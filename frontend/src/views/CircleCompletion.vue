@@ -1858,7 +1858,7 @@ function normalizeReleaseDateForBonusProbe(raw) {
 }
 
 function getWorkBonusProbeDate(item) {
-  return normalizeReleaseDateForBonusProbe(item?.release_date || item?.date || item?.release_at || '')
+  return normalizeReleaseDateForBonusProbe(item?.original_release_date || item?.release_date || item?.date || item?.release_at || '')
 }
 
 function toggleWorksReleaseSort() {
@@ -4624,19 +4624,13 @@ async function getSelectedBonusProbeDates() {
       skippedHasBonusCount += 1
       continue
     }
-    if (noBonusCodes.has(code)) {
-      skippedNoBonusCount += 1
-      continue
-    }
     const releaseDate = normalizeReleaseDateForBonusProbe(releaseDatesByCode[code])
     if (!releaseDate) {
       missingDateCount += 1
       continue
     }
-    if (completedDates.has(releaseDate)) {
-      skippedCompletedDateCount += 1
-      continue
-    }
+    if (noBonusCodes.has(code)) skippedNoBonusCount += 1
+    if (completedDates.has(releaseDate)) skippedCompletedDateCount += 1
     if (!dates.includes(releaseDate)) dates.push(releaseDate)
     if (!Array.isArray(selectedRjcodesByDate[releaseDate])) selectedRjcodesByDate[releaseDate] = []
     if (!selectedRjcodesByDate[releaseDate].includes(code)) selectedRjcodesByDate[releaseDate].push(code)

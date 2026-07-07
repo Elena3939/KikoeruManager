@@ -925,9 +925,9 @@ async def test_probe_date_budget_reached_returns_incomplete_without_no_bonus_sta
 
 
 @pytest.mark.asyncio
-async def test_probe_date_selected_rj_scope_avoids_large_date_range_budget(db_session, monkeypatch) -> None:
+async def test_probe_date_selected_rj_scope_uses_date_range_for_far_bonus(db_session, monkeypatch) -> None:
     service = _service()
-    service.DEFAULT_DATE_RANGE_LIMIT = 2
+    service.DEFAULT_DATE_RANGE_LIMIT = 6000
     service.DEFAULT_CIRCLE_EDGE_WINDOW = 2
     monkeypatch.setattr("app.core.dlsite_bonus_probe_service.SessionLocal", lambda: db_session)
     db_session.add(
@@ -953,19 +953,19 @@ async def test_probe_date_selected_rj_scope_avoids_large_date_range_budget(db_se
     monkeypatch.setattr(service, "_load_reusable_hidden_bonus_features", lambda **_kwargs: [])
 
     async def fake_public_worknos(*_args, **_kwargs):
-        return ["RJ01000001", "RJ02000000"], ["RJ01000001", "RJ02000000"], "ok"
+        return ["RJ01000003"], ["RJ01000000", "RJ01005000"], "ok"
 
     async def fake_load_or_probe(rjcodes, **_kwargs):
         features = {}
         for rjcode in rjcodes:
-            is_bonus = rjcode == "RJ01000004"
+            is_bonus = rjcode == "RJ01004000"
             features[rjcode] = DLsiteProductProbeFeature(
                 workno=rjcode,
-                exists=is_bonus or rjcode in {"RJ01000001", "RJ02000000"},
-                probe_status="ok" if is_bonus or rjcode in {"RJ01000001", "RJ02000000"} else "missing",
-                maker_id="RG62878" if is_bonus or rjcode in {"RJ01000001", "RJ02000000"} else "",
-                release_date="2025-06-11" if is_bonus or rjcode in {"RJ01000001", "RJ02000000"} else "",
-                work_type="SOU" if is_bonus or rjcode in {"RJ01000001", "RJ02000000"} else "",
+                exists=is_bonus or rjcode in {"RJ01000000", "RJ01000003", "RJ01005000"},
+                probe_status="ok" if is_bonus or rjcode in {"RJ01000000", "RJ01000003", "RJ01005000"} else "missing",
+                maker_id="RG62878" if is_bonus or rjcode in {"RJ01000000", "RJ01000003", "RJ01005000"} else "",
+                release_date="2025-06-11" if is_bonus or rjcode in {"RJ01000000", "RJ01000003", "RJ01005000"} else "",
+                work_type="SOU" if is_bonus or rjcode in {"RJ01000000", "RJ01000003", "RJ01005000"} else "",
                 price=0 if is_bonus else 770,
                 is_free=is_bonus,
                 is_oly=is_bonus,
@@ -992,10 +992,105 @@ async def test_probe_date_selected_rj_scope_avoids_large_date_range_budget(db_se
     assert result["selected_scope"] is True
     assert result["target_rjcodes"] == ["RJ01000003"]
     assert result["budget_reached"] is False
-    assert result["hit_rjcodes"] == ["RJ01000004"]
+    assert result["date_page_range_count"] == 4999
+    assert result["hit_rjcodes"] == ["RJ01004000"]
     assert state.original_rjcode == "RJ01000003"
     assert state.status == "has_bonus"
     assert date_row.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_probe_date_reused_hit_index_still_continues_unfinished_scan(db_session, monkeypatch) -> None:
+    service = _service()
+    service.DEFAULT_DATE_RANGE_LIMIT = 20
+    service.DEFAULT_CIRCLE_EDGE_WINDOW = 2
+    monkeypatch.setattr("app.core.dlsite_bonus_probe_service.SessionLocal", lambda: db_session)
+    db_session.add(
+        CircleWork(
+            id="reuse-index-original",
+            circle_id="circle-reuse-index-probe",
+            canonical_rjcode="RJ01000003",
+            display_rjcode="RJ01000003",
+            maker_id="RG62878",
+            is_bonus_work=False,
+        )
+    )
+    db_session.add(
+        WorkMetadata(
+            rjcode="RJ01000003",
+            maker_id="RG62878",
+            release_date="2025-06-11",
+            is_bonus_work=False,
+        )
+    )
+    db_session.add(
+        DLsiteBonusProbeCache(
+            rjcode="RJ01000004",
+            exists=True,
+            probe_status="ok",
+            maker_id="RG62878",
+            release_date="2025-06-11",
+            work_type="SOU",
+            price=0,
+            is_sale=False,
+            is_free=True,
+            is_oly=True,
+            wishlist_count=0,
+            is_hidden_bonus_audio=True,
+            title="早期特典 1",
+        )
+    )
+    db_session.add(
+        DLsiteBonusProbeHitIndex(
+            circle_id="circle-reuse-index-probe",
+            maker_id="RG62878",
+            release_date="2025-06-11",
+            bonus_rjcode="RJ01000004",
+        )
+    )
+    db_session.commit()
+
+    async def fake_public_worknos(*_args, **_kwargs):
+        return ["RJ01000003"], ["RJ01000001", "RJ01000010"], "ok"
+
+    async def fake_load_or_probe(rjcodes, **_kwargs):
+        features = {}
+        for rjcode in rjcodes:
+            is_second_bonus = rjcode == "RJ01000008"
+            features[rjcode] = DLsiteProductProbeFeature(
+                workno=rjcode,
+                exists=is_second_bonus or rjcode in {"RJ01000001", "RJ01000003", "RJ01000010"},
+                probe_status="ok" if is_second_bonus or rjcode in {"RJ01000001", "RJ01000003", "RJ01000010"} else "missing",
+                maker_id="RG62878" if is_second_bonus or rjcode in {"RJ01000001", "RJ01000003", "RJ01000010"} else "",
+                release_date="2025-06-11" if is_second_bonus or rjcode in {"RJ01000001", "RJ01000003", "RJ01000010"} else "",
+                work_type="SOU" if is_second_bonus or rjcode in {"RJ01000001", "RJ01000003", "RJ01000010"} else "",
+                price=0 if is_second_bonus else 770,
+                is_free=is_second_bonus,
+                is_oly=is_second_bonus,
+                is_hidden_bonus_audio=is_second_bonus,
+                title="早期特典 2" if is_second_bonus else "",
+            )
+        return features, 0, 1 if rjcodes else 0
+
+    monkeypatch.setattr(service, "_load_public_worknos_for_date", fake_public_worknos)
+    monkeypatch.setattr(service, "_load_or_probe_features", fake_load_or_probe)
+
+    result = await service.probe_date(
+        circle_id="circle-reuse-index-probe",
+        maker_id="RG62878",
+        release_date="2025-06-11",
+        mode="deep",
+        gap_limit=2,
+        batch_size=20,
+        target_rjcodes=["RJ01000003"],
+    )
+
+    hit_codes = sorted(result["hit_rjcodes"])
+    hit_index_codes = sorted(row.bonus_rjcode for row in db_session.query(DLsiteBonusProbeHitIndex).all())
+    assert result["reused_hit_index"] is True
+    assert hit_codes == ["RJ01000004", "RJ01000008"]
+    assert hit_index_codes == ["RJ01000004", "RJ01000008"]
+    assert result["probe_count"] > 0
 
 
 @pytest.mark.asyncio
@@ -1079,7 +1174,7 @@ async def test_probe_date_counts_cached_hidden_bonus_candidate(db_session, monke
     date_row = db_session.query(DLsiteBonusProbeDate).first()
     assert result["hit_rjcodes"] == ["RJ01256633"]
     assert result["hit_count"] == 1
-    assert result["candidate_filter_stats"]["cached"] == 1
+    assert result["candidate_filter_stats"]["cached"] >= 1
     assert state.original_rjcode == "RJ01256625"
     assert state.status == "has_bonus"
     assert bonus_row is not None

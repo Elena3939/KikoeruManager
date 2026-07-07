@@ -2297,7 +2297,13 @@ class CircleCompletionService:
             code = str(item.get("canonical_rjcode") or "").strip()
             if not code:
                 continue
-            release_date = str(item.get("release_date") or item.get("date") or item.get("release_at") or "").strip()
+            release_date = str(
+                item.get("original_release_date")
+                or item.get("release_date")
+                or item.get("date")
+                or item.get("release_at")
+                or ""
+            ).strip()
             if release_date:
                 release_dates_by_rjcode[code] = release_date
             candidates = []

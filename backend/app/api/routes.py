@@ -17185,13 +17185,17 @@ async def circle_completion_bonus_probe_start(request: CircleCompletionBonusProb
         batch_size = int(runtime_limits["batch_size"])
         concurrency = int(runtime_limits["concurrency"])
         requested_release_dates = list(release_dates)
-        release_dates, skipped_completed_release_dates = service.split_reusable_release_dates(
-            circle_id=circle_id,
-            maker_id=maker_id,
-            release_dates=requested_release_dates,
-            mode=mode,
-            gap_limit=gap_limit,
-        )
+        if selected_rjcodes_by_date:
+            release_dates = requested_release_dates
+            skipped_completed_release_dates = []
+        else:
+            release_dates, skipped_completed_release_dates = service.split_reusable_release_dates(
+                circle_id=circle_id,
+                maker_id=maker_id,
+                release_dates=requested_release_dates,
+                mode=mode,
+                gap_limit=gap_limit,
+            )
         selected_rjcodes_by_date = {
             date: selected_rjcodes_by_date.get(date, [])
             for date in release_dates

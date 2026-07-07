@@ -172,14 +172,25 @@ class DLsiteBonusProbeService:
         normalized_status = str(status or "").strip()
         if not circle_id or not normalized_original or normalized_status not in {"no_bonus", "has_bonus"}:
             return
-        row = (
-            db.query(DLsiteBonusOriginalProbeState)
-            .filter(
-                DLsiteBonusOriginalProbeState.circle_id == circle_id,
-                DLsiteBonusOriginalProbeState.original_rjcode == normalized_original,
-            )
-            .first()
+        row = next(
+            (
+                pending
+                for pending in db.new
+                if isinstance(pending, DLsiteBonusOriginalProbeState)
+                and str(pending.circle_id or "") == circle_id
+                and self.normalize_rjcode(pending.original_rjcode) == normalized_original
+            ),
+            None,
         )
+        if row is None:
+            row = (
+                db.query(DLsiteBonusOriginalProbeState)
+                .filter(
+                    DLsiteBonusOriginalProbeState.circle_id == circle_id,
+                    DLsiteBonusOriginalProbeState.original_rjcode == normalized_original,
+                )
+                .first()
+            )
         if row is None:
             row = DLsiteBonusOriginalProbeState(
                 circle_id=circle_id,
@@ -1649,7 +1660,7 @@ class DLsiteBonusProbeService:
                 )
                 .first()
             )
-            if self._can_reuse_completed_date_row(date_row, mode=mode):
+            if not normalized_target_rjcodes and self._can_reuse_completed_date_row(date_row, mode=mode):
                 result = self._completed_date_row_result(
                     date_row,
                     circle_id=normalized_circle_id,
@@ -1692,81 +1703,7 @@ class DLsiteBonusProbeService:
                 release_date=normalized_date,
             )
             if reusable_hidden_hits:
-                inserted_count += self._upsert_bonus_works(
-                    normalized_circle_id,
-                    normalized_maker_id,
-                    reusable_hidden_hits,
-                )
                 cached_hit_count += len(reusable_hidden_hits)
-                self._mark_original_probe_states_after_scan(
-                    circle_id=normalized_circle_id,
-                    maker_id=normalized_maker_id,
-                    release_date=normalized_date,
-                    hidden_hits=reusable_hidden_hits,
-                )
-                db = SessionLocal()
-                try:
-                    original_summary = self._release_date_original_state_summary(
-                        db,
-                        circle_id=normalized_circle_id,
-                        maker_id=normalized_maker_id,
-                        release_date=normalized_date,
-                    )
-                finally:
-                    db.close()
-                if original_summary["pending_count"] == 0:
-                    result = {
-                        "circle_id": normalized_circle_id,
-                        "maker_id": normalized_maker_id,
-                        "release_date": normalized_date,
-                        "parse_status": "local_hit_index",
-                        "public_count": original_summary["original_count"],
-                        "date_page_public_count": 0,
-                        "sou_public_count": original_summary["original_count"],
-                        "gap_count": 0,
-                        "circle_gap_count": 0,
-                        "circle_edge_window": 0,
-                        "date_page_range_count": 0,
-                        "date_page_range_limit": self.DEFAULT_DATE_RANGE_LIMIT,
-                        "probe_count": 0,
-                        "cached_hit_count": cached_hit_count,
-                        "request_count": 0,
-                        "hit_count": len(reusable_hidden_hits),
-                        "inserted_count": inserted_count,
-                        "budget_reached": False,
-                        "hit_rjcodes": [feature.workno for feature in reusable_hidden_hits],
-                        "reused_hit_index": True,
-                        "original_count": original_summary["original_count"],
-                        "original_concluded_count": original_summary["concluded_count"],
-                        "original_pending_count": original_summary["pending_count"],
-                        "original_has_bonus_count": original_summary["has_bonus_count"],
-                        "original_no_bonus_count": original_summary["no_bonus_count"],
-                    }
-                    db = SessionLocal()
-                    try:
-                        date_row = self._upsert_date_row(
-                            db,
-                            maker_id=normalized_maker_id,
-                            circle_id=normalized_circle_id,
-                            release_date=normalized_date,
-                            gap_limit=gap_limit,
-                        )
-                        date_row.mode = mode_key
-                        date_row.status = "completed"
-                        date_row.public_count = result["public_count"]
-                        date_row.sou_public_count = result["sou_public_count"]
-                        date_row.gap_count = 0
-                        date_row.probe_count = 0
-                        date_row.cached_hit_count = cached_hit_count
-                        date_row.request_count = 0
-                        date_row.hit_count = result["hit_count"]
-                        date_row.inserted_count = inserted_count
-                        date_row.budget_reached = False
-                        date_row.finished_at = datetime.now()
-                        db.commit()
-                    finally:
-                        db.close()
-                    return result
 
             public_worknos, date_page_worknos, parse_status = await self._load_public_worknos_for_date(
                 normalized_circle_id,
@@ -1802,9 +1739,10 @@ class DLsiteBonusProbeService:
                 )
                 circle_gap_count = 0
                 circle_budget_reached = False
-                date_page_candidates = []
-                date_page_range_count = 0
-                date_page_budget_reached = False
+                date_page_candidates, date_page_range_count, date_page_budget_reached = self._build_range_candidates(
+                    date_page_worknos,
+                    range_limit=self.DEFAULT_DATE_RANGE_LIMIT,
+                )
             else:
                 circle_candidates, circle_gap_count, circle_budget_reached = self._build_gap_candidates(
                     sou_public,
@@ -1860,6 +1798,10 @@ class DLsiteBonusProbeService:
                 if not normalized_workno:
                     continue
                 hidden_hits_by_rjcode[normalized_workno] = feature
+            for feature in reusable_hidden_hits:
+                normalized_workno = self.normalize_rjcode(feature.workno)
+                if normalized_workno and normalized_workno not in hidden_hits_by_rjcode:
+                    hidden_hits_by_rjcode[normalized_workno] = feature
             hidden_hits = list(hidden_hits_by_rjcode.values())
             inserted_count += self._upsert_bonus_works(normalized_circle_id, normalized_maker_id, hidden_hits)
             if not budget_reached:
@@ -1905,10 +1847,10 @@ class DLsiteBonusProbeService:
                 ],
                 "cached_hit_count": cached_hit_count,
                 "request_count": request_count,
-                "hit_count": len(reusable_hidden_hits) + len(hidden_hits),
+                "hit_count": len(hidden_hits),
                 "inserted_count": inserted_count,
                 "budget_reached": bool(budget_reached),
-                "hit_rjcodes": [feature.workno for feature in [*reusable_hidden_hits, *hidden_hits]],
+                "hit_rjcodes": [feature.workno for feature in hidden_hits],
                 "reused_hit_index": bool(reusable_hidden_hits),
                 "original_count": original_summary["original_count"],
                 "original_concluded_count": original_summary["concluded_count"],
