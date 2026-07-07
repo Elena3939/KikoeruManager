@@ -1,14 +1,21 @@
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine
+from sqlalchemy import Text, create_engine
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.notification_helper import build_notification_extra_for_task
 from app.core import task_notification_service
 from app.core.task_engine import TaskStatus, TaskType
-from app.models.database import Base, NotificationInboxItem, NotificationOutbox
+from app.models.database import NotificationInboxItem, NotificationOutbox
+
+
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_for_sqlite(_type, compiler, **_kw):
+    return "JSON"
 
 
 def _session_factory():
@@ -17,7 +24,8 @@ def _session_factory():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    Base.metadata.create_all(bind=engine)
+    NotificationInboxItem.__table__.create(bind=engine)
+    NotificationOutbox.__table__.create(bind=engine)
     return sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -182,3 +190,7 @@ def test_baidu_netdisk_partial_success_is_failed_event():
     )
 
     assert task_notification_service._is_http_download_partial_success(task) is True
+
+
+def test_notification_business_key_column_allows_long_keys():
+    assert isinstance(NotificationInboxItem.__table__.c.business_key.type, Text)

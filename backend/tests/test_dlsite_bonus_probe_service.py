@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.dlsite_bonus_probe_service import DLsiteBonusProbeService
 from app.core.dlsite_service import DLsiteProductProbeFeature
@@ -204,6 +205,36 @@ def test_hidden_bonus_match_does_not_require_current_probe_date() -> None:
         maker_id="RG62878",
         release_date="2026-03-22",
     )
+
+
+def test_cache_values_accept_bigint_probe_counts() -> None:
+    service = _service()
+    feature = DLsiteProductProbeFeature(
+        workno="RJ01000001",
+        exists=True,
+        price=2147483648,
+        wishlist_count=2147483649,
+    )
+
+    values = service._cache_values_from_feature(feature)
+
+    assert values["price"] == 2147483648
+    assert values["wishlist_count"] == 2147483649
+
+
+def test_cache_values_clamps_values_beyond_bigint() -> None:
+    service = _service()
+    feature = DLsiteProductProbeFeature(
+        workno="RJ01000001",
+        exists=True,
+        price=10**30,
+        wishlist_count=-1,
+    )
+
+    values = service._cache_values_from_feature(feature)
+
+    assert values["price"] == 0
+    assert values["wishlist_count"] == 0
 
 
 def test_completed_probe_date_row_reuses_current_strategy() -> None:
@@ -537,6 +568,142 @@ async def test_probe_circle_dates_runs_six_date_workers(monkeypatch) -> None:
     assert max_active == 6
     assert result["date_count"] == 8
     assert [item["release_date"] for item in result["dates"]] == [f"2025-06-{day:02d}" for day in range(1, 9)]
+
+
+@pytest.mark.asyncio
+async def test_probe_circle_dates_keeps_running_after_local_date_failures(monkeypatch) -> None:
+    service = _service()
+    monkeypatch.setattr(
+        service,
+        "resolve_circle_context",
+        lambda circle_id, maker_id="": {
+            "circle_id": circle_id,
+            "circle_name": "测试社团",
+            "maker_id": maker_id or "RG62878",
+        },
+    )
+    monkeypatch.setattr(service, "_order_probe_release_dates", lambda **kwargs: list(kwargs["dates"]))
+
+    async def fake_probe_date(**kwargs):
+        release_date = kwargs["release_date"]
+        if release_date in {"2025-06-02", "2025-06-04"}:
+            raise RuntimeError(f"DLsite RJ 探测异常：{release_date}")
+        await asyncio.sleep(0)
+        return {
+            "release_date": release_date,
+            "probe_count": 1,
+            "request_count": 1,
+            "hit_count": 0,
+            "inserted_count": 0,
+        }
+
+    monkeypatch.setattr(service, "probe_date", fake_probe_date)
+
+    result = await service.probe_circle_dates(
+        circle_id="circle-local-failures",
+        maker_id="RG62878",
+        release_dates=[f"2025-06-{day:02d}" for day in range(1, 6)],
+        concurrency=3,
+    )
+
+    assert result["date_count"] == 5
+    assert result["failed_count"] == 2
+    assert result["failed_dates"] == ["2025-06-02", "2025-06-04"]
+    assert result["incomplete_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_probe_circle_dates_cancels_workers_after_fatal_failure(monkeypatch) -> None:
+    service = _service()
+    monkeypatch.setattr(
+        service,
+        "resolve_circle_context",
+        lambda circle_id, maker_id="": {
+            "circle_id": circle_id,
+            "circle_name": "测试社团",
+            "maker_id": maker_id or "RG62878",
+        },
+    )
+    monkeypatch.setattr(service, "_order_probe_release_dates", lambda **kwargs: list(kwargs["dates"]))
+    completed: list[str] = []
+
+    async def fake_probe_date(**kwargs):
+        release_date = kwargs["release_date"]
+        if release_date == "2025-06-01":
+            raise SQLAlchemyError("integer out of range")
+        try:
+            await asyncio.sleep(1)
+            completed.append(release_date)
+        except asyncio.CancelledError:
+            raise
+        return {
+            "release_date": release_date,
+            "probe_count": 1,
+            "request_count": 1,
+            "hit_count": 0,
+            "inserted_count": 0,
+        }
+
+    monkeypatch.setattr(service, "probe_date", fake_probe_date)
+
+    with pytest.raises(SQLAlchemyError):
+        await service.probe_circle_dates(
+            circle_id="circle-fatal-failure",
+            maker_id="RG62878",
+            release_dates=[f"2025-06-{day:02d}" for day in range(1, 5)],
+            concurrency=4,
+        )
+
+    assert completed == []
+
+
+@pytest.mark.asyncio
+async def test_probe_circle_dates_cancels_workers_after_worker_cancel(monkeypatch) -> None:
+    service = _service()
+    monkeypatch.setattr(
+        service,
+        "resolve_circle_context",
+        lambda circle_id, maker_id="": {
+            "circle_id": circle_id,
+            "circle_name": "测试社团",
+            "maker_id": maker_id or "RG62878",
+        },
+    )
+    monkeypatch.setattr(service, "_order_probe_release_dates", lambda **kwargs: list(kwargs["dates"]))
+    completed: list[str] = []
+    cancelled: list[str] = []
+
+    async def fake_probe_date(**kwargs):
+        release_date = kwargs["release_date"]
+        if release_date == "2025-06-01":
+            await asyncio.sleep(0)
+            raise asyncio.CancelledError()
+        try:
+            await asyncio.sleep(1)
+            completed.append(release_date)
+        except asyncio.CancelledError:
+            cancelled.append(release_date)
+            raise
+        return {
+            "release_date": release_date,
+            "probe_count": 1,
+            "request_count": 1,
+            "hit_count": 0,
+            "inserted_count": 0,
+        }
+
+    monkeypatch.setattr(service, "probe_date", fake_probe_date)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.probe_circle_dates(
+            circle_id="circle-worker-cancel",
+            maker_id="RG62878",
+            release_dates=[f"2025-06-{day:02d}" for day in range(1, 5)],
+            concurrency=4,
+        )
+
+    assert completed == []
+    assert set(cancelled) == {"2025-06-02", "2025-06-03", "2025-06-04"}
 
 
 @pytest.mark.asyncio

@@ -6104,6 +6104,8 @@ class TaskEngine:
         append_progress_log('准备探测 DLsite 隐藏特典', 1)
 
         def progress_callback(progress: int, step: str, meta: Dict[str, Any]):
+            if task.status != TaskStatus.PROCESSING or task.is_cancelled():
+                return
             pct = min(99, max(1, int(progress or 0)))
             task.update_progress(pct, step)
             task.task_metadata = {
@@ -6146,14 +6148,23 @@ class TaskEngine:
                 'original_has_bonus_count': int(result.get('original_has_bonus_count') or 0),
                 'original_no_bonus_count': int(result.get('original_no_bonus_count') or 0),
                 'incomplete_count': int(result.get('incomplete_count') or 0),
+                'failed_count': int(result.get('failed_count') or 0),
+                'failed_dates': list(result.get('failed_dates') or []),
                 'budget_reached': bool(result.get('budget_reached')),
             },
         })
         inserted_count = int(result.get('inserted_count') or 0)
         incomplete_count = int(result.get('incomplete_count') or 0)
+        failed_count = int(result.get('failed_count') or 0)
         if incomplete_count:
             append_progress_log(
-                f"特典探测完成但有 {incomplete_count} 个发售日超出 RJ 预算，未产出无特典结论",
+                f"特典探测完成但有 {incomplete_count} 个发售日未产出完整结论",
+                100,
+                'warning',
+            )
+        if failed_count:
+            append_progress_log(
+                f"特典探测有 {failed_count} 个发售日局部失败，可稍后重试失败日期",
                 100,
                 'warning',
             )
@@ -6165,7 +6176,7 @@ class TaskEngine:
         task.update_progress(
             100,
             f"特典探测完成，写入 {inserted_count} 个"
-            + (f"，{incomplete_count} 个发售日未产出无特典结论" if incomplete_count else ""),
+            + (f"，{incomplete_count} 个发售日未产出完整结论" if incomplete_count else ""),
         )
         task.complete()
 

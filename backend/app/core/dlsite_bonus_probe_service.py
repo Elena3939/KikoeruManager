@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from ..models.database import (
@@ -25,6 +26,7 @@ from .dlsite_service import DLsiteProductProbeFeature, get_dlsite_service
 from .resource_budget_service import get_resource_budget_service
 
 logger = logging.getLogger(__name__)
+_POSTGRES_BIGINT_MAX = 9223372036854775807
 
 
 class DLsiteBonusProbeService:
@@ -454,11 +456,11 @@ class DLsiteBonusProbeService:
             "maker_id": feature.maker_id or "",
             "release_date": feature.release_date or "",
             "work_type": feature.work_type or "",
-            "price": int(feature.price or 0),
+            "price": self._safe_cache_int(feature.price, field="price", workno=feature.workno),
             "is_sale": bool(feature.is_sale),
             "is_free": bool(feature.is_free),
             "is_oly": bool(feature.is_oly),
-            "wishlist_count": int(feature.wishlist_count or 0),
+            "wishlist_count": self._safe_cache_int(feature.wishlist_count, field="wishlist_count", workno=feature.workno),
             "is_hidden_bonus_audio": bool(feature.is_hidden_bonus_audio),
             "title": feature.title or "",
             "raw_summary_json": dict(feature.raw_summary_json or {}),
@@ -466,6 +468,66 @@ class DLsiteBonusProbeService:
             "checked_at": now,
             "created_at": now,
             "updated_at": now,
+        }
+
+    def _safe_cache_int(self, value: Any, *, field: str, workno: str) -> int:
+        if value is None or isinstance(value, bool):
+            return 0
+        try:
+            number = int(value)
+        except Exception:
+            logger.debug("[DLsite特典探测] 缓存数值字段无法解析 workno=%s field=%s value=%r", workno, field, value)
+            return 0
+        if number < 0:
+            return 0
+        if number > _POSTGRES_BIGINT_MAX:
+            logger.warning(
+                "[DLsite特典探测] 缓存数值字段超过 BIGINT 范围，已按 0 处理 workno=%s field=%s value=%s",
+                workno,
+                field,
+                value,
+            )
+            return 0
+        return number
+
+    def _is_fatal_probe_exception(self, exc: BaseException) -> bool:
+        if isinstance(exc, (asyncio.CancelledError, SQLAlchemyError, DBAPIError)):
+            return True
+        text = str(exc or "").lower()
+        fatal_markers = (
+            "integer out of range",
+            "numericvalueoutofrange",
+            "stringdatarighttruncation",
+            "value too long for type",
+            "transaction is aborted",
+            "connection is closed",
+            "database is closed",
+            "deadlock detected",
+        )
+        return any(marker in text for marker in fatal_markers)
+
+    def _failed_date_result(self, *, circle_id: str, maker_id: str, release_date: str, exc: BaseException) -> Dict[str, Any]:
+        message = str(exc or exc.__class__.__name__).strip() or exc.__class__.__name__
+        return {
+            "circle_id": circle_id,
+            "maker_id": maker_id,
+            "release_date": release_date,
+            "parse_status": "failed",
+            "public_count": 0,
+            "date_page_public_count": 0,
+            "sou_public_count": 0,
+            "gap_count": 0,
+            "circle_gap_count": 0,
+            "date_page_range_count": 0,
+            "probe_count": 0,
+            "cached_hit_count": 0,
+            "request_count": 0,
+            "hit_count": 0,
+            "inserted_count": 0,
+            "budget_reached": False,
+            "failed": True,
+            "incomplete": True,
+            "error_message": message[:2000],
         }
 
     def _upsert_cache_features_sync(self, features: Sequence[DLsiteProductProbeFeature]) -> None:
@@ -1689,6 +1751,7 @@ class DLsiteBonusProbeService:
         worker_count = max(1, min(int(concurrency or self.DEFAULT_CONCURRENCY), total))
         queue: asyncio.Queue[Tuple[int, str]] = asyncio.Queue()
         result_lock = asyncio.Lock()
+        stop_event = asyncio.Event()
         for index, release_date in enumerate(dates, start=1):
             queue.put_nowait((index, release_date))
 
@@ -1703,7 +1766,10 @@ class DLsiteBonusProbeService:
         async def probe_worker(worker_index: int) -> None:
             worker_label = f"并发 {worker_index}/{worker_count}"
             while True:
+                if stop_event.is_set():
+                    return
                 if cancel_callback and cancel_callback():
+                    stop_event.set()
                     raise asyncio.CancelledError()
                 try:
                     index, release_date = queue.get_nowait()
@@ -1764,27 +1830,78 @@ class DLsiteBonusProbeService:
                         target_rjcodes=normalized_selected_by_date.get(release_date) or [],
                         probe_progress_callback=emit_date_probe_progress,
                     )
-                    completed_probe_count = await append_result(result)
-                    if progress_callback:
-                        progress_callback(
-                            min(99, int((len(results) / max(total, 1)) * 100)),
-                            f"{worker_label} 完成 {release_date}：命中 {result.get('hit_count', 0)} 个",
-                            {
-                                "release_date": release_date,
-                                "batch_index": index,
-                                "batch_total": total,
-                                "worker_index": worker_index,
-                                "worker_total": worker_count,
-                                "checked_probe_count": completed_probe_count,
-                                "probe_count": completed_probe_count,
-                                "last_result": result,
-                            },
+                except asyncio.CancelledError:
+                    stop_event.set()
+                    raise
+                except Exception as exc:
+                    if self._is_fatal_probe_exception(exc):
+                        stop_event.set()
+                        logger.error(
+                            "[DLsite特典探测] 致命错误，停止剩余 worker job_id=%s worker=%s release_date=%s error=%s",
+                            job_id,
+                            worker_index,
+                            release_date,
+                            exc,
+                            exc_info=True,
                         )
+                        raise
+                    result = self._failed_date_result(
+                        circle_id=normalized_circle_id,
+                        maker_id=normalized_maker_id,
+                        release_date=release_date,
+                        exc=exc,
+                    )
+                    logger.warning(
+                        "[DLsite特典探测] 发售日局部失败，继续剩余 worker job_id=%s worker=%s release_date=%s error=%s",
+                        job_id,
+                        worker_index,
+                        release_date,
+                        exc,
+                    )
                 finally:
                     queue.task_done()
 
-        await asyncio.gather(*[probe_worker(index) for index in range(1, worker_count + 1)])
+                completed_probe_count = await append_result(result)
+                if progress_callback:
+                    message = (
+                        f"{worker_label} 跳过 {release_date}：{str(result.get('error_message') or '')[:80]}"
+                        if result.get("failed")
+                        else f"{worker_label} 完成 {release_date}：命中 {result.get('hit_count', 0)} 个"
+                    )
+                    progress_callback(
+                        min(99, int((len(results) / max(total, 1)) * 100)),
+                        message,
+                        {
+                            "release_date": release_date,
+                            "batch_index": index,
+                            "batch_total": total,
+                            "worker_index": worker_index,
+                            "worker_total": worker_count,
+                            "checked_probe_count": completed_probe_count,
+                            "probe_count": completed_probe_count,
+                            "last_result": result,
+                        },
+                    )
+
+        worker_tasks = [asyncio.create_task(probe_worker(index)) for index in range(1, worker_count + 1)]
+        try:
+            await asyncio.gather(*worker_tasks)
+        except asyncio.CancelledError:
+            stop_event.set()
+            for worker_task in worker_tasks:
+                if not worker_task.done():
+                    worker_task.cancel()
+            await asyncio.gather(*worker_tasks, return_exceptions=True)
+            raise
+        except Exception:
+            stop_event.set()
+            for worker_task in worker_tasks:
+                if not worker_task.done():
+                    worker_task.cancel()
+            await asyncio.gather(*worker_tasks, return_exceptions=True)
+            raise
         results.sort(key=lambda item: date_order.get(str(item.get("release_date") or ""), total))
+        failed_dates = [str(item.get("release_date") or "") for item in results if bool(item.get("failed"))]
 
         summary = {
             "circle_id": normalized_circle_id,
@@ -1811,6 +1928,8 @@ class DLsiteBonusProbeService:
             "original_no_bonus_count": sum(int(item.get("original_no_bonus_count") or 0) for item in results),
             "skipped_count": sum(1 for item in results if bool(item.get("skipped"))),
             "incomplete_count": sum(1 for item in results if bool(item.get("incomplete"))),
+            "failed_count": len(failed_dates),
+            "failed_dates": failed_dates,
             "budget_reached": any(bool(item.get("budget_reached")) for item in results),
             "dates": results,
         }
