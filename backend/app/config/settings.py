@@ -543,9 +543,9 @@ class RedisConfig(BaseModel):
 class BonusProbeConfig(BaseModel):
     """DLsite 特典补全运行配置。"""
     max_active_jobs: int = 1
-    normal_batch_size: int = 100
+    normal_batch_size: int = 500
     normal_concurrency: int = 6
-    deep_batch_size: int = 200
+    deep_batch_size: int = 500
     deep_concurrency: int = 6
     new_release_batch_size: int = 100
     new_release_concurrency: int = 6
@@ -559,9 +559,9 @@ class BonusProbeConfig(BaseModel):
         self.max_active_jobs = max(1, int(self.max_active_jobs or 1))
         self.max_batch_size = max(1, int(self.max_batch_size or 500))
         self.max_concurrency = max(1, int(self.max_concurrency or 6))
-        self.normal_batch_size = min(max(1, int(self.normal_batch_size or 100)), self.max_batch_size)
+        self.normal_batch_size = min(max(1, int(self.normal_batch_size or 500)), self.max_batch_size)
         self.normal_concurrency = min(max(1, int(self.normal_concurrency or 6)), self.max_concurrency)
-        self.deep_batch_size = min(max(1, int(self.deep_batch_size or 200)), self.max_batch_size)
+        self.deep_batch_size = min(max(1, int(self.deep_batch_size or 500)), self.max_batch_size)
         self.deep_concurrency = min(max(1, int(self.deep_concurrency or 6)), self.max_concurrency)
         self.new_release_batch_size = min(max(1, int(self.new_release_batch_size or 100)), self.max_batch_size)
         self.new_release_concurrency = min(max(1, int(self.new_release_concurrency or 6)), self.max_concurrency)
