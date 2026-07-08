@@ -2912,3 +2912,236 @@
 - `backend/tests/test_dlsite_bonus_probe_service.py`：缓存候选统计断言改为确认至少命中缓存路径。
 - `progress.md`：追加本轮发布配置和验证记录。
 - 回滚方式：还原上述三个文件本轮 hunk，并删除本段进度记录；如 tag 已推送，则需删除远程 `v1.6.73` 后重新发布。
+## 2026-07-08 - Task: 补齐数据库迁移兜底路径
+### What was done
+- Docker 单镜像启动流程新增 `alembic upgrade head`，避免迁移文件未执行导致线上结构长期停留在旧版本。
+- 启动期兼容迁移新增特典探测缓存字段类型兜底，发现 `dlsite_bonus_probe_cache.price` / `wishlist_count` 不是 `BIGINT` 时自动升级。
+- 同步补充通知收件箱 `business_key` 的 TEXT 兜底和数据库迁移执行说明，明确 Alembic 与历史库兼容迁移要同时维护。
+
+### Testing
+- `\.venv\Scripts\python.exe -m py_compile .\backend\app\models\database.py`：通过。
+- 使用项目 `.venv` 执行独立兼容迁移回归脚本：通过，确认 int4 会生成 `ALTER COLUMN ... TYPE BIGINT`，已有 int8 不会重复执行。
+- `$env:PYTHONPATH='backend'; .\backend\venv\Scripts\python.exe -m alembic heads`：通过，当前 head 为 `20260707_0001_bonus_probe_resilience`。
+- `git diff --check`：通过，仅有 Windows autocrlf 的 LF/CRLF 提示。
+- `backend` 下执行 `..\.venv\Scripts\python.exe -m pytest tests\test_database_compat_migrations.py -q --basetemp .pytest-codex-db-migrations`：未进入用例执行，本机 PostgreSQL 测试库 `kikoerumanager_test` 连接超时，改用不依赖测试库的独立回归脚本验证本轮逻辑。
+
+### Notes
+- `docker/entrypoint.sh`：启动应用前执行 Alembic 迁移。
+- `backend/app/models/database.py`：兼容迁移增加特典探测缓存 BIGINT 和通知 `business_key` TEXT 兜底。
+- `backend/tests/test_database_compat_migrations.py`：新增特典探测缓存兼容迁移测试。
+- `docs/database-migrations.md`：记录 Docker 启动迁移和历史库兼容迁移规则。
+- `progress.md`：追加本轮迁移兜底记录。
+- 回滚方式：还原上述文件本轮 hunk，并删除本段进度记录。
+## 2026-07-08 - Task: 修复社团补全切换与翻页性能
+### What was done
+- 后端社团补全新增 state / summary / page / work-codes / recent 分层缓存，L1 使用进程内 TTLCache，L2 使用项目 Redis，并用版本号和 build lock 防止跨请求重复冷构建。
+- 写路径统一失效社团补全读模型：单社团递增 Redis version，全量未知范围递增全局 epoch，最近社团目录单独递增 recent version。
+- 前端切社团请求收敛为默认只打 `/works`，复用 `/works` 返回的 summary 统计，不再冷启动并发打 `/summary` + `/works`。
+- 前端翻页保留旧页内容并显示轻量更新状态，保留卡片入场、hover、active 动效，同时减少 server paging 下虚拟列表重复 measure。
+- 修复特典分组中同 canonical 原作/特典的父子挂接，让缓存路径不破坏既有特典展示语义。
+- 补充社团补全缓存说明文档，记录 Redis 降级、失效和浏览器验收入口。
+
+### Testing
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m py_compile app\core\circle_completion_service.py tests\test_circle_completion_paged_view.py`：通过。
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m pytest tests\test_circle_completion_paged_view.py tests\test_circle_completion_bonus_grouping.py -q --basetemp .pytest-codex-circle-cache-final`：通过，17 passed。
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning。
+- 浏览器打开 `http://localhost:5556/circle-completion` 实测点击社团和翻页：切换 `RG42609` 约 918ms、`RG19615` 约 457ms；翻页 `1 -> 2 -> 3 -> 2` 分别约 444ms、518ms、450ms，过程中卡片保持 10 个，无空白重建，加载状态结束后无残留。
+- 本地 API 实测：`/recent?limit=24` 260.6ms -> 86.1ms；`RG42609` works p1 39.8ms -> 11.3ms、p2 25.2ms -> 9.3ms；`RG19615` works p1 39.0ms -> 9.5ms、p2 24.3ms -> 10.1ms；`RG64225` 复测 warm 稳定 8.6-9.9ms。
+- `git diff --check`：通过，仅有 Windows autocrlf 的 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/circle_completion_service.py`：新增社团补全 Redis/L1 缓存、singleflight/build lock、版本失效、recent 短缓存，并保持特典分组语义。
+- `backend/tests/test_circle_completion_paged_view.py`：新增缓存复用、Redis L2、版本失效和 Redis 不可用降级测试。
+- `frontend/src/views/CircleCompletion.vue`：切社团请求收敛、分页缓存、保留旧页的轻量 loading 状态。
+- `frontend/src/components/circle/CircleWorksViewport.vue`：server paging 翻页时减少虚拟列表 measure 风暴。
+- `docs/circle-completion-performance-cache.md`：新增社团补全缓存与验证说明。
+- `progress.md`：追加本轮性能修复记录。
+- 回滚方式：还原上述五个代码/文档文件本轮 hunk，并删除本段进度记录。
+## 2026-07-08 - Task: 优化社团补全卡片封面加载和暗色视图切换样式
+### What was done
+- 社团补全作品接口返回封面时优先使用本地 cover API 路径，即使本地文件尚未缓存，也让首屏图片请求先走本机 `/api/circle-completion/cover/*`。
+- cover API 从“只读本地文件”升级为“本地命中直接返回，缺失时按需从 DLsite 下载到 `data/img/` 后返回”，避免当前页继续直接等待 DLsite 公网图片。
+- 修正 DLsite 图片 URL 里目录 bucket RJ 与真实图片 RJ 混用的问题，缓存文件名取图片文件名里的真实 RJ，避免翻译版 / 关联版封面 404。
+- 前端 active 卡片图片从低优先级 lazy 改为 eager/auto，并把视口图片激活队列从 6 提到 8；虚拟列表外图片仍不会一次性挂载。
+- 收掉社团补全右上角卡片/列表切换控件在暗色态下的浅色 active 胶囊，不影响 hover/active 动效。
+- 社团补全缓存 schema 升到 v4，避免继续读到旧 Redis state/page 里的远程封面 URL 或错误本地文件名。
+
+### Testing
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m py_compile app\core\circle_image_cache_service.py app\core\circle_completion_service.py app\api\routes.py tests\test_circle_completion_paged_view.py`：通过。
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m pytest tests\test_circle_completion_paged_view.py tests\test_circle_completion_bonus_grouping.py -q --basetemp .pytest-codex-circle-cover-cache`：通过，19 passed。
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning。
+- `git diff --check`：通过，仅有 Windows autocrlf 的 LF/CRLF 提示。
+- 通过 `start-all.bat` 重启本地服务后，真实接口 `RG19615 /works` 返回 `/api/circle-completion/cover/RJ01201316_sam.jpg` 这类本地 cover API，不再返回 DLsite CDN。
+- 本地 cover API 实测：`RJ01201316_sam.jpg` 首次按需下载 1060.2ms，二次本地命中 8.5ms；截图里的 `RJ244747_sam.jpg` 首次 634.5ms，二次 8.1ms。
+- Playwright 打开 `http://localhost:5556/circle-completion` 实测当前视口 10 张卡片、10 张图片全部加载完成，cover 资源耗时约 26-95ms；暗色态 view toggle active 背景 computed 为 `rgba(255, 255, 255, 0.075)`，不再是浅色白胶囊。
+
+### Notes
+- `backend/app/core/circle_image_cache_service.py`：新增真实图片 RJ 提取、按需下载候选 URL、缺图单文件锁和允许缺失时返回本地 API URL。
+- `backend/app/api/routes.py`：cover 路由缺文件时触发按需下载后返回本地文件。
+- `backend/app/core/circle_completion_service.py`：社团补全返回本地 cover API，缓存命名取图片真实 RJ，并提升读模型 schema 版本。
+- `backend/tests/test_circle_completion_paged_view.py`：补充封面缓存 URL 和图片 RJ 提取测试。
+- `frontend/src/components/circle/WorkCard.vue`：active 卡片封面使用 eager/auto 优先级。
+- `frontend/src/components/circle/CircleWorksViewport.vue`：图片激活队列上限从 6 调整为 8。
+- `frontend/src/views/CircleCompletion.vue`：修复暗色态 view toggle active 背景。
+- `docs/circle-completion-performance-cache.md`：补充封面缓存按需下载说明。
+- `progress.md`：追加本轮修复和验证记录。
+- 回滚方式：还原上述文件本轮 hunk，并删除本段进度记录；如需清理验证产生的封面缓存，可删除 `data/img/RJ01201316_sam.jpg`、`data/img/RJ244747_sam.jpg` 等本轮按需下载文件。
+## 2026-07-08 - Task: 修正社团补全视图切换控件浅色兜底
+### What was done
+- 继续排查用户截图里的右上角白色胶囊，确认真实运行态可能没有把 `dark` / `kikoerumanager-dark` class 挂在 `html` 或 `body` 上，导致之前只依赖暗色选择器的覆盖不稳定。
+- 将社团补全卡片 / 列表切换控件的基础样式改为深色中性背景，active / hover / inactive 图标也改为深色背景上可读的浅色文本，避免任何主题 class 漏挂时出现白色胶囊。
+- 保留原有按钮 hover 上浮、active 缩放和图标动效，没有降低前端动画效果。
+
+### Testing
+- Playwright 打开 `http://localhost:5556/circle-completion`，强制清空 `html` / `body` / `#app` 主题 class 后读取 computed style：`view-toggle-group` 背景为 `rgba(20, 22, 26, 0.72)`，active 背景为 `rgba(255, 255, 255, 0.075)`，不再出现浅色胶囊。
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning。
+- `git diff --check`：通过，仅有 Windows autocrlf 的 LF/CRLF 提示。
+
+### Notes
+- `frontend/src/views/CircleCompletion.vue`：将 `view-toggle-group` 和 `view-toggle-btn` 的基础样式改为深色中性兜底，避免主题 class 漏挂时显示浅色背景。
+- `progress.md`：追加本轮补充修复和验证记录。
+- 回滚方式：还原 `frontend/src/views/CircleCompletion.vue` 本轮 view-toggle 基础样式 hunk，并删除本段进度记录。
+## 2026-07-08 - Task: 修正社团补全视图切换 active 白色高光
+### What was done
+- 根据用户截图和真实页面复测，确认右上角白色块仍来自卡片 / 列表视图切换控件的 active 高光；cache miss 或翻页加载时页面视觉暗下去后，这个白色半透明高光会更显眼。
+- 将视图切换按钮 hover / active 从白色半透明高光改为暗蓝色渐变与蓝色边框，保留 hover 上浮、active 缩放和图标动效，不降低动画效果。
+- 继续保留页面级 cache miss loading 的顶部细进度线方案，避免恢复右上角浮动 loading 胶囊。
+
+### Testing
+- 应用内浏览器打开 `http://localhost:5556/circle-completion`，点击分页后截取右上角区域复验：active toggle 从 `rgba(255, 255, 255, 0.075)` 改为 `linear-gradient(rgba(59, 130, 246, 0.18), rgba(30, 64, 175, 0.12))`，边框为 `rgba(96, 165, 250, 0.3)`，截图区域不再出现白色胶囊。
+- 应用内浏览器复验当前页封面：可见 `img.work-cover` 10 张全部 `complete=true`，图片来源均为本地 `/api/circle-completion/cover/*.jpg`。
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning；`precompress-assets` 输出 `created 134, skipped 51`。
+- `git diff --check`：通过，仅有 Windows autocrlf 的 LF/CRLF 提示。
+
+### Notes
+- `frontend/src/views/CircleCompletion.vue`：将 view-toggle hover / active 高光从白色半透明改为暗蓝色高光，避免暗色页面加载时右上角出现白块。
+- `progress.md`：追加本轮补充修复和验证记录。
+- 回滚方式：还原 `frontend/src/views/CircleCompletion.vue` 本轮 view-toggle active / hover 样式 hunk，并删除本段进度记录。
+## 2026-07-08 - Task: 修正社团补全卡片模式选中态蓝色高光
+### What was done
+- 根据用户截图，确认卡片 / 列表视图切换控件的卡片模式 active 态被上一轮改成蓝色高光，和当前暗色界面不协调。
+- 将该 active / hover 态从蓝色改回中性暗色高光：保留选中识别、hover 上浮、active 缩放和图标动效，但不再显示蓝色方块。
+
+### Testing
+- 应用内浏览器打开 `http://localhost:5556/circle-completion` 复验 computed style：`.view-toggle-btn.active` 背景为 `linear-gradient(rgba(244, 244, 245, 0.06), rgba(244, 244, 245, 0.03))`，边框为 `rgba(244, 244, 245, 0.16)`，不再是蓝色。
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning；`precompress-assets` 输出 `created 134, skipped 51`。
+- `git diff --check`：通过，仅有 Windows autocrlf 的 LF/CRLF 提示。
+
+### Notes
+- `frontend/src/views/CircleCompletion.vue`：将 view-toggle active / hover 从蓝色高光改回中性暗色高光。
+- `progress.md`：追加本轮补充修复和验证记录。
+- 回滚方式：还原 `frontend/src/views/CircleCompletion.vue` 本轮 view-toggle active / hover 中性高光 hunk，并删除本段进度记录。
+
+## 2026-07-08 - Task: 压缩社团补全详情顶部布局
+### What was done
+- 压缩社团补全详情页顶部区域，把已满足页的统计条和筛选条收成可同排的紧凑控制区，减少卡片列表上方占高。
+- 移除已满足面板模板上的 Tailwind 大间距，改用页面内受控的 `owned-panel` / `owned-filter-row` / `owned-filter-actions` 布局。
+- 收紧社团详情 toolbar、tab header、筛选按钮、搜索框、作品容器 padding 和 gap，让作品卡片 / 空状态区域更早进入可视区域。
+
+### Testing
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning；`precompress-assets` 输出 `created 134, skipped 51`。
+- `git diff --check`：通过，仅有 Windows autocrlf 的 LF/CRLF 提示。
+- Playwright 打开 `http://localhost:5556/circle-completion`，切到用户截图对应的“已满足”tab 并截图复验：统计和筛选已同排显示，没有遮挡或换行错位。
+- Playwright DOM 实测当前 2048x1110 视口：`toolbar-card` 高度 80px，tab header 33px，`owned-panel` 42px，`works-card` 可用高度 942px。
+
+### Notes
+- `frontend/src/views/CircleCompletion.vue`：压缩社团详情 toolbar / tabs / works-card，并将已满足统计和筛选区改为紧凑同排布局。
+- `progress.md`：追加本轮布局优化和验证记录。
+- 回滚方式：若确认当前同文件未提交改动都不需要保留，可执行 `git restore -- frontend/src/views/CircleCompletion.vue progress.md`；若要保留同文件既有性能 / 缓存改动，只反向应用本轮涉及 `.toolbar-card`、`.circle-tabs`、`.works-card`、`.owned-panel`、`.owned-filter-*` 的 hunk，并删除本段进度记录。
+
+## 2026-07-08 - Task: 合并社团补全已满足筛选与工具栏布局
+### What was done
+- 将“已满足”页左侧统计条直接改成筛选 tab：总收录、简中、繁中、原作、字幕、特典都直接点击筛选，删除右侧重复筛选条。
+- 删除“已满足”页内部第二个发售时间排序按钮，只保留 tabs 顶部工具行里的统一排序入口。
+- 将“已满足”搜索框移动到顶部工具行，与排序、状态筛选、视图切换同排显示。
+- 缩短统计筛选条为内容宽度，避免横向铺满整行；同时修正顶部搜索框高度，避免上沿被工具行裁切。
+
+### Testing
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning；`precompress-assets` 输出 `created 134, skipped 51`。
+- `git diff --check`：通过，仅有 Windows autocrlf 的 LF/CRLF 提示。
+- Playwright 打开 `http://localhost:5556/circle-completion`，切到“已满足”tab 复验：顶部搜索框位置为 top 163 / bottom 193，高度 30px，位于工具行 top 161 / bottom 195 内，不再被裁切。
+- Playwright 实测“已满足”tab 内部重复排序按钮数量为 0，左侧统计筛选条宽度 534px，不再横向铺满。
+
+### Notes
+- `frontend/src/views/CircleCompletion.vue`：合并已满足筛选和统计条，移动搜索框到顶部工具行，删除重复排序，缩短筛选统计条并修复搜索框裁切。
+- `progress.md`：追加本轮布局收口和验证记录。
+- 回滚方式：若确认当前同文件未提交改动都不需要保留，可执行 `git restore -- frontend/src/views/CircleCompletion.vue progress.md`；若要保留同文件既有性能 / 缓存改动，只反向应用本轮涉及 `.owned-stat-item`、`.owned-stats-strip`、`.owned-search-wrap--top`、`.circle-tabs-wrapper.has-owned-search` 的 hunk，并删除本段进度记录。
+
+## 2026-07-08 - Task: 修复选中 RJ01624471 特典探测无明确日期
+### What was done
+- 修复社团补全 work-codes 给特典探测返回发售日的逻辑：当本地缓存里只有 `2026年05月下旬` 这类模糊日期时，先按 canonical 原作 RJ 调 DLsite product/info 补精确 `regist_date`。
+- 日期优先级改为 canonical 原作日期优先，避免 RJ01624471 被繁中 / 简中显示版本的发售日带偏到翻译版日期。
+- 社团补全缓存 schema 升到 v6，避免继续读到旧 Redis / L1 work-codes 里的模糊日期。
+
+### Testing
+- `\.venv\Scripts\python.exe -m py_compile .\backend\app\core\circle_completion_service.py .\backend\tests\test_circle_completion_paged_view.py`：通过。
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m pytest tests\test_circle_completion_paged_view.py -q --basetemp .pytest-codex-bonus-date`：通过，12 passed。
+- 使用当前代码直连本地数据执行 `list_circle_completion_work_codes('RG68316')`：确认 `RJ01624471` 的特典探测日期从模糊日期补为 `2026-05-31`，并保留请求链 `RJ01641421 / RJ01624471 / RJ01641422`。
+- 启动本地特典探测任务 `3737493f-8a26-44fd-9b34-0bc1ebe9b79d` 按 `RJ01624471 / 2026-05-31` 跑完：检查 2983 个候选、15 次 DLsite 请求，命中 0、写入 0；因日期页 RJ 范围超出预算，结果为 incomplete，没有写成“确认无特典”结论。
+
+### Notes
+- `backend/app/core/circle_completion_service.py`：新增完整日期判断和 canonical 原作 product/info 精确发售日补查，并提升社团补全缓存 schema。
+- `backend/tests/test_circle_completion_paged_view.py`：补充模糊日期通过 DLsite product/info 补成完整日期的回归断言。
+- `progress.md`：追加本轮 RJ01624471 特典探测日期修复记录。
+- 回滚方式：还原上述两个代码文件本轮 hunk，并删除本段进度记录；若线上已产生 v6 社团补全缓存，可等待 TTL 过期或清理对应 Redis cache key。
+## 2026-07-08 - Task: 修复社团补全顶部工具按钮裁切
+### What was done
+- 根据用户截图，修复社团补全顶部工具行里“发售时间”和“状态筛选”按钮在 hover / scale 动效下被上沿裁切的问题。
+- 将顶部绝对工具行从贴顶改为保留 3px 安全边界，并保持 30px 紧凑高度，不重新增高顶部区域。
+- 给排序按钮和状态筛选按钮补齐 line-height、box-sizing、flex-shrink 与 nowrap 约束，避免文本和按钮自身在同排布局里被压缩。
+
+### Testing
+- Playwright 打开 `http://localhost:5556/circle-completion`，切到“已满足”tab 后实测 2048x1110 视口：基础态工具按钮 topClear 为 3px，未越界。
+- Playwright hover “发售时间”：按钮 transform 为 `matrix(1.02, 0, 0, 1.02, 0, -2)`，topClear 为 0.7px，`clippedTop=false` / `clippedBottom=false`。
+- Playwright hover “状态筛选”：按钮 transform 为 `matrix(1.02, 0, 0, 1.02, 0, -2)`，topClear 为 0.7px，`clippedTop=false` / `clippedBottom=false`。
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning；`precompress-assets` 输出 `created 134, skipped 51`。
+- `git diff --check`：通过，仅有 Windows autocrlf 的 LF/CRLF 提示。
+
+### Notes
+- `frontend/src/views/CircleCompletion.vue`：调整顶部工具行安全边界，并修复排序 / 状态筛选按钮的行高、盒模型和收缩约束。
+- `progress.md`：追加本轮顶部工具按钮裁切修复和验证记录。
+- 回滚方式：反向应用本轮涉及 `.circle-tabs-wrapper .toolbar-right-actions`、`.release-sort-button`、`.status-filter-trigger`、`.status-filter-trigger__content`、`.status-filter-trigger__placeholder`、`.release-sort-direction` 的 hunk，并删除本段进度记录。
+
+## 2026-07-09 - Task: 修复 DLsite 隐藏特典探测缓存与模糊发售日归属
+### What was done
+- 将 DLsite 特典探测 normal / deep 批量大小统一调到 500，并保留 6 并发配置。
+- 修复 selected RJ 探测不再因日期页 RJ 范围过大直接 incomplete；选中作品必须完整跑完范围，只有全部跑完仍无命中才写 `no_bonus`。
+- 修复同发售日隐藏特典缓存复用：同 maker + 同精确发售日已经扫到隐藏特典时，优先从 `DLsiteBonusProbeCache` / hit index 直接归属；缓存已覆盖目标 RJ 时不再拉 DLsite 日期页、不构造候选、不探测 RJ。
+- 修复缓存未覆盖目标 RJ 时的续扫起点：从同发售日已知最大隐藏特典 RJ 之后继续扫，避免重复扫已沉淀的早期特典范围。
+- 修复 `2026年05月下旬` / `中旬` / `上旬` 这类模糊日期导致特典无法归属的问题：社团补全 work-codes 会用 DLsite product/info 补精确 `YYYY-MM-DD` 并写回 `WorkMetadata.release_date`；特典探测入口自身也会把 selected RJ 和日期页公开 RJ 的精确发售日写回 PostgreSQL，并清理社团补全 metadata / view 缓存。
+- 真实验证 `RG68316 / RJ01624471 / 2026-05-31`：命中隐藏特典 `RJ01637297`，结果为 `parse_status=cached_hidden_bonus`、`selected_cache_covered=true`、`probe_count=0`、`raw_probe_count=0`、`request_count=0`，并写回原作 `release_date=2026-05-31`、`state_status=has_bonus`。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile backend/app/core/dlsite_bonus_probe_service.py backend/app/core/circle_completion_service.py backend/app/config/settings.py`：通过。
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m pytest tests\test_dlsite_bonus_probe_service.py tests\test_circle_completion_paged_view.py::test_paged_missing_works_and_work_codes -q --basetemp .pytest-codex-bonus-date-cache`：通过，39 passed。
+- 使用当前代码直连本地 PostgreSQL 执行 `probe_date(circle_id='RG68316', maker_id='RG68316', release_date='2026-05-31', target_rjcodes=['RJ01624471'], batch_size=500, concurrency=6)`：确认直接命中缓存特典 `RJ01637297`，没有网络探测请求，日期行状态为 completed。
+
+### Notes
+- `backend/app/core/dlsite_bonus_probe_service.py`：放开 selected scope 日期页范围上限、复用同日隐藏特典缓存、缓存覆盖目标时早返回、未覆盖时从已知特典后续扫、收窄 selected RJ 状态写回，并新增精确发售日持久化和缓存失效。
+- `backend/app/core/circle_completion_service.py`：work-codes 遇到模糊日期时通过 DLsite product/info 补精确发售日并写回 metadata / L1 缓存。
+- `backend/app/config/settings.py`、`backend/config/config.yaml`、`data/config/config.yaml`：将 DLsite 特典探测 normal / deep batch size 改为 500。
+- `backend/tests/test_dlsite_bonus_probe_service.py`：覆盖 selected scope 超范围完整扫描、缓存覆盖目标不再拉日期页、模糊日期也会写回精确日期、缓存特典命中后直接完成。
+- `backend/tests/test_circle_completion_paged_view.py`：覆盖社团补全 work-codes 将模糊发售日补成精确日期并写回 DB / metadata cache。
+- `progress.md`：追加本轮 DLsite 隐藏特典探测修复和验证记录。
+- 回滚方式：反向应用上述文件本轮 DLsite bonus probe / precise release date / batch size 相关 hunk，并删除本段进度记录；若运行库已写入 `RJ01624471` / `RJ01637297` 的特典归属，可按需删除对应 `dlsite_bonus_probe_*` 行并还原 `work_metadata.release_date`。
+
+## 2026-07-09 - Task: Redis 完整验收与推送前审查
+### What was done
+- 完成 Redis 运行态、社团补全 Redis/L1 缓存、DLsite 特典 dirty buffer、任务中心实时/物化链路和数据库迁移兜底的推送前验收。
+- 实测本机 Redis 使用项目配置 URL 可用，裸 `redis://localhost:6379/0` 因认证失败不可用，验收改用项目 Redis 配置，避免误判。
+- 修正 `test_routes_maintenance_config.py` 中 DLsite 特典探测默认批量大小断言，和当前 `BonusProbeConfig` / `backend/config/config.yaml` 的 500/500 默认值保持一致。
+- 审查当前 diff 未发现 Redis 不可用降级、Redis URL 脱敏回写、缓存版本失效、Docker 启动迁移顺序方面的新问题。
+
+### Testing
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-redis.ps1`：通过，项目配置 Redis 已 ready。
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m py_compile app\core\redis_service.py app\core\circle_completion_service.py app\core\dlsite_bonus_probe_service.py app\core\circle_image_cache_service.py app\api\routes.py app\config\settings.py app\models\database.py`：通过。
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m pytest tests\test_redis_config.py tests\test_routes_maintenance_config.py tests\test_database_compat_migrations.py tests\test_dlsite_bonus_probe_service.py tests\test_circle_completion_paged_view.py tests\test_circle_completion_bonus_grouping.py -q --basetemp .pytest-codex-redis-acceptance`：通过，100 passed。
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m pytest tests\test_task_center_service.py -q --basetemp .pytest-codex-redis-task-center`：通过，19 passed。
+- `backend/` 下执行 Redis JSON set/get/delete 冒烟：通过，`redis_acceptance_ok`。
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning。
+- `git diff --check`：通过，仅有 Windows autocrlf 的 LF/CRLF 提示。
+
+### Notes
+- `backend/tests/test_routes_maintenance_config.py`：将 `BonusProbeConfig` 默认 normal/deep batch size 断言更新为 500/500。
+- `progress.md`：追加本轮完整 Redis 验收、审查和测试记录。
+- 回滚方式：反向应用 `backend/tests/test_routes_maintenance_config.py` 的默认批量断言 hunk，并删除本段进度记录；验收过程中写入的 Redis 临时 key 已在脚本中删除。
