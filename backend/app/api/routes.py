@@ -17661,7 +17661,10 @@ async def circle_completion_cover(filename: str):
     """
     from ..core.circle_image_cache_service import get_circle_image_cache_service
 
-    cache_path = get_circle_image_cache_service().resolve_filename(filename)
+    image_cache_service = get_circle_image_cache_service()
+    cache_path = image_cache_service.resolve_filename(filename)
+    if cache_path is not None and not cache_path.is_file():
+        cache_path = await image_cache_service.ensure_local_for_filename(filename)
     if cache_path is None or not cache_path.is_file():
         raise HTTPException(status_code=404, detail="封面未缓存")
     return FileResponse(
