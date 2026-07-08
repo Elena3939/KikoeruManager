@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
 import re
+import threading
 import time
 import unicodedata
 import uuid
@@ -200,6 +202,14 @@ class CircleCompletionSnapshot:
 
 class CircleCompletionService:
     DL_SEARCH_URL = "https://www.dlsite.com/maniax/fsr/=/keyword/{keyword}"
+    _COMPLETION_STATE_REDIS_TTL_SECONDS = 600
+    _COMPLETION_PAGE_REDIS_TTL_SECONDS = 120
+    _COMPLETION_SUMMARY_REDIS_TTL_SECONDS = 120
+    _COMPLETION_CODES_REDIS_TTL_SECONDS = 120
+    _COMPLETION_RECENT_REDIS_TTL_SECONDS = 30
+    _COMPLETION_BUILD_LOCK_SECONDS = 12
+    _COMPLETION_ALIAS_REDIS_TTL_SECONDS = 86400
+    _COMPLETION_CACHE_SCHEMA_VERSION = 6
 
     def __init__(self):
         self.metadata_service = MetadataService()
@@ -216,6 +226,13 @@ class CircleCompletionService:
         self._metadata_cache: TTLCache = TTLCache(max_size=512, ttl_seconds=3600, name="circle.metadata")
         self._completion_view_cache: TTLCache = TTLCache(max_size=128, ttl_seconds=600, name="circle.completion_view")
         self._completion_state_cache: TTLCache = TTLCache(max_size=128, ttl_seconds=180, name="circle.completion_state")
+        self._completion_summary_cache: TTLCache = TTLCache(max_size=256, ttl_seconds=60, name="circle.completion_summary")
+        self._completion_page_cache: TTLCache = TTLCache(max_size=512, ttl_seconds=60, name="circle.completion_page")
+        self._completion_codes_cache: TTLCache = TTLCache(max_size=256, ttl_seconds=60, name="circle.completion_codes")
+        self._completion_recent_cache: TTLCache = TTLCache(max_size=128, ttl_seconds=30, name="circle.completion_recent")
+        self._completion_state_singleflight_lock = asyncio.Lock()
+        self._completion_redis_lock_tokens: Dict[str, str] = {}
+        self._completion_redis_lock_guard = threading.Lock()
         # ⚠ canonical cache 必须够大装下"大社团一次索引涉及的所有链路 RJ"：
         # 实测 RaRo（304 件）展开后涉及 ~1600 个 RJ，旧 max_size=1024 会触发 LRU 淘汰，
         # wave1 批量预热写进 1600 条但留下最后 1024 条，前 ~600 条全被踢出，
@@ -269,20 +286,295 @@ class CircleCompletionService:
             "dlonly=1" if include_dl_only else "dlonly=0",
         ])
 
+    def _completion_cache_scope(self, value: Any) -> str:
+        text = str(value or "").strip() or "_"
+        text = re.sub(r"[\s\r\n\t|:]+", "-", text)
+        return text[:160] or "_"
+
+    def _completion_hash_payload(self, payload: Any) -> str:
+        try:
+            raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+        except Exception:
+            raw = repr(payload)
+        return hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()[:24]
+
+    def _completion_state_builder_overridden(self) -> bool:
+        return "_build_completion_view_state" in self.__dict__
+
+    def _completion_redis_service(self):
+        try:
+            from .redis_service import get_redis_service
+
+            service = get_redis_service()
+            if not service.is_enabled():
+                return None
+            return service
+        except Exception:
+            logger.debug("[社团补全·缓存] Redis service 获取失败", exc_info=True)
+            return None
+
+    def _completion_redis_get_json(self, type_name: str, item_id: str) -> Any:
+        service = self._completion_redis_service()
+        if service is None:
+            return None
+        try:
+            return service.get_json("circle-completion", type_name, item_id)
+        except Exception:
+            logger.debug("[社团补全·缓存] Redis 读取失败 type=%s key=%s", type_name, item_id, exc_info=True)
+            return None
+
+    def _completion_redis_set_json(self, type_name: str, item_id: str, payload: Any, *, ttl_seconds: int) -> None:
+        service = self._completion_redis_service()
+        if service is None:
+            return
+        try:
+            service.set_json("circle-completion", type_name, item_id, payload, ttl_seconds=ttl_seconds)
+        except Exception:
+            logger.debug("[社团补全·缓存] Redis 写入失败 type=%s key=%s", type_name, item_id, exc_info=True)
+
+    def _completion_redis_client(self):
+        service = self._completion_redis_service()
+        if service is None:
+            return None, None
+        try:
+            client = service.client(required=False)
+            return service, client
+        except Exception:
+            logger.debug("[社团补全·缓存] Redis client 获取失败", exc_info=True)
+            return service, None
+
+    def _completion_redis_int(self, *parts: Any) -> int:
+        service, client = self._completion_redis_client()
+        if service is None or client is None:
+            return 0
+        try:
+            raw = client.get(service.key("circle-completion", *parts))
+            return max(0, int(raw or 0))
+        except Exception:
+            logger.debug("[社团补全·缓存] Redis 版本读取失败 parts=%s", parts, exc_info=True)
+            return 0
+
+    def _completion_redis_incr(self, *parts: Any) -> int:
+        service, client = self._completion_redis_client()
+        if service is None or client is None:
+            return 0
+        try:
+            return int(client.incr(service.key("circle-completion", *parts)) or 0)
+        except Exception:
+            logger.debug("[社团补全·缓存] Redis 版本递增失败 parts=%s", parts, exc_info=True)
+            return 0
+
+    def _completion_version_tag(self, circle_id_or_query: str) -> str:
+        scope = self._completion_cache_scope(circle_id_or_query)
+        epoch = self._completion_redis_int("epoch", "global")
+        version = self._completion_redis_int("version", scope)
+        return f"s{self._COMPLETION_CACHE_SCHEMA_VERSION}:e{epoch}:v{version}"
+
+    def _completion_state_cache_key(self, circle_id_or_query: str, version_tag: str) -> str:
+        return f"{self._completion_cache_scope(circle_id_or_query)}|state|{version_tag}"
+
+    def _completion_query_cache_key(self, kind: str, circle_id_or_query: str, params: Dict[str, Any]) -> str:
+        payload = {"scope": self._completion_cache_scope(circle_id_or_query), "params": params}
+        return f"{self._completion_cache_scope(circle_id_or_query)}|{kind}|{self._completion_version_tag(circle_id_or_query)}|{self._completion_hash_payload(payload)}"
+
+    def _completion_recent_cache_key(self, keyword: str, limit: int) -> str:
+        payload = {
+            "keyword": self.normalize_circle_name(keyword),
+            "limit": max(1, int(limit or 30)),
+            "epoch": self._completion_redis_int("epoch", "global"),
+            "recent": self._completion_redis_int("version", "recent"),
+        }
+        return f"recent|{self._completion_hash_payload(payload)}"
+
+    def _completion_alias_map_key(self, circle_scope: str) -> str:
+        return f"{self._completion_cache_scope(circle_scope)}|aliases"
+
+    def _completion_alias_cache_get(self, circle_scope: str) -> List[str]:
+        payload = self._completion_redis_get_json("aliases", self._completion_alias_map_key(circle_scope))
+        aliases = payload.get("aliases") if isinstance(payload, dict) else []
+        result: List[str] = []
+        for alias in aliases or []:
+            scope = self._completion_cache_scope(alias)
+            if scope and scope not in result:
+                result.append(scope)
+        return result
+
+    def _completion_alias_cache_set(self, circle_scope: str, aliases: List[str]) -> None:
+        normalized_circle = self._completion_cache_scope(circle_scope)
+        normalized_aliases: List[str] = []
+        for alias in [normalized_circle, *(aliases or [])]:
+            scope = self._completion_cache_scope(alias)
+            if scope and scope not in normalized_aliases:
+                normalized_aliases.append(scope)
+        self._completion_redis_set_json(
+            "aliases",
+            self._completion_alias_map_key(normalized_circle),
+            {"circle_scope": normalized_circle, "aliases": normalized_aliases, "updated_at": datetime.now().isoformat()},
+            ttl_seconds=self._COMPLETION_ALIAS_REDIS_TTL_SECONDS,
+        )
+
+    def _completion_register_aliases(self, circle_scope: str, aliases: List[str]) -> List[str]:
+        normalized_circle = self._completion_cache_scope(circle_scope)
+        merged = self._completion_alias_cache_get(normalized_circle)
+        for alias in [normalized_circle, *(aliases or [])]:
+            scope = self._completion_cache_scope(alias)
+            if scope and scope not in merged:
+                merged.append(scope)
+        self._completion_alias_cache_set(normalized_circle, merged)
+        return merged
+
+    def _completion_alias_scopes_for_invalidation(self, circle_id_or_query: str) -> List[str]:
+        normalized_scope = self._completion_cache_scope(circle_id_or_query)
+        aliases = self._completion_alias_cache_get(normalized_scope)
+        if normalized_scope not in aliases:
+            aliases.insert(0, normalized_scope)
+        return aliases
+
+    def _completion_l1_l2_get(self, cache: TTLCache, redis_type: str, cache_key: str) -> Optional[Any]:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return deepcopy(cached)
+        cached = self._completion_redis_get_json(redis_type, cache_key)
+        if cached is not None:
+            cache[cache_key] = deepcopy(cached)
+            return deepcopy(cached)
+        return None
+
+    def _completion_l1_l2_set(
+        self,
+        cache: TTLCache,
+        redis_type: str,
+        cache_key: str,
+        payload: Any,
+        *,
+        ttl_seconds: int,
+    ) -> None:
+        cache[cache_key] = deepcopy(payload)
+        self._completion_redis_set_json(redis_type, cache_key, payload, ttl_seconds=ttl_seconds)
+
+    def _completion_store_state_cache(self, requested_key: str, state: Dict[str, Any]) -> None:
+        catalog = state.get("catalog") if isinstance(state, dict) else {}
+        aliases = {self._completion_cache_scope(requested_key)}
+        if isinstance(catalog, dict):
+            circle_id = self._completion_cache_scope(catalog.get("circle_id"))
+            if circle_id:
+                aliases.add(circle_id)
+                aliases.update(self._completion_register_aliases(circle_id, list(aliases)))
+        for alias in aliases:
+            cache_key = self._completion_state_cache_key(alias, self._completion_version_tag(alias))
+            self._completion_l1_l2_set(
+                self._completion_state_cache,
+                "state",
+                cache_key,
+                state,
+                ttl_seconds=self._COMPLETION_STATE_REDIS_TTL_SECONDS,
+            )
+
+    def _completion_try_acquire_build_lock(self, circle_id_or_query: str) -> Optional[str]:
+        service, client = self._completion_redis_client()
+        if service is None or client is None:
+            return None
+        scope = self._completion_cache_scope(circle_id_or_query)
+        key = service.key("circle-completion", "build_lock", scope)
+        token = uuid.uuid4().hex
+        try:
+            acquired = bool(client.set(key, token, nx=True, ex=self._COMPLETION_BUILD_LOCK_SECONDS))
+        except Exception:
+            logger.debug("[社团补全·缓存] Redis build lock 获取失败 circle=%s", circle_id_or_query, exc_info=True)
+            return None
+        if not acquired:
+            return ""
+        with self._completion_redis_lock_guard:
+            self._completion_redis_lock_tokens[key] = token
+        return key
+
+    def _completion_release_build_lock(self, lock_key: Optional[str]) -> None:
+        if not lock_key:
+            return
+        service, client = self._completion_redis_client()
+        if service is None or client is None:
+            return
+        with self._completion_redis_lock_guard:
+            token = self._completion_redis_lock_tokens.pop(lock_key, "")
+        if not token:
+            return
+        try:
+            if client.get(lock_key) == token:
+                client.delete(lock_key)
+        except Exception:
+            logger.debug("[社团补全·缓存] Redis build lock 释放失败 key=%s", lock_key, exc_info=True)
+
+    async def _wait_for_completion_state_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        for _ in range(20):
+            await asyncio.sleep(0.06)
+            cached = self._completion_l1_l2_get(self._completion_state_cache, "state", cache_key)
+            if isinstance(cached, dict):
+                return cached
+        return None
+
+    async def _get_completion_view_state(self, circle_id_or_query: str) -> Dict[str, Any]:
+        state_key = str(circle_id_or_query or "").strip()
+        if not state_key:
+            raise ValueError("缺少社团标识")
+        if self._completion_state_builder_overridden():
+            return deepcopy(self._build_completion_view_state(state_key))
+        cache_key = self._completion_state_cache_key(state_key, self._completion_version_tag(state_key))
+        cached = self._completion_l1_l2_get(self._completion_state_cache, "state", cache_key)
+        if isinstance(cached, dict):
+            return cached
+
+        async with self._completion_state_singleflight_lock:
+            cache_key = self._completion_state_cache_key(state_key, self._completion_version_tag(state_key))
+            cached = self._completion_l1_l2_get(self._completion_state_cache, "state", cache_key)
+            if isinstance(cached, dict):
+                return cached
+            lock_key = self._completion_try_acquire_build_lock(state_key)
+            if lock_key == "":
+                cached = await self._wait_for_completion_state_cache(cache_key)
+                if isinstance(cached, dict):
+                    return cached
+            try:
+                state = self._build_completion_view_state(state_key)
+                self._completion_store_state_cache(state_key, state)
+                return deepcopy(state)
+            finally:
+                self._completion_release_build_lock(lock_key)
+
     def invalidate_completion_view_cache(self, circle_id: str = "") -> int:
         normalized = str(circle_id or "").strip()
         if not normalized:
             size = len(self._completion_view_cache)
             self._completion_view_cache.clear()
             self._completion_state_cache.clear()
+            self._completion_summary_cache.clear()
+            self._completion_page_cache.clear()
+            self._completion_codes_cache.clear()
+            self._completion_recent_cache.clear()
+            self._completion_redis_incr("epoch", "global")
+            self._completion_redis_incr("version", "recent")
             return size
+        alias_scopes = self._completion_alias_scopes_for_invalidation(normalized)
+        alias_scope_set = set(alias_scopes)
         view_removed = self._completion_view_cache.invalidate_predicate(
-            lambda key: isinstance(key, str) and key.startswith(f"{normalized}|")
+            lambda key: isinstance(key, str) and any(key.startswith(f"{scope}|") for scope in alias_scope_set)
         )
         state_removed = self._completion_state_cache.invalidate_predicate(
-            lambda key: isinstance(key, str) and key == normalized
+            lambda key: isinstance(key, str) and any(key.startswith(f"{scope}|state|") for scope in alias_scope_set)
         )
-        return view_removed + state_removed
+        summary_removed = self._completion_summary_cache.invalidate_predicate(
+            lambda key: isinstance(key, str) and any(key.startswith(f"{scope}|summary|") for scope in alias_scope_set)
+        )
+        page_removed = self._completion_page_cache.invalidate_predicate(
+            lambda key: isinstance(key, str) and any(key.startswith(f"{scope}|page|") for scope in alias_scope_set)
+        )
+        codes_removed = self._completion_codes_cache.invalidate_predicate(
+            lambda key: isinstance(key, str) and any(key.startswith(f"{scope}|") for scope in alias_scope_set)
+        )
+        recent_removed = self._completion_recent_cache.invalidate_predicate(lambda key: isinstance(key, str) and key.startswith("recent|"))
+        for scope in alias_scopes:
+            self._completion_redis_incr("version", scope)
+        self._completion_redis_incr("version", "recent")
+        return view_removed + state_removed + summary_removed + page_removed + codes_removed + recent_removed
 
     def normalize_circle_name(self, value: Any) -> str:
         text = unicodedata.normalize("NFKC", str(value or "")).strip().lower()
@@ -1286,6 +1578,82 @@ class CircleCompletionService:
         metadata = metadata_map_all.get(self.normalize_rjcode(canonical_rjcode)) or {}
         return str((metadata or {}).get("release_date") or "").strip()
 
+    def _completion_full_release_date(self, value: Any) -> str:
+        normalized = str(self.dlsite_service._normalize_date_text(value) or "").strip()
+        return normalized if re.fullmatch(r"20\d{2}-\d{2}-\d{2}", normalized) else ""
+
+    def _completion_persist_precise_release_date(self, rjcode: Any, release_date: str) -> None:
+        normalized_rj = self.normalize_rjcode(rjcode)
+        normalized_date = self._completion_full_release_date(release_date)
+        if not normalized_rj or not normalized_date:
+            return
+        cached = self._metadata_cache.get(normalized_rj)
+        if isinstance(cached, dict) and str(cached.get("release_date") or "").strip() == normalized_date:
+            return
+        db = SessionLocal()
+        try:
+            row = db.query(WorkMetadata).filter(WorkMetadata.rjcode == normalized_rj).first()
+            if row is None:
+                row = WorkMetadata(rjcode=normalized_rj)
+                db.add(row)
+            if str(row.release_date or "").strip() == normalized_date:
+                payload = row.to_dict()
+                self._metadata_cache[normalized_rj] = payload
+                return
+            row.release_date = normalized_date
+            row.cached_at = datetime.now()
+            db.commit()
+            self._metadata_cache[normalized_rj] = row.to_dict()
+        except Exception:
+            db.rollback()
+            logger.debug("[社团补全] 写回作品精确发售日失败 rj=%s date=%s", normalized_rj, normalized_date, exc_info=True)
+        finally:
+            db.close()
+
+    async def _completion_resolve_bonus_probe_release_date(
+        self,
+        item: Dict[str, Any],
+        candidate_rjcodes: List[str],
+    ) -> str:
+        original_release_date = item.get("original_release_date")
+        normalized_original_date = self._completion_full_release_date(original_release_date)
+        if normalized_original_date:
+            return normalized_original_date
+
+        fallback_raw_values = [
+            item.get("release_date"),
+            item.get("date"),
+            item.get("release_at"),
+        ]
+        probe_rjcodes: List[str] = []
+        for value in [item.get("canonical_rjcode"), *(candidate_rjcodes or [])]:
+            normalized = self.normalize_rjcode(value)
+            if normalized and normalized not in probe_rjcodes:
+                probe_rjcodes.append(normalized)
+
+        for rjcode in probe_rjcodes:
+            try:
+                product_info = await self.dlsite_service.get_product_info(rjcode)
+            except Exception:
+                logger.debug("[社团补全] 补查作品精确发售日失败 rj=%s", rjcode, exc_info=True)
+                continue
+            product = (product_info or {}).get("product") if isinstance(product_info, dict) else None
+            if not isinstance(product, dict):
+                continue
+            for key in ("regist_date", "release_date", "sales_date", "disp_start_date"):
+                normalized = self._completion_full_release_date(product.get(key))
+                if normalized:
+                    self._completion_persist_precise_release_date(rjcode, normalized)
+                    return normalized
+
+        for value in fallback_raw_values:
+            normalized = self._completion_full_release_date(value)
+            if normalized:
+                return normalized
+
+        raw_values = [original_release_date, *fallback_raw_values]
+        return next((str(value or "").strip() for value in raw_values if str(value or "").strip()), "")
+
     def _completion_release_timestamp(self, item: Dict[str, Any]) -> int:
         raw = str(
             item.get("original_release_date")
@@ -1401,7 +1769,6 @@ class CircleCompletionService:
 
     def _completion_bonus_own_codes(self, item: Dict[str, Any]) -> Set[str]:
         candidates = [
-            item.get("canonical_rjcode"),
             item.get("display_rjcode"),
             item.get("rjcode"),
         ]
@@ -1750,10 +2117,19 @@ class CircleCompletionService:
         local_cover_url = ""
         local_thumb_url = ""
         if image_cache_service is not None:
-            local_cover_url = image_cache_service.get_local_url(stored_display_rjcode or row.canonical_rjcode)
+            cover_cache_rjcode = (
+                image_cache_service.extract_image_rjcode(normalized_remote_cover)
+                or stored_display_rjcode
+                or row.canonical_rjcode
+            )
+            local_cover_url = image_cache_service.get_local_url(
+                cover_cache_rjcode,
+                allow_missing=True,
+            )
             local_thumb_url = image_cache_service.get_local_url(
-                stored_display_rjcode or row.canonical_rjcode,
+                cover_cache_rjcode,
                 variant="list",
+                allow_missing=True,
             )
         cvs = list((metadata_map.get(stored_display_rjcode) or {}).get("cvs") or [])
         if not cvs:
@@ -1886,9 +2262,18 @@ class CircleCompletionService:
 
     def _build_completion_view_state(self, circle_id_or_query: str) -> Dict[str, Any]:
         state_key = str(circle_id_or_query or "").strip()
-        cached_state = self._completion_state_cache.get(state_key)
+        if not state_key:
+            raise ValueError("缺少社团标识")
+        cache_key = self._completion_state_cache_key(state_key, self._completion_version_tag(state_key))
+        cached_state = self._completion_state_cache.get(cache_key)
         if cached_state is not None:
             return deepcopy(cached_state)
+        state = self._build_completion_view_state_uncached(state_key)
+        self._completion_store_state_cache(state_key, state)
+        return deepcopy(state)
+
+    def _build_completion_view_state_uncached(self, circle_id_or_query: str) -> Dict[str, Any]:
+        state_key = str(circle_id_or_query or "").strip()
         db = SessionLocal()
         try:
             catalog = self._find_circle_catalog_for_view(db, circle_id_or_query)
@@ -1980,9 +2365,6 @@ class CircleCompletionService:
             "last_indexed_at": catalog.last_indexed_at.isoformat() if catalog.last_indexed_at else None,
         }
         state = {"catalog": catalog_payload, "items": items}
-        self._completion_state_cache[state_key] = deepcopy(state)
-        if catalog.circle_id and catalog.circle_id != state_key:
-            self._completion_state_cache[catalog.circle_id] = deepcopy(state)
         return state
 
     def _completion_summary_from_items(self, catalog: Any, items: List[Dict[str, Any]], *, visible_items: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
@@ -2125,14 +2507,35 @@ class CircleCompletionService:
         return rows
 
     async def build_circle_completion_summary(self, circle_id_or_query: str, *, include_dl_only: bool = True) -> Dict[str, Any]:
-        state = self._build_completion_view_state(circle_id_or_query)
+
+        cache_key = self._completion_query_cache_key(
+            "summary",
+            circle_id_or_query,
+            {"include_dl_only": bool(include_dl_only)},
+        )
+        cache_enabled = not self._completion_state_builder_overridden()
+        if cache_enabled:
+            cached = self._completion_l1_l2_get(self._completion_summary_cache, "summary", cache_key)
+            if isinstance(cached, dict):
+                return cached
+
+        state = await self._get_completion_view_state(circle_id_or_query)
         catalog = state["catalog"]
-        items = state["items"]
+        items = self._completion_attach_bonus_parent_codes([dict(item) for item in state["items"]])
         visible_items = [
             item for item in items
             if include_dl_only or item.get("owned") or item.get("has_asmr_one")
         ]
-        return self._completion_summary_from_items(catalog, items, visible_items=visible_items)
+        result = self._completion_summary_from_items(catalog, items, visible_items=visible_items)
+        if cache_enabled:
+            self._completion_l1_l2_set(
+                self._completion_summary_cache,
+                "summary",
+                cache_key,
+                result,
+                ttl_seconds=self._COMPLETION_SUMMARY_REDIS_TTL_SECONDS,
+            )
+        return deepcopy(result)
 
     async def list_circle_completion_works(
         self,
@@ -2149,12 +2552,36 @@ class CircleCompletionService:
         sort: str = "updated_desc",
         view_mode: str = "list",
     ) -> Dict[str, Any]:
-        state = self._build_completion_view_state(circle_id_or_query)
-        catalog = state["catalog"]
-        items = state["items"]
         normalized_filters = self._completion_status_filters(status_filters)
         tab_key = str(tab or "missing").strip().lower()
         card_mode = str(view_mode or "").strip().lower() == "card"
+        safe_page_size = max(1, min(200, int(page_size or 10)))
+        safe_page_request = max(1, int(page or 1))
+        query_cache_key = self._completion_query_cache_key(
+            "page",
+            circle_id_or_query,
+            {
+                "tab": tab_key,
+                "page": safe_page_request,
+                "page_size": safe_page_size,
+                "include_dl_only": bool(include_dl_only),
+                "status_filters": normalized_filters,
+                "owned_filter": str(owned_filter or "all").strip().lower(),
+                "compare_filter": str(compare_filter or "all").strip().lower(),
+                "search": str(search or "").strip(),
+                "sort": str(sort or "updated_desc").strip().lower(),
+                "view_mode": "card" if card_mode else "list",
+            },
+        )
+        cache_enabled = not self._completion_state_builder_overridden()
+        if cache_enabled:
+            cached = self._completion_l1_l2_get(self._completion_page_cache, "page", query_cache_key)
+            if isinstance(cached, dict):
+                return cached
+
+        state = await self._get_completion_view_state(circle_id_or_query)
+        catalog = state["catalog"]
+        items = self._completion_attach_bonus_parent_codes([dict(item) for item in state["items"]])
         if card_mode and tab_key in {"missing", "owned"}:
             grouped_filtered = self._filter_completion_items_for_card_tab(
                 items,
@@ -2186,10 +2613,9 @@ class CircleCompletionService:
                 if tab_key in {"missing", "owned"}
                 else filtered
             )
-        safe_page_size = max(1, min(200, int(page_size or 10)))
         total = len(grouped_filtered)
         page_count = max(1, (total + safe_page_size - 1) // safe_page_size)
-        safe_page = max(1, min(page_count, int(page or 1)))
+        safe_page = max(1, min(page_count, safe_page_request))
         start = (safe_page - 1) * safe_page_size
         page_items = grouped_filtered[start:start + safe_page_size]
         if tab_key == "compare":
@@ -2197,7 +2623,7 @@ class CircleCompletionService:
         else:
             payload_items = [self._strip_completion_internal_fields(item) for item in page_items]
         summary = self._completion_summary_from_items(catalog, items, visible_items=filtered)
-        return {
+        result = {
             **summary,
             "tab": tab_key,
             "items": payload_items,
@@ -2207,6 +2633,15 @@ class CircleCompletionService:
             "page_count": page_count,
             "status_filters": normalized_filters,
         }
+        if cache_enabled:
+            self._completion_l1_l2_set(
+                self._completion_page_cache,
+                "page",
+                query_cache_key,
+                result,
+                ttl_seconds=self._COMPLETION_PAGE_REDIS_TTL_SECONDS,
+            )
+        return deepcopy(result)
 
     async def list_circle_completion_work_codes(
         self,
@@ -2220,10 +2655,30 @@ class CircleCompletionService:
         search: str = "",
         sort: str = "updated_desc",
     ) -> Dict[str, Any]:
-        state = self._build_completion_view_state(circle_id_or_query)
+        normalized_filters = self._completion_status_filters(status_filters)
+        tab_key = str(tab or "missing").strip().lower()
+        query_cache_key = self._completion_query_cache_key(
+            "work-codes",
+            circle_id_or_query,
+            {
+                "tab": tab_key,
+                "include_dl_only": bool(include_dl_only),
+                "status_filters": normalized_filters,
+                "owned_filter": str(owned_filter or "all").strip().lower(),
+                "compare_filter": str(compare_filter or "all").strip().lower(),
+                "search": str(search or "").strip(),
+                "sort": str(sort or "updated_desc").strip().lower(),
+            },
+        )
+        cache_enabled = not self._completion_state_builder_overridden()
+        if cache_enabled:
+            cached = self._completion_l1_l2_get(self._completion_codes_cache, "work-codes", query_cache_key)
+            if isinstance(cached, dict):
+                return cached
+
+        state = await self._get_completion_view_state(circle_id_or_query)
         catalog = state["catalog"]
         items = state["items"]
-        normalized_filters = self._completion_status_filters(status_filters)
         filtered = self._filter_completion_items_for_tab(
             items,
             tab=tab,
@@ -2234,7 +2689,6 @@ class CircleCompletionService:
             search=search,
         )
         filtered = self._sort_completion_items(filtered, sort)
-        tab_key = str(tab or "missing").strip().lower()
         grouped_for_bonus = (
             self._completion_group_bonus_items([dict(item) for item in filtered])
             if tab_key in {"missing", "owned"}
@@ -2293,15 +2747,6 @@ class CircleCompletionService:
             code = str(item.get("canonical_rjcode") or "").strip()
             if not code:
                 continue
-            release_date = str(
-                item.get("original_release_date")
-                or item.get("release_date")
-                or item.get("date")
-                or item.get("release_at")
-                or ""
-            ).strip()
-            if release_date:
-                release_dates_by_rjcode[code] = release_date
             candidates = []
             for candidate in [
                 (item.get("download_plan") or {}).get("rjcode") if isinstance(item.get("download_plan"), dict) else "",
@@ -2315,6 +2760,9 @@ class CircleCompletionService:
                     candidates.append(normalized)
             if candidates:
                 requested_rjcodes[code] = candidates
+            release_date = await self._completion_resolve_bonus_probe_release_date(item, candidates)
+            if release_date:
+                release_dates_by_rjcode[code] = release_date
         completed_bonus_probe_dates = []
         if release_dates_by_rjcode:
             try:
@@ -2333,7 +2781,7 @@ class CircleCompletionService:
                 )
             except Exception:
                 logger.debug("[社团补全] 查询已完成特典探测日期失败 circle=%s", circle_id_or_query, exc_info=True)
-        return {
+        result = {
             "circle_id": catalog.get("circle_id") if isinstance(catalog, dict) else catalog.circle_id,
             "circle_name": catalog.get("circle_name") if isinstance(catalog, dict) else catalog.circle_name,
             "canonical_rjcodes": canonical_rjcodes,
@@ -2347,9 +2795,25 @@ class CircleCompletionService:
             "total": len(canonical_rjcodes),
             "downloadable_count": len(downloadable_rjcodes),
         }
+        if cache_enabled:
+            self._completion_l1_l2_set(
+                self._completion_codes_cache,
+                "work-codes",
+                query_cache_key,
+                result,
+                ttl_seconds=self._COMPLETION_CODES_REDIS_TTL_SECONDS,
+            )
+        return deepcopy(result)
 
     async def list_circle_completion_bonus_work_codes(self, circle_id_or_query: str) -> Dict[str, Any]:
-        state = self._build_completion_view_state(circle_id_or_query)
+        query_cache_key = self._completion_query_cache_key("bonus-work-codes", circle_id_or_query, {})
+        cache_enabled = not self._completion_state_builder_overridden()
+        if cache_enabled:
+            cached = self._completion_l1_l2_get(self._completion_codes_cache, "bonus-work-codes", query_cache_key)
+            if isinstance(cached, dict):
+                return cached
+
+        state = await self._get_completion_view_state(circle_id_or_query)
         catalog = state["catalog"]
         items = state["items"]
         seen: Set[str] = set()
@@ -2376,7 +2840,7 @@ class CircleCompletionService:
 
         canonical_rjcodes = [self.normalize_rjcode(item.get("canonical_rjcode")) for item in bonus_items]
         canonical_rjcodes = [code for code in canonical_rjcodes if code]
-        return {
+        result = {
             "circle_id": catalog.get("circle_id") if isinstance(catalog, dict) else catalog.circle_id,
             "circle_name": catalog.get("circle_name") if isinstance(catalog, dict) else catalog.circle_name,
             "canonical_rjcodes": canonical_rjcodes,
@@ -2393,6 +2857,15 @@ class CircleCompletionService:
                 for item in bonus_items
             ],
         }
+        if cache_enabled:
+            self._completion_l1_l2_set(
+                self._completion_codes_cache,
+                "bonus-work-codes",
+                query_cache_key,
+                result,
+                ttl_seconds=self._COMPLETION_CODES_REDIS_TTL_SECONDS,
+            )
+        return deepcopy(result)
 
     async def locate_circle_completion_work(
         self,
@@ -2408,7 +2881,7 @@ class CircleCompletionService:
         search: str = "",
         sort: str = "updated_desc",
     ) -> Dict[str, Any]:
-        state = self._build_completion_view_state(circle_id_or_query)
+        state = await self._get_completion_view_state(circle_id_or_query)
         catalog = state["catalog"]
         items = state["items"]
         tab_key = str(tab or "missing").strip().lower()
@@ -2558,8 +3031,20 @@ class CircleCompletionService:
                     display_rjcode or canonical,
                     is_unreleased=self._is_future_release_date(release_date),
                 )
-                local_cover_url = image_cache_service.get_local_url(display_rjcode or canonical)
-                local_thumb_url = image_cache_service.get_local_url(display_rjcode or canonical, variant="list")
+                cover_cache_rjcode = (
+                    image_cache_service.extract_image_rjcode(normalized_cover)
+                    or display_rjcode
+                    or canonical
+                )
+                local_cover_url = image_cache_service.get_local_url(
+                    cover_cache_rjcode,
+                    allow_missing=True,
+                )
+                local_thumb_url = image_cache_service.get_local_url(
+                    cover_cache_rjcode,
+                    variant="list",
+                    allow_missing=True,
+                )
 
                 results.append({
                     "circle_id": circle_id,
@@ -6543,6 +7028,11 @@ class CircleCompletionService:
         normalized = self.normalize_circle_name(keyword)
         safe_limit = max(1, int(limit))
 
+        recent_cache_key = self._completion_recent_cache_key(keyword, safe_limit)
+        cached_recent = self._completion_l1_l2_get(self._completion_recent_cache, "recent", recent_cache_key)
+        if isinstance(cached_recent, list):
+            return cached_recent
+
         db = SessionLocal()
         try:
             catalog_query = db.query(CircleCatalog).order_by(CircleCatalog.last_indexed_at.desc())
@@ -6704,7 +7194,14 @@ class CircleCompletionService:
                     elapsed_ms,
                     stage_costs,
                 )
-            return out
+            self._completion_l1_l2_set(
+                self._completion_recent_cache,
+                "recent",
+                recent_cache_key,
+                out,
+                ttl_seconds=self._COMPLETION_RECENT_REDIS_TTL_SECONDS,
+            )
+            return deepcopy(out)
         finally:
             db.close()
 
@@ -6913,12 +7410,19 @@ class CircleCompletionService:
                 # 优先返回本地缓存的 API path（/api/circle-completion/cover/RJxxxxxx.jpg），
                 # 没缓存就退回到 dlsite 公开 URL；前端 WorkCard.onCoverError 还有第二层
                 # fallback（按 RJ 推算多个 dlsite 地址），所以单点失败不会让整页白板。
+                cover_cache_rjcode = (
+                    image_cache_service.extract_image_rjcode(normalized_remote_cover)
+                    or stored_display_rjcode
+                    or row.canonical_rjcode
+                )
                 local_cover_url = image_cache_service.get_local_url(
-                    stored_display_rjcode or row.canonical_rjcode
+                    cover_cache_rjcode,
+                    allow_missing=True,
                 )
                 local_thumb_url = image_cache_service.get_local_url(
-                    stored_display_rjcode or row.canonical_rjcode,
+                    cover_cache_rjcode,
                     variant="list",
+                    allow_missing=True,
                 )
                 item["image_url"] = local_cover_url or normalized_remote_cover
                 item["thumb_image_url"] = local_thumb_url or self._normalize_dlsite_thumb_url(

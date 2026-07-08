@@ -45,6 +45,7 @@ class CircleImageCacheService:
         self._client: Optional[httpx.AsyncClient] = None
         self._client_lock: Optional[asyncio.Lock] = None
         self._cache_dir: Optional[Path] = None
+        self._download_locks: Dict[str, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------
     # 路径 / 命名
@@ -75,6 +76,16 @@ class CircleImageCacheService:
         return match.group(0) if match else ""
 
     @staticmethod
+    def extract_image_rjcode(value: Any) -> str:
+        """从 DLsite 图片 URL 里取真实作品 RJ。
+
+        图片路径通常同时包含目录 RJ bucket 和文件名 RJ：
+        ``.../RJ01202000/RJ01201316_img_sam.jpg``。用于缓存文件名时必须取最后一个。
+        """
+        matches = _RJCODE_PATTERN.findall(str(value or "").strip().upper())
+        return matches[-1] if matches else ""
+
+    @staticmethod
     def _normalize_variant(variant: str = "card") -> str:
         value = str(variant or "card").strip().lower()
         return "list" if value in {"list", "sam", "thumb", "thumbnail"} else "card"
@@ -102,10 +113,15 @@ class CircleImageCacheService:
         except OSError:
             return False
 
-    def get_local_url(self, rjcode: str, variant: str = "card") -> str:
-        """如果本地有缓存，返回前端可访问的 API 路径，否则返回空。"""
-        if self.has_local(rjcode, variant):
-            return f"{self.URL_PATH_PREFIX}{self._filename_for(rjcode, variant)}"
+    def get_local_url(self, rjcode: str, variant: str = "card", *, allow_missing: bool = False) -> str:
+        """返回前端可访问的本地缓存 API 路径。
+
+        默认只在文件已存在时返回；社团补全卡片列表会传 ``allow_missing=True``，
+        让首屏直接打本地 cover API，缺图时由 API 做一次按需下载并落盘。
+        """
+        filename = self._filename_for(rjcode, variant)
+        if filename and (allow_missing or self.has_local(rjcode, variant)):
+            return f"{self.URL_PATH_PREFIX}{filename}"
         return ""
 
     def resolve_display_url(self, rjcode: Any, fallback_url: Any = "", variant: str = "card") -> str:
@@ -115,21 +131,91 @@ class CircleImageCacheService:
             return local
         return str(fallback_url or "")
 
+    def _parse_filename(self, filename: str) -> Tuple[str, str]:
+        candidate = str(filename or "").strip()
+        if not candidate or "/" in candidate or "\\" in candidate:
+            return "", ""
+        match = re.fullmatch(r"([RVB]J\d{6,8})(?:_(sam))?\.(?:jpg|jpeg)", candidate, re.IGNORECASE)
+        if not match:
+            return "", ""
+        return match.group(1).upper(), "list" if match.group(2) else "card"
+
     def resolve_filename(self, filename: str) -> Optional[Path]:
         """供 API 路由使用：将外部传入的文件名映射回缓存目录下的真实路径。
 
         会做严格白名单校验，只允许 ``RJ\\d{6,8}.jpg``，避免 ``../`` 路径穿越。
         """
 
-        candidate = str(filename or "").strip()
-        if not candidate or "/" in candidate or "\\" in candidate:
+        rjcode, variant = self._parse_filename(filename)
+        if not rjcode:
             return None
-        match = re.fullmatch(r"([RVB]J\d{6,8})(?:_(sam))?\.(?:jpg|jpeg)", candidate, re.IGNORECASE)
-        if not match:
-            return None
-        rjcode = match.group(1).upper()
-        variant = "list" if match.group(2) else "card"
         return self.get_local_path(rjcode, variant)
+
+    @staticmethod
+    def _dlsite_folder_for(rjcode: str) -> str:
+        match = re.fullmatch(r"[RVB]J(\d{6}|\d{8})", str(rjcode or "").strip().upper())
+        if not match:
+            return ""
+        digits = match.group(1)
+        folder_upper = (int(digits) // 1000 + 1) * 1000
+        return f"RJ{folder_upper:08d}" if len(digits) == 8 else f"RJ{folder_upper:06d}"
+
+    def _candidate_source_urls(self, rjcode: str, variant: str) -> List[str]:
+        normalized = self.normalize_rjcode(rjcode)
+        folder = self._dlsite_folder_for(normalized)
+        if not normalized or not folder:
+            return []
+        work_base = f"https://img.dlsite.jp/modpub/images2/work/doujin/{folder}/{normalized}"
+        work_resize = f"https://img.dlsite.jp/resize/images2/work/doujin/{folder}/{normalized}"
+        announce_base = f"https://img.dlsite.jp/modpub/images2/announce/doujin/{folder}/{normalized}"
+        announce_resize = f"https://img.dlsite.jp/resize/images2/announce/doujin/{folder}/{normalized}"
+        ana_base = f"https://img.dlsite.jp/modpub/images2/ana/doujin/{folder}/{normalized}"
+        if self._normalize_variant(variant) == "list":
+            return [
+                f"{work_base}_img_sam.jpg",
+                f"{work_resize}_img_main_240x240.jpg",
+                f"{work_base}_img_main.jpg",
+                f"{ana_base}_ana_img_main.jpg",
+                f"{announce_resize}_img_main_240x240.jpg",
+                f"{announce_base}_img_main.jpg",
+            ]
+        return [
+            f"{work_resize}_img_main_240x240.jpg",
+            f"{work_base}_img_main.jpg",
+            f"{work_base}_img_sam.jpg",
+            f"{announce_resize}_img_main_240x240.jpg",
+            f"{announce_base}_img_main.jpg",
+            f"{ana_base}_ana_img_main.jpg",
+        ]
+
+    async def ensure_local_for_filename(self, filename: str) -> Optional[Path]:
+        """按需下载并返回本地缓存路径。
+
+        用于前端首屏直接请求 ``/api/circle-completion/cover/RJxxxx_sam.jpg`` 的场景：
+        文件已存在时只走本地磁盘；文件缺失时按 RJ 推导 DLsite CDN 地址下载一次。
+        """
+
+        rjcode, variant = self._parse_filename(filename)
+        if not rjcode:
+            return None
+        target = self.get_local_path(rjcode, variant)
+        if target is None:
+            return None
+        if self.has_local(rjcode, variant):
+            return target
+
+        lock_key = self._filename_for(rjcode, variant)
+        lock = self._download_locks.get(lock_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._download_locks[lock_key] = lock
+        async with lock:
+            if self.has_local(rjcode, variant):
+                return target
+            for source_url in self._candidate_source_urls(rjcode, variant):
+                if await self.download_one(rjcode, source_url, variant=variant):
+                    return target if self.has_local(rjcode, variant) else None
+            return None
 
     # ------------------------------------------------------------------
     # 下载
