@@ -44,9 +44,9 @@ redis:
   dirty_stream_maxlen: 200000
 bonus_probe:
   max_active_jobs: 1
-  normal_batch_size: 100
+  normal_batch_size: 500
   normal_concurrency: 6
-  deep_batch_size: 200
+  deep_batch_size: 500
   deep_concurrency: 6
   new_release_batch_size: 100
   new_release_concurrency: 6

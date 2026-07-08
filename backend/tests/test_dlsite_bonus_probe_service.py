@@ -927,7 +927,7 @@ async def test_probe_date_budget_reached_returns_incomplete_without_no_bonus_sta
 @pytest.mark.asyncio
 async def test_probe_date_selected_rj_scope_uses_date_range_for_far_bonus(db_session, monkeypatch) -> None:
     service = _service()
-    service.DEFAULT_DATE_RANGE_LIMIT = 6000
+    service.DEFAULT_DATE_RANGE_LIMIT = 2
     service.DEFAULT_CIRCLE_EDGE_WINDOW = 2
     monkeypatch.setattr("app.core.dlsite_bonus_probe_service.SessionLocal", lambda: db_session)
     db_session.add(
@@ -992,6 +992,8 @@ async def test_probe_date_selected_rj_scope_uses_date_range_for_far_bonus(db_ses
     assert result["selected_scope"] is True
     assert result["target_rjcodes"] == ["RJ01000003"]
     assert result["budget_reached"] is False
+    assert result["date_page_range_limit"] is None
+    assert result["date_page_range_unbounded"] is True
     assert result["date_page_range_count"] == 4999
     assert result["hit_rjcodes"] == ["RJ01004000"]
     assert state.original_rjcode == "RJ01000003"
@@ -1000,7 +1002,88 @@ async def test_probe_date_selected_rj_scope_uses_date_range_for_far_bonus(db_ses
 
 
 @pytest.mark.asyncio
-async def test_probe_date_reused_hit_index_still_continues_unfinished_scan(db_session, monkeypatch) -> None:
+async def test_probe_date_selected_rj_scope_runs_full_over_limit_range_before_no_bonus(
+    db_session,
+    monkeypatch,
+) -> None:
+    service = _service()
+    service.DEFAULT_DATE_RANGE_LIMIT = 2
+    service.DEFAULT_CIRCLE_EDGE_WINDOW = 2
+    monkeypatch.setattr("app.core.dlsite_bonus_probe_service.SessionLocal", lambda: db_session)
+    db_session.add(
+        CircleWork(
+            id="selected-no-bonus-original",
+            circle_id="circle-selected-no-bonus-probe",
+            canonical_rjcode="RJ01000003",
+            display_rjcode="RJ01000003",
+            maker_id="RG62878",
+            is_bonus_work=False,
+        )
+    )
+    db_session.add(
+        WorkMetadata(
+            rjcode="RJ01000003",
+            maker_id="RG62878",
+            release_date="2025年06月中旬",
+            is_bonus_work=False,
+        )
+    )
+    db_session.commit()
+
+    monkeypatch.setattr(service, "_load_reusable_hidden_bonus_features", lambda **_kwargs: [])
+
+    async def fake_public_worknos(*_args, **_kwargs):
+        return ["RJ01000003"], ["RJ01000001", "RJ01000003", "RJ01000010"], "ok"
+
+    async def fake_load_or_probe(rjcodes, **_kwargs):
+        public_rjcodes = {"RJ01000001", "RJ01000003", "RJ01000010"}
+        features = {}
+        for rjcode in rjcodes:
+            is_public = rjcode in public_rjcodes
+            features[rjcode] = DLsiteProductProbeFeature(
+                workno=rjcode,
+                exists=is_public,
+                probe_status="ok" if is_public else "missing",
+                maker_id="RG62878" if is_public else "",
+                release_date="2025-06-11" if is_public else "",
+                work_type="SOU" if is_public else "",
+                price=770 if is_public else 0,
+            )
+        return features, 0, 1
+
+    monkeypatch.setattr(service, "_load_public_worknos_for_date", fake_public_worknos)
+    monkeypatch.setattr(service, "_load_or_probe_features", fake_load_or_probe)
+
+    result = await service.probe_date(
+        circle_id="circle-selected-no-bonus-probe",
+        maker_id="RG62878",
+        release_date="2025-06-11",
+        mode="deep",
+        gap_limit=2,
+        batch_size=10,
+        target_rjcodes=["RJ01000003"],
+    )
+
+    state = db_session.query(DLsiteBonusOriginalProbeState).first()
+    date_row = db_session.query(DLsiteBonusProbeDate).first()
+    assert result["selected_scope"] is True
+    assert result["budget_reached"] is False
+    assert "incomplete" not in result
+    assert result["date_page_range_limit"] is None
+    assert result["date_page_range_unbounded"] is True
+    assert result["date_page_range_count"] == 8
+    assert result["hit_rjcodes"] == []
+    assert result["original_no_bonus_count"] == 1
+    assert state.original_rjcode == "RJ01000003"
+    assert state.status == "no_bonus"
+    assert date_row.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_probe_date_reused_hit_index_stops_selected_scope_when_cache_covers_target(
+    db_session,
+    monkeypatch,
+) -> None:
     service = _service()
     service.DEFAULT_DATE_RANGE_LIMIT = 20
     service.DEFAULT_CIRCLE_EDGE_WINDOW = 2
@@ -1019,7 +1102,7 @@ async def test_probe_date_reused_hit_index_still_continues_unfinished_scan(db_se
         WorkMetadata(
             rjcode="RJ01000003",
             maker_id="RG62878",
-            release_date="2025-06-11",
+            release_date="2025年06月中旬",
             is_bonus_work=False,
         )
     )
@@ -1050,30 +1133,19 @@ async def test_probe_date_reused_hit_index_still_continues_unfinished_scan(db_se
     )
     db_session.commit()
 
-    async def fake_public_worknos(*_args, **_kwargs):
-        return ["RJ01000003"], ["RJ01000001", "RJ01000010"], "ok"
+    async def fail_public_worknos(*_args, **_kwargs):
+        raise AssertionError("缓存命中目标时不应该再拉 DLsite 日期页")
 
-    async def fake_load_or_probe(rjcodes, **_kwargs):
-        features = {}
-        for rjcode in rjcodes:
-            is_second_bonus = rjcode == "RJ01000008"
-            features[rjcode] = DLsiteProductProbeFeature(
-                workno=rjcode,
-                exists=is_second_bonus or rjcode in {"RJ01000001", "RJ01000003", "RJ01000010"},
-                probe_status="ok" if is_second_bonus or rjcode in {"RJ01000001", "RJ01000003", "RJ01000010"} else "missing",
-                maker_id="RG62878" if is_second_bonus or rjcode in {"RJ01000001", "RJ01000003", "RJ01000010"} else "",
-                release_date="2025-06-11" if is_second_bonus or rjcode in {"RJ01000001", "RJ01000003", "RJ01000010"} else "",
-                work_type="SOU" if is_second_bonus or rjcode in {"RJ01000001", "RJ01000003", "RJ01000010"} else "",
-                price=0 if is_second_bonus else 770,
-                is_free=is_second_bonus,
-                is_oly=is_second_bonus,
-                is_hidden_bonus_audio=is_second_bonus,
-                title="早期特典 2" if is_second_bonus else "",
-            )
-        return features, 0, 1 if rjcodes else 0
+    async def fail_load_or_probe(*_args, **_kwargs):
+        raise AssertionError("缓存命中目标时不应该再探测 RJ")
 
-    monkeypatch.setattr(service, "_load_public_worknos_for_date", fake_public_worknos)
-    monkeypatch.setattr(service, "_load_or_probe_features", fake_load_or_probe)
+    def fail_build_candidates(*_args, **_kwargs):
+        raise AssertionError("缓存命中目标时不应该再构造候选范围")
+
+    monkeypatch.setattr(service, "_load_public_worknos_for_date", fail_public_worknos)
+    monkeypatch.setattr(service, "_load_or_probe_features", fail_load_or_probe)
+    monkeypatch.setattr(service, "_build_anchor_edge_candidates", fail_build_candidates)
+    monkeypatch.setattr(service, "_build_range_candidates", fail_build_candidates)
 
     result = await service.probe_date(
         circle_id="circle-reuse-index-probe",
@@ -1087,10 +1159,25 @@ async def test_probe_date_reused_hit_index_still_continues_unfinished_scan(db_se
 
     hit_codes = sorted(result["hit_rjcodes"])
     hit_index_codes = sorted(row.bonus_rjcode for row in db_session.query(DLsiteBonusProbeHitIndex).all())
+    state = db_session.query(DLsiteBonusOriginalProbeState).filter(
+        DLsiteBonusOriginalProbeState.original_rjcode == "RJ01000003",
+    ).first()
+    original_row = db_session.query(CircleWork).filter(CircleWork.canonical_rjcode == "RJ01000003").first()
+    bonus_row = db_session.query(CircleWork).filter(CircleWork.canonical_rjcode == "RJ01000004").first()
+    refreshed_metadata = db_session.query(WorkMetadata).filter(WorkMetadata.rjcode == "RJ01000003").first()
     assert result["reused_hit_index"] is True
-    assert hit_codes == ["RJ01000004", "RJ01000008"]
-    assert hit_index_codes == ["RJ01000004", "RJ01000008"]
-    assert result["probe_count"] > 0
+    assert result["selected_cache_covered"] is True
+    assert result["parse_status"] == "cached_hidden_bonus"
+    assert hit_codes == ["RJ01000004"]
+    assert hit_index_codes == ["RJ01000004"]
+    assert result["probe_count"] == 0
+    assert result["raw_probe_count"] == 0
+    assert result["date_page_public_count"] == 0
+    assert result["original_has_bonus_count"] == 1
+    assert refreshed_metadata.release_date == "2025-06-11"
+    assert state.status == "has_bonus"
+    assert original_row.has_bonus is True
+    assert bonus_row.linked_rjcodes == ["RJ01000003", "RJ01000004"]
 
 
 @pytest.mark.asyncio
@@ -1174,7 +1261,9 @@ async def test_probe_date_counts_cached_hidden_bonus_candidate(db_session, monke
     date_row = db_session.query(DLsiteBonusProbeDate).first()
     assert result["hit_rjcodes"] == ["RJ01256633"]
     assert result["hit_count"] == 1
-    assert result["candidate_filter_stats"]["cached"] >= 1
+    assert result["selected_cache_covered"] is True
+    assert result["candidate_filter_stats"]["selected"] == 0
+    assert result["probe_count"] == 0
     assert state.original_rjcode == "RJ01256625"
     assert state.status == "has_bonus"
     assert bonus_row is not None
