@@ -2869,6 +2869,21 @@ def _existing_columns(conn, table_name: str, column_names: Iterable[str]) -> set
     return {str(row[0]) for row in rows}
 
 
+def _column_udt_name(conn, table_name: str, column_name: str) -> str:
+    return str(conn.execute(
+        text(
+            """
+            SELECT udt_name
+              FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = :table_name
+               AND column_name = :column_name
+            """
+        ),
+        {"table_name": table_name, "column_name": column_name},
+    ).scalar() or "")
+
+
 def _add_column_if_missing(
     conn,
     table_name: str,
@@ -2888,6 +2903,47 @@ def _add_column_if_missing(
         existing_columns.add(column_name)
     _db_logger.info("[数据库] %s 新增列: %s", table_name, column_name)
     return True
+
+
+def _migrate_dlsite_bonus_probe_cache_schema(conn, existing_tables: Optional[set[str]] = None) -> None:
+    table_name = "dlsite_bonus_probe_cache"
+    if existing_tables is not None and table_name not in existing_tables:
+        return
+    for column_name in ("price", "wishlist_count"):
+        current_type = _column_udt_name(conn, table_name, column_name)
+        if not current_type or current_type == "int8":
+            continue
+        if current_type != "int4":
+            _db_logger.warning(
+                "[数据库] %s.%s 当前类型为 %s，仍尝试升级为 BIGINT",
+                table_name,
+                column_name,
+                current_type,
+            )
+        conn.execute(text(
+            f"ALTER TABLE {table_name} "
+            f"ALTER COLUMN {column_name} TYPE BIGINT "
+            f"USING COALESCE({column_name}, 0)::bigint"
+        ))
+        _db_logger.info(
+            "[数据库] 已将 %s.%s 升级为 BIGINT，避免特典探测缓存数值溢出",
+            table_name,
+            column_name,
+        )
+
+
+def _migrate_notification_inbox_items_schema(conn, existing_tables: Optional[set[str]] = None) -> None:
+    table_name = "notification_inbox_items"
+    if existing_tables is not None and table_name not in existing_tables:
+        return
+    current_type = _column_udt_name(conn, table_name, "business_key")
+    if not current_type or current_type == "text":
+        return
+    conn.execute(text(
+        "ALTER TABLE notification_inbox_items "
+        "ALTER COLUMN business_key TYPE TEXT"
+    ))
+    _db_logger.info("[数据库] 已将 notification_inbox_items.business_key 升级为 TEXT")
 
 
 def _existing_tables(conn, table_names: Iterable[str]) -> set[str]:
@@ -3141,6 +3197,8 @@ def _migrate_compat_schema(conn) -> None:
         "library_owned_works",
         "activity_logs",
         "activity_log_daily_stats",
+        "dlsite_bonus_probe_cache",
+        "notification_inbox_items",
     ))
     compat_index_specs = [
         spec
@@ -3170,6 +3228,8 @@ def _migrate_compat_schema(conn) -> None:
     _migrate_library_index_entries_schema(conn, existing_tables)
     _migrate_library_index_status_schema(conn, existing_tables)
     _migrate_library_owned_works_schema(conn, existing_tables)
+    _migrate_dlsite_bonus_probe_cache_schema(conn, existing_tables)
+    _migrate_notification_inbox_items_schema(conn, existing_tables)
     _migrate_activity_logs_projection(conn, existing_tables, compat_index_definitions)
     _migrate_activity_log_daily_stats(conn, existing_tables)
 

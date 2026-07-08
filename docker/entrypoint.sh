@@ -120,6 +120,11 @@ SQL
   unset PGPASSWORD
 }
 
+run_database_migrations() {
+  log "执行数据库迁移: alembic upgrade head"
+  python -m alembic upgrade head
+}
+
 if [[ -z "${DATABASE_URL:-}" ]]; then
   init_postgres
   start_postgres
@@ -129,6 +134,8 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
 else
   log "检测到 DATABASE_URL，使用外部 PostgreSQL"
 fi
+
+run_database_migrations
 
 if [[ -n "${KIKOERUMANAGER_REDIS_URL:-}" ]]; then
   KIKOERUMANAGER_REDIS_URL_WAS_SET=1

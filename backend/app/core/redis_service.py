@@ -546,6 +546,15 @@ class RedisService:
             'bonus_probe_cache': count_keys(['bonus-probe', 'cache']),
             'bonus_probe_jobs': count_keys(['bonus-probe', 'job']),
             'bonus_probe_dirty_sets': count_keys(['bonus-probe', 'task-dirty']),
+            'circle_completion_state': count_keys(['circle-completion', 'state']),
+            'circle_completion_summary': count_keys(['circle-completion', 'summary']),
+            'circle_completion_page': count_keys(['circle-completion', 'page']),
+            'circle_completion_codes': count_keys(['circle-completion', 'work-codes']),
+            'circle_completion_bonus_codes': count_keys(['circle-completion', 'bonus-work-codes']),
+            'circle_completion_recent': count_keys(['circle-completion', 'recent']),
+            'circle_completion_aliases': count_keys(['circle-completion', 'aliases']),
+            'circle_completion_versions': count_keys(['circle-completion', 'version']),
+            'circle_completion_build_locks': count_keys(['circle-completion', 'build_lock']),
         }
         try:
             memory = client.info('memory')
