@@ -42,7 +42,7 @@ const activeBonusDetail = ref(null)
 let resizeObserver = null
 let motionTimer = null
 const imageLoadTimers = new Map()
-const MAX_ACTIVE_IMAGES = 6
+const MAX_ACTIVE_IMAGES = 8
 
 const safeItems = computed(() => Array.isArray(props.items) ? props.items : [])
 const totalItems = computed(() => {
@@ -576,10 +576,10 @@ function triggerViewportMotion() {
   })
 }
 
-function scrollToTop() {
+function scrollToTop(options = {}) {
   nextTick(() => {
     rowVirtualizer.value.scrollToOffset(0)
-    rowVirtualizer.value.measure()
+    if (options.measure !== false) rowVirtualizer.value.measure()
   })
 }
 
@@ -588,9 +588,17 @@ watch(pageCount, (count) => {
 })
 
 watch(
-  () => [props.mode, props.currentPage, props.pageSize, columnCount.value, totalItems.value].join(':'),
+  () => [props.mode, props.pageSize, columnCount.value, totalItems.value].join(':'),
   () => {
     scrollToTop()
+    triggerViewportMotion()
+  },
+)
+
+watch(
+  () => props.currentPage,
+  () => {
+    scrollToTop({ measure: !props.serverPaging })
     triggerViewportMotion()
   },
 )
@@ -607,8 +615,9 @@ onMounted(() => {
   updateViewportWidth()
   triggerViewportMotion()
   resizeObserver = new ResizeObserver(() => {
+    const previousWidth = viewportWidth.value
     updateViewportWidth()
-    nextTick(() => rowVirtualizer.value.measure())
+    if (viewportWidth.value !== previousWidth) nextTick(() => rowVirtualizer.value.measure())
   })
   if (scrollRef.value) resizeObserver.observe(scrollRef.value)
 })

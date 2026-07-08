@@ -256,6 +256,10 @@
         </section>
 
         <section v-if="activeCircleId" class="works-card">
+          <div v-if="circleWorksPage.loading && circleDetailLoaded" class="circle-works-page-loading" aria-live="polite">
+            <RefreshCw :size="13" class="circle-works-page-loading-icon" />
+            <span>更新中</span>
+          </div>
           <section v-if="bonusProbeJob.visible" class="index-progress-card refresh-progress-card bonus-progress-card">
             <div class="index-progress-head">
               <div>
@@ -356,7 +360,7 @@
             </div>
           </section>
 
-          <div class="circle-tabs-wrapper">
+          <div class="circle-tabs-wrapper" :class="{ 'has-owned-search': activeTab === 'owned' }">
             <div class="toolbar-right-actions">
               <button
                 type="button"
@@ -429,6 +433,25 @@
                   </span>
                 </template>
               </AppDropdown>
+              <div v-if="activeTab === 'owned'" class="owned-search-wrap owned-search-wrap--top">
+                <div class="owned-search-icon">
+                  <Search :size="16" />
+                </div>
+                <input
+                  v-model="ownedWorksSearchQuery"
+                  type="text"
+                  class="owned-search-input"
+                  placeholder="搜索作品名或 RJ 号..."
+                />
+                <button
+                  v-if="ownedWorksSearchQuery"
+                  type="button"
+                  class="owned-search-clear"
+                  @click="ownedWorksSearchQuery = ''"
+                >
+                  <X :size="14" />
+                </button>
+              </div>
               <div class="view-toggle-group">
                 <button type="button" class="view-toggle-btn" :class="{ active: viewMode === 'card' }" title="卡片视图" @click="viewMode = 'card'"><LayoutGrid :size="14" /></button>
                 <button type="button" class="view-toggle-btn" :class="{ active: viewMode === 'list' }" title="列表视图" @click="viewMode = 'list'"><List :size="14" /></button>
@@ -532,10 +555,17 @@
                 <span class="circle-tab-label"><CheckCircle2 :size="13" class="circle-tab-icon owned" /> 已满足 <em class="circle-tab-badge owned">{{ detail.owned_count || 0 }}</em></span>
               </template>
               <!-- Header Stats & Actions -->
-              <div class="owned-panel mb-4 space-y-4">
+              <div class="owned-panel">
                 <div class="owned-stats-strip">
                   <div class="owned-stats-list">
-                    <div class="owned-stat-item">
+                    <button
+                      type="button"
+                      class="owned-stat-item is-total"
+                      :class="{ 'is-active': ownedWorksFilterType === 'all' }"
+                      :aria-pressed="ownedWorksFilterType === 'all'"
+                      title="筛选全部已满足作品"
+                      @click="setOwnedWorksFilter('all')"
+                    >
                       <div class="owned-stat-icon is-total">
                         <LibraryBig :size="14" stroke-width="2.5" />
                       </div>
@@ -543,8 +573,15 @@
                         <span class="owned-stat-label">总收录</span>
                         <span class="owned-stat-value">{{ ownedWorksStats.total }}</span>
                       </div>
-                    </div>
-                    <div class="owned-stat-item">
+                    </button>
+                    <button
+                      type="button"
+                      class="owned-stat-item is-simplified"
+                      :class="{ 'is-active': ownedWorksFilterType === 'simplified' }"
+                      :aria-pressed="ownedWorksFilterType === 'simplified'"
+                      title="筛选简中作品"
+                      @click="setOwnedWorksFilter('simplified')"
+                    >
                       <div class="owned-stat-icon is-simplified">
                         <Languages :size="14" stroke-width="2.5" />
                       </div>
@@ -552,8 +589,15 @@
                         <span class="owned-stat-label">简中</span>
                         <span class="owned-stat-value">{{ ownedWorksStats.simplified }}</span>
                       </div>
-                    </div>
-                    <div class="owned-stat-item">
+                    </button>
+                    <button
+                      type="button"
+                      class="owned-stat-item is-traditional"
+                      :class="{ 'is-active': ownedWorksFilterType === 'traditional' }"
+                      :aria-pressed="ownedWorksFilterType === 'traditional'"
+                      title="筛选繁中作品"
+                      @click="setOwnedWorksFilter('traditional')"
+                    >
                       <div class="owned-stat-icon is-traditional">
                         <Languages :size="14" stroke-width="2.5" />
                       </div>
@@ -561,8 +605,15 @@
                         <span class="owned-stat-label">繁中</span>
                         <span class="owned-stat-value">{{ ownedWorksStats.traditional }}</span>
                       </div>
-                    </div>
-                    <div class="owned-stat-item">
+                    </button>
+                    <button
+                      type="button"
+                      class="owned-stat-item is-original"
+                      :class="{ 'is-active': ownedWorksFilterType === 'original' }"
+                      :aria-pressed="ownedWorksFilterType === 'original'"
+                      title="筛选原作"
+                      @click="setOwnedWorksFilter('original')"
+                    >
                       <div class="owned-stat-icon is-original">
                         <PlayCircle :size="14" stroke-width="2.5" />
                       </div>
@@ -570,8 +621,15 @@
                         <span class="owned-stat-label">原作</span>
                         <span class="owned-stat-value">{{ ownedWorksStats.original }}</span>
                       </div>
-                    </div>
-                    <div class="owned-stat-item">
+                    </button>
+                    <button
+                      type="button"
+                      class="owned-stat-item is-subtitle"
+                      :class="{ 'is-active': ownedWorksFilterType === 'subtitle' }"
+                      :aria-pressed="ownedWorksFilterType === 'subtitle'"
+                      title="筛选含字幕作品"
+                      @click="setOwnedWorksFilter('subtitle')"
+                    >
                       <div class="owned-stat-icon is-subtitle">
                         <Subtitles :size="14" stroke-width="2.5" />
                       </div>
@@ -579,8 +637,15 @@
                         <span class="owned-stat-label">含字幕</span>
                         <span class="owned-stat-value">{{ ownedWorksStats.subtitle }}</span>
                       </div>
-                    </div>
-                    <div class="owned-stat-item">
+                    </button>
+                    <button
+                      type="button"
+                      class="owned-stat-item is-bonus"
+                      :class="{ 'is-active': ownedWorksFilterType === 'bonus' }"
+                      :aria-pressed="ownedWorksFilterType === 'bonus'"
+                      title="筛选特典作品"
+                      @click="setOwnedWorksFilter('bonus')"
+                    >
                       <div class="owned-stat-icon is-bonus">
                         <Gift :size="14" stroke-width="2.5" />
                       </div>
@@ -588,78 +653,13 @@
                         <span class="owned-stat-label">特典</span>
                         <span class="owned-stat-value">{{ ownedWorksStats.bonus }}</span>
                       </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="owned-filter-row flex items-center justify-between gap-4">
-                  <div class="owned-filter-tabs">
-                    <button type="button" class="owned-filter-chip" :class="{ 'is-active': ownedWorksFilterType === 'all' }" @click="setOwnedWorksFilter('all')">
-                      全部
-                      <span class="owned-filter-count">{{ ownedWorksStats.total }}</span>
-                    </button>
-                    <button type="button" class="owned-filter-chip" :class="{ 'is-active': ownedWorksFilterType === 'original' }" @click="setOwnedWorksFilter('original')">
-                      仅原作
-                      <span class="owned-filter-count">{{ ownedWorksStats.original }}</span>
-                    </button>
-                    <button type="button" class="owned-filter-chip is-simplified" :class="{ 'is-active': ownedWorksFilterType === 'simplified' }" @click="setOwnedWorksFilter('simplified')">
-                      简中
-                      <span class="owned-filter-count">{{ ownedWorksStats.simplified }}</span>
-                    </button>
-                    <button type="button" class="owned-filter-chip is-traditional" :class="{ 'is-active': ownedWorksFilterType === 'traditional' }" @click="setOwnedWorksFilter('traditional')">
-                      繁中
-                      <span class="owned-filter-count">{{ ownedWorksStats.traditional }}</span>
-                    </button>
-                    <button type="button" class="owned-filter-chip is-subtitle" :class="{ 'is-active': ownedWorksFilterType === 'subtitle' }" @click="setOwnedWorksFilter('subtitle')">
-                      <MessageSquareText :size="14" stroke-width="2.5" />
-                      字幕
-                      <span class="owned-filter-count">{{ ownedWorksStats.subtitle }}</span>
-                    </button>
-                    <button type="button" class="owned-filter-chip is-bonus" :class="{ 'is-active': ownedWorksFilterType === 'bonus' }" @click="setOwnedWorksFilter('bonus')">
-                      <Gift :size="14" stroke-width="2.5" />
-                      特典
-                      <span class="owned-filter-count">{{ ownedWorksStats.bonus }}</span>
-                    </button>
-                  </div>
-
-                  <div class="flex items-center gap-3">
-                    <button
-                      type="button"
-                      class="release-sort-button group"
-                      :title="worksReleaseSort === 'asc' ? '按发售时间正序' : '按发售时间倒序'"
-                      @click="toggleWorksReleaseSort"
-                    >
-                      <span class="release-sort-icon-stack">
-                        <ArrowUpDown :size="13" class="release-sort-icon base" />
-                        <ArrowUp v-if="worksReleaseSort === 'asc'" :size="13" class="release-sort-icon hover asc" />
-                        <ArrowDown v-else :size="13" class="release-sort-icon hover desc" />
-                      </span>
-                      <span>发售时间</span>
-                      <ArrowUp v-if="worksReleaseSort === 'asc'" :size="12" class="release-sort-direction asc" />
-                      <ArrowDown v-else :size="12" class="release-sort-direction desc" />
-                    </button>
-
-                    <div class="owned-search-wrap">
-                    <div class="owned-search-icon">
-                      <Search :size="16" />
-                    </div>
-                    <input
-                      v-model="ownedWorksSearchQuery"
-                      type="text"
-                      class="owned-search-input"
-                      placeholder="搜索作品名或 RJ 号..."
-                    />
-                    <button 
-                      v-if="ownedWorksSearchQuery" 
-                      @click="ownedWorksSearchQuery = ''" 
-                      class="owned-search-clear"
-                    >
-                      <X :size="14" />
                     </button>
                   </div>
                 </div>
+
+
               </div>
-              </div>
+
 
               <!-- List -->
               <!-- 改成和"缺失作品" tab 一样的双模式（card / list），共用 viewMode 开关，
@@ -1135,6 +1135,7 @@ const CIRCLE_DETAIL_CACHE_TTL = 5 * 60 * 1000
 const CIRCLE_DETAIL_PREFETCH_LIMIT = 1
 const DOWNLOAD_PREVIEW_JOB_THRESHOLD = 8
 const circleDetailCache = new Map()
+const circleWorksPageCache = new Map()
 let circleDetailRequestSeq = 0
 let circleDetailAbortController = null
 let circleDetailPrefetchTimer = null
@@ -1335,15 +1336,81 @@ function setCachedCircleDetail(circleId, payload) {
   }
 }
 
+function getCircleWorksPageCacheKey(circleId, query = buildCircleWorksQuery()) {
+  const normalizedQuery = {
+    tab: String(query?.tab || activeTab.value || 'missing'),
+    page: Number(query?.page || 1),
+    pageSize: Number(query?.pageSize || query?.page_size || 10),
+    includeDlOnly: Boolean(query?.includeDlOnly),
+    statusFilters: Array.isArray(query?.statusFilters) ? [...query.statusFilters].sort() : [],
+    ownedFilter: String(query?.ownedFilter || 'all'),
+    compareFilter: String(query?.compareFilter || 'all'),
+    search: String(query?.search || '').trim(),
+    sort: String(query?.sort || 'updated_desc'),
+    viewMode: String(query?.viewMode || (viewMode.value === 'card' ? 'card' : 'list')),
+  }
+  return `${String(circleId || '').trim()}::${JSON.stringify(normalizedQuery)}`
+}
+
+function cloneCircleWorksPagePayload(payload = {}) {
+  return {
+    ...payload,
+    items: Array.isArray(payload.items) ? payload.items.map(item => ({ ...item })) : [],
+    owned_stats: payload.owned_stats ? { ...payload.owned_stats } : undefined,
+    compare_stats: payload.compare_stats ? { ...payload.compare_stats } : undefined,
+    status_filter_counts: payload.status_filter_counts ? {
+      missing: { ...(payload.status_filter_counts.missing || {}) },
+      owned: { ...(payload.status_filter_counts.owned || {}) },
+    } : undefined,
+  }
+}
+
+function getCachedCircleWorksPage(circleId, query = buildCircleWorksQuery()) {
+  const key = getCircleWorksPageCacheKey(circleId, query)
+  const cached = circleWorksPageCache.get(key)
+  if (!cached) return null
+  if (Date.now() - cached.cachedAt > CIRCLE_DETAIL_CACHE_TTL) {
+    circleWorksPageCache.delete(key)
+    return null
+  }
+  return cloneCircleWorksPagePayload(cached.payload)
+}
+
+function setCachedCircleWorksPage(circleId, query, payload) {
+  const key = getCircleWorksPageCacheKey(circleId, query)
+  circleWorksPageCache.set(key, {
+    cachedAt: Date.now(),
+    payload: cloneCircleWorksPagePayload(payload),
+  })
+  while (circleWorksPageCache.size > 48) {
+    const oldestKey = circleWorksPageCache.keys().next().value
+    if (!oldestKey) break
+    circleWorksPageCache.delete(oldestKey)
+  }
+}
+
+function invalidateCircleWorksPageCache(circleId = '') {
+  const target = String(circleId || '').trim()
+  if (!target) {
+    circleWorksPageCache.clear()
+    return
+  }
+  for (const key of [...circleWorksPageCache.keys()]) {
+    if (key.startsWith(`${target}::`)) circleWorksPageCache.delete(key)
+  }
+}
+
 function invalidateCircleDetailCache(circleId = '') {
   const target = String(circleId || '').trim()
   if (!target) {
     circleDetailCache.clear()
+    circleWorksPageCache.clear()
     return
   }
   for (const key of [...circleDetailCache.keys()]) {
     if (key.startsWith(`${target}::`)) circleDetailCache.delete(key)
   }
+  invalidateCircleWorksPageCache(target)
 }
 
 function applyCircleDetailPayload(payload, { loaded = true } = {}) {
@@ -4414,20 +4481,19 @@ async function prefetchNeighborCircleDetails() {
   try {
     for (const circleId of candidates.slice(0, CIRCLE_DETAIL_PREFETCH_LIMIT)) {
       if (hasFreshCircleDetailCache(circleId)) continue
-      const [summary, works] = await Promise.all([
-        circleCompletionApi.getCircleSummary(circleId, { includeDlOnly: filters.includeDlOnly }),
-        circleCompletionApi.getCircleWorks(circleId, {
-          tab: 'missing',
-          page: 1,
-          pageSize: worksPageSize.value,
-          includeDlOnly: filters.includeDlOnly,
-          statusFilters: [],
-          sort: getCircleWorksSort(),
-          viewMode: viewMode.value === 'card' ? 'card' : 'list',
-        })
-      ])
+      const worksQuery = {
+        tab: 'missing',
+        page: 1,
+        pageSize: worksPageSize.value,
+        includeDlOnly: filters.includeDlOnly,
+        statusFilters: [],
+        sort: getCircleWorksSort(),
+        viewMode: viewMode.value === 'card' ? 'card' : 'list',
+      }
+      const works = await circleCompletionApi.getCircleWorks(circleId, worksQuery)
       if (circleDetailLoading.value || circleDetailAbortController) break
-      setCachedCircleDetail(circleId, buildCachedCircleDetailPayload(summary, works))
+      setCachedCircleWorksPage(circleId, worksQuery, works)
+      setCachedCircleDetail(circleId, buildCachedCircleDetailPayload(works, works))
     }
   } finally {
     circleDetailPrefetchRunning = false
@@ -5002,24 +5068,39 @@ async function refreshActiveCircle(options = {}) {
     circleDetailAbortController.abort()
   }
   circleDetailAbortController = new AbortController()
-  circleDetailLoading.value = true
+  circleDetailLoading.value = !circleDetailLoaded.value
   circleWorksPage.loading = true
   try {
-    const summaryPromise = circleCompletionApi.getCircleSummary(requestCircleId, {
-      includeDlOnly: filters.includeDlOnly,
-      signal: circleDetailAbortController.signal
-    })
-    const worksPromise = summaryOnly
-      ? Promise.resolve(null)
-      : circleCompletionApi.getCircleWorks(requestCircleId, buildCircleWorksQuery(), {
+    if (summaryOnly) {
+      const summary = await circleCompletionApi.getCircleSummary(requestCircleId, {
+        includeDlOnly: filters.includeDlOnly,
         signal: circleDetailAbortController.signal
       })
-    const [summary, works] = await Promise.all([summaryPromise, worksPromise])
+      if (requestSeq !== circleDetailRequestSeq || activeCircleId.value !== requestCircleId) return
+      applyCircleSummaryPayload(summary)
+      scheduleCircleDetailPrefetch()
+      return
+    }
+
+    const worksQuery = buildCircleWorksQuery()
+    const cachedWorks = preferCache ? getCachedCircleWorksPage(requestCircleId, worksQuery) : null
+    if (cachedWorks) {
+      applyCircleSummaryPayload(cachedWorks)
+      applyCircleWorksPayload(cachedWorks)
+      setCachedCircleDetail(requestCircleId, buildCachedCircleDetailPayload(cachedWorks, cachedWorks))
+      scheduleCircleDetailPrefetch()
+      return
+    }
+
+    const works = await circleCompletionApi.getCircleWorks(requestCircleId, worksQuery, {
+      signal: circleDetailAbortController.signal
+    })
     if (requestSeq !== circleDetailRequestSeq || activeCircleId.value !== requestCircleId) return
-    applyCircleSummaryPayload(summary)
-    if (works) applyCircleWorksPayload(works)
+    applyCircleSummaryPayload(works)
+    applyCircleWorksPayload(works)
+    setCachedCircleWorksPage(requestCircleId, worksQuery, works)
     if (activeTab.value === 'missing' && missingPage.value === 1 && !statusFilters.value.length) {
-      setCachedCircleDetail(requestCircleId, buildCachedCircleDetailPayload(summary, works || {}))
+      setCachedCircleDetail(requestCircleId, buildCachedCircleDetailPayload(works, works))
     }
     scheduleCircleDetailPrefetch()
   } catch (error) {
@@ -5041,15 +5122,28 @@ async function refreshActiveCircleWorks(options = {}) {
   if (circleDetailAbortController) {
     circleDetailAbortController.abort()
   }
+  const worksQuery = buildCircleWorksQuery()
+  const cachedWorks = getCachedCircleWorksPage(circleId, worksQuery)
+  if (cachedWorks) {
+    applyCircleSummaryPayload(cachedWorks)
+    applyCircleWorksPayload(cachedWorks)
+    circleWorksPage.loading = false
+    circleDetailLoading.value = false
+    circleDetailAbortController = null
+    return
+  }
+
   circleDetailAbortController = new AbortController()
   circleWorksPage.loading = true
   if (options.showLoading !== false) circleDetailLoading.value = !circleDetailLoaded.value
   try {
-    const result = await circleCompletionApi.getCircleWorks(circleId, buildCircleWorksQuery(), {
+    const result = await circleCompletionApi.getCircleWorks(circleId, worksQuery, {
       signal: circleDetailAbortController.signal
     })
     if (requestSeq !== circleDetailRequestSeq || activeCircleId.value !== circleId) return
+    applyCircleSummaryPayload(result)
     applyCircleWorksPayload(result)
+    setCachedCircleWorksPage(circleId, worksQuery, result)
   } catch (error) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return
     ElMessage.error(error.response?.data?.detail || '加载社团作品失败')
@@ -5605,6 +5699,65 @@ function getUploadBackgroundTargetLabel(task) {
   font-weight: 600;
   line-height: 1.55;
   letter-spacing: 0;
+}
+
+.works-card {
+  position: relative;
+
+}
+
+.circle-works-page-loading {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 8;
+  display: block;
+  height: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  overflow: hidden;
+  pointer-events: none;
+
+}
+
+.circle-works-page-loading::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -34%;
+  width: 34%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, rgba(96, 165, 250, 0.88), transparent);
+  animation: circle-works-page-loading-slide 1s ease-in-out infinite;
+
+}
+
+.circle-works-page-loading-icon {
+  display: none;
+
+}
+
+.circle-works-page-loading span {
+  display: none;
+
+}
+
+:global(html.kikoerumanager-dark) .circle-works-page-loading,
+:global(body.kikoerumanager-dark) .circle-works-page-loading {
+  background: transparent;
+  box-shadow: none;
+
+}
+
+@keyframes circle-works-page-loading-slide {
+  from { transform: translateX(0); }
+  to { transform: translateX(394%); }
+
 }
 
 :global(html.kikoerumanager-dark) .circle-works-loading-state :deep(.app-loading-animation__label),
@@ -6393,43 +6546,43 @@ function getUploadBackgroundTargetLabel(task) {
   color: var(--circle-text-strong, #111827);
 }
 .toolbar-card {
-  padding: 14px 18px 10px;
+  padding: 8px 14px 6px;
   display: grid;
   align-content: start;
-  gap: 6px;
-  min-height: 94px;
+  gap: 4px;
+  min-height: 0;
   border-bottom: 1px solid var(--circle-border-soft, #f3f4f6);
 }
 .toolbar-subtitle {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--circle-text-subtle, #9ca3af);
-  margin-top: 2px;
+  margin-top: 1px;
 }
 .toolbar-metrics {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
 }
 .toolbar-stats-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 .toolbar-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
   justify-content: flex-end;
   flex-shrink: 0;
 }
 .toolbar-actions .batch-action-button {
-  min-width: 96px;
-  height: 32px;
-  padding: 0 14px;
-  font-size: 12px !important;
+  min-width: 88px;
+  height: 28px;
+  padding: 0 11px;
+  font-size: 11px !important;
   font-weight: 700 !important;
   line-height: 1 !important;
 }
@@ -6447,11 +6600,11 @@ function getUploadBackgroundTargetLabel(task) {
 .metric-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 12px;
-  border-radius: 7px;
-  font-size: 11px;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 10.5px;
   font-weight: 700;
   background: var(--circle-label-surface, var(--circle-surface-elevated, #ffffff));
   color: var(--circle-text, #475569);
@@ -6543,7 +6696,7 @@ function getUploadBackgroundTargetLabel(task) {
 .toolbar-right-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex-shrink: 0;
 }
 .work-status-filter-dropdown {
@@ -6552,16 +6705,21 @@ function getUploadBackgroundTargetLabel(task) {
 .status-filter-trigger {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
+  flex: 0 0 auto;
   width: 100%;
-  height: 32px;
+  height: 30px;
   padding: 0 9px 0 11px;
+  box-sizing: border-box;
   border: 1px solid var(--circle-border-soft, rgba(203, 213, 225, 0.9));
-  border-radius: 13px;
+  border-radius: 10px;
   background: var(--circle-surface-elevated, linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.94) 100%));
   color: var(--circle-text, #334155);
+  line-height: 1;
   box-shadow: none;
   cursor: pointer;
+  overflow: visible;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .status-filter-trigger:hover {
@@ -6583,7 +6741,9 @@ function getUploadBackgroundTargetLabel(task) {
   display: flex;
   align-items: center;
   flex: 1 1 auto;
+  height: 100%;
   min-width: 0;
+  line-height: 1;
   overflow: hidden;
 }
 .status-filter-trigger__content.has-overflow::after {
@@ -6612,6 +6772,7 @@ function getUploadBackgroundTargetLabel(task) {
   color: var(--circle-text-muted, rgba(100, 116, 139, 0.82));
   font-size: 12px;
   font-weight: 600;
+  line-height: 1;
 }
 .status-filter-token {
   flex-shrink: 0;
@@ -6762,17 +6923,23 @@ function getUploadBackgroundTargetLabel(task) {
 .release-sort-button {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  height: 32px;
+  flex: 0 0 auto;
+  height: 30px;
   padding: 0 12px;
+  box-sizing: border-box;
   border: 1px solid var(--circle-border-soft, #e2e8f0);
   border-radius: 10px;
   background: var(--circle-surface-elevated, #ffffff);
   color: var(--circle-text, #334155);
   font-size: 12px;
   font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
   box-shadow: none;
   cursor: pointer;
+  overflow: visible;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .release-sort-button:hover {
@@ -6818,6 +6985,7 @@ function getUploadBackgroundTargetLabel(task) {
   transform: translateY(0) scale(1.08) rotate(0deg);
 }
 .release-sort-direction {
+  flex-shrink: 0;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .release-sort-direction.asc {
@@ -6834,48 +7002,73 @@ function getUploadBackgroundTargetLabel(task) {
   align-items: center;
   gap: 3px;
   flex-shrink: 0;
-  height: 32px;
-  padding: 3px;
-  border: 1px solid var(--circle-border-soft, rgba(203, 213, 225, 0.9));
+  height: 30px;
+  padding: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 13px;
-  background: var(--circle-surface-elevated, linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.94) 100%));
+  background: rgba(20, 22, 26, 0.72);
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--circle-surface, #fff) 72%, transparent),
-    0 1px 2px rgba(15, 23, 42, 0.035);
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 8px 18px rgba(0, 0, 0, 0.18);
 }
 .view-toggle-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 9px;
   background: transparent;
-  color: var(--circle-text-muted, #64748b);
+  color: rgba(244, 244, 245, 0.66);
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .view-toggle-btn:hover {
-  color: var(--circle-text-strong, #0f172a);
-  background: var(--circle-hover-bg, #f8fafc);
+  color: #f4f4f5;
+  background: rgba(244, 244, 245, 0.055);
   transform: translateY(-1px) scale(1.04);
 }
 .view-toggle-btn:active {
   transform: scale(0.94);
 }
 .view-toggle-btn.active {
-  color: var(--circle-primary, #2563eb);
-  border-color: color-mix(in srgb, var(--circle-primary, #2563eb) 20%, transparent);
-  background: color-mix(in srgb, var(--circle-primary-soft, #eff6ff) 86%, transparent);
+  color: #f4f4f5;
+  border-color: rgba(244, 244, 245, 0.16);
+  background: linear-gradient(180deg, rgba(244, 244, 245, 0.060) 0%, rgba(244, 244, 245, 0.032) 100%);
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--circle-surface, #fff) 72%, transparent),
-    0 4px 10px color-mix(in srgb, var(--circle-primary, #2563eb) 12%, transparent);
+    inset 0 1px 0 rgba(244, 244, 245, 0.07),
+    0 6px 14px rgba(0, 0, 0, 0.20);
 }
 .view-toggle-btn.active:hover {
-  color: var(--circle-primary, #1d4ed8);
-  border-color: color-mix(in srgb, var(--circle-primary, #2563eb) 30%, transparent);
+  color: #ffffff;
+  border-color: rgba(244, 244, 245, 0.22);
+}
+:global(html.kikoerumanager-dark .circle-page .view-toggle-group),
+:global(body.kikoerumanager-dark .circle-page .view-toggle-group),
+:global(html.dark .circle-page .view-toggle-group),
+:global(body.dark .circle-page .view-toggle-group),
+:global(.kikoerumanager-dark .circle-page .view-toggle-group),
+:global(.dark .circle-page .view-toggle-group) {
+  background: rgba(20, 22, 26, 0.92);
+  border-color: rgba(255, 255, 255, 0.10);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 8px 18px rgba(0, 0, 0, 0.22);
+}
+:global(html.kikoerumanager-dark .circle-page .view-toggle-btn.active),
+:global(body.kikoerumanager-dark .circle-page .view-toggle-btn.active),
+:global(html.dark .circle-page .view-toggle-btn.active),
+:global(body.dark .circle-page .view-toggle-btn.active),
+:global(.kikoerumanager-dark .circle-page .view-toggle-btn.active),
+:global(.dark .circle-page .view-toggle-btn.active) {
+  color: #f4f4f5 !important;
+  background: linear-gradient(180deg, rgba(244, 244, 245, 0.060) 0%, rgba(244, 244, 245, 0.032) 100%) !important;
+  border-color: rgba(244, 244, 245, 0.16) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(244, 244, 245, 0.07),
+    0 6px 14px rgba(0, 0, 0, 0.20) !important;
 }
 .circle-list {
   display: grid;
@@ -7252,20 +7445,20 @@ function getUploadBackgroundTargetLabel(task) {
   border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 22%, transparent);
 }
 .works-card {
-  padding: 18px;
+  padding: 10px 12px 12px;
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  gap: 14px;
+  gap: 8px;
 }
 .selection-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin: 8px 0 16px;
-  padding: 12px 16px;
+  margin: 4px 0 8px;
+  padding: 8px 12px;
   border: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.8));
   border-radius: 12px;
   background: var(--circle-surface-muted, rgba(248, 250, 252, 0.8));
@@ -7460,25 +7653,29 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .circle-tabs-wrapper .toolbar-right-actions {
   position: absolute;
-  top: 0;
+  top: 3px;
   right: 0;
   z-index: 10;
-  height: 38px; /* 对齐 .el-tabs__item 的高度 */
+  height: 30px; /* 给顶部 hover / scale 动效留出不被裁切的安全边界 */
   display: flex;
   align-items: center;
+  overflow: visible;
 }
 .circle-tabs :deep(.el-tabs__nav-wrap) {
-  padding-right: 372px; /* 为排序、状态筛选、视图切换留出空间 */
+  padding-right: 344px; /* 为排序、状态筛选、视图切换留出空间 */
+}
+.circle-tabs-wrapper.has-owned-search .circle-tabs :deep(.el-tabs__nav-wrap) {
+  padding-right: 610px;
 }
 .circle-tabs :deep(.el-tabs__header) {
-  margin: 0 0 12px;
-  padding-top: 2px;
+  margin: 0 0 8px;
+  padding-top: 0;
 }
 .circle-tabs :deep(.el-tabs__nav-wrap::after) {
   display: none;
 }
 .circle-tabs :deep(.el-tabs__item) {
-  height: 38px;
+  height: 34px;
   font-weight: 800;
   color: var(--circle-text-muted, #60748d);
 }
@@ -7490,7 +7687,7 @@ function getUploadBackgroundTargetLabel(task) {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  padding-top: 2px;
+  padding-top: 0;
 }
 .circle-tabs :deep(.el-tab-pane) {
   display: flex;
@@ -7566,6 +7763,12 @@ function getUploadBackgroundTargetLabel(task) {
   position: relative;
   z-index: 30;
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 .owned-stats-strip,
 .compare-stats-list {
@@ -7579,21 +7782,94 @@ function getUploadBackgroundTargetLabel(task) {
   box-shadow: var(--circle-shadow-soft, 0 1px 2px rgba(15, 23, 42, 0.04));
 }
 .owned-stats-strip {
+  flex: 0 1 auto;
   justify-content: space-between;
-  padding: 6px;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 36px;
+  padding: 3px 4px;
 }
 .owned-stats-list {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.owned-stats-list::-webkit-scrollbar {
+  display: none;
 }
 .owned-stat-item,
 .compare-stat-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 16px;
+  gap: 6px;
+  padding: 5px 10px;
   min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.owned-stat-item > .flex.flex-col {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 4px;
+
+}
+.owned-stat-item {
+  min-height: 30px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all .22s cubic-bezier(.34, 1.56, .64, 1);
+}
+.owned-stat-item:hover {
+  background: var(--circle-hover-bg, rgba(248, 250, 252, .92));
+  transform: translateY(-1px);
+
+}
+.owned-stat-item:active {
+  transform: scale(.96);
+
+}
+.owned-stat-item:focus,
+.owned-stat-item:focus-visible {
+  outline: none;
+  box-shadow: none;
+
+}
+.owned-stat-item.is-active {
+  background: var(--circle-surface, rgba(255, 255, 255, .96));
+  color: var(--circle-text-strong, #0f172a);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--circle-surface, #fff) 70%, transparent),
+    0 4px 12px rgba(15, 23, 42, .08);
+
+}
+.owned-stat-item.is-simplified.is-active {
+  color: var(--circle-tag-sky, #0369a1);
+  background: var(--circle-tag-sky-soft, rgba(240, 249, 255, .78));
+
+}
+.owned-stat-item.is-traditional.is-active,
+.owned-stat-item.is-bonus.is-active {
+  color: var(--circle-tag-violet, #6d28d9);
+  background: var(--circle-tag-violet-soft, rgba(245, 243, 255, .68));
+
+}
+.owned-stat-item.is-original.is-active {
+  color: var(--circle-text-strong, #111827);
+  background: color-mix(in srgb, var(--circle-text-strong, #111827) 7%, transparent);
+
+}
+.owned-stat-item.is-subtitle.is-active {
+  color: var(--circle-tag-indigo, #4338ca);
+  background: var(--circle-tag-indigo-soft, rgba(238, 242, 255, .72));
+
 }
 .owned-stat-item + .owned-stat-item,
 .compare-stat-item + .compare-stat-item {
@@ -7604,8 +7880,8 @@ function getUploadBackgroundTargetLabel(task) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: 5px;
   border: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.5));
   background: var(--circle-surface-soft, #f8fafc);
@@ -7644,108 +7920,37 @@ function getUploadBackgroundTargetLabel(task) {
   font-size: 10px;
   font-weight: 700;
   color: var(--circle-text-subtle, #94a3b8);
-  text-transform: uppercase;
+  text-transform: none;
 }
 .owned-stat-value,
 .compare-stat-value {
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 800;
   color: var(--circle-text-strong, #111827);
   line-height: 1;
 }
-.owned-filter-row {
-  position: relative;
-  z-index: 31;
-  pointer-events: auto;
-}
-.owned-filter-tabs {
-  position: relative;
-  z-index: 32;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px;
-  border: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.6));
-  border-radius: 10px;
-  background: var(--circle-surface-elevated, #ffffff);
-  box-shadow: var(--circle-shadow-soft, 0 1px 2px rgba(15, 23, 42, 0.04));
-  pointer-events: auto;
-}
-.owned-filter-chip {
-  position: relative;
-  z-index: 1;
-  min-height: 32px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 0 11px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--circle-text, #475569);
-  font-size: 13px;
-  font-weight: 750;
-  line-height: 1;
-  cursor: pointer;
-  transition: all .22s cubic-bezier(.34, 1.56, .64, 1);
-}
-.owned-filter-chip:hover {
-  background: var(--circle-hover-bg, rgba(248, 250, 252, .92));
-  color: var(--circle-text-strong, #1f2937);
-  transform: translateY(-1px);
-}
-.owned-filter-chip.is-active {
-  background: var(--circle-surface, rgba(255, 255, 255, .96));
-  border-color: var(--circle-border-strong, rgba(148, 163, 184, .28));
-  color: var(--circle-text-strong, #0f172a);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--circle-surface, #fff) 70%, transparent),
-    0 4px 12px rgba(15, 23, 42, .08);
-}
-.owned-filter-chip.is-simplified.is-active {
-  border-color: color-mix(in srgb, var(--circle-tag-sky, #0284c7) 24%, transparent);
-  color: var(--circle-tag-sky, #0369a1);
-  background: var(--circle-tag-sky-soft, rgba(240, 249, 255, .78));
-}
-.owned-filter-chip.is-traditional.is-active {
-  border-color: color-mix(in srgb, var(--circle-tag-violet, #7e22ce) 20%, transparent);
-  color: var(--circle-tag-violet, #6d28d9);
-  background: var(--circle-tag-violet-soft, rgba(245, 243, 255, .68));
-}
-.owned-filter-chip.is-subtitle.is-active {
-  border-color: color-mix(in srgb, var(--circle-tag-indigo, #4f46e5) 20%, transparent);
-  color: var(--circle-tag-indigo, #4338ca);
-  background: var(--circle-tag-indigo-soft, rgba(238, 242, 255, .72));
-}
-.owned-filter-chip.is-bonus.is-active {
-  border-color: color-mix(in srgb, var(--circle-tag-violet, #7e22ce) 18%, transparent);
-  color: var(--circle-tag-violet, #7e22ce);
-  background: var(--circle-tag-violet-soft, rgba(250, 245, 255, .66));
-}
-.owned-filter-count {
-  min-width: 20px;
-  height: 18px;
-  padding: 0 6px;
-  border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--circle-surface-soft, rgba(241, 245, 249, .92));
-  color: var(--circle-text-muted, #64748b);
-  font-size: 11px;
-  font-weight: 800;
-  line-height: 1;
-}
-.owned-filter-chip.is-active .owned-filter-count {
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  color: currentColor;
-}
 .owned-search-wrap,
 .compare-search-wrap {
   position: relative;
-  width: 256px;
+  width: 236px;
 }
+.owned-search-wrap--top {
+  flex: 0 0 250px;
+  width: 250px;
+  height: 30px;
+  align-self: center;
+}
+ .owned-search-wrap--top .owned-search-input {
+  height: 30px;
+  min-height: 30px;
+  padding-top: 0;
+  padding-bottom: 0;
+  box-sizing: border-box;
+ }
+ .owned-search-wrap--top .owned-search-icon,
+ .owned-search-wrap--top .owned-search-clear {
+  height: 30px;
+ }
 .owned-search-icon,
 .compare-search-icon {
   position: absolute;
@@ -7760,13 +7965,13 @@ function getUploadBackgroundTargetLabel(task) {
 .compare-search-input {
   display: block;
   width: 100%;
-  min-height: 36px;
-  padding: 8px 36px 8px 36px;
+  min-height: 32px;
+  padding: 6px 32px 6px 34px;
   border: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.6));
   border-radius: 10px;
   background: var(--circle-field-bg, #ffffff);
   color: var(--circle-text-strong, #111827);
-  font-size: 14px;
+  font-size: 13px;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
