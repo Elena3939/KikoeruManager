@@ -3236,16 +3236,16 @@
 - `progress.md`：追加本轮字段根因调查、修复和验证记录。
 - 回滚方式：反向应用上述文件中本轮 `BIGINT` 字段强校验、`init_db()` 标记时机、数值边界和文档 / 测试 hunk，并删除本段进度记录；运行库若已升级为 `BIGINT` 不建议回退到 `INTEGER`，除非先确认不会再写入超过 32 位整数的缓存值。
 
-## 2026-07-09 - Task: 同步群晖 Docker 导入模板
+## 2026-07-09 - Task: 移除误提交的本地 Docker 导入模板
 ### What was done
-- 将下载目录中的群晖 Docker 容器导入配置纳入仓库部署资料，便于后续按版本同步维护。
-- 将导入模板镜像更新为 `elena39/kikoerumanager:1.6.77`，并同步 `KIKOERUMANAGER_VERSION=v1.6.77`，确保本次打标签触发构建后导入模板指向同一版本。
+- 移除误提交到仓库的群晖 Docker 容器导入配置。
+- 该文件包含具体部署实例路径，属于本机 / 群晖环境配置，不是项目源码或通用发布产物。
 
 ### Testing
-- `Get-Content docker\synology\elena39-kikoerumanager-postgresql-single.json -Raw | ConvertFrom-Json`：通过，JSON 可解析。
-- 校验导入模板 `image=elena39/kikoerumanager:1.6.77`、`KIKOERUMANAGER_VERSION=v1.6.77`：通过。
+- `Test-Path docker\synology\elena39-kikoerumanager-postgresql-single.json`：返回 `False`。
+- `git diff --check -- progress.md docker/synology/elena39-kikoerumanager-postgresql-single.json`：通过。
 
 ### Notes
-- `docker/synology/elena39-kikoerumanager-postgresql-single.json`：新增群晖 Docker 单容器 PostgreSQL 导入模板并同步本次发布版本。
-- `progress.md`：追加本轮 Docker 导入模板同步记录。
-- 回滚方式：删除 `docker/synology/elena39-kikoerumanager-postgresql-single.json`，并删除本段进度记录。
+- `docker/synology/elena39-kikoerumanager-postgresql-single.json`：删除误提交的本地 Docker 导入模板。
+- `progress.md`：修正本轮记录，说明移除原因和验证方式。
+- 回滚方式：从提交 `9682afcc` 恢复 `docker/synology/elena39-kikoerumanager-postgresql-single.json`，并还原本段进度记录。
