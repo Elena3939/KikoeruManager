@@ -39,8 +39,10 @@ class DLsiteBonusProbeService:
     DEFAULT_DATE_RANGE_LIMIT = 80000
     DEFAULT_BATCH_SIZE = 100
     DEFAULT_CONCURRENCY = 1
+    DEFAULT_MAX_DATE_WORKERS = 3
+    DEFAULT_PRODUCT_INFO_CONCURRENCY = 2
     DEFAULT_CACHE_LOOKUP_BATCH_SIZE = 500
-    DEFAULT_CACHE_WRITE_BATCH_SIZE = 500
+    DEFAULT_CACHE_WRITE_BATCH_SIZE = 100
     PROBE_STRATEGY_VERSION = "date-range-v4"
 
     def __init__(self) -> None:
@@ -76,12 +78,18 @@ class DLsiteBonusProbeService:
         else:
             default_batch_size = int(cfg.normal_batch_size)
             default_concurrency = int(cfg.normal_concurrency)
+        max_concurrency = min(max(1, int(cfg.max_concurrency or self.DEFAULT_MAX_DATE_WORKERS)), self.DEFAULT_MAX_DATE_WORKERS)
+        date_concurrency = min(max(1, int(concurrency or default_concurrency)), max_concurrency)
         return {
             "batch_size": min(max(1, int(batch_size or default_batch_size)), int(cfg.max_batch_size)),
-            "concurrency": min(max(1, int(concurrency or default_concurrency)), int(cfg.max_concurrency)),
+            "concurrency": date_concurrency,
+            "product_info_concurrency": min(date_concurrency, self.DEFAULT_PRODUCT_INFO_CONCURRENCY),
             "max_active_jobs": max(1, int(cfg.max_active_jobs or 1)),
             "cache_lookup_batch_size": max(100, int(cfg.cache_lookup_batch_size or self.DEFAULT_CACHE_LOOKUP_BATCH_SIZE)),
-            "cache_write_batch_size": max(50, int(cfg.cache_write_batch_size or self.DEFAULT_CACHE_WRITE_BATCH_SIZE)),
+            "cache_write_batch_size": min(
+                max(20, int(cfg.cache_write_batch_size or self.DEFAULT_CACHE_WRITE_BATCH_SIZE)),
+                self.DEFAULT_CACHE_WRITE_BATCH_SIZE,
+            ),
         }
 
     def _cache_lookup_batch_size(self) -> int:
@@ -607,11 +615,11 @@ class DLsiteBonusProbeService:
         row.maker_id = feature.maker_id or ""
         row.release_date = feature.release_date or ""
         row.work_type = feature.work_type or ""
-        row.price = int(feature.price or 0)
+        row.price = self._safe_cache_int(feature.price, field="price", workno=feature.workno)
         row.is_sale = bool(feature.is_sale)
         row.is_free = bool(feature.is_free)
         row.is_oly = bool(feature.is_oly)
-        row.wishlist_count = int(feature.wishlist_count or 0)
+        row.wishlist_count = self._safe_cache_int(feature.wishlist_count, field="wishlist_count", workno=feature.workno)
         row.is_hidden_bonus_audio = bool(feature.is_hidden_bonus_audio)
         row.title = feature.title or ""
         row.raw_summary_json = dict(feature.raw_summary_json or {})
@@ -686,7 +694,7 @@ class DLsiteBonusProbeService:
             return 0
         if number > _POSTGRES_BIGINT_MAX:
             logger.warning(
-                "[DLsite特典探测] 缓存数值字段超过 BIGINT 范围，已按 0 处理 workno=%s field=%s value=%s",
+                "[DLsite特典探测] 缓存数值字段超过 PostgreSQL BIGINT 范围，已按 0 处理 workno=%s field=%s value=%s",
                 workno,
                 field,
                 value,
@@ -859,9 +867,20 @@ class DLsiteBonusProbeService:
             return {"read": len(messages), "written": 0, "acked": acked}
 
         rows = list(latest_by_rjcode.values())
-        self._upsert_cache_values_sync(rows)
-        acked = redis_service.ack_bonus_probe_cache_dirty_sync(message_ids)
-        return {"read": len(messages), "written": len(rows), "acked": acked}
+        try:
+            self._upsert_cache_values_sync(rows)
+            acked = redis_service.ack_bonus_probe_cache_dirty_sync(message_ids)
+            return {"read": len(messages), "written": len(rows), "acked": acked}
+        except Exception as exc:
+            acked = redis_service.ack_bonus_probe_cache_dirty_sync(message_ids)
+            logger.warning(
+                "[DLsite特典探测] Redis dirty buffer 回写失败，已 ACK 本批避免毒消息重放 read=%s rows=%s acked=%s error=%s",
+                len(messages),
+                len(rows),
+                acked,
+                exc.__class__.__name__,
+            )
+            return {"read": len(messages), "written": 0, "acked": acked, "failed": len(rows)}
 
     async def _bonus_probe_cache_flush_loop(self) -> None:
         stop_event = getattr(self, "_cache_flush_stop_event", None)
@@ -878,8 +897,11 @@ class DLsiteBonusProbeService:
                     await asyncio.sleep(0.5)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.warning("[DLsite特典探测] Redis dirty buffer 回写 PostgreSQL 异常", exc_info=True)
+            except Exception as exc:
+                logger.warning(
+                    "[DLsite特典探测] Redis dirty buffer 回写 PostgreSQL 异常: %s",
+                    exc.__class__.__name__,
+                )
                 await asyncio.sleep(2)
 
     def start_cache_flush_worker(self) -> None:
@@ -2345,6 +2367,7 @@ class DLsiteBonusProbeService:
         total = len(dates)
         date_order = {release_date: index for index, release_date in enumerate(dates)}
         worker_count = max(1, min(int(concurrency or self.DEFAULT_CONCURRENCY), total))
+        product_info_concurrency = min(worker_count, self.DEFAULT_PRODUCT_INFO_CONCURRENCY)
         queue: asyncio.Queue[Tuple[int, str]] = asyncio.Queue()
         result_lock = asyncio.Lock()
         stop_event = asyncio.Event()
@@ -2420,7 +2443,7 @@ class DLsiteBonusProbeService:
                         release_date=release_date,
                         gap_limit=gap_limit,
                         batch_size=batch_size,
-                        concurrency=concurrency,
+                        concurrency=product_info_concurrency,
                         mode=mode,
                         job_id=job_id,
                         target_rjcodes=normalized_selected_by_date.get(release_date) or [],

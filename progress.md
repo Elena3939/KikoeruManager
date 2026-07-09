@@ -3145,3 +3145,107 @@
 - `backend/tests/test_routes_maintenance_config.py`：将 `BonusProbeConfig` 默认 normal/deep batch size 断言更新为 500/500。
 - `progress.md`：追加本轮完整 Redis 验收、审查和测试记录。
 - 回滚方式：反向应用 `backend/tests/test_routes_maintenance_config.py` 的默认批量断言 hunk，并删除本段进度记录；验收过程中写入的 Redis 临时 key 已在脚本中删除。
+
+## 2026-07-09 - Task: 根据项目真实变更更新 AGENTS 接手说明
+### What was done
+- 基于最近已合入的 Redis 运行态、社团补全读模型缓存、DLsite 特典探测和社团补全已满足工具栏变更，更新仓库接手说明。
+- 补充 Redis 依赖、Docker 内置 Redis、`/app/data/redis` 持久化、Redis URL 脱敏回填和高压任务不可静默降级到 PostgreSQL 的规则。
+- 补充社团补全 L1 / Redis / PostgreSQL 缓存层、封面缓存、分页交互、已满足搜索定位和 DLsite 特典探测完成口径 / 异常写结论红线。
+- 补充任务中心 Redis Stream / runtime overlay、特典探测任务字段、操作历史 `bonus_probe` / `new_release_bonus_probe` 语义，以及对应验证和排查入口。
+
+### Testing
+- `git diff --check -- AGENTS.md`：通过；仅有 Windows autocrlf 的 LF/CRLF 提示。
+- `git diff -- AGENTS.md`：已复核改动均来自当前代码、文档和最近提交可确认的真实变更。
+
+### Notes
+- `AGENTS.md`：更新 Redis、社团补全缓存、DLsite 特典探测、任务中心 / 操作历史语义、最低验证和常用排查路径。
+- `progress.md`：追加本轮 AGENTS 接手说明更新记录。
+- 回滚方式：反向应用本轮 `AGENTS.md` 新增条目和本段 `progress.md` 记录，或执行 `git restore -- AGENTS.md progress.md` 回到本轮前状态。
+
+## 2026-07-09 - Task: 聚合同名拆分特典展示
+### What was done
+- 社团补全作品卡改为在展示层聚合同一父作品下的同名拆分特典，去掉标题末尾 `_01` / `＿０１` 这类编号后作为聚合 key。
+- `【早期限定415大特典】_01`、`【早期限定415大特典】_06`、`【早期限定415大特典】_09` 现在展示为一个 `【早期限定415大特典】`，不同基础标题仍分别保留。
+- 聚合后的特典保留真实成员 RJ 列表，选中、闪烁定位、已收录、可下载、入库和预览状态按成员合并判断；实际入库 / 预览仍落到可执行的真实 RJ。
+- 补充 DLsite 特典探测文档中的展示聚合规则，明确后端不合并写库数据。
+
+### Testing
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning。
+- `frontend/` 下执行 Node 标题归一烟测：`【早期限定415大特典】_01`、`【早期限定415大特典】_06` 均归一为 `【早期限定415大特典】`，无编号的 `【早期限定118大特典】` 保持不变。
+- `git diff --check -- frontend/src/components/circle/CircleWorksViewport.vue docs/dlsite-bonus-probe.md`：通过；仅有 Windows autocrlf 的 LF/CRLF 提示。
+
+### Notes
+- `frontend/src/components/circle/CircleWorksViewport.vue`：新增特典标题归一、同名拆分聚合、成员 RJ 合并状态和动作代表选择。
+- `docs/dlsite-bonus-probe.md`：记录拆分特典只做展示层聚合，后端真实 RJ 和父子关联保持独立。
+- `progress.md`：追加本轮特典展示聚合记录。
+- 回滚方式：反向应用 `CircleWorksViewport.vue` 的特典聚合 hunk、删除 `docs/dlsite-bonus-probe.md` 的展示规则段落，并删除本段进度记录。
+
+## 2026-07-09 - Task: 降低特典补全与 ASMR.one 故障时的连接压力
+### What was done
+- 定位 504 的主要压力来源：特典补全期间 `dlsite_bonus_probe_cache` dirty buffer 回写 PostgreSQL 因 `integer out of range` 失败，反复重放同一批 500 行 upsert 并打印巨型 SQL；同一时间 ASMR.one API 大量 522 / connection reset 重试，叠加占用外部 HTTP、DB 和日志 I/O。
+- 将 DLsite 特典补全默认并发降压，日期 worker 最多 3 个，日期内 `product/info/ajax` 请求另行限制到最多 2，避免配置并发被两层相乘。
+- 将特典缓存回写批次限制到 100，并对 `price` / `wishlist_count` 按 PostgreSQL integer 上限裁剪；dirty buffer 回写失败会 ACK 当前批次，避免毒消息无限重放。
+- 修复特典任务运行态计数：后端先写 `bonus_probe_meta` 再发任务中心事件，实时事件携带轻量计数字段，前端进度卡合并运行态后能显示已查 RJ / 命中特典 / 请求等数值。
+- 为 ASMR.one `workInfo` / `tracks` 增加短熔断：连续失败后 5 分钟内直接跳过后续 ASMR.one 请求，不再继续打满连接。
+- 同步后端模板配置、本地运行配置、设置页默认值和相关文档。
+
+### Testing
+- `$env:PYTHONPATH='backend'; $env:PYTHONIOENCODING='utf-8'; backend\venv\Scripts\python.exe -m py_compile backend\app\core\dlsite_bonus_probe_service.py backend\app\core\task_engine.py backend\app\core\task_center_event_service.py backend\app\core\asmr_download_service.py backend\app\config\settings.py`：通过。
+- `frontend/` 下执行 `npm run build`：通过，预压缩 `created 134, skipped 51`；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning。
+- 使用项目 Python 执行不依赖 pytest / 测试库的逻辑烟测：ASMR.one 连续 522 后打开熔断，后续 RJ 不再发 HTTP；特典 runtime limit 将 concurrency 截断为 3、`product_info_concurrency=2`、`cache_write_batch_size=100`。
+- `git diff --check -- backend/app/config/settings.py backend/app/core/asmr_download_service.py backend/app/core/dlsite_bonus_probe_service.py backend/app/core/task_center_event_service.py backend/app/core/task_engine.py backend/config/config.yaml backend/tests/test_asmr_download_service.py backend/tests/test_dlsite_bonus_probe_service.py docs/dlsite-bonus-probe.md docs/library-folder-completion-implementation.md frontend/src/components/settings/ServicesSettingsPanel.vue frontend/src/views/CircleCompletion.vue progress.md`：通过；仅有 Windows autocrlf 的 LF/CRLF 提示。
+- `$env:PYTHONPATH='backend'; $env:PYTHONIOENCODING='utf-8'; backend\venv\Scripts\python.exe -m pytest backend\tests\test_dlsite_bonus_probe_service.py backend\tests\test_asmr_download_service.py -q`：未进入用例执行；`backend/tests/conftest.py` 初始化 PostgreSQL 测试库 `kikoerumanager_test` 时连接超时，后续收窄 pytest 也卡在同一初始化问题，已清理残留 pytest 进程。
+
+### Notes
+- `backend/app/core/dlsite_bonus_probe_service.py`：限制特典补全两层并发、缓存数值按旧 integer 表安全裁剪、dirty buffer 回写失败 ACK 并缩小写回批次。
+- `backend/app/config/settings.py`、`backend/config/config.yaml`、`data/config/config.yaml`：将特典补全默认并发和缓存写回批次降压。
+- `backend/app/core/task_engine.py`、`backend/app/core/task_center_event_service.py`：修正特典运行态写入顺序，并在任务中心实时事件中带出轻量计数。
+- `backend/app/core/asmr_download_service.py`：新增 ASMR.one API 连续失败短熔断，保护 `fetch_work_info` / `fetch_track_list` 入口。
+- `frontend/src/views/CircleCompletion.vue`、`frontend/src/components/settings/ServicesSettingsPanel.vue`：合并特典运行态计数并降低设置页默认并发上限。
+- `backend/tests/test_dlsite_bonus_probe_service.py`、`backend/tests/test_asmr_download_service.py`：补充 dirty buffer 失败 ACK、并发截断和 ASMR 熔断回归测试。
+- `docs/dlsite-bonus-probe.md`、`docs/library-folder-completion-implementation.md`：记录特典限流 / dirty buffer 策略和 ASMR.one 熔断行为。
+- `progress.md`：追加本轮卡顿调查、优化和验证记录。
+- 回滚方式：反向应用上述文件中本轮特典并发 / dirty buffer / ASMR 熔断 / 前端计数相关 hunk，并删除本段进度记录；若只需恢复运行态配置，可先将 `backend/config/config.yaml` 与 `data/config/config.yaml` 的 `bonus_probe.*_concurrency` 和 `cache_write_batch_size` 改回旧值。
+
+## 2026-07-09 - Task: 彻查并修复特典缓存 price / wishlist_count 字段反复溢出
+### What was done
+- 确认日志里的 `integer out of range` 来自运行库字段结构漂移：SQLAlchemy 已按 `::BIGINT` 绑定 `price` / `wishlist_count`，但旧运行库字段曾仍是 PostgreSQL `integer`。
+- 修正 DLsite 特典缓存初始 Alembic 迁移，新建库直接创建 `BIGINT` 字段，不再先建 `INTEGER` 再依赖后续补丁迁移。
+- 加强 2026-07-07 正式迁移和应用启动兼容迁移：执行 `ALTER TABLE ... TYPE BIGINT` 后复查 `information_schema.columns.udt_name`，未变成 `int8` 直接报错，不允许静默继续写旧结构。
+- 修复 `init_db()` 初始化完成标记时机，只有数据库自检、建表、扩展索引和兼容迁移全部成功后才设置 `_init_db_done=True`；迁移失败后同进程内后续启动路径仍可重试，不再被误跳过。
+- 撤销特典缓存按旧 `integer` 上限归零的临时策略，`2147483648+` 这类合法 PostgreSQL `BIGINT` 值会正常保留，只拦截负数、布尔值、无法解析值和超过 `BIGINT` 上限的异常值。
+- 实际连接服务器 PostgreSQL 外部入口检查当前运行库，`dlsite_bonus_probe_cache.price` 和 `wishlist_count` 当前均为 `int8`。
+- 同步数据库迁移说明和 DLsite 特典探测文档，明确该字段必须保持 `BIGINT`，启动兼容迁移必须强校验。
+
+### Testing
+- `$env:PYTHONPATH='backend'; $env:PYTHONIOENCODING='utf-8'; backend\venv\Scripts\python.exe -m py_compile backend\app\models\database.py backend\app\core\dlsite_bonus_probe_service.py backend\alembic\versions\20260702_0001_dlsite_bonus_probe.py backend\alembic\versions\20260707_0001_bonus_probe_resilience.py`：通过。
+- 使用项目 Python 执行迁移烟测：模拟旧 `int4` 字段时，兼容迁移会对 `price` / `wishlist_count` 执行 `ALTER COLUMN ... TYPE BIGINT`，并复查类型变成 `int8`。
+- 使用项目 Python 执行缓存值烟测：`price=2147483648`、`wishlist_count=2147483649` 会按原值保留，不再按旧 `integer` 上限归零。
+- 使用项目 Python 执行初始化失败烟测：兼容迁移抛 `schema drift` 时，`init_db()` 会抛错且 `_init_db_done` 保持 `False`。
+- 服务器运行库实查：通过 `100.85.17.10:15432` 连接 PostgreSQL，`information_schema.columns` 返回 `price=int8`、`wishlist_count=int8`。
+- `git diff --check -- backend/app/models/database.py backend/alembic/versions/20260702_0001_dlsite_bonus_probe.py backend/alembic/versions/20260707_0001_bonus_probe_resilience.py backend/app/core/dlsite_bonus_probe_service.py backend/tests/test_database_compat_migrations.py backend/tests/test_dlsite_bonus_probe_service.py docs/database-migrations.md docs/dlsite-bonus-probe.md`：通过；仅有 Windows autocrlf 的 LF/CRLF 提示。
+- `$env:PYTHONPATH='backend'; $env:PYTHONIOENCODING='utf-8'; backend\venv\Scripts\python.exe -m pytest backend\tests\test_database_compat_migrations.py backend\tests\test_dlsite_bonus_probe_service.py -q`：仍卡在测试初始化阶段无用例输出，已停止残留 pytest 进程；本轮用不依赖测试库的项目 Python 烟测覆盖核心逻辑。
+
+### Notes
+- `backend/alembic/versions/20260702_0001_dlsite_bonus_probe.py`：新建 `dlsite_bonus_probe_cache` 时直接使用 `BIGINT` 存储 `price` / `wishlist_count`。
+- `backend/alembic/versions/20260707_0001_bonus_probe_resilience.py`：升级旧字段后复查 `udt_name=int8`，失败时阻断迁移。
+- `backend/app/models/database.py`：启动兼容迁移升级旧字段后强校验；`init_db()` 迁移成功后才标记完成。
+- `backend/app/core/dlsite_bonus_probe_service.py`：特典缓存数值边界改为 PostgreSQL `BIGINT`，不再按旧 `integer` 上限归零。
+- `backend/tests/test_database_compat_migrations.py`、`backend/tests/test_dlsite_bonus_probe_service.py`：补充字段升级强校验、初始化失败不误标记完成、合法 bigint 数值保留的回归覆盖。
+- `docs/database-migrations.md`、`docs/dlsite-bonus-probe.md`：记录特典缓存数值列必须为 `BIGINT` 以及迁移后类型复查要求。
+- `progress.md`：追加本轮字段根因调查、修复和验证记录。
+- 回滚方式：反向应用上述文件中本轮 `BIGINT` 字段强校验、`init_db()` 标记时机、数值边界和文档 / 测试 hunk，并删除本段进度记录；运行库若已升级为 `BIGINT` 不建议回退到 `INTEGER`，除非先确认不会再写入超过 32 位整数的缓存值。
+
+## 2026-07-09 - Task: 同步群晖 Docker 导入模板
+### What was done
+- 将下载目录中的群晖 Docker 容器导入配置纳入仓库部署资料，便于后续按版本同步维护。
+- 将导入模板镜像更新为 `elena39/kikoerumanager:1.6.77`，并同步 `KIKOERUMANAGER_VERSION=v1.6.77`，确保本次打标签触发构建后导入模板指向同一版本。
+
+### Testing
+- `Get-Content docker\synology\elena39-kikoerumanager-postgresql-single.json -Raw | ConvertFrom-Json`：通过，JSON 可解析。
+- 校验导入模板 `image=elena39/kikoerumanager:1.6.77`、`KIKOERUMANAGER_VERSION=v1.6.77`：通过。
+
+### Notes
+- `docker/synology/elena39-kikoerumanager-postgresql-single.json`：新增群晖 Docker 单容器 PostgreSQL 导入模板并同步本次发布版本。
+- `progress.md`：追加本轮 Docker 导入模板同步记录。
+- 回滚方式：删除 `docker/synology/elena39-kikoerumanager-postgresql-single.json`，并删除本段进度记录。

@@ -45,15 +45,15 @@ redis:
 bonus_probe:
   max_active_jobs: 1
   normal_batch_size: 500
-  normal_concurrency: 6
+  normal_concurrency: 3
   deep_batch_size: 500
-  deep_concurrency: 6
+  deep_concurrency: 3
   new_release_batch_size: 100
-  new_release_concurrency: 6
+  new_release_concurrency: 2
   max_batch_size: 500
-  max_concurrency: 6
+  max_concurrency: 3
   cache_lookup_batch_size: 500
-  cache_write_batch_size: 500
+  cache_write_batch_size: 100
 watcher:
   enabled: false
   scan_interval: 30

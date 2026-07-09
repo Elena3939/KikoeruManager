@@ -73,7 +73,8 @@ def _task_domain(task) -> str:
 def build_task_center_event(task, reason: str = "progress") -> dict[str, Any]:
     task_id = str(getattr(task, "id", "") or "")
     now = datetime.now().isoformat()
-    return {
+    metadata = dict(getattr(task, "task_metadata", None) or {})
+    event = {
         "type": "task_center_changed",
         "reason": str(reason or "progress"),
         "item_id": f"engine:{task_id}" if task_id else "",
@@ -84,6 +85,24 @@ def build_task_center_event(task, reason: str = "progress") -> dict[str, Any]:
         "current_step": str(getattr(task, "current_step", "") or ""),
         "updated_at": now,
     }
+    bonus_probe_meta = metadata.get("bonus_probe_meta")
+    if isinstance(bonus_probe_meta, dict):
+        event["bonus_probe_meta"] = {
+            key: bonus_probe_meta.get(key)
+            for key in (
+                "release_date",
+                "batch_index",
+                "batch_total",
+                "worker_index",
+                "worker_total",
+                "current_probe_checked_count",
+                "current_probe_total_count",
+                "checked_probe_count",
+                "probe_count",
+            )
+            if key in bonus_probe_meta
+        }
+    return event
 
 
 def _should_emit(event: dict[str, Any]) -> bool:

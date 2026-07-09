@@ -185,6 +185,7 @@ class LibraryFolderCompletionStartRequest(BaseModel):
 ## 性能瓶颈与处理
 
 1. ASMR.one 请求瓶颈：
+   - ASMR.one `workInfo` / `tracks` 连续失败会打开短熔断；熔断期间统一跳过后续 ASMR.one 请求，避免远端 522 / 连接重置时把本机连接和反代拖满。
    - 多 RJ 批量时不能全并发。
    - 后端预览用 `asyncio.Semaphore(4)` 起步。
    - 同一个 RJ 去重，只拉一次。

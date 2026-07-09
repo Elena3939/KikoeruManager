@@ -207,7 +207,7 @@ def test_hidden_bonus_match_does_not_require_current_probe_date() -> None:
     )
 
 
-def test_cache_values_accept_bigint_probe_counts() -> None:
+def test_cache_values_keeps_values_beyond_integer_after_bigint_schema() -> None:
     service = _service()
     feature = DLsiteProductProbeFeature(
         workno="RJ01000001",
@@ -552,6 +552,40 @@ def test_flush_bonus_probe_cache_dirty_once_writes_latest_row(db_session, monkey
     assert fake_redis.acked == ["1-0", "2-0", "3-0"]
 
 
+def test_flush_bonus_probe_cache_dirty_once_acks_failed_batch(monkeypatch) -> None:
+    service = _service()
+
+    class FakeRedis:
+        def __init__(self):
+            self.acked = []
+
+        def read_bonus_probe_cache_dirty_sync(self, **_kwargs):
+            return [
+                (
+                    "1-0",
+                    {
+                        "rjcode": "RJ01000001",
+                        "exists": True,
+                        "probe_status": "ok",
+                        "title": "毒消息",
+                    },
+                )
+            ]
+
+        def ack_bonus_probe_cache_dirty_sync(self, message_ids):
+            self.acked = list(message_ids)
+            return len(self.acked)
+
+    fake_redis = FakeRedis()
+    monkeypatch.setattr("app.core.redis_service.get_redis_service", lambda: fake_redis)
+    monkeypatch.setattr(service, "_upsert_cache_values_sync", lambda _rows: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    result = service.flush_bonus_probe_cache_dirty_once(limit=10)
+
+    assert result == {"read": 1, "written": 0, "acked": 1, "failed": 1}
+    assert fake_redis.acked == ["1-0"]
+
+
 def test_select_original_work_for_bonus_uses_same_date_and_nearest_rj() -> None:
     service = _service()
     far_original = _Row("RJ01410000")
@@ -662,9 +696,47 @@ async def test_probe_circle_dates_uses_configured_date_workers(monkeypatch) -> N
         concurrency=6,
     )
 
-    assert max_active == 6
+    assert max_active == 3
     assert result["date_count"] == 8
     assert [item["release_date"] for item in result["dates"]] == [f"2025-06-{day:02d}" for day in range(1, 9)]
+
+
+@pytest.mark.asyncio
+async def test_probe_circle_dates_caps_product_info_concurrency(monkeypatch) -> None:
+    service = _service()
+    monkeypatch.setattr(
+        service,
+        "resolve_circle_context",
+        lambda circle_id, maker_id="": {
+            "circle_id": circle_id,
+            "circle_name": "测试社团",
+            "maker_id": maker_id or "RG62878",
+        },
+    )
+    monkeypatch.setattr(service, "_order_probe_release_dates", lambda **kwargs: list(kwargs["dates"]))
+    seen_concurrency = []
+
+    async def fake_probe_date(**kwargs):
+        seen_concurrency.append(kwargs["concurrency"])
+        return {
+            "release_date": kwargs["release_date"],
+            "probe_count": 1,
+            "request_count": 1,
+            "hit_count": 0,
+            "inserted_count": 0,
+        }
+
+    monkeypatch.setattr(service, "probe_date", fake_probe_date)
+
+    await service.probe_circle_dates(
+        circle_id="circle-product-info-cap",
+        maker_id="RG62878",
+        release_dates=["2025-06-01", "2025-06-02", "2025-06-03"],
+        concurrency=6,
+    )
+
+    assert seen_concurrency
+    assert set(seen_concurrency) == {2}
 
 
 @pytest.mark.asyncio

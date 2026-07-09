@@ -1082,6 +1082,25 @@ function formatBonusProbeRjProgress(meta = {}, currentStep = '') {
   return String(checked)
 }
 
+function mergeBonusProbeMeta(current = {}, incoming = {}) {
+  const next = { ...(current || {}) }
+  const source = incoming && typeof incoming === 'object' ? incoming : {}
+  for (const [key, value] of Object.entries(source)) {
+    if (value == null || value === '') continue
+    next[key] = value
+  }
+  if (toProgressCount(next.current_probe_total_count) > 0) {
+    next.probe_count = toProgressCount(next.probe_count) || toProgressCount(next.current_probe_total_count)
+  }
+  if (toProgressCount(next.current_probe_checked_count) > 0) {
+    next.checked_probe_count = Math.max(
+      toProgressCount(next.checked_probe_count),
+      toProgressCount(next.current_probe_checked_count),
+    )
+  }
+  return next
+}
+
 const circleSearch = ref('')
 const circleSearchRequestSeq = ref(0)
 const heroWorkSearchQuery = ref('')
@@ -3847,7 +3866,7 @@ function applyBonusProbeJob(payload = {}) {
     : (Array.isArray(payload.meta?.release_dates) ? payload.meta.release_dates.filter(Boolean) : bonusProbeJob.release_dates)
   bonusProbeJob.elapsed_seconds = Number(payload.elapsed_seconds || 0)
   bonusProbeJob.error_message = payload.error_message || ''
-  bonusProbeJob.meta = payload.meta || {}
+  bonusProbeJob.meta = mergeBonusProbeMeta(bonusProbeJob.meta, payload.meta || {})
   bonusProbeJob.result = payload.result || {}
   bonusProbeJob.progress_log = Array.isArray(payload.progress_log) ? payload.progress_log : []
   bonusProbeRunning.value = ['pending', 'processing'].includes(String(bonusProbeJob.status || ''))
@@ -3891,6 +3910,7 @@ function patchBonusProbeJobFromTaskEvent(payload = {}) {
   bonusProbeJob.status = payload.status || bonusProbeJob.status || ''
   bonusProbeJob.progress = Number(payload.progress ?? bonusProbeJob.progress ?? 0)
   bonusProbeJob.current_step = payload.current_step || bonusProbeJob.current_step || ''
+  bonusProbeJob.meta = mergeBonusProbeMeta(bonusProbeJob.meta, payload.bonus_probe_meta || payload.meta || {})
   bonusProbeRunning.value = ['pending', 'processing'].includes(String(bonusProbeJob.status || ''))
   persistBonusProbeJobState()
 }
@@ -4118,14 +4138,13 @@ async function pollBonusProbeJob(jobId, options = {}) {
       bonusProbeJob.progress = 100
       bonusProbeJob.error_message = ''
       const probeCount = Number(summary.probe_count || result.meta?.probe_count || 0)
-      bonusProbeJob.meta = {
-        ...(bonusProbeJob.meta || {}),
+      bonusProbeJob.meta = mergeBonusProbeMeta(bonusProbeJob.meta, {
         probe_count: probeCount,
         checked_probe_count: Number(summary.checked_probe_count || result.meta?.checked_probe_count || probeCount),
         hit_count: hitCount,
         inserted_count: insertedCount,
         incomplete_count: incompleteCount,
-      }
+      })
       persistBonusProbeJobState()
       scheduleBonusProbeJobAutoHide(10000)
       if (!silentFinish) {
