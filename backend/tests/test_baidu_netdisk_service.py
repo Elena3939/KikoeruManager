@@ -675,6 +675,63 @@ def test_baidu_filter_preview_selection_merges_custom_file_names():
     assert filtered["items"][0]["custom_file_names"]["fs-001"]["custom_extract_password"] == "southplus@mzh1051"
 
 
+def test_baidu_filter_preview_selection_keeps_share_file_custom_password(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.extract = type("ExtractConfig", (), {
+        "filename_password_sniff_templates": ["{name}（{password}）"],
+    })()
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    preview = {
+        "items": [{
+            "ok": True,
+            "selection_key": "baidu:item",
+            "share_id": "share-id",
+            "share_url": "https://pan.baidu.com/s/share?pwd=0402",
+            "filename": "RJ01609723",
+            "share_files": [{
+                "name": "RJ01609723.7z.001",
+                "relative_path": "RJ01609723/RJ01609723.7z.001",
+                "path": "/RJ01609723/RJ01609723.7z.001",
+                "fs_id": "fs-001",
+            }],
+        }],
+    }
+
+    filtered = service.filter_preview_selection(
+        preview,
+        selected_items=[{
+            "selection_key": "baidu:item",
+            "share_files": [{
+                "name": "RJ01609723.7z.001",
+                "relative_path": "RJ01609723/RJ01609723.7z.001",
+                "path": "/RJ01609723/RJ01609723.7z.001",
+                "fs_id": "fs-001",
+                "custom_name": "RJ01609723.7z",
+                "custom_extract_password": "southplus@mzh1051",
+            }],
+        }],
+    )
+
+    item = filtered["items"][0]
+    assert item["share_files"][0]["custom_extract_password"] == "southplus@mzh1051"
+    assert item["custom_file_names"]["fs-001"]["custom_extract_password"] == "southplus@mzh1051"
+
+    rows = service._apply_custom_download_name_to_rows(
+        item,
+        [{
+            "fs_id": "fs-001",
+            "name": "RJ01609723.7z.001",
+            "relative_path": "RJ01609723/RJ01609723.7z.001",
+            "original_relative_path": "RJ01609723/RJ01609723.7z.001",
+        }],
+    )
+
+    assert rows[0]["name"] == "RJ01609723.7z（southplus@mzh1051）.001"
+    assert rows[0]["relative_path"] == os.path.join("RJ01609723", "RJ01609723.7z（southplus@mzh1051）.001")
+
+
 @pytest.mark.asyncio
 async def test_baidu_web_transfer_uses_decoded_sekey(monkeypatch):
     service = BaiduNetdiskService()

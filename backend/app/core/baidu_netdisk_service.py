@@ -768,8 +768,6 @@ class BaiduNetdiskService:
             if not isinstance(file_item, dict):
                 continue
             next_file = dict(file_item)
-            next_file.pop("custom_extract_password", None)
-            next_file.pop("extract_password", None)
             files.append(next_file)
         return files
 
@@ -815,7 +813,7 @@ class BaiduNetdiskService:
             for value in raw_overrides:
                 add_override(value)
 
-        for file_item in list(item.get("preview_files") or []):
+        for file_item in list(item.get("preview_files") or []) + list(item.get("share_files") or []):
             add_override(file_item)
 
         return overrides
