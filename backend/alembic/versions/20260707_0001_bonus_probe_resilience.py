@@ -31,13 +31,37 @@ def _column_exists(bind, table_name: str, column_name: str) -> bool:
     ).first())
 
 
+def _column_udt_name(bind, table_name: str, column_name: str) -> str:
+    return str(bind.execute(
+        text("""
+            SELECT udt_name
+              FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = :table_name
+               AND column_name = :column_name
+        """),
+        {"table_name": table_name, "column_name": column_name},
+    ).scalar() or "")
+
+
+def _promote_column_to_bigint(bind, table_name: str, column_name: str) -> None:
+    if not _column_exists(bind, table_name, column_name):
+        return
+    bind.execute(text(
+        f"ALTER TABLE {table_name} "
+        f"ALTER COLUMN {column_name} TYPE BIGINT "
+        f"USING COALESCE({column_name}, 0)::bigint"
+    ))
+    current_type = _column_udt_name(bind, table_name, column_name)
+    if current_type != "int8":
+        raise RuntimeError(f"{table_name}.{column_name} 类型升级失败，当前类型={current_type or 'missing'}")
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     if _table_exists(bind, "dlsite_bonus_probe_cache"):
-        if _column_exists(bind, "dlsite_bonus_probe_cache", "price"):
-            bind.execute(text("ALTER TABLE dlsite_bonus_probe_cache ALTER COLUMN price TYPE BIGINT USING COALESCE(price, 0)::bigint"))
-        if _column_exists(bind, "dlsite_bonus_probe_cache", "wishlist_count"):
-            bind.execute(text("ALTER TABLE dlsite_bonus_probe_cache ALTER COLUMN wishlist_count TYPE BIGINT USING COALESCE(wishlist_count, 0)::bigint"))
+        _promote_column_to_bigint(bind, "dlsite_bonus_probe_cache", "price")
+        _promote_column_to_bigint(bind, "dlsite_bonus_probe_cache", "wishlist_count")
     if _table_exists(bind, "notification_inbox_items") and _column_exists(bind, "notification_inbox_items", "business_key"):
         bind.execute(text("ALTER TABLE notification_inbox_items ALTER COLUMN business_key TYPE TEXT"))
 

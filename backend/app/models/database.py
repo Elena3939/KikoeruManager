@@ -2930,6 +2930,9 @@ def _migrate_dlsite_bonus_probe_cache_schema(conn, existing_tables: Optional[set
             table_name,
             column_name,
         )
+        current_type = _column_udt_name(conn, table_name, column_name)
+        if current_type != "int8":
+            raise RuntimeError(f"{table_name}.{column_name} 类型升级失败，当前类型={current_type or 'missing'}")
 
 
 def _migrate_notification_inbox_items_schema(conn, existing_tables: Optional[set[str]] = None) -> None:
@@ -3240,24 +3243,24 @@ def init_db():
         if _init_db_done:
             _db_logger.info("[数据库] 初始化已完成，跳过重复执行")
             return
+        _db_logger.info(
+            "[数据库] 初始化 PostgreSQL: %s pool=%s+%s statement_timeout=%sms",
+            _mask_database_url(_DATABASE_URL),
+            _DB_RUNTIME_CONFIG["pool_size"],
+            _DB_RUNTIME_CONFIG["max_overflow"],
+            _DB_RUNTIME_CONFIG["statement_timeout_ms"],
+        )
+        if _DB_RUNTIME_CONFIG.get("startup_health_check", True):
+            health = check_database_health(full=False)
+            if not health.get("ok"):
+                _db_logger.critical("[数据库] 启动自检失败: %s", health)
+                raise RuntimeError(f"数据库自检失败: {health}")
+        Base.metadata.create_all(bind=engine)
+        with engine.begin() as conn:
+            _create_postgres_extensions_and_indexes(conn)
+            _migrate_compat_schema(conn)
+        schedule_library_index_postgres_index_maintenance()
         _init_db_done = True
-    _db_logger.info(
-        "[数据库] 初始化 PostgreSQL: %s pool=%s+%s statement_timeout=%sms",
-        _mask_database_url(_DATABASE_URL),
-        _DB_RUNTIME_CONFIG["pool_size"],
-        _DB_RUNTIME_CONFIG["max_overflow"],
-        _DB_RUNTIME_CONFIG["statement_timeout_ms"],
-    )
-    if _DB_RUNTIME_CONFIG.get("startup_health_check", True):
-        health = check_database_health(full=False)
-        if not health.get("ok"):
-            _db_logger.critical("[数据库] 启动自检失败: %s", health)
-            raise RuntimeError(f"数据库自检失败: {health}")
-    Base.metadata.create_all(bind=engine)
-    with engine.begin() as conn:
-        _create_postgres_extensions_and_indexes(conn)
-        _migrate_compat_schema(conn)
-    schedule_library_index_postgres_index_maintenance()
     _db_logger.info("[数据库] PostgreSQL 表和索引初始化完成")
 
 

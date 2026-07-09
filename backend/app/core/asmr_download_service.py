@@ -57,6 +57,8 @@ class ASMRDownloadService:
         "https://api.asmr-200.com/api",
         "https://api.asmr-100.com/api",
     ]
+    CIRCUIT_FAILURE_THRESHOLD = 6
+    CIRCUIT_OPEN_SECONDS = 300
 
     # DLsite API
     DLSITE_API = "https://www.dlsite.com/maniax/api/=/product.json"
@@ -65,6 +67,9 @@ class ASMRDownloadService:
         self.config = config
         self._session: Optional[aiohttp.ClientSession] = None
         self._current_api_index = 0
+        self._api_failure_count = 0
+        self._api_circuit_open_until = 0.0
+        self._api_circuit_reason = ""
         # linked_* 关联作品信息缓存：key=f"linked_{workno}"；TTL+LRU 控上限
         self._cache: TTLCache = TTLCache(max_size=1024, ttl_seconds=300, name="asmr_download.linked")
         self._cache_ttl = 300  # 5分钟缓存（给现有内层 TTL 判定用，兼容）
@@ -89,6 +94,44 @@ class ASMRDownloadService:
         """切换到下一个 API 服务器"""
         self._current_api_index = (self._current_api_index + 1) % len(self.API_BASE_URLS)
         logger.info(f"切换 API 服务器到: {self._get_api_base()}")
+
+    def _asmr_api_circuit_remaining(self) -> int:
+        remaining = int(max(0.0, self._api_circuit_open_until - time.monotonic()))
+        return remaining
+
+    def _asmr_api_circuit_open(self) -> bool:
+        return self._asmr_api_circuit_remaining() > 0
+
+    def _record_asmr_api_success(self) -> None:
+        self._api_failure_count = 0
+        self._api_circuit_open_until = 0.0
+        self._api_circuit_reason = ""
+
+    def _record_asmr_api_failure(self, reason: str) -> None:
+        self._api_failure_count += 1
+        self._api_circuit_reason = str(reason or "request_failed")[:200]
+        if self._api_failure_count < self.CIRCUIT_FAILURE_THRESHOLD:
+            return
+        self._api_circuit_open_until = time.monotonic() + self.CIRCUIT_OPEN_SECONDS
+        logger.warning(
+            "[ASMR] API 连续失败 %s 次，熔断 %s 秒，期间跳过 asmr.one 请求: %s",
+            self._api_failure_count,
+            self.CIRCUIT_OPEN_SECONDS,
+            self._api_circuit_reason,
+        )
+
+    def _skip_asmr_api_when_circuit_open(self, action: str, rjcode: str) -> bool:
+        remaining = self._asmr_api_circuit_remaining()
+        if remaining <= 0:
+            return False
+        logger.warning(
+            "[ASMR] API 熔断中，跳过%s rj=%s remaining=%ss reason=%s",
+            action,
+            rjcode,
+            remaining,
+            self._api_circuit_reason or "连续失败",
+        )
+        return True
 
     def _get_runtime_config(self):
         """Return the latest ASMR sync config so proxy changes apply immediately."""
@@ -367,6 +410,8 @@ class ASMRDownloadService:
         Returns:
             作品信息字典，包含标题、文件列表等
         """
+        if self._skip_asmr_api_when_circuit_open("作品信息请求", rjcode):
+            return None
         # 标准化 RJ 号
         if rjcode.upper().startswith('RJ'):
             rjcode_num = rjcode[2:]
@@ -386,16 +431,24 @@ class ASMRDownloadService:
                 async with session.get(url, **request_kwargs) as response:
                     if response.status == 200:
                         data = await response.json()
+                        self._record_asmr_api_success()
                         logger.info(f"[ASMR] 成功获取作品信息: {data.get('title', '未知标题')}")
                         return data
                     elif response.status == 404:
+                        self._record_asmr_api_success()
                         logger.warning(f"[ASMR] 作品不存在: {rjcode}")
                         return None
                     else:
+                        self._record_asmr_api_failure(f"workInfo HTTP {response.status}")
                         logger.warning(f"[ASMR] 获取作品信息失败: HTTP {response.status}")
+                        if self._asmr_api_circuit_open():
+                            return None
                         await self._switch_api()
-            except aiohttp.ClientError as e:
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                self._record_asmr_api_failure(e.__class__.__name__)
                 logger.error(f"[ASMR] 请求作品信息失败: {e}")
+                if self._asmr_api_circuit_open():
+                    return None
                 await self._switch_api()
 
         logger.error(f"[ASMR] 所有 API 服务器都无法访问: {rjcode}")
@@ -445,6 +498,8 @@ class ASMRDownloadService:
         Returns:
             文件列表
         """
+        if self._skip_asmr_api_when_circuit_open("文件列表请求", rjcode):
+            return None
         # 标准化 RJ 号
         if rjcode.upper().startswith('RJ'):
             rjcode_num = rjcode[2:]
@@ -463,6 +518,7 @@ class ASMRDownloadService:
                 async with session.get(url, **request_kwargs) as response:
                     if response.status == 200:
                         data = await response.json()
+                        self._record_asmr_api_success()
                         file_count = len(data) if isinstance(data, list) else 0
                         logger.debug("[ASMR] 成功获取文件列表: rj=%s count=%s", rjcode, file_count)
 
@@ -491,13 +547,20 @@ class ASMRDownloadService:
 
                         return data
                     elif response.status == 404:
+                        self._record_asmr_api_success()
                         logger.warning(f"[ASMR] 文件列表不存在: {rjcode}")
                         return []
                     else:
+                        self._record_asmr_api_failure(f"tracks HTTP {response.status}")
                         logger.warning(f"[ASMR] 获取文件列表失败: HTTP {response.status}")
+                        if self._asmr_api_circuit_open():
+                            return None
                         await self._switch_api()
-            except aiohttp.ClientError as e:
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                self._record_asmr_api_failure(e.__class__.__name__)
                 logger.error(f"[ASMR] 请求文件列表失败: {e}")
+                if self._asmr_api_circuit_open():
+                    return None
                 await self._switch_api()
 
         logger.error(f"[ASMR] 所有 API 服务器都无法获取文件列表: {rjcode}")

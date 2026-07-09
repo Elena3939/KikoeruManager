@@ -100,3 +100,36 @@ async def test_download_file_uses_network_download_budget(monkeypatch, tmp_path)
 
     assert ok is True
     assert calls == [("network_download", 1, "asmr.download_file")]
+
+
+@pytest.mark.asyncio
+async def test_fetch_work_info_short_circuits_after_api_failures():
+    service = ASMRDownloadService()
+    service.CIRCUIT_FAILURE_THRESHOLD = 2
+    service.CIRCUIT_OPEN_SECONDS = 60
+    calls = []
+
+    class FakeResponse:
+        status = 522
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeSession:
+        closed = False
+
+        def get(self, url, **_kwargs):
+            calls.append(str(url))
+            return FakeResponse()
+
+    service._session = FakeSession()
+
+    assert await service.fetch_work_info("RJ01000001") is None
+    assert len(calls) == 2
+    assert service._asmr_api_circuit_open() is True
+
+    assert await service.fetch_work_info("RJ01000002") is None
+    assert len(calls) == 2

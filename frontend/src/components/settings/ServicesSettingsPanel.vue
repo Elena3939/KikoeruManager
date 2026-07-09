@@ -236,7 +236,7 @@
               <SettingsNumberStepper v-model="bonusProbe.max_active_jobs" :min="1" :max="6" />
             </SettingsFieldCard>
             <SettingsFieldCard label="最大并发上限" hint="普通、深度、新作并发都会被这个上限截断。">
-              <SettingsNumberStepper v-model="bonusProbe.max_concurrency" :min="1" :max="20" />
+              <SettingsNumberStepper v-model="bonusProbe.max_concurrency" :min="1" :max="3" />
             </SettingsFieldCard>
           </div>
           <div class="mini-grid two">
@@ -468,15 +468,15 @@ const subtitleItems = [
 const defaultBonusProbeConfig = {
   max_active_jobs: 1,
   normal_batch_size: 100,
-  normal_concurrency: 6,
+  normal_concurrency: 3,
   deep_batch_size: 200,
-  deep_concurrency: 6,
+  deep_concurrency: 3,
   new_release_batch_size: 100,
-  new_release_concurrency: 6,
+  new_release_concurrency: 2,
   max_batch_size: 500,
-  max_concurrency: 6,
+  max_concurrency: 3,
   cache_lookup_batch_size: 500,
-  cache_write_batch_size: 500
+  cache_write_batch_size: 100
 }
 
 const bonusProbe = computed(() => {

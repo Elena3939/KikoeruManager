@@ -6133,7 +6133,6 @@ class TaskEngine:
             if task.status != TaskStatus.PROCESSING or task.is_cancelled():
                 return
             pct = min(99, max(1, int(progress or 0)))
-            task.update_progress(pct, step)
             task.task_metadata = {
                 **dict(task.task_metadata or {}),
                 'bonus_probe_meta': {
@@ -6141,6 +6140,7 @@ class TaskEngine:
                     **dict(meta or {}),
                 },
             }
+            task.update_progress(pct, step)
             append_progress_log(step, pct)
 
         result = await bonus_probe_service.probe_circle_dates(
