@@ -110,6 +110,8 @@ function bonusParentCode(item, availableCodes = new Set()) {
 }
 
 function canDownloadBonus(bonus) {
+  const members = bonusMembers(bonus)
+  if (members.length > 1) return members.some(canDownloadBonus)
   return isStrictTrue(bonus?.has_asmr_one) || Boolean(bonus?.download_plan?.rjcode || bonus?.asmr_available_rjcode)
 }
 
@@ -119,9 +121,8 @@ function isActiveBonus(bonus) {
   const active = activeBonusDetail.value
   if (!active || !bonus) return false
   if (active === bonus) return true
-  const activeCode = bonusCode(active)
-  const code = bonusCode(bonus)
-  return Boolean(activeCode && code && activeCode === code)
+  const activeCodes = new Set(bonusCodeList(active))
+  return bonusCodeList(bonus).some(code => activeCodes.has(code))
 }
 
 function hasActiveBonus(bonuses = []) {
@@ -129,6 +130,8 @@ function hasActiveBonus(bonuses = []) {
 }
 
 function isCompletionOwned(item) {
+  const members = bonusMembers(item)
+  if (members.length > 1) return members.some(isCompletionOwned)
   return isStrictTrue(item?.server_owned) || isStrictTrue(item?.owned) || isStrictTrue(item?.completion_owned) || isStrictTrue(item?.local_owned)
 }
 
@@ -141,7 +144,7 @@ function bonusOwnedTagClass(bonus) {
 }
 
 function bonusDownloadLabel(bonus) {
-  return bonus?.local_download_ready || canDownloadBonus(bonus) ? '可下载' : '无源'
+  return hasLocalDownloadReadyBonus(bonus) || canDownloadBonus(bonus) ? '可下载' : '无源'
 }
 
 function bonusDownloadTagClass(bonus) {
@@ -149,9 +152,10 @@ function bonusDownloadTagClass(bonus) {
 }
 
 function bonusCvLabel(bonus) {
-  const cvs = Array.isArray(bonus?.cvs) ? bonus.cvs.map(value => String(value || '').trim()).filter(Boolean) : []
+  const target = bonusActionItem(bonus)
+  const cvs = Array.isArray(target?.cvs) ? target.cvs.map(value => String(value || '').trim()).filter(Boolean) : []
   if (cvs.length) return cvs.join(' / ')
-  const makerName = String(bonus?.maker_name || '').trim()
+  const makerName = String(target?.maker_name || '').trim()
   if (!makerName) return ''
   return makerName.split('/').map(value => value.trim()).filter(Boolean).pop() || ''
 }
@@ -179,35 +183,133 @@ function shouldDimBonusCard(bonusViewModel) {
 
 function openBonusDetail(bonus) {
   activeBonusDetail.value = bonus
-  if (!isItemSelected(bonus)) emit('select', bonus)
+  const target = bonusActionItem(bonus, 'select')
+  if (!isItemSelected(target)) emit('select', target)
 }
 
 function closeBonusDetail() {
   const bonus = activeBonusDetail.value
   activeBonusDetail.value = null
-  if (isItemSelected(bonus)) emit('select', bonus)
+  const target = bonusActionItem(bonus, 'deselect')
+  if (isItemSelected(target)) emit('select', target)
 }
 
 function handleBonusAction(bonus) {
-  emit('reimport', bonus)
+  emit('reimport', bonusActionItem(bonus, 'import'))
 }
 
 function previewBonus(bonus) {
-  emit('preview', bonus?.canonical_rjcode || bonusCode(bonus))
+  const target = bonusActionItem(bonus, 'preview')
+  emit('preview', target?.canonical_rjcode || bonusCode(target))
+}
+
+function forwardRowSelect(item) {
+  emit('select', bonusActionItem(item, 'select'))
+}
+
+function forwardRowPreview(payload, fallbackItem = null) {
+  if (payload && typeof payload === 'object') {
+    previewBonus(payload)
+    return
+  }
+  if (fallbackItem?._bonus_members?.length) {
+    previewBonus(fallbackItem)
+    return
+  }
+  emit('preview', payload)
+}
+
+function forwardRowReimport(item) {
+  emit('reimport', bonusActionItem(item, 'import'))
+}
+
+function normalizeBonusGroupTitle(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[＿_][\s　]*(?:\d+|[０-９]+)\s*$/u, '')
+    .trim()
+}
+
+function bonusDisplayTitle(item) {
+  return String(item?._bonus_display_title || item?.title || '未命名特典').trim()
+}
+
+function bonusMembers(item) {
+  return Array.isArray(item?._bonus_members) && item._bonus_members.length ? item._bonus_members : [item].filter(Boolean)
+}
+
+function bonusCodeList(item) {
+  return bonusMembers(item)
+    .map(member => bonusCode(member))
+    .filter(Boolean)
+    .filter((code, index, array) => array.indexOf(code) === index)
+}
+
+function hasLocalDownloadReadyBonus(item) {
+  return bonusMembers(item).some(member => Boolean(member?.local_download_ready))
+}
+
+function bonusActionItem(item, action = '') {
+  const members = bonusMembers(item)
+  if (action === 'import') return members.find(member => member?.local_download_ready) || members[0] || item
+  if (action === 'preview') return members.find(canDownloadBonus) || members[0] || item
+  if (action === 'select') return members.find(member => !isItemSelected(member)) || members[0] || item
+  if (action === 'deselect') return members.find(isItemSelected) || members[0] || item
+  return members[0] || item
+}
+
+function aggregateBonusWorks(bonuses = []) {
+  if (!Array.isArray(bonuses) || bonuses.length <= 1) return Array.isArray(bonuses) ? bonuses : []
+  const buckets = new Map()
+  const result = []
+  for (const bonus of bonuses) {
+    if (!bonus) continue
+    const title = bonusDisplayTitle(bonus)
+    const baseTitle = normalizeBonusGroupTitle(title)
+    const key = baseTitle || title || bonusCode(bonus)
+    if (!key) {
+      result.push(bonus)
+      continue
+    }
+    let bucket = buckets.get(key)
+    if (!bucket) {
+      bucket = {
+        ...bonus,
+        title: baseTitle || title,
+        _bonus_display_title: baseTitle || title,
+        _bonus_members: [bonus],
+      }
+      buckets.set(key, bucket)
+      result.push(bucket)
+      continue
+    }
+    bucket._bonus_members.push(bonus)
+    bucket.linked_rjcodes = bonusCodeList(bucket)
+    bucket.local_download_ready = hasLocalDownloadReadyBonus(bucket)
+    bucket.has_asmr_one = bucket.has_asmr_one || bonus.has_asmr_one
+    bucket.owned = isCompletionOwned(bucket)
+    bucket.server_owned = bucket.server_owned || bonus.server_owned
+    bucket.completion_owned = bucket.completion_owned || bonus.completion_owned
+    bucket.local_owned = bucket.local_owned || bonus.local_owned
+    if (!bucket.image_url && bonus.image_url) bucket.image_url = bonus.image_url
+    if (!bucket.thumb_image_url && bonus.thumb_image_url) bucket.thumb_image_url = bonus.thumb_image_url
+  }
+  return result
 }
 
 const groupedItems = computed(() => {
   const items = safeItems.value
   const directGroups = items.map((item, index) => {
-    const bonuses = Array.isArray(item?.bonus_works) ? item.bonus_works : []
+    const bonuses = aggregateBonusWorks(Array.isArray(item?.bonus_works) ? item.bonus_works : [])
     return { item, bonuses, sourceIndex: index }
   })
   if (directGroups.some(group => group.bonuses.length)) {
     const attachedBonusCodes = new Set()
     for (const group of directGroups) {
       for (const bonus of group.bonuses || []) {
-        const code = bonusCode(bonus)
-        if (code) attachedBonusCodes.add(code)
+        for (const code of bonusCodeList(bonus)) {
+          if (code) attachedBonusCodes.add(code)
+        }
       }
     }
     return directGroups.filter(group => {
@@ -244,16 +346,16 @@ const groupedItems = computed(() => {
     .filter(item => !hiddenBonusItems.has(item))
     .map((item, index) => {
       const key = itemKey(item, index)
-      return { item, bonuses: bonusBuckets.get(key) || [], sourceIndex: index }
+      return { item, bonuses: aggregateBonusWorks(bonusBuckets.get(key) || []), sourceIndex: index }
     })
 })
 
 watch(groupedItems, groups => {
-  const activeCode = bonusCode(activeBonusDetail.value)
-  if (!activeCode) return
+  const activeCodes = new Set(bonusCodeList(activeBonusDetail.value))
+  if (!activeCodes.size) return
   for (const group of groups) {
     for (const bonus of group.bonuses || []) {
-      if (bonusCode(bonus) === activeCode) {
+      if (bonusCodeList(bonus).some(code => activeCodes.has(code))) {
         if (activeBonusDetail.value !== bonus) activeBonusDetail.value = bonus
         return
       }
@@ -315,7 +417,8 @@ const rowCount = computed(() => {
 const itemViewModels = computed(() => pagedGroups.value.map((group, index) => {
   const item = group.item
   const bonuses = Array.isArray(group.bonuses) ? group.bonuses : []
-  const code = String(item?.canonical_rjcode || '').trim()
+  const itemCodes = bonusCodeList(item)
+  const code = String(itemCodes[0] || item?.canonical_rjcode || '').trim()
   const key = itemKey(item, group.sourceIndex ?? index)
   const itemOwned = isCompletionOwned(item)
   const groupOwned = itemOwned || bonuses.some(isCompletionOwned)
@@ -324,7 +427,8 @@ const itemViewModels = computed(() => pagedGroups.value.map((group, index) => {
     : isStrictTrue(item?.completion_card_dimmed)
   const bonusViewModels = bonuses.map((bonus, bonusIndex) => {
     const bonusKey = itemKey(bonus, `${key}:bonus:${bonusIndex}`)
-    const bonusCodeValue = String(bonus?.canonical_rjcode || '').trim()
+    const bonusCodes = bonusCodeList(bonus)
+    const bonusCodeValue = bonusCodes[0] || ''
     const bonusOwned = isCompletionOwned(bonus)
     return {
       item: bonus,
@@ -333,9 +437,9 @@ const itemViewModels = computed(() => pagedGroups.value.map((group, index) => {
       code: bonusCodeValue,
       owned: bonusOwned,
       dimmed: groupOwned && !bonusOwned,
-      selected: Boolean(bonusCodeValue && props.selectedCodes?.has?.(bonusCodeValue)),
-      flashed: Boolean(bonusCodeValue && props.flashedCodes?.has?.(bonusCodeValue)),
-      located: Boolean(bonusCodeValue && props.locatedCodes?.has?.(bonusCodeValue)),
+      selected: bonusCodes.some(code => props.selectedCodes?.has?.(code)),
+      flashed: bonusCodes.some(code => props.flashedCodes?.has?.(code)),
+      located: bonusCodes.some(code => props.locatedCodes?.has?.(code)),
     }
   })
   return {
@@ -348,9 +452,9 @@ const itemViewModels = computed(() => pagedGroups.value.map((group, index) => {
     itemOwned,
     groupOwned,
     completionDimmed,
-    selected: Boolean(code && props.selectedCodes?.has?.(code)),
-    flashed: Boolean(code && props.flashedCodes?.has?.(code)),
-    located: Boolean(code && props.locatedCodes?.has?.(code)),
+    selected: itemCodes.some(value => props.selectedCodes?.has?.(value)) || Boolean(code && props.selectedCodes?.has?.(code)),
+    flashed: itemCodes.some(value => props.flashedCodes?.has?.(value)) || Boolean(code && props.flashedCodes?.has?.(code)),
+    located: itemCodes.some(value => props.locatedCodes?.has?.(value)) || Boolean(code && props.locatedCodes?.has?.(code)),
   }
 }))
 const rowViewModels = computed(() => {
@@ -435,14 +539,15 @@ function itemKey(item, fallbackIndex) {
 }
 
 function viewModelForBonus(item, fallbackIndex) {
-  const code = String(item?.canonical_rjcode || '').trim()
+  const codes = bonusCodeList(item)
+  const code = codes[0] || ''
   return {
     item,
     key: itemKey(item, fallbackIndex),
     code,
-    selected: Boolean(code && props.selectedCodes?.has?.(code)),
-    flashed: Boolean(code && props.flashedCodes?.has?.(code)),
-    located: Boolean(code && props.locatedCodes?.has?.(code)),
+    selected: codes.some(value => props.selectedCodes?.has?.(value)),
+    flashed: codes.some(value => props.flashedCodes?.has?.(value)),
+    located: codes.some(value => props.locatedCodes?.has?.(value)),
   }
 }
 
@@ -451,7 +556,13 @@ function bonusCode(item) {
 }
 
 function bonusTitle(item) {
-  return String(item?.title || '未命名特典').trim()
+  return bonusDisplayTitle(item)
+}
+
+function bonusCodeLabel(item) {
+  const codes = bonusCodeList(item)
+  if (!codes.length) return bonusCode(item)
+  return codes.length > 1 ? `${codes[0]} 等 ${codes.length} 个` : codes[0]
 }
 
 function bonusReleaseLabel(item) {
@@ -732,7 +843,7 @@ onBeforeUnmount(() => {
                   <span class="circle-bonus-detail-tag" :class="bonusDownloadTagClass(activeBonusDetail)">{{ bonusDownloadLabel(activeBonusDetail) }}</span>
                 </div>
                 <div class="circle-bonus-detail-linked">
-                  <span>特典 · {{ bonusCode(activeBonusDetail) }}</span>
+                  <span>特典 · {{ bonusCodeLabel(activeBonusDetail) }}</span>
                   <span v-if="bonusReleaseLabel(activeBonusDetail)" class="circle-bonus-detail-release">
                     <Calendar :size="11" />{{ bonusReleaseLabel(activeBonusDetail) }}
                   </span>
@@ -741,9 +852,9 @@ onBeforeUnmount(() => {
               <div class="circle-bonus-detail-body">
                 <h3 class="circle-bonus-detail-title">{{ bonusTitle(activeBonusDetail) }}</h3>
                 <div class="circle-bonus-detail-cv" :class="{ 'is-empty': !bonusCvLabel(activeBonusDetail) }">{{ bonusCvLabel(activeBonusDetail) }}</div>
-                <div v-if="activeBonusDetail.local_download_ready || canDownloadBonus(activeBonusDetail)" class="circle-bonus-detail-actions">
+                <div v-if="hasLocalDownloadReadyBonus(activeBonusDetail) || canDownloadBonus(activeBonusDetail)" class="circle-bonus-detail-actions">
                   <button
-                    v-if="activeBonusDetail.local_download_ready"
+                    v-if="hasLocalDownloadReadyBonus(activeBonusDetail)"
                     type="button"
                     class="circle-bonus-detail-action import"
                     @click.stop="handleBonusAction(activeBonusDetail)"
@@ -771,9 +882,9 @@ onBeforeUnmount(() => {
                 :image-field="imageField"
                 :corner-label="cornerLabel"
                 :image-active="isImageActive(viewModel.key)"
-                @select="emit('select', $event)"
-                @preview="emit('preview', $event)"
-                @reimport="emit('reimport', $event)"
+                @select="forwardRowSelect($event)"
+                @preview="forwardRowPreview($event, viewModel.item)"
+                @reimport="forwardRowReimport($event)"
                 @image-settled="markImageSettled(viewModel.key)"
               />
               <div v-if="viewModel.bonuses.length" class="circle-bonus-shelf is-list">
@@ -808,11 +919,11 @@ onBeforeUnmount(() => {
                   <span class="circle-bonus-gift-main">
                     <span class="circle-bonus-gift-kicker"><Gift :size="10" />特典</span>
                     <span class="circle-bonus-gift-title">{{ bonusTitle(bonus) }}</span>
-                    <span class="circle-bonus-gift-code">{{ bonusCode(bonus) }}</span>
+                    <span class="circle-bonus-gift-code">{{ bonusCodeLabel(bonus) }}</span>
                   </span>
                   <span class="circle-bonus-gift-actions">
                     <button
-                      v-if="bonus.local_download_ready"
+                      v-if="hasLocalDownloadReadyBonus(bonus)"
                       type="button"
                       class="circle-bonus-mini-action import"
                       title="入库"
@@ -855,7 +966,7 @@ onBeforeUnmount(() => {
                     <span class="circle-bonus-detail-tag" :class="bonusDownloadTagClass(activeBonusDetail)">{{ bonusDownloadLabel(activeBonusDetail) }}</span>
                   </div>
                   <div class="circle-bonus-detail-linked">
-                    <span>特典 · {{ bonusCode(activeBonusDetail) }}</span>
+                    <span>特典 · {{ bonusCodeLabel(activeBonusDetail) }}</span>
                     <span v-if="bonusReleaseLabel(activeBonusDetail)" class="circle-bonus-detail-release">
                       <Calendar :size="11" />{{ bonusReleaseLabel(activeBonusDetail) }}
                     </span>
@@ -864,9 +975,9 @@ onBeforeUnmount(() => {
                 <div class="circle-bonus-detail-body">
                   <h3 class="circle-bonus-detail-title">{{ bonusTitle(activeBonusDetail) }}</h3>
                   <div class="circle-bonus-detail-cv" :class="{ 'is-empty': !bonusCvLabel(activeBonusDetail) }">{{ bonusCvLabel(activeBonusDetail) }}</div>
-                  <div v-if="activeBonusDetail.local_download_ready || canDownloadBonus(activeBonusDetail)" class="circle-bonus-detail-actions">
+                  <div v-if="hasLocalDownloadReadyBonus(activeBonusDetail) || canDownloadBonus(activeBonusDetail)" class="circle-bonus-detail-actions">
                     <button
-                      v-if="activeBonusDetail.local_download_ready"
+                      v-if="hasLocalDownloadReadyBonus(activeBonusDetail)"
                       type="button"
                       class="circle-bonus-detail-action import"
                       @click.stop="handleBonusAction(activeBonusDetail)"
@@ -990,7 +1101,7 @@ onBeforeUnmount(() => {
                       <span class="circle-bonus-detail-tag" :class="bonusDownloadTagClass(activeBonusDetail)">{{ bonusDownloadLabel(activeBonusDetail) }}</span>
                     </div>
                     <div class="circle-bonus-detail-linked">
-                      <span>特典 · {{ bonusCode(activeBonusDetail) }}</span>
+                      <span>特典 · {{ bonusCodeLabel(activeBonusDetail) }}</span>
                       <span v-if="bonusReleaseLabel(activeBonusDetail)" class="circle-bonus-detail-release">
                         <Calendar :size="11" />{{ bonusReleaseLabel(activeBonusDetail) }}
                       </span>
@@ -999,9 +1110,9 @@ onBeforeUnmount(() => {
                   <div class="circle-bonus-detail-body">
                     <h3 class="circle-bonus-detail-title">{{ bonusTitle(activeBonusDetail) }}</h3>
                     <div class="circle-bonus-detail-cv" :class="{ 'is-empty': !bonusCvLabel(activeBonusDetail) }">{{ bonusCvLabel(activeBonusDetail) }}</div>
-                    <div v-if="activeBonusDetail.local_download_ready || canDownloadBonus(activeBonusDetail)" class="circle-bonus-detail-actions">
+                    <div v-if="hasLocalDownloadReadyBonus(activeBonusDetail) || canDownloadBonus(activeBonusDetail)" class="circle-bonus-detail-actions">
                       <button
-                        v-if="activeBonusDetail.local_download_ready"
+                        v-if="hasLocalDownloadReadyBonus(activeBonusDetail)"
                         type="button"
                         class="circle-bonus-detail-action import"
                         @click.stop="handleBonusAction(activeBonusDetail)"
@@ -1029,9 +1140,9 @@ onBeforeUnmount(() => {
                     :image-field="imageField"
                     :corner-label="cornerLabel"
                     :image-active="isImageActive(cell.key)"
-                    @select="emit('select', $event)"
-                    @preview="emit('preview', $event)"
-                    @reimport="emit('reimport', $event)"
+                    @select="forwardRowSelect($event)"
+                    @preview="forwardRowPreview($event, cell.item)"
+                    @reimport="forwardRowReimport($event)"
                     @image-settled="markImageSettled(cell.key)"
                   />
                   <div v-if="cell.bonuses.length" class="circle-bonus-shelf is-list">
@@ -1066,11 +1177,11 @@ onBeforeUnmount(() => {
                       <span class="circle-bonus-gift-main">
                         <span class="circle-bonus-gift-kicker"><Gift :size="10" />特典</span>
                         <span class="circle-bonus-gift-title">{{ bonusTitle(bonus) }}</span>
-                        <span class="circle-bonus-gift-code">{{ bonusCode(bonus) }}</span>
+                        <span class="circle-bonus-gift-code">{{ bonusCodeLabel(bonus) }}</span>
                       </span>
                       <span class="circle-bonus-gift-actions">
                         <button
-                          v-if="bonus.local_download_ready"
+                          v-if="hasLocalDownloadReadyBonus(bonus)"
                           type="button"
                           class="circle-bonus-mini-action import"
                           title="入库"
@@ -1113,7 +1224,7 @@ onBeforeUnmount(() => {
                         <span class="circle-bonus-detail-tag" :class="bonusDownloadTagClass(activeBonusDetail)">{{ bonusDownloadLabel(activeBonusDetail) }}</span>
                       </div>
                       <div class="circle-bonus-detail-linked">
-                        <span>特典 · {{ bonusCode(activeBonusDetail) }}</span>
+                        <span>特典 · {{ bonusCodeLabel(activeBonusDetail) }}</span>
                         <span v-if="bonusReleaseLabel(activeBonusDetail)" class="circle-bonus-detail-release">
                           <Calendar :size="11" />{{ bonusReleaseLabel(activeBonusDetail) }}
                         </span>
@@ -1122,9 +1233,9 @@ onBeforeUnmount(() => {
                     <div class="circle-bonus-detail-body">
                       <h3 class="circle-bonus-detail-title">{{ bonusTitle(activeBonusDetail) }}</h3>
                       <div class="circle-bonus-detail-cv" :class="{ 'is-empty': !bonusCvLabel(activeBonusDetail) }">{{ bonusCvLabel(activeBonusDetail) }}</div>
-                      <div v-if="activeBonusDetail.local_download_ready || canDownloadBonus(activeBonusDetail)" class="circle-bonus-detail-actions">
+                      <div v-if="hasLocalDownloadReadyBonus(activeBonusDetail) || canDownloadBonus(activeBonusDetail)" class="circle-bonus-detail-actions">
                         <button
-                          v-if="activeBonusDetail.local_download_ready"
+                          v-if="hasLocalDownloadReadyBonus(activeBonusDetail)"
                           type="button"
                           class="circle-bonus-detail-action import"
                           @click.stop="handleBonusAction(activeBonusDetail)"
