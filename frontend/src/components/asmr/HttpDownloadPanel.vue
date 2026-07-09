@@ -1580,28 +1580,54 @@ function selectedPreviewItemsForStart() {
     if (!item) return
     const itemKey = previewItemKey(item)
     if (!itemKey) return
-    if (!grouped.has(itemKey)) grouped.set(itemKey, { item, files: [] })
+    if (!grouped.has(itemKey)) grouped.set(itemKey, { item, files: [], customFiles: [] })
+    const group = grouped.get(itemKey)
     const file = fileRow.file || item
     const fileKey = previewRowSelectionKey(fileRow)
     if (file && !seen.has(fileKey)) {
       seen.add(fileKey)
-      grouped.get(itemKey).files.push(file)
+      group.files.push(file)
+    }
+    if (isBaidu.value) {
+      group.customFiles.push(...baiduCustomFilesForSelectedRow(fileRow))
     }
   })
-  return [...grouped.values()].map(({ item, files }) => {
+  return [...grouped.values()].map(({ item, files, customFiles }) => {
     if (!isBaidu.value) {
       const file = files[0] || item
       return { ...item, ...file, selection_key: previewItemKey(item) }
     }
     const folderCount = files.filter(file => file?.is_dir).length
+    const customFileNames = buildBaiduCustomFileOverridesFromFiles(customFiles)
     return {
       ...item,
       preview_files: files,
       share_files: files,
       preview_file_count: files.length,
       preview_folder_count: folderCount,
+      ...(Object.keys(customFileNames).length ? { custom_file_names: customFileNames } : {}),
     }
   })
+}
+
+function baiduCustomFilesForSelectedRow(row) {
+  if (!isBaidu.value || !row) return []
+  const rows = []
+  const visit = node => {
+    if (!node?.ok) return
+    const file = node.file || null
+    if (file && !file.is_dir && hasBaiduCustomFileOverride(file)) rows.push(file)
+    ;(node.children || []).forEach(visit)
+  }
+  visit(row)
+  return rows
+}
+
+function hasBaiduCustomFileOverride(file) {
+  return Boolean(
+    String(file?.custom_name || file?.custom_filename || '').trim()
+    || String(file?.custom_extract_password || file?.extract_password || '').trim()
+  )
 }
 
 function rowCanShowSelectionCheck(row) {
@@ -2213,13 +2239,20 @@ function syncBaiduCustomNamingPayload(items) {
     custom_name: String(item?.custom_name || '').trim(),
     custom_extract_password: String(item?.custom_extract_password || '').trim(),
     custom_group_folder: Boolean(item?.custom_group_folder),
-    custom_file_names: buildBaiduCustomFileOverrides(item),
+    custom_file_names: {
+      ...normalizeBaiduCustomFileOverrides(item?.custom_file_names),
+      ...buildBaiduCustomFileOverrides(item),
+    },
   }))
 }
 
 function buildBaiduCustomFileOverrides(item) {
+  return buildBaiduCustomFileOverridesFromFiles(baiduPreviewFiles(item))
+}
+
+function buildBaiduCustomFileOverridesFromFiles(files) {
   const overrides = {}
-  baiduPreviewFiles(item).forEach(file => {
+  ;(files || []).forEach(file => {
     if (!file || file.is_dir) return
     const key = baiduPreviewFileKey(file)
     if (!key) return
@@ -2233,6 +2266,27 @@ function buildBaiduCustomFileOverrides(item) {
       path: String(file.path || '').trim(),
       relative_path: String(file.relative_path || '').trim(),
       name: String(file.name || '').trim(),
+    }
+  })
+  return overrides
+}
+
+function normalizeBaiduCustomFileOverrides(value) {
+  const overrides = {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return overrides
+  Object.entries(value).forEach(([key, override]) => {
+    const cleanKey = String(key || '').trim()
+    if (!cleanKey || !override || typeof override !== 'object') return
+    const customName = String(override.custom_name || override.custom_filename || '').trim()
+    const customPassword = String(override.custom_extract_password || override.extract_password || '').trim()
+    if (!customName && !customPassword) return
+    overrides[cleanKey] = {
+      custom_name: customName,
+      custom_extract_password: customPassword,
+      fs_id: String(override.fs_id || override.fsid || '').trim(),
+      path: String(override.path || override.remote_path || '').trim(),
+      relative_path: String(override.relative_path || '').trim(),
+      name: String(override.name || '').trim(),
     }
   })
   return overrides
