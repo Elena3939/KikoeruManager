@@ -33,6 +33,7 @@
 - 解压依赖：运行环境必须有官方 `7zz 24.08+`，并保留 `unar` / `lsar`。
 - 不要回退到旧 `p7zip-full`。Dockerfile 会显式 purge p7zip，并把官方 `7zz` 链接到 `/usr/local/bin/7zz` 和 `/usr/local/bin/7z`。
 - 百度网盘依赖 `BaiduPCS-Go`，Dockerfile 会按架构安装并链接 `/usr/local/bin/BaiduPCS-Go` / `baidupcs-go`；不要把它当成可选工具删掉。
+- Redis 是运行态依赖，Python 依赖 `redis>=5.0.0`；只承载短期运行态、事件流和高频缓存，PostgreSQL 仍是最终事实源。
 - 新增的伪装 ZIP 探测只用 Python 标准库 `zipfile` / `os`，不用加 requirements。
 - 运行态数据库不再保留 SQLite 兼容；`DATABASE_URL` 必须使用 `postgresql+psycopg://...`，存在时覆盖配置文件中的 `database.*` 字段。
 - 本地 Windows 通过 `setup.bat` / `scripts/install-postgresql.ps1` 检查、安装、初始化 PostgreSQL，并把随机密码明文写入 `data/config/config.yaml` 方便后续查看和修改。
@@ -57,10 +58,11 @@
 
 ### Docker / 环境
 
-- 根 `Dockerfile` 是完整前后端单镜像，并内置 PostgreSQL 18 server；`docker/entrypoint.sh` 会在没有 `DATABASE_URL` 时初始化并启动容器内 PostgreSQL。
+- 根 `Dockerfile` 是完整前后端单镜像，并内置 PostgreSQL 18 server 与 Redis；`docker/entrypoint.sh` 会在没有 `DATABASE_URL` 时初始化并启动容器内 PostgreSQL，没有 `KIKOERUMANAGER_REDIS_URL` 时启动内置 Redis。
 - `backend/Dockerfile` 是后端基础镜像，只安装 PostgreSQL 客户端和 Python 驱动，默认连接外部 PostgreSQL。
-- 两个 Dockerfile 都必须保留官方 `7zz 24.08`、`unar`、`lsar`；根 Dockerfile 还要保留 `BaiduPCS-Go`；不要恢复 SQLite FTS5 构建检查。
+- 两个 Dockerfile 都必须保留官方 `7zz 24.08`、`unar`、`lsar`；根 Dockerfile 还要保留 `BaiduPCS-Go` 和 `redis-server`；不要恢复 SQLite FTS5 构建检查。
 - Docker 单镜像部署必须持久化挂载 `/app/postgres`，否则更新 / 重建容器后数据库会落在容器层里丢失。
+- Docker 单镜像的 Redis AOF / 日志默认在 `/app/data/redis`，`/app/data` 也必须持久化挂载；显式设置 `KIKOERUMANAGER_REDIS_URL` 时使用外部 Redis。
 - Docker 里如显式设置 `DATABASE_URL`，则跳过内置 PostgreSQL 并连接外部 PostgreSQL；默认 compose 不设置 `DATABASE_URL`。
 - 伪装 ZIP 解压会在 `storage.temp_path` 下创建 `kikoerumanager_embedded_zip_*.zip` 临时视图。Docker 部署时这个 temp 路径要挂到有足够空间的卷，不要放很小的容器层。
 - temp 视图成功、失败、取消都必须清理；原始文件路径不能被临时视图覆盖。
@@ -75,6 +77,7 @@
 - 任务引擎：`backend/app/core/task_engine.py`
 - 任务中心：`backend/app/core/task_center_service.py`
 - 任务中心物化：`backend/app/core/task_center_materialization_service.py`
+- Redis 运行态：`backend/app/core/redis_service.py`
 - 实时事件：`backend/app/core/realtime_event_service.py`、`backend/app/core/task_center_event_service.py`
 - 操作审计：`backend/app/core/activity_log_service.py`、`backend/app/core/activity_log_writer.py`、`backend/app/core/activity_log_aggregator/`
 - 操作审计压缩 / rollup：`backend/app/core/activity_log_compactor.py`、`backend/app/core/activity_log_rollup_service.py`、`backend/app/core/activity_log_lite.py`
@@ -92,6 +95,7 @@
 - AI 字幕配对：`backend/app/core/ai_subtitle_match_service.py`
 - 安全网关：`backend/app/core/security_gate_service.py`
 - 社团补全：`backend/app/core/circle_completion_service.py`、`backend/app/core/kikoeru_duplicate_service.py`
+- DLsite 特典探测：`backend/app/core/dlsite_bonus_probe_service.py`
 - 冲突处理：`backend/app/core/conflict_resolution_service.py`
 - 通知：`backend/app/core/notification_template_service.py`、`notification_helper.py`、`task_notification_service.py`、`variable_registry.py`、`block_renderers/__init__.py`、`html_sanitizer.py`
 
@@ -141,12 +145,15 @@
 - 桌面 / 开发默认运行配置是 `data/config/config.yaml`；Docker 是 `/app/config/config.yaml`。
 - 只有设置 `CONFIG_PATH` 时才读环境变量指定文件。
 - 数据库配置字段在 `database.host/port/database/username/password/sslmode/...`；`/api/config` 返回密码必须脱敏，保存时传回 `********` 或省略都要保留磁盘真实密码。
+- Redis 配置字段在 `redis.enabled/required/url/namespace/environment/...`；`/api/config` 返回 URL 必须脱敏，保存脱敏 URL 时必须从运行环境或磁盘回填真实值，不能把 `********` 写回配置。
+- 默认 Redis `enabled=true`、`required=true`；只有本地临时跳过时才显式设置 `redis.enabled=false` 和 `redis.required=false`，不要在高压后台任务里静默回退到 PostgreSQL 高频写路径。
 - `resource_budget.database_write` 是当前数据库写入资源维度；旧 `sqlite_write` 只能作为读取旧配置的兼容 key，保存后不能再写回旧 key。
 - `resource_budget.library_index_write` 是库存索引追赶 / 重建写入资源维度，和普通 `database_write` 分开；索引后台追赶不能把业务写入全部挤死。
+- `resource_budget.bonus_probe_database_write` 是 DLsite 特典探测缓存 / 状态回写资源维度，不要并入普通 `database_write` 或删掉。
 - 不要提交真实密码、Token、代理、私服地址、群晖账号、本地数据库、缓存、`.env`。
 - 默认运行态 / 敏感产物：`.env`、`data/`、`backend/data/`、本地数据库、缓存目录、`.codex-backups/`。
 - `/api/config` 返回 SMTP 密码必须脱敏为 `********`；保存时前端传回 `********` 或省略 `password`，后端必须保留真实密码。
-- 百度网盘 `cookie`、HTTP 下载 `pikpak_* / gofile_token / google_drive_*`、PikPak 多账号 `password / encoded_token` 都要在 `/api/config` 和日志中脱敏；保存脱敏表单时必须从磁盘或当前配置回填真实值，不能把 `********` 写回文件。
+- 百度网盘 `cookie`、HTTP 下载 `pikpak_* / gofile_token / google_drive_*`、PikPak 多账号 `password / encoded_token`、Redis URL 密码都要在 `/api/config` 和日志中脱敏；保存脱敏表单时必须从磁盘或当前配置回填真实值，不能把 `********` 写回文件。
 
 ## 5. 前端设计规则
 
@@ -246,11 +253,31 @@
 
 - `CircleCompletion.vue` 使用 `CircleWorksViewport.vue` 渲染作品列表。
 - `CircleWorksViewport.vue` 依赖 `@tanstack/vue-virtual`，卡片 / 列表模式共用分页和虚拟行。
+- 社团补全读路径已拆成 `state`、`summary`、`page`、`work-codes`、`recent` 缓存：L1 进程内 `TTLCache` + L2 Redis JSON + PostgreSQL source，写路径必须调用 `invalidate_completion_view_cache()` 做版本失效。
+- 切社团默认只请求 `/works`，响应里的 `summary` 直接供首屏统计；不要重新并发冷读 `/summary` + `/works`。
+- `/works` 返回封面优先走 `/api/circle-completion/cover/{RJ}.jpg` / `{RJ}_sam.jpg` 本地缓存；缺失时后端按 DLsite CDN 推导并落 `data/img/`，前端仍保留 `WorkCard` fallback。
 - 小屏宽度下使用 plain render，避免移动端虚拟布局高度误差。
+- 翻页时保留旧页内容叠加轻量更新态；server paging 下 `CircleWorksViewport` 不要每次强制 `measure()`，只在布局 / 列数 / 行高变化时重测。
 - 作品卡片 / 行继续复用 `WorkCard.vue`、`WorkListRow.vue`，保留 CV、关联链、封面错误降级和状态 flash。
+- 已满足 tab 有独立工具栏 / 筛选 / 搜索定位逻辑，页头 RJ 搜索要按 owned 状态跳到“已满足作品”或“缺失作品”对应页并高亮，不要固定跳缺失页。
 - 批量下载入口优先使用 `asmr_available_rjcode`，不要默认拿 `display_rjcode`。
 - DLsite 关联链统一复用 `dlsite_service.get_linked_works()`。
 - 本地收录态优先走库存索引 / 社团聚合数据，不要靠慢速全库路径扫描。
+
+### 6.5.1 DLsite 特典探测
+
+- 核心文件：`backend/app/core/dlsite_bonus_probe_service.py`、`docs/dlsite-bonus-probe.md`。
+- 特典探测只用 DLsite 官方数据源；作品级结论只有 `has_bonus` / `no_bonus`，对应 `dlsite_bonus_original_probe_states.status`。
+- 发售日完成口径是同 maker / 同社团 / 同发售日所有原作 RJ 都已有作品级结论；`500RJ` 只是 product/info 合并请求单位，不是完成依据。
+- 查询前先查 `dlsite_bonus_probe_hit_index` 和 `dlsite_bonus_probe_cache`；本地隐藏特典线索命中后要写入当前社团作品，但仍要补完同发售日未结论原作。
+- 日期调度固定 6 worker；待处理发售日按最小原作 RJ 升序，worker 拿到一个发售日后必须完整处理完再领下一个。
+- 选中作品触发时，前端按发售日传 selected 原作 RJ；后端以 selected RJ 为锚点构造邻近候选，不能被同日其它公开作品超大 RJ 跨度拖成整日全范围。
+- 同一发售日并发命中时必须按 RJ 数字区间切稳定 range shard，并通过 active lease 排除正在查询的 RJ，避免重复请求或漏扫相邻区间。
+- `403`、`429`、风控页、HTTP 异常、日期页解析异常、批量探测异常都不能写 `no_bonus`。
+- 扫描范围超过预算时可以沉淀已命中的隐藏特典，但不能把未覆盖原作标 `no_bonus`；该发售日记 `incomplete` 并在汇总暴露 `incomplete_count`。
+- 只有候选 RJ 全部得到稳定 `ok` 或 `missing` 后，才允许给剩余原作写 `no_bonus`。
+- 模糊发售日（如 `上旬` / `中旬` / `下旬`）进入特典探测前要用 canonical 原作 product/info 补精确 `YYYY-MM-DD` 并写回 `WorkMetadata.release_date`，同时清理社团补全 metadata / view 缓存。
+- Redis dirty buffer 使用 `bonus-probe:cache:stream`，由 `dlsite_bonus_probe_service` 启停 flush worker；关停时要尽量 flush 回 PostgreSQL。
 
 ### 6.6 上传 / 下载工作台
 
@@ -299,7 +326,10 @@
 - RJ 字幕任务有自己的进度日志、下载明细、人工匹配等待态，不要硬塞回通用粗粒度进度条。
 - 新 API 默认走 `/api/task-center/*`；`/api/tasks*` 是兼容层，只给少数历史入口用，新功能不要接回旧任务列表。
 - 任务中心实时刷新有两条线：旧 `/api/task-center/stream` 和统一 `/api/events/stream`；新增前端刷新优先用 `useRealtimeEvents.js`，并保留 `kikoerumanager:task-center:changed` 兼容事件。
+- Redis 可用时实时事件会双写 Redis Stream：统一事件 `events:stream`、任务中心 `task-center:stream`；SSE 读 Redis 失败只能降级，不要阻断主业务。
+- 任务运行态快照在 Redis `task:runtime:{task_id}`，任务中心 / routes 读路径会 overlay 活跃运行态；新增长任务运行态字段时要同步 `redis_service.py` 的 runtime metadata 白名单。
 - `TaskEngine` 会双写 `task_center_items` 物化快照，并用指纹和最小写入间隔限流进度更新；不要在每个 progress tick 同步写库。
+- DLsite 特典探测任务类型是 `circle_completion_bonus_probe`，进度字段包括 `bonus_probe_meta`、`bonus_probe_summary`、`bonus_probe_result`，任务中心文案不能当普通下载 / 导入任务处理。
 - `KIKOERUMANAGER_TASK_CENTER_MATERIALIZED_SUMMARY=1` 会让 summary 读路径优先读物化表；上线前可用 `/api/task-center/materialized/backfill`、`/api/task-center/materialized/list`、`/api/task-center/diagnose` 做双写和 diff。
 - 物化表搜索字段 `searchable_text` 依赖 trigram 索引；新增可搜索字段时同步更新物化构造和数据库索引/维护逻辑。
 
@@ -311,6 +341,7 @@
 - `pending_execute` 只是预检 / 进入工作台，不进历史树和顶层列表。
 - `waiting + task_finished` 文案统一展示为 `等待处理`。
 - 手动字幕配对只有真正落盘才写完成日志。
+- 社团补全特典探测操作历史使用 `source_action=bonus_probe`，邮件新作触发使用 `new_release_bonus_probe`；lite/detail/children 路径都要保留 `bonus_probe_status`、命中 RJ、date results。
 - `/api/activity-logs` 的 row cache 设计前提是 append-only；聚合函数禁止原地修改缓存 dict 的深层内容。
 - `activity_log_rollups` 只维护 batch / session / task 三类轻量计数和最新状态，不替代 `activity_log_aggregator` 的深度树形输出。
 - 写入操作历史时要让 `ActivityLogWriter` 同步更新 rollup；历史数据用 `/api/activity-logs/rollups/backfill` 回填，用 `/api/activity-logs/rollups/diff` 校验。
@@ -426,7 +457,10 @@
 - 改解压 / 文件识别：跑 `backend/tests/test_extract_service.py` 中对应用例；涉及真实用户样本时，用样本实际验证。
 - 改库存索引 / `library_manager.py` 写操作 / `find_rj_in_libraries`：跑 `tests/test_library_index_*.py tests/test_library_manager_index_integration.py -q`。
 - 改库存社团聚合：跑 `backend/tests/test_library_circle_aggregation*.py`，涉及前端浏览再跑 `npm run build`。
+- 改社团补全读模型 / 分页 / 封面缓存：跑 `backend/tests/test_circle_completion_paged_view.py backend/tests/test_circle_completion_bonus_grouping.py -q`，前端改动再跑 `npm run build`。
+- 改 DLsite 特典探测：跑 `backend/tests/test_dlsite_bonus_probe_service.py backend/tests/test_circle_completion_paged_view.py -q`，涉及操作历史 / 通知再补 `backend/tests/test_activity_log_*.py backend/tests/test_task_notification_service.py -q`。
 - 改任务中心 / 实时事件：跑 `backend/tests/test_task_center_service.py backend/tests/test_routes_maintenance_config.py -q`，前端改动再跑 `npm run build`。
+- 改 Redis 配置 / 运行态 / dirty buffer：跑 `backend/tests/test_redis_config.py backend/tests/test_routes_maintenance_config.py backend/tests/test_database_compat_migrations.py -q`，并用 `scripts/check-redis.ps1` 做本机连通性冒烟。
 - 改操作历史 / rollup / compact：跑 `backend/tests/test_activity_log_*.py backend/tests/test_routes_maintenance_config.py -q`。
 - 改 HTTP / 百度网盘下载：跑 `backend/tests/test_http_download_service.py backend/tests/test_baidu_netdisk*.py backend/tests/test_task_notification_service.py -q`，前端面板改动再跑 `npm run build`。
 - 改通知模板：后端 `py_compile` + 前端 `npm run build`。
@@ -442,6 +476,9 @@
 - “库存页交互不对”：先看 `Library.vue`、`LibraryMoveDialog.vue`、`frontend/src/api/index.js`。
 - “库存社团聚合 / circle:/ 路径不对”：先看 `library_circle_aggregation_service.py`、`FolderContentsDialog.vue`、`Library.vue`，确认虚拟路径是否解析回真实库路径。
 - “社团列表卡顿 / 空白”：先看 `CircleWorksViewport.vue` 和 `@tanstack/vue-virtual` 是否安装。
+- “社团补全切页 / 已满足 / 封面慢”：先看 `circle_completion_service.py` 的 state/page/work-codes 缓存、`circle_image_cache_service.py`、`CircleCompletion.vue`、`CircleWorksViewport.vue`。
+- “DLsite 特典探测漏命中 / no_bonus 异常”：先看 `dlsite_bonus_probe_service.py`、`docs/dlsite-bonus-probe.md`、`dlsite_bonus_probe_cache`、`dlsite_bonus_probe_hit_index`、`dlsite_bonus_original_probe_states`。
+- “Redis 不可用 / 任务运行态丢失 / SSE 延迟”：先跑 `scripts/check-redis.ps1`，再看 `redis_service.py`、`routes.py` 的 startup / SSE 读流、`docker/entrypoint.sh` 是否启动内置 Redis。
 - “上传预览 / 上传进度不对”：先看 `ServerUploadPreviewDialog.vue`、`UploadTaskWorkbenchDialog.vue`、`library_manager.py`、`task_engine.py`。
 - “任务中心不刷新 / 状态串了”：先看 `task_engine.py` 的 event hook / 物化快照、`task_center_service.py`、`task_center_materialization_service.py`、`useRealtimeEvents.js`。
 - “操作历史 / 历史记录不对”：先看 `activity_log_service.py`、`activity_log_writer.py`、`activity_log_aggregator/`、`activity_log_rollup_service.py`、`ActivityHistory.vue`。
