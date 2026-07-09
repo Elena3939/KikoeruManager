@@ -14,6 +14,20 @@ IS_FROZEN = getattr(sys, 'frozen', False)
 # 全局变量存储实际使用的端口
 ACTUAL_PORT = 5555
 
+def get_uvicorn_limit_concurrency() -> int | None:
+    """读取 uvicorn 并发硬限制；0/空值表示关闭，避免高并发读接口被直接 503。"""
+    raw_value = os.environ.get("KIKOERUMANAGER_UVICORN_LIMIT_CONCURRENCY", "").strip()
+    if not raw_value or raw_value in {"0", "none", "None", "false", "False"}:
+        return None
+    try:
+        value = int(raw_value)
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            "忽略无效 KIKOERUMANAGER_UVICORN_LIMIT_CONCURRENCY=%r", raw_value
+        )
+        return None
+    return value if value > 0 else None
+
 def configure_stdio():
     """Force UTF-8 stdio on Windows so DLsite metadata logs render correctly."""
     for stream_name in ("stdout", "stderr"):
@@ -231,9 +245,15 @@ def main():
     if IS_FROZEN:
         threading.Thread(target=check_stop, daemon=True).start()
 
+    limit_concurrency = get_uvicorn_limit_concurrency()
+    logger.info(
+        "uvicorn 并发硬限制: %s",
+        limit_concurrency if limit_concurrency is not None else "disabled",
+    )
+
     # uvicorn 调优（针对群晖 / NAS Docker 这种慢 IO 场景）：
-    #   - limit_concurrency=128：并发请求超过这个数直接 503，避免 SSE 风暴 / 慢 SMB
-    #     堆积请求把内存吃光，进而让所有接口集体超时。
+    #   - limit_concurrency 默认关闭，避免 SSE / 健康检查 / 页面并发读接口被 uvicorn 直接 503。
+    #     如确实需要硬限制，可设置 KIKOERUMANAGER_UVICORN_LIMIT_CONCURRENCY 为正整数。
     #   - timeout_keep_alive=15：keep-alive 短一点，前面挂 nginx/反代时空闲连接更早释放。
     #   - backlog=512：监听队列加深，瞬时连接洪峰不至于直接被 OS 拒掉。
     config = uvicorn.Config(
@@ -243,7 +263,7 @@ def main():
         log_level="warning",
         access_log=False,
         log_config=None,
-        limit_concurrency=128,
+        limit_concurrency=limit_concurrency,
         timeout_keep_alive=15,
         backlog=512,
     )

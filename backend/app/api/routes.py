@@ -18494,27 +18494,37 @@ async def email_watcher_poll_now():
 
 @app.get("/api/notifications/stream")
 async def notifications_sse(request: Request):
-    """SSE 实时通知推送流"""
+    """兼容旧通知 SSE：从统一实时事件流筛出通知事件。"""
     import json as _json
     from starlette.responses import StreamingResponse as _SR
-    from ..core.task_notification_service import sse_subscribe, sse_unsubscribe
-
-    loop = asyncio.get_event_loop()
-    sid, q = sse_subscribe(loop)
+    from ..core.redis_service import get_redis_service
 
     async def generator():
+        last_redis_id = "$"
         try:
             yield f"data: {_json.dumps({'type': 'connected'})}\n\n"
             while True:
                 if await request.is_disconnected():
                     break
-                try:
-                    event = await asyncio.wait_for(q.get(), timeout=25)
-                    yield f"data: {_json.dumps(event, ensure_ascii=False)}\n\n"
-                except asyncio.TimeoutError:
+                redis_events = await asyncio.to_thread(
+                    get_redis_service().read_stream_payloads_sync,
+                    'events:stream',
+                    last_id=last_redis_id,
+                    block_ms=1000,
+                    count=50,
+                )
+                if redis_events:
+                    for message_id, event in redis_events:
+                        last_redis_id = message_id
+                        if str((event or {}).get("type") or "") != "notification.new":
+                            continue
+                        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+                        if payload:
+                            yield f"data: {_json.dumps(payload, ensure_ascii=False)}\n\n"
+                elif int(time.time()) % 25 == 0:
                     yield ": keepalive\n\n"
         finally:
-            sse_unsubscribe(sid)
+            pass
 
     return _SR(
         generator(),
