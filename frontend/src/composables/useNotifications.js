@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue'
-import { apiUrl, notificationApi, redirectIfSecurityGateExpired } from '../api'
+import { notificationApi } from '../api'
+import { useRealtimeEvents } from './useRealtimeEvents'
 
 const _unreadCount = ref(0)
 const _items = ref([])
@@ -10,18 +11,15 @@ const _page = ref(1)
 const _pageSize = 20
 const _panelOpen = ref(false)
 
-// SSE 状态（模块级单例，避免多组件重复连接）
-let _sse = null
-let _sseRetryTimer = null
-let _sseRetryDelay = 2000
-const SSE_MAX_DELAY = 30000
-const SSE_URL = apiUrl('/notifications/stream')
 const SYNC_CHANNEL_NAME = 'kikoerumanager.notification.sync'
 const SYNC_STORAGE_KEY = 'kikoerumanager:notification:sync'
 const _windowId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
 const _seenSyncIds = new Set()
 let _syncChannel = null
 let _sseConsumers = 0
+let _unsubscribeRealtimeNotification = null
+let _realtimeStarted = false
+const _realtimeEvents = useRealtimeEvents()
 
 function _rememberSyncId(id) {
   if (!id) return false
@@ -134,71 +132,36 @@ function _initCrossWindowSync() {
 _initCrossWindowSync()
 
 // ─────────────────────────────────────────────
-// SSE 连接管理
+// 统一实时事件订阅
 // ─────────────────────────────────────────────
-function _connectSSE() {
-  if (_sse && _sse.readyState !== EventSource.CLOSED) return
-
-  _sse = new EventSource(SSE_URL, { withCredentials: true })
-
-  _sse.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data)
-      if (data.type === 'connected') {
-        _sseRetryDelay = 2000  // 连接成功，重置退避
-        fetchUnreadCount()     // 拉一次当前未读数（初始同步）
-        return
-      }
-      if (data.type === 'new_notification') {
-        _unreadCount.value = data.unread_count ?? (_unreadCount.value + 1)
-        _broadcastSync('new', {
-          unread_count: _unreadCount.value,
-          item: data.item || null,
-        })
-        window.dispatchEvent(new CustomEvent('kikoerumanager:notification:new', { detail: data.item || data }))
-        if (_panelOpen.value) {
-          // 面板打开中，实时追加到列表顶部
-          if (data.item) {
-            _appendNotificationItem(data.item)
-          }
-        }
-        return
-      }
-      // 数据变更类信号事件：不进通知中心，只透传给关心它的页面/组件。
-      // - circle_owned_synced：某 RJ 已成功入库并写入 LibraryOwnedWork，前端 CircleCompletion 收到后可秒级刷新对应社团。
-      //   payload: { type, rjcode, canonicals: string[], circle_ids: string[] }
-      if (data.type === 'circle_owned_synced') {
-        window.dispatchEvent(new CustomEvent('kikoerumanager:circle:owned-synced', { detail: data }))
-        return
-      }
-      if (data.type === 'circle_subtitle_synced') {
-        window.dispatchEvent(new CustomEvent('kikoerumanager:circle:subtitle-synced', { detail: data }))
-        return
-      }
-    } catch { /* ignore */ }
-  }
-
-  _sse.onerror = async () => {
-    _sse?.close()
-    _sse = null
-    if (await redirectIfSecurityGateExpired()) return
-    if (_sseRetryTimer) clearTimeout(_sseRetryTimer)
-    _sseRetryTimer = setTimeout(() => {
-      _connectSSE()
-      _sseRetryDelay = Math.min(_sseRetryDelay * 2, SSE_MAX_DELAY)
-    }, _sseRetryDelay)
+function _handleRealtimeNotification(event) {
+  const data = event?.payload || {}
+  if (data.type !== 'new_notification') return
+  _unreadCount.value = data.unread_count ?? (_unreadCount.value + 1)
+  _broadcastSync('new', {
+    unread_count: _unreadCount.value,
+    item: data.item || null,
+  })
+  window.dispatchEvent(new CustomEvent('kikoerumanager:notification:new', { detail: data.item || data }))
+  if (_panelOpen.value && data.item) {
+    _appendNotificationItem(data.item)
   }
 }
 
-function _disconnectSSE() {
-  if (_sseRetryTimer) {
-    clearTimeout(_sseRetryTimer)
-    _sseRetryTimer = null
-  }
-  if (_sse) {
-    _sse.close()
-    _sse = null
-  }
+function _startRealtimeSubscription() {
+  if (_realtimeStarted) return
+  _realtimeStarted = true
+  _realtimeEvents.start()
+  _unsubscribeRealtimeNotification = _realtimeEvents.subscribe('notification.new', _handleRealtimeNotification)
+  fetchUnreadCount()
+}
+
+function _stopRealtimeSubscription() {
+  if (!_realtimeStarted) return
+  _unsubscribeRealtimeNotification?.()
+  _unsubscribeRealtimeNotification = null
+  _realtimeEvents.stop()
+  _realtimeStarted = false
 }
 
 // ─────────────────────────────────────────────
@@ -295,13 +258,13 @@ export function useNotifications() {
 
   function startSSE() {
     _sseConsumers += 1
-    _connectSSE()
+    _startRealtimeSubscription()
   }
 
   function stopSSE() {
     _sseConsumers = Math.max(0, _sseConsumers - 1)
     if (_sseConsumers === 0) {
-      _disconnectSSE()
+      _stopRealtimeSubscription()
     }
   }
 
