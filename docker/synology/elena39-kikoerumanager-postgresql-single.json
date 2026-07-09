@@ -1,0 +1,167 @@
+{
+  "CapAdd": null,
+  "CapDrop": null,
+  "cmd": "python -m app.main",
+  "cpu_priority": 50,
+  "enable_publish_all_ports": false,
+  "enable_restart_policy": false,
+  "enable_service_portal": false,
+  "enabled": true,
+  "env_variables": [
+    {
+      "key": "PATH",
+      "value": "/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    },
+    {
+      "key": "LANG",
+      "value": "C.UTF-8"
+    },
+    {
+      "key": "GPG_KEY",
+      "value": "A035C8C19219BA821ECEA86B64E628F8D684696D"
+    },
+    {
+      "key": "PYTHON_VERSION",
+      "value": "3.11.15"
+    },
+    {
+      "key": "PYTHON_SHA256",
+      "value": "272179ddd9a2e41a0fc8e42e33dfbdca0b3711aa5abf372d3f2d51543d09b625"
+    },
+    {
+      "key": "CONFIG_PATH",
+      "value": "/app/config/config.yaml"
+    },
+    {
+      "key": "DATA_PATH",
+      "value": "/app/data"
+    },
+    {
+      "key": "PYTHONPATH",
+      "value": "/app"
+    },
+    {
+      "key": "STATIC_FILES_PATH",
+      "value": "/app/static"
+    },
+    {
+      "key": "KIKOERUMANAGER_VERSION",
+      "value": "v1.6.77"
+    },
+    {
+      "key": "PORT",
+      "value": "5555"
+    },
+    {
+      "key": "TZ",
+      "value": "Asia/Shanghai"
+    },
+    {
+      "key": "POSTGRES_PASSWORD",
+      "value": "kikoerumanager"
+    }
+  ],
+  "exporting": false,
+  "id": "0e53f33da2948426547d5aed48cfdcb153cb25b4c9ab39dddce5b378b9dc09da",
+  "image": "elena39/kikoerumanager:1.6.77",
+  "is_ddsm": false,
+  "is_package": false,
+  "links": [],
+  "memory_limit": 0,
+  "name": "elena39-kikoerumanager",
+  "network": [
+    {
+      "driver": "bridge",
+      "name": "bridge"
+    }
+  ],
+  "network_mode": "bridge",
+  "port_bindings": [
+    {
+      "container_port": 5555,
+      "host_port": 5555,
+      "type": "tcp"
+    },
+    {
+      "container_port": 5432,
+      "host_port": 15432,
+      "type": "tcp"
+    }
+  ],
+  "privileged": false,
+  "service_portals": [],
+  "shortcut": {
+    "enable_shortcut": false,
+    "enable_status_page": false,
+    "enable_web_page": false,
+    "web_page_url": ""
+  },
+  "use_host_network": false,
+  "volume_bindings": [
+    {
+      "host_volume_file": "/docker/prekikoeru/data",
+      "mount_point": "/app/data",
+      "type": "rw"
+    },
+    {
+      "host_volume_file": "/docker/prekikoeru/temp",
+      "mount_point": "/temp",
+      "type": "rw"
+    },
+    {
+      "host_volume_file": "/AMSR",
+      "mount_point": "/library_amsr",
+      "type": "rw"
+    },
+    {
+      "host_volume_file": "/ANIME/temp/asmr",
+      "mount_point": "/library_anime",
+      "type": "rw"
+    },
+    {
+      "host_volume_file": "/ASMR",
+      "mount_point": "/library_asmr",
+      "type": "rw"
+    },
+    {
+      "host_volume_file": "/docker/prekikoeru/input",
+      "mount_point": "/input",
+      "type": "rw"
+    },
+    {
+      "host_volume_file": "/docker/prekikoeru/config",
+      "mount_point": "/app/config",
+      "type": "rw"
+    },
+    {
+      "host_volume_file": "/ANIME/temp/压缩包/input",
+      "mount_point": "/input1",
+      "type": "rw"
+    },
+    {
+      "host_volume_file": "/ANIME/temp/压缩包/temp",
+      "mount_point": "/temp1",
+      "type": "rw"
+    },
+    {
+      "host_volume_file": "/ANIME/temp/压缩包/processed",
+      "mount_point": "/processed1",
+      "type": "rw"
+    },
+    {
+      "host_volume_file": "/docker/prekikoeru/existing",
+      "mount_point": "/existing",
+      "type": "rw"
+    },
+    {
+      "host_volume_file": "/docker/prekikoeru/processed",
+      "mount_point": "/processed",
+      "type": "rw"
+    },
+    {
+      "host_volume_file": "/docker/prekikoeru/postgres",
+      "mount_point": "/app/postgres",
+      "type": "rw"
+    }
+  ]
+}
