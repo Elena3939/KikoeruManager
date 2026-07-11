@@ -342,6 +342,8 @@ import {
 } from 'lucide-vue-next'
 import { libraryApi } from '../../api'
 import { libraryEntryIconFor, libraryEntryMetaFor } from './_libraryFileKind'
+import { libraryIndexPathMatches, useLibraryIndexStateStore } from '../../stores/libraryIndexState'
+import { normalizeSuccessfulDeletePaths } from '../../utils/libraryRequestGuard'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -352,6 +354,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['update:modelValue', 'mutated'])
+const indexStateStore = useLibraryIndexStateStore()
 
 const visible = computed({
   get: () => props.modelValue,
@@ -404,6 +407,9 @@ let directorySummaryQueue = []
 let directorySummaryTimer = null
 let directorySummaryProcessing = false
 let directorySummaryRunToken = 0
+let folderRequestEpoch = 0
+let folderAbortController = null
+const directoryAbortControllers = new Map()
 
 const treeRoot = computed(() => buildTree(folderItems.value, folderContentsInfo.value.folderPath, folderContentsInfo.value.recursive))
 const treeIndex = computed(() => buildTreeIndex(treeRoot.value))
@@ -517,6 +523,7 @@ watch(visible, async value => {
   }
   window.removeEventListener('keydown', handleDialogKeydown)
   window.removeEventListener('resize', syncTreeScrollbarWidth)
+  invalidateFolderRequests()
   resetDirectorySummaryHydration()
 })
 
@@ -560,13 +567,21 @@ function handleDialogKeydown (event) {
 
 async function reload () {
   if (!isMultiRootMode.value && (!props.folderPath || !props.libraryId)) return
+  const requestEpoch = ++folderRequestEpoch
+  folderAbortController?.abort()
+  const controller = new AbortController()
+  folderAbortController = controller
   resetDirectorySummaryHydration()
   folderLoading.value = true
   try {
     const previousExpanded = new Set([...expandedIds.value].map(id => String(id).replace(/^dir:/, '')))
     const previousSelected = new Set(selectedFileIds.value)
     if (isMultiRootMode.value) {
-      const roots = folderRootEntries.value.map(root => normalizeRootItem(root))
+      const roots = indexStateStore.filterRows('', folderRootEntries.value, {
+        getLibraryId: root => root?.library_id,
+        getPath: root => root?.path,
+      }).map(root => normalizeRootItem(root))
+      if (requestEpoch !== folderRequestEpoch || controller.signal.aborted || !visible.value) return
       folderItems.value = roots
       folderContentsInfo.value = {
         folderName: props.folderName || `聚合文件管理（${roots.length} 个路径）`,
@@ -589,8 +604,19 @@ async function reload () {
       return
     }
 
-    const data = await libraryApi.browserFolderContents(props.libraryId, props.folderPath, { recursive: false })
-    const items = Array.isArray(data.items) ? data.items : []
+    const requestLibraryId = String(props.libraryId || '')
+    const requestFolderPath = String(props.folderPath || '')
+    const data = await libraryApi.browserFolderContents(requestLibraryId, requestFolderPath, {
+      recursive: false,
+      signal: controller.signal,
+    })
+    if (requestEpoch !== folderRequestEpoch || controller.signal.aborted || !visible.value) return
+    if (String(props.libraryId || '') !== requestLibraryId || String(props.folderPath || '') !== requestFolderPath) return
+    if (!indexStateStore.isIndexViewResponseCurrent(data)) return
+    indexStateStore.recordIndexViews(data)
+    const items = indexStateStore.filterRows(requestLibraryId, data.items || [], {
+      getPath: item => item?.path || item?.absolute_path || item?.relative_path,
+    })
     folderItems.value = items.map(item => normalizeShallowItem(item, data.folder_path || props.folderPath || ''))
     folderContentsInfo.value = {
       folderName: data.folder_name || props.folderName || '',
@@ -633,11 +659,25 @@ async function reload () {
     queueVisibleDirectorySummaries()
     queueBackgroundDirectorySummaries()
   } catch (error) {
+    if (controller.signal.aborted || error?.code === 'ERR_CANCELED') return
     visible.value = false
     ElMessage.error('加载文件夹内容失败: ' + (error.response?.data?.detail || error.message))
   } finally {
-    folderLoading.value = false
+    if (requestEpoch === folderRequestEpoch) {
+      folderAbortController = null
+      folderLoading.value = false
+    }
   }
+}
+
+function invalidateFolderRequests () {
+  folderRequestEpoch += 1
+  folderAbortController?.abort()
+  folderAbortController = null
+  for (const controller of directoryAbortControllers.values()) controller.abort()
+  directoryAbortControllers.clear()
+  loadingDirectoryIds.value = new Set()
+  folderLoading.value = false
 }
 
 async function openMojibakeRepairPreview () {
@@ -712,6 +752,17 @@ async function deletePaths (paths, options = {}) {
       for (const [libraryId, rows] of groups.entries()) {
         results.push(await libraryApi.browserBatchDelete(libraryId, rows.map(row => resolveNodePath(row)).filter(Boolean), true))
       }
+      const successfulDeletes = []
+      results.forEach((result, index) => {
+        const libraryId = [...groups.keys()][index]
+        for (const path of normalizeSuccessfulDeletePaths(result)) successfulDeletes.push({ libraryId, path })
+        indexStateStore.registerMutationResponse(result, {
+          libraryId,
+          deletedPaths: normalizeSuccessfulDeletePaths(result).map(path => ({ libraryId, path, scope: 'subtree' })),
+        })
+      })
+      invalidateFolderRequests()
+      pruneDeletedRows(successfulDeletes)
       const successCount = results.reduce((sum, item) => sum + Number(item?.success_count || 0), 0)
       const failedCount = results.reduce((sum, item) => sum + Number(item?.failed_paths?.length || 0), 0)
       if (failedCount) ElMessage.warning(`批量删除完成：成功 ${successCount} 项，失败 ${failedCount} 项`)
@@ -723,7 +774,7 @@ async function deletePaths (paths, options = {}) {
       })
       selectedFileIds.value = new Set()
       folderLastSelectedId.value = ''
-      await reload()
+      if (visible.value) await reload()
       return
     }
 
@@ -736,7 +787,13 @@ async function deletePaths (paths, options = {}) {
         cancelText: '取消',
         tone: 'danger'
       })
-      await libraryApi.browserDelete(props.libraryId, paths[0], true)
+      const result = await libraryApi.browserDelete(props.libraryId, paths[0], true)
+      indexStateStore.registerMutationResponse(result, {
+        libraryId: props.libraryId,
+        deletedPaths: [{ libraryId: props.libraryId, path: paths[0], scope: 'subtree' }],
+      })
+      invalidateFolderRequests()
+      pruneDeletedRows([{ libraryId: props.libraryId, path: paths[0] }])
       ElMessage.success('删除成功')
       const previewCounts = getRowDeleteCounts(effectivePreviewRow)
       emit('mutated', {
@@ -753,6 +810,13 @@ async function deletePaths (paths, options = {}) {
         tone: 'danger'
       })
       const result = await libraryApi.browserBatchDelete(props.libraryId, paths, true)
+      const successPaths = normalizeSuccessfulDeletePaths(result)
+      indexStateStore.registerMutationResponse(result, {
+        libraryId: props.libraryId,
+        deletedPaths: successPaths.map(path => ({ libraryId: props.libraryId, path, scope: 'subtree' })),
+      })
+      invalidateFolderRequests()
+      pruneDeletedRows(successPaths.map(path => ({ libraryId: props.libraryId, path })))
       const failedCount = Number(result?.failed_paths?.length || 0)
       if (failedCount) {
         ElMessage.warning(`批量删除完成：成功 ${result.success_count || 0} 项，失败 ${failedCount} 项`)
@@ -767,9 +831,9 @@ async function deletePaths (paths, options = {}) {
     }
     selectedFileIds.value = new Set()
     folderLastSelectedId.value = ''
-    await reload()
+    if (visible.value) await reload()
   } catch (error) {
-    if (error === 'cancel' || error?.message === 'cancel') return
+    if (error === 'cancel' || error?.message === 'cancel' || error?.code === 'ERR_CANCELED') return
     ElMessage.error('删除失败: ' + (error.response?.data?.detail || error.message))
   } finally {
     folderDeleting.value = false
@@ -1064,22 +1128,61 @@ async function loadDirectoryChildren (node) {
   const path = resolveNodePath(node)
   const libraryId = resolveNodeLibraryId(node)
   if (!path || !libraryId || loadingDirectoryIds.value.has(node.id)) return false
+  const requestEpoch = folderRequestEpoch
+  const controller = new AbortController()
+  directoryAbortControllers.get(node.id)?.abort()
+  directoryAbortControllers.set(node.id, controller)
   loadingDirectoryIds.value = new Set([...loadingDirectoryIds.value, node.id])
   try {
-    const data = await libraryApi.browserFolderContents(libraryId, path, { recursive: false })
-    const items = Array.isArray(data.items) ? data.items : []
+    const data = await libraryApi.browserFolderContents(libraryId, path, {
+      recursive: false,
+      signal: controller.signal,
+    })
+    if (requestEpoch !== folderRequestEpoch || controller.signal.aborted || !visible.value) return false
+    if (!indexStateStore.isIndexViewResponseCurrent(data)) return false
+    indexStateStore.recordIndexViews(data)
+    const items = indexStateStore.filterRows(libraryId, data.items || [], {
+      getPath: item => item?.path || item?.absolute_path || item?.relative_path,
+    })
     replaceTreeNodeChildren(node.id, items.map(item => ({ ...normalizeShallowItem(item, path), library_id: libraryId })), data)
     await nextTick()
     treeRowVirtualizer.value.measure()
     return true
   } catch (error) {
+    if (controller.signal.aborted || error?.code === 'ERR_CANCELED') return false
     ElMessage.error('加载子目录失败: ' + (error.response?.data?.detail || error.message))
     return false
   } finally {
-    const next = new Set(loadingDirectoryIds.value)
-    next.delete(node.id)
-    loadingDirectoryIds.value = next
+    if (requestEpoch === folderRequestEpoch && directoryAbortControllers.get(node.id) === controller) {
+      directoryAbortControllers.delete(node.id)
+      const next = new Set(loadingDirectoryIds.value)
+      next.delete(node.id)
+      loadingDirectoryIds.value = next
+    }
   }
+}
+
+function pruneDeletedRows (deletedItems = []) {
+  const normalized = (Array.isArray(deletedItems) ? deletedItems : [])
+    .map(item => ({
+      libraryId: String(item?.libraryId || '').trim(),
+      path: String(item?.path || '').trim(),
+    }))
+    .filter(item => item.libraryId && item.path)
+  if (!normalized.length) return
+
+  const prune = rows => (Array.isArray(rows) ? rows : []).flatMap(row => {
+    const libraryId = resolveNodeLibraryId(row)
+    const path = resolveNodePath(row)
+    if (normalized.some(item => item.libraryId === libraryId && libraryIndexPathMatches(path, item.path, 'subtree'))) return []
+    if (!Array.isArray(row?.children) || !row.children.length) return [row]
+    return [{ ...row, children: prune(row.children) }]
+  })
+
+  folderItems.value = prune(folderItems.value)
+  const validIds = new Set(buildTreeIndex(buildTree(folderItems.value, folderContentsInfo.value.folderPath, folderContentsInfo.value.recursive)).nodeById.keys())
+  selectedFileIds.value = new Set([...selectedFileIds.value].filter(id => validIds.has(id)))
+  expandedIds.value = new Set([...expandedIds.value].filter(id => validIds.has(id)))
 }
 
 function replaceTreeNodeChildren (targetId, children, summary = {}) {
@@ -1339,41 +1442,62 @@ async function loadRecursiveIndexTreeForExpand () {
       .filter(Boolean)
   )
 
-  const data = await libraryApi.browserFolderContents(props.libraryId, props.folderPath, {
-    recursive: true,
-    preferIndex: true,
-    includeDirs: true,
-  })
+  const requestEpoch = ++folderRequestEpoch
+  folderAbortController?.abort()
+  const controller = new AbortController()
+  folderAbortController = controller
 
-  const items = Array.isArray(data.items) ? data.items : []
-  folderItems.value = items.map(item => ({
-    ...item,
-    library_id: item?.library_id || props.libraryId,
-    type: item?.type || (item?.is_directory ? 'dir' : 'file'),
-  }))
-  folderContentsInfo.value = {
-    folderName: data.folder_name || props.folderName || folderContentsInfo.value.folderName || '',
-    folderPath: data.folder_path || props.folderPath || folderContentsInfo.value.folderPath || '',
-    totalFiles: pickNonNegativeNumber(data.total_files, items.length),
-    totalSize: pickNonNegativeNumber(
-      data.total_size,
-      data.total_size_bytes,
-      items.reduce((sum, item) => sum + Number(item?.size || 0), 0),
-    ),
-    totalFolderCount: pickNonNegativeNumber(data.total_folder_count, folderContentsInfo.value.totalFolderCount, 0),
-    recursive: true,
-    viaIndex: Boolean(data.browse_via_index),
+  try {
+    const data = await libraryApi.browserFolderContents(props.libraryId, props.folderPath, {
+      recursive: true,
+      preferIndex: true,
+      includeDirs: true,
+      signal: controller.signal,
+    })
+
+    if (requestEpoch !== folderRequestEpoch || controller.signal.aborted || !visible.value) return false
+    if (!indexStateStore.isIndexViewResponseCurrent(data)) return false
+    indexStateStore.recordIndexViews(data)
+
+    const items = indexStateStore.filterRows(props.libraryId, data.items || [], {
+      getPath: item => item?.path || item?.absolute_path || item?.relative_path,
+    })
+    folderItems.value = items.map(item => ({
+      ...item,
+      library_id: item?.library_id || props.libraryId,
+      type: item?.type || (item?.is_directory ? 'dir' : 'file'),
+    }))
+    folderContentsInfo.value = {
+      folderName: data.folder_name || props.folderName || folderContentsInfo.value.folderName || '',
+      folderPath: data.folder_path || props.folderPath || folderContentsInfo.value.folderPath || '',
+      totalFiles: pickNonNegativeNumber(data.total_files, items.length),
+      totalSize: pickNonNegativeNumber(
+        data.total_size,
+        data.total_size_bytes,
+        items.reduce((sum, item) => sum + Number(item?.size || 0), 0),
+      ),
+      totalFolderCount: pickNonNegativeNumber(data.total_folder_count, folderContentsInfo.value.totalFolderCount, 0),
+      recursive: true,
+      viaIndex: Boolean(data.browse_via_index),
+    }
+
+    await nextTick()
+    const validIds = new Set(folderNodeById.value.keys())
+    selectedFileIds.value = new Set(
+      [...folderNodeById.value.values()]
+        .filter(node => previousSelectedPaths.has(normalizeAnyPath(resolveNodePath(node))))
+        .map(node => node.id)
+        .filter(id => validIds.has(id))
+    )
+    return true
+  } catch (error) {
+    if (controller.signal.aborted || error?.code === 'ERR_CANCELED') return false
+    throw error
+  } finally {
+    if (requestEpoch === folderRequestEpoch && folderAbortController === controller) {
+      folderAbortController = null
+    }
   }
-
-  await nextTick()
-  const validIds = new Set(folderNodeById.value.keys())
-  selectedFileIds.value = new Set(
-    [...folderNodeById.value.values()]
-      .filter(node => previousSelectedPaths.has(normalizeAnyPath(resolveNodePath(node))))
-      .map(node => node.id)
-      .filter(id => validIds.has(id))
-  )
-  return true
 }
 
 async function expandAll () {
@@ -1860,6 +1984,7 @@ function isTextInputElement (target) {
 defineExpose({ reload })
 
 onBeforeUnmount(() => {
+  invalidateFolderRequests()
   window.removeEventListener('keydown', handleDialogKeydown)
   window.removeEventListener('resize', syncTreeScrollbarWidth)
   resetDirectorySummaryHydration()

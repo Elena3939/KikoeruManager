@@ -7,7 +7,7 @@
       :title="tooltip"
     >
       <svg
-        v-if="statusName === 'syncing'"
+        v-if="['syncing', 'catching_up', 'rebuilding'].includes(statusName)"
         class="lib-index-spinner"
         viewBox="0 0 16 16"
         aria-hidden="true"
@@ -45,6 +45,7 @@ import { Database as IconDatabase, RefreshCw as IconRefreshCw } from 'lucide-vue
 import { Badge } from '@/components/ui/badge'
 import { libraryApi } from '../../api'
 import { showSystemAlert, showSystemConfirm } from '../../composables/useSystemPrompt'
+import { useLibraryIndexStateStore } from '../../stores/libraryIndexState'
 
 const props = defineProps({
   library: {
@@ -55,10 +56,12 @@ const props = defineProps({
 
 const emit = defineEmits(['status-change'])
 
-const status = ref(null)
-const rebuilding = ref(false)
+const indexStateStore = useLibraryIndexStateStore()
+const rebuildingForLibrary = ref('')
 const fetching = ref(false)
 let lastFetchedFor = null
+let statusRequestEpoch = 0
+let statusAbortController = null
 
 const libraryId = computed(() => (props.library?.id ? String(props.library.id) : ''))
 const libraryName = computed(() => props.library?.name || libraryId.value || '当前库存')
@@ -67,6 +70,8 @@ const isRemoteLibrary = computed(() => props.library?.type === 'synology_filesta
 const STATUS_LABELS = {
   idle: '索引未建',
   syncing: '正在同步',
+  catching_up: '后台追赶',
+  rebuilding: '正在重建',
   ready: '索引就绪',
   error: '索引出错',
 }
@@ -74,19 +79,30 @@ const STATUS_LABELS = {
 const STATUS_CLASSES = {
   idle: 'lib-index-chip-idle',
   syncing: 'lib-index-chip-syncing',
+  catching_up: 'lib-index-chip-syncing',
+  rebuilding: 'lib-index-chip-syncing',
   ready: 'lib-index-chip-ready',
   error: 'lib-index-chip-error',
 }
 
+const status = computed(() => indexStateStore.statusFor(libraryId.value))
+
 const statusName = computed(() => {
-  const raw = status.value?.status || 'idle'
+  const snapshot = status.value || {}
+  const acceptedSeq = Number(snapshot.accepted_seq || 0)
+  const materializedSeq = Number(snapshot.materialized_seq || 0)
+  const raw = snapshot.building_generation
+    ? 'rebuilding'
+    : acceptedSeq > materializedSeq
+      ? 'catching_up'
+      : snapshot.status || 'idle'
   return STATUS_LABELS[raw] ? raw : 'idle'
 })
 
 const statusLabel = computed(() => STATUS_LABELS[statusName.value])
 const chipColorClass = computed(() => STATUS_CLASSES[statusName.value])
 
-const busy = computed(() => rebuilding.value || statusName.value === 'syncing')
+const busy = computed(() => rebuildingForLibrary.value === libraryId.value || ['syncing', 'catching_up', 'rebuilding'].includes(statusName.value))
 
 // syncing 期间 total_entries 表示已扫描数，ready 后表示总数
 const totalEntriesText = computed(() => {
@@ -99,6 +115,10 @@ const totalEntriesText = computed(() => {
   if (name === 'syncing' && total > 0) {
     if (total >= 10000) return `· ${(total / 10000).toFixed(1)}w 项`
     return `· ${total.toLocaleString()} 项`
+  }
+  if (name === 'catching_up') {
+    const pending = Math.max(0, Number(status.value?.pending_events ?? Number(status.value?.accepted_seq || 0) - Number(status.value?.materialized_seq || 0)))
+    return pending > 0 ? `· ${pending.toLocaleString()} 项` : ''
   }
   return ''
 })
@@ -126,16 +146,14 @@ const rebuildTooltip = computed(() => {
 })
 
 watch([libraryId, isRemoteLibrary], ([id, remote]) => {
+  const previousId = lastFetchedFor
+  invalidateStatusRequest()
   if (remote) {
-    status.value = null
     lastFetchedFor = null
     return
   }
-  if (!id) {
-    status.value = null
-    return
-  }
-  if (id === lastFetchedFor) return
+  if (!id) return
+  if (id === previousId && indexStateStore.statusFor(id)) return
   lastFetchedFor = id
   fetchStatus()
 }, { immediate: true })
@@ -150,6 +168,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  invalidateStatusRequest()
   if (typeof document !== 'undefined') {
     document.removeEventListener('visibilitychange', handleVisibilityChange)
   }
@@ -165,18 +184,37 @@ async function fetchStatus() {
   if (typeof document !== 'undefined' && document.hidden) {
     return
   }
-  if (fetching.value) return
+  const requestEpoch = ++statusRequestEpoch
+  statusAbortController?.abort()
+  const controller = new AbortController()
+  statusAbortController = controller
   fetching.value = true
   try {
-    const data = await libraryApi.getIndexStatus(id)
-    status.value = data
-    emit('status-change', data)
+    const data = await libraryApi.getIndexStatus(id, { signal: controller.signal })
+    if (requestEpoch !== statusRequestEpoch || controller.signal.aborted) return
+    if (libraryId.value !== id || isRemoteLibrary.value) return
+    if (indexStateStore.applyStatusSnapshot(data, 'http')) {
+      emit('status-change', indexStateStore.statusFor(id))
+    }
   } catch (error) {
+    if (controller.signal.aborted || error?.code === 'ERR_CANCELED') return
     // 静默：状态查询失败不应该影响页面其他功能
-    status.value = { status: 'idle', error: error?.message || String(error) }
+    if (!indexStateStore.statusFor(id)) {
+      indexStateStore.applyStatusSnapshot({ library_id: id, status: 'idle', error: error?.message || String(error) }, 'http')
+    }
   } finally {
-    fetching.value = false
+    if (requestEpoch === statusRequestEpoch) {
+      statusAbortController = null
+      fetching.value = false
+    }
   }
+}
+
+function invalidateStatusRequest() {
+  statusRequestEpoch += 1
+  statusAbortController?.abort()
+  statusAbortController = null
+  fetching.value = false
 }
 
 function handleVisibilityChange() {
@@ -192,12 +230,9 @@ function handleStreamEvent(event) {
   const payload = event?.detail || {}
   if (payload.type !== 'library_index_status_changed') return
   if (!libraryId.value || String(payload.library_id || '') !== libraryId.value) return
-  const next = {
-    ...(status.value || {}),
-    ...payload,
+  if (indexStateStore.applyStatusSnapshot(payload, 'sse')) {
+    emit('status-change', indexStateStore.statusFor(libraryId.value))
   }
-  status.value = next
-  emit('status-change', next)
 }
 
 async function onRebuild() {
@@ -217,11 +252,12 @@ async function onRebuild() {
     return // 用户取消
   }
 
-  rebuilding.value = true
+  rebuildingForLibrary.value = id
   try {
     const data = await libraryApi.rebuildIndex(id)
-    status.value = data
-    emit('status-change', data)
+    if (indexStateStore.applyStatusSnapshot(data, 'http')) {
+      emit('status-change', indexStateStore.statusFor(id))
+    }
   } catch (error) {
     const detail = error?.response?.data?.detail || error?.message || String(error)
     showSystemAlert({
@@ -229,7 +265,7 @@ async function onRebuild() {
       message: detail,
     })
   } finally {
-    rebuilding.value = false
+    if (rebuildingForLibrary.value === id) rebuildingForLibrary.value = ''
   }
 }
 

@@ -3249,3 +3249,257 @@
 - `docker/synology/elena39-kikoerumanager-postgresql-single.json`：删除误提交的本地 Docker 导入模板。
 - `progress.md`：修正本轮记录，说明移除原因和验证方式。
 - 回滚方式：从提交 `9682afcc` 恢复 `docker/synology/elena39-kikoerumanager-postgresql-single.json`，并还原本段进度记录。
+
+## 2026-07-09 - Task: 调查特典补全卡顿与封面缓存重复下载
+### What was done
+- 实查服务器日志、健康接口和 PostgreSQL 活动，确认本次不是数据库锁、连接池打满或 `price / wishlist_count` 字段问题；卡顿发生在 `circle_completion_bonus_probe` 开始后，DLsite 新作日期页连接失败进入重试，期间大量封面请求也在等待外网下载。
+- 保持封面“缺图时下载到本地再读取”的业务语义不变，修复 Docker 环境封面缓存目录：优先使用 `DATA_PATH/img`，默认落到持久化卷 `/app/data/img`，不再由 `/app/config/config.yaml` 错推到 `/app/img`。
+- 给 DLsite 新作日期页请求增加特典链路快速失败：该请求不再走 2/4/8 秒重试和 one-shot 兜底，单次 `connect=5s / read=10s` 失败后返回 `http_error`，特典层按既有规则标记该日期 `incomplete`，不写 `no_bonus`。
+- 新增事件循环 watchdog：启动后记录主循环延迟；如果主循环心跳停顿，独立守护线程会把所有 Python 线程栈写入日志，便于下次直接定位同步阻塞点。
+- 同步社团补全缓存、DLsite 特典探测和性能诊断文档，明确封面缓存持久化目录、日期页快速失败规则和 watchdog 行为。
+
+### Testing
+- `$env:PYTHONPATH='backend'; $env:PYTHONIOENCODING='utf-8'; backend\venv\Scripts\python.exe -m py_compile backend\app\api\routes.py backend\app\core\dlsite_service.py backend\app\core\circle_image_cache_service.py`：通过。
+- 使用项目 Python 执行封面缓存目录烟测：设置 `DATA_PATH=D:\Tool\ASMR\KikoeruTool_Elena_StartAll\data` 后，`CircleImageCacheService.cache_dir` 返回 `D:\Tool\ASMR\KikoeruTool_Elena_StartAll\data\img`。
+- 使用项目 Python 执行 DLsite 日期页快速失败烟测：模拟 `ConnectError` 时，`list_new_work_summaries_by_date('2024-06-04')` 只调用 1 次 `_guarded_get`，参数 `retry=False`，返回 `http_error`。
+- `git diff --check -- backend/app/api/routes.py backend/app/core/dlsite_service.py backend/app/core/circle_image_cache_service.py docs/circle-completion-performance-cache.md`：通过，仅有 Windows autocrlf 的 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/circle_image_cache_service.py`：封面缓存目录优先走 `DATA_PATH/img`，确保 Docker 下落到 `/app/data/img` 持久化卷。
+- `backend/app/core/dlsite_service.py`：`_guarded_get()` 增加可选快速失败参数，并让新作日期页请求使用短 timeout + `retry=False`。
+- `backend/app/api/routes.py`：新增事件循环 watchdog，在卡顿时输出主循环延迟和线程栈。
+- `docs/circle-completion-performance-cache.md`：记录 Docker 封面缓存持久化目录规则。
+- `docs/dlsite-bonus-probe.md`：记录新作日期页网络失败必须快速 `incomplete`，不能拖住整站或写 `no_bonus`。
+- `docs/system-performance-bottleneck-audit-2026-06-09.md`：记录事件循环 watchdog 诊断能力。
+- `progress.md`：追加本轮调查、修复和验证记录。
+- 回滚方式：反向应用上述文件中本轮 `DATA_PATH/img`、日期页 `retry=False` / 短 timeout、事件循环 watchdog 和文档 hunk，并删除本段进度记录；若只回滚诊断能力，可仅还原 `backend/app/api/routes.py` 中 `_EVENT_LOOP_WATCHDOG_*` 相关 hunk。
+
+## 2026-07-09 - Task: HTTP 高压下控制面不卡死优化
+### What was done
+- 新增 `runtime_buffer` 运行态配置，明确只缓冲任务进度、事件和日志流批次，不改 HTTP / ASMR / 百度下载并发、aria2 `split` 或连接数配置。
+- 扩展 Redis 运行态：任务下载中的 `download_files` / `failed_files` / runtime / progress log 优先进入 Redis；Redis 不可用时降级到进程内 memory fallback，已有下载不被中断。
+- 将系统日志读取、日志搜索、日志管理切到专用 `system-log-io` bounded thread pool，避免日志页被默认 executor 中的下载、解析和数据库写入挤占。
+- `/api/logs/stream` 增加固定批次保护，超过批次只推最新日志并返回 `dropped_count` / `next_offset`，前端日志页显示“流保护跳过 N”，避免一次 SSE 把大增量塞到页面导致白屏。
+- 任务中间态持久化削峰：下载 / 上传中的大文件明细不再每个 progress tick 全量写 PostgreSQL，只保存轻量摘要；完成、失败、取消、等待人工 / 重试状态仍强制完整落库。
+- 新增控制面诊断接口：`/api/system/pressure`、`/api/system/runtime-buffer/status`、`/api/logs/stream/status`，用于查看资源预算、runtime buffer、日志线程池、任务队列和数据库连接池压力。
+- 新增文档说明控制面隔离、运行态缓冲、日志流保护、诊断接口和“不改下载数据面配置”的边界。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile backend/app/config/settings.py backend/app/core/redis_service.py backend/app/core/task_engine.py backend/app/api/routes.py`：通过。
+- `frontend/` 下执行 `npm run build`：通过，预压缩 `created 134, skipped 51`；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning。
+- 使用项目 Python 执行 runtime buffer memory fallback 烟测：强制 `KIKOERUMANAGER_REDIS_ENABLED=0` 后，HTTP 下载任务运行态可写入 / 读取进程内 memory，事件 stream 返回 `memory-*` id。
+- `git diff --check -- backend/app/config/settings.py backend/config/config.yaml backend/app/core/redis_service.py backend/app/core/task_engine.py backend/app/api/routes.py frontend/src/views/Logs.vue docs/runtime-buffer-control-plane.md progress.md`：通过；仅有 Windows autocrlf 的 LF/CRLF 提示。
+- `powershell -ExecutionPolicy Bypass -File scripts/check-redis.ps1`：未通过；本机 `redis-server` 不在 PATH，且 `redis://:123456@localhost:6379/0` 不可达。
+- `$env:PYTHONPATH='backend'; $env:PYTHONIOENCODING='utf-8'; .\.venv\Scripts\python.exe -m pytest backend/tests/test_redis_config.py backend/tests/test_routes_maintenance_config.py backend/tests/test_database_compat_migrations.py -q`：90 秒无输出，卡在测试初始化阶段，已停止残留 pytest 进程。
+
+### Notes
+- `backend/app/config/settings.py`、`backend/config/config.yaml`：新增 `runtime_buffer` 配置项及默认值。
+- `backend/app/core/redis_service.py`：新增 runtime buffer 配置读取、任务运行态 memory fallback、事件 stream memory ring 和状态诊断。
+- `backend/app/core/task_engine.py`：中间态任务快照瘦身并按 `progress_flush_interval_seconds` 合并写库，终态 / 等待态保持完整持久化。
+- `backend/app/api/routes.py`：日志 I/O 专用线程池、日志流批次保护、runtime overlay 扩展和新增压力诊断接口。
+- `frontend/src/views/Logs.vue`：展示日志流保护性跳过数量。
+- `docs/runtime-buffer-control-plane.md`：记录控制面运行态缓冲设计、配置、接口和边界。
+- `progress.md`：追加本轮优化和验证记录。
+- 回滚方式：反向应用上述文件中本轮 `runtime_buffer`、Redis memory fallback、日志线程池 / SSE 批次保护、任务中间态瘦身、前端跳过提示和文档 hunk，并删除本段进度记录；若只需临时关闭运行态缓冲，可先把 `runtime_buffer.enabled` 改为 `false`。
+
+## 2026-07-09 - Task: 拆分 DLsite 特典缓存超大 RJ 查询
+### What was done
+- 将 `DLsiteBonusProbeCache.rjcode.in_(...)` 统一收口到缓存回表 helper，避免各入口直接构造超大 `IN`。
+- 小批量缓存读取按 `cache_lookup_batch_size` 分批查询，默认从 500 调整为 1000，并限制最大 3000。
+- PostgreSQL 且 RJ 数量达到 3000 时，改用 session 临时表写入 RJ 列表后 `JOIN dlsite_bonus_probe_cache` 回查，减少 SQLAlchemy 参数绑定、网络传输和 PostgreSQL 解析 / planner 压力。
+- 临时表路径失败时自动回退分批 `IN`，避免单次优化失败阻断特典探测。
+- 命中索引复用隐藏特典的回表查询也改走同一 helper，不再一次性把 `hit_rjcodes` 全塞进 `IN`。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile backend/app/core/dlsite_bonus_probe_service.py backend/app/config/settings.py`：通过。
+- 使用项目 Python 执行 helper 烟测：2500 个 RJ 拆成 `[1000, 1000, 500]` 三批；PostgreSQL fake db 下 3500 个 RJ 走临时表建表、批量插入和 `JOIN tmp_bonus_probe_rjcodes_*` 查询。
+- `$env:PYTHONPATH='backend'; $env:PYTHONIOENCODING='utf-8'; .\.venv\Scripts\python.exe -m pytest backend/tests/test_dlsite_bonus_probe_service.py::test_cache_rows_by_rjcodes_sync_splits_large_in_batches backend/tests/test_dlsite_bonus_probe_service.py::test_cache_rows_by_rjcodes_sync_uses_temp_table_for_postgresql_large_lookup -q`：90 秒无输出，仍卡在测试初始化阶段，已停止残留 pytest 进程。
+
+### Notes
+- `backend/app/core/dlsite_bonus_probe_service.py`：新增缓存 RJ 批量回表 helper、小批量分批 `IN` 和大批量 PostgreSQL 临时表 `JOIN` 路径。
+- `backend/app/config/settings.py`、`backend/config/config.yaml`：调整 `bonus_probe.cache_lookup_batch_size` 默认值和上限。
+- `backend/tests/test_dlsite_bonus_probe_service.py`：补充大列表分批 `IN` 与 PostgreSQL 临时表路径测试。
+- `docs/dlsite-bonus-probe.md`：记录缓存批量读取不能使用超大 `IN`，以及临时表阈值和回退策略。
+- `progress.md`：追加本轮优化和验证记录。
+- 回滚方式：反向应用上述文件中本轮 `_cache_rows_by_rjcodes_sync`、临时表路径、`cache_lookup_batch_size` 默认值、测试和文档 hunk，并删除本段进度记录。
+
+## 2026-07-09 - Task: 修复社团特典探测 RJ 计数进度
+### What was done
+- 根据服务器任务日志确认坏点是特典探测开始后长时间只显示“探测某日 RJ 缺口”，没有把当前发售日候选 RJ 总数推给前端，进度卡只能显示 `0`。
+- 后端在候选 RJ shard lease 完成后立即上报 `0/总数`，日期内 `current_probe_*` 计数改成 Redis runtime/SSE 运行态更新，不再把每次 RJ 计数写进 PostgreSQL `progress_log`。
+- 前端特典进度卡同时读取 `probe_count`、`current_probe_total_count`、`raw_probe_count` 和对应已查字段，并对同一任务做单调合并，避免旧轮询包里的 `0` 覆盖 Redis 实时计数；切换到新任务时重置计数基线，避免串任务。
+- 放宽 `dlsite_bonus_probe_dates.mode` 到 `VARCHAR(64)` 并补 Alembic 迁移，修复服务器日志里 `new_release:date-range-v4` 写入 `VARCHAR(20)` 截断导致的新作特典任务失败。
+- 同步 DLsite 特典探测文档，明确日期内 RJ 计数属于 Redis 运行态字段，候选总数出来后必须先推 `0/总数`。
+
+### Testing
+- `.\venv\Scripts\python.exe -m py_compile app/core/dlsite_bonus_probe_service.py app/core/task_engine.py app/models/database.py alembic/versions/20260702_0001_dlsite_bonus_probe.py alembic/versions/20260709_0001_bonus_probe_mode_width.py`：通过。
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning。
+- 使用项目 Python 执行直接烟测：缓存 RJ 读取 2500 个拆 `[1000, 1000, 500]`，PostgreSQL fake db 下 3500 个走临时表 `JOIN`；`probe_date()` 在候选集确定后首个进度事件为 `checked_probe_count=0 / probe_count=3`；TaskEngine 收到 `current_probe_*` 后触发 `bonus_probe_meta` 事件且不把 `RJ 缺口：0/3` 写入 `progress_log`。
+- `.\venv\Scripts\python.exe -m pytest tests/test_dlsite_bonus_probe_service.py::test_cache_rows_by_rjcodes_sync_splits_large_in_batches tests/test_dlsite_bonus_probe_service.py::test_cache_rows_by_rjcodes_sync_uses_temp_table_for_postgresql_large_lookup tests/test_dlsite_bonus_probe_service.py::test_probe_date_emits_candidate_total_before_probe_requests -q --basetemp .pytest-codex-bonus-progress`：60 秒无输出，卡在测试初始化阶段，已停止残留 pytest 进程。
+- `.\venv\Scripts\python.exe -m pytest tests/test_task_engine.py::TestTaskEngine::test_bonus_probe_current_count_progress_uses_metadata_event_not_progress_log -q --basetemp .pytest-codex-task-bonus-progress`：60 秒无输出，卡在测试初始化阶段，已停止残留 pytest 进程。
+
+### Notes
+- `backend/app/core/dlsite_bonus_probe_service.py`：候选 shard lease 后立即上报日期内 `0/总数` 进度。
+- `backend/app/core/task_engine.py`：特典日期内 RJ 计数走静默 progress/current_step 更新加 `touch_metadata('bonus_probe_meta')`，由 Redis runtime/SSE 承载高频进度。
+- `frontend/src/views/CircleCompletion.vue`：进度卡读取 current/raw/summary 多来源计数，合并时同任务单调递增、新任务重置。
+- `backend/app/models/database.py`、`backend/alembic/versions/20260702_0001_dlsite_bonus_probe.py`、`backend/alembic/versions/20260709_0001_bonus_probe_mode_width.py`：将 `dlsite_bonus_probe_dates.mode` 放宽到 64 字符并补运行库迁移。
+- `backend/tests/test_dlsite_bonus_probe_service.py`、`backend/tests/test_task_engine.py`：补充候选总数先发、缓存大查询和运行态计数不刷 progress_log 的回归测试。
+- `docs/dlsite-bonus-probe.md`：记录 RJ 计数运行态语义。
+- `progress.md`：追加本轮计数修复、验证和回滚记录。
+- 回滚方式：反向应用上述文件中本轮 `emit_probe_progress(0, ...)`、`bonus_probe_meta` 静默运行态更新、前端计数合并、`mode` 字段放宽、测试和文档 hunk，并删除本段进度记录；若运行库已执行 `20260709_0001_bonus_probe_mode_width`，不建议回退到 `VARCHAR(20)`，除非同时停止写入 `new_release:date-range-v4`。
+
+## 2026-07-09 - Task: 修复单选 RJ 特典探测重复命中旧特典
+### What was done
+- 根据 `RJ01192535` 单选特典探测现场确认：前端会按选中作品传 `selected_rjcodes_by_date={"2024-06-04":["RJ01192535"]}`，问题不在日期选择范围。
+- 保留隐藏特典结构判断不强制同日：真实存在“特典登记日早于原作发售日”的样本，不能把 `_hidden_bonus_matches()` 改成同日期硬过滤。
+- 修复单选目标的缓存复用短路：不同发售日的历史隐藏特典不再覆盖当前选中原作；同一发售日内按同 maker 公开 RJ 范围放开编号距离，不再被选中 RJ 附近窗口卡死。
+- 移除单选探测里“未覆盖目标但已有隐藏特典时，从最大命中特典 RJ 后继续扫”的裁剪逻辑，避免旧命中把真实候选范围截掉，导致每次都重复命中同一批历史特典。
+- 修复日期页候选范围污染：日期页只提供同 maker 的公开 RJ 边界，不能拿当天全站 RJ 构造超大范围；分类不做硬过滤，图片等非音声特典仍靠 `product/info/ajax` 结构识别。
+- 补充回归测试，覆盖跨日期历史命中 / 旧脏 `bonus` 链不能覆盖当前选中 RJ、同发售日远距离特典仍可覆盖选中 RJ、日期页只取同 maker 边界，以及非 SOU 隐藏特典结构仍可命中。
+
+### Testing
+- `.\venv\Scripts\python.exe -m py_compile app\core\dlsite_bonus_probe_service.py tests\test_dlsite_bonus_probe_service.py`：通过。
+- 使用项目 Python 直接烟测：`RJ01091762` 仍符合隐藏特典结构判断，但对 `RJ01192535 / 2024-06-04` 的单选相关性返回 `False`；同发售日远距离命中仍允许覆盖。
+- 使用项目 DLsite 客户端调用官方 `product/info/ajax`：`RJ01192535` 返回 `RG68316 / 2024-06-04 / SOU / price=1100 / is_sale=True / is_hidden_bonus_audio=False`；反复命中的 `RJ01091762` 返回 `RG68316 / 2023-08-27 / SOU / price=0 / is_free=True / is_oly=True / wishlist_count=0 / is_hidden_bonus_audio=True`，证明旧命中不属于本发售日。
+- 使用项目 Python 直接烟测 `_load_public_worknos_for_date('RG68316','RG68316','2024-06-04')`：`public_worknos` 和 `date_page_worknos` 都只返回 `RJ01192535`，不再混入日期页当天全站 RJ；非 SOU 但满足隐藏特典结构的 payload 可被 `_hidden_bonus_matches()` 接受。
+- 服务器日志确认同几次单选任务实际探测的是 `2024-06-04`，不是截图里的更新日 `2025-12-20`。
+- 尝试执行 `.\venv\Scripts\python.exe -m pytest tests\test_dlsite_bonus_probe_service.py -q --basetemp .pytest-codex-bonus-rj01192535`：两分钟无输出，卡在测试初始化阶段，已停止残留 pytest 进程。
+- 尝试执行聚焦用例 `test_hidden_bonus_match_allows_bonus_registered_before_original_date`、`test_selected_target_cache_reuse_filters_other_release_date_history_hit`、`test_selected_target_cache_reuse_allows_same_release_date_far_hit`、`test_probe_date_reused_hit_index_stops_selected_scope_when_cache_covers_target`：60 秒无输出，仍卡在测试初始化阶段，已停止残留 pytest 进程。
+
+### Notes
+- `backend/app/core/dlsite_bonus_probe_service.py`：单选缓存 / 命中覆盖先校验命中 RJ 自身发售日，日期页候选只取同 maker 公开 RJ，并取消旧命中导致的候选范围裁剪。
+- `backend/app/core/dlsite_service.py`：日期页列表新增 `n_worklist_item` 切块并把日期页结果强制归一为请求日期；隐藏特典结构识别不再要求 `work_type=SOU`。
+- `backend/tests/test_dlsite_bonus_probe_service.py`：保留跨日期隐藏特典结构判断，新增跨日期历史命中过滤、同发售日远距离命中放行、同 maker 日期页边界和非 SOU 特典结构回归测试。
+- `docs/dlsite-bonus-probe.md`：明确选中作品探测必须在同一发售日、同 maker 范围内放开 RJ 编号，同时过滤不同发售日历史命中。
+- `progress.md`：追加本轮原因、修复和验证记录。
+- 回滚方式：反向应用上述文件中本轮 `_selected_hidden_hit_matches_release_date()`、`_explicit_bonus_original_rjcodes_sync()` / `_filter_hidden_hits_for_target_links_sync()`、单选复用传参、移除 `known_hidden_numbers` 裁剪、文档和对应测试 hunk，并删除本段进度记录。
+
+## 2026-07-10 - Task: 修复空发售日隐藏特典被单选探测漏掉
+### What was done
+- 按 `RJ01192535 -> RJ01203798` 顺序直接硬扫 `product/info/ajax`，使用 `500 RJ / 请求`、`6` 并发，确认真实早期特典是 `RJ01201745`。
+- 复核 `RJ01201745` 官方结构：`maker_id=RG68316`、`price=0`、`is_free=true`、`is_oly=true`、`wishlist_count=0`，但 `regist_date / release_date / sales_date / disp_start_date` 均为空。
+- 修复隐藏特典识别：不再要求隐藏特典自身必须带发售日；若特典有明确日期则必须匹配当前探测日期，若日期为空则按当前探测日期和同 maker / RJ 范围归属。
+- 修复写库复用：空日期隐藏特典写入命中索引、原作状态和社团作品关联时，使用当前探测原作发售日作为归属日期，避免后续复用查不到。
+- 保持历史旧特典过滤：`RJ01091762 / 2023-08-27` 仍不会覆盖 `RJ01192535 / 2024-06-04`。
+
+### Testing
+- `RJ01192535 -> RJ01203798` 实扫：`11264` 个 RJ、`23` 个请求、`6` 并发、`0` 请求错误；命中 `RJ01201745` 为空日期隐藏特典。
+- `RJ01059487 -> RJ01207484` 全区间复核：`147998` 个 RJ、`296` 个请求、`6` 并发、`0` 请求错误；同 maker 历史隐藏特典 `9` 个均有旧日期，`2024-06-04` 明确日期隐藏特典为 `0`，证明此前漏点是 `RJ01201745` 空日期。
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\dlsite_service.py app\core\dlsite_bonus_probe_service.py tests\test_dlsite_bonus_probe_service.py`：通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_dlsite_bonus_probe_service.py::test_hidden_bonus_match_allows_missing_bonus_release_date tests\test_dlsite_bonus_probe_service.py::test_selected_hidden_hit_release_date_filters_history_bonus tests\test_dlsite_bonus_probe_service.py::test_probe_date_selected_rj_scope_uses_circle_neighbor_range_when_date_page_has_single_anchor -q --basetemp .pytest-codex-rj01201745-final`：通过，`3 passed`；仅有既有 deprecation warning 和 pytest cache warning。
+
+### Notes
+- `backend/app/core/dlsite_service.py`：隐藏特典结构识别不再要求 `release_date` 非空。
+- `backend/app/core/dlsite_bonus_probe_service.py`：selected 命中日期判断允许空日期特典归属当前探测日期，并在写入 hit index / 原作状态时使用有效探测日期。
+- `backend/tests/test_dlsite_bonus_probe_service.py`：新增空日期隐藏特典回归，并把 selected 范围测试改为真实 `RJ01201745` 形态。
+- `docs/dlsite-bonus-probe.md`：记录空日期隐藏特典规则。
+- `progress.md`：追加本轮实查、修复和验证记录。
+- 回滚方式：反向应用上述文件中本轮 `release_date` 非空要求移除、`effective_release_date`、空日期 selected 判断、测试和文档 hunk，并删除本段进度记录。
+
+## 2026-07-10 - Task: DLsite 特典探测样本回归与并发缓存收敛
+### What was done
+- 按用户给出的真实样本补回归：只输入本体 `RJ01149793` / `RJ01165316`，由单选探测自己构造同 maker / 同发售日 RJ 范围，并分别命中、判定 `RJ01158522` / `RJ01171174` 为隐藏特典结构。
+- 修复显式 `bonus` 旧链的误归属风险：若本地已有明确特典指向其它原作，单选当前 RJ 时不能复用、覆盖或扫描后抢写该特典。
+- 将特典日期 worker 默认上限调整为 6，`product/info/ajax` 总并发用 `bonus_probe.product_info_total_concurrency=6` 均摊，避免 6 个日期 worker 再各自开 6 个 HTTP 请求。
+- 保持 Redis 优先路径：读取先走 Redis overlay，缺失 RJ 才打 DLsite；写入先走 Redis dirty buffer，再后台批量回写 PostgreSQL。
+- 同步当前运行态 `data/config/config.yaml` 的非敏感 `bonus_probe` 并发和缓存批量配置，避免本机项目继续用旧的 3 并发覆盖代码默认值。
+
+### Testing
+- 使用项目 DLsite 客户端实扫验证：从 `RJ01149793` 往后扫到 `RJ01158522`，`8729` 个候选、`18` 个请求、`6` 并发，命中 `RJ01158522`，结构为同 maker、`price=0`、非销售、免费、`is_oly=true`、`wishlist_count=0`、`is_hidden_bonus_audio=true`。
+- 使用项目 DLsite 客户端实扫验证：从 `RJ01165316` 往后扫到 `RJ01171174`，`5858` 个候选、`12` 个请求、`6` 并发，命中 `RJ01171174`，结构同样满足隐藏特典判定。
+- `cd backend; $env:PYTHONPATH='.'; $env:PYTHONIOENCODING='utf-8'; .\venv\Scripts\python.exe -m py_compile app\core\dlsite_bonus_probe_service.py app\config\settings.py tests\test_dlsite_bonus_probe_service.py tests\test_routes_maintenance_config.py`：通过。
+- `cd backend; $env:PYTHONPATH='.'; $env:PYTHONIOENCODING='utf-8'; .\venv\Scripts\python.exe -m pytest tests\test_dlsite_bonus_probe_service.py::test_probe_date_selected_rj_scope_finds_known_rg68316_bonus_pairs tests\test_dlsite_bonus_probe_service.py::test_selected_target_cache_reuse_ignores_explicit_link_to_other_original tests\test_dlsite_bonus_probe_service.py::test_probe_date_selected_scope_does_not_steal_bonus_linked_to_other_original tests\test_dlsite_bonus_probe_service.py::test_load_or_probe_features_uses_redis_overlay_before_http tests\test_dlsite_bonus_probe_service.py::test_probe_circle_dates_uses_configured_date_workers tests\test_dlsite_bonus_probe_service.py::test_probe_circle_dates_caps_product_info_concurrency tests\test_routes_maintenance_config.py::test_redis_and_bonus_probe_defaults_use_parallel_probe_workers -q --basetemp .pytest-codex-bonus-regression4`：通过，`8 passed`；仅有既有 deprecation / pytest cache warning。
+
+### Notes
+- `backend/app/core/dlsite_bonus_probe_service.py`：将日期 worker 上限改为 6，新增 product/info 总并发均摊，旧显式 bonus 链不再误覆盖当前选中 RJ，并在最终写库前再次过滤目标归属。
+- `backend/app/config/settings.py`、`backend/config/config.yaml`：新增 `bonus_probe.product_info_total_concurrency`，默认 `500 RJ / 请求`、6 并发、缓存读取批量 1000。
+- `data/config/config.yaml`：同步当前本机运行态 `bonus_probe` 非敏感并发配置，避免启动中的项目继续读旧 3 并发。
+- `backend/tests/test_dlsite_bonus_probe_service.py`：补充用户给出的两个本体 / 特典样本回归、旧链防误归属、Redis overlay 不重复 HTTP、6 worker 与 product/info 总并发均摊测试。
+- `backend/tests/test_routes_maintenance_config.py`：同步特典探测默认配置断言。
+- `docs/dlsite-bonus-probe.md`：记录 6 worker、product/info 总并发均摊和显式旧链不能误覆盖选中原作。
+- `progress.md`：追加本轮回归、验证和回滚记录。
+- 回滚方式：反向应用上述文件中本轮 6 worker / `product_info_total_concurrency` / 旧链过滤 / 样本回归 / Redis overlay 测试 / 文档 hunk，并将 `data/config/config.yaml` 的 `bonus_probe` 段恢复到回滚前配置；若只需临时降载，可先把 `data/config/config.yaml` 中 `bonus_probe.max_concurrency` 和 `bonus_probe.product_info_total_concurrency` 改小后重启。
+
+## 2026-07-10 - Task: 修复单选特典缓存覆盖后漏扫后续特典
+### What was done
+- 确认 `RJ01647392` 单选探测漏掉 `RJ01658547` 的直接原因：本地缓存 / 命中索引里已有 `_01` 特典 `RJ01657203` 后，`selected_cache_covered=True` 会跳过候选 lease 和后续 RJ 扫描，导致 `_02` 永远补不到。
+- 修复 selected scope 探测流程：手动选中 RJ 即使已有缓存命中，也继续按发售日边界扫描未缓存候选；缓存命中只表示当前原作已有特典线索，不再表示当前发售日编号段已经完成。
+- 删除 selected cache 旧短路死分支，避免后续维护误把缓存命中恢复成直接返回。
+- 将选中 RJ 的发售日边界规则收敛为同一发售日全站同位数 RJ 边界，并排除 6 位旧 RJ；归属和特典结构仍只信 `product/info/ajax`。
+- 补充回归测试覆盖：`RJ01647392` 能同时找到 `RJ01657203` / `RJ01658547`、已有 `_01` 缓存时仍继续扫 `_02`、复用 hit index 但继续扫描、6 位 RJ 不参与 selected range、缓存候选统计不受本机 Redis overlay 污染。
+- 真实执行 `RJ01647392` 单选探测后，已将 `RJ01658547` 写入当前运行库的缓存、命中索引、社团作品和原作关联。
+
+### Testing
+- `cd backend; $env:PYTHONPATH='.'; $env:PYTHONIOENCODING='utf-8'; .\venv\Scripts\python.exe -m py_compile app\core\dlsite_bonus_probe_service.py tests\test_dlsite_bonus_probe_service.py`：通过。
+- `cd backend; $env:PYTHONPATH='.'; $env:PYTHONIOENCODING='utf-8'; .\venv\Scripts\python.exe -m pytest tests\test_dlsite_bonus_probe_service.py::test_probe_date_selected_rj_scope_finds_known_rg68316_bonus_pairs tests\test_dlsite_bonus_probe_service.py::test_probe_date_selected_rj_scope_uses_date_range_for_far_bonus tests\test_dlsite_bonus_probe_service.py::test_probe_date_selected_rj_scope_runs_full_over_limit_range_before_no_bonus tests\test_dlsite_bonus_probe_service.py::test_probe_date_selected_rj_scope_uses_circle_neighbor_range_when_date_page_has_single_anchor tests\test_dlsite_bonus_probe_service.py::test_probe_date_selected_release_date_range_finds_rj01647392_bonus tests\test_dlsite_bonus_probe_service.py::test_probe_date_selected_scope_continues_after_cached_bonus_cover tests\test_dlsite_bonus_probe_service.py::test_probe_date_reused_hit_index_keeps_scanning_selected_scope_when_cache_covers_target tests\test_dlsite_bonus_probe_service.py::test_selected_release_date_range_ignores_six_digit_targets tests\test_dlsite_bonus_probe_service.py::test_probe_date_counts_cached_hidden_bonus_candidate tests\test_dlsite_bonus_probe_service.py::test_probe_date_emits_candidate_total_before_probe_requests tests\test_dlsite_bonus_probe_service.py::test_load_or_probe_features_uses_redis_overlay_before_http tests\test_dlsite_bonus_probe_service.py::test_probe_circle_dates_caps_product_info_concurrency -q --basetemp .pytest-codex-bonus-final`：通过，`13 passed`；仅有既有 deprecation warning 和 pytest cache warning。
+- 真实运行 `probe_date(circle_id='RG68316', maker_id='RG68316', release_date='2026-06-30', target_rjcodes=['RJ01647392'], batch_size=500, concurrency=6)`：`date_page_range_count=14875`、`raw_probe_count=14760`、`probe_count=4778`、`request_count=10`、`hit_rjcodes=['RJ01657203', 'RJ01658547']`、`budget_reached=False`。
+- 真实 DB 复核：`RJ01658547` 已存在于 `dlsite_bonus_probe_cache`，`probe_status=ok`、`maker_id=RG68316`、`release_date=2026-06-30`、`is_hidden_bonus_audio=True`、标题为 `【早期購入限定500大特典】_02`；`dlsite_bonus_probe_hit_index` 已有 `RJ01658547 / RG68316 / 2026-06-30`；`circle_works.RJ01647392.linked_rjcodes` 已包含 `RJ01647392`、`RJ01657203`、`RJ01658547`。
+
+### Notes
+- `backend/app/core/dlsite_bonus_probe_service.py`：selected scope 不再因 `selected_cache_covered` 跳过候选 lease / 扫描，并清理旧缓存覆盖短路。
+- `backend/tests/test_dlsite_bonus_probe_service.py`：新增和调整 selected scope 发售日范围、缓存覆盖继续扫描、6 位 RJ 排除、缓存候选统计隔离等回归测试。
+- `docs/dlsite-bonus-probe.md`：记录单选 RJ 按发售日全站同位数 RJ 边界扫描、缓存覆盖仍继续扫、6 位 RJ 排除和 product/info 最终归属规则。
+- `progress.md`：追加本轮原因、修复、真实验证和回滚记录。
+- 回滚方式：反向应用上述文件中本轮 `should_probe_candidates`、selected cache 死分支删除、selected 发售日边界测试 / 文档 hunk，并删除本段进度记录；若需要回滚本次真实验证写入的运行库数据，可删除 `RJ01658547` 对应 `dlsite_bonus_probe_cache`、`dlsite_bonus_probe_hit_index`、`circle_works` 行，并从 `RJ01647392.linked_rjcodes` 移除 `RJ01658547`。
+
+## 2026-07-11 - Task: 库存索引 API 重命名一致性修复与运行态验收
+### What was done
+- 修复单条和批量 API 重命名的幂等重放时机：在旧路径存在性检查和元数据请求前读取已存 operation，并严格校验操作类型、库存和源路径集合，避免成功重命名后的同 key 重试先返回 404 或串用其它请求结果。
+- 修复批量本地重命名的模糊异常语义：底层整体抛错后不再用空 effects finalize 和解除 mask，改为保留 prepared scope、标记 `reconcile_required` 并返回 202。
+- 修复单条本地重命名在文件系统已启动后的外层异常处理：不再错误调用 `fail_prepared()` 解除 mask，统一转后台核对。
+- 修正 Redis wake hint 降级测试：明确 Redis 发布失败不改变已提交 PG operation，且未物化 ledger 不得被清理。
+- 使用仓库启动器恢复本地 PostgreSQL / Redis / 前后端，并将本地运行库实际升级到库存索引一致性 migration。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\api\routes.py app\core\library_index\mutation_service.py`：通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests/test_library_browser_api.py tests/test_library_index_mutation_service.py -q --basetemp=.pytest-codex-api-rename-live5`：通过，`40 passed`。
+- 完整库存套件（browser、mutation、generation、self mutation、remote scanner、circle aggregation）：通过，`86 passed`。
+- `cd frontend; npm run test -- --run`：通过，`4` 个测试文件、`11 passed`。
+- `cd frontend; npm run build`：通过，`4183 modules transformed`，预压缩完成。
+- `git diff --check`：通过；仅有工作树既有 LF/CRLF 提示。
+- `start-all.bat`：PostgreSQL 5432、Redis 6379、后端 5555、前端 5556 均恢复监听。
+- Alembic 实际升级到 `20260710_0001_library_index_consistency`；运行库 catalog 已确认 operation / ledger / effects / pending masks / generations 表、`filesystem_started_at`、entry generation/materialized seq、status 水位/租约/blocked 字段齐全。
+- 运行库同时存在新三列唯一索引 `library_id + generation + relative_path` 和 expand 阶段旧二列唯一索引 `library_id + relative_path`，符合 generation 2 启用前的兼容约束。
+
+### Notes
+- `backend/app/api/routes.py`：新增严格 operation 重放校验，提前处理 API rename 幂等请求，并收敛单条/批量模糊异常为 reconciliation pending。
+- `backend/tests/test_library_index_mutation_service.py`：修正 Redis wake hint 失败后未物化 ledger 的保留断言。
+- `progress.md`：追加本轮修复、测试和运行库迁移核验记录。
+- 回滚方式：反向应用 `backend/app/api/routes.py` 中 `_stored_mutation_replay_response`、单条/批量 early replay 和 `reconcile_required` 分支，以及对应测试 hunk；数据库 expand migration 如需回滚，先停写并执行 `backend\venv\Scripts\python.exe -m alembic downgrade 20260709_0001_bonus_probe_mode_width`，不得在存在 generation 2 或未完成 mutation 时直接降级。
+
+## 2026-07-11 - Task: 删除闪回真实浏览器延迟响应验收
+### What was done
+- 在默认本地库存创建唯一测试目录 `CodexIndexFlashbackE2E20260711`，包含根文件和一层子目录文件；确认 watcher 自动生成 reconcile ledger，并等待 `accepted_seq == materialized_seq` 后进入稳定浏览快照。
+- 使用真实库存页面右键删除该测试目录；删除前人为延迟第一次 `/api/library/browser/files` 响应 3 秒，制造“删除前旧响应晚到”的竞态。
+- 删除完成后等待旧响应释放，再分别核对页面 DOM、磁盘、强制刷新浏览 API、索引水位和跨库索引搜索；最后整页 reload 再次确认测试目录未恢复。
+- 验证了下划线开头目录属于项目既有主动跳过规则，因此测试数据改用普通名称，未修改索引跳过语义。
+
+### Testing
+- 新增目录入账：watcher/materializer 达到 `accepted_seq=13`、`materialized_seq=13`，浏览 API 命中测试目录 `1` 条。
+- 删除竞态：确认删除后等待延迟旧响应额外 `3.5s`，页面 `rowCount=0`、`bodyHasName=false`，未发生闪回。
+- 文件系统与后端：测试路径 `Test-Path=False`；`/api/library/browser/files?library_id=local&force_refresh=true` 命中 `0`；最终 `accepted_seq=19`、`materialized_seq=19`、`catchup_state=idle`。
+- 整页刷新：reload 后页面 `rowCount=0`、`bodyHasName=false`。
+- `/api/library/index/global-search?keyword=CodexIndexFlashbackE2E20260711`：本地索引结果 `count=0`；三个远程库现场 fallback 超时，但未影响本地索引结论。
+
+### Notes
+- `progress.md`：追加真实测试数据创建、延迟响应、删除和清理证据；测试目录已由页面确认型删除接口清理，无测试文件残留。
+- 观察到 Axios 主动取消 `/library/browser/files` 时仍输出 `[API Error] ... canceled` 控制台错误；epoch/Abort 行为正确且不影响删除一致性，但日志级别可单独收敛。
+- 回滚方式：本轮除进度记录外未修改业务代码；删除本段进度记录即可。运行库中的测试 ledger 按既有 7 天保留策略自动清理，不应手工删除未确认水位记录。
+
+## 2026-07-11 - Task: 静默处理前端主动取消的 API 请求
+### What was done
+- 在 Axios 响应拦截器记录错误前识别主动取消请求，覆盖 Axios `isCancel`、`ERR_CANCELED`、`CanceledError` 和原生 `AbortError`。
+- 取消请求继续以 rejected Promise 透传给调用方维持现有 epoch/loading 收尾逻辑，但不再输出误导性的 `[API Error] ... canceled`。
+- 普通网络和接口错误继续进入原有 console、OTP 与安全网关处理分支，不被吞掉。
+
+### Testing
+- `cd frontend; npm run test -- --run`：通过，`5` 个测试文件、`16 passed`；新增取消请求四种形态和普通错误不误判测试。
+- `cd frontend; npm run build`：通过，`4183 modules transformed`，预压缩完成。
+- `git diff --check -- frontend/src/api/index.js frontend/src/api/apiCancellation.test.js`：通过；仅有既有 LF/CRLF 提示。
+- Playwright 打开真实库存页并连续点击两次“刷新”制造 Abort：console `Errors: 0`、`Warnings: 0`，未再出现 canceled 误报。
+
+### Notes
+- `frontend/src/api/index.js`：新增 `isCanceledApiRequest()`，并在响应错误拦截器首段静默透传取消请求。
+- `frontend/src/api/apiCancellation.test.js`：新增取消分类回归测试。
+- `progress.md`：追加本轮修复和真实页面验证记录。
+- 回滚方式：反向应用 `frontend/src/api/index.js` 的 `isCanceledApiRequest()` 与拦截器早退分支，删除 `frontend/src/api/apiCancellation.test.js` 和本段进度记录。

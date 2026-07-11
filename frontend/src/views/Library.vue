@@ -1954,6 +1954,8 @@ import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composa
 import { useSubtitleTask } from '../composables/useSubtitleTask'
 import { normalizeTaskCenterRealtimePayloads } from '../composables/taskCenterEventUtils'
 import { useRealtimeEvents } from '../composables/useRealtimeEvents'
+import { libraryIndexPathMatches, useLibraryIndexStateStore } from '../stores/libraryIndexState'
+import { createLatestRequestGate, normalizeSuccessfulDeletePaths } from '../utils/libraryRequestGuard'
 
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 
@@ -2006,6 +2008,7 @@ import { useViewport } from '../composables/useViewport'
 
 const { isMobile: isMobileViewport } = useViewport()
 const realtimeEvents = useRealtimeEvents()
+const libraryIndexStateStore = useLibraryIndexStateStore()
 
 
 
@@ -2153,6 +2156,12 @@ const circleCurrentWorkContext = computed(() => {
 })
 
 let circleRefreshSequence = 0
+let circleAbortController = null
+const directoryRequestGate = createLatestRequestGate()
+let statsRequestSequence = 0
+const statsRequestEpochByKey = new Map()
+const statsAbortControllers = new Map()
+let statsLoadingOwner = ''
 
 const activeLibraryPage = computed({
   get () {
@@ -2532,18 +2541,20 @@ function circleApplyRowsFromState () {
 
 async function requestCircleLibraryViewData (options = {}) {
 
-  const { forceRefresh = false } = options
+  const { forceRefresh = false, signal = undefined } = options
   if (forceRefresh) clearCircleViewRequestCache()
 
   const cacheKey = circleViewCacheKey(options)
   if (!forceRefresh) {
     const cached = getCachedCircleViewPayload(cacheKey)
-    if (cached) {
+    if (cached && libraryIndexStateStore.isIndexViewResponseCurrent(cached)) {
       return {
         data: cached,
         requestPageSize: Number(cached.page_size || (circleDecodeVirtualPath(circleVirtualCurrentPath.value).type === 'root' ? circleGroupPageSize.value : circleWorkPageSize.value)),
+        cacheKey,
       }
     }
+    if (cached) circleViewRequestCache.delete(cacheKey)
   }
 
   const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
@@ -2567,15 +2578,17 @@ async function requestCircleLibraryViewData (options = {}) {
     sortBy: requestSortBy,
     sortOrder: sortOrder.value,
     forceRefresh,
+    signal,
   })
 
-  setCachedCircleViewPayload(cacheKey, data)
-
-  return { data, requestPageSize }
+  return { data, requestPageSize, cacheKey }
 
 }
 
 function applyCircleLibraryViewData ({ data, requestPageSize }) {
+
+  if (!libraryIndexStateStore.isIndexViewResponseCurrent(data)) return
+  libraryIndexStateStore.recordIndexViews(data)
 
   const responsePath = data.current_path || circleVirtualCurrentPath.value || circleBuildRootPath()
   const responseDecoded = circleDecodeVirtualPath(responsePath)
@@ -2586,7 +2599,7 @@ function applyCircleLibraryViewData ({ data, requestPageSize }) {
   currentPath.value = responsePath
   parentPath.value = data.parent_path || ''
 
-  files.value = applyRecentRenameRows(data.files || [])
+  files.value = applyRecentRenameRows(filterRowsByIndexTombstones(data.files || []))
   totalFiles.value = Number(data.total || files.value.length || 0)
   if (data.circle_summary && typeof data.circle_summary === 'object') {
     circleSummary.value = {
@@ -2598,7 +2611,7 @@ function applyCircleLibraryViewData ({ data, requestPageSize }) {
   if (responseDecoded.type === 'root') {
     circleGroupPage.value = Number(data.page || circleGroupPage.value || 1)
     circleGroupPageSize.value = Number(data.page_size || circleGroupPageSize.value || requestPageSize)
-    circleGroups.value = applyRecentRenameRows(Array.isArray(data.circle_groups) ? data.circle_groups : files.value)
+    circleGroups.value = applyRecentRenameRows(filterRowsByIndexTombstones(Array.isArray(data.circle_groups) ? data.circle_groups : files.value))
     circleGroupTotal.value = totalFiles.value
     circleSelectedGroupKey.value = ''
     circleSelectedWorkKey.value = ''
@@ -2614,13 +2627,13 @@ function applyCircleLibraryViewData ({ data, requestPageSize }) {
   }
 
   if (responseDecoded.type === 'group') {
-    circleWorks.value = applyRecentRenameRows(Array.isArray(data.circle_works) ? data.circle_works : [])
+    circleWorks.value = applyRecentRenameRows(filterRowsByIndexTombstones(Array.isArray(data.circle_works) ? data.circle_works : []))
     circleWorkTotal.value = totalFiles.value
     circleSelectedWorkKey.value = ''
   } else if (['work', 'item', 'location', 'location-item'].includes(responseDecoded.type)) {
     circleSelectedWorkKey.value = responseDecoded.workKey || data.circle_work?.rjcode || circleSelectedWorkKey.value
     if (Array.isArray(data.circle_works)) {
-      circleWorks.value = applyRecentRenameRows(data.circle_works)
+      circleWorks.value = applyRecentRenameRows(filterRowsByIndexTombstones(data.circle_works))
     } else if (data.circle_work?.rjcode) {
       const workIndex = circleWorks.value.findIndex(item => String(item?.rjcode || '') === String(data.circle_work.rjcode || ''))
       if (workIndex >= 0) circleWorks.value.splice(workIndex, 1, data.circle_work)
@@ -2631,6 +2644,7 @@ function applyCircleLibraryViewData ({ data, requestPageSize }) {
   if (Array.isArray(data.libraries)) {
     circleLibraries.value = data.libraries
     libraries.value = data.libraries
+    libraryIndexStateStore.setLibraryRoots(data.libraries)
   }
 
   librarySearchState.value = createLibrarySearchState()
@@ -2650,29 +2664,34 @@ function handleCircleLibraryViewError (error) {
 async function refreshCircleLibraryView (options = {}) {
 
   const requestSeq = ++circleRefreshSequence
+  circleAbortController?.abort()
+  const controller = new AbortController()
+  circleAbortController = controller
   const shouldShowLoading = !options.silent
 
-  if (shouldShowLoading) circleLoading.value = true
+  circleLoading.value = shouldShowLoading
 
   circleErrorMessage.value = ''
 
   try {
 
-    const result = await requestCircleLibraryViewData(options)
+    const result = await requestCircleLibraryViewData({ ...options, signal: controller.signal })
 
-    if (requestSeq !== circleRefreshSequence || libraryViewMode.value !== 'circle') return
+    if (requestSeq !== circleRefreshSequence || controller.signal.aborted || libraryViewMode.value !== 'circle') return
 
-    applyCircleLibraryViewData(result)
+    if (!commitCircleLibraryViewResult(result)) return
 
     await applyTableSortIndicator()
 
   } catch (error) {
-
-    handleCircleLibraryViewError(error)
+    if (!controller.signal.aborted && error?.code !== 'ERR_CANCELED') handleCircleLibraryViewError(error)
 
   } finally {
 
-    if (shouldShowLoading && (requestSeq === circleRefreshSequence || libraryViewMode.value !== 'circle')) {
+    if (requestSeq === circleRefreshSequence && circleAbortController === controller) {
+      circleAbortController = null
+    }
+    if (requestSeq === circleRefreshSequence) {
       circleLoading.value = false
     }
 
@@ -4605,6 +4624,37 @@ function setCachedCircleViewPayload (cacheKey, payload) {
 
 function clearCircleViewRequestCache () {
   circleViewRequestCache.clear()
+}
+
+function commitCircleLibraryViewResult (result) {
+  if (!result?.data || !libraryIndexStateStore.isIndexViewResponseCurrent(result.data)) return false
+  libraryIndexStateStore.recordIndexViews(result.data)
+  if (result.cacheKey) setCachedCircleViewPayload(result.cacheKey, result.data)
+  applyCircleLibraryViewData(result)
+  return true
+}
+
+function filterRowsByIndexTombstones (rows, fallbackLibraryId = selectedLibraryId.value) {
+  return libraryIndexStateStore.filterRows(fallbackLibraryId, rows, {
+    getLibraryId: row => getCircleRealLibraryId(row) || row?.library_id || fallbackLibraryId,
+    getPath: row => getCircleRealPath(row) || row?.absolute_path || row?.path || row?.relative_path,
+  })
+}
+
+function invalidateDirectoryViewRequests () {
+  directoryRequestGate.invalidate()
+  suppressSelectionChange.value = false
+  listPolling.value = false
+  loading.value = false
+}
+
+function invalidateStatsRequests () {
+  statsRequestSequence += 1
+  for (const controller of statsAbortControllers.values()) controller.abort()
+  statsAbortControllers.clear()
+  statsRequestEpochByKey.clear()
+  statsLoadingOwner = ''
+  statsLoading.value = false
 }
 
 const isWritableCurrentLibrary = computed(() => !!currentLibrary.value?.writable)
@@ -7551,6 +7601,14 @@ onDeactivated(() => {
 
   stopLibraryPolling()
 
+  invalidateDirectoryViewRequests()
+
+  invalidateStatsRequests()
+
+  circleAbortController?.abort()
+
+  circleAbortController = null
+
   stopUploadWorkbenchPolling()
 
   unbindLibraryKeydown()
@@ -7595,6 +7653,14 @@ onBeforeUnmount(() => {
   unbindPathBreadcrumbResizeObserver()
 
   stopLibraryPolling()
+
+  invalidateDirectoryViewRequests()
+
+  invalidateStatsRequests()
+
+  circleAbortController?.abort()
+
+  circleAbortController = null
 
   stopUploadWorkbenchPolling()
 
@@ -7805,6 +7871,9 @@ watch(searchExact, value => {
 watch(selectedLibraryId, async (newId, oldId) => {
 
   if (!newId) return
+
+  invalidateDirectoryViewRequests()
+  invalidateStatsRequests()
 
   if (oldId) saveLibraryState(oldId)
 
@@ -8245,6 +8314,7 @@ async function loadLibraries () {
   const data = await libraryApi.listLibraries()
 
   libraries.value = data.libraries || []
+  libraryIndexStateStore.setLibraryRoots(libraries.value)
 
   const validIds = new Set(libraries.value.map(item => item.id))
 
@@ -8413,20 +8483,42 @@ function rebuildAggregateStatsFromStatsMap () {
 
 
 
-function handleLibraryIndexStatusChange (status) {
+function handleLibraryIndexStatusChange (status, source = 'store') {
 
   const libraryId = String(status?.library_id || currentLibrary.value?.id || '').trim()
 
   if (!libraryId) return
+  const previousView = libraryIndexStateStore.indexViewFor(libraryId)
+  const previousViewRevision = Number(previousView?.view_revision)
+  const nextViewRevision = Number(status?.view_revision)
+  if (source === 'sse') libraryIndexStateStore.applyStatusSnapshot(status, 'sse')
+  libraryIndexStateStore.recordIndexViews({ index_view: status })
+  const durableStatus = libraryIndexStateStore.statusFor(libraryId) || status
+
+  if (Number.isFinite(nextViewRevision) && (!Number.isFinite(previousViewRevision) || nextViewRevision > previousViewRevision)) {
+    clearCircleViewRequestCache()
+    ++circleRefreshSequence
+    circleAbortController?.abort()
+    circleAbortController = null
+    if (String(selectedLibraryId.value || '') === libraryId) {
+      invalidateDirectoryViewRequests()
+    }
+  }
 
   const library = libraries.value.find(item => item.id === libraryId) || currentLibrary.value || {}
-  if (library?.type === 'synology_filestation' || status?.status === 'disabled') return
+  if (library?.type === 'synology_filestation' || durableStatus?.status === 'disabled') return
 
-  const rawStatus = String(status?.status || 'idle')
+  const acceptedSeq = Math.max(0, Number(durableStatus?.accepted_seq || 0))
+  const materializedSeq = Math.max(0, Number(durableStatus?.materialized_seq || 0))
+  const rawStatus = durableStatus?.building_generation
+    ? 'rebuilding'
+    : acceptedSeq > materializedSeq
+      ? 'catching_up'
+      : String(durableStatus?.status || 'idle')
 
-  const statsStatus = ['ready', 'syncing', 'error'].includes(rawStatus) ? rawStatus : 'idle'
+  const statsStatus = ['ready', 'syncing', 'catching_up', 'rebuilding', 'error'].includes(rawStatus) ? rawStatus : 'idle'
 
-  const totalBytes = Math.max(0, Number(status?.total_size_bytes || 0))
+  const totalBytes = Math.max(0, Number(durableStatus?.total_size_bytes || 0))
 
   const nextStats = {
 
@@ -8434,15 +8526,15 @@ function handleLibraryIndexStatusChange (status) {
 
     library_id: libraryId,
 
-    library_name: status?.library_name || library.name || libraryId,
+    library_name: durableStatus?.library_name || library.name || libraryId,
 
-    library_type: status?.library_type || library.type || 'local',
+    library_type: durableStatus?.library_type || library.type || 'local',
 
     status: statsStatus,
 
     index_status: rawStatus,
 
-    folder_count: Math.max(0, Number(status?.folder_count || 0)),
+    folder_count: Math.max(0, Number(durableStatus?.folder_count || 0)),
 
     total_size_bytes: totalBytes,
 
@@ -8450,19 +8542,27 @@ function handleLibraryIndexStatusChange (status) {
 
     scan_mode: rawStatus === 'idle' ? 'index_required' : 'library_index',
 
-    progress_done: Math.max(0, Number(status?.total_entries || 0)),
+    progress_done: Math.max(0, Number(durableStatus?.total_entries || 0)),
 
     progress_total: 0,
 
     progress_percent: rawStatus === 'ready' ? 100 : 0,
 
-    last_completed_at: statusTimestampToSeconds(status?.last_full_scan_at),
+    last_completed_at: statusTimestampToSeconds(durableStatus?.last_full_scan_at),
 
-    updated_at: statusTimestampToSeconds(status?.updated_at) || (Date.now() / 1000),
+    updated_at: statusTimestampToSeconds(durableStatus?.updated_at) || (Date.now() / 1000),
 
-    last_error: status?.error || null,
+    last_error: durableStatus?.error || null,
 
-    warning: rawStatus === 'idle' ? '索引未就绪，请先重建索引' : (status?.error || null)
+    warning: rawStatus === 'idle' ? '索引未就绪，请先重建索引' : (durableStatus?.error || null),
+
+    state_revision: durableStatus?.state_revision,
+
+    view_revision: durableStatus?.view_revision,
+
+    accepted_seq: durableStatus?.accepted_seq,
+
+    materialized_seq: durableStatus?.materialized_seq,
 
   }
 
@@ -8483,28 +8583,66 @@ function handleLibraryIndexStatusChange (status) {
 async function refreshStats (forceRefresh = false, options = {}) {
 
   const { silent = false, refreshLibraryId = null } = options
+  const requestLibraryId = String(refreshLibraryId || selectedLibraryId.value || '')
+  const requestKey = refreshLibraryId ? requestLibraryId : '__all__'
+  const requestEpoch = ++statsRequestSequence
+  statsRequestEpochByKey.set(requestKey, requestEpoch)
+  statsAbortControllers.get(requestKey)?.abort()
+  const controller = new AbortController()
+  statsAbortControllers.set(requestKey, controller)
 
-  if (!silent) statsLoading.value = true
+  const loadingOwner = `${requestKey}:${requestEpoch}`
+  if (!silent) {
+    statsLoadingOwner = loadingOwner
+    statsLoading.value = true
+  } else if (statsLoadingOwner.startsWith(`${requestKey}:`)) {
+    statsLoadingOwner = ''
+    statsLoading.value = false
+  }
 
   try {
 
-    const data = await libraryApi.getStats(forceRefresh, refreshLibraryId)
+    const data = await libraryApi.getStats(forceRefresh, refreshLibraryId, { signal: controller.signal })
+    if (statsRequestEpochByKey.get(requestKey) !== requestEpoch || controller.signal.aborted) return
+    if (refreshLibraryId && requestLibraryId !== String(refreshLibraryId || '')) return
+    if (!libraryIndexStateStore.isIndexViewResponseCurrent(data)) return
+    libraryIndexStateStore.recordIndexViews(data)
 
     const nextMap = {}
 
-    for (const item of data.libraries || []) nextMap[item.library_id] = item
+    for (const item of data.libraries || []) {
+      const libraryId = String(item?.library_id || '')
+      const status = libraryIndexStateStore.statusFor(libraryId)
+      const itemRevision = Number(item?.state_revision)
+      const statusRevision = Number(status?.state_revision)
+      if (status && Number.isFinite(statusRevision) && (!Number.isFinite(itemRevision) || itemRevision < statusRevision)) {
+        nextMap[libraryId] = statsMap.value[libraryId] || item
+      } else {
+        nextMap[libraryId] = item
+      }
+    }
 
-    statsMap.value = nextMap
+    statsMap.value = refreshLibraryId
+      ? { ...statsMap.value, ...nextMap }
+      : nextMap
 
-    aggregateStats.value = data.all_libraries || { folder_count: 0, total_size_gb: 0, total_size_bytes: 0 }
+    rebuildAggregateStatsFromStatsMap()
 
   } catch (error) {
-
-    ElMessage.error(error.response?.data?.detail || error.message || '获取统计失败')
+    if (!controller.signal.aborted && error?.code !== 'ERR_CANCELED') {
+      ElMessage.error(error.response?.data?.detail || error.message || '获取统计失败')
+    }
 
   } finally {
 
-    if (!silent) statsLoading.value = false
+    if (statsRequestEpochByKey.get(requestKey) === requestEpoch && statsAbortControllers.get(requestKey) === controller) {
+      statsRequestEpochByKey.delete(requestKey)
+      statsAbortControllers.delete(requestKey)
+      if (statsLoadingOwner === loadingOwner) {
+        statsLoadingOwner = ''
+        statsLoading.value = false
+      }
+    }
 
   }
 
@@ -8577,6 +8715,16 @@ async function refreshLibrary (options = {}) {
 
   if (!selectedLibraryId.value) return
 
+  const directoryRequest = directoryRequestGate.begin()
+  const requestEpoch = directoryRequest.epoch
+  const controller = directoryRequest.controller
+  const requestLibraryId = String(selectedLibraryId.value)
+  const requestPath = String(currentPath.value || '')
+  const requestPage = Number(currentPage.value || 1)
+  const requestPageSize = Number(pageSize.value || DEFAULT_PAGE_SIZE)
+  const requestSortBy = String(sortBy.value || DEFAULT_SORT_BY)
+  const requestSortOrder = String(sortOrder.value || DEFAULT_SORT_ORDER)
+
   if (forceRefresh) resetLibraryPageCursorCache()
 
   const pageCursor = getLibraryPageCursorForRequest(forceRefresh)
@@ -8589,9 +8737,9 @@ async function refreshLibrary (options = {}) {
 
   clearListPoll()
 
-  if (silent) listPolling.value = true
+  listPolling.value = silent
 
-  else loading.value = true
+  loading.value = !silent
 
   try {
 
@@ -8603,9 +8751,9 @@ async function refreshLibrary (options = {}) {
 
       libraryId: selectedLibraryId.value,
 
-      page: currentPage.value,
+      page: requestPage,
 
-      pageSize: pageSize.value,
+      pageSize: requestPageSize,
 
       search: '',
 
@@ -8615,23 +8763,32 @@ async function refreshLibrary (options = {}) {
 
       currentPath: currentPath.value,
 
-      sortBy: sortBy.value,
+      sortBy: requestSortBy,
 
-      sortOrder: sortOrder.value,
+      sortOrder: requestSortOrder,
 
       forceRefresh,
 
-      pageCursor
+      pageCursor,
+
+      signal: controller.signal
 
     })
 
+    if (!directoryRequestGate.isCurrent(directoryRequest)) return
     if (libraryViewMode.value !== requestMode) return
+    if (String(selectedLibraryId.value) !== requestLibraryId || String(currentPath.value || '') !== requestPath) return
+    if (Number(currentPage.value || 1) !== requestPage || Number(pageSize.value || DEFAULT_PAGE_SIZE) !== requestPageSize) return
+    if (String(sortBy.value || DEFAULT_SORT_BY) !== requestSortBy || String(sortOrder.value || DEFAULT_SORT_ORDER) !== requestSortOrder) return
+    if (!libraryIndexStateStore.isIndexViewResponseCurrent(data)) return
+    libraryIndexStateStore.recordIndexViews(data)
 
-    files.value = applyRecentRenameRows(data.files || [])
+    files.value = applyRecentRenameRows(filterRowsByIndexTombstones(data.files || [], requestLibraryId))
 
     totalFiles.value = data.total || 0
 
     if (data.libraries?.length) libraries.value = data.libraries
+    if (data.libraries?.length) libraryIndexStateStore.setLibraryRoots(data.libraries)
 
     if (data.library_id && data.library_id !== selectedLibraryId.value) {
 
@@ -8695,19 +8852,22 @@ async function refreshLibrary (options = {}) {
 
   } catch (error) {
 
-    if (!throwOnError) ElMessage.error(error.response?.data?.detail || error.message || '获取库存文件失败')
-    if (throwOnError) throw error
+    if (!controller.signal.aborted && error?.code !== 'ERR_CANCELED') {
+      if (!throwOnError) ElMessage.error(error.response?.data?.detail || error.message || '获取库存文件失败')
+      if (throwOnError) throw error
+    }
 
   } finally {
 
-    if (suppressSelectionChange.value) {
+    if (directoryRequestGate.isCurrent(directoryRequest) && suppressSelectionChange.value) {
       await nextTick()
       suppressSelectionChange.value = false
     }
 
-    if (silent) listPolling.value = false
-
-    else loading.value = false
+    if (directoryRequestGate.finish(directoryRequest)) {
+      listPolling.value = false
+      loading.value = false
+    }
 
   }
 
@@ -18690,6 +18850,9 @@ async function switchToCircleLibraryView () {
   circleLoading.value = true
   circleErrorMessage.value = ''
   const requestSeq = ++circleRefreshSequence
+  circleAbortController?.abort()
+  const controller = new AbortController()
+  circleAbortController = controller
 
   try {
     captureDirectoryReturnState()
@@ -18706,17 +18869,20 @@ async function switchToCircleLibraryView () {
     sortBy.value = 'work_count'
     sortOrder.value = 'desc'
 
-    const result = await requestCircleLibraryViewData()
-    if (requestSeq !== circleRefreshSequence) return
+    const result = await requestCircleLibraryViewData({ signal: controller.signal })
+    if (requestSeq !== circleRefreshSequence || controller.signal.aborted) return
 
     libraryViewMode.value = 'circle'
-    applyCircleLibraryViewData(result)
+    if (!commitCircleLibraryViewResult(result)) return
     await applyTableSortIndicator()
   } catch (error) {
-    handleCircleLibraryViewError(error)
+    if (!controller.signal.aborted && error?.code !== 'ERR_CANCELED') handleCircleLibraryViewError(error)
   } finally {
-    if (requestSeq === circleRefreshSequence) circleLoading.value = false
-    libraryViewModeSwitching.value = false
+    if (requestSeq === circleRefreshSequence) {
+      circleAbortController = null
+      circleLoading.value = false
+      libraryViewModeSwitching.value = false
+    }
   }
 
 }
@@ -18727,6 +18893,8 @@ async function switchToDirectoryLibraryView () {
 
   libraryViewModeSwitching.value = true
   ++circleRefreshSequence
+  circleAbortController?.abort()
+  circleAbortController = null
 
   try {
     closeLibraryRowContextMenu()
@@ -18811,7 +18979,8 @@ function restoreDirectoryReturnState () {
     currentPage.value = Number(state.currentPage || 1)
     sortBy.value = state.sortBy || DEFAULT_SORT_BY
     sortOrder.value = state.sortOrder || DEFAULT_SORT_ORDER
-    files.value = cloneLibraryRows(state.files)
+    const restoredRows = filterRowsByIndexTombstones(state.files, state.libraryId || selectedLibraryId.value)
+    files.value = cloneLibraryRows(restoredRows)
     totalFiles.value = Number(state.totalFiles || files.value.length || 0)
     librarySearchState.value = createLibrarySearchState(state.librarySearchState || {})
     return
@@ -18847,6 +19016,10 @@ async function circleLoadWorkChildRows (decoded) {
   const relativePath = circleNormalizeRelativePath(decoded.itemRelativePath || '')
   const realPath = circleJoinRealPath(location?.path, relativePath)
 
+  const requestSeq = ++circleRefreshSequence
+  circleAbortController?.abort()
+  const controller = new AbortController()
+  circleAbortController = controller
   const data = await libraryApi.browseFiles({
     libraryId: String(location?.library_id || ''),
     page: circleWorkPage.value,
@@ -18855,9 +19028,14 @@ async function circleLoadWorkChildRows (decoded) {
     sortBy: sortBy.value,
     sortOrder: sortOrder.value,
     forceRefresh: false,
+    signal: controller.signal,
   })
 
-  const rows = (data.files || []).map(item => circleBuildWorkChildRow(work, location, item))
+  if (requestSeq !== circleRefreshSequence || controller.signal.aborted || libraryViewMode.value !== 'circle') return false
+  if (!libraryIndexStateStore.isIndexViewResponseCurrent(data)) return false
+  libraryIndexStateStore.recordIndexViews(data)
+
+  const rows = filterRowsByIndexTombstones(data.files || [], location?.library_id).map(item => circleBuildWorkChildRow(work, location, item))
 
   files.value = rows
   totalFiles.value = Number(data.total || rows.length)
@@ -18884,6 +19062,10 @@ async function circleLoadLocationChildRows (decoded) {
   const relativePath = circleNormalizeRelativePath(decoded.itemRelativePath || '')
   const realPath = circleJoinRealPath(location?.path, relativePath)
 
+  const requestSeq = ++circleRefreshSequence
+  circleAbortController?.abort()
+  const controller = new AbortController()
+  circleAbortController = controller
   const data = await libraryApi.browseFiles({
     libraryId: String(location?.library_id || ''),
     page: circleWorkPage.value,
@@ -18892,9 +19074,14 @@ async function circleLoadLocationChildRows (decoded) {
     sortBy: sortBy.value,
     sortOrder: sortOrder.value,
     forceRefresh: false,
+    signal: controller.signal,
   })
 
-  const rows = (data.files || []).map(item => circleBuildLocationChildRow(work, location, locationIndex, item))
+  if (requestSeq !== circleRefreshSequence || controller.signal.aborted || libraryViewMode.value !== 'circle') return false
+  if (!libraryIndexStateStore.isIndexViewResponseCurrent(data)) return false
+  libraryIndexStateStore.recordIndexViews(data)
+
+  const rows = filterRowsByIndexTombstones(data.files || [], location?.library_id).map(item => circleBuildLocationChildRow(work, location, locationIndex, item))
 
   files.value = rows
   totalFiles.value = Number(data.total || rows.length)
@@ -21816,7 +22003,7 @@ function handleFolderCompletionRealtimeEvent (event) {
 
   if (payload?.type === 'library_index_status_changed') {
 
-    handleLibraryIndexStatusChange(payload)
+    handleLibraryIndexStatusChange(payload, 'sse')
 
     return
 
@@ -21991,27 +22178,57 @@ async function refreshAfterMove (sourceLibraryId, targetLibraryId) {
 
 
 
-function pruneRowsFromCurrentViewByPaths (paths) {
+function pruneRowsFromCurrentViewByPaths (paths, libraryId = selectedLibraryId.value) {
 
-  const movedPaths = new Set((Array.isArray(paths) ? paths : [])
+  const movedPaths = (Array.isArray(paths) ? paths : [])
     .map(path => String(path || '').trim())
-    .filter(Boolean))
+    .filter(Boolean)
 
-  if (!movedPaths.size) return
+  if (!movedPaths.length) return
 
-  files.value = files.value.filter(row => !row?.path || !movedPaths.has(row.path))
-  totalFiles.value = Math.max(0, Number(totalFiles.value || 0) - movedPaths.size)
-  selectedRows.value = selectedRows.value.filter(row => row?.path && !movedPaths.has(row.path))
+  const matches = row => {
+    const rowLibraryId = getCircleRealLibraryId(row) || row?.library_id || selectedLibraryId.value
+    const rowPath = getCircleRealPath(row) || row?.path
+    return (!libraryId || String(rowLibraryId || '') === String(libraryId)) &&
+      movedPaths.some(path => libraryIndexPathMatches(rowPath, path, 'subtree'))
+  }
+  const previousCount = files.value.length
+  files.value = files.value.filter(row => !matches(row))
+  totalFiles.value = Math.max(0, Number(totalFiles.value || 0) - (previousCount - files.value.length))
+  selectedRows.value = selectedRows.value.filter(row => !matches(row))
   selectedRowPaths.value = new Set(selectedRows.value.map(row => row.path).filter(Boolean))
 
+  if (directoryReturnState?.files) {
+    const returnPreviousCount = directoryReturnState.files.length
+    const nextReturnFiles = directoryReturnState.files.filter(row => !matches(row))
+    directoryReturnState = {
+      ...directoryReturnState,
+      files: nextReturnFiles,
+    }
+    directoryReturnState.totalFiles = Math.max(nextReturnFiles.length, Number(directoryReturnState.totalFiles || 0) - (returnPreviousCount - nextReturnFiles.length))
+  }
+
+  for (const [cacheKey, cached] of circleViewRequestCache.entries()) {
+    const payload = cached?.payload
+    if (!payload || typeof payload !== 'object') continue
+    const prune = rows => filterRowsByIndexTombstones(rows || []).filter(row => !matches(row))
+    circleViewRequestCache.set(cacheKey, {
+      ...cached,
+      payload: {
+        ...payload,
+        files: prune(payload.files),
+        circle_groups: prune(payload.circle_groups),
+        circle_works: prune(payload.circle_works),
+      },
+    })
+  }
+
 }
-
-
 
 function pruneMovedRowsFromCurrentView (result) {
 
   pruneRowsFromCurrentViewByPaths((Array.isArray(result?.moved) ? result.moved : [])
-    .map(item => item?.source))
+    .map(item => item?.source), result?.source_library_id || '')
 
 }
 
@@ -22114,6 +22331,18 @@ async function executeLibraryMove ({ sourceLibraryId, targetLibraryId, targetPat
   )
 
   notifyMoveResult(result)
+
+  const movedPaths = (Array.isArray(result?.moved) ? result.moved : [])
+    .map(item => item?.source)
+    .filter(Boolean)
+  libraryIndexStateStore.registerMutationResponse(result, {
+    libraryId: sourceLibraryId,
+    deletedPaths: movedPaths.map(path => ({ libraryId: sourceLibraryId, path, scope: 'subtree' })),
+  })
+  invalidateDirectoryViewRequests()
+  ++circleRefreshSequence
+  circleAbortController?.abort()
+  circleAbortController = null
 
   pruneMovedRowsFromCurrentView(result)
 
@@ -22239,6 +22468,12 @@ async function renameItem (row) {
     const nextPath = data?.new_path || data?.path || ''
 
     if (nextPath) {
+      const libraryId = renameForm.value.libraryId || selectedLibraryId.value
+      libraryIndexStateStore.registerMutationResponse(data, {
+        libraryId,
+        deletedPaths: [{ libraryId, path: renameForm.value.path, scope: 'subtree' }],
+      })
+      invalidateDirectoryViewRequests()
       replaceRowPathInCurrentView(renameForm.value.path, nextPath, renameForm.value.newName)
     }
 
@@ -22280,6 +22515,12 @@ async function apiRenameItem (row) {
     const nextPath = data?.new_path || data?.path || ''
 
     if (nextPath) {
+      const libraryId = target.library_id || selectedLibraryId.value
+      libraryIndexStateStore.registerMutationResponse(data, {
+        libraryId,
+        deletedPaths: [{ libraryId, path: target.path, scope: 'subtree' }],
+      })
+      invalidateDirectoryViewRequests()
       replaceRowPathInCurrentView(target.path, nextPath, data.new_name || data.name || '')
     }
 
@@ -22375,10 +22616,18 @@ async function deleteItem (row) {
 
     })
 
-    await libraryApi.browserDelete(libraryId, target.path, true)
+    const result = await libraryApi.browserDelete(libraryId, target.path, true)
 
     ElMessage.success('删除成功')
 
+    invalidateDirectoryViewRequests()
+    ++circleRefreshSequence
+    circleAbortController?.abort()
+    circleAbortController = null
+    libraryIndexStateStore.registerMutationResponse(result, {
+      libraryId,
+      deletedPaths: [{ libraryId, path: target.path, scope: 'subtree' }],
+    })
     pruneRowsFromCurrentViewByPaths([target.path])
 
     refreshAfterMutationInBackground({
@@ -22518,7 +22767,23 @@ async function handleBatchDelete () {
       ElMessage.success(`批量删除完成：成功 ${summary.successCount} 项`)
     }
 
-    pruneRowsFromCurrentViewByPaths(targets.map(row => row.path))
+    const successfulDeletesByLibrary = []
+    results.forEach((result, index) => {
+      const libraryId = [...groups.keys()][index]
+      const successPaths = normalizeSuccessfulDeletePaths(result)
+      libraryIndexStateStore.registerMutationResponse(result, {
+        libraryId,
+        deletedPaths: successPaths.map(path => ({ libraryId, path, scope: 'subtree' })),
+      })
+      successfulDeletesByLibrary.push({ libraryId, paths: successPaths })
+    })
+    invalidateDirectoryViewRequests()
+    ++circleRefreshSequence
+    circleAbortController?.abort()
+    circleAbortController = null
+    for (const item of successfulDeletesByLibrary) {
+      pruneRowsFromCurrentViewByPaths(item.paths, item.libraryId)
+    }
 
     clearSelection()
 
@@ -23752,9 +24017,22 @@ async function runBatchApiRenameRows (targetGroups, batchId) {
 
     try {
 
-      const response = await libraryApi.batchApiRename(runnableRows.map(row => row.path), libraryId)
+      const response = await libraryApi.batchApiRename(
+        runnableRows.map(row => row.path),
+        libraryId,
+        { idempotencyKey: `${batchId}:${libraryId}` },
+      )
       const responseResults = Array.isArray(response?.results) ? response.results : []
       const resultByPath = new Map(responseResults.map(item => [String(item?.path || ''), item]))
+      const successfulPaths = responseResults
+        .filter(item => item?.success)
+        .map(item => String(item?.path || '').trim())
+        .filter(Boolean)
+      libraryIndexStateStore.registerMutationResponse(response, {
+        libraryId,
+        deletedPaths: successfulPaths.map(path => ({ libraryId, path, scope: 'subtree' })),
+      })
+      if (successfulPaths.length) invalidateDirectoryViewRequests()
 
       runnableRows.forEach((row, index) => {
         const item = resultByPath.get(String(row.path || '')) || responseResults[index] || {}
@@ -23908,6 +24186,8 @@ function statsSizeCardText (stats) {
 
   if (stats.status === 'syncing') return formatGB(stats.total_size_gb)
 
+  if (stats.status === 'catching_up' || stats.status === 'rebuilding') return formatGB(stats.total_size_gb)
+
   if (stats.status === 'idle') return isRemoteCurrentLibrary.value ? '\u6309\u7fa4\u6656\u63a5\u53e3\u6d4f\u89c8' : '\u5c1a\u672a\u7edf\u8ba1'
 
   if (stats.status === 'canceled') return '\u5df2\u53d6\u6d88\uff0c\u4fdd\u7559\u5feb\u7167'
@@ -23949,6 +24229,18 @@ function statsStatusCardText (stats) {
     return done > 0 ? `\u7edf\u8ba1\u66f4\u65b0\u4e2d\uff0c\u5df2\u5904\u7406 ${done.toLocaleString()} \u9879` : '\u7edf\u8ba1\u66f4\u65b0\u4e2d\uff0c\u5feb\u7167\u4f1a\u81ea\u52a8\u66f4\u65b0'
 
   }
+
+  if (status === 'catching_up') {
+
+    const pending = Math.max(0, Number(stats?.accepted_seq || 0) - Number(stats?.materialized_seq || 0))
+
+    return pending > 0
+      ? `后台追赶 ${pending.toLocaleString()} 项，当前快照截至 #${Number(stats?.materialized_seq || 0).toLocaleString()}`
+      : '后台追赶中，当前快照仍可用'
+
+  }
+
+  if (status === 'rebuilding') return '全量重建中，当前快照仍可用'
 
   if (status === 'canceled') return '\u5df2\u624b\u52a8\u53d6\u6d88\uff0c\u4ecd\u4fdd\u7559\u5feb\u7167'
 

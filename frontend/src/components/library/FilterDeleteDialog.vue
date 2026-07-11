@@ -307,6 +307,7 @@ import {
 import { activityLogApi, libraryApi } from '../../api'
 import { useRealtimeEvents } from '../../composables/useRealtimeEvents'
 import { libraryEntryIconFor, libraryEntryMetaFor } from './_libraryFileKind'
+import { useLibraryIndexStateStore } from '../../stores/libraryIndexState'
 
 const text = {
   title: '\u5220\u9664\u8fc7\u6ee4\u6587\u4ef6\u9884\u5ba1',
@@ -372,6 +373,7 @@ const props = defineProps({
 
 const emit = defineEmits(['update:modelValue', 'deleted', 'state-change', 'dismiss-background'])
 const realtimeEvents = useRealtimeEvents()
+const libraryIndexStateStore = useLibraryIndexStateStore()
 
 const visible = computed({
   get: () => props.modelValue,
@@ -1652,6 +1654,13 @@ async function confirmFilterDeleteSelection () {
           succeededPaths.push(target)
           deletedBytes += Number(sizeByKey.get(key) || 0)
           deletedFolderCount += Number(folderCountByKey.get(key) || 0)
+        })
+        libraryIndexStateStore.registerMutationResponse(result, {
+          deletedPaths: succeededPaths.map(target => ({
+            libraryId: target.library_id,
+            path: target.path,
+            scope: 'subtree',
+          })),
         })
       } catch (error) {
         const errorMessage = error?.response?.data?.detail || error?.message || '删除失败'
