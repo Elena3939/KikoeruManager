@@ -12,6 +12,7 @@
 - 已有资源预算服务，资源维度包括 `disk_io_local`、`archive_cpu`、`remote_fs`、`network_download`、`sqlite_write`，见 `backend/app/core/resource_budget_service.py:24`。
 - 已有慢 API 日志和资源预算快照，阈值默认 0.5s，见 `backend/app/api/routes.py:1700`、`backend/app/api/routes.py:1771`。
 - 已有任务阶段指标接口，见 `backend/app/api/routes.py:3176`。
+- 启动时会默认开启事件循环 watchdog：主循环延迟或心跳停顿会写入 `[事件循环]` 日志，停顿超过阈值时由独立线程 dump 所有 Python 线程栈，避免线上卡死只能靠慢请求时间线反推。可用 `KIKOERUMANAGER_EVENT_LOOP_WATCHDOG=0` 临时关闭。
 - 前端路由已经懒加载，见 `frontend/src/router/index.js:4`；Vite 已有 manual chunks，见 `frontend/vite.config.js:60`。
 
 真正的瓶颈集中在四处：
@@ -316,4 +317,3 @@
 - 库存页：打开 1 万文件目录、搜索、框选、右键菜单、移动弹窗的 FPS 和内存。
 - 下载：HTTP / Google Drive / Transfer.it / 百度 / ASMR 同时跑时，resource budget active/waiting、任务中心 SSE 频率、SQLite 写入次数。
 - 解压：SSD / HDD / NAS 下 `archive_cpu` 不同默认值的吞吐和 API p95。
-

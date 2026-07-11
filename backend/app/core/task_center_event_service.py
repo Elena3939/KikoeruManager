@@ -236,19 +236,41 @@ def broadcast_library_index_status_changed(status, reason: str = "library_index_
     try:
         if status is None:
             return
+        if hasattr(status, "to_dict"):
+            snapshot = dict(status.to_dict() or {})
+        else:
+            accepted_seq = int(getattr(status, "accepted_seq", 0) or 0)
+            materialized_seq = int(getattr(status, "materialized_seq", 0) or 0)
+            snapshot = {
+                "library_id": str(getattr(status, "library_id", "") or ""),
+                "status": str(getattr(status, "status", "") or ""),
+                "watcher_mode": getattr(status, "watcher_mode", None),
+                "total_entries": int(getattr(status, "total_entries", 0) or 0),
+                "total_size_bytes": int(getattr(status, "total_size_bytes", 0) or 0),
+                "folder_count": int(getattr(status, "folder_count", 0) or 0),
+                "last_full_scan_at": getattr(status, "last_full_scan_at", None),
+                "last_event_at": getattr(status, "last_event_at", None),
+                "accepted_seq": accepted_seq,
+                "materialized_seq": materialized_seq,
+                "pending_events": max(accepted_seq - materialized_seq, 0),
+                "state_revision": int(getattr(status, "state_revision", 0) or 0),
+                "view_revision": int(getattr(status, "view_revision", 0) or 0),
+                "active_generation": int(getattr(status, "active_generation", 1) or 1),
+                "building_generation": getattr(status, "building_generation", None),
+                "catchup_state": str(getattr(status, "catchup_state", "idle") or "idle"),
+                "last_operation_id": getattr(status, "last_operation_id", None),
+                "materializer_owner": getattr(status, "materializer_owner", None),
+                "materializer_lease_until": getattr(status, "materializer_lease_until", None),
+                "materializer_epoch": int(getattr(status, "materializer_epoch", 0) or 0),
+                "blocked_seq": getattr(status, "blocked_seq", None),
+                "catchup_error": getattr(status, "catchup_error", None),
+                "error": getattr(status, "error", None),
+                "updated_at": int(getattr(status, "updated_at", 0) or 0),
+            }
         broadcast_event({
             "type": "library_index_status_changed",
             "reason": str(reason or "library_index_status"),
-            "library_id": str(getattr(status, "library_id", "") or ""),
-            "status": str(getattr(status, "status", "") or ""),
-            "watcher_mode": getattr(status, "watcher_mode", None),
-            "total_entries": int(getattr(status, "total_entries", 0) or 0),
-            "total_size_bytes": int(getattr(status, "total_size_bytes", 0) or 0),
-            "folder_count": int(getattr(status, "folder_count", 0) or 0),
-            "last_full_scan_at": getattr(status, "last_full_scan_at", None),
-            "last_event_at": getattr(status, "last_event_at", None),
-            "error": getattr(status, "error", None),
-            "updated_at": int(getattr(status, "updated_at", 0) or 0),
+            **snapshot,
         })
     except Exception:
         logger.debug("构建库存索引 SSE 事件失败", exc_info=True)

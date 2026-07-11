@@ -10,6 +10,7 @@ from app.core import library_circle_aggregation_service as circle_module
 from app.core.library_circle_aggregation_service import LibraryCircleAggregationService
 from app.models.database import (
     LibraryIndexEntry,
+    LibraryIndexStatus,
 )
 
 
@@ -129,6 +130,23 @@ def fake_library_manager(tmp_path):
 
 @pytest.fixture
 def circle_service(db_session, fake_library_manager, monkeypatch):
+    db_session.add_all([
+        LibraryIndexStatus(
+            library_id=library.id,
+            status="ready",
+            watcher_mode="disabled",
+            accepted_seq=0,
+            materialized_seq=0,
+            state_revision=0,
+            view_revision=0,
+            active_generation=1,
+            materializer_epoch=0,
+            catchup_state="idle",
+            updated_at=1000,
+        )
+        for library in fake_library_manager._active_libraries()
+    ])
+    db_session.commit()
     monkeypatch.setattr(circle_module, "SessionLocal", lambda: _NoCloseSession(db_session))
     monkeypatch.setattr(circle_module, "get_library_manager", lambda: fake_library_manager)
     yield LibraryCircleAggregationService()
@@ -332,6 +350,20 @@ def test_library_view_preferences_route_validates_mode(monkeypatch):
 
 def test_circle_group_routes_support_pagination_and_keyword(db_session, fake_library_manager, monkeypatch):
     fake_library_manager._libraries = fake_library_manager._libraries[:1]
+    db_session.add(LibraryIndexStatus(
+        library_id="local-a",
+        status="ready",
+        watcher_mode="disabled",
+        accepted_seq=0,
+        materialized_seq=0,
+        state_revision=0,
+        view_revision=0,
+        active_generation=1,
+        materializer_epoch=0,
+        catchup_state="idle",
+        updated_at=1000,
+    ))
+    db_session.commit()
     monkeypatch.setattr(circle_module, "SessionLocal", lambda: _NoCloseSession(db_session))
     monkeypatch.setattr(circle_module, "get_library_manager", lambda: fake_library_manager)
     monkeypatch.setattr(routes_module, "get_library_manager", lambda: fake_library_manager)

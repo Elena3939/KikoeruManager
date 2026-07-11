@@ -26,7 +26,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.models.database import Base, LibraryIndexEntry, LibraryIndexStatus  # noqa: E402
+from app.models.database import (  # noqa: E402
+    Base,
+    LibraryIndexEntry,
+    LibraryIndexMutationOperation,
+    LibraryIndexPendingMask,
+    LibraryIndexStatus,
+)
 from app.core.library_index.service import LibraryIndexService  # noqa: E402
 from app.core.library_index.snapshot_store import SnapshotStore  # noqa: E402
 from app.core.library_index.types import IndexEntry  # noqa: E402
@@ -71,6 +77,30 @@ def _backdate_index_status(store: SnapshotStore, library_id: str, updated_at_ms:
         assert row is not None
         row.updated_at = updated_at_ms
         db.flush()
+
+
+def test_status_snapshot_broadcast_happens_only_after_commit(isolated_index, monkeypatch):
+    store: SnapshotStore = isolated_index["store"]
+    library_id = "lib_status_after_commit"
+    broadcasts = []
+
+    def capture(status, *, reason):
+        persisted = store.get_status(status.library_id)
+        broadcasts.append((status.library_id, reason, persisted.status if persisted else None))
+
+    monkeypatch.setattr(store, "_broadcast_status_change", capture)
+
+    def fail_commit(_session):
+        raise RuntimeError("forced commit failure")
+
+    event.listen(store._session_factory.class_, "before_commit", fail_commit, once=True)  # noqa: SLF001
+    with pytest.raises(RuntimeError, match="forced commit failure"):
+        store.upsert_status(library_id, status="ready", watcher_mode="disabled")
+    assert broadcasts == []
+    assert store.get_status(library_id) is None
+
+    store.upsert_status(library_id, status="ready", watcher_mode="disabled")
+    assert broadcasts == [(library_id, "library_index_status", "ready")]
 
 
 def _manual_entry(
@@ -847,6 +877,70 @@ def test_find_by_rjcode_repairs_legacy_missing_rjcode_column(isolated_index):
             .scalar()
         )
     assert repaired == "RJ01627612"
+
+
+def test_find_by_rjcode_legacy_repair_respects_active_view_and_pending_masks(isolated_index):
+    """旧字段修复不能越过 generation 水位或把已遮罩删除项重新带回搜索。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    library_id = "lib_rj_legacy_repair_overlay"
+    masked_path = "RaRo/[RaRo][RJ01627612](CV A)"
+    inactive_path = "RaRo/[RaRo][RJ01627612](CV B)"
+
+    store.bulk_upsert([
+        _manual_entry(masked_path, library_id=library_id, rjcode="RJ01627612"),
+    ])
+    with store._write_session(invalidate_children_total_cache=False) as db:  # noqa: SLF001
+        masked = db.query(LibraryIndexEntry).filter_by(
+            library_id=library_id,
+            generation=1,
+            relative_path=masked_path,
+        ).one()
+        masked.rjcode = ""
+        db.add(LibraryIndexEntry(
+            library_id=library_id,
+            generation=2,
+            materialized_seq=0,
+            entry_type="dir",
+            relative_path=inactive_path,
+            absolute_path=f"/library/{inactive_path}",
+            name=inactive_path.rsplit("/", 1)[-1],
+            name_sort_key=inactive_path.casefold(),
+            rjcode="",
+            parent_path="RaRo",
+            size=0,
+            file_count=0,
+            mtime=1000,
+            depth=2,
+            indexed_at=1000,
+        ))
+        db.add(LibraryIndexMutationOperation(
+            operation_id="legacy-repair-mask-operation",
+            idempotency_key="legacy-repair-mask-key",
+            request_fingerprint="legacy-repair-mask-fingerprint",
+            kind="delete",
+            state="prepared",
+            planned_scopes=[],
+            actual_result={},
+        ))
+        db.add(LibraryIndexPendingMask(
+            operation_id="legacy-repair-mask-operation",
+            library_id=library_id,
+            effect_no=0,
+            kind="delete",
+            relative_path=masked_path,
+            scope="exact",
+        ))
+
+    assert service.find_by_rjcode("RJ01627612", library_id) == []
+    with store._read_session() as db:  # noqa: SLF001
+        rows = db.query(
+            LibraryIndexEntry.generation,
+            LibraryIndexEntry.rjcode,
+        ).filter(
+            LibraryIndexEntry.library_id == library_id,
+        ).order_by(LibraryIndexEntry.generation.asc()).all()
+    assert rows == [(1, ""), (2, "")]
 
 
 def test_interrupted_initial_syncing_status_becomes_error(isolated_index):

@@ -15,8 +15,10 @@ from datetime import datetime, timedelta
 import asyncio
 import base64
 import copy
+import concurrent.futures
 from collections import defaultdict, deque
 import contextlib
+import functools
 import hashlib
 import json
 import logging
@@ -32,6 +34,8 @@ import re
 import shutil
 import stat
 import tempfile
+import threading
+import traceback
 from types import SimpleNamespace
 import uuid
 import yaml
@@ -46,6 +50,141 @@ _LIBRARY_STORAGE_INFO_STALE_TIMEOUT_SECONDS = 0.35
 _BATCH_API_RENAME_INFLIGHT: Dict[str, asyncio.Task] = {}
 _DOWNLOAD_STATUS_CACHE_TTL_SECONDS = 1.0
 _DOWNLOAD_STATUS_CACHE: Dict[str, Dict[str, Any]] = {}
+_EVENT_LOOP_WATCHDOG_TASK: Optional[asyncio.Task] = None
+_EVENT_LOOP_WATCHDOG_THREAD: Optional[threading.Thread] = None
+_EVENT_LOOP_WATCHDOG_STOP_EVENT: Optional[threading.Event] = None
+_EVENT_LOOP_WATCHDOG_LAST_BEAT = time.monotonic()
+_LOG_IO_EXECUTOR: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_LOG_IO_EXECUTOR_LOCK = threading.Lock()
+_LOG_STREAM_ACTIVE_COUNT = 0
+_LOG_STREAM_TOTAL_CONNECTIONS = 0
+_LOG_STREAM_DROPPED_COUNT = 0
+_LOG_STREAM_STATUS_LOCK = threading.Lock()
+
+
+def _env_float(name: str, default: float, *, min_value: float = 0.1, max_value: float = 3600.0) -> float:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return min(max(value, min_value), max_value)
+
+
+def _format_all_thread_stacks() -> str:
+    frames = sys._current_frames()
+    lines: List[str] = []
+    for thread in threading.enumerate():
+        lines.append(f"\n--- thread name={thread.name} ident={thread.ident} daemon={thread.daemon} ---")
+        frame = frames.get(thread.ident)
+        if frame is None:
+            lines.append("<no python frame>")
+            continue
+        lines.extend(traceback.format_stack(frame))
+    return "".join(lines)
+
+
+async def _event_loop_watchdog_loop() -> None:
+    interval = _env_float("KIKOERUMANAGER_EVENT_LOOP_WATCHDOG_INTERVAL", 1.0, min_value=0.2, max_value=60.0)
+    loop = asyncio.get_running_loop()
+    expected = loop.time() + interval
+    global _EVENT_LOOP_WATCHDOG_LAST_BEAT
+    _EVENT_LOOP_WATCHDOG_LAST_BEAT = time.monotonic()
+    while True:
+        await asyncio.sleep(interval)
+        now = loop.time()
+        lag = max(0.0, now - expected)
+        expected = now + interval
+        _EVENT_LOOP_WATCHDOG_LAST_BEAT = time.monotonic()
+        warn_threshold = _env_float("KIKOERUMANAGER_EVENT_LOOP_LAG_WARN_SECONDS", 2.0, min_value=0.2, max_value=600.0)
+        if lag >= warn_threshold:
+            logger.warning("[事件循环] 主循环延迟 %.3fs，HTTP 请求和后台任务可能被同步阻塞拖慢", lag)
+
+
+def _event_loop_watchdog_thread(stop_event: threading.Event) -> None:
+    interval = _env_float("KIKOERUMANAGER_EVENT_LOOP_WATCHDOG_INTERVAL", 1.0, min_value=0.2, max_value=60.0)
+    warn_threshold = _env_float("KIKOERUMANAGER_EVENT_LOOP_LAG_WARN_SECONDS", 2.0, min_value=0.2, max_value=600.0)
+    stack_threshold = _env_float("KIKOERUMANAGER_EVENT_LOOP_STACK_SECONDS", 8.0, min_value=1.0, max_value=1800.0)
+    stack_cooldown = _env_float("KIKOERUMANAGER_EVENT_LOOP_STACK_COOLDOWN_SECONDS", 60.0, min_value=5.0, max_value=3600.0)
+    last_warn = 0.0
+    last_stack_dump = 0.0
+    while not stop_event.wait(interval):
+        now = time.monotonic()
+        lag = max(0.0, now - _EVENT_LOOP_WATCHDOG_LAST_BEAT)
+        if lag < warn_threshold or now - last_warn < stack_cooldown:
+            continue
+        last_warn = now
+        logger.warning("[事件循环] 心跳停顿 %.3fs，主循环可能被同步阻塞", lag)
+        if lag >= stack_threshold and now - last_stack_dump >= stack_cooldown:
+            last_stack_dump = now
+            logger.error("[事件循环] 心跳停顿 %.3fs，线程栈如下:%s", lag, _format_all_thread_stacks())
+
+
+def _start_event_loop_watchdog() -> None:
+    global _EVENT_LOOP_WATCHDOG_TASK, _EVENT_LOOP_WATCHDOG_THREAD, _EVENT_LOOP_WATCHDOG_STOP_EVENT, _EVENT_LOOP_WATCHDOG_LAST_BEAT
+    if os.environ.get("KIKOERUMANAGER_EVENT_LOOP_WATCHDOG", "1").strip().lower() in {"0", "false", "no", "off"}:
+        logger.info("[事件循环] watchdog 已通过环境变量禁用")
+        return
+    if _EVENT_LOOP_WATCHDOG_TASK and not _EVENT_LOOP_WATCHDOG_TASK.done():
+        return
+    _EVENT_LOOP_WATCHDOG_LAST_BEAT = time.monotonic()
+    _EVENT_LOOP_WATCHDOG_STOP_EVENT = threading.Event()
+    _EVENT_LOOP_WATCHDOG_THREAD = threading.Thread(
+        target=_event_loop_watchdog_thread,
+        args=(_EVENT_LOOP_WATCHDOG_STOP_EVENT,),
+        name="event-loop-watchdog-thread",
+        daemon=True,
+    )
+    _EVENT_LOOP_WATCHDOG_THREAD.start()
+    _EVENT_LOOP_WATCHDOG_TASK = asyncio.create_task(_event_loop_watchdog_loop(), name="event-loop-watchdog")
+    logger.info("[事件循环] watchdog 已启动")
+
+
+async def _stop_event_loop_watchdog() -> None:
+    global _EVENT_LOOP_WATCHDOG_TASK, _EVENT_LOOP_WATCHDOG_THREAD, _EVENT_LOOP_WATCHDOG_STOP_EVENT
+    stop_event = _EVENT_LOOP_WATCHDOG_STOP_EVENT
+    _EVENT_LOOP_WATCHDOG_STOP_EVENT = None
+    if stop_event:
+        stop_event.set()
+    task = _EVENT_LOOP_WATCHDOG_TASK
+    _EVENT_LOOP_WATCHDOG_TASK = None
+    if not task:
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    thread = _EVENT_LOOP_WATCHDOG_THREAD
+    _EVENT_LOOP_WATCHDOG_THREAD = None
+    if thread:
+        thread.join(timeout=2.0)
+
+
+def _get_log_io_executor() -> concurrent.futures.ThreadPoolExecutor:
+    global _LOG_IO_EXECUTOR
+    with _LOG_IO_EXECUTOR_LOCK:
+        if _LOG_IO_EXECUTOR is None:
+            workers = int(os.environ.get("KIKOERUMANAGER_LOG_IO_WORKERS", "2") or 2)
+            _LOG_IO_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, min(workers, 8)),
+                thread_name_prefix="system-log-io",
+            )
+        return _LOG_IO_EXECUTOR
+
+
+async def _run_log_io(func, *args, **kwargs):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_get_log_io_executor(), functools.partial(func, *args, **kwargs))
+
+
+def _shutdown_log_io_executor() -> None:
+    global _LOG_IO_EXECUTOR
+    with _LOG_IO_EXECUTOR_LOCK:
+        executor = _LOG_IO_EXECUTOR
+        _LOG_IO_EXECUTOR = None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _is_media_response_for_gzip(headers: Headers, status_code: int) -> bool:
@@ -255,7 +394,14 @@ from ..core.processed_archive_cleanup import get_processed_archive_cleanup_servi
 from ..core.backup_zip_service import get_backup_zip_service
 from ..core.file_processor import get_file_processor
 from ..core.library_manager import get_library_manager, shutdown_library_manager_background_workers, SynologyError
-from ..core.library_index import get_library_index_service
+from ..core.library_index import (
+    get_library_index_service,
+    get_library_index_mutation_service,
+    start_library_index_mutation_service,
+    start_library_index_watcher_driver,
+    stop_library_index_mutation_service,
+    stop_library_index_watcher_driver,
+)
 from ..core.rjcode_utils import extract_rjcode, extract_rjcode_from_path, scan_existing_folder_candidates
 from ..core.password_utils import (
     normalize_filename_value,
@@ -2192,6 +2338,8 @@ async def _periodic_task_phase_metric_cleanup():
 @app.on_event("startup")
 async def startup_event():
     """应用启动时执行"""
+    _start_event_loop_watchdog()
+
     # 抬高 starlette 默认 threadpool 上限：FastAPI 的同步路由（def 而非 async def）
     # 都跑在这个池里，默认 40 在群晖 + SMB + 多任务并发时容易顶满，连环超时。
     # 80 对单实例桌面 / 中小 NAS 已经很宽裕，CPU / 内存压力可控。
@@ -2232,6 +2380,14 @@ async def startup_event():
         get_library_index_service().normalize_all_interrupted_syncing_statuses()
     except Exception:
         logger.warning("[启动] 纠正库存索引同步状态失败", exc_info=True)
+    try:
+        start_library_index_mutation_service()
+    except Exception:
+        logger.warning("[启动] 库存索引 materializer 启动失败", exc_info=True)
+    try:
+        start_library_index_watcher_driver()
+    except Exception:
+        logger.warning("[启动] 库存索引 watcher 启动失败", exc_info=True)
 
     # 启动任务引擎
     engine = get_task_engine()
@@ -2282,6 +2438,17 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """应用关闭时执行"""
+    try:
+        stop_library_index_watcher_driver()
+    except Exception:
+        logger.warning("关闭库存索引 watcher 失败", exc_info=True)
+    try:
+        stop_library_index_mutation_service()
+    except Exception:
+        logger.warning("关闭库存索引 materializer 失败", exc_info=True)
+    await _stop_event_loop_watchdog()
+    _shutdown_log_io_executor()
+
     # 停止 DLsite 邮件监听服务
     from ..core.email_watcher_service import get_email_watcher_service
     await get_email_watcher_service().stop()
@@ -2350,7 +2517,9 @@ class TaskResponse(BaseModel):
 
 _TASK_RUNTIME_ACTIVE_STATUSES = {"pending", "processing", "paused", "waiting_manual", "waiting_retry"}
 _TASK_RUNTIME_METADATA_OVERLAY_KEYS = (
+    "download_files",
     "download_runtime",
+    "failed_files",
     "upload_runtime",
     "bonus_probe_meta",
     "progress_log",
@@ -3636,6 +3805,90 @@ def get_redis_status():
     return get_redis_service().diagnostics()
 
 
+@app.get("/api/system/library-index/status")
+def get_library_index_runtime_status():
+    """返回库存索引水位、账本、Redis hint 与 watcher 诊断。"""
+    from ..core.library_index import (
+        get_library_index_mutation_service,
+        get_library_index_watcher_driver,
+    )
+    from ..core.redis_service import get_redis_service
+
+    mutation = get_library_index_mutation_service().diagnostics()
+    watcher = get_library_index_watcher_driver().diagnostics()
+    redis_status = get_redis_service().diagnostics()
+    pending_libraries = []
+    for item in mutation.get("pending_libraries") or []:
+        row = dict(item or {})
+        row["watermark_lag"] = max(
+            int(row.get("accepted_seq") or 0) - int(row.get("materialized_seq") or 0),
+            0,
+        )
+        pending_libraries.append(row)
+    return {
+        "libraries": pending_libraries,
+        "oldest_prepared_at": mutation.get("oldest_prepared_at"),
+        "oldest_ledger_by_library": mutation.get("oldest_ledger_by_library") or {},
+        "pending_mask_count_by_library": mutation.get("pending_mask_count_by_library") or {},
+        "replay_count": int(mutation.get("replay_count") or 0),
+        "materializer": {
+            "worker_alive": bool(mutation.get("worker_alive")),
+            "consumer": mutation.get("consumer"),
+        },
+        "watcher": watcher,
+        "redis": redis_status,
+        "generated_at": datetime.now().isoformat(),
+    }
+
+
+@app.get("/api/system/runtime-buffer/status")
+def get_runtime_buffer_status():
+    """返回运行态缓冲状态。Redis 失败时可看到 memory fallback 是否接管。"""
+    from ..core.redis_service import get_redis_service
+
+    return get_redis_service().runtime_buffer_status()
+
+
+@app.get("/api/system/pressure")
+def get_system_pressure():
+    """返回控制面压力快照，不触发下载队列或远程库探测。"""
+    from ..core.redis_service import get_redis_service
+    from ..core.resource_budget_service import get_resource_budget_service
+    from ..models import database as database_module
+
+    engine = get_task_engine()
+    db_pool_status = ""
+    db_pool_checked_out = None
+    try:
+        pool = getattr(database_module.engine, "pool", None)
+        if pool is not None:
+            db_pool_status = pool.status()
+            checked_out = getattr(pool, "checkedout", None)
+            if callable(checked_out):
+                db_pool_checked_out = checked_out()
+    except Exception:
+        db_pool_status = "unavailable"
+
+    return {
+        "resource_budget": get_resource_budget_service().snapshot(),
+        "runtime_buffer": get_redis_service().runtime_buffer_status(),
+        "logs": _log_stream_status_payload(),
+        "task_engine": {
+            "queue_size": engine.queue.qsize() if getattr(engine, "queue", None) is not None else 0,
+            "processing_count": len(getattr(engine, "processing", set()) or set()),
+            "task_count": len(getattr(engine, "tasks", {}) or {}),
+            "task_center_version": engine.get_task_center_version(),
+            "materialized_pending_count": len(getattr(engine, "_materialized_snapshot_pending", {}) or {}),
+            "max_concurrent": getattr(engine, "max_concurrent", None),
+        },
+        "database": {
+            "pool_status": db_pool_status,
+            "checked_out": db_pool_checked_out,
+        },
+        "generated_at": datetime.now().isoformat(),
+    }
+
+
 @app.get("/api/system/runtime/status")
 def get_runtime_status():
     """返回运行态依赖和关键限流配置。"""
@@ -3645,6 +3898,7 @@ def get_runtime_status():
     config = get_config()
     return {
         "redis": get_redis_service().diagnostics(),
+        "runtime_buffer": get_redis_service().runtime_buffer_status(),
         "resource_budget": get_resource_budget_service().snapshot(),
         "bonus_probe": config.bonus_probe.model_dump() if hasattr(config, 'bonus_probe') else None,
         "generated_at": datetime.now().isoformat(),
@@ -4816,6 +5070,72 @@ def _read_log_payload(log_file: str, line_limit: int, since_offset: int = -1) ->
     return {"logs": result, "next_offset": file_size, "is_full": True}
 
 
+def _runtime_log_stream_config() -> Dict[str, int]:
+    cfg = getattr(get_config(), "runtime_buffer", None)
+    return {
+        "batch_size": max(50, min(int(getattr(cfg, "log_stream_batch_size", 300) or 300), 5000)),
+        "flush_ms": max(100, min(int(getattr(cfg, "log_stream_flush_ms", 250) or 250), 5000)),
+    }
+
+
+def _trim_log_stream_payload(payload: Dict[str, Any], batch_size: int) -> Dict[str, Any]:
+    next_payload = dict(payload or {})
+    logs = list(next_payload.get("logs") or [])
+    original_count = len(logs)
+    dropped_count = 0
+    if original_count > batch_size:
+        dropped_count = original_count - batch_size
+        logs = logs[-batch_size:]
+        next_payload["logs"] = logs
+        next_payload["is_truncated_batch"] = True
+        with _LOG_STREAM_STATUS_LOCK:
+            global _LOG_STREAM_DROPPED_COUNT
+            _LOG_STREAM_DROPPED_COUNT += dropped_count
+    next_payload["batch_size"] = len(logs)
+    next_payload["original_count"] = original_count
+    next_payload["dropped_count"] = dropped_count
+    return next_payload
+
+
+def _log_stream_status_payload() -> Dict[str, Any]:
+    config = _runtime_log_stream_config()
+    log_file = _resolve_main_log_path()
+    stat_payload: Dict[str, Any] = {
+        "path": os.path.basename(log_file) if log_file else "",
+        "size_bytes": 0,
+        "mtime": None,
+    }
+    if log_file:
+        try:
+            stat_result = os.stat(log_file)
+            stat_payload.update({
+                "size_bytes": int(stat_result.st_size),
+                "mtime": datetime.fromtimestamp(stat_result.st_mtime).isoformat(),
+            })
+        except OSError:
+            pass
+    with _LOG_STREAM_STATUS_LOCK:
+        active_count = _LOG_STREAM_ACTIVE_COUNT
+        total_connections = _LOG_STREAM_TOTAL_CONNECTIONS
+        dropped_count = _LOG_STREAM_DROPPED_COUNT
+    executor = _LOG_IO_EXECUTOR
+    return {
+        "enabled": True,
+        "batch_size": config["batch_size"],
+        "flush_ms": config["flush_ms"],
+        "active_streams": active_count,
+        "total_connections": total_connections,
+        "dropped_count": dropped_count,
+        "log_file": stat_payload,
+        "executor": {
+            "max_workers": getattr(executor, "_max_workers", None) if executor else 0,
+            "threads": len(getattr(executor, "_threads", []) or []) if executor else 0,
+            "queue_size": getattr(getattr(executor, "_work_queue", None), "qsize", lambda: None)() if executor else 0,
+        },
+        "generated_at": datetime.now().isoformat(),
+    }
+
+
 def _sse_payload(event: str, payload: Dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -4846,7 +5166,7 @@ async def get_logs(lines: int = 100, since_offset: int = -1):
         def _read_log():
             return _read_log_payload(_log_file, line_limit, since_offset)
 
-        return await asyncio.to_thread(_read_log)
+        return await _run_log_io(_read_log)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取日志失败: {str(e)}")
 
@@ -4859,6 +5179,8 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
     主日志文件偏移，发现新增内容就批量推送。心跳用于防止代理/浏览器静默断开。
     """
     line_limit = max(50, min(int(lines or 300), 5000))
+    stream_config = _runtime_log_stream_config()
+    batch_size = int(stream_config["batch_size"])
 
     async def generator():
         current_offset = max(-1, int(since_offset or -1))
@@ -4866,6 +5188,10 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
         active_log_path = ""
         active_log_signature: tuple[int, int] | None = None
         sent_missing_notice = False
+        global _LOG_STREAM_ACTIVE_COUNT, _LOG_STREAM_TOTAL_CONNECTIONS
+        with _LOG_STREAM_STATUS_LOCK:
+            _LOG_STREAM_ACTIVE_COUNT += 1
+            _LOG_STREAM_TOTAL_CONNECTIONS += 1
         try:
             while True:
                 log_file = _resolve_main_log_path()
@@ -4881,10 +5207,11 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
                     break
 
                 active_log_path = log_file
-                payload = await asyncio.to_thread(_read_log_payload, log_file, line_limit, current_offset)
+                payload = await _run_log_io(_read_log_payload, log_file, line_limit, current_offset)
+                payload = _trim_log_stream_payload(payload, batch_size)
                 current_offset = int(payload.get("next_offset") or 0)
                 try:
-                    active_log_signature = await asyncio.to_thread(_log_file_signature, log_file)
+                    active_log_signature = await _run_log_io(_log_file_signature, log_file)
                 except OSError:
                     active_log_signature = None
                 yield _sse_payload("connected", {
@@ -4926,7 +5253,7 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
                     active_log_signature = None
 
                 try:
-                    current_signature = await asyncio.to_thread(_log_file_signature, log_file)
+                    current_signature = await _run_log_io(_log_file_signature, log_file)
                 except OSError:
                     await asyncio.sleep(1)
                     continue
@@ -4943,7 +5270,8 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
                     continue
 
                 try:
-                    payload = await asyncio.to_thread(_read_log_payload, log_file, line_limit, current_offset)
+                    payload = await _run_log_io(_read_log_payload, log_file, line_limit, current_offset)
+                    payload = _trim_log_stream_payload(payload, batch_size)
                 except OSError:
                     await asyncio.sleep(1)
                     continue
@@ -4975,6 +5303,9 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
                 "message": str(exc),
                 "time": datetime.now().isoformat(),
             })
+        finally:
+            with _LOG_STREAM_STATUS_LOCK:
+                _LOG_STREAM_ACTIVE_COUNT = max(0, _LOG_STREAM_ACTIVE_COUNT - 1)
 
     return StreamingResponse(
         generator(),
@@ -5155,7 +5486,7 @@ async def search_logs(
                 "stopped_early": stopped_early,
             }
 
-        return await asyncio.to_thread(_search)
+        return await _run_log_io(_search)
     except HTTPException:
         raise
     except Exception as e:
@@ -5197,7 +5528,13 @@ async def get_logs_info():
             ),
         }
 
-    return await asyncio.to_thread(_collect)
+    return await _run_log_io(_collect)
+
+
+@app.get("/api/logs/stream/status")
+async def get_log_stream_status():
+    """返回系统日志流运行态，不扫描历史日志。"""
+    return await _run_log_io(_log_stream_status_payload)
 
 
 class LogCleanupRequest(BaseModel):
@@ -5242,7 +5579,7 @@ async def cleanup_logs(payload: LogCleanupRequest):
         }
 
     try:
-        result = await asyncio.to_thread(_run)
+        result = await _run_log_io(_run)
     except Exception as exc:  # pragma: no cover - 兜底
         logger.warning("[日志管理] 清理日志失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"清理日志失败: {exc}")
@@ -7160,6 +7497,9 @@ async def browse_library_circle_files(
                 sort_order=sort_order,
                 force_refresh=force_refresh,
             )
+        index_views, view_token = service._load_index_views()
+        payload["index_views"] = index_views
+        payload["view_token"] = view_token
         payload["libraries"] = get_library_manager().list_libraries()
         return payload
     except Exception as e:
@@ -7199,6 +7539,82 @@ class LibraryIndexRebuildRequest(BaseModel):
     library_id: str
 
 
+def _request_idempotency_key(request: Request) -> str:
+    return str(request.headers.get("Idempotency-Key") or "").strip()
+
+
+def _local_relative_path(library, absolute_path: str) -> str:
+    root = os.path.abspath(library.root_path)
+    target = os.path.abspath(absolute_path)
+    try:
+        if os.path.normcase(os.path.commonpath([root, target])) != os.path.normcase(root):
+            raise ValueError("路径不在库存根目录内")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="路径不在库存根目录内") from exc
+    relative = os.path.relpath(target, root).replace("\\", "/")
+    return "" if relative == "." else relative.strip("/")
+
+
+def _local_rename_effects(library, source_path: str, target_path: str) -> List[Dict[str, Any]]:
+    scope = "subtree" if os.path.isdir(source_path) else "exact"
+    relative_target = _local_relative_path(library, target_path)
+    return [
+        {
+            "kind": "move",
+            "relative_path": _local_relative_path(library, source_path),
+            "scope": scope,
+            "target_library_id": library.id,
+            "target_path": relative_target,
+        },
+        {
+            "kind": "reconcile",
+            "relative_path": relative_target,
+            "scope": scope,
+        },
+    ]
+
+
+def _prepared_replay_response(prepared) -> Optional[Dict[str, Any]]:
+    if not prepared.replayed:
+        return None
+    if prepared.state == "committed":
+        return dict(prepared.result or {})
+    return {
+        "operation_id": prepared.operation_id,
+        "operation_state": prepared.state,
+        "processing": prepared.state in {"prepared", "reconcile_required"},
+    }
+
+
+def _stored_mutation_replay_response(
+    operation: Optional[Dict[str, Any]],
+    *,
+    expected_kind: str,
+    expected_sources: Dict[str, set[str]],
+) -> Optional[Dict[str, Any]]:
+    if operation is None:
+        return None
+    if str(operation.get("kind") or "") != expected_kind:
+        raise HTTPException(status_code=409, detail="Idempotency-Key 已用于不同操作")
+    actual_sources: Dict[str, set[str]] = {}
+    for scope in operation.get("planned_scopes") or []:
+        if str(scope.get("kind") or "") != "move":
+            continue
+        library_id = str(scope.get("library_id") or "")
+        relative_path = str(scope.get("relative_path") or "").strip("/")
+        actual_sources.setdefault(library_id, set()).add(relative_path)
+    if actual_sources != expected_sources:
+        raise HTTPException(status_code=409, detail="Idempotency-Key 对应的库存或路径与当前请求不一致")
+    state = str(operation.get("state") or "prepared")
+    if state == "committed":
+        return dict(operation.get("actual_result") or {})
+    return {
+        "operation_id": str(operation.get("operation_id") or ""),
+        "operation_state": state,
+        "processing": state in {"prepared", "reconcile_required"},
+    }
+
+
 def _index_status_to_dict(status, fallback_library_id: Optional[str] = None) -> Dict[str, Any]:
     if status is None:
         return {
@@ -7212,8 +7628,16 @@ def _index_status_to_dict(status, fallback_library_id: Optional[str] = None) -> 
             "last_event_at": None,
             "error": None,
             "updated_at": None,
+            "accepted_seq": 0,
+            "materialized_seq": 0,
+            "pending_events": 0,
+            "state_revision": 0,
+            "view_revision": 0,
+            "active_generation": 1,
+            "building_generation": None,
+            "catchup_state": "idle",
         }
-    return {
+    payload = {
         "library_id": status.library_id,
         "status": status.status,
         "watcher_mode": status.watcher_mode,
@@ -7224,7 +7648,20 @@ def _index_status_to_dict(status, fallback_library_id: Optional[str] = None) -> 
         "last_event_at": status.last_event_at,
         "error": status.error,
         "updated_at": status.updated_at,
+        "accepted_seq": int(getattr(status, "accepted_seq", 0) or 0),
+        "materialized_seq": int(getattr(status, "materialized_seq", 0) or 0),
+        "pending_events": int(getattr(status, "pending_events", 0) or 0),
+        "state_revision": int(getattr(status, "state_revision", 0) or 0),
+        "view_revision": int(getattr(status, "view_revision", 0) or 0),
+        "active_generation": int(getattr(status, "active_generation", 1) or 1),
+        "building_generation": getattr(status, "building_generation", None),
+        "catchup_state": str(getattr(status, "catchup_state", "idle") or "idle"),
+        "last_operation_id": getattr(status, "last_operation_id", None),
+        "materializer_epoch": int(getattr(status, "materializer_epoch", 0) or 0),
+        "blocked_seq": getattr(status, "blocked_seq", None),
+        "catchup_error": getattr(status, "catchup_error", None),
     }
+    return payload
 
 
 def _disabled_remote_index_status(library) -> Dict[str, Any]:
@@ -7258,7 +7695,35 @@ def _index_entry_to_dict(entry) -> Dict[str, Any]:
         "file_count": entry.file_count,
         "mtime": entry.mtime,
         "depth": entry.depth,
+        "index_generation": int(getattr(entry, "generation", 1) or 1),
+        "materialized_seq": int(getattr(entry, "materialized_seq", 0) or 0),
     }
+
+
+def _library_index_view(library_id: str) -> Dict[str, Any]:
+    status = get_library_index_service().get_status(library_id)
+    payload = _index_status_to_dict(status, library_id)
+    return {
+        "library_id": library_id,
+        "index_generation": int(payload.get("active_generation") or 1),
+        "accepted_seq": int(payload.get("accepted_seq") or 0),
+        "materialized_seq": int(payload.get("materialized_seq") or 0),
+        "state_revision": int(payload.get("state_revision") or 0),
+        "view_revision": int(payload.get("view_revision") or 0),
+        "stats_as_of_seq": int(payload.get("materialized_seq") or 0),
+    }
+
+
+def _library_index_views(library_ids: list[str]) -> tuple[list[Dict[str, Any]], str]:
+    views = [
+        _library_index_view(library_id)
+        for library_id in sorted({str(item or "").strip() for item in library_ids if str(item or "").strip()})
+    ]
+    token = "|".join(
+        f"{item['library_id']}:{item['index_generation']}:{item['view_revision']}"
+        for item in views
+    )
+    return views, token
 
 
 @app.post("/api/library/index/rebuild")
@@ -7287,7 +7752,23 @@ async def post_library_index_rebuild(request: LibraryIndexRebuildRequest):
     if library.type == "local":
         if not library.path:
             raise HTTPException(status_code=400, detail="本地库存未配置 path")
-        status = await service.schedule_rebuild_local(library.id, library.path)
+        if service._generation_contract_enabled():
+            async def _run_generation_rebuild() -> None:
+                try:
+                    await asyncio.to_thread(
+                        service.rebuild_local_generation,
+                        library.id,
+                        library.path,
+                    )
+                except Exception:
+                    logger.exception("[索引] generation rebuild 失败 library=%s", library.id)
+
+            task = asyncio.create_task(_run_generation_rebuild())
+            service._track_rebuild_task(library.id, task)
+            await asyncio.sleep(0)
+            status = service.get_status(library.id)
+        else:
+            status = await service.schedule_rebuild_local(library.id, library.path)
     elif library.type == "synology_filestation":
         raise HTTPException(
             status_code=400,
@@ -7398,10 +7879,18 @@ async def search_library_index(
             limit=capped_limit,
         )
 
-    return {
+    response = {
         "items": [_index_entry_to_dict(entry) for entry in entries],
         "count": len(entries),
     }
+    scope_ids = [library_scope] if isinstance(library_scope, str) else list(library_scope or [])
+    if len(scope_ids) == 1:
+        response["index_view"] = _library_index_view(scope_ids[0])
+    else:
+        index_views, view_token = _library_index_views(scope_ids)
+        response["index_views"] = index_views
+        response["view_token"] = view_token
+    return response
 
 
 _GLOBAL_INDEX_SEARCH_LIMIT_MAX = 500
@@ -7766,7 +8255,7 @@ async def global_search_library_index(
             "search_mode": "index",  # 默认假设走索引；下面会根据 ready / fallback 调整
             "fallback_error": None,
         }
-        if index_status_name == "ready":
+        if status_obj is not None and service.has_usable_snapshot(library_id):
             ready_library_ids.append(library_id)
         else:
             # syncing / idle / error 都视为未就绪 → 走非索引兜底
@@ -8073,7 +8562,7 @@ async def global_search_library_index_stream(
                 "search_mode": "index",
                 "fallback_error": None,
             }
-            if index_status_name == "ready":
+            if status_obj is not None and service.has_usable_snapshot(lib_id):
                 ready_library_ids.append(lib_id)
             else:
                 unready_library_infos.append(info or {"id": lib_id})
@@ -8341,6 +8830,8 @@ async def browse_library_files(
             )
         data["libraries"] = manager.list_libraries()
         data["library_id"] = data.get("library_id") or current_library.id
+        if current_library.type == "local":
+            data["index_view"] = _library_index_view(current_library.id)
         return data
     except HTTPException:
         raise
@@ -8353,7 +8844,21 @@ async def browse_library_files(
 async def get_library_browser_stats(force_refresh: bool = False, library_id: Optional[str] = None):
     try:
         manager = get_library_manager()
-        return await manager.ensure_stats(force=force_refresh, library_id=library_id)
+        payload = await manager.ensure_stats(force=force_refresh, library_id=library_id)
+        if library_id:
+            library = manager.get_library_definition(library_id)
+            if library.type == "local" and isinstance(payload, dict):
+                payload["index_view"] = _library_index_view(library.id)
+        elif isinstance(payload, dict):
+            local_ids = [
+                str(item.get("id") or "")
+                for item in manager.list_libraries()
+                if item.get("id") and item.get("type") == "local"
+            ]
+            index_views, view_token = _library_index_views(local_ids)
+            payload["index_views"] = index_views
+            payload["view_token"] = view_token
+        return payload
     except HTTPException:
         raise
     except Exception as e:
@@ -8625,13 +9130,17 @@ async def get_library_browser_folder_contents(request: Request):
         if not folder_path:
             raise HTTPException(status_code=400, detail="缺少文件夹路径")
         manager = get_library_manager()
-        return await manager.folder_contents(
+        payload = await manager.folder_contents(
             library_id,
             folder_path,
             recursive=bool(recursive),
             prefer_index=bool(prefer_index),
             include_dirs=bool(include_dirs),
         )
+        library = manager.get_library_definition(library_id)
+        if library.type == "local":
+            payload["index_view"] = _library_index_view(library.id)
+        return payload
     except HTTPException:
         raise
     except ValueError as e:
@@ -8918,6 +9427,8 @@ async def rename_library_browser_item(request: Request):
     skip_activity_log = False
     batch_id = ""
     rename_context = ""
+    prepared = None
+    mutation_service = None
     try:
         data = await request.json()
         path = str(data.get("path") or "").strip()
@@ -8930,13 +9441,66 @@ async def rename_library_browser_item(request: Request):
         if not path or not new_name:
             raise HTTPException(status_code=400, detail="缺少必要参数")
         manager = get_library_manager()
-        result = await manager.rename(
-            library_id,
-            path,
-            new_name,
-            skip_index_mutation=skip_index_mutation,
-            sync_index_mutation=not skip_index_mutation,
-        )
+        library = manager.get_library_definition(library_id) if not skip_index_mutation else None
+        planned_effects = []
+        if library is not None and library.type == "local":
+            new_path = os.path.join(os.path.dirname(path), new_name)
+            scope = "subtree" if os.path.isdir(path) else "exact"
+            planned_effects = [
+                {
+                    "kind": "move",
+                    "relative_path": _local_relative_path(library, path),
+                    "scope": scope,
+                    "target_library_id": library.id,
+                    "target_path": _local_relative_path(library, new_path),
+                },
+                {
+                    "kind": "reconcile",
+                    "relative_path": _local_relative_path(library, new_path),
+                    "scope": scope,
+                },
+            ]
+            mutation_service = get_library_index_mutation_service()
+            prepared = mutation_service.prepare(
+                kind="rename",
+                effects_by_library={library.id: planned_effects},
+                idempotency_key=_request_idempotency_key(request),
+            )
+            replay = _prepared_replay_response(prepared)
+            if replay is not None:
+                return replay
+        try:
+            if prepared is not None:
+                mutation_service.mark_filesystem_started(prepared.operation_id)
+            result = await manager.rename(
+                library_id,
+                path,
+                new_name,
+                skip_index_mutation=skip_index_mutation or prepared is not None,
+                sync_index_mutation=False,
+            )
+        except Exception as exc:
+            if prepared is not None:
+                mutation_service.fail_prepared(prepared.operation_id, exc)
+            raise
+        if prepared is not None:
+            try:
+                result = mutation_service.finalize(
+                    prepared.operation_id,
+                    actual_effects_by_library={library.id: planned_effects},
+                    actual_result=result,
+                )
+            except Exception as exc:
+                mutation_service.mark_reconcile_required(prepared.operation_id, exc)
+                return JSONResponse(
+                    status_code=202,
+                    content={
+                        **result,
+                        "operation_id": prepared.operation_id,
+                        "operation_state": "reconcile_required",
+                        "reconciliation_pending": True,
+                    },
+                )
         try:
             from ..core.activity_log_service import log_api_rename_action
             if not skip_activity_log:
@@ -9003,6 +9567,8 @@ async def rename_library_browser_item(request: Request):
 
 @app.post("/api/library/browser/batch-rename")
 async def batch_rename_library_browser_items(request: Request):
+    prepared = None
+    mutation_service = None
     try:
         data = await request.json()
         library_id = data.get("library_id")
@@ -9017,6 +9583,7 @@ async def batch_rename_library_browser_items(request: Request):
         from ..core.activity_log_service import log_api_rename_action, log_batch_manual_rename_result
 
         manager = get_library_manager()
+        library = manager.get_library_definition(library_id) if not skip_index_mutation else None
         batch_prefix = "mojibake" if rename_context == "folder_contents_mojibake_repair" else "manual-rename"
         batch_id = requested_batch_id or f"{batch_prefix}-{uuid.uuid4().hex}"
         normalized_items: list[dict[str, str]] = []
@@ -9051,12 +9618,57 @@ async def batch_rename_library_browser_items(request: Request):
                 "current_name": current_name,
             })
 
-        batch_result = await manager.batch_rename(
-            library_id,
-            normalized_items,
-            skip_index_mutation=skip_index_mutation,
-            sync_index_mutation=not skip_index_mutation,
-        )
+        planned_effects_by_index: dict[int, list[dict[str, Any]]] = {}
+        if library is not None and library.type == "local":
+            for item in normalized_items:
+                source_path = str(item["path"])
+                target_path = os.path.join(os.path.dirname(source_path), str(item["new_name"]))
+                scope = "subtree" if os.path.isdir(source_path) else "exact"
+                relative_target = _local_relative_path(library, target_path)
+                planned_effects_by_index[int(item["index"])] = [
+                    {
+                        "kind": "move",
+                        "relative_path": _local_relative_path(library, source_path),
+                        "scope": scope,
+                        "target_library_id": library.id,
+                        "target_path": relative_target,
+                    },
+                    {
+                        "kind": "reconcile",
+                        "relative_path": relative_target,
+                        "scope": scope,
+                    },
+                ]
+            if planned_effects_by_index:
+                mutation_service = get_library_index_mutation_service()
+                prepared = mutation_service.prepare(
+                    kind="batch_rename",
+                    effects_by_library={
+                        library.id: [
+                            effect
+                            for effects in planned_effects_by_index.values()
+                            for effect in effects
+                        ]
+                    },
+                    idempotency_key=_request_idempotency_key(request),
+                )
+                replay = _prepared_replay_response(prepared)
+                if replay is not None:
+                    return replay
+
+        try:
+            if prepared is not None:
+                mutation_service.mark_filesystem_started(prepared.operation_id)
+            batch_result = await manager.batch_rename(
+                library_id,
+                normalized_items,
+                skip_index_mutation=skip_index_mutation or prepared is not None,
+                sync_index_mutation=False if prepared is not None else not skip_index_mutation,
+            )
+        except Exception as exc:
+            if prepared is not None:
+                mutation_service.fail_prepared(prepared.operation_id, exc)
+            raise
         raw_success_results = list(batch_result.get("results") or [])
         raw_failed_results = list(batch_result.get("failed") or [])
 
@@ -9118,7 +9730,7 @@ async def batch_rename_library_browser_items(request: Request):
                 source_path=str(data.get("path") or (results[0].get("path") if results else "") or "").strip(),
                 rename_context=rename_context,
             )
-        return {
+        response = {
             "batch_id": batch_id,
             "success_count": success_count,
             "failed_count": failed_count,
@@ -9126,6 +9738,31 @@ async def batch_rename_library_browser_items(request: Request):
             "failed_items": [item for item in results if not item.get("success")],
             "results": results,
         }
+        if prepared is not None:
+            actual_effects = [
+                effect
+                for item in results
+                if item.get("success") and int(item.get("index") or 0) in planned_effects_by_index
+                for effect in planned_effects_by_index[int(item.get("index") or 0)]
+            ]
+            try:
+                response = mutation_service.finalize(
+                    prepared.operation_id,
+                    actual_effects_by_library={library.id: actual_effects} if actual_effects else {},
+                    actual_result=response,
+                )
+            except Exception as exc:
+                mutation_service.mark_reconcile_required(prepared.operation_id, exc)
+                return JSONResponse(
+                    status_code=202,
+                    content={
+                        **response,
+                        "operation_id": prepared.operation_id,
+                        "operation_state": "reconcile_required",
+                        "reconciliation_pending": True,
+                    },
+                )
+        return response
     except HTTPException:
         raise
     except Exception as e:
@@ -9170,7 +9807,55 @@ async def delete_library_browser_item(request: Request):
         if not path:
             raise HTTPException(status_code=400, detail="缺少路径")
         manager = get_library_manager()
-        result = await manager.delete(library_id, path, confirmed=confirmed)
+        library = manager.get_library_definition(library_id)
+        prepared = None
+        mutation_effect = None
+        if confirmed and library.type == "local":
+            service = get_library_index_mutation_service()
+            mutation_effect = {
+                "kind": "delete",
+                "relative_path": _local_relative_path(library, path),
+                "scope": "subtree" if os.path.isdir(path) else "exact",
+            }
+            prepared = service.prepare(
+                kind="delete",
+                effects_by_library={library.id: [mutation_effect]},
+                idempotency_key=_request_idempotency_key(request),
+            )
+            replay = _prepared_replay_response(prepared)
+            if replay is not None:
+                return replay
+        try:
+            if prepared is not None:
+                service.mark_filesystem_started(prepared.operation_id)
+            result = await manager.delete(
+                library_id,
+                path,
+                confirmed=confirmed,
+                skip_index_mutation=prepared is not None,
+            )
+        except Exception as exc:
+            if prepared is not None:
+                service.fail_prepared(prepared.operation_id, exc)
+            raise
+        if prepared is not None:
+            try:
+                result = service.finalize(
+                    prepared.operation_id,
+                    actual_effects_by_library={library.id: [mutation_effect]},
+                    actual_result=result,
+                )
+            except Exception as exc:
+                service.mark_reconcile_required(prepared.operation_id, exc)
+                return JSONResponse(
+                    status_code=202,
+                    content={
+                        **result,
+                        "operation_id": prepared.operation_id,
+                        "operation_state": "reconcile_required",
+                        "reconciliation_pending": True,
+                    },
+                )
         try:
             from ..core.activity_log_service import log_api_delete_action
             if confirmed and not skip_activity_log:
@@ -9243,7 +9928,40 @@ async def batch_delete_library_browser_items(request: Request):
         if not paths:
             raise HTTPException(status_code=400, detail="路径列表不能为空")
         manager = get_library_manager()
-        result = await manager.batch_delete(library_id, paths, confirmed=confirmed)
+        library = manager.get_library_definition(library_id)
+        prepared = None
+        planned_effects = []
+        if confirmed and library.type == "local":
+            planned_effects = [
+                {
+                    "kind": "delete",
+                    "relative_path": _local_relative_path(library, path),
+                    "scope": "subtree" if os.path.isdir(path) else "exact",
+                }
+                for path in paths
+            ]
+            mutation_service = get_library_index_mutation_service()
+            prepared = mutation_service.prepare(
+                kind="batch_delete",
+                effects_by_library={library.id: planned_effects},
+                idempotency_key=_request_idempotency_key(request),
+            )
+            replay = _prepared_replay_response(prepared)
+            if replay is not None:
+                return replay
+        try:
+            if prepared is not None:
+                mutation_service.mark_filesystem_started(prepared.operation_id)
+            result = await manager.batch_delete(
+                library_id,
+                paths,
+                confirmed=confirmed,
+                skip_index_mutation=prepared is not None,
+            )
+        except Exception as exc:
+            if prepared is not None:
+                mutation_service.fail_prepared(prepared.operation_id, exc)
+            raise
         if confirmed and isinstance(result, dict):
             failed_paths = result.get("failed_paths") or []
             failed_set = {
@@ -9256,6 +9974,32 @@ async def batch_delete_library_browser_items(request: Request):
             result["index_mutation_queued"] = int(result.get("success_count") or 0) > 0
             if batch_id:
                 result["batch_id"] = batch_id
+            if prepared is not None:
+                success_set = set(result.get("success_paths") or [])
+                actual_effects = [
+                    effect
+                    for path, effect in zip(paths, planned_effects)
+                    if path in success_set
+                ]
+                try:
+                    result = mutation_service.finalize(
+                        prepared.operation_id,
+                        actual_effects_by_library=(
+                            {library.id: actual_effects} if actual_effects else {}
+                        ),
+                        actual_result=result,
+                    )
+                except Exception as exc:
+                    mutation_service.mark_reconcile_required(prepared.operation_id, exc)
+                    return JSONResponse(
+                        status_code=202,
+                        content={
+                            **result,
+                            "operation_id": prepared.operation_id,
+                            "operation_state": "reconcile_required",
+                            "reconciliation_pending": True,
+                        },
+                    )
         try:
             from ..core.activity_log_service import log_api_delete_action, log_batch_api_delete_result
             if confirmed and isinstance(result, dict) and not skip_activity_log:
@@ -9356,7 +10100,46 @@ async def batch_delete_library_browser_targets(request: Request):
         if not targets:
             raise HTTPException(status_code=400, detail="路径列表不能为空")
         manager = get_library_manager()
-        result = await manager.batch_delete_targets(targets, confirmed=confirmed)
+        prepared = None
+        mutation_service = None
+        planned_effects_by_target: dict[tuple[str, str], dict[str, Any]] = {}
+        if confirmed:
+            planned_by_library: dict[str, list[dict[str, Any]]] = {}
+            for target in targets:
+                library = manager.get_library_definition(target["library_id"])
+                if library.type != "local":
+                    continue
+                path = target["path"]
+                effect = {
+                    "kind": "delete",
+                    "relative_path": _local_relative_path(library, path),
+                    "scope": "subtree" if os.path.isdir(path) else "exact",
+                }
+                key = (library.id, os.path.normcase(os.path.abspath(path)))
+                planned_effects_by_target[key] = effect
+                planned_by_library.setdefault(library.id, []).append(effect)
+            if planned_by_library:
+                mutation_service = get_library_index_mutation_service()
+                prepared = mutation_service.prepare(
+                    kind="batch_delete_targets",
+                    effects_by_library=planned_by_library,
+                    idempotency_key=_request_idempotency_key(request),
+                )
+                replay = _prepared_replay_response(prepared)
+                if replay is not None:
+                    return replay
+        try:
+            if prepared is not None:
+                mutation_service.mark_filesystem_started(prepared.operation_id)
+            result = await manager.batch_delete_targets(
+                targets,
+                confirmed=confirmed,
+                skip_index_mutation=prepared is not None,
+            )
+        except Exception as exc:
+            if prepared is not None:
+                mutation_service.fail_prepared(prepared.operation_id, exc)
+            raise
         if confirmed and isinstance(result, dict):
             success_targets = result.get("success_paths") or []
             result["index_mutation_queued"] = int(result.get("success_count") or 0) > 0
@@ -9414,6 +10197,37 @@ async def batch_delete_library_browser_targets(request: Request):
                     result["success_paths"] = success_targets
             except Exception:
                 logger.debug("[操作记录] 跨库存批量删除记录失败", exc_info=True)
+            if prepared is not None:
+                actual_by_library: dict[str, list[dict[str, Any]]] = {}
+                for item in success_targets:
+                    if not isinstance(item, dict):
+                        continue
+                    library_id = str(item.get("library_id") or "").strip()
+                    path = str(item.get("path") or "").strip()
+                    if not library_id or not path:
+                        continue
+                    effect = planned_effects_by_target.get(
+                        (library_id, os.path.normcase(os.path.abspath(path)))
+                    )
+                    if effect is not None:
+                        actual_by_library.setdefault(library_id, []).append(effect)
+                try:
+                    result = mutation_service.finalize(
+                        prepared.operation_id,
+                        actual_effects_by_library=actual_by_library,
+                        actual_result=result,
+                    )
+                except Exception as exc:
+                    mutation_service.mark_reconcile_required(prepared.operation_id, exc)
+                    return JSONResponse(
+                        status_code=202,
+                        content={
+                            **result,
+                            "operation_id": prepared.operation_id,
+                            "operation_state": "reconcile_required",
+                            "reconciliation_pending": True,
+                        },
+                    )
         return result
     except HTTPException:
         raise
@@ -9529,7 +10343,7 @@ async def preview_library_browser_move(request: LibraryBrowserMoveRequest):
 
 
 @app.post("/api/library/browser/move")
-async def move_library_browser_items(request: LibraryBrowserMoveRequest):
+async def move_library_browser_items(request: LibraryBrowserMoveRequest, raw_request: Request):
     if not request.paths:
         raise HTTPException(status_code=400, detail="待移动项不能为空")
     if not str(request.source_library_id or "").strip():
@@ -9538,14 +10352,102 @@ async def move_library_browser_items(request: LibraryBrowserMoveRequest):
         raise HTTPException(status_code=400, detail="缺少目标库存")
     try:
         manager = get_library_manager()
-        return await manager.move_local_items(
+        source_library = manager.get_library_definition(request.source_library_id)
+        target_library = manager.get_library_definition(request.target_library_id)
+        target_dir = os.path.abspath(request.target_path or target_library.root_path)
+        source_effects = []
+        target_effects = []
+        for path in request.paths:
+            source_effects.append({
+                "kind": "move",
+                "relative_path": _local_relative_path(source_library, path),
+                "scope": "subtree" if os.path.isdir(path) else "exact",
+                "target_library_id": target_library.id,
+                "target_path": _local_relative_path(
+                    target_library,
+                    os.path.join(target_dir, os.path.basename(path)),
+                ),
+            })
+            target_effects.append({
+                "kind": "reconcile",
+                "relative_path": _local_relative_path(
+                    target_library,
+                    os.path.join(target_dir, os.path.basename(path)),
+                ),
+                "scope": "subtree" if os.path.isdir(path) else "exact",
+            })
+        effects_by_library = {source_library.id: source_effects}
+        if target_library.id == source_library.id:
+            effects_by_library[source_library.id] = [*source_effects, *target_effects]
+        else:
+            effects_by_library[target_library.id] = target_effects
+        planned_source_by_path = {
+            str(effect["relative_path"]): effect
+            for effect in source_effects
+        }
+        mutation_service = get_library_index_mutation_service()
+        prepared = mutation_service.prepare(
+            kind="move",
+            effects_by_library=effects_by_library,
+            idempotency_key=_request_idempotency_key(raw_request),
+        )
+        replay = _prepared_replay_response(prepared)
+        if replay is not None:
+            return replay
+        try:
+            mutation_service.mark_filesystem_started(prepared.operation_id)
+            result = await manager.move_local_items(
             source_library_id=request.source_library_id,
             target_library_id=request.target_library_id,
             paths=list(request.paths or []),
             target_path=request.target_path or None,
             conflict_strategy=str(request.conflict_strategy or "suffix"),
             overwrite=bool(request.overwrite),
-        )
+            skip_index_mutation=True,
+            )
+        except Exception as exc:
+            mutation_service.fail_prepared(prepared.operation_id, exc)
+            raise
+        moved = list(result.get("moved") or [])
+        actual_by_library: dict[str, list[dict[str, Any]]] = {}
+        for item in moved:
+            source_path = str(item.get("source") or "")
+            destination = str(item.get("destination") or "")
+            if not source_path or not destination:
+                continue
+            source_relative = _local_relative_path(source_library, source_path)
+            source_scope = str(
+                planned_source_by_path.get(source_relative, {}).get("scope") or "exact"
+            )
+            actual_by_library.setdefault(source_library.id, []).append({
+                "kind": "move",
+                "relative_path": source_relative,
+                "scope": source_scope,
+                "target_library_id": target_library.id,
+                "target_path": _local_relative_path(target_library, destination),
+            })
+            actual_by_library.setdefault(target_library.id, []).append({
+                "kind": "reconcile",
+                "relative_path": _local_relative_path(target_library, destination),
+                "scope": source_scope,
+            })
+        try:
+            return mutation_service.finalize(
+                prepared.operation_id,
+                actual_effects_by_library=actual_by_library,
+                actual_result=result,
+            )
+        except Exception as exc:
+            mutation_service.mark_reconcile_required(prepared.operation_id, exc)
+            return JSONResponse(
+                status_code=202,
+                content={
+                    **result,
+                    "operation_id": prepared.operation_id,
+                    "operation_state": "reconcile_required",
+                    "reconciliation_pending": True,
+                },
+            )
     except HTTPException:
         raise
     except ValueError as e:
@@ -10318,12 +11220,15 @@ async def get_library_folder_contents(request: Request):
                 "browse_via_index": False,
                 "items": items,
             }
-        return await manager.folder_contents(
+        payload = await manager.folder_contents(
             library.id,
             folder_path,
             recursive=recursive,
             prefer_index=prefer_index,
         )
+        if library.type == "local":
+            payload["index_view"] = _library_index_view(library.id)
+        return payload
     except HTTPException:
         raise
     except Exception as e:
@@ -10369,6 +11274,10 @@ async def api_rename_library_file(request: Request):
     metadata_source = ""
     dlsite_circuit_open = False
     rename_skipped_reason = ""
+    prepared = None
+    mutation_service = None
+    planned_effects: List[Dict[str, Any]] = []
+    filesystem_started = False
     try:
         data = await request.json()
         file_path = str(data.get("path") or "").strip()
@@ -10387,6 +11296,18 @@ async def api_rename_library_file(request: Request):
         
         if not file_path:
             raise HTTPException(status_code=400, detail="缺少文件路径")
+
+        if library.type == "local":
+            mutation_service = get_library_index_mutation_service()
+            lookup = getattr(mutation_service, "get_operation_by_idempotency_key", None)
+            if callable(lookup):
+                replay = _stored_mutation_replay_response(
+                    lookup(_request_idempotency_key(request)),
+                    expected_kind="api_rename",
+                    expected_sources={library.id: {_local_relative_path(library, file_path)}},
+                )
+                if replay is not None:
+                    return replay
         
         if not is_remote_library and not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail="文件不存在")
@@ -10548,7 +11469,57 @@ async def api_rename_library_file(request: Request):
             }
 
         # 执行重命名
-        rename_result = await manager.rename(library.id, file_path, new_name, sync_index_mutation=True)
+        if library.type == "local":
+            planned_effects = _local_rename_effects(library, file_path, new_path)
+            mutation_service = mutation_service or get_library_index_mutation_service()
+            prepared = mutation_service.prepare(
+                kind="api_rename",
+                effects_by_library={library.id: planned_effects},
+                idempotency_key=_request_idempotency_key(request),
+            )
+            replay = _prepared_replay_response(prepared)
+            if replay is not None:
+                return replay
+            mutation_service.mark_filesystem_started(prepared.operation_id)
+            filesystem_started = True
+        try:
+            if prepared is not None:
+                rename_result = await manager.rename(
+                    library.id,
+                    file_path,
+                    new_name,
+                    skip_index_mutation=True,
+                    sync_index_mutation=False,
+                )
+            else:
+                rename_result = await manager.rename(
+                    library.id,
+                    file_path,
+                    new_name,
+                    sync_index_mutation=True,
+                )
+        except Exception as exc:
+            if prepared is not None:
+                source_still_exists = os.path.exists(file_path)
+                target_exists = os.path.exists(new_path)
+                if source_still_exists and not target_exists:
+                    mutation_service.fail_prepared(prepared.operation_id, exc)
+                    prepared = None
+                else:
+                    mutation_service.mark_reconcile_required(prepared.operation_id, exc)
+                    return JSONResponse(
+                        status_code=202,
+                        content={
+                            "message": "文件系统结果待核对，后台将自动恢复索引",
+                            "operation_id": prepared.operation_id,
+                            "operation_state": "reconcile_required",
+                            "reconciliation_pending": True,
+                            "path": new_path if target_exists else file_path,
+                            "new_path": new_path if target_exists else "",
+                            "new_name": new_name,
+                        },
+                    )
+            raise
         new_path = str(rename_result.get("new_path") or new_path)
         logger.info(f"API重命名成功: {file_path} -> {new_path}")
         try:
@@ -10568,15 +11539,37 @@ async def api_rename_library_file(request: Request):
         except Exception:
             logger.debug("[操作记录] API 重命名成功记录失败", exc_info=True)
 
-        return {
+        response = {
             "message": "API重命名成功",
             "old_name": os.path.basename(file_path),
             "new_name": new_name,
             "path": new_path,
+            "new_path": new_path,
             "metadata": metadata
         }
+        if prepared is not None:
+            try:
+                response = mutation_service.finalize(
+                    prepared.operation_id,
+                    actual_effects_by_library={library.id: planned_effects},
+                    actual_result=response,
+                )
+            except Exception as exc:
+                mutation_service.mark_reconcile_required(prepared.operation_id, exc)
+                return JSONResponse(
+                    status_code=202,
+                    content={
+                        **response,
+                        "operation_id": prepared.operation_id,
+                        "operation_state": "reconcile_required",
+                        "reconciliation_pending": True,
+                    },
+                )
+        return response
         
     except HTTPException as exc:
+        if prepared is not None and not filesystem_started:
+            mutation_service.fail_prepared(prepared.operation_id, exc.detail or exc)
         try:
             from ..core.activity_log_service import log_api_rename_action
 
@@ -10601,6 +11594,19 @@ async def api_rename_library_file(request: Request):
             logger.debug("[操作记录] API 重命名 HTTP 异常记录失败", exc_info=True)
         raise
     except Exception as e:
+        if prepared is not None:
+            if filesystem_started:
+                mutation_service.mark_reconcile_required(prepared.operation_id, e)
+                return JSONResponse(
+                    status_code=202,
+                    content={
+                        "message": "文件系统结果待核对，后台将自动恢复索引",
+                        "operation_id": prepared.operation_id,
+                        "operation_state": "reconcile_required",
+                        "reconciliation_pending": True,
+                    },
+                )
+            mutation_service.fail_prepared(prepared.operation_id, e)
         logger.error(f"API重命名失败: {e}", exc_info=True)
         try:
             from ..core.activity_log_service import log_api_rename_action
@@ -10803,12 +11809,30 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
         data = await request.json()
         paths = data.get("paths", [])
         library_id = data.get("library_id")
+        idempotency_key = _request_idempotency_key(request)
         
         if not paths:
             raise HTTPException(status_code=400, detail="路径列表不能为空")
 
         manager = get_library_manager()
         request_library = manager.get_library_definition(library_id) if library_id else None
+
+        if request_library is not None and request_library.type == "local":
+            mutation_service = get_library_index_mutation_service()
+            lookup = getattr(mutation_service, "get_operation_by_idempotency_key", None)
+            if callable(lookup):
+                replay = _stored_mutation_replay_response(
+                    lookup(idempotency_key),
+                    expected_kind="batch_api_rename",
+                    expected_sources={
+                        request_library.id: {
+                            _local_relative_path(request_library, str(path or "").strip())
+                            for path in paths
+                        }
+                    },
+                )
+                if replay is not None:
+                    return replay
 
         # 验证路径。远程库路径由 manager.rename/FileStation 负责校验，本地库仍先做快速存在性检查。
         for path in paths:
@@ -10846,6 +11870,11 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
             rename_service = RenameService()
             plan_semaphore = asyncio.Semaphore(max(1, min(2, len(paths))))
             rename_plans_by_library: dict[str, dict[str, Any]] = {}
+            mutation_service = None
+            prepared = None
+            planned_effects_by_library: dict[str, list[dict[str, Any]]] = {}
+            actual_effects_by_library: dict[str, list[dict[str, Any]]] = {}
+            ambiguous_local_error: Optional[Exception] = None
 
             def _plan_library(path_value: str):
                 if request_library is not None:
@@ -11086,8 +12115,38 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
 
             for bucket in rename_plans_by_library.values():
                 item_library = bucket["library"]
+                if item_library.type != "local":
+                    continue
+                for index, meta in bucket["meta"].items():
+                    effects = _local_rename_effects(
+                        item_library,
+                        meta["path"],
+                        meta["new_path"],
+                    )
+                    meta["index_effects"] = effects
+                    planned_effects_by_library.setdefault(item_library.id, []).extend(effects)
+
+            if planned_effects_by_library:
+                mutation_service = get_library_index_mutation_service()
+                prepared = mutation_service.prepare(
+                    kind="batch_api_rename",
+                    effects_by_library=planned_effects_by_library,
+                    idempotency_key=idempotency_key,
+                )
+                replay = _prepared_replay_response(prepared)
+                if replay is not None:
+                    return {"replay": replay}
+                mutation_service.mark_filesystem_started(prepared.operation_id)
+
+            for bucket in rename_plans_by_library.values():
+                item_library = bucket["library"]
                 try:
-                    batch_result = await manager.batch_rename(item_library.id, bucket["items"])
+                    batch_result = await manager.batch_rename(
+                        item_library.id,
+                        bucket["items"],
+                        skip_index_mutation=prepared is not None and item_library.type == "local",
+                        sync_index_mutation=False,
+                    )
                 except Exception as exc:
                     for index, meta in bucket["meta"].items():
                         log_api_rename_action(
@@ -11102,6 +12161,9 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                             error=str(exc),
                         )
                         results.append({"path": meta["path"], "success": False, "error": str(exc)})
+                    if prepared is not None and item_library.type == "local":
+                        ambiguous_local_error = exc
+                        break
                     continue
 
                 failed_by_index = {
@@ -11147,6 +12209,10 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                         "new_path": new_path,
                         "new_name": meta["new_name"],
                     })
+                    if meta.get("index_effects"):
+                        actual_effects_by_library.setdefault(item_library.id, []).extend(
+                            meta["index_effects"]
+                        )
             
             # 保存结果（可选：保存到文件或数据库）
             logger.info(f"批量 API重命名完成：batch_id={batch_id}, success={sum(1 for r in results if r['success'])}/{len(results)}")
@@ -11161,14 +12227,23 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                 )
             except Exception:
                 logger.debug("[操作记录] 批量 API 重命名汇总记录失败", exc_info=True)
-            return results
+            return {
+                "results": results,
+                "prepared": prepared,
+                "mutation_service": mutation_service,
+                "actual_effects_by_library": actual_effects_by_library,
+                "ambiguous_local_error": ambiguous_local_error,
+            }
         
         async def process_batch_response():
-            results = await process_batch()
+            outcome = await process_batch()
+            if outcome.get("replay") is not None:
+                return outcome["replay"]
+            results = outcome["results"]
             success_count = sum(1 for item in results if item.get("success"))
             failed_count = sum(1 for item in results if not item.get("success"))
 
-            return {
+            response = {
                 "batch_id": batch_id,
                 "message": f"批量重命名完成，共 {len(paths)} 项",
                 "total_count": len(paths),
@@ -11177,6 +12252,39 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                 "results": results,
                 "failed": [item for item in results if not item.get("success")],
             }
+            prepared = outcome.get("prepared")
+            mutation_service = outcome.get("mutation_service")
+            if prepared is not None:
+                ambiguous_local_error = outcome.get("ambiguous_local_error")
+                if ambiguous_local_error is not None:
+                    mutation_service.mark_reconcile_required(prepared.operation_id, ambiguous_local_error)
+                    return JSONResponse(
+                        status_code=202,
+                        content={
+                            **response,
+                            "operation_id": prepared.operation_id,
+                            "operation_state": "reconcile_required",
+                            "reconciliation_pending": True,
+                        },
+                    )
+                try:
+                    response = mutation_service.finalize(
+                        prepared.operation_id,
+                        actual_effects_by_library=outcome["actual_effects_by_library"],
+                        actual_result=response,
+                    )
+                except Exception as exc:
+                    mutation_service.mark_reconcile_required(prepared.operation_id, exc)
+                    return JSONResponse(
+                        status_code=202,
+                        content={
+                            **response,
+                            "operation_id": prepared.operation_id,
+                            "operation_state": "reconcile_required",
+                            "reconciliation_pending": True,
+                        },
+                    )
+            return response
 
         batch_task = asyncio.create_task(process_batch_response())
         _BATCH_API_RENAME_INFLIGHT[request_key] = batch_task

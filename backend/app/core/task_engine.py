@@ -1,5 +1,6 @@
 import asyncio
 import concurrent.futures
+import contextlib
 import re
 import uuid
 import os
@@ -540,7 +541,13 @@ def get_conflict_type_name(conflict_type: str) -> str:
 
 class TaskEngine:
     """任务引擎 - 管理任务队列和执行"""
-
+    _TERMINAL_OR_WAITING_STATUSES = {
+        TaskStatus.COMPLETED.value,
+        TaskStatus.FAILED.value,
+        TaskStatus.CANCELLED.value,
+        TaskStatus.WAITING_MANUAL.value,
+        TaskStatus.WAITING_RETRY.value,
+    }
     def __init__(self, max_concurrent: int = 2):
         self.max_concurrent = max_concurrent
         self.tasks: dict[str, Task] = {}
@@ -559,6 +566,7 @@ class TaskEngine:
         self._task_center_version = 0
         self._task_center_version_lock = threading.Lock()
         self._persisted_task_snapshot_versions: dict[str, tuple] = {}
+        self._persisted_task_snapshot_last_write_at: dict[str, float] = {}
         self._materialized_task_center_item_versions: dict[str, tuple] = {}
         self._materialized_task_center_item_last_write_at: dict[str, float] = {}
         self._materialized_task_center_item_written_versions: dict[str, int] = {}
@@ -571,6 +579,12 @@ class TaskEngine:
         )
         self._materialized_progress_min_interval_seconds = float(
             os.getenv("KIKOERUMANAGER_TASK_CENTER_PROGRESS_SNAPSHOT_INTERVAL_SECONDS", "5") or 5
+        )
+        self._task_persistence_progress_min_interval_seconds = float(
+            os.getenv(
+                "KIKOERUMANAGER_TASK_PROGRESS_DB_SNAPSHOT_INTERVAL_SECONDS",
+                str(self._runtime_buffer_progress_flush_interval_seconds()),
+            ) or 5
         )
         Task.set_global_event_hook(self._emit_task_center_event)
         self.stale_processing_seconds = int(
@@ -585,6 +599,25 @@ class TaskEngine:
     def get_task_center_version(self) -> int:
         with self._task_center_version_lock:
             return self._task_center_version
+
+    @staticmethod
+    def _runtime_buffer_progress_flush_interval_seconds() -> float:
+        try:
+            from ..config.settings import get_config
+
+            cfg = getattr(get_config(), "runtime_buffer", None)
+            return max(0.5, float(getattr(cfg, "progress_flush_interval_seconds", 5.0) or 5.0))
+        except Exception:
+            return 5.0
+
+    @classmethod
+    def _status_value(cls, task: Task) -> str:
+        status = getattr(task, "status", "")
+        return status.value if isinstance(status, TaskStatus) else str(status or "")
+
+    @classmethod
+    def _is_terminal_or_waiting_status(cls, task: Task) -> bool:
+        return cls._status_value(task) in cls._TERMINAL_OR_WAITING_STATUSES
 
     def _emit_task_center_event(self, task: Task, reason: str = "progress") -> None:
         try:
@@ -931,10 +964,94 @@ class TaskEngine:
             or action in {"RETRY", "KEEP_NEW", "MERGE", "RENAME_VOLUMES"}
         )
 
+    @classmethod
+    def _compact_transfer_rows_summary(cls, rows: Any) -> dict[str, Any]:
+        items = [row for row in list(rows or []) if isinstance(row, dict)]
+        total = len(items)
+        completed = 0
+        failed = 0
+        active = 0
+        transferred_bytes = 0
+        total_bytes = 0
+        for row in items:
+            status = str(row.get("status") or "").strip().lower()
+            if status == "completed":
+                completed += 1
+            elif status in {"failed", "error", "cancelled"}:
+                failed += 1
+            elif status in {"downloading", "uploading", "processing", "active"}:
+                active += 1
+            with contextlib.suppress(Exception):
+                transferred_bytes += int(row.get("downloaded") or row.get("uploaded") or 0)
+            with contextlib.suppress(Exception):
+                total_bytes += int(row.get("total") or row.get("size") or 0)
+        return {
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+            "active": active,
+            "transferred_bytes": transferred_bytes,
+            "total_bytes": total_bytes,
+        }
+
+    @classmethod
+    def _task_persistence_metadata(cls, task: Task) -> dict:
+        metadata = dict(task.task_metadata or {})
+        if cls._is_terminal_or_waiting_status(task):
+            return Task.compact_progress_log_for_persistence(metadata, task.status)
+
+        next_metadata = Task.compact_progress_log_for_persistence(metadata, task.status)
+        progress_log = [
+            item for item in list(next_metadata.get("progress_log") or [])
+            if isinstance(item, dict)
+        ][-12:]
+        if progress_log:
+            next_metadata["progress_log"] = progress_log
+        else:
+            next_metadata.pop("progress_log", None)
+
+        transfer_summary: dict[str, Any] = {}
+        for key in ("download_files", "failed_files", "upload_files", "uploaded_files"):
+            if key not in next_metadata:
+                continue
+            rows = next_metadata.pop(key, None)
+            transfer_summary[key] = cls._compact_transfer_rows_summary(rows)
+        if transfer_summary:
+            next_metadata["runtime_transfer_summary"] = transfer_summary
+            next_metadata["runtime_transfer_summary_at"] = datetime.now().isoformat()
+            next_metadata["runtime_transfer_details_in"] = "runtime_buffer"
+
+        for key in ("download_runtime", "upload_runtime"):
+            value = next_metadata.get(key)
+            if isinstance(value, dict):
+                allowed_keys = {
+                    "status",
+                    "total_files",
+                    "completed_files",
+                    "failed_files",
+                    "active_file_count",
+                    "transferred_bytes",
+                    "total_bytes",
+                    "speed_bytes",
+                    "speed_bytes_per_sec",
+                    "average_speed_bytes",
+                    "elapsed_seconds",
+                    "updated_at",
+                    "stage",
+                    "platform",
+                    "mode",
+                }
+                next_metadata[key] = {
+                    item_key: item_value
+                    for item_key, item_value in value.items()
+                    if item_key in allowed_keys
+                }
+        return next_metadata
+
     def _task_snapshot_version_key(self, task: Task) -> tuple:
-        status_value = task.status.value if isinstance(task.status, TaskStatus) else str(task.status or "")
+        status_value = self._status_value(task)
         type_value = task.type.value if isinstance(task.type, TaskType) else str(task.type or "")
-        metadata_fp = self._task_metadata_fingerprint(task.task_metadata)
+        metadata_fp = self._task_metadata_fingerprint(self._task_persistence_metadata(task))
         return (
             type_value,
             status_value,
@@ -946,7 +1063,6 @@ class TaskEngine:
             task.created_at.isoformat() if task.created_at else "",
             task.started_at.isoformat() if task.started_at else "",
             task.completed_at.isoformat() if task.completed_at else "",
-            int(task.metadata_version()),
             metadata_fp,
         )
 
@@ -961,18 +1077,15 @@ class TaskEngine:
 
     def _should_persist_task_snapshot(self, task: Task, version_key: tuple) -> bool:
         previous = self._persisted_task_snapshot_versions.get(task.id)
+        if self._is_terminal_or_waiting_status(task):
+            return True
         if previous is None:
             return True
-        if previous != version_key:
-            return True
-        status_value = task.status.value if isinstance(task.status, TaskStatus) else str(task.status or "")
-        return status_value in {
-            TaskStatus.COMPLETED.value,
-            TaskStatus.FAILED.value,
-            TaskStatus.CANCELLED.value,
-            TaskStatus.WAITING_MANUAL.value,
-            TaskStatus.WAITING_RETRY.value,
-        }
+        if previous == version_key:
+            return False
+        last_write_at = float(self._persisted_task_snapshot_last_write_at.get(task.id, 0.0) or 0.0)
+        interval = max(0.5, float(self._task_persistence_progress_min_interval_seconds or 5.0))
+        return time.monotonic() - last_write_at >= interval
 
     def _should_upsert_task_center_item_snapshot(self, task: Task, item: Dict[str, Any]) -> bool:
         item_id = str(item.get("id") or "").strip()
@@ -1022,12 +1135,10 @@ class TaskEngine:
             record.created_at = task.created_at
             record.started_at = task.started_at
             record.completed_at = task.completed_at
-            record.task_metadata = Task.compact_progress_log_for_persistence(
-                dict(task.task_metadata or {}),
-                task.status,
-            )
+            record.task_metadata = self._task_persistence_metadata(task)
             db.commit()
             self._persisted_task_snapshot_versions[task.id] = version_key
+            self._persisted_task_snapshot_last_write_at[task.id] = time.monotonic()
         except Exception:
             logger.warning("[任务持久化] 写入任务快照失败: task_id=%s", getattr(task, "id", ""), exc_info=True)
             db.rollback()
@@ -1053,7 +1164,7 @@ class TaskEngine:
             service.upsert_engine_item(
                 item,
                 version=version,
-                metadata=dict(task.task_metadata or {}),
+                metadata=self._task_persistence_metadata(task),
             )
             with self._materialized_snapshot_lock:
                 self._materialized_task_center_item_versions[item_id] = self._task_metadata_fingerprint(item)
@@ -1078,7 +1189,7 @@ class TaskEngine:
             if not self._should_upsert_task_center_item_snapshot(task, item):
                 return
             version = self.get_task_center_version()
-            metadata = dict(task.task_metadata or {})
+            metadata = self._task_persistence_metadata(task)
             with self._materialized_snapshot_lock:
                 self._materialized_snapshot_pending[item_id] = (item, version, metadata, item_fp)
                 if self._materialized_snapshot_worker_scheduled:
@@ -1135,6 +1246,7 @@ class TaskEngine:
             db.query(TaskRecord).filter(TaskRecord.id == normalized_task_id).delete()
             db.commit()
             self._persisted_task_snapshot_versions.pop(normalized_task_id, None)
+            self._persisted_task_snapshot_last_write_at.pop(normalized_task_id, None)
             materialized_item_id = f"engine:{normalized_task_id}"
             with self._materialized_snapshot_lock:
                 self._materialized_task_center_item_versions.pop(materialized_item_id, None)
@@ -6133,15 +6245,26 @@ class TaskEngine:
             if task.status != TaskStatus.PROCESSING or task.is_cancelled():
                 return
             pct = min(99, max(1, int(progress or 0)))
+            meta_payload = dict(meta or {})
+            previous_meta = dict((task.task_metadata or {}).get('bonus_probe_meta') or {})
             task.task_metadata = {
                 **dict(task.task_metadata or {}),
                 'bonus_probe_meta': {
-                    **dict((task.task_metadata or {}).get('bonus_probe_meta') or {}),
-                    **dict(meta or {}),
+                    **previous_meta,
+                    **meta_payload,
                 },
             }
-            task.update_progress(pct, step)
-            append_progress_log(step, pct)
+            if (
+                meta_payload.get('current_probe_total_count') is not None
+                or meta_payload.get('current_probe_checked_count') is not None
+            ):
+                with task._set_state_silent():
+                    task.progress = pct
+                    task.current_step = step
+                task.touch_metadata('bonus_probe_meta')
+            else:
+                task.update_progress(pct, step)
+                append_progress_log(step, pct)
 
         result = await bonus_probe_service.probe_circle_dates(
             circle_id=circle_id,

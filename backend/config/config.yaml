@@ -42,17 +42,24 @@ redis:
   short_cache_ttl_seconds: 60
   event_stream_maxlen: 50000
   dirty_stream_maxlen: 200000
+runtime_buffer:
+  enabled: true
+  backend: redis
+  progress_flush_interval_seconds: 5.0
+  log_stream_batch_size: 300
+  log_stream_flush_ms: 250
 bonus_probe:
   max_active_jobs: 1
   normal_batch_size: 500
-  normal_concurrency: 3
+  normal_concurrency: 6
   deep_batch_size: 500
-  deep_concurrency: 3
+  deep_concurrency: 6
   new_release_batch_size: 100
-  new_release_concurrency: 2
+  new_release_concurrency: 6
   max_batch_size: 500
-  max_concurrency: 3
-  cache_lookup_batch_size: 500
+  max_concurrency: 6
+  product_info_total_concurrency: 6
+  cache_lookup_batch_size: 1000
   cache_write_batch_size: 100
 watcher:
   enabled: false

@@ -3047,14 +3047,36 @@ class LibraryManager:
             self._schedule_index_mutation_flush_locked(delay_seconds=0 if force_flush else 0.1)
         return True
 
-    def _enqueue_index_delete_many(self, library: LibraryDefinition, absolute_paths: list[str]) -> bool:
-        return self._queue_index_paths(self._index_mutation_pending_deletes, library, absolute_paths)
+    def _enqueue_index_delete_many(
+        self,
+        library: LibraryDefinition,
+        absolute_paths: list[str],
+        *,
+        scopes_by_path: Optional[dict[str, str]] = None,
+    ) -> bool:
+        return self._record_index_reconcile_many(
+            library,
+            absolute_paths,
+            kind="delete",
+            source="self_mutation_delete",
+            scopes_by_path=scopes_by_path,
+        )
 
     def _enqueue_index_upsert_subtree_many(self, library: LibraryDefinition, absolute_paths: list[str]) -> bool:
-        return self._queue_index_paths(self._index_mutation_pending_upserts, library, absolute_paths)
+        return self._record_index_reconcile_many(
+            library,
+            absolute_paths,
+            kind="reconcile",
+            source="self_mutation_upsert",
+        )
 
     def _enqueue_index_replace_subtree_many(self, library: LibraryDefinition, absolute_paths: list[str]) -> bool:
-        return self._queue_index_paths(self._index_mutation_pending_replaces, library, absolute_paths)
+        return self._record_index_reconcile_many(
+            library,
+            absolute_paths,
+            kind="reconcile",
+            source="self_mutation_replace",
+        )
 
     def _enqueue_index_move_many(
         self,
@@ -3062,7 +3084,12 @@ class LibraryManager:
         target_library: LibraryDefinition,
         moved_items: list[dict[str, Any]],
     ) -> bool:
-        return self._queue_index_moves(source_library, target_library, moved_items)
+        return self._record_index_move_many(
+            source_library,
+            target_library,
+            moved_items,
+            source="self_mutation_move",
+        )
 
     def _flush_index_move_many_now(
         self,
@@ -3074,16 +3101,11 @@ class LibraryManager:
         if not items:
             return
         try:
-            from .library_index import get_library_index_service
-
-            service = get_library_index_service()
-            self._run_index_move_flush(
-                service,
-                {
-                    "source_library": source_library,
-                    "target_library": target_library,
-                    "items": items,
-                },
+            self._record_index_move_many(
+                source_library,
+                target_library,
+                items,
+                source="self_mutation_move_sync",
             )
         except Exception:
             logger.warning(
@@ -3098,15 +3120,20 @@ class LibraryManager:
         self,
         library: LibraryDefinition,
         absolute_paths: list[str],
+        *,
+        scopes_by_path: Optional[dict[str, str]] = None,
     ) -> None:
         paths = self._compress_index_absolute_paths(library, absolute_paths or [])
         if not paths:
             return
         try:
-            from .library_index import get_library_index_service
-
-            service = get_library_index_service()
-            self._run_index_delete_flush(service, {"library": library, "paths": paths})
+            self._record_index_reconcile_many(
+                library,
+                paths,
+                kind="delete",
+                source="self_mutation_delete_sync",
+                scopes_by_path=scopes_by_path,
+            )
         except Exception:
             logger.warning(
                 "[索引] 同步追赶 delete 失败 library=%s count=%s",
@@ -3424,6 +3451,7 @@ class LibraryManager:
         absolute_path: str,
         *,
         sync: bool = False,
+        scope: Optional[str] = None,
     ) -> None:
         """本地写操作完成后，后台批量通知索引删除。
 
@@ -3432,11 +3460,22 @@ class LibraryManager:
         """
         if not self._library_uses_inventory_index(library):
             return
+        scopes_by_path = None
+        if scope in {"exact", "subtree"}:
+            scopes_by_path = {os.path.normcase(os.path.abspath(absolute_path)): scope}
         try:
             if sync:
-                self._flush_index_delete_many_now(library, [absolute_path])
+                self._flush_index_delete_many_now(
+                    library,
+                    [absolute_path],
+                    scopes_by_path=scopes_by_path,
+                )
             else:
-                self._enqueue_index_delete_many(library, [absolute_path])
+                self._enqueue_index_delete_many(
+                    library,
+                    [absolute_path],
+                    scopes_by_path=scopes_by_path,
+                )
         except Exception:
             logger.debug(
                 "通知索引删除失败 library=%s path=%s",
@@ -3449,15 +3488,24 @@ class LibraryManager:
         absolute_paths: list[str],
         *,
         sync: bool = False,
+        scopes_by_path: Optional[dict[str, str]] = None,
     ) -> None:
         """批量通知索引删除：后台队列合并执行，避免阻塞业务请求。"""
         if not self._library_uses_inventory_index(library):
             return
         try:
             if sync:
-                self._flush_index_delete_many_now(library, absolute_paths)
+                self._flush_index_delete_many_now(
+                    library,
+                    absolute_paths,
+                    scopes_by_path=scopes_by_path,
+                )
             else:
-                self._enqueue_index_delete_many(library, absolute_paths)
+                self._enqueue_index_delete_many(
+                    library,
+                    absolute_paths,
+                    scopes_by_path=scopes_by_path,
+                )
         except Exception:
             logger.debug(
                 "批量通知索引删除失败 library=%s count=%s",
@@ -3520,28 +3568,12 @@ class LibraryManager:
         submit_error = ""
         if indexable_items:
             try:
-                from .library_index import get_library_index_service
-
-                service = get_library_index_service()
-                if service.is_ready(library.id):
-                    loop = None
-                    if library.type == "synology_filestation":
-                        try:
-                            loop = asyncio.get_running_loop()
-                        except RuntimeError:
-                            loop = None
-                    self._run_index_move_flush(
-                        service,
-                        {
-                            "source_library": library,
-                            "target_library": library,
-                            "items": indexable_items,
-                            "loop": loop,
-                        },
-                    )
-                    submitted = True
-                else:
-                    submit_error = "index_not_ready"
+                submitted = self._record_index_move_many(
+                    library,
+                    library,
+                    indexable_items,
+                    source="subtitle_final_move",
+                )
             except Exception as exc:
                 submit_error = str(exc)
                 logger.warning(
@@ -3575,7 +3607,11 @@ class LibraryManager:
         if not self._library_uses_inventory_index(library):
             return
         try:
-            self._enqueue_index_upsert_subtree_many(library, [absolute_path])
+            self._record_index_reconcile_by_path(
+                library,
+                absolute_path,
+                source="self_mutation_upsert",
+            )
         except Exception:
             logger.debug(
                 "通知索引 upsert 子树失败 library=%s path=%s",
@@ -3818,7 +3854,7 @@ class LibraryManager:
             library = self.find_local_library_for_path(absolute_path)
             if library is None:
                 return
-            self._notify_index_self_mutation_upsert_subtree(library, absolute_path)
+            self._record_index_reconcile_by_path(library, absolute_path, source="self_mutation")
         except Exception:
             logger.debug(
                 "[索引] 按路径反查 library 后 upsert 失败 path=%s",
@@ -4155,8 +4191,20 @@ class LibraryManager:
             version = int(stat_result.st_mtime_ns)
         except OSError:
             version = 0
+        index_generation = 1
+        view_revision = 0
+        try:
+            from .library_index import get_library_index_service
+
+            status = get_library_index_service().get_status(library.id)
+            index_generation = int(getattr(status, "active_generation", 1) or 1)
+            view_revision = int(getattr(status, "view_revision", 0) or 0)
+        except Exception:
+            logger.debug("读取库存目录缓存版本失败 library=%s", library.id, exc_info=True)
         return (
             library.id,
+            index_generation,
+            view_revision,
             os.path.normcase(os.path.abspath(target_path)),
             str(search or "").strip().lower(),
             self._normalize_library_sort_by(sort_by),
@@ -4237,6 +4285,7 @@ class LibraryManager:
                 limit=page_size,
                 page_cursor=page_cursor,
             )
+
             entries = list(payload.get("entries") or [])
             raw_entry_count = len(entries)
             stale_relative_paths: set[str] = set()
@@ -4313,6 +4362,143 @@ class LibraryManager:
                 exc_info=True,
             )
             return None
+
+    def _record_index_reconcile_by_path(
+        self,
+        library: LibraryDefinition,
+        absolute_path: str,
+        *,
+        source: str,
+    ) -> Optional[dict[str, Any]]:
+        """无 HTTP 请求上下文的落地操作统一追加 reconcile ledger。"""
+        if not self._library_uses_inventory_index(library):
+            return None
+        relative_path = self._index_relative_path(library, absolute_path)
+        if relative_path is None:
+            return None
+        from .library_index import get_library_index_mutation_service
+
+        effect = {
+            "kind": "reconcile",
+            "relative_path": relative_path,
+            "scope": "subtree" if os.path.isdir(absolute_path) else "exact",
+        }
+        service = get_library_index_mutation_service()
+        prepared = service.prepare(
+            kind="reconcile",
+            effects_by_library={library.id: [effect]},
+            idempotency_key=f"{source}:{library.id}:{uuid.uuid4()}",
+        )
+        service.mark_filesystem_started(prepared.operation_id)
+        return service.finalize(
+            prepared.operation_id,
+            actual_effects_by_library={library.id: [effect]},
+            actual_result={"source": source, "path": absolute_path},
+        )
+
+    def _record_index_reconcile_many(
+        self,
+        library: LibraryDefinition,
+        absolute_paths: list[str],
+        *,
+        kind: str,
+        source: str,
+        scopes_by_path: Optional[dict[str, str]] = None,
+    ) -> bool:
+        if not self._library_uses_inventory_index(library):
+            return False
+        effects: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for absolute_path in self._compress_index_absolute_paths(library, absolute_paths or []):
+            relative_path = self._index_relative_path(library, absolute_path)
+            if relative_path is None or relative_path in seen:
+                continue
+            seen.add(relative_path)
+            explicit_scope = (scopes_by_path or {}).get(
+                os.path.normcase(os.path.abspath(absolute_path))
+            )
+            effects.append({
+                "kind": kind,
+                "relative_path": relative_path,
+                "scope": explicit_scope
+                if explicit_scope in {"exact", "subtree"}
+                else (
+                    "subtree"
+                    if os.path.isdir(absolute_path) or not os.path.exists(absolute_path)
+                    else "exact"
+                ),
+            })
+        if not effects:
+            return False
+        from .library_index import get_library_index_mutation_service
+
+        service = get_library_index_mutation_service()
+        prepared = service.prepare(
+            kind=source,
+            effects_by_library={library.id: effects},
+            idempotency_key=f"{source}:{library.id}:{uuid.uuid4()}",
+        )
+        service.mark_filesystem_started(prepared.operation_id)
+        service.finalize(
+            prepared.operation_id,
+            actual_effects_by_library={library.id: effects},
+            actual_result={"source": source, "path_count": len(effects)},
+        )
+        return True
+
+    def _record_index_move_many(
+        self,
+        source_library: LibraryDefinition,
+        target_library: LibraryDefinition,
+        moved_items: list[dict[str, Any]],
+        *,
+        source: str,
+    ) -> bool:
+        effects_by_library: dict[str, list[dict[str, Any]]] = {}
+        for item in moved_items or []:
+            source_path = str(item.get("source") or item.get("old_path") or item.get("from") or "").strip()
+            destination = str(item.get("destination") or item.get("new_path") or item.get("to") or "").strip()
+            if not source_path or not destination:
+                continue
+            old_relative = self._index_relative_path(source_library, source_path)
+            new_relative = self._index_relative_path(target_library, destination)
+            if old_relative is None or new_relative is None:
+                continue
+            scope = "subtree" if os.path.isdir(destination) or not os.path.splitext(source_path)[1] else "exact"
+            effects_by_library.setdefault(source_library.id, []).append({
+                "kind": "move",
+                "relative_path": old_relative,
+                "scope": scope,
+                "target_library_id": target_library.id,
+                "target_path": new_relative,
+            })
+            effects_by_library.setdefault(target_library.id, []).append({
+                "kind": "reconcile",
+                "relative_path": new_relative,
+                "scope": scope,
+            })
+        effects_by_library = {
+            library_id: effects
+            for library_id, effects in effects_by_library.items()
+            if effects
+        }
+        if not effects_by_library:
+            return False
+        from .library_index import get_library_index_mutation_service
+
+        service = get_library_index_mutation_service()
+        prepared = service.prepare(
+            kind=source,
+            effects_by_library=effects_by_library,
+            idempotency_key=f"{source}:{uuid.uuid4()}",
+        )
+        service.mark_filesystem_started(prepared.operation_id)
+        service.finalize(
+            prepared.operation_id,
+            actual_effects_by_library=effects_by_library,
+            actual_result={"source": source, "move_count": len(moved_items or [])},
+        )
+        return True
 
     def _build_index_search_result(
         self,
@@ -4536,7 +4722,14 @@ class LibraryManager:
             if not status or status.status == 'idle':
                 return None
             total_size = int(status.total_size_bytes or 0)
-            stats_status = 'ready' if status.status == 'ready' else status.status
+            stats_status = (
+                'ready'
+                if status.status == 'ready'
+                and int(getattr(status, 'accepted_seq', 0) or 0)
+                == int(getattr(status, 'materialized_seq', 0) or 0)
+                and getattr(status, 'building_generation', None) is None
+                else ('catching_up' if status.status == 'ready' else status.status)
+            )
             return {
                 "library_id": library.id,
                 "library_name": library.name,
@@ -6239,7 +6432,14 @@ class LibraryManager:
         )
         return {"success_count": success_count, "results": results, "failed": failed}
 
-    def _local_delete(self, library: LibraryDefinition, path: str, confirmed: bool) -> dict[str, Any]:
+    def _local_delete(
+        self,
+        library: LibraryDefinition,
+        path: str,
+        confirmed: bool,
+        *,
+        skip_index_mutation: bool = False,
+    ) -> dict[str, Any]:
         self._assert_local_path_in_library(library, path)
         if not confirmed:
             indexed_preview = self._delete_preview_via_index(library, path)
@@ -6259,7 +6459,7 @@ class LibraryManager:
             return preview
 
         was_top_level_dir = os.path.isdir(path)
-        if os.path.isdir(path):
+        if was_top_level_dir:
             _robust_rmtree(path)
         else:
             os.remove(path)
@@ -6267,17 +6467,43 @@ class LibraryManager:
         if was_top_level_dir:
             self._local_top_level_delta(library, path, -1)
         # 索引同步：删除完成后立即同步索引（不依赖 watcher）
-        self._notify_index_self_mutation_delete(library, path, sync=True)
+        if not skip_index_mutation:
+            self._notify_index_self_mutation_delete(
+                library,
+                path,
+                sync=True,
+                scope="subtree" if was_top_level_dir else "exact",
+            )
         self._append_stats_log(library, "INFO", f"删除完成 path={path}")
         return {"message": "删除成功", "path": path}
 
-    async def batch_delete(self, library_id: str, paths: list[str], confirmed: bool = False) -> dict[str, Any]:
+    async def batch_delete(
+        self,
+        library_id: str,
+        paths: list[str],
+        confirmed: bool = False,
+        *,
+        skip_index_mutation: bool = False,
+    ) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type != "local":
             raise RuntimeError("当前远程库不支持这里的批量删除")
-        return await asyncio.to_thread(self._local_batch_delete, library, paths, confirmed)
+        return await asyncio.to_thread(
+            self._local_batch_delete,
+            library,
+            paths,
+            confirmed,
+            skip_index_mutation=skip_index_mutation,
+        )
 
-    def _local_batch_delete(self, library: LibraryDefinition, paths: list[str], confirmed: bool) -> dict[str, Any]:
+    def _local_batch_delete(
+        self,
+        library: LibraryDefinition,
+        paths: list[str],
+        confirmed: bool,
+        *,
+        skip_index_mutation: bool = False,
+    ) -> dict[str, Any]:
         for path in paths:
             self._assert_local_path_in_library(library, path)
         if not confirmed:
@@ -6316,10 +6542,11 @@ class LibraryManager:
         success_count = 0
         failed_paths: list[dict[str, str]] = []
         successful_paths: list[str] = []
+        successful_scopes: dict[str, str] = {}
         for path in paths:
             try:
                 was_top_level_dir = os.path.isdir(path)
-                if os.path.isdir(path):
+                if was_top_level_dir:
                     _robust_rmtree(path)
                 else:
                     os.remove(path)
@@ -6327,12 +6554,21 @@ class LibraryManager:
                     self._local_top_level_delta(library, path, -1)
                 success_count += 1
                 successful_paths.append(path)
+                successful_scopes[os.path.normcase(os.path.abspath(path))] = (
+                    "subtree" if was_top_level_dir else "exact"
+                )
             except Exception as exc:
                 failed_paths.append({"path": path, "error": str(exc)})
         if successful_paths:
             self._invalidate_local_browse_caches(library.id)
         # 索引同步：批量通知删除（单事务一次提交）
-        self._notify_index_self_mutation_delete_batch(library, successful_paths, sync=True)
+        if not skip_index_mutation:
+            self._notify_index_self_mutation_delete_batch(
+                library,
+                successful_paths,
+                sync=True,
+                scopes_by_path=successful_scopes,
+            )
         self._append_stats_log(
             library,
             "INFO",
@@ -6626,6 +6862,7 @@ class LibraryManager:
         target_path: Optional[str] = None,
         conflict_strategy: str = "suffix",
         overwrite: bool = False,
+        skip_index_mutation: bool = False,
     ) -> dict[str, Any]:
         if not paths:
             raise ValueError("缺少待移动项")
@@ -6648,6 +6885,7 @@ class LibraryManager:
             list(paths),
             target_path,
             strategy,
+            skip_index_mutation,
         )
 
     async def preview_move_local_items(
@@ -6883,6 +7121,7 @@ class LibraryManager:
         paths: list[str],
         target_path: Optional[str],
         conflict_strategy: str,
+        skip_index_mutation: bool = False,
     ) -> dict[str, Any]:
         target_root = os.path.abspath(target_library.root_path)
         target_dir = os.path.abspath(target_path) if target_path else target_root
@@ -6980,15 +7219,15 @@ class LibraryManager:
             self._invalidate_local_browse_caches(target_library.id)
 
         # 索引同步：普通移动走 fast-path；目录合并会影响已有目标目录，改为 delete 源 + replace 目标。
-        if moved_index_items:
+        if moved_index_items and not skip_index_mutation:
             self._notify_index_self_mutation_move_batch(
                 source_library,
                 target_library,
                 moved_index_items,
             )
-        if deleted_index_paths:
+        if deleted_index_paths and not skip_index_mutation:
             self._notify_index_self_mutation_delete_batch(source_library, deleted_index_paths)
-        for library, paths_to_replace in replace_index_paths.values():
+        for library, paths_to_replace in ([] if skip_index_mutation else replace_index_paths.values()):
             try:
                 self._enqueue_index_replace_subtree_many(library, list(paths_to_replace))
             except Exception:
@@ -11690,10 +11929,23 @@ class LibraryManager:
         finally:
             self._filter_preview_tasks.pop(job_id, None)
 
-    async def delete(self, library_id: str, path: str, confirmed: bool = False) -> dict[str, Any]:
+    async def delete(
+        self,
+        library_id: str,
+        path: str,
+        confirmed: bool = False,
+        *,
+        skip_index_mutation: bool = False,
+    ) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type == "local":
-            return await asyncio.to_thread(self._local_delete, library, path, confirmed)
+            return await asyncio.to_thread(
+                self._local_delete,
+                library,
+                path,
+                confirmed,
+                skip_index_mutation=skip_index_mutation,
+            )
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
         _, target_path = self._resolve_remote_operation_path(
@@ -11799,10 +12051,23 @@ class LibraryManager:
         )
         return {"message": "批量删除完成", "success_count": success_count, "failed_paths": failed_paths}
 
-    async def batch_delete(self, library_id: str, paths: list[str], confirmed: bool = False) -> dict[str, Any]:
+    async def batch_delete(
+        self,
+        library_id: str,
+        paths: list[str],
+        confirmed: bool = False,
+        *,
+        skip_index_mutation: bool = False,
+    ) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type == "local":
-            return await asyncio.to_thread(self._local_batch_delete, library, paths, confirmed)
+            return await asyncio.to_thread(
+                self._local_batch_delete,
+                library,
+                paths,
+                confirmed,
+                skip_index_mutation=skip_index_mutation,
+            )
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
         normalized_paths = [
@@ -11815,7 +12080,13 @@ class LibraryManager:
         ]
         return await self._remote_batch_delete(library, normalized_paths, confirmed)
 
-    async def batch_delete_targets(self, targets: list[dict[str, Any]], confirmed: bool = False) -> dict[str, Any]:
+    async def batch_delete_targets(
+        self,
+        targets: list[dict[str, Any]],
+        confirmed: bool = False,
+        *,
+        skip_index_mutation: bool = False,
+    ) -> dict[str, Any]:
         grouped: dict[str, list[str]] = {}
         ordered_targets: list[dict[str, str]] = []
         seen: set[tuple[str, str]] = set()
@@ -11851,7 +12122,12 @@ class LibraryManager:
         size_disabled = False
 
         for item_library_id, paths in grouped.items():
-            result = await self.batch_delete(item_library_id, paths, confirmed=confirmed)
+            result = await self.batch_delete(
+                item_library_id,
+                paths,
+                confirmed=confirmed,
+                skip_index_mutation=skip_index_mutation,
+            )
             failed_set = {
                 str((failed or {}).get("path") or "").strip()
                 for failed in (result.get("failed_paths") or [])

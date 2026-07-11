@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, BigInteger, Index, text, Float, event
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, BigInteger, Index, text, Float, event, CheckConstraint, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -470,7 +470,7 @@ class DLsiteBonusProbeDate(Base):
     circle_id = Column(String(120), index=True, default='')
     release_date = Column(String(20), index=True, default='')
     gap_limit = Column(Integer, default=500)
-    mode = Column(String(20), default='normal')
+    mode = Column(String(64), default='normal')
     status = Column(String(24), default='pending', index=True)
     job_id = Column(String(36), index=True, default='')
     public_count = Column(Integer, default=0)
@@ -1535,7 +1535,8 @@ class LibraryIndexEntry(Base):
     - synology_filestation 库存走 SYNO.FileStation.Search 快照 + 定期 rescan
 
     设计要点：
-    - (library_id, relative_path) 作为自然主键保证幂等
+    - ORM / fresh schema 只声明 (library_id, generation, relative_path) 唯一约束；
+      expand migration 对既有库暂时保留旧二列索引，直到 contract 阶段显式删除
     - 运行期只随表创建唯一索引；RJ / 名称 / 子树路径索引由 PostgreSQL 后台 CONCURRENTLY 维护
     - 目录行 size 存递归大小，避免运行时反复 os.walk
     - 与 LibrarySnapshot 不冲突：LibrarySnapshot 是业务缓存（按 RJ 号单射），
@@ -1545,6 +1546,8 @@ class LibraryIndexEntry(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     library_id = Column(String(60), nullable=False)
+    generation = Column(Integer, nullable=False, default=1)
+    materialized_seq = Column(BigInteger, nullable=False, default=0)
     entry_type = Column(String(10), nullable=False)  # 'dir' / 'file'
     relative_path = Column(Text, nullable=False)
     absolute_path = Column(Text, nullable=False)
@@ -1559,7 +1562,7 @@ class LibraryIndexEntry(Base):
     indexed_at = Column(BigInteger, nullable=False)
 
     __table_args__ = (
-        Index('idx_lie_library_rel', 'library_id', 'relative_path', unique=True),
+        Index('idx_lie_library_generation_rel', 'library_id', 'generation', 'relative_path', unique=True),
     )
 
 
@@ -1580,6 +1583,19 @@ class LibraryIndexStatus(Base):
     total_entries = Column(Integer, default=0)
     total_size_bytes = Column(BigInteger, default=0)
     folder_count = Column(Integer, default=0)
+    accepted_seq = Column(BigInteger, nullable=False, default=0)
+    materialized_seq = Column(BigInteger, nullable=False, default=0)
+    state_revision = Column(BigInteger, nullable=False, default=0)
+    view_revision = Column(BigInteger, nullable=False, default=0)
+    active_generation = Column(Integer, nullable=False, default=1)
+    building_generation = Column(Integer)
+    catchup_state = Column(String(24), nullable=False, default='idle')
+    last_operation_id = Column(String(36))
+    materializer_owner = Column(String(120))
+    materializer_lease_until = Column(DateTime)
+    materializer_epoch = Column(BigInteger, nullable=False, default=0)
+    blocked_seq = Column(BigInteger)
+    catchup_error = Column(Text)
     error = Column(Text)
     updated_at = Column(BigInteger, nullable=False)
 
@@ -1593,8 +1609,248 @@ class LibraryIndexStatus(Base):
             'total_entries': int(self.total_entries or 0),
             'total_size_bytes': int(self.total_size_bytes or 0),
             'folder_count': int(self.folder_count or 0),
+            'accepted_seq': int(self.accepted_seq or 0),
+            'materialized_seq': int(self.materialized_seq or 0),
+            'pending_events': max(int(self.accepted_seq or 0) - int(self.materialized_seq or 0), 0),
+            'state_revision': int(self.state_revision or 0),
+            'view_revision': int(self.view_revision or 0),
+            'active_generation': int(self.active_generation or 1),
+            'building_generation': int(self.building_generation) if self.building_generation is not None else None,
+            'catchup_state': self.catchup_state or 'idle',
+            'last_operation_id': self.last_operation_id,
+            'materializer_owner': self.materializer_owner,
+            'materializer_lease_until': self.materializer_lease_until.isoformat() if self.materializer_lease_until else None,
+            'materializer_epoch': int(self.materializer_epoch or 0),
+            'blocked_seq': int(self.blocked_seq) if self.blocked_seq is not None else None,
+            'catchup_error': self.catchup_error,
             'error': self.error,
             'updated_at': int(self.updated_at or 0),
+        }
+
+
+class LibraryIndexMutationOperation(Base):
+    """一次确认型文件系统操作及其幂等、崩溃恢复状态。"""
+    __tablename__ = 'library_index_mutation_operations'
+
+    operation_id = Column(String(36), primary_key=True)
+    idempotency_key = Column(String(255), nullable=False)
+    request_fingerprint = Column(String(128), nullable=False)
+    kind = Column(String(40), nullable=False)
+    state = Column(String(32), nullable=False, default='prepared')
+    planned_scopes = Column(JSON, nullable=False, default=list)
+    actual_result = Column(JSON, nullable=False, default=dict)
+    error = Column(Text)
+    prepared_at = Column(DateTime, nullable=False, default=get_local_now)
+    filesystem_started_at = Column(DateTime)
+    finalized_at = Column(DateTime)
+    created_at = Column(DateTime, nullable=False, default=get_local_now)
+    updated_at = Column(DateTime, nullable=False, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_li_mutation_operations_idempotency', 'idempotency_key', unique=True),
+        Index('idx_li_mutation_operations_state_updated', 'state', 'updated_at'),
+        CheckConstraint("request_fingerprint <> ''", name='ck_li_mutation_operations_fingerprint_nonempty'),
+    )
+
+    def to_dict(self):
+        return {
+            'operation_id': self.operation_id,
+            'idempotency_key': self.idempotency_key,
+            'request_fingerprint': self.request_fingerprint,
+            'kind': self.kind,
+            'state': self.state,
+            'planned_scopes': self.planned_scopes or [],
+            'actual_result': self.actual_result or {},
+            'error': self.error,
+            'prepared_at': self.prepared_at.isoformat() if self.prepared_at else None,
+            'filesystem_started_at': self.filesystem_started_at.isoformat() if self.filesystem_started_at else None,
+            'finalized_at': self.finalized_at.isoformat() if self.finalized_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class LibraryIndexMutationLedger(Base):
+    """按库存连续编号的不可变 mutation envelope。"""
+    __tablename__ = 'library_index_mutation_ledger'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    operation_id = Column(
+        String(36),
+        ForeignKey('library_index_mutation_operations.operation_id', ondelete='CASCADE'),
+        nullable=False,
+    )
+    library_id = Column(String(60), nullable=False)
+    seq = Column(BigInteger, nullable=False)
+    kind = Column(String(40), nullable=False)
+    payload = Column(JSON, nullable=False, default=dict)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    next_retry_at = Column(DateTime)
+    applied_at = Column(DateTime)
+    error = Column(Text)
+    created_at = Column(DateTime, nullable=False, default=get_local_now)
+    updated_at = Column(DateTime, nullable=False, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_li_mutation_ledger_library_seq', 'library_id', 'seq', unique=True),
+        Index('idx_li_mutation_ledger_operation_library', 'operation_id', 'library_id', unique=True),
+        Index('idx_li_mutation_ledger_pending', 'library_id', 'applied_at', 'seq'),
+        Index('idx_li_mutation_ledger_retry', 'next_retry_at', 'library_id', 'seq'),
+        Index('idx_li_mutation_ledger_retention', 'applied_at', 'id'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': int(self.id) if self.id is not None else None,
+            'operation_id': self.operation_id,
+            'library_id': self.library_id,
+            'seq': int(self.seq or 0),
+            'kind': self.kind,
+            'payload': self.payload or {},
+            'attempt_count': int(self.attempt_count or 0),
+            'next_retry_at': self.next_retry_at.isoformat() if self.next_retry_at else None,
+            'applied_at': self.applied_at.isoformat() if self.applied_at else None,
+            'error': self.error,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class LibraryIndexMutationEffect(Base):
+    """一个 ledger envelope 内按 effect_no 严格排序的路径变化。"""
+    __tablename__ = 'library_index_mutation_effects'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    ledger_id = Column(
+        BigInteger,
+        ForeignKey('library_index_mutation_ledger.id', ondelete='CASCADE'),
+        nullable=False,
+    )
+    operation_id = Column(
+        String(36),
+        ForeignKey('library_index_mutation_operations.operation_id', ondelete='CASCADE'),
+        nullable=False,
+    )
+    library_id = Column(String(60), nullable=False)
+    seq = Column(BigInteger, nullable=False)
+    effect_no = Column(Integer, nullable=False)
+    kind = Column(String(24), nullable=False)
+    relative_path = Column(Text, nullable=False)
+    scope = Column(String(12), nullable=False, default='exact')
+    target_library_id = Column(String(60))
+    target_path = Column(Text)
+    payload = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, default=get_local_now)
+
+    __table_args__ = (
+        Index('idx_li_mutation_effects_ledger_no', 'ledger_id', 'effect_no', unique=True),
+        Index('idx_li_mutation_effects_library_seq', 'library_id', 'seq', 'effect_no'),
+        Index('idx_li_mutation_effects_path', 'library_id', 'relative_path'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': int(self.id) if self.id is not None else None,
+            'ledger_id': int(self.ledger_id) if self.ledger_id is not None else None,
+            'operation_id': self.operation_id,
+            'library_id': self.library_id,
+            'seq': int(self.seq or 0),
+            'effect_no': int(self.effect_no or 0),
+            'kind': self.kind,
+            'relative_path': self.relative_path,
+            'scope': self.scope,
+            'target_library_id': self.target_library_id,
+            'target_path': self.target_path,
+            'payload': self.payload or {},
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class LibraryIndexPendingMask(Base):
+    """prepared 起生效、对应 seq 完整物化后才删除的读路径遮罩。"""
+    __tablename__ = 'library_index_pending_masks'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    operation_id = Column(
+        String(36),
+        ForeignKey('library_index_mutation_operations.operation_id', ondelete='CASCADE'),
+        nullable=False,
+    )
+    library_id = Column(String(60), nullable=False)
+    ledger_seq = Column(BigInteger)
+    effect_no = Column(Integer, nullable=False)
+    kind = Column(String(24), nullable=False)
+    relative_path = Column(Text, nullable=False)
+    scope = Column(String(12), nullable=False, default='exact')
+    created_at = Column(DateTime, nullable=False, default=get_local_now)
+    updated_at = Column(DateTime, nullable=False, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_li_pending_masks_operation_effect', 'operation_id', 'library_id', 'effect_no', unique=True),
+        Index('idx_li_pending_masks_active_path', 'library_id', 'relative_path', 'scope'),
+        Index('idx_li_pending_masks_ledger_seq', 'library_id', 'ledger_seq'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': int(self.id) if self.id is not None else None,
+            'operation_id': self.operation_id,
+            'library_id': self.library_id,
+            'ledger_seq': int(self.ledger_seq) if self.ledger_seq is not None else None,
+            'effect_no': int(self.effect_no or 0),
+            'kind': self.kind,
+            'relative_path': self.relative_path,
+            'scope': self.scope,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class LibraryIndexGeneration(Base):
+    """全量构建候选 generation 的持久生命周期与稳定水位。"""
+    __tablename__ = 'library_index_generations'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    library_id = Column(String(60), nullable=False)
+    generation = Column(Integer, nullable=False)
+    state = Column(String(24), nullable=False, default='building')
+    build_base_seq = Column(BigInteger, nullable=False, default=0)
+    reconciled_seq = Column(BigInteger, nullable=False, default=0)
+    total_entries = Column(Integer, nullable=False, default=0)
+    total_size_bytes = Column(BigInteger, nullable=False, default=0)
+    folder_count = Column(Integer, nullable=False, default=0)
+    error = Column(Text)
+    created_at = Column(DateTime, nullable=False, default=get_local_now)
+    scan_completed_at = Column(DateTime)
+    cutover_at = Column(DateTime)
+    retired_at = Column(DateTime)
+    delete_after = Column(DateTime)
+    updated_at = Column(DateTime, nullable=False, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_li_generations_library_generation', 'library_id', 'generation', unique=True),
+        Index('idx_li_generations_state_updated', 'state', 'updated_at'),
+        Index('idx_li_generations_delete_after', 'delete_after', 'id'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': int(self.id) if self.id is not None else None,
+            'library_id': self.library_id,
+            'generation': int(self.generation or 0),
+            'state': self.state,
+            'build_base_seq': int(self.build_base_seq or 0),
+            'reconciled_seq': int(self.reconciled_seq or 0),
+            'total_entries': int(self.total_entries or 0),
+            'total_size_bytes': int(self.total_size_bytes or 0),
+            'folder_count': int(self.folder_count or 0),
+            'error': self.error,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'scan_completed_at': self.scan_completed_at.isoformat() if self.scan_completed_at else None,
+            'cutover_at': self.cutover_at.isoformat() if self.cutover_at else None,
+            'retired_at': self.retired_at.isoformat() if self.retired_at else None,
+            'delete_after': self.delete_after.isoformat() if self.delete_after else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
 
 
@@ -2049,6 +2305,11 @@ _POSTGRES_BUSINESS_INDEX_SPECS = (
 _POSTGRES_LIBRARY_INDEX_SPECS = (
     # 库存索引：几十万行级别的大表索引，启动时不在事务里阻塞创建，改由后台 CONCURRENTLY 维护。
     {
+        "name": "idx_lie_library_generation_rel",
+        "sql": "CREATE UNIQUE INDEX IF NOT EXISTS idx_lie_library_generation_rel ON library_index_entries(library_id, generation, relative_path)",
+        "fragments": ("library_index_entries", "UNIQUE", "library_id", "generation", "relative_path"),
+    },
+    {
         "name": "idx_lie_rj_lookup",
         "sql": (
             "CREATE INDEX IF NOT EXISTS idx_lie_rj_lookup "
@@ -2109,6 +2370,74 @@ _POSTGRES_LIBRARY_INDEX_SPECS = (
         "name": "idx_lie_subtree_path_pattern",
         "sql": "CREATE INDEX IF NOT EXISTS idx_lie_subtree_path_pattern ON library_index_entries(library_id, relative_path text_pattern_ops)",
         "fragments": ("library_index_entries", "library_id", "relative_path", "text_pattern_ops"),
+    },
+    # expand 阶段保留上面的旧索引；新代码显式限定 active generation 后使用下列索引。
+    {
+        "name": "idx_lie_generation_rj_lookup",
+        "sql": (
+            "CREATE INDEX IF NOT EXISTS idx_lie_generation_rj_lookup "
+            "ON library_index_entries(rjcode, library_id, generation, depth, relative_path, entry_type) "
+            "WHERE rjcode IS NOT NULL"
+        ),
+        "fragments": ("library_index_entries", "rjcode", "library_id", "generation", "depth", "relative_path", "entry_type", "WHERE", "rjcode IS NOT NULL"),
+    },
+    {
+        "name": "idx_lie_generation_rj_prefix",
+        "sql": (
+            "CREATE INDEX IF NOT EXISTS idx_lie_generation_rj_prefix "
+            "ON library_index_entries(rjcode varchar_pattern_ops, library_id, generation, depth, relative_path, entry_type) "
+            "WHERE rjcode IS NOT NULL"
+        ),
+        "fragments": ("library_index_entries", "rjcode", "varchar_pattern_ops", "library_id", "generation", "depth", "relative_path", "entry_type", "WHERE", "rjcode IS NOT NULL"),
+    },
+    {
+        "name": "idx_lie_generation_circle_dir",
+        "sql": (
+            "CREATE INDEX IF NOT EXISTS idx_lie_generation_circle_dir "
+            "ON library_index_entries(library_id, generation, rjcode, relative_path, depth) "
+            "WHERE entry_type = 'dir' AND rjcode IS NOT NULL"
+        ),
+        "fragments": ("library_index_entries", "library_id", "generation", "rjcode", "relative_path", "depth", "WHERE", "entry_type", "dir", "rjcode IS NOT NULL"),
+    },
+    {
+        "name": "idx_lie_generation_indexed_at",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_generation_indexed_at ON library_index_entries(library_id, generation, indexed_at, id)",
+        "fragments": ("library_index_entries", "library_id", "generation", "indexed_at", "id"),
+    },
+    {
+        "name": "idx_lie_generation_children_name",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_generation_children_name ON library_index_entries(library_id, generation, parent_path, name_sort_key, relative_path)",
+        "fragments": ("library_index_entries", "library_id", "generation", "parent_path", "name_sort_key", "relative_path"),
+    },
+    {
+        "name": "idx_lie_generation_children_size",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_generation_children_size ON library_index_entries(library_id, generation, parent_path, size, name_sort_key, relative_path)",
+        "fragments": ("library_index_entries", "library_id", "generation", "parent_path", "size", "name_sort_key", "relative_path"),
+    },
+    {
+        "name": "idx_lie_generation_children_size_desc",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_generation_children_size_desc ON library_index_entries(library_id, generation, parent_path, size DESC, name_sort_key, relative_path)",
+        "fragments": ("library_index_entries", "library_id", "generation", "parent_path", "size DESC", "name_sort_key", "relative_path"),
+    },
+    {
+        "name": "idx_lie_generation_children_time",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_generation_children_time ON library_index_entries(library_id, generation, parent_path, mtime, name_sort_key, relative_path)",
+        "fragments": ("library_index_entries", "library_id", "generation", "parent_path", "mtime", "name_sort_key", "relative_path"),
+    },
+    {
+        "name": "idx_lie_generation_children_time_desc",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_generation_children_time_desc ON library_index_entries(library_id, generation, parent_path, mtime DESC NULLS LAST, name_sort_key, relative_path)",
+        "fragments": ("library_index_entries", "library_id", "generation", "parent_path", "mtime DESC", "NULLS LAST", "name_sort_key", "relative_path"),
+    },
+    {
+        "name": "idx_lie_generation_subtree_path",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_generation_subtree_path ON library_index_entries(library_id, generation, relative_path text_pattern_ops)",
+        "fragments": ("library_index_entries", "library_id", "generation", "relative_path", "text_pattern_ops"),
+    },
+    {
+        "name": "idx_lie_generation_materialized_seq",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_generation_materialized_seq ON library_index_entries(library_id, generation, materialized_seq, id)",
+        "fragments": ("library_index_entries", "library_id", "generation", "materialized_seq", "id"),
     },
 )
 
@@ -2473,6 +2802,9 @@ def _ensure_library_index_table_reloptions(conn) -> None:
 
 
 def _concurrent_create_index_sql(sql: str) -> str:
+    unique_prefix = "CREATE UNIQUE INDEX IF NOT EXISTS "
+    if sql.startswith(unique_prefix):
+        return "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS " + sql[len(unique_prefix):]
     prefix = "CREATE INDEX IF NOT EXISTS "
     if sql.startswith(prefix):
         return "CREATE INDEX CONCURRENTLY IF NOT EXISTS " + sql[len(prefix):]
@@ -2667,9 +2999,17 @@ def suspend_library_index_secondary_indexes_for_initial_bulk_load(target_engine=
 
     调用方必须只在 `library_index_entries` 业务行为空时进入。函数持有同一把
     advisory lock 到恢复完成，避免后台维护线程在二级索引暂停期间交叉重建。
-    `idx_lie_library_rel` 唯一索引负责幂等约束，首建期间也必须保留。
+    `idx_lie_library_generation_rel` 唯一索引负责幂等约束，首建期间也必须保留。
     """
-    specs = list(_POSTGRES_LIBRARY_INDEX_SPECS) + list(_POSTGRES_LIBRARY_TRIGRAM_INDEX_SPECS)
+    protected_names = {"idx_lie_library_generation_rel"}
+    specs = [
+        spec
+        for spec in (
+            list(_POSTGRES_LIBRARY_INDEX_SPECS)
+            + list(_POSTGRES_LIBRARY_TRIGRAM_INDEX_SPECS)
+        )
+        if str(spec.get("name") or "") not in protected_names
+    ]
     names = _index_names_from_specs(specs)
     dropped: list[str] = []
     restored: list[str] = []
@@ -3059,17 +3399,353 @@ def _migrate_activity_log_daily_stats(conn, existing_tables: Optional[set[str]] 
         _db_logger.info("[数据库] activity_log_daily_stats 初次回填完成")
 
 
+_LIBRARY_INDEX_CONSISTENCY_TABLE_NAMES = (
+    "library_index_mutation_operations",
+    "library_index_mutation_ledger",
+    "library_index_mutation_effects",
+    "library_index_pending_masks",
+    "library_index_generations",
+)
+
+
+_LIBRARY_INDEX_CONSISTENCY_INDEX_SPECS = (
+    {
+        "table": "library_index_entries",
+        "name": "idx_lie_library_generation_rel",
+        "sql": "CREATE UNIQUE INDEX IF NOT EXISTS idx_lie_library_generation_rel ON library_index_entries(library_id, generation, relative_path)",
+    },
+    {
+        "table": "library_index_mutation_operations",
+        "name": "idx_li_mutation_operations_idempotency",
+        "sql": "CREATE UNIQUE INDEX IF NOT EXISTS idx_li_mutation_operations_idempotency ON library_index_mutation_operations(idempotency_key)",
+    },
+    {
+        "table": "library_index_mutation_operations",
+        "name": "idx_li_mutation_operations_state_updated",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_li_mutation_operations_state_updated ON library_index_mutation_operations(state, updated_at)",
+    },
+    {
+        "table": "library_index_mutation_ledger",
+        "name": "idx_li_mutation_ledger_library_seq",
+        "sql": "CREATE UNIQUE INDEX IF NOT EXISTS idx_li_mutation_ledger_library_seq ON library_index_mutation_ledger(library_id, seq)",
+    },
+    {
+        "table": "library_index_mutation_ledger",
+        "name": "idx_li_mutation_ledger_operation_library",
+        "sql": "CREATE UNIQUE INDEX IF NOT EXISTS idx_li_mutation_ledger_operation_library ON library_index_mutation_ledger(operation_id, library_id)",
+    },
+    {
+        "table": "library_index_mutation_ledger",
+        "name": "idx_li_mutation_ledger_pending",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_li_mutation_ledger_pending ON library_index_mutation_ledger(library_id, applied_at, seq)",
+    },
+    {
+        "table": "library_index_mutation_ledger",
+        "name": "idx_li_mutation_ledger_retry",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_li_mutation_ledger_retry ON library_index_mutation_ledger(next_retry_at, library_id, seq)",
+    },
+    {
+        "table": "library_index_mutation_ledger",
+        "name": "idx_li_mutation_ledger_retention",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_li_mutation_ledger_retention ON library_index_mutation_ledger(applied_at, id)",
+    },
+    {
+        "table": "library_index_mutation_effects",
+        "name": "idx_li_mutation_effects_ledger_no",
+        "sql": "CREATE UNIQUE INDEX IF NOT EXISTS idx_li_mutation_effects_ledger_no ON library_index_mutation_effects(ledger_id, effect_no)",
+    },
+    {
+        "table": "library_index_mutation_effects",
+        "name": "idx_li_mutation_effects_library_seq",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_li_mutation_effects_library_seq ON library_index_mutation_effects(library_id, seq, effect_no)",
+    },
+    {
+        "table": "library_index_mutation_effects",
+        "name": "idx_li_mutation_effects_path",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_li_mutation_effects_path ON library_index_mutation_effects(library_id, relative_path)",
+    },
+    {
+        "table": "library_index_pending_masks",
+        "name": "idx_li_pending_masks_operation_effect",
+        "sql": "CREATE UNIQUE INDEX IF NOT EXISTS idx_li_pending_masks_operation_effect ON library_index_pending_masks(operation_id, library_id, effect_no)",
+    },
+    {
+        "table": "library_index_pending_masks",
+        "name": "idx_li_pending_masks_active_path",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_li_pending_masks_active_path ON library_index_pending_masks(library_id, relative_path, scope)",
+    },
+    {
+        "table": "library_index_pending_masks",
+        "name": "idx_li_pending_masks_ledger_seq",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_li_pending_masks_ledger_seq ON library_index_pending_masks(library_id, ledger_seq)",
+    },
+    {
+        "table": "library_index_generations",
+        "name": "idx_li_generations_library_generation",
+        "sql": "CREATE UNIQUE INDEX IF NOT EXISTS idx_li_generations_library_generation ON library_index_generations(library_id, generation)",
+    },
+    {
+        "table": "library_index_generations",
+        "name": "idx_li_generations_state_updated",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_li_generations_state_updated ON library_index_generations(state, updated_at)",
+    },
+    {
+        "table": "library_index_generations",
+        "name": "idx_li_generations_delete_after",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_li_generations_delete_after ON library_index_generations(delete_after, id)",
+    },
+)
+
+
+_LIBRARY_INDEX_GENERATION_CONTRACT_ENV = (
+    "KIKOERUMANAGER_LIBRARY_INDEX_GENERATION_CONTRACT"
+)
+_LIBRARY_INDEX_LEGACY_UNIQUE_COLUMNS = ("library_id", "relative_path")
+_LIBRARY_INDEX_GENERATION_UNIQUE_COLUMNS = (
+    "library_id",
+    "generation",
+    "relative_path",
+)
+
+
+def library_index_generation_contract_requested() -> bool:
+    return os.getenv(_LIBRARY_INDEX_GENERATION_CONTRACT_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def library_index_generation_contract_status(conn) -> Dict[str, Any]:
+    """从 PostgreSQL catalog 验证 generation contract 的真实数据库前置条件。"""
+    table_exists = bool(conn.execute(
+        text("SELECT to_regclass('library_index_entries') IS NOT NULL")
+    ).scalar())
+    if not table_exists:
+        return {
+            "ready": False,
+            "table_exists": False,
+            "columns_ready": False,
+            "legacy_unique_indexes": [],
+            "generation_index_ready": False,
+            "reasons": ["library_index_entries 不存在"],
+        }
+
+    column_rows = conn.execute(text("""
+        SELECT attribute.attname AS column_name,
+               attribute.attnotnull AS not_null,
+               pg_get_expr(default_value.adbin, default_value.adrelid) AS default_expr
+          FROM pg_attribute AS attribute
+          LEFT JOIN pg_attrdef AS default_value
+            ON default_value.adrelid = attribute.attrelid
+           AND default_value.adnum = attribute.attnum
+         WHERE attribute.attrelid = to_regclass('library_index_entries')
+           AND attribute.attname = ANY(:column_names)
+           AND attribute.attnum > 0
+           AND NOT attribute.attisdropped
+    """), {
+        "column_names": ["generation", "materialized_seq"],
+    }).mappings().all()
+    columns = {
+        str(row["column_name"]): {
+            "not_null": bool(row["not_null"]),
+            "default_expr": str(row["default_expr"] or ""),
+        }
+        for row in column_rows
+    }
+
+    index_rows = conn.execute(text("""
+        SELECT index_class.relname AS index_name,
+               index_meta.indisunique AS is_unique,
+               index_meta.indisvalid AS is_valid,
+               index_meta.indisready AS is_ready,
+               COALESCE(
+                   array_agg(attribute.attname ORDER BY index_key.ordinality)
+                       FILTER (
+                           WHERE index_key.attnum > 0
+                             AND index_key.ordinality <= index_meta.indnkeyatts
+                       ),
+                   ARRAY[]::name[]
+               ) AS key_columns
+          FROM pg_class AS table_class
+          JOIN pg_namespace AS namespace
+            ON namespace.oid = table_class.relnamespace
+          JOIN pg_index AS index_meta
+            ON index_meta.indrelid = table_class.oid
+          JOIN pg_class AS index_class
+            ON index_class.oid = index_meta.indexrelid
+          LEFT JOIN LATERAL unnest(index_meta.indkey::smallint[])
+               WITH ORDINALITY AS index_key(attnum, ordinality)
+            ON TRUE
+          LEFT JOIN pg_attribute AS attribute
+            ON attribute.attrelid = table_class.oid
+           AND attribute.attnum = index_key.attnum
+         WHERE namespace.nspname = current_schema()
+           AND table_class.relname = 'library_index_entries'
+         GROUP BY index_class.relname,
+                  index_meta.indisunique,
+                  index_meta.indisvalid,
+                  index_meta.indisready
+    """)).mappings().all()
+    indexes = [
+        {
+            "index_name": str(row["index_name"]),
+            "is_unique": bool(row["is_unique"]),
+            "is_valid": bool(row["is_valid"]),
+            "is_ready": bool(row["is_ready"]),
+            "key_columns": tuple(str(item) for item in (row["key_columns"] or [])),
+        }
+        for row in index_rows
+    ]
+
+    legacy_unique_indexes = sorted(
+        row["index_name"]
+        for row in indexes
+        if row["is_unique"]
+        and row["key_columns"] == _LIBRARY_INDEX_LEGACY_UNIQUE_COLUMNS
+    )
+    generation_index = next(
+        (
+            row
+            for row in indexes
+            if row["index_name"] == "idx_lie_library_generation_rel"
+        ),
+        None,
+    )
+    generation_index_ready = bool(
+        generation_index
+        and generation_index["is_unique"]
+        and generation_index["is_valid"]
+        and generation_index["is_ready"]
+        and generation_index["key_columns"]
+        == _LIBRARY_INDEX_GENERATION_UNIQUE_COLUMNS
+    )
+
+    expected_defaults = {"generation": "1", "materialized_seq": "0"}
+    columns_ready = True
+    reasons: list[str] = []
+    for column_name, expected_default in expected_defaults.items():
+        column = columns.get(column_name)
+        if column is None:
+            columns_ready = False
+            reasons.append(f"缺少 {column_name} 列")
+            continue
+        if not column["not_null"]:
+            columns_ready = False
+            reasons.append(f"{column_name} 不是 NOT NULL")
+        normalized_default = _compact_index_definition(column["default_expr"])
+        normalized_default = normalized_default.replace("(", "").replace(")", "").strip()
+        if normalized_default != expected_default:
+            columns_ready = False
+            reasons.append(
+                f"{column_name} 默认值不是 {expected_default}"
+            )
+    if legacy_unique_indexes:
+        reasons.append(
+            "仍存在旧二列唯一索引: " + ", ".join(legacy_unique_indexes)
+        )
+    if not generation_index_ready:
+        reasons.append("generation 三列唯一索引缺失、无效或定义不匹配")
+
+    return {
+        "ready": bool(
+            columns_ready
+            and not legacy_unique_indexes
+            and generation_index_ready
+        ),
+        "table_exists": True,
+        "columns_ready": columns_ready,
+        "columns": columns,
+        "legacy_unique_indexes": legacy_unique_indexes,
+        "generation_index_ready": generation_index_ready,
+        "generation_index": generation_index,
+        "reasons": reasons,
+    }
+
+
+def require_library_index_generation_contract_ready(conn) -> Dict[str, Any]:
+    status = library_index_generation_contract_status(conn)
+    if not status["ready"]:
+        details = "; ".join(status.get("reasons") or ["未知原因"])
+        raise RuntimeError(f"库存索引 generation contract 未就绪: {details}")
+    return status
+
+
 def _migrate_library_index_status_schema(conn, existing_tables: Optional[set[str]] = None) -> None:
     if existing_tables is not None:
         if "library_index_status" not in existing_tables:
             return
     elif not _table_exists(conn, "library_index_status"):
         return
-    existing_columns = _existing_columns(conn, "library_index_status", ("total_size_bytes", "folder_count"))
+    status_columns = (
+        ("total_size_bytes", "BIGINT", "0"),
+        ("folder_count", "INTEGER", "0"),
+        ("accepted_seq", "BIGINT", "0"),
+        ("materialized_seq", "BIGINT", "0"),
+        ("state_revision", "BIGINT", "0"),
+        ("view_revision", "BIGINT", "0"),
+        ("active_generation", "INTEGER", "1"),
+        ("building_generation", "INTEGER", None),
+        ("catchup_state", "VARCHAR(24)", "'idle'"),
+        ("last_operation_id", "VARCHAR(36)", None),
+        ("materializer_owner", "VARCHAR(120)", None),
+        ("materializer_lease_until", "TIMESTAMP WITHOUT TIME ZONE", None),
+        ("materializer_epoch", "BIGINT", "0"),
+        ("blocked_seq", "BIGINT", None),
+        ("catchup_error", "TEXT", None),
+    )
+    existing_columns = _existing_columns(
+        conn,
+        "library_index_status",
+        [name for name, _type, _default in status_columns],
+    )
     missing_total = "total_size_bytes" not in existing_columns
     missing_folders = "folder_count" not in existing_columns
-    _add_column_if_missing(conn, "library_index_status", "total_size_bytes", "BIGINT", "0", existing_columns=existing_columns)
-    _add_column_if_missing(conn, "library_index_status", "folder_count", "INTEGER", "0", existing_columns=existing_columns)
+    for column_name, column_type, default_sql in status_columns:
+        _add_column_if_missing(
+            conn,
+            "library_index_status",
+            column_name,
+            column_type,
+            default_sql,
+            existing_columns=existing_columns,
+        )
+    conn.execute(text("""
+        UPDATE library_index_status
+           SET accepted_seq = COALESCE(accepted_seq, 0),
+               materialized_seq = COALESCE(materialized_seq, 0),
+               state_revision = COALESCE(state_revision, 0),
+               view_revision = COALESCE(view_revision, 0),
+               active_generation = COALESCE(active_generation, 1),
+               catchup_state = COALESCE(NULLIF(catchup_state, ''), 'idle'),
+               materializer_epoch = COALESCE(materializer_epoch, 0)
+         WHERE accepted_seq IS NULL
+            OR materialized_seq IS NULL
+            OR state_revision IS NULL
+            OR view_revision IS NULL
+            OR active_generation IS NULL
+            OR catchup_state IS NULL
+            OR catchup_state = ''
+            OR materializer_epoch IS NULL
+    """))
+    conn.execute(text("""
+        ALTER TABLE library_index_status
+            ALTER COLUMN accepted_seq SET DEFAULT 0,
+            ALTER COLUMN accepted_seq SET NOT NULL,
+            ALTER COLUMN materialized_seq SET DEFAULT 0,
+            ALTER COLUMN materialized_seq SET NOT NULL,
+            ALTER COLUMN state_revision SET DEFAULT 0,
+            ALTER COLUMN state_revision SET NOT NULL,
+            ALTER COLUMN view_revision SET DEFAULT 0,
+            ALTER COLUMN view_revision SET NOT NULL,
+            ALTER COLUMN active_generation SET DEFAULT 1,
+            ALTER COLUMN active_generation SET NOT NULL,
+            ALTER COLUMN catchup_state SET DEFAULT 'idle',
+            ALTER COLUMN catchup_state SET NOT NULL,
+            ALTER COLUMN materializer_epoch SET DEFAULT 0,
+            ALTER COLUMN materializer_epoch SET NOT NULL
+    """))
     if missing_total or missing_folders:
         conn.execute(text("""
             UPDATE library_index_status
@@ -3123,7 +3799,40 @@ def _migrate_library_index_entries_schema(conn, existing_tables: Optional[set[st
             return
     elif not _table_exists(conn, "library_index_entries"):
         return
-    existing_columns = _existing_columns(conn, "library_index_entries", ("name_sort_key",))
+    existing_columns = _existing_columns(
+        conn,
+        "library_index_entries",
+        ("name_sort_key", "generation", "materialized_seq"),
+    )
+    _add_column_if_missing(
+        conn,
+        "library_index_entries",
+        "generation",
+        "INTEGER",
+        "1",
+        existing_columns=existing_columns,
+    )
+    _add_column_if_missing(
+        conn,
+        "library_index_entries",
+        "materialized_seq",
+        "BIGINT",
+        "0",
+        existing_columns=existing_columns,
+    )
+    conn.execute(text("""
+        UPDATE library_index_entries
+           SET generation = COALESCE(generation, 1),
+               materialized_seq = COALESCE(materialized_seq, 0)
+         WHERE generation IS NULL OR materialized_seq IS NULL
+    """))
+    conn.execute(text("""
+        ALTER TABLE library_index_entries
+            ALTER COLUMN generation SET DEFAULT 1,
+            ALTER COLUMN generation SET NOT NULL,
+            ALTER COLUMN materialized_seq SET DEFAULT 0,
+            ALTER COLUMN materialized_seq SET NOT NULL
+    """))
     added = _add_column_if_missing(
         conn,
         "library_index_entries",
@@ -3189,6 +3898,111 @@ def _migrate_library_index_entries_schema(conn, existing_tables: Optional[set[st
         _db_logger.info("[数据库] library_index_entries.name_sort_key 回填完成 rows=%s", updated_total)
 
 
+def _migrate_library_index_consistency_tables(conn) -> None:
+    """保证未通过 Alembic 启动的既有 PostgreSQL 也具备 expand schema。"""
+    consistency_tables = (
+        LibraryIndexMutationOperation.__table__,
+        LibraryIndexMutationLedger.__table__,
+        LibraryIndexMutationEffect.__table__,
+        LibraryIndexPendingMask.__table__,
+        LibraryIndexGeneration.__table__,
+    )
+    existed_before = _existing_tables(conn, _LIBRARY_INDEX_CONSISTENCY_TABLE_NAMES)
+    for table in consistency_tables:
+        table.create(bind=conn, checkfirst=True)
+
+    operation_columns = _existing_columns(
+        conn,
+        "library_index_mutation_operations",
+        ("filesystem_started_at",),
+    )
+    _add_column_if_missing(
+        conn,
+        "library_index_mutation_operations",
+        "filesystem_started_at",
+        "TIMESTAMP WITHOUT TIME ZONE",
+        existing_columns=operation_columns,
+    )
+
+    existing_tables = _existing_tables(conn, _LIBRARY_INDEX_CONSISTENCY_TABLE_NAMES)
+    if existing_tables != set(_LIBRARY_INDEX_CONSISTENCY_TABLE_NAMES):
+        missing = sorted(set(_LIBRARY_INDEX_CONSISTENCY_TABLE_NAMES) - existing_tables)
+        raise RuntimeError(f"库存索引一致性表创建失败: {', '.join(missing)}")
+    specs = [
+        spec
+        for spec in _LIBRARY_INDEX_CONSISTENCY_INDEX_SPECS
+        if str(spec.get("table") or "") in existing_tables
+    ]
+    # 新建表的 metadata.create() 已同时创建索引；既有半迁移表才逐项补齐。
+    if existed_before:
+        _ensure_indexes_exist(conn, specs)
+    conn.execute(text("""
+        INSERT INTO library_index_status(
+            library_id,
+            status,
+            watcher_mode,
+            total_entries,
+            total_size_bytes,
+            folder_count,
+            accepted_seq,
+            materialized_seq,
+            state_revision,
+            view_revision,
+            active_generation,
+            catchup_state,
+            materializer_epoch,
+            updated_at
+        )
+        SELECT entries.library_id,
+               'ready',
+               'disabled',
+               COUNT(*)::integer,
+               COALESCE(SUM(CASE WHEN entries.entry_type = 'file' THEN entries.size ELSE 0 END), 0),
+               COUNT(*) FILTER (
+                   WHERE entries.entry_type = 'dir'
+                     AND entries.relative_path <> ''
+                     AND COALESCE(entries.parent_path, '') = ''
+               )::integer,
+               0,
+               0,
+               0,
+               0,
+               1,
+               'idle',
+               0,
+               (EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) * 1000)::bigint
+          FROM library_index_entries AS entries
+         GROUP BY entries.library_id
+        ON CONFLICT (library_id) DO NOTHING
+    """))
+    conn.execute(text("""
+        INSERT INTO library_index_generations(
+            library_id,
+            generation,
+            state,
+            build_base_seq,
+            reconciled_seq,
+            total_entries,
+            total_size_bytes,
+            folder_count,
+            created_at,
+            updated_at
+        )
+        SELECT status.library_id,
+               status.active_generation,
+               'active',
+               status.materialized_seq,
+               status.materialized_seq,
+               COALESCE(status.total_entries, 0),
+               COALESCE(status.total_size_bytes, 0),
+               COALESCE(status.folder_count, 0),
+               CURRENT_TIMESTAMP,
+               CURRENT_TIMESTAMP
+          FROM library_index_status AS status
+        ON CONFLICT (library_id, generation) DO NOTHING
+    """))
+
+
 def _migrate_compat_schema(conn) -> None:
     existing_tables = _existing_tables(conn, (
         "processed_archives",
@@ -3230,6 +4044,7 @@ def _migrate_compat_schema(conn) -> None:
         )
     _migrate_library_index_entries_schema(conn, existing_tables)
     _migrate_library_index_status_schema(conn, existing_tables)
+    _migrate_library_index_consistency_tables(conn)
     _migrate_library_owned_works_schema(conn, existing_tables)
     _migrate_dlsite_bonus_probe_cache_schema(conn, existing_tables)
     _migrate_notification_inbox_items_schema(conn, existing_tables)
@@ -3259,6 +4074,15 @@ def init_db():
         with engine.begin() as conn:
             _create_postgres_extensions_and_indexes(conn)
             _migrate_compat_schema(conn)
+        if library_index_generation_contract_requested():
+            ensure_result = ensure_library_index_postgres_indexes_concurrently(engine)
+            if ensure_result.get("ok") is False:
+                raise RuntimeError(
+                    "库存索引 generation contract 索引维护失败: "
+                    f"{ensure_result.get('error') or 'unknown error'}"
+                )
+            with engine.connect() as conn:
+                require_library_index_generation_contract_ready(conn)
         schedule_library_index_postgres_index_maintenance()
         _init_db_done = True
     _db_logger.info("[数据库] PostgreSQL 表和索引初始化完成")
