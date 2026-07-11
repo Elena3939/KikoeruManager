@@ -155,6 +155,11 @@
           class="logs-status-chip is-warning"
           title="本次搜索触顶（5 万匹配 / 96MB 扫描预算 / 单页 1000 条），未扫到全部历史"
         >已截断</span>
+        <span
+          v-if="streamDroppedCount > 0"
+          class="logs-status-chip is-warning"
+          title="高压下后端已跳到最新 offset，只推送最新批次，避免日志页白屏"
+        >流保护跳过 {{ streamDroppedCount }}</span>
         <span class="logs-status-chip is-muted">快捷键 Ctrl+K 搜索 · Ctrl+R 刷新 · Ctrl+Shift+C 复制可见</span>
       </div>
     </div>
@@ -410,6 +415,7 @@ const parseCache = new Map()
 // 后端搜索状态（用于头部小标签展示，不进入 render path 修改）
 const lastSearchScanMb = ref(0)
 const lastSearchStoppedEarly = ref(false)
+const streamDroppedCount = ref(0)
 
 const availableModules = computed(() => {
   const modules = new Set()
@@ -1117,6 +1123,7 @@ function resetLiveLogState() {
   lastLogSignature = ''
   nextOffset = -1
   incrementalCount.value = 0
+  streamDroppedCount.value = 0
   parseCache.clear()
   pendingStreamLines = []
   if (streamFlushTimer) {
@@ -1214,6 +1221,10 @@ function handleStreamPayload(event, { reset = false } = {}) {
     payload = {}
   }
   if (typeof payload.next_offset === 'number') nextOffset = payload.next_offset
+  const dropped = Number(payload.dropped_count || 0)
+  if (Number.isFinite(dropped) && dropped > 0) {
+    streamDroppedCount.value += dropped
+  }
   const lines = Array.isArray(payload.logs) ? payload.logs : []
   const signature = `${lines.length}::${lines[lines.length - 1] || ''}`
   lastFetchMode.value = reset || payload.is_full ? 'sse(full)' : 'sse'

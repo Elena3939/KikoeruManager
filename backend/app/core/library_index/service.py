@@ -22,11 +22,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import threading
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Optional, Sequence, Union
+
+from sqlalchemy import func, text
 
 from .local_scanner import LocalScanner
 from .remote_scanner import RemoteScanner
@@ -37,7 +41,19 @@ from .snapshot_store import (
     get_snapshot_store,
 )
 from .types import IndexEntry, IndexStatus
-from ...models.database import suspend_library_index_secondary_indexes_for_initial_bulk_load
+from ...models.database import (
+    LibraryIndexEntry,
+    LibraryIndexGeneration,
+    LibraryIndexMutationEffect,
+    LibraryIndexMutationLedger,
+    LibraryIndexMutationOperation,
+    LibraryIndexPendingMask,
+    LibraryIndexStatus,
+    SessionLocal,
+    get_local_now,
+    require_library_index_generation_contract_ready,
+    suspend_library_index_secondary_indexes_for_initial_bulk_load,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +62,8 @@ FULL_REBUILD_BULK_CHUNK_SIZE = 5000
 FULL_REBUILD_ANALYZE_THRESHOLD = 5000
 STALE_SYNCING_GRACE_SECONDS = 30.0
 INTERRUPTED_SYNCING_MESSAGE = "上次索引同步中断，未发现正在运行的重建任务；请手动重建索引"
+GENERATION_RETENTION_HOURS = 24
+GENERATION_CLEANUP_CHUNK_SIZE = 5000
 
 
 @dataclass(slots=True)
@@ -149,6 +167,550 @@ class LibraryIndexService:
         task.add_done_callback(_discard)
 
     # ========== 重建 ==========
+
+    @staticmethod
+    def _generation_contract_enabled() -> bool:
+        requested = os.getenv(
+            "KIKOERUMANAGER_LIBRARY_INDEX_GENERATION_CONTRACT",
+            "",
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if not requested:
+            return False
+        db = SessionLocal()
+        try:
+            require_library_index_generation_contract_ready(db.connection())
+            return True
+        finally:
+            db.rollback()
+            db.close()
+
+    @staticmethod
+    def _estimate_generation_bytes(library_id: str, generation: int) -> int:
+        db = SessionLocal()
+        try:
+            total = db.query(
+                LibraryIndexEntry,
+            ).filter(
+                LibraryIndexEntry.library_id == library_id,
+                LibraryIndexEntry.generation == generation,
+            ).count()
+            relation_bytes = int(db.execute(
+                text("SELECT COALESCE(pg_total_relation_size('library_index_entries'), 0)")
+            ).scalar() or 0)
+            all_rows = int(db.execute(
+                text("SELECT count(*) FROM library_index_entries")
+            ).scalar() or 0)
+            return max(1, int(relation_bytes * total / max(all_rows, 1)))
+        finally:
+            db.close()
+
+    def _require_generation_capacity(self, library_id: str, root_path: str, active_generation: int) -> None:
+        del root_path
+        estimated = self._estimate_generation_bytes(library_id, active_generation)
+        override = os.getenv("KIKOERUMANAGER_LIBRARY_INDEX_DATABASE_FREE_BYTES", "").strip()
+        if override:
+            try:
+                available = int(override)
+            except ValueError as exc:
+                raise RuntimeError("库存索引数据库可用空间配置不是整数") from exc
+        else:
+            db = SessionLocal()
+            try:
+                data_directory = str(db.execute(text("SHOW data_directory")).scalar() or "").strip()
+            finally:
+                db.close()
+            if not data_directory or not os.path.isdir(data_directory):
+                raise RuntimeError(
+                    "无法从应用主机读取 PostgreSQL data_directory 可用空间；请设置 "
+                    "KIKOERUMANAGER_LIBRARY_INDEX_DATABASE_FREE_BYTES 后再重建"
+                )
+            available = int(shutil.disk_usage(data_directory).free)
+        required = int(estimated * 1.2)
+        if available < required:
+            raise RuntimeError(
+                f"库存索引候选 generation 空间不足: free={available} required={required}"
+            )
+
+    def _create_building_generation(self, library_id: str, root_path: str) -> tuple[int, int]:
+        if not self._generation_contract_enabled():
+            raise RuntimeError(
+                "generation contract 尚未启用；所有实例升级后先删除旧二列唯一索引，再设置 "
+                "KIKOERUMANAGER_LIBRARY_INDEX_GENERATION_CONTRACT=1"
+            )
+        db = SessionLocal()
+        try:
+            status = db.query(LibraryIndexStatus).filter(
+                LibraryIndexStatus.library_id == library_id
+            ).with_for_update().first()
+            if status is None:
+                status = LibraryIndexStatus(
+                    library_id=library_id,
+                    status="idle",
+                    watcher_mode="disabled",
+                    accepted_seq=0,
+                    materialized_seq=0,
+                    state_revision=0,
+                    view_revision=0,
+                    active_generation=1,
+                    materializer_epoch=0,
+                    catchup_state="idle",
+                    updated_at=int(time.time() * 1000),
+                )
+                db.add(status)
+                db.flush()
+            if status.building_generation is not None:
+                raise RuntimeError("当前库存已有 building generation")
+            prepared_exists = db.query(LibraryIndexMutationOperation.operation_id).join(
+                LibraryIndexPendingMask,
+                LibraryIndexPendingMask.operation_id == LibraryIndexMutationOperation.operation_id,
+            ).filter(
+                LibraryIndexMutationOperation.state == "prepared",
+                LibraryIndexPendingMask.library_id == library_id,
+            ).first()
+            if prepared_exists is not None:
+                raise RuntimeError("当前库存有 prepared mutation，暂不能开始重建")
+            active_generation = int(status.active_generation or 1)
+            self._require_generation_capacity(library_id, root_path, active_generation)
+            max_generation = db.query(func.max(LibraryIndexGeneration.generation)).filter(
+                LibraryIndexGeneration.library_id == library_id
+            ).scalar()
+            generation = max(active_generation, int(max_generation or 0)) + 1
+            base_seq = int(status.accepted_seq or 0)
+            db.add(LibraryIndexGeneration(
+                library_id=library_id,
+                generation=generation,
+                state="building",
+                build_base_seq=base_seq,
+                reconciled_seq=base_seq,
+            ))
+            status.building_generation = generation
+            status.status = "syncing"
+            status.catchup_state = "rebuilding"
+            status.state_revision = int(status.state_revision or 0) + 1
+            status.updated_at = int(time.time() * 1000)
+            db.commit()
+            return generation, base_seq
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def _scan_building_generation(
+        self,
+        library_id: str,
+        root_path: str,
+        generation: int,
+        build_base_seq: int,
+        chunk_size: int,
+    ) -> dict[str, int]:
+        scanner = self._local_scanner_factory()
+        buffer: list[IndexEntry] = []
+        written = 0
+        total_size = 0
+        folder_count = 0
+        for entry in scanner.scan(library_id, root_path):
+            entry.generation = generation
+            entry.materialized_seq = build_base_seq
+            buffer.append(entry)
+            size_delta, folder_delta = self._entry_stats(entry)
+            total_size += size_delta
+            folder_count += folder_delta
+            if len(buffer) >= chunk_size:
+                written += self._store.bulk_upsert(
+                    buffer,
+                    chunk_size=chunk_size,
+                    maintain_status_stats=False,
+                    insert_only=True,
+                    relaxed_commit=True,
+                )
+                buffer.clear()
+        if buffer:
+            written += self._store.bulk_upsert(
+                buffer,
+                chunk_size=chunk_size,
+                maintain_status_stats=False,
+                insert_only=True,
+                relaxed_commit=True,
+            )
+        return {
+            "total_entries": written,
+            "total_size_bytes": total_size,
+            "folder_count": folder_count,
+        }
+
+    @staticmethod
+    def _generation_reconcile_roots(
+        library_id: str,
+        after_seq: int,
+        through_seq: int,
+    ) -> list[str]:
+        db = SessionLocal()
+        try:
+            rows = db.query(LibraryIndexMutationEffect).filter(
+                LibraryIndexMutationEffect.library_id == library_id,
+                LibraryIndexMutationEffect.seq > after_seq,
+                LibraryIndexMutationEffect.seq <= through_seq,
+            ).order_by(
+                LibraryIndexMutationEffect.seq.asc(),
+                LibraryIndexMutationEffect.effect_no.asc(),
+            ).all()
+            paths: list[str] = []
+            for row in rows:
+                paths.append(str(row.relative_path or ""))
+                if row.target_library_id == library_id and row.target_path is not None:
+                    paths.append(str(row.target_path or ""))
+            compressed: list[str] = []
+            for path in sorted(set(paths), key=lambda value: (value.count("/"), value)):
+                if any(not root or path == root or path.startswith(root + "/") for root in compressed):
+                    continue
+                compressed.append(path)
+            return compressed
+        finally:
+            db.close()
+
+    def _reconcile_building_generation(
+        self,
+        library_id: str,
+        root_path: str,
+        generation: int,
+        from_seq: int,
+        through_seq: int,
+        chunk_size: int,
+    ) -> None:
+        for relative_path in self._generation_reconcile_roots(
+            library_id,
+            from_seq,
+            through_seq,
+        ):
+            target = (
+                os.path.abspath(os.path.join(root_path, *relative_path.split("/")))
+                if relative_path
+                else os.path.abspath(root_path)
+            )
+            db = SessionLocal()
+            try:
+                q = db.query(LibraryIndexEntry).filter(
+                    LibraryIndexEntry.library_id == library_id,
+                    LibraryIndexEntry.generation == generation,
+                )
+                if relative_path:
+                    q = q.filter(
+                        (LibraryIndexEntry.relative_path == relative_path)
+                        | (
+                            (LibraryIndexEntry.relative_path >= relative_path + "/")
+                            & (LibraryIndexEntry.relative_path < relative_path + "0")
+                        )
+                    )
+                q.delete(synchronize_session=False)
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
+            if not os.path.exists(target):
+                continue
+            buffer: list[IndexEntry] = []
+            for entry in self._local_scanner_factory().scan_subtree(
+                library_id,
+                root_path,
+                target,
+            ):
+                entry.generation = generation
+                entry.materialized_seq = through_seq
+                buffer.append(entry)
+                if len(buffer) >= chunk_size:
+                    self._store.bulk_upsert(
+                        buffer,
+                        chunk_size=chunk_size,
+                        maintain_status_stats=False,
+                    )
+                    buffer.clear()
+            if buffer:
+                self._store.bulk_upsert(
+                    buffer,
+                    chunk_size=chunk_size,
+                    maintain_status_stats=False,
+                )
+
+    @staticmethod
+    def _building_generation_stats(library_id: str, generation: int) -> dict[str, int]:
+        db = SessionLocal()
+        try:
+            rows = db.query(
+                LibraryIndexEntry.entry_type,
+                LibraryIndexEntry.relative_path,
+                LibraryIndexEntry.parent_path,
+                LibraryIndexEntry.size,
+            ).filter(
+                LibraryIndexEntry.library_id == library_id,
+                LibraryIndexEntry.generation == generation,
+            ).all()
+            return {
+                "total_entries": len(rows),
+                "total_size_bytes": sum(
+                    max(0, int(row.size or 0))
+                    for row in rows
+                    if row.entry_type == "file"
+                ),
+                "folder_count": sum(
+                    1
+                    for row in rows
+                    if row.entry_type == "dir"
+                    and bool(row.relative_path)
+                    and str(row.parent_path or "") == ""
+                ),
+            }
+        finally:
+            db.close()
+
+    def _cutover_building_generation(
+        self,
+        library_id: str,
+        generation: int,
+        expected_seq: int,
+        stats: dict[str, int],
+    ) -> IndexStatus:
+        db = SessionLocal()
+        try:
+            status = db.query(LibraryIndexStatus).filter(
+                LibraryIndexStatus.library_id == library_id
+            ).with_for_update().one()
+            if int(status.building_generation or 0) != generation:
+                raise RuntimeError("building generation 已变化")
+            if int(status.accepted_seq or 0) != expected_seq:
+                raise RuntimeError("cutover 前 accepted_seq 已推进")
+            prepared_exists = db.query(LibraryIndexMutationOperation.operation_id).join(
+                LibraryIndexPendingMask,
+                LibraryIndexPendingMask.operation_id == LibraryIndexMutationOperation.operation_id,
+            ).filter(
+                LibraryIndexMutationOperation.state == "prepared",
+                LibraryIndexPendingMask.library_id == library_id,
+            ).first()
+            if prepared_exists is not None:
+                raise RuntimeError("cutover 时仍有 prepared mutation")
+            old_generation = int(status.active_generation or 1)
+            now = get_local_now()
+            candidate = db.query(LibraryIndexGeneration).filter(
+                LibraryIndexGeneration.library_id == library_id,
+                LibraryIndexGeneration.generation == generation,
+            ).with_for_update().one()
+            old = db.query(LibraryIndexGeneration).filter(
+                LibraryIndexGeneration.library_id == library_id,
+                LibraryIndexGeneration.generation == old_generation,
+            ).with_for_update().first()
+            candidate.state = "active"
+            candidate.reconciled_seq = expected_seq
+            candidate.total_entries = int(stats["total_entries"])
+            candidate.total_size_bytes = int(stats["total_size_bytes"])
+            candidate.folder_count = int(stats["folder_count"])
+            candidate.error = None
+            candidate.cutover_at = now
+            candidate.retired_at = None
+            candidate.delete_after = None
+            if old is not None and old.generation != generation:
+                old.state = "retired"
+                old.retired_at = now
+                old.delete_after = now + timedelta(hours=GENERATION_RETENTION_HOURS)
+            status.active_generation = generation
+            status.building_generation = None
+            status.materialized_seq = expected_seq
+            status.total_entries = int(stats["total_entries"])
+            status.total_size_bytes = int(stats["total_size_bytes"])
+            status.folder_count = int(stats["folder_count"])
+            status.status = "ready"
+            status.catchup_state = "idle"
+            status.blocked_seq = None
+            status.catchup_error = None
+            status.error = None
+            status.state_revision = int(status.state_revision or 0) + 1
+            status.view_revision = int(status.view_revision or 0) + 1
+            status.materializer_epoch = int(status.materializer_epoch or 0) + 1
+            status.materializer_owner = None
+            status.materializer_lease_until = None
+            status.last_full_scan_at = int(time.time() * 1000)
+            status.updated_at = int(time.time() * 1000)
+            db.query(LibraryIndexMutationLedger).filter(
+                LibraryIndexMutationLedger.library_id == library_id,
+                LibraryIndexMutationLedger.seq <= expected_seq,
+                LibraryIndexMutationLedger.applied_at.is_(None),
+            ).update(
+                {
+                    LibraryIndexMutationLedger.applied_at: now,
+                    LibraryIndexMutationLedger.attempt_count: 0,
+                    LibraryIndexMutationLedger.error: None,
+                    LibraryIndexMutationLedger.next_retry_at: None,
+                },
+                synchronize_session=False,
+            )
+            db.query(LibraryIndexPendingMask).filter(
+                LibraryIndexPendingMask.library_id == library_id,
+                LibraryIndexPendingMask.ledger_seq.isnot(None),
+                LibraryIndexPendingMask.ledger_seq <= expected_seq,
+            ).delete(synchronize_session=False)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+        snapshot = self._store.get_status(library_id)
+        if snapshot is None:
+            raise RuntimeError("generation cutover 后状态行不存在")
+        self._store._broadcast_status_change(snapshot, reason="library_index_generation_cutover")
+        return snapshot
+
+    def _fail_building_generation(self, library_id: str, generation: int, error: Exception) -> None:
+        db = SessionLocal()
+        changed = False
+        try:
+            status = db.query(LibraryIndexStatus).filter(
+                LibraryIndexStatus.library_id == library_id
+            ).with_for_update().first()
+            candidate = db.query(LibraryIndexGeneration).filter(
+                LibraryIndexGeneration.library_id == library_id,
+                LibraryIndexGeneration.generation == generation,
+            ).with_for_update().first()
+            if candidate is not None:
+                now = get_local_now()
+                candidate.state = "failed"
+                candidate.error = str(error)
+                candidate.retired_at = now
+                candidate.delete_after = now + timedelta(hours=GENERATION_RETENTION_HOURS)
+                changed = True
+            if status is not None and int(status.building_generation or 0) == generation:
+                status.building_generation = None
+                status.status = "ready" if status.active_generation else "error"
+                status.catchup_state = (
+                    "catching_up"
+                    if int(status.accepted_seq or 0) > int(status.materialized_seq or 0)
+                    else "idle"
+                )
+                status.error = str(error)
+                status.state_revision = int(status.state_revision or 0) + 1
+                status.updated_at = int(time.time() * 1000)
+                changed = True
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("[索引] 标记 building generation 失败异常 library=%s", library_id)
+        finally:
+            db.close()
+        if changed:
+            snapshot = self._store.get_status(library_id)
+            if snapshot is not None:
+                self._store._broadcast_status_change(
+                    snapshot,
+                    reason="library_index_generation_failed",
+                )
+
+    def rebuild_local_generation(
+        self,
+        library_id: str,
+        root_path: str,
+        *,
+        chunk_size: int = FULL_REBUILD_BULK_CHUNK_SIZE,
+    ) -> IndexStatus:
+        lock = self._get_lock(library_id)
+        if not lock.acquire(blocking=False):
+            raise RuntimeError("当前库存正在重建")
+        generation = 0
+        try:
+            generation, reconciled_seq = self._create_building_generation(
+                library_id,
+                root_path,
+            )
+            self._scan_building_generation(
+                library_id,
+                root_path,
+                generation,
+                reconciled_seq,
+                chunk_size,
+            )
+            while True:
+                db = SessionLocal()
+                try:
+                    accepted_seq = int(db.query(LibraryIndexStatus.accepted_seq).filter(
+                        LibraryIndexStatus.library_id == library_id
+                    ).scalar() or 0)
+                finally:
+                    db.close()
+                if accepted_seq == reconciled_seq:
+                    stats = self._building_generation_stats(library_id, generation)
+                    try:
+                        return self._cutover_building_generation(
+                            library_id,
+                            generation,
+                            accepted_seq,
+                            stats,
+                        )
+                    except RuntimeError as exc:
+                        if "accepted_seq" not in str(exc):
+                            raise
+                        continue
+                self._reconcile_building_generation(
+                    library_id,
+                    root_path,
+                    generation,
+                    reconciled_seq,
+                    accepted_seq,
+                    chunk_size,
+                )
+                reconciled_seq = accepted_seq
+                db = SessionLocal()
+                try:
+                    candidate = db.query(LibraryIndexGeneration).filter(
+                        LibraryIndexGeneration.library_id == library_id,
+                        LibraryIndexGeneration.generation == generation,
+                    ).one()
+                    candidate.reconciled_seq = reconciled_seq
+                    db.commit()
+                finally:
+                    db.close()
+        except Exception as exc:
+            if generation:
+                self._fail_building_generation(library_id, generation, exc)
+            raise
+        finally:
+            lock.release()
+
+    @staticmethod
+    def cleanup_retired_generations(
+        *,
+        chunk_size: int = GENERATION_CLEANUP_CHUNK_SIZE,
+    ) -> int:
+        removed = 0
+        while True:
+            db = SessionLocal()
+            try:
+                candidate = db.query(LibraryIndexGeneration).filter(
+                    LibraryIndexGeneration.state.in_(("retired", "failed")),
+                    LibraryIndexGeneration.delete_after.isnot(None),
+                    LibraryIndexGeneration.delete_after <= get_local_now(),
+                ).order_by(LibraryIndexGeneration.delete_after.asc()).first()
+                if candidate is None:
+                    return removed
+                ids = [
+                    row[0]
+                    for row in db.query(LibraryIndexEntry.id).filter(
+                        LibraryIndexEntry.library_id == candidate.library_id,
+                        LibraryIndexEntry.generation == candidate.generation,
+                    ).order_by(LibraryIndexEntry.id.asc()).limit(chunk_size).all()
+                ]
+                if ids:
+                    db.query(LibraryIndexEntry).filter(
+                        LibraryIndexEntry.id.in_(ids)
+                    ).delete(synchronize_session=False)
+                    removed += len(ids)
+                else:
+                    db.delete(candidate)
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
 
     def rebuild_local(
         self,
@@ -1069,7 +1631,13 @@ class LibraryIndexService:
 
     def is_ready(self, library_id: str) -> bool:
         status = self.get_status(library_id)
-        return bool(status and status.status == 'ready')
+        return bool(
+            status
+            and status.status == 'ready'
+            and int(getattr(status, "accepted_seq", 0) or 0)
+            == int(getattr(status, "materialized_seq", 0) or 0)
+            and getattr(status, "building_generation", None) is None
+        )
 
     def has_usable_snapshot(self, library_id: str) -> bool:
         """读路径可用性：ready 或 syncing 且库里已有快照。
@@ -1081,8 +1649,6 @@ class LibraryIndexService:
         status = self.get_status(library_id)
         if not status or status.status not in {'ready', 'syncing'}:
             return False
-        if status.status == 'ready':
-            return True
         return self._store_has_library_entries(library_id)
 
     def has_library_entries(self, library_id: str) -> bool:

@@ -6,8 +6,8 @@
 - 上层 scanner / watcher 以 IndexEntry / WatcherEvent 为单位和本层交互
 
 幂等语义：
-- upsert 用 (library_id, relative_path) 判重
-- bulk_upsert 会把同一库存同一相对路径的重复条目去重，保留最后一个
+- upsert 用 (library_id, generation, relative_path) 判重
+- bulk_upsert 会把同一库存、generation、相对路径的重复条目去重，保留最后一个
 """
 
 from __future__ import annotations
@@ -21,11 +21,12 @@ from contextlib import contextmanager
 from dataclasses import replace
 from typing import Iterable, Iterator, Optional, Sequence, Union
 
-from sqlalchemy import and_, case, func, or_, text
+from sqlalchemy import and_, case, exists, func, or_, text
 from sqlalchemy.orm import Session
 
 from ...models.database import (
     LibraryIndexEntry,
+    LibraryIndexPendingMask,
     LibraryIndexStatus,
     SessionLocal,
     library_index_name_sort_key,
@@ -46,6 +47,8 @@ _RJ_PREFIX_RE = re.compile(r"^(?:RJ)?\d{0,12}$", re.IGNORECASE)
 _BULK_UPSERT_SQL = """
 INSERT INTO library_index_entries (
     library_id,
+    generation,
+    materialized_seq,
     entry_type,
     relative_path,
     absolute_path,
@@ -61,6 +64,8 @@ INSERT INTO library_index_entries (
 )
 VALUES (
     :library_id,
+    :generation,
+    :materialized_seq,
     :entry_type,
     :relative_path,
     :absolute_path,
@@ -74,7 +79,8 @@ VALUES (
     :depth,
     :indexed_at
 )
-ON CONFLICT(library_id, relative_path) DO UPDATE SET
+ON CONFLICT(library_id, generation, relative_path) DO UPDATE SET
+    materialized_seq = excluded.materialized_seq,
     entry_type = excluded.entry_type,
     absolute_path = excluded.absolute_path,
     name = excluded.name,
@@ -86,7 +92,8 @@ ON CONFLICT(library_id, relative_path) DO UPDATE SET
     mtime = excluded.mtime,
     depth = excluded.depth,
     indexed_at = excluded.indexed_at
-WHERE library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
+WHERE library_index_entries.materialized_seq IS DISTINCT FROM excluded.materialized_seq
+   OR library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
    OR library_index_entries.absolute_path IS DISTINCT FROM excluded.absolute_path
    OR library_index_entries.name IS DISTINCT FROM excluded.name
    OR library_index_entries.name_sort_key IS DISTINCT FROM excluded.name_sort_key
@@ -101,6 +108,8 @@ WHERE library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
 _BULK_UNNEST_SOURCE_SQL = """
 SELECT
     library_id,
+    generation,
+    materialized_seq,
     entry_type,
     relative_path,
     absolute_path,
@@ -115,6 +124,8 @@ SELECT
     indexed_at
 FROM unnest(
     CAST(:library_ids AS text[]),
+    CAST(:generations AS integer[]),
+    CAST(:materialized_seqs AS bigint[]),
     CAST(:entry_types AS text[]),
     CAST(:relative_paths AS text[]),
     CAST(:absolute_paths AS text[]),
@@ -129,6 +140,8 @@ FROM unnest(
     CAST(:indexed_ats AS bigint[])
 ) AS payload(
     library_id,
+    generation,
+    materialized_seq,
     entry_type,
     relative_path,
     absolute_path,
@@ -147,6 +160,8 @@ FROM unnest(
 _BULK_UPSERT_UNNEST_SQL = f"""
 INSERT INTO library_index_entries (
     library_id,
+    generation,
+    materialized_seq,
     entry_type,
     relative_path,
     absolute_path,
@@ -161,7 +176,8 @@ INSERT INTO library_index_entries (
     indexed_at
 )
 {_BULK_UNNEST_SOURCE_SQL}
-ON CONFLICT(library_id, relative_path) DO UPDATE SET
+ON CONFLICT(library_id, generation, relative_path) DO UPDATE SET
+    materialized_seq = excluded.materialized_seq,
     entry_type = excluded.entry_type,
     absolute_path = excluded.absolute_path,
     name = excluded.name,
@@ -173,7 +189,8 @@ ON CONFLICT(library_id, relative_path) DO UPDATE SET
     mtime = excluded.mtime,
     depth = excluded.depth,
     indexed_at = excluded.indexed_at
-WHERE library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
+WHERE library_index_entries.materialized_seq IS DISTINCT FROM excluded.materialized_seq
+   OR library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
    OR library_index_entries.absolute_path IS DISTINCT FROM excluded.absolute_path
    OR library_index_entries.name IS DISTINCT FROM excluded.name
    OR library_index_entries.name_sort_key IS DISTINCT FROM excluded.name_sort_key
@@ -188,6 +205,8 @@ WHERE library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
 _BULK_INSERT_IGNORE_UNNEST_SQL = f"""
 INSERT INTO library_index_entries (
     library_id,
+    generation,
+    materialized_seq,
     entry_type,
     relative_path,
     absolute_path,
@@ -202,7 +221,7 @@ INSERT INTO library_index_entries (
     indexed_at
 )
 {_BULK_UNNEST_SOURCE_SQL}
-ON CONFLICT(library_id, relative_path) DO NOTHING
+ON CONFLICT(library_id, generation, relative_path) DO NOTHING
 """
 
 _REBUILD_STAGE_TABLE_NAME = "library_index_rebuild_stage"
@@ -210,6 +229,8 @@ _REBUILD_STAGE_TABLE_NAME = "library_index_rebuild_stage"
 _CREATE_REBUILD_STAGE_SQL = f"""
 CREATE TEMP TABLE {_REBUILD_STAGE_TABLE_NAME} (
     library_id TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 1,
+    materialized_seq BIGINT NOT NULL DEFAULT 0,
     entry_type TEXT NOT NULL,
     relative_path TEXT PRIMARY KEY,
     absolute_path TEXT NOT NULL,
@@ -228,6 +249,8 @@ CREATE TEMP TABLE {_REBUILD_STAGE_TABLE_NAME} (
 _REBUILD_STAGE_UPSERT_UNNEST_SQL = f"""
 INSERT INTO {_REBUILD_STAGE_TABLE_NAME} (
     library_id,
+    generation,
+    materialized_seq,
     entry_type,
     relative_path,
     absolute_path,
@@ -244,6 +267,8 @@ INSERT INTO {_REBUILD_STAGE_TABLE_NAME} (
 {_BULK_UNNEST_SOURCE_SQL}
 ON CONFLICT(relative_path) DO UPDATE SET
     library_id = excluded.library_id,
+    generation = excluded.generation,
+    materialized_seq = excluded.materialized_seq,
     entry_type = excluded.entry_type,
     absolute_path = excluded.absolute_path,
     name = excluded.name,
@@ -277,6 +302,8 @@ _REBUILD_STAGE_ANALYZE_SQL = f"ANALYZE {_REBUILD_STAGE_TABLE_NAME}"
 _REBUILD_STAGE_INSERT_NEW_CHUNK_SQL = f"""
 INSERT INTO library_index_entries (
     library_id,
+    generation,
+    materialized_seq,
     entry_type,
     relative_path,
     absolute_path,
@@ -292,6 +319,8 @@ INSERT INTO library_index_entries (
 )
 SELECT
     s.library_id,
+    s.generation,
+    s.materialized_seq,
     s.entry_type,
     s.relative_path,
     s.absolute_path,
@@ -310,17 +339,20 @@ WHERE s.library_id = :library_id
       SELECT 1
         FROM library_index_entries AS existing
        WHERE existing.library_id = s.library_id
+         AND existing.generation = s.generation
          AND existing.relative_path = s.relative_path
   )
 ORDER BY s.relative_path
 LIMIT :chunk_size
-ON CONFLICT(library_id, relative_path) DO NOTHING
+ON CONFLICT(library_id, generation, relative_path) DO NOTHING
 """
 
 _REBUILD_STAGE_UPDATE_CHANGED_CHUNK_SQL = f"""
 WITH changed AS (
     SELECT
         staged.library_id,
+        staged.generation,
+        staged.materialized_seq,
         staged.entry_type,
         staged.relative_path,
         staged.absolute_path,
@@ -336,11 +368,13 @@ WITH changed AS (
       FROM {_REBUILD_STAGE_TABLE_NAME} AS staged
       JOIN library_index_entries AS target
         ON target.library_id = staged.library_id
+       AND target.generation = staged.generation
        AND target.relative_path = staged.relative_path
      WHERE target.library_id = :library_id
        AND staged.library_id = :library_id
        AND (
-           target.entry_type IS DISTINCT FROM staged.entry_type
+           target.materialized_seq IS DISTINCT FROM staged.materialized_seq
+           OR target.entry_type IS DISTINCT FROM staged.entry_type
            OR target.absolute_path IS DISTINCT FROM staged.absolute_path
            OR target.name IS DISTINCT FROM staged.name
            OR target.name_sort_key IS DISTINCT FROM staged.name_sort_key
@@ -355,7 +389,8 @@ WITH changed AS (
      LIMIT :chunk_size
 )
 UPDATE library_index_entries AS target
-   SET entry_type = changed.entry_type,
+   SET materialized_seq = changed.materialized_seq,
+       entry_type = changed.entry_type,
        absolute_path = changed.absolute_path,
        name = changed.name,
        name_sort_key = changed.name_sort_key,
@@ -369,6 +404,7 @@ UPDATE library_index_entries AS target
   FROM changed
  WHERE target.library_id = :library_id
    AND changed.library_id = :library_id
+   AND target.generation = changed.generation
    AND target.relative_path = changed.relative_path
 """
 
@@ -378,10 +414,17 @@ DELETE FROM library_index_entries AS target
        SELECT stale.id
          FROM library_index_entries AS stale
         WHERE stale.library_id = :library_id
+          AND stale.generation = (
+              SELECT generation
+                FROM library_index_rebuild_stage
+               WHERE library_id = :library_id
+               LIMIT 1
+          )
           AND NOT EXISTS (
               SELECT 1
                 FROM {_REBUILD_STAGE_TABLE_NAME} AS staged
                WHERE staged.library_id = :library_id
+                 AND staged.generation = stale.generation
                  AND staged.relative_path = stale.relative_path
           )
         ORDER BY stale.id ASC
@@ -473,6 +516,7 @@ class SnapshotStore:
         *,
         relaxed_commit: bool = False,
         invalidate_children_total_cache: bool = True,
+        before_commit=None,
     ) -> Iterator[Session]:
         with get_resource_budget_service().acquire_sync("library_index_write", reason="library_index.write"):
             db = self._session_factory()
@@ -480,9 +524,14 @@ class SnapshotStore:
                 if relaxed_commit:
                     db.execute(text("SET LOCAL synchronous_commit = off"))
                 yield db
+                if before_commit is not None:
+                    before_commit(db)
                 db.commit()
                 if invalidate_children_total_cache:
                     self._invalidate_children_total_cache()
+                pending_broadcasts = db.info.pop("library_index_status_broadcasts", {})
+                for snapshot, reason in pending_broadcasts.values():
+                    self._broadcast_status_change(snapshot, reason=reason)
             except Exception:
                 db.rollback()
                 raise
@@ -502,8 +551,13 @@ class SnapshotStore:
         library_id: str,
         parent_path: Optional[str],
         entry_type: Optional[str],
+        active_generation: int,
+        view_revision: int,
     ) -> str:
-        return f"{library_id}\0{parent_path or ''}\0{entry_type or ''}"
+        return (
+            f"{library_id}\0{active_generation}\0{view_revision}\0"
+            f"{parent_path or ''}\0{entry_type or ''}"
+        )
 
     def _invalidate_children_total_cache(self, library_id: Optional[str] = None) -> None:
         if library_id:
@@ -519,13 +573,95 @@ class SnapshotStore:
         entry_type: Optional[str],
         q,
     ) -> int:
-        cache_key = self._children_total_cache_key(library_id, parent_path, entry_type)
+        status = db.query(
+            LibraryIndexStatus.active_generation,
+            LibraryIndexStatus.view_revision,
+        ).filter(LibraryIndexStatus.library_id == library_id).first()
+        cache_key = self._children_total_cache_key(
+            library_id,
+            parent_path,
+            entry_type,
+            int(getattr(status, "active_generation", 1) or 1),
+            int(getattr(status, "view_revision", 0) or 0),
+        )
         cached = self._children_total_cache.get(cache_key)
         if cached is not None:
             return int(cached)
         total = int(q.with_entities(func.count(LibraryIndexEntry.id)).scalar() or 0)
         self._children_total_cache.set(cache_key, total)
         return total
+
+    @staticmethod
+    def _active_view_query(db: Session, q, *, library_ids: Optional[Sequence[str]] = None):
+        """限制到 active generation/连续水位，并反连接所有生效 pending mask。"""
+        status = LibraryIndexStatus
+        mask = LibraryIndexPendingMask
+        q = q.join(status, status.library_id == LibraryIndexEntry.library_id).filter(
+            LibraryIndexEntry.generation == status.active_generation,
+            LibraryIndexEntry.materialized_seq <= status.materialized_seq,
+        )
+        if library_ids:
+            q = q.filter(LibraryIndexEntry.library_id.in_(list(library_ids)))
+        hidden = exists().where(
+            mask.library_id == LibraryIndexEntry.library_id,
+            or_(
+                and_(
+                    mask.scope == "exact",
+                    LibraryIndexEntry.relative_path == mask.relative_path,
+                ),
+                and_(
+                    mask.scope == "subtree",
+                    or_(
+                        mask.relative_path == "",
+                        LibraryIndexEntry.relative_path == mask.relative_path,
+                        and_(
+                            LibraryIndexEntry.relative_path >= mask.relative_path + "/",
+                            LibraryIndexEntry.relative_path < mask.relative_path + "0",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        return q.filter(~hidden)
+
+    @staticmethod
+    def _ensure_status_row(db: Session, library_id: str) -> LibraryIndexStatus:
+        """兼容旧写入口：generation-aware 读要求每个库存先有 active view。"""
+        row = (
+            db.query(LibraryIndexStatus)
+            .filter(LibraryIndexStatus.library_id == library_id)
+            .first()
+        )
+        if row is None:
+            row = LibraryIndexStatus(
+                library_id=library_id,
+                status="idle",
+                watcher_mode="disabled",
+                accepted_seq=0,
+                materialized_seq=0,
+                state_revision=0,
+                view_revision=0,
+                active_generation=1,
+                materializer_epoch=0,
+                catchup_state="idle",
+                updated_at=_now_ms(),
+            )
+            db.add(row)
+            db.flush()
+        return row
+
+    @classmethod
+    def _ensure_status_rows(cls, db: Session, library_ids: Iterable[str]) -> None:
+        normalized_ids = {
+            str(item or "").strip()
+            for item in library_ids
+            if str(item or "").strip()
+        }
+        for library_id in sorted(normalized_ids):
+            cls._ensure_status_row(db, library_id)
+
+    def apply_active_view(self, db: Session, q, *, library_ids: Optional[Sequence[str]] = None):
+        return self._active_view_query(db, q, library_ids=library_ids)
 
     @staticmethod
     def _encode_direct_child_page_cursor(
@@ -661,10 +797,16 @@ class SnapshotStore:
     # ========== Entry 写入 ==========
 
     def upsert(self, entry: IndexEntry) -> None:
-        """写入或更新一行索引，(library_id, relative_path) 作为自然主键。"""
+        """写入或更新一行索引，(library_id, generation, relative_path) 作为自然主键。"""
         with self._write_session() as db:
             entry = _database_safe_entry(entry)
-            old = self._get_existing_stats_map(db, entry.library_id, [entry.relative_path])
+            self._ensure_status_row(db, entry.library_id)
+            old = self._get_existing_stats_map(
+                db,
+                entry.library_id,
+                [entry.relative_path],
+                generation=max(1, int(entry.generation or 1)),
+            )
             old_size, old_folders = old.get(entry.relative_path, (0, 0))
             new_size, new_folders = self._entry_stats(entry)
             ancestor_deltas = self._build_bulk_upsert_ancestor_deltas(db, [entry])
@@ -687,6 +829,7 @@ class SnapshotStore:
         maintain_parent_dir_stats: bool = False,
         insert_only: bool = False,
         relaxed_commit: bool = False,
+        before_commit=None,
     ) -> int:
         """批量写入 / 更新，返回实际写入条数。
 
@@ -694,17 +837,27 @@ class SnapshotStore:
         全量首建可传 insert_only=True，空库首次导入时少走 UPDATE 分支。
         异常环境下回退 `_upsert_one()`，保证用户现场可用。
         """
-        deduped: dict[tuple[str, str], IndexEntry] = {}
+        deduped: dict[tuple[str, int, str], IndexEntry] = {}
         for item in entries:
             safe_item = _database_safe_entry(item)
-            deduped[(safe_item.library_id, safe_item.relative_path)] = safe_item
+            deduped[
+                (
+                    safe_item.library_id,
+                    max(1, int(safe_item.generation or 1)),
+                    safe_item.relative_path,
+                )
+            ] = safe_item
         if not deduped:
             return 0
 
         chunk_size = max(1, int(chunk_size or DEFAULT_BULK_UPSERT_CHUNK_SIZE))
         payload = list(deduped.values())
         try:
-            with self._write_session(relaxed_commit=relaxed_commit) as db:
+            with self._write_session(
+                relaxed_commit=relaxed_commit,
+                before_commit=before_commit,
+            ) as db:
+                self._ensure_status_rows(db, (entry.library_id for entry in payload))
                 affected_total = 0
                 deltas = (
                     self._build_bulk_upsert_status_deltas(db, payload, insert_only=insert_only)
@@ -737,7 +890,11 @@ class SnapshotStore:
             logger.warning("[索引] 原生批量 UPSERT 失败，回退逐条写入", exc_info=True)
 
         written = 0
-        with self._write_session(relaxed_commit=relaxed_commit) as db:
+        with self._write_session(
+            relaxed_commit=relaxed_commit,
+            before_commit=before_commit,
+        ) as db:
+            self._ensure_status_rows(db, (entry.library_id for entry in payload))
             deltas = (
                 self._build_bulk_upsert_status_deltas(db, payload, insert_only=insert_only)
                 if maintain_status_stats else {}
@@ -752,6 +909,7 @@ class SnapshotStore:
                         db.query(LibraryIndexEntry.id)
                         .filter(
                             LibraryIndexEntry.library_id == item.library_id,
+                            LibraryIndexEntry.generation == max(1, int(item.generation or 1)),
                             LibraryIndexEntry.relative_path == item.relative_path,
                         )
                         .first()
@@ -791,6 +949,7 @@ class SnapshotStore:
             db.query(LibraryIndexEntry)
             .filter(
                 LibraryIndexEntry.library_id == entry.library_id,
+                LibraryIndexEntry.generation == max(1, int(entry.generation or 1)),
                 LibraryIndexEntry.relative_path == entry.relative_path,
             )
             .first()
@@ -799,6 +958,8 @@ class SnapshotStore:
         if row is None:
             row = LibraryIndexEntry(
                 library_id=entry.library_id,
+                generation=max(1, int(entry.generation or 1)),
+                materialized_seq=max(0, int(entry.materialized_seq or 0)),
                 entry_type=entry.entry_type,
                 relative_path=entry.relative_path,
                 absolute_path=entry.absolute_path,
@@ -817,6 +978,8 @@ class SnapshotStore:
         else:
             if not self._row_differs_from_entry(row, entry):
                 return False
+            row.generation = max(1, int(entry.generation or 1))
+            row.materialized_seq = max(0, int(entry.materialized_seq or 0))
             row.entry_type = entry.entry_type
             row.absolute_path = entry.absolute_path
             row.name = entry.name
@@ -833,7 +996,9 @@ class SnapshotStore:
     @staticmethod
     def _row_differs_from_entry(row: LibraryIndexEntry, entry: IndexEntry) -> bool:
         return (
-            row.entry_type != entry.entry_type
+            int(row.generation or 1) != max(1, int(entry.generation or 1))
+            or int(row.materialized_seq or 0) != max(0, int(entry.materialized_seq or 0))
+            or row.entry_type != entry.entry_type
             or row.absolute_path != entry.absolute_path
             or row.name != entry.name
             or row.name_sort_key != library_index_name_sort_key(entry.name)
@@ -849,6 +1014,8 @@ class SnapshotStore:
     def _entry_to_upsert_params(entry: IndexEntry) -> dict:
         return {
             "library_id": entry.library_id,
+            "generation": max(1, int(entry.generation or 1)),
+            "materialized_seq": max(0, int(entry.materialized_seq or 0)),
             "entry_type": entry.entry_type,
             "relative_path": entry.relative_path,
             "absolute_path": entry.absolute_path,
@@ -868,6 +1035,8 @@ class SnapshotStore:
         rows = [cls._entry_to_upsert_params(entry) for entry in entries]
         return {
             "library_ids": [row["library_id"] for row in rows],
+            "generations": [row["generation"] for row in rows],
+            "materialized_seqs": [row["materialized_seq"] for row in rows],
             "entry_types": [row["entry_type"] for row in rows],
             "relative_paths": [row["relative_path"] for row in rows],
             "absolute_paths": [row["absolute_path"] for row in rows],
@@ -924,6 +1093,8 @@ class SnapshotStore:
         db: Session,
         library_id: str,
         relative_paths: Iterable[str],
+        *,
+        generation: int = 1,
     ) -> dict[str, tuple[int, int]]:
         paths = list(dict.fromkeys(relative_paths))
         if not paths:
@@ -940,6 +1111,7 @@ class SnapshotStore:
                 )
                 .filter(
                     LibraryIndexEntry.library_id == library_id,
+                    LibraryIndexEntry.generation == max(1, int(generation or 1)),
                     LibraryIndexEntry.relative_path.in_(paths[i:i + chunk_size]),
                 )
                 .all()
@@ -958,6 +1130,8 @@ class SnapshotStore:
         db: Session,
         library_id: str,
         relative_paths: Iterable[str],
+        *,
+        generation: int = 1,
     ) -> dict[str, tuple[int, int]]:
         paths = list(dict.fromkeys(relative_paths))
         if not paths:
@@ -973,6 +1147,7 @@ class SnapshotStore:
                 )
                 .filter(
                     LibraryIndexEntry.library_id == library_id,
+                    LibraryIndexEntry.generation == max(1, int(generation or 1)),
                     LibraryIndexEntry.relative_path.in_(paths[i:i + chunk_size]),
                 )
                 .all()
@@ -997,10 +1172,15 @@ class SnapshotStore:
 
         deltas: dict[str, dict[str, int]] = {}
         for library_id, items in by_library.items():
+            generations = {max(1, int(item.generation or 1)) for item in items}
+            if len(generations) != 1:
+                raise ValueError("同一库存批量状态统计不能混合多个 generation")
+            generation = generations.pop()
             old = self._get_existing_stats_map(
                 db,
                 library_id,
                 [item.relative_path for item in items],
+                generation=generation,
             )
             size_delta = 0
             folder_delta = 0
@@ -1035,6 +1215,10 @@ class SnapshotStore:
 
         deltas: dict[str, dict[str, dict[str, int]]] = {}
         for library_id, items in by_library.items():
+            generations = {max(1, int(item.generation or 1)) for item in items}
+            if len(generations) != 1:
+                raise ValueError("同一库存祖先聚合不能混合多个 generation")
+            generation = generations.pop()
             file_items = [item for item in items if item.entry_type == 'file']
             if not file_items:
                 continue
@@ -1042,6 +1226,7 @@ class SnapshotStore:
                 db,
                 library_id,
                 [item.relative_path for item in file_items],
+                generation=generation,
             )
             for item in file_items:
                 if insert_only and item.relative_path in old:
@@ -1133,7 +1318,11 @@ class SnapshotStore:
         row.total_entries = max(0, int(row.total_entries or 0) + int(entry_delta or 0))
         row.updated_at = _now_ms()
         db.flush()
-        self._broadcast_status_change(self._row_to_status(row), reason="library_index_delta")
+        self._queue_status_broadcast(
+            db,
+            self._row_to_status(row),
+            reason="library_index_delta",
+        )
 
     def _flush_status_deltas(
         self,
@@ -2099,7 +2288,7 @@ class SnapshotStore:
             if not scope_ids:
                 scope_ids = None
         def _query_rows(db: Session) -> list[LibraryIndexEntry]:
-            q = db.query(LibraryIndexEntry)
+            q = self._active_view_query(db, db.query(LibraryIndexEntry), library_ids=scope_ids)
             filters = [LibraryIndexEntry.rjcode == normalized_rjcode]
             if scope_ids:
                 if len(scope_ids) == 1:
@@ -2156,7 +2345,16 @@ class SnapshotStore:
         if entry_type:
             filters.append(LibraryIndexEntry.entry_type == entry_type)
         with self._write_session(invalidate_children_total_cache=False) as db:
-            rows = db.query(LibraryIndexEntry).filter(*filters).limit(limit).all()
+            rows = (
+                self._active_view_query(
+                    db,
+                    db.query(LibraryIndexEntry),
+                    library_ids=scope_ids,
+                )
+                .filter(*filters)
+                .limit(limit)
+                .all()
+            )
             repaired = 0
             for row in rows:
                 haystack = " ".join([
@@ -2228,7 +2426,11 @@ class SnapshotStore:
         # 才能用单个 GIN trigram 索引覆盖 name/path/rjcode/parent_path 的模糊搜索。
         escaped = name_like.replace('!', '!!').replace('%', '!%').replace('_', '!_')
         pattern = f"%{escaped}%"
-        q = db.query(LibraryIndexEntry).filter(
+        q = self._active_view_query(
+            db,
+            db.query(LibraryIndexEntry),
+            library_ids=scope_ids,
+        ).filter(
             text(
                 """
                 (COALESCE(name, '') || ' ' ||
@@ -2274,7 +2476,11 @@ class SnapshotStore:
     ) -> list[IndexEntry]:
         # 短 RJ 前缀（RJ / RJ12 / 123456）用 text_pattern_ops btree，避免
         # trigram 在短 pattern 上退化成几十万行顺序扫。
-        q = db.query(LibraryIndexEntry).filter(
+        q = self._active_view_query(
+            db,
+            db.query(LibraryIndexEntry),
+            library_ids=scope_ids,
+        ).filter(
             LibraryIndexEntry.rjcode.like(f"{rj_prefix}%")
         )
         if scope_ids:
@@ -2335,7 +2541,11 @@ class SnapshotStore:
         走 offset 兼容老分页。
         """
         with self._read_session() as db:
-            q = db.query(LibraryIndexEntry).filter(
+            q = self._active_view_query(
+                db,
+                db.query(LibraryIndexEntry),
+                library_ids=[library_id],
+            ).filter(
                 LibraryIndexEntry.library_id == library_id,
                 LibraryIndexEntry.parent_path == (parent_path or ''),
             )
@@ -2418,7 +2628,11 @@ class SnapshotStore:
     ) -> list[IndexEntry]:
         normalized_path = str(relative_path or "").strip().strip("/")
         with self._read_session() as db:
-            q = db.query(LibraryIndexEntry).filter(
+            q = self._active_view_query(
+                db,
+                db.query(LibraryIndexEntry),
+                library_ids=[library_id],
+            ).filter(
                 LibraryIndexEntry.library_id == library_id,
             )
             if normalized_path:
@@ -2444,7 +2658,11 @@ class SnapshotStore:
     def get_entry(self, library_id: str, relative_path: str) -> Optional[IndexEntry]:
         with self._read_session() as db:
             row = (
-                db.query(LibraryIndexEntry)
+                self._active_view_query(
+                    db,
+                    db.query(LibraryIndexEntry),
+                    library_ids=[library_id],
+                )
                 .filter(
                     LibraryIndexEntry.library_id == library_id,
                     LibraryIndexEntry.relative_path == relative_path,
@@ -2457,7 +2675,11 @@ class SnapshotStore:
         """库存所有文件条目的总大小（字节）。目录行不累加，避免重复计数。"""
         with self._read_session() as db:
             total = (
-                db.query(func.coalesce(func.sum(LibraryIndexEntry.size), 0))
+                self._active_view_query(
+                    db,
+                    db.query(func.coalesce(func.sum(LibraryIndexEntry.size), 0)),
+                    library_ids=[library_id],
+                )
                 .filter(
                     LibraryIndexEntry.library_id == library_id,
                     LibraryIndexEntry.entry_type == 'file',
@@ -2493,7 +2715,11 @@ class SnapshotStore:
     def calculate_library_stats(self, library_id: str) -> dict[str, int]:
         """从 entries 表实时重算库存聚合，用于恢复中断的全量同步状态。"""
         with self._read_session() as db:
-            q = db.query(LibraryIndexEntry).filter(
+            q = self._active_view_query(
+                db,
+                db.query(LibraryIndexEntry),
+                library_ids=[library_id],
+            ).filter(
                 LibraryIndexEntry.library_id == library_id,
             )
             total_size, folder_count, entry_count, _file_count = self._query_stats_delta(q)
@@ -2514,6 +2740,11 @@ class SnapshotStore:
         if not normalized_paths:
             return {}
         with self._read_session() as db:
+            status = db.query(LibraryIndexStatus).filter(
+                LibraryIndexStatus.library_id == library_id
+            ).first()
+            if status is None:
+                return {path: 0 for path in normalized_paths}
             rows = db.execute(
                 text(
                     f"""
@@ -2527,15 +2758,33 @@ class SnapshotStore:
                       FROM roots
                  LEFT JOIN library_index_entries AS e
                         ON e.library_id = :library_id
+                       AND e.generation = :active_generation
+                       AND e.materialized_seq <= :materialized_seq
                        AND e.entry_type = 'dir'
                        AND e.relative_path >= roots.relative_path || '/'
                        AND e.relative_path < roots.relative_path || '0'
+                       AND NOT EXISTS (
+                           SELECT 1
+                             FROM library_index_pending_masks AS mask
+                            WHERE mask.library_id = e.library_id
+                              AND (
+                                  (mask.scope = 'exact' AND e.relative_path = mask.relative_path)
+                                  OR (mask.scope = 'subtree' AND (
+                                      mask.relative_path = ''
+                                      OR e.relative_path = mask.relative_path
+                                      OR (e.relative_path >= mask.relative_path || '/'
+                                          AND e.relative_path < mask.relative_path || '0')
+                                  ))
+                              )
+                       )
                      GROUP BY roots.relative_path
                     """
                 )
                 ,
                 {
                     "library_id": library_id,
+                    "active_generation": int(status.active_generation or 1),
+                    "materialized_seq": int(status.materialized_seq or 0),
                     "paths": json.dumps([{"relative_path": path} for path in normalized_paths], ensure_ascii=False),
                 },
             ).mappings()
@@ -2552,6 +2801,14 @@ class SnapshotStore:
         if not normalized_paths:
             return {}
         with self._read_session() as db:
+            status = db.query(LibraryIndexStatus).filter(
+                LibraryIndexStatus.library_id == library_id
+            ).first()
+            if status is None:
+                return {
+                    path: {"total_size": 0, "file_count": 0}
+                    for path in normalized_paths
+                }
             rows = db.execute(
                 text(
                     """
@@ -2566,14 +2823,32 @@ class SnapshotStore:
                       FROM roots
                  LEFT JOIN library_index_entries AS e
                         ON e.library_id = :library_id
+                       AND e.generation = :active_generation
+                       AND e.materialized_seq <= :materialized_seq
                        AND e.entry_type = 'file'
                        AND e.relative_path >= roots.relative_path || '/'
                        AND e.relative_path < roots.relative_path || '0'
+                       AND NOT EXISTS (
+                           SELECT 1
+                             FROM library_index_pending_masks AS mask
+                            WHERE mask.library_id = e.library_id
+                              AND (
+                                  (mask.scope = 'exact' AND e.relative_path = mask.relative_path)
+                                  OR (mask.scope = 'subtree' AND (
+                                      mask.relative_path = ''
+                                      OR e.relative_path = mask.relative_path
+                                      OR (e.relative_path >= mask.relative_path || '/'
+                                          AND e.relative_path < mask.relative_path || '0')
+                                  ))
+                              )
+                       )
                      GROUP BY roots.relative_path
                     """
                 ),
                 {
                     "library_id": library_id,
+                    "active_generation": int(status.active_generation or 1),
+                    "materialized_seq": int(status.materialized_seq or 0),
                     "paths": json.dumps([{"relative_path": path} for path in normalized_paths], ensure_ascii=False),
                 },
             ).mappings()
@@ -2592,7 +2867,11 @@ class SnapshotStore:
         entry_type: Optional[str] = None,
     ) -> int:
         with self._read_session() as db:
-            q = db.query(func.count(LibraryIndexEntry.id)).filter(
+            q = self._active_view_query(
+                db,
+                db.query(func.count(LibraryIndexEntry.id)),
+                library_ids=[library_id],
+            ).filter(
                 LibraryIndexEntry.library_id == library_id,
             )
             if entry_type:
@@ -2607,7 +2886,11 @@ class SnapshotStore:
     ) -> bool:
         """判断某个库存是否已有索引行；重建前只需要存在性，不做 count(*)。"""
         with self._read_session() as db:
-            q = db.query(LibraryIndexEntry.id).filter(
+            q = self._active_view_query(
+                db,
+                db.query(LibraryIndexEntry.id),
+                library_ids=[library_id],
+            ).filter(
                 LibraryIndexEntry.library_id == library_id,
             )
             if entry_type:
@@ -2622,7 +2905,7 @@ class SnapshotStore:
         """
         with self._read_session() as db:
             return (
-                db.query(LibraryIndexEntry.id)
+                self._active_view_query(db, db.query(LibraryIndexEntry.id))
                 .limit(1)
                 .first()
                 is not None
@@ -2694,7 +2977,11 @@ class SnapshotStore:
                 row.updated_at = now
             db.flush()
             snapshot = self._row_to_status(row)
-            self._broadcast_status_change(snapshot, reason="library_index_status")
+            self._queue_status_broadcast(
+                db,
+                snapshot,
+                reason="library_index_status",
+            )
         return snapshot
 
     def delete_status(self, library_id: str) -> int:
@@ -2835,6 +3122,8 @@ class SnapshotStore:
             mtime=row.mtime,
             depth=row.depth,
             indexed_at=int(row.indexed_at or 0),
+            generation=int(row.generation or 1),
+            materialized_seq=int(row.materialized_seq or 0),
         )
 
     @staticmethod
@@ -2852,6 +3141,8 @@ class SnapshotStore:
             mtime=row["mtime"],
             depth=row["depth"],
             indexed_at=int(row["indexed_at"] or 0),
+            generation=int(row.get("generation", 1) or 1),
+            materialized_seq=int(row.get("materialized_seq", 0) or 0),
         )
 
     @staticmethod
@@ -2878,7 +3169,29 @@ class SnapshotStore:
             folder_count=int(row.folder_count or 0),
             error=row.error,
             updated_at=int(row.updated_at or 0),
+            accepted_seq=int(row.accepted_seq or 0),
+            materialized_seq=int(row.materialized_seq or 0),
+            state_revision=int(row.state_revision or 0),
+            view_revision=int(row.view_revision or 0),
+            active_generation=int(row.active_generation or 1),
+            building_generation=(
+                int(row.building_generation) if row.building_generation is not None else None
+            ),
+            catchup_state=str(row.catchup_state or "idle"),
+            last_operation_id=row.last_operation_id,
+            materializer_owner=row.materializer_owner,
+            materializer_lease_until=(
+                row.materializer_lease_until.isoformat() if row.materializer_lease_until else None
+            ),
+            materializer_epoch=int(row.materializer_epoch or 0),
+            blocked_seq=int(row.blocked_seq) if row.blocked_seq is not None else None,
+            catchup_error=row.catchup_error,
         )
+
+    @staticmethod
+    def _queue_status_broadcast(db: Session, status: IndexStatus, *, reason: str) -> None:
+        pending = db.info.setdefault("library_index_status_broadcasts", {})
+        pending[status.library_id] = (status, reason)
 
     @staticmethod
     def _broadcast_status_change(status: IndexStatus, *, reason: str) -> None:

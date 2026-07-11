@@ -26,6 +26,12 @@
 """
 
 from .local_scanner import LocalScanner
+from .mutation_service import (
+    LibraryIndexMutationService,
+    get_library_index_mutation_service,
+    start_library_index_mutation_service,
+    stop_library_index_mutation_service,
+)
 from .remote_scanner import RemoteScanner
 from .service import LibraryIndexService, get_library_index_service
 from .snapshot_store import SnapshotStore, get_snapshot_store
@@ -38,6 +44,11 @@ from .types import (
     WatcherEventKind,
     WatcherMode,
 )
+from .watcher_driver import (
+    get_library_index_watcher_driver,
+    start_library_index_watcher_driver,
+    stop_library_index_watcher_driver,
+)
 
 __all__ = [
     'EntryType',
@@ -45,6 +56,7 @@ __all__ = [
     'IndexStatus',
     'IndexStatusName',
     'LibraryIndexService',
+    'LibraryIndexMutationService',
     'LocalScanner',
     'RemoteScanner',
     'SnapshotStore',
@@ -52,5 +64,11 @@ __all__ = [
     'WatcherEventKind',
     'WatcherMode',
     'get_library_index_service',
+    'get_library_index_mutation_service',
+    'get_library_index_watcher_driver',
     'get_snapshot_store',
+    'start_library_index_mutation_service',
+    'start_library_index_watcher_driver',
+    'stop_library_index_mutation_service',
+    'stop_library_index_watcher_driver',
 ]

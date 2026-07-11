@@ -28,8 +28,9 @@ class _RuntimeConfig:
 
 
 class _FakeJsonRequest:
-    def __init__(self, payload):
+    def __init__(self, payload, *, headers=None):
         self._payload = payload
+        self.headers = headers or {}
 
     async def json(self):
         return self._payload
@@ -298,9 +299,37 @@ def test_local_inventory_reads_prefer_usable_index_snapshot(monkeypatch, tmp_pat
 
     manager = object.__new__(library_manager_module.LibraryManager)
     manager._size_cache = {}
+    ledger_effects = []
+
+    class FakeMutationService:
+        def prepare(self, **kwargs):
+            ledger_effects.extend(kwargs["effects_by_library"][library.id])
+            return SimpleNamespace(
+                operation_id="inventory-read-operation",
+                replayed=False,
+                state="prepared",
+                result=None,
+            )
+
+        def mark_filesystem_started(self, _operation_id):
+            return None
+
+        def finalize(self, _operation_id, **kwargs):
+            for effect in kwargs["actual_effects_by_library"].get(library.id, []):
+                if effect["kind"] != "delete":
+                    continue
+                relative_path = effect["relative_path"]
+                for key in list(entries):
+                    if key == relative_path or (
+                        effect["scope"] == "subtree" and key.startswith(relative_path + "/")
+                    ):
+                        entries.pop(key, None)
+            return kwargs["actual_result"]
+
     monkeypatch.setattr(manager, "get_library_definition", lambda _library_id: library)
     monkeypatch.setattr(manager, "_append_stats_log", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(library_index_module, "get_library_index_service", lambda: FakeIndexService())
+    monkeypatch.setattr(library_index_module, "get_library_index_mutation_service", lambda: FakeMutationService())
 
     list_result = manager._list_local_files(
         library,
@@ -424,8 +453,14 @@ def test_local_inventory_reads_prefer_usable_index_snapshot(monkeypatch, tmp_pat
         "RJ01000001/subtitles/track.vtt",
     ]
 
+    ledger_effects.clear()
     delete_result = manager._local_delete(library, str(circle_dir / "cover.jpg"), confirmed=True)
     assert delete_result["message"] == "删除成功"
+    assert ledger_effects == [{
+        "kind": "delete",
+        "relative_path": "Circle/cover.jpg",
+        "scope": "exact",
+    }]
     assert "Circle/cover.jpg" not in entries
     folders_after_delete = asyncio.run(manager.list_local_folders_only(library.id, str(circle_dir), include_files=True))
     assert folders_after_delete.get("browse_via_index") is True
@@ -806,7 +841,7 @@ def test_notify_index_move_batch_filters_workbench_subtitles_but_indexes_audio(m
     subtitle_dir.mkdir(parents=True)
 
     manager = object.__new__(library_manager_module.LibraryManager)
-    submitted_moves = []
+    captured = {}
     monkeypatch.setattr(
         manager,
         "get_library_definition",
@@ -819,15 +854,19 @@ def test_notify_index_move_batch_filters_workbench_subtitles_but_indexes_audio(m
         ),
     )
 
-    class FakeIndexService:
-        def is_ready(self, library_id):
-            return library_id == "local-a"
+    class FakeMutationService:
+        def prepare(self, **kwargs):
+            captured["prepare"] = kwargs
+            return SimpleNamespace(operation_id="subtitle-move-operation")
 
-        def handle_self_mutation_move_many(self, moves):
-            submitted_moves.extend(moves)
-            return [1 for _ in moves]
+        def mark_filesystem_started(self, operation_id):
+            captured["filesystem_started"] = operation_id
 
-    monkeypatch.setattr(library_index_module, "get_library_index_service", lambda: FakeIndexService())
+        def finalize(self, operation_id, **kwargs):
+            captured["finalize"] = {"operation_id": operation_id, **kwargs}
+            return kwargs["actual_result"]
+
+    monkeypatch.setattr(library_index_module, "get_library_index_mutation_service", lambda: FakeMutationService())
     result = manager.notify_index_move_batch("local-a", [
         {
             "source": str(work_dir / "old.wav"),
@@ -845,14 +884,21 @@ def test_notify_index_move_batch_filters_workbench_subtitles_but_indexes_audio(m
     assert result["queued_count"] == 0
     assert result["filtered_count"] == 1
     assert result["total_count"] == 2
-    assert submitted_moves == [{
-        "source_library_id": "local-a",
-        "target_library_id": "local-a",
-        "old_relative_path": "RJ01000001/old.wav",
-        "new_relative_path": "RJ01000001/new.wav",
-        "old_absolute_path": str(work_dir / "old.wav"),
-        "new_absolute_path": str(work_dir / "new.wav"),
-    }]
+    assert captured["filesystem_started"] == "subtitle-move-operation"
+    assert captured["finalize"]["actual_effects_by_library"]["local-a"] == [
+        {
+            "kind": "move",
+            "relative_path": "RJ01000001/old.wav",
+            "scope": "exact",
+            "target_library_id": "local-a",
+            "target_path": "RJ01000001/new.wav",
+        },
+        {
+            "kind": "reconcile",
+            "relative_path": "RJ01000001/new.wav",
+            "scope": "exact",
+        },
+    ]
 
 
 def test_local_move_preview_allows_same_name_folder_merge(monkeypatch, tmp_path):
@@ -989,10 +1035,17 @@ def test_subtitle_manual_match_rename_can_skip_index_mutation(monkeypatch):
     assert captured["sync_index_mutation"] is False
 
 
-def test_library_browser_rename_syncs_index_by_default(monkeypatch):
+def test_library_browser_rename_uses_mutation_fence_by_default(monkeypatch):
     captured = {}
 
     class FakeLibraryManager:
+        def get_library_definition(self, library_id):
+            return SimpleNamespace(
+                id=library_id,
+                type="local",
+                root_path="/library",
+            )
+
         async def rename(self, library_id, path, new_name, *, skip_index_mutation=False, sync_index_mutation=False):
             captured["library_id"] = library_id
             captured["path"] = path
@@ -1001,21 +1054,64 @@ def test_library_browser_rename_syncs_index_by_default(monkeypatch):
             captured["sync_index_mutation"] = sync_index_mutation
             return {"message": "重命名成功", "new_path": path.replace("old", "new")}
 
+    class FakeMutationService:
+        def prepare(self, **kwargs):
+            captured["prepare"] = kwargs
+            return SimpleNamespace(
+                operation_id="rename-operation",
+                replayed=False,
+                state="prepared",
+                result=None,
+            )
+
+        def mark_filesystem_started(self, operation_id):
+            captured["filesystem_started"] = operation_id
+
+        def finalize(self, operation_id, **kwargs):
+            captured["finalize"] = {"operation_id": operation_id, **kwargs}
+            return {
+                **kwargs["actual_result"],
+                "operation_id": operation_id,
+                "operation_state": "committed",
+                "index_fences": [{"library_id": "local-a", "accepted_seq": 1}],
+            }
+
     monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
+    monkeypatch.setattr(routes_module, "get_library_index_mutation_service", lambda: FakeMutationService())
     monkeypatch.setattr("app.core.activity_log_service.log_api_rename_action", lambda **_kwargs: None)
 
     response = asyncio.run(
-        routes_module.rename_library_browser_item(_FakeJsonRequest({
-            "library_id": "local-a",
-            "path": "/library/work/old",
-            "new_name": "new",
-            "skip_activity_log": True,
-        }))
+        routes_module.rename_library_browser_item(_FakeJsonRequest(
+            {
+                "library_id": "local-a",
+                "path": "/library/work/old",
+                "new_name": "new",
+                "skip_activity_log": True,
+            },
+            headers={"Idempotency-Key": "rename-key"},
+        ))
     )
 
     assert response["new_path"] == "/library/work/new"
-    assert captured["skip_index_mutation"] is False
-    assert captured["sync_index_mutation"] is True
+    assert response["operation_state"] == "committed"
+    assert captured["filesystem_started"] == "rename-operation"
+    assert captured["skip_index_mutation"] is True
+    assert captured["sync_index_mutation"] is False
+    assert captured["prepare"]["idempotency_key"] == "rename-key"
+    assert captured["finalize"]["actual_effects_by_library"]["local-a"] == [
+        {
+            "kind": "move",
+            "relative_path": "work/old",
+            "scope": "exact",
+            "target_library_id": "local-a",
+            "target_path": "work/new",
+        },
+        {
+            "kind": "reconcile",
+            "relative_path": "work/new",
+            "scope": "exact",
+        },
+    ]
 
 
 def test_subtitle_manual_match_batch_rename_can_skip_index_mutation(monkeypatch):
@@ -1063,6 +1159,13 @@ def test_library_browser_batch_rename_syncs_index_by_default(monkeypatch):
     captured = {}
 
     class FakeLibraryManager:
+        def get_library_definition(self, library_id):
+            return SimpleNamespace(
+                id=library_id,
+                type="local",
+                root_path="/library",
+            )
+
         async def batch_rename(self, library_id, items, *, skip_index_mutation=False, sync_index_mutation=False):
             captured["library_id"] = library_id
             captured["items"] = items
@@ -1082,21 +1185,141 @@ def test_library_browser_batch_rename_syncs_index_by_default(monkeypatch):
                 "failed": [],
             }
 
+    class FakeMutationService:
+        def prepare(self, **kwargs):
+            captured["prepare"] = kwargs
+            return SimpleNamespace(
+                operation_id="batch-rename-operation",
+                replayed=False,
+                state="prepared",
+                result=None,
+            )
+
+        def mark_filesystem_started(self, operation_id):
+            captured["filesystem_started"] = operation_id
+
+        def finalize(self, operation_id, **kwargs):
+            captured["finalize"] = {"operation_id": operation_id, **kwargs}
+            return {
+                **kwargs["actual_result"],
+                "operation_id": operation_id,
+                "operation_state": "committed",
+                "index_fences": [{"library_id": "local-a", "accepted_seq": 1}],
+            }
+
     monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
+    monkeypatch.setattr(routes_module, "get_library_index_mutation_service", lambda: FakeMutationService())
     monkeypatch.setattr("app.core.activity_log_service.log_api_rename_action", lambda **_kwargs: None)
     monkeypatch.setattr("app.core.activity_log_service.log_batch_manual_rename_result", lambda **_kwargs: None)
 
     response = asyncio.run(
-        routes_module.batch_rename_library_browser_items(_FakeJsonRequest({
-            "library_id": "local-a",
-            "items": [{"path": "/library/work/old", "new_name": "new", "current_name": "old"}],
-            "skip_activity_log": True,
-        }))
+        routes_module.batch_rename_library_browser_items(_FakeJsonRequest(
+            {
+                "library_id": "local-a",
+                "items": [{"path": "/library/work/old", "new_name": "new", "current_name": "old"}],
+                "skip_activity_log": True,
+            },
+            headers={"Idempotency-Key": "batch-rename-key"},
+        ))
     )
 
     assert response["success_count"] == 1
-    assert captured["skip_index_mutation"] is False
-    assert captured["sync_index_mutation"] is True
+    assert response["operation_state"] == "committed"
+    assert captured["filesystem_started"] == "batch-rename-operation"
+    assert captured["skip_index_mutation"] is True
+    assert captured["sync_index_mutation"] is False
+    assert captured["prepare"]["idempotency_key"] == "batch-rename-key"
+    assert captured["finalize"]["actual_effects_by_library"]["local-a"] == [
+        {
+            "kind": "move",
+            "relative_path": "work/old",
+            "scope": "exact",
+            "target_library_id": "local-a",
+            "target_path": "work/new",
+        },
+        {
+            "kind": "reconcile",
+            "relative_path": "work/new",
+            "scope": "exact",
+        },
+    ]
+
+
+def test_cross_library_batch_delete_fence_contains_only_success_targets(monkeypatch):
+    captured = {}
+
+    class FakeLibraryManager:
+        def get_library_definition(self, library_id):
+            return SimpleNamespace(
+                id=library_id,
+                type="local",
+                root_path=f"/library/{library_id}",
+            )
+
+        async def batch_delete_targets(self, targets, confirmed=False, *, skip_index_mutation=False):
+            captured["skip_index_mutation"] = skip_index_mutation
+            return {
+                "message": "批量删除完成",
+                "success_count": 1,
+                "success_paths": [{"library_id": "library-a", "path": "/library/library-a/ok"}],
+                "failed_paths": [{
+                    "library_id": "library-b",
+                    "path": "/library/library-b/failed",
+                    "error": "locked",
+                }],
+            }
+
+    class FakeMutationService:
+        def prepare(self, **kwargs):
+            captured["prepare"] = kwargs
+            return SimpleNamespace(
+                operation_id="batch-delete-operation",
+                replayed=False,
+                state="prepared",
+                result=None,
+            )
+
+        def mark_filesystem_started(self, operation_id):
+            captured["filesystem_started"] = operation_id
+
+        def finalize(self, operation_id, **kwargs):
+            captured["finalize"] = {"operation_id": operation_id, **kwargs}
+            return {
+                **kwargs["actual_result"],
+                "operation_id": operation_id,
+                "operation_state": "committed",
+                "index_fences": [{"library_id": "library-a", "accepted_seq": 1}],
+            }
+
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
+    monkeypatch.setattr(routes_module, "get_library_index_mutation_service", lambda: FakeMutationService())
+
+    response = asyncio.run(
+        routes_module.batch_delete_library_browser_targets(_FakeJsonRequest(
+            {
+                "confirmed": True,
+                "skip_activity_log": True,
+                "targets": [
+                    {"library_id": "library-a", "path": "/library/library-a/ok"},
+                    {"library_id": "library-b", "path": "/library/library-b/failed"},
+                ],
+            },
+            headers={"Idempotency-Key": "cross-delete-key"},
+        ))
+    )
+
+    assert response["operation_state"] == "committed"
+    assert captured["filesystem_started"] == "batch-delete-operation"
+    assert captured["skip_index_mutation"] is True
+    assert captured["prepare"]["idempotency_key"] == "cross-delete-key"
+    assert set(captured["prepare"]["effects_by_library"]) == {"library-a", "library-b"}
+    assert captured["finalize"]["actual_effects_by_library"] == {
+        "library-a": [{
+            "kind": "delete",
+            "relative_path": "ok",
+            "scope": "exact",
+        }],
+    }
 
 
 def test_api_rename_locks_metadata_to_target_folder_rjcode(monkeypatch):
@@ -1197,6 +1420,104 @@ def test_api_rename_locks_metadata_to_target_folder_rjcode(monkeypatch):
     assert captured["japanese_rjcode"] == "RJ01572763"
     assert captured["rename"]["new_name"] == "[青春][RJ01572763]"
     assert captured["rename"]["sync_index_mutation"] is True
+
+
+def test_local_api_rename_commits_mutation_fence(monkeypatch, tmp_path):
+    captured = {}
+    root = tmp_path / "library"
+    source = root / "RJ01572763 old"
+    source.mkdir(parents=True)
+    library = SimpleNamespace(id="local-a", type="local", root_path=str(root))
+
+    class FakeLibraryManager:
+        def get_library_definition(self, library_id):
+            assert library_id == library.id
+            return library
+
+        async def rename(self, library_id, path, new_name, **kwargs):
+            captured["rename"] = {
+                "library_id": library_id,
+                "path": path,
+                "new_name": new_name,
+                **kwargs,
+            }
+            return {"message": "重命名成功", "new_path": str(root / new_name)}
+
+    class FakeMetadataService:
+        async def fetch(self, _path, task, force_refresh=False):
+            assert force_refresh is False
+            return {
+                "rjcode": task.rjcode,
+                "work_name": "目标作品",
+                "maker_name": "目标社团",
+                "cvs": [],
+            }
+
+    class FakeMutationService:
+        def prepare(self, **kwargs):
+            captured["prepare"] = kwargs
+            return SimpleNamespace(
+                operation_id="api-rename-operation",
+                replayed=False,
+                state="prepared",
+                result=None,
+            )
+
+        def mark_filesystem_started(self, operation_id):
+            captured["filesystem_started"] = operation_id
+
+        def finalize(self, operation_id, **kwargs):
+            captured["finalize"] = {"operation_id": operation_id, **kwargs}
+            return {
+                **kwargs["actual_result"],
+                "operation_id": operation_id,
+                "operation_state": "committed",
+                "index_fences": [{"library_id": library.id, "accepted_seq": 1}],
+            }
+
+        def fail_prepared(self, *_args, **_kwargs):
+            raise AssertionError("成功重命名不应回滚 prepared operation")
+
+        def mark_reconcile_required(self, *_args, **_kwargs):
+            raise AssertionError("成功重命名不应进入 reconcile_required")
+
+    fake_config = SimpleNamespace(
+        rename=SimpleNamespace(
+            template="",
+            api_rename_follow_template=False,
+            use_japanese_metadata=False,
+        )
+    )
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
+    monkeypatch.setattr(routes_module, "get_library_index_mutation_service", lambda: FakeMutationService())
+    monkeypatch.setattr(routes_module, "get_config", lambda: fake_config)
+    monkeypatch.setattr("app.core.metadata_service.MetadataService", lambda: FakeMetadataService())
+    monkeypatch.setattr("app.core.activity_log_service.log_api_rename_action", lambda **_kwargs: None)
+
+    response = asyncio.run(routes_module.api_rename_library_file(_FakeJsonRequest(
+        {"library_id": library.id, "path": str(source)},
+        headers={"Idempotency-Key": "api-rename-key"},
+    )))
+
+    assert response["operation_state"] == "committed"
+    assert captured["filesystem_started"] == "api-rename-operation"
+    assert captured["prepare"]["idempotency_key"] == "api-rename-key"
+    assert captured["rename"]["skip_index_mutation"] is True
+    assert captured["rename"]["sync_index_mutation"] is False
+    assert captured["finalize"]["actual_effects_by_library"][library.id] == [
+        {
+            "kind": "move",
+            "relative_path": source.name,
+            "scope": "subtree",
+            "target_library_id": library.id,
+            "target_path": "RJ01572763 目标作品",
+        },
+        {
+            "kind": "reconcile",
+            "relative_path": "RJ01572763 目标作品",
+            "scope": "subtree",
+        },
+    ]
 
 
 def test_api_rename_rejects_minimal_metadata_without_renaming(monkeypatch):
@@ -1433,31 +1754,144 @@ def test_batch_api_rename_skips_minimal_metadata_without_batch_renaming(monkeypa
     assert "batch_rename_called" not in captured
 
 
-def test_index_mutation_threshold_schedules_background_flush(monkeypatch):
+def test_local_batch_api_rename_fence_contains_only_successful_items(monkeypatch, tmp_path):
+    routes_module._BATCH_API_RENAME_INFLIGHT.clear()
+    captured = {}
+    root = tmp_path / "library"
+    first = root / "RJ01000001 old"
+    second = root / "RJ01000002 old"
+    first.mkdir(parents=True)
+    second.mkdir()
+    library = SimpleNamespace(id="local-a", type="local", root_path=str(root))
+
+    class FakeLibraryManager:
+        def get_library_definition(self, library_id):
+            assert library_id == library.id
+            return library
+
+        async def batch_rename(self, library_id, items, **kwargs):
+            captured["batch_rename"] = {
+                "library_id": library_id,
+                "items": items,
+                **kwargs,
+            }
+            return {
+                "success_count": 1,
+                "results": [{
+                    "index": 0,
+                    "path": items[0]["path"],
+                    "new_name": items[0]["new_name"],
+                    "new_path": str(root / items[0]["new_name"]),
+                }],
+                "failed": [{
+                    "index": 1,
+                    "path": items[1]["path"],
+                    "new_name": items[1]["new_name"],
+                    "error": "locked",
+                }],
+            }
+
+    class FakeMetadataService:
+        async def fetch(self, _path, task, force_refresh=False):
+            return {
+                "rjcode": task.rjcode,
+                "work_name": f"作品 {task.rjcode}",
+                "maker_name": "目标社团",
+                "cvs": [],
+            }
+
+    class FakeMutationService:
+        def prepare(self, **kwargs):
+            captured["prepare"] = kwargs
+            return SimpleNamespace(
+                operation_id="batch-api-rename-operation",
+                replayed=False,
+                state="prepared",
+                result=None,
+            )
+
+        def mark_filesystem_started(self, operation_id):
+            captured["filesystem_started"] = operation_id
+
+        def finalize(self, operation_id, **kwargs):
+            captured["finalize"] = {"operation_id": operation_id, **kwargs}
+            return {
+                **kwargs["actual_result"],
+                "operation_id": operation_id,
+                "operation_state": "committed",
+                "index_fences": [{"library_id": library.id, "accepted_seq": 1}],
+            }
+
+        def mark_reconcile_required(self, *_args, **_kwargs):
+            raise AssertionError("确定的部分失败不应进入 reconcile_required")
+
+    fake_config = SimpleNamespace(
+        rename=SimpleNamespace(
+            api_rename_follow_template=False,
+            use_japanese_metadata=False,
+        )
+    )
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
+    monkeypatch.setattr(routes_module, "get_library_index_mutation_service", lambda: FakeMutationService())
+    monkeypatch.setattr(routes_module, "get_config", lambda: fake_config)
+    monkeypatch.setattr("app.core.metadata_service.MetadataService", lambda: FakeMetadataService())
+    monkeypatch.setattr("app.core.activity_log_service.log_api_rename_action", lambda **_kwargs: None)
+    monkeypatch.setattr("app.core.activity_log_service.log_batch_api_rename_result", lambda **_kwargs: None)
+
+    response = asyncio.run(routes_module.batch_api_rename_library_items(
+        _FakeJsonRequest(
+            {"library_id": library.id, "paths": [str(first), str(second)]},
+            headers={"Idempotency-Key": "batch-api-rename-key"},
+        ),
+        None,
+    ))
+
+    assert response["operation_state"] == "committed"
+    assert response["success_count"] == 1
+    assert response["failed_count"] == 1
+    assert captured["filesystem_started"] == "batch-api-rename-operation"
+    assert captured["prepare"]["idempotency_key"] == "batch-api-rename-key"
+    assert captured["batch_rename"]["skip_index_mutation"] is True
+    assert captured["batch_rename"]["sync_index_mutation"] is False
+    effects = captured["finalize"]["actual_effects_by_library"][library.id]
+    assert len(effects) == 2
+    assert effects[0]["relative_path"] == first.name
+    assert effects[0]["kind"] == "move"
+    assert effects[1]["kind"] == "reconcile"
+    assert all(second.name not in str(effect) for effect in effects)
+
+
+def test_index_replace_many_records_one_ledger_envelope(monkeypatch):
     manager = object.__new__(library_manager_module.LibraryManager)
-    manager._index_mutation_lock = threading.Lock()
-    manager._index_mutation_timer = None
-    manager._index_mutation_pending_deletes = {}
-    manager._index_mutation_pending_upserts = {}
-    manager._index_mutation_pending_replaces = {}
-    manager._index_mutation_pending_moves = {}
+    library = library_manager_module.LibraryDefinition(
+        id="local-library",
+        name="本地库存",
+        type="local",
+        path="/library",
+    )
+    captured = {}
 
-    library = SimpleNamespace(id="local-library", type="local")
-    scheduled = []
+    class FakeMutationService:
+        def prepare(self, **kwargs):
+            captured["prepare"] = kwargs
+            return SimpleNamespace(operation_id="replace-operation")
 
-    def fake_schedule(*, delay_seconds=0.1):
-        scheduled.append(delay_seconds)
+        def mark_filesystem_started(self, operation_id):
+            captured["filesystem_started"] = operation_id
 
-    def fail_sync_flush():
-        raise AssertionError("索引队列达到阈值也不应在业务线程同步 flush")
+        def finalize(self, operation_id, **kwargs):
+            captured["finalize"] = {"operation_id": operation_id, **kwargs}
+            return kwargs["actual_result"]
 
-    monkeypatch.setattr(manager, "_normalize_index_abs_key", lambda _library, path: path)
-    monkeypatch.setattr(manager, "_schedule_index_mutation_flush_locked", fake_schedule)
-    monkeypatch.setattr(manager, "_flush_index_mutations", fail_sync_flush)
+    monkeypatch.setattr(library_index_module, "get_library_index_mutation_service", lambda: FakeMutationService())
 
     assert manager._enqueue_index_replace_subtree_many(
         library,
         [f"/library/work-{index}" for index in range(200)],
     ) is True
 
-    assert scheduled == [0]
+    effects = captured["prepare"]["effects_by_library"]["local-library"]
+    assert len(effects) == 200
+    assert all(effect["kind"] == "reconcile" for effect in effects)
+    assert captured["filesystem_started"] == "replace-operation"
+    assert captured["finalize"]["actual_result"]["path_count"] == 200

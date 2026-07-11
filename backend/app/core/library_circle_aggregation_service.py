@@ -22,11 +22,13 @@ from ..models.database import (
     CircleCatalog,
     CircleWork,
     LibraryIndexEntry,
+    LibraryIndexStatus,
     SessionLocal,
     WorkCanonicalLink,
     WorkMetadata,
 )
 from .library_manager import get_library_manager
+from .library_index.snapshot_store import get_snapshot_store
 
 UNKNOWN_CIRCLE_ID = "__unknown__"
 UNKNOWN_CIRCLE_NAME = "未识别社团"
@@ -505,25 +507,49 @@ class LibraryCircleAggregationService:
 
     def _get_snapshot(self, *, force_refresh: bool = False) -> dict[str, Any]:
         now = time.monotonic()
-        cached_payload = self._get_cached_snapshot(now=now, force_refresh=force_refresh)
+        index_views, view_token = self._load_index_views()
+        cached_payload = self._get_cached_snapshot(
+            now=now,
+            force_refresh=force_refresh,
+            view_token=view_token,
+        )
         if cached_payload is not None:
             return cached_payload
 
         with self._snapshot_lock:
             now = time.monotonic()
-            cached_payload = self._get_cached_snapshot(now=now, force_refresh=force_refresh)
+            index_views, view_token = self._load_index_views()
+            cached_payload = self._get_cached_snapshot(
+                now=now,
+                force_refresh=force_refresh,
+                view_token=view_token,
+            )
             if cached_payload is not None:
                 return cached_payload
-            return self._build_snapshot(now=now)
+            return self._build_snapshot(now=now, index_views=index_views, view_token=view_token)
 
-    def _get_cached_snapshot(self, *, now: float, force_refresh: bool = False) -> Optional[dict[str, Any]]:
+    def _get_cached_snapshot(
+        self,
+        *,
+        now: float,
+        force_refresh: bool = False,
+        view_token: str = "",
+    ) -> Optional[dict[str, Any]]:
         if force_refresh or not self._snapshot_cache:
+            return None
+        if str(self._snapshot_cache.get("view_token") or "") != str(view_token or ""):
             return None
         if float(self._snapshot_cache.get("expires_at") or 0.0) <= now:
             return None
         return self._snapshot_cache["payload"]
 
-    def _build_snapshot(self, *, now: float) -> dict[str, Any]:
+    def _build_snapshot(
+        self,
+        *,
+        now: float,
+        index_views: list[dict[str, Any]],
+        view_token: str,
+    ) -> dict[str, Any]:
         rows = self._load_index_work_rows()
         library_summary_items = self._load_active_library_summary_items()
         path_identities: dict[int, _CircleIdentity] = {}
@@ -618,12 +644,55 @@ class LibraryCircleAggregationService:
             "rows_by_group": rows_by_group,
             "works_by_group": {},
             "summary": summary,
+            "index_views": index_views,
+            "view_token": view_token,
         }
         self._snapshot_cache = {
             "expires_at": now + _SNAPSHOT_TTL_SECONDS,
+            "view_token": view_token,
             "payload": payload,
         }
         return payload
+
+    @staticmethod
+    def _load_index_views() -> tuple[list[dict[str, Any]], str]:
+        manager = get_library_manager()
+        active_libraries = {
+            str(library.id): str(library.type or "")
+            for library in manager._active_libraries()
+            if str(library.id or "")
+        }
+        active_ids = sorted(active_libraries)
+        if not active_ids:
+            return [], ""
+        db = SessionLocal()
+        try:
+            rows = db.query(LibraryIndexStatus).filter(
+                LibraryIndexStatus.library_id.in_(active_ids)
+            ).order_by(LibraryIndexStatus.library_id.asc()).all()
+            by_id = {row.library_id: row for row in rows}
+            views = []
+            for library_id in active_ids:
+                row = by_id.get(library_id)
+                views.append({
+                    "library_id": library_id,
+                    "index_generation": (
+                        int(getattr(row, "active_generation", 1) or 1)
+                        if active_libraries[library_id] == "local"
+                        else None
+                    ),
+                    "accepted_seq": int(getattr(row, "accepted_seq", 0) or 0),
+                    "materialized_seq": int(getattr(row, "materialized_seq", 0) or 0),
+                    "view_revision": int(getattr(row, "view_revision", 0) or 0),
+                    "state_revision": int(getattr(row, "state_revision", 0) or 0),
+                })
+        finally:
+            db.close()
+        token = "|".join(
+            f"{item['library_id']}:{item['index_generation']}:{item['view_revision']}"
+            for item in views
+        )
+        return views, token
 
     @staticmethod
     def _filter_groups(groups: list[dict[str, Any]], keyword: str) -> list[dict[str, Any]]:
@@ -1196,7 +1265,9 @@ class LibraryCircleAggregationService:
         rows: list[dict[str, Any]] = []
         db = SessionLocal()
         try:
-            query = (
+            store = get_snapshot_store()
+            query = store.apply_active_view(
+                db,
                 db.query(
                     LibraryIndexEntry.library_id,
                     LibraryIndexEntry.rjcode,
@@ -1206,7 +1277,11 @@ class LibraryCircleAggregationService:
                     LibraryIndexEntry.size,
                     LibraryIndexEntry.file_count,
                     LibraryIndexEntry.mtime,
-                )
+                ),
+                library_ids=active_ids,
+            )
+            query = (
+                query
                 .filter(
                     LibraryIndexEntry.library_id.in_(active_ids),
                     LibraryIndexEntry.entry_type == "dir",

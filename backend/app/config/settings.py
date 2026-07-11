@@ -540,32 +540,55 @@ class RedisConfig(BaseModel):
         return self
 
 
+class RuntimeBufferConfig(BaseModel):
+    """高频运行态缓冲配置。只缓冲控制面状态，不改变下载数据面并发。"""
+    enabled: bool = True
+    backend: str = "redis"
+    progress_flush_interval_seconds: float = 5.0
+    log_stream_batch_size: int = 300
+    log_stream_flush_ms: int = 250
+
+    @model_validator(mode='after')
+    def normalize_runtime_buffer_values(self):
+        backend = str(self.backend or "redis").strip().lower()
+        self.backend = backend if backend in {"redis", "memory"} else "redis"
+        self.progress_flush_interval_seconds = max(
+            0.5,
+            min(float(self.progress_flush_interval_seconds or 5.0), 60.0),
+        )
+        self.log_stream_batch_size = max(50, min(int(self.log_stream_batch_size or 300), 5000))
+        self.log_stream_flush_ms = max(100, min(int(self.log_stream_flush_ms or 250), 5000))
+        return self
+
+
 class BonusProbeConfig(BaseModel):
     """DLsite 特典补全运行配置。"""
     max_active_jobs: int = 1
     normal_batch_size: int = 500
-    normal_concurrency: int = 3
+    normal_concurrency: int = 6
     deep_batch_size: int = 500
-    deep_concurrency: int = 3
+    deep_concurrency: int = 6
     new_release_batch_size: int = 100
-    new_release_concurrency: int = 2
+    new_release_concurrency: int = 6
     max_batch_size: int = 500
-    max_concurrency: int = 3
-    cache_lookup_batch_size: int = 500
+    max_concurrency: int = 6
+    product_info_total_concurrency: int = 6
+    cache_lookup_batch_size: int = 1000
     cache_write_batch_size: int = 100
 
     @model_validator(mode='after')
     def normalize_limits(self):
         self.max_active_jobs = max(1, int(self.max_active_jobs or 1))
         self.max_batch_size = max(1, int(self.max_batch_size or 500))
-        self.max_concurrency = min(max(1, int(self.max_concurrency or 3)), 3)
+        self.max_concurrency = min(max(1, int(self.max_concurrency or 6)), 6)
         self.normal_batch_size = min(max(1, int(self.normal_batch_size or 500)), self.max_batch_size)
-        self.normal_concurrency = min(max(1, int(self.normal_concurrency or 3)), self.max_concurrency)
+        self.normal_concurrency = min(max(1, int(self.normal_concurrency or 6)), self.max_concurrency)
         self.deep_batch_size = min(max(1, int(self.deep_batch_size or 500)), self.max_batch_size)
-        self.deep_concurrency = min(max(1, int(self.deep_concurrency or 3)), self.max_concurrency)
+        self.deep_concurrency = min(max(1, int(self.deep_concurrency or 6)), self.max_concurrency)
         self.new_release_batch_size = min(max(1, int(self.new_release_batch_size or 100)), self.max_batch_size)
-        self.new_release_concurrency = min(max(1, int(self.new_release_concurrency or 2)), self.max_concurrency)
-        self.cache_lookup_batch_size = max(100, int(self.cache_lookup_batch_size or 500))
+        self.new_release_concurrency = min(max(1, int(self.new_release_concurrency or 6)), self.max_concurrency)
+        self.product_info_total_concurrency = min(max(1, int(self.product_info_total_concurrency or 6)), 12)
+        self.cache_lookup_batch_size = min(max(100, int(self.cache_lookup_batch_size or 1000)), 3000)
         self.cache_write_batch_size = min(max(20, int(self.cache_write_batch_size or 100)), 100)
         return self
 
@@ -712,6 +735,7 @@ class AppConfig(BaseModel):
     notification_email: NotificationEmailConfig = NotificationEmailConfig()
     notification_center: NotificationCenterConfig = NotificationCenterConfig()
     redis: RedisConfig = RedisConfig()
+    runtime_buffer: RuntimeBufferConfig = RuntimeBufferConfig()
     bonus_probe: BonusProbeConfig = BonusProbeConfig()
     resource_budget: ResourceBudgetConfig = ResourceBudgetConfig()
     database: DatabaseConfig = DatabaseConfig()

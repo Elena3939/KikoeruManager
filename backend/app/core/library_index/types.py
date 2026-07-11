@@ -40,6 +40,8 @@ class IndexEntry:
     mtime: Optional[int] = None
     depth: Optional[int] = None
     indexed_at: int = 0
+    generation: int = 1
+    materialized_seq: int = 0
 
 
 @dataclass(slots=True)
@@ -55,6 +57,23 @@ class IndexStatus:
     folder_count: int = 0
     error: Optional[str] = None
     updated_at: int = 0
+    accepted_seq: int = 0
+    materialized_seq: int = 0
+    state_revision: int = 0
+    view_revision: int = 0
+    active_generation: int = 1
+    building_generation: Optional[int] = None
+    catchup_state: str = 'idle'
+    last_operation_id: Optional[str] = None
+    materializer_owner: Optional[str] = None
+    materializer_lease_until: Optional[str] = None
+    materializer_epoch: int = 0
+    blocked_seq: Optional[int] = None
+    catchup_error: Optional[str] = None
+
+    @property
+    def pending_events(self) -> int:
+        return max(int(self.accepted_seq or 0) - int(self.materialized_seq or 0), 0)
 
 
 @dataclass(slots=True)
