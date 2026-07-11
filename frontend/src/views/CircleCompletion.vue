@@ -1074,12 +1074,26 @@ function toProgressCount(value) {
 }
 
 function formatBonusProbeRjProgress(meta = {}, currentStep = '') {
-  const total = toProgressCount(meta.probe_count)
-  const checked = Math.min(toProgressCount(meta.checked_probe_count), total || Number.MAX_SAFE_INTEGER)
+  const total = Math.max(
+    toProgressCount(meta.probe_count),
+    toProgressCount(meta.current_probe_total_count),
+    toProgressCount(meta.raw_probe_count),
+  )
+  const checked = Math.min(
+    Math.max(
+      toProgressCount(meta.checked_probe_count),
+      toProgressCount(meta.current_probe_checked_count),
+    ),
+    total || Number.MAX_SAFE_INTEGER,
+  )
   if (total > 0) return `${checked} / ${total}`
   const stepMatch = String(currentStep || '').match(/[：:]\s*(\d+)\s*\/\s*(\d+)/)
   if (stepMatch) return `${Number(stepMatch[1] || 0)} / ${Number(stepMatch[2] || 0)}`
   return String(checked)
+}
+
+function mergeProgressCount(current, incoming) {
+  return Math.max(toProgressCount(current), toProgressCount(incoming))
 }
 
 function mergeBonusProbeMeta(current = {}, incoming = {}) {
@@ -1089,16 +1103,28 @@ function mergeBonusProbeMeta(current = {}, incoming = {}) {
     if (value == null || value === '') continue
     next[key] = value
   }
-  if (toProgressCount(next.current_probe_total_count) > 0) {
-    next.probe_count = toProgressCount(next.probe_count) || toProgressCount(next.current_probe_total_count)
-  }
-  if (toProgressCount(next.current_probe_checked_count) > 0) {
-    next.checked_probe_count = Math.max(
-      toProgressCount(next.checked_probe_count),
+  next.current_probe_total_count = mergeProgressCount(current.current_probe_total_count, source.current_probe_total_count)
+  next.current_probe_checked_count = mergeProgressCount(current.current_probe_checked_count, source.current_probe_checked_count)
+  next.probe_count = Math.max(
+    mergeProgressCount(current.probe_count, source.probe_count),
+    toProgressCount(next.current_probe_total_count),
+    mergeProgressCount(current.raw_probe_count, source.raw_probe_count),
+  )
+  next.checked_probe_count = Math.min(
+    Math.max(
+      mergeProgressCount(current.checked_probe_count, source.checked_probe_count),
       toProgressCount(next.current_probe_checked_count),
-    )
-  }
+    ),
+    next.probe_count || Number.MAX_SAFE_INTEGER,
+  )
   return next
+}
+
+function mergeBonusProbeMetaForJob(jobId, incoming = {}) {
+  const normalizedJobId = String(jobId || '').trim()
+  const currentJobId = String(bonusProbeJob.job_id || '').trim()
+  const currentMeta = normalizedJobId && currentJobId && normalizedJobId !== currentJobId ? {} : bonusProbeJob.meta
+  return mergeBonusProbeMeta(currentMeta, incoming)
 }
 
 const circleSearch = ref('')
@@ -3853,9 +3879,18 @@ function applyRefreshJob(payload = {}) {
 }
 
 function applyBonusProbeJob(payload = {}) {
+  const nextJobId = String(payload.job_id || bonusProbeJob.job_id || '').trim()
   bonusProbeJob.visible = true
   bonusProbeJob._retryCount = 0
-  bonusProbeJob.job_id = payload.job_id || bonusProbeJob.job_id || ''
+  const nextMeta = mergeBonusProbeMetaForJob(
+    nextJobId,
+    {
+      ...(payload.result || {}),
+      ...(payload.summary || {}),
+      ...(payload.meta || {}),
+    },
+  )
+  bonusProbeJob.job_id = nextJobId
   bonusProbeJob.status = payload.status || ''
   bonusProbeJob.progress = Number(payload.progress || 0)
   bonusProbeJob.current_step = payload.current_step || ''
@@ -3866,7 +3901,7 @@ function applyBonusProbeJob(payload = {}) {
     : (Array.isArray(payload.meta?.release_dates) ? payload.meta.release_dates.filter(Boolean) : bonusProbeJob.release_dates)
   bonusProbeJob.elapsed_seconds = Number(payload.elapsed_seconds || 0)
   bonusProbeJob.error_message = payload.error_message || ''
-  bonusProbeJob.meta = mergeBonusProbeMeta(bonusProbeJob.meta, payload.meta || {})
+  bonusProbeJob.meta = nextMeta
   bonusProbeJob.result = payload.result || {}
   bonusProbeJob.progress_log = Array.isArray(payload.progress_log) ? payload.progress_log : []
   bonusProbeRunning.value = ['pending', 'processing'].includes(String(bonusProbeJob.status || ''))
@@ -3904,13 +3939,15 @@ function patchRefreshJobFromTaskEvent(payload = {}) {
 }
 
 function patchBonusProbeJobFromTaskEvent(payload = {}) {
+  const nextJobId = String(payload.engine_task_id || payload.entity_id || bonusProbeJob.job_id || '').trim()
   bonusProbeJobLastRealtimeAt = Date.now()
   bonusProbeJob.visible = true
-  bonusProbeJob.job_id = String(payload.engine_task_id || payload.entity_id || bonusProbeJob.job_id || '')
+  const nextMeta = mergeBonusProbeMetaForJob(nextJobId, payload.bonus_probe_meta || payload.meta || {})
+  bonusProbeJob.job_id = nextJobId
   bonusProbeJob.status = payload.status || bonusProbeJob.status || ''
   bonusProbeJob.progress = Number(payload.progress ?? bonusProbeJob.progress ?? 0)
   bonusProbeJob.current_step = payload.current_step || bonusProbeJob.current_step || ''
-  bonusProbeJob.meta = mergeBonusProbeMeta(bonusProbeJob.meta, payload.bonus_probe_meta || payload.meta || {})
+  bonusProbeJob.meta = nextMeta
   bonusProbeRunning.value = ['pending', 'processing'].includes(String(bonusProbeJob.status || ''))
   persistBonusProbeJobState()
 }

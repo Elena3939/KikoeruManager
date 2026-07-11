@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { LibraryBig, Calendar, Gift } from 'lucide-vue-next'
 
 const props = defineProps({
@@ -33,6 +33,8 @@ const props = defineProps({
 const emit = defineEmits(['select', 'preview', 'reimport', 'image-settled'])
 
 const rawCoverUrl = computed(() => String(props.item[props.imageField] || '').trim())
+const remoteCoverUrl = computed(() => String(props.item?.remote_image_url || '').trim())
+const imageFailed = ref(false)
 const displayCode = computed(() => {
   if (props.codeField) return props.item[props.codeField]
   return props.item.source_compare?.work_rjcode || props.item.canonical_rjcode || props.item.rjcode || ''
@@ -136,7 +138,7 @@ const bonusFlagClass = computed(() => {
 
 const coverUrl = computed(() => {
   const value = rawCoverUrl.value
-  const rjcode = props.item.display_rjcode || displayCode.value || props.item.canonical_rjcode || props.item.rjcode
+  const rjcode = imageRjcode(remoteCoverUrl.value) || props.item.display_rjcode || displayCode.value || props.item.canonical_rjcode || props.item.rjcode
   if (isUnreleased.value && value.includes('/modpub/images2/work/doujin/')) {
     return buildDlsiteCoverUrl(rjcode, true, 'sam')
   }
@@ -145,8 +147,37 @@ const coverUrl = computed(() => {
       .replace('https://img.dlsite.jp/modpub/images2/', 'https://img.dlsite.jp/resize/images2/')
       .replace('_img_main.jpg', '_img_main_240x240.jpg')
   }
-  return value || buildDlsiteCoverUrl(rjcode, isUnreleased.value, 'sam')
+  return value || remoteCoverUrl.value || buildDlsiteCoverUrl(rjcode, isUnreleased.value, 'sam')
 })
+
+watch(coverUrl, () => {
+  imageFailed.value = false
+})
+
+function imageRjcode(value) {
+  const matches = String(value || '').match(/[RVB]J\d{6,8}/gi)
+  return matches?.length ? matches[matches.length - 1].toUpperCase() : ''
+}
+
+function comparableUrl(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  try {
+    return new URL(text, globalThis.location?.origin || 'http://localhost').href
+  } catch {
+    return text
+  }
+}
+
+function uniqueImageUrls(values) {
+  const seen = new Set()
+  return values.filter(value => {
+    const normalized = comparableUrl(value)
+    if (!normalized || seen.has(normalized)) return false
+    seen.add(normalized)
+    return true
+  })
+}
 
 function buildDlsiteCoverUrl(rjcode, unreleased = false, variant = 'sam') {
   const normalized = String(rjcode || '').trim().toUpperCase()
@@ -171,9 +202,11 @@ function buildDlsiteCoverUrl(rjcode, unreleased = false, variant = 'sam') {
 }
 
 function onCoverError(event) {
-  const rjcode = props.item.display_rjcode || displayCode.value || props.item.canonical_rjcode || props.item.rjcode
-  const fallbacks = isUnreleased.value
-    ? [
+  const rjcode = imageRjcode(remoteCoverUrl.value) || props.item.display_rjcode || displayCode.value || props.item.canonical_rjcode || props.item.rjcode
+  const fallbacks = uniqueImageUrls([
+    remoteCoverUrl.value,
+    ...(isUnreleased.value
+      ? [
         buildDlsiteCoverUrl(rjcode, true, 'sam'),
         buildDlsiteCoverUrl(rjcode, true, 'resized'),
         buildDlsiteCoverUrl(rjcode, true, 'main'),
@@ -181,21 +214,28 @@ function onCoverError(event) {
         buildDlsiteCoverUrl(rjcode, false, 'resized'),
         buildDlsiteCoverUrl(rjcode, false, 'main'),
       ]
-    : [
+      : [
         buildDlsiteCoverUrl(rjcode, false, 'resized'),
         buildDlsiteCoverUrl(rjcode, false, 'main'),
-      ]
-  const tried = Number(event.currentTarget.dataset.fallbackIndex || 0)
-  const fallback = fallbacks[tried]
-  if (!fallback) {
-    emit('image-settled', displayCode.value)
+      ]),
+  ])
+  const current = comparableUrl(event.currentTarget.currentSrc || event.currentTarget.src)
+  let index = Number(event.currentTarget.dataset.fallbackIndex || 0)
+  while (index < fallbacks.length) {
+    const fallback = fallbacks[index]
+    index += 1
+    if (comparableUrl(fallback) === current) continue
+    event.currentTarget.dataset.fallbackIndex = String(index)
+    event.currentTarget.src = fallback
     return
   }
-  event.currentTarget.dataset.fallbackIndex = String(tried + 1)
-  event.currentTarget.src = fallback
+  imageFailed.value = true
+  emit('image-settled', displayCode.value)
 }
 
-function onCoverLoad() {
+function onCoverLoad(event) {
+  imageFailed.value = false
+  delete event.currentTarget.dataset.fallbackIndex
   emit('image-settled', displayCode.value)
 }
 
@@ -223,7 +263,7 @@ function onCoverLoad() {
 
     <div class="work-cover-wrapper">
       <img
-        v-if="imageActive && coverUrl"
+        v-if="imageActive && coverUrl && !imageFailed"
         :src="coverUrl"
         class="work-cover"
         loading="eager"

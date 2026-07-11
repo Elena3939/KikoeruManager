@@ -552,6 +552,8 @@ class DLsiteApiService:
             return []
         chunks: List[str] = []
         for pattern in [
+            # maniax new/date PC template
+            r'<div[^>]*class="[^"]*n_worklist_item[^"]*"[^>]*>.*?(?=<div[^>]*class="[^"]*n_worklist_item|\Z)',
             # maker_profile 经典 PC 模板
             r'<li[^>]*class="[^"]*search_result_img_box_inner[^"]*"[^>]*>.*?</li>',
             # maniax-touch / SP 模板
@@ -1639,7 +1641,7 @@ class DLsiteApiService:
                 "tested_at": datetime.now().isoformat(),
             }
 
-    async def _guarded_get(self, url: str, **kwargs) -> httpx.Response:
+    async def _guarded_get(self, url: str, *, retry: bool = True, **kwargs) -> httpx.Response:
         """带并发限制的 HTTP GET，超时时指数退避重试（最多 3 次）。
 
         并发上限设为 6，是社团补全 wave1 的核心瓶颈调优：旧值 3 + sleep 0.5s
@@ -1661,7 +1663,8 @@ class DLsiteApiService:
             self._http_semaphore = asyncio.Semaphore(sem_size)
         sleep_min = float(os.environ.get("DLSITE_HTTP_SLEEP_MIN", "0.1") or "0.1")
         sleep_max = float(os.environ.get("DLSITE_HTTP_SLEEP_MAX", "0.3") or "0.3")
-        for attempt in range(3):
+        max_attempts = 3 if retry else 1
+        for attempt in range(max_attempts):
             try:
                 async with self._http_semaphore:
                     await asyncio.sleep(random.uniform(sleep_min, sleep_max))
@@ -1673,13 +1676,16 @@ class DLsiteApiService:
                 wait = 2.0 * (2 ** attempt)  # 2s → 4s → 8s
                 _record_dlsite_http_failure(exc)
                 await self._reset_client_after_transport_error(exc)
-                if attempt < 2:
+                if attempt < max_attempts - 1:
                     logger.warning(
                         "[DLsite] 请求失败，等待 %.0fs 后重试（第 %d 次）: %s error=%s",
                         wait, attempt + 1, url, self._format_exc(exc),
                     )
                     await asyncio.sleep(wait)
                     continue
+                if not retry:
+                    logger.warning("[DLsite] 请求失败，快速返回: %s error=%s", url, self._format_exc(exc))
+                    raise
                 logger.warning("[DLsite] 复用客户端重试失败，改用一次性客户端: %s error=%s", url, self._format_exc(exc))
                 try:
                     response = await self._one_shot_get(url, **kwargs)
@@ -2361,7 +2367,12 @@ class DLsiteApiService:
         for page in range(1, max(1, int(max_pages or 1)) + 1):
             url = self._build_new_release_date_url(normalized_date, language=normalized_language, page=page)
             try:
-                response = await self._guarded_get(url, headers=self._get_browser_headers())
+                response = await self._guarded_get(
+                    url,
+                    headers=self._get_browser_headers(),
+                    timeout=httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=None),
+                    retry=False,
+                )
                 if response.status_code != 200:
                     logger.warning(
                         "[DLsite] 新作日期页抓取失败 date=%s page=%s status=%s",
@@ -2378,8 +2389,7 @@ class DLsiteApiService:
                 for summary in page_summaries:
                     if not summary.workno or summary.workno in summaries_by_rj:
                         continue
-                    if not summary.release_date:
-                        summary.release_date = normalized_date
+                    summary.release_date = normalized_date
                     summaries_by_rj[summary.workno] = summary
                     new_count += 1
                 if new_count == 0:
@@ -2465,8 +2475,6 @@ class DLsiteApiService:
         )
         feature.is_hidden_bonus_audio = bool(
             maker_id
-            and release_date
-            and work_type == "SOU"
             and price == 0
             and self._product_info_indicates_bonus_work(product)
         )
