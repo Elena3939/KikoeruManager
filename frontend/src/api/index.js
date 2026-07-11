@@ -82,6 +82,15 @@ const HTTP_DOWNLOAD_START_TIMEOUT = 10 * 60 * 1000
 /** 群晖 OTP 二步验证过期标志。任意库存接口返回含 OTP 的错误时置 true，提示用户刷新 Device Token。 */
 export const synologyOtpRequired = ref(false)
 
+export function isCanceledApiRequest(error) {
+  return Boolean(
+    axios.isCancel?.(error)
+    || error?.code === 'ERR_CANCELED'
+    || error?.name === 'CanceledError'
+    || error?.name === 'AbortError'
+  )
+}
+
 const apiClient = axios.create({
   baseURL: API_BASE,
   timeout: 60000,
@@ -94,6 +103,9 @@ const apiClient = axios.create({
 apiClient.interceptors.response.use(
   response => response,
   error => {
+    if (isCanceledApiRequest(error)) {
+      return Promise.reject(error)
+    }
     const detail = error.response?.data?.detail || error.message || '未知错误'
     console.error('[API Error]', error.config?.url, detail)
     if (typeof detail === 'string' && detail.includes('OTP')) {
@@ -700,6 +712,23 @@ export const processedArchiveApi = {
   }
 }
 
+function mutationRequestConfig (options = {}) {
+  const idempotencyKey = String(options.idempotencyKey || '').trim() || (
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `mutation-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
+  )
+  return {
+    ...(options.config || {}),
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
+    headers: {
+      ...(options.config?.headers || {}),
+      'Idempotency-Key': idempotencyKey,
+    },
+  }
+}
+
 export const libraryApi = {
   listLibraries: async () => {
     const response = await apiClient.get('/library/libraries')
@@ -738,9 +767,10 @@ export const libraryApi = {
     return response.data
   },
 
-  getIndexStatus: async (libraryId = null) => {
+  getIndexStatus: async (libraryId = null, options = {}) => {
     const response = await apiClient.get('/library/index/status', {
       params: libraryId ? { library_id: libraryId } : {},
+      signal: options.signal,
     })
     return response.data
   },
@@ -880,7 +910,8 @@ export const libraryApi = {
     searchExact = false,
     searchResultKind = 'all',
     scope = 'global',
-    pageCursor = ''
+    pageCursor = '',
+    signal = undefined,
   } = {}) => {
     const response = await apiClient.get('/library/browser/files', {
       params: {
@@ -896,7 +927,8 @@ export const libraryApi = {
         search_result_kind: searchResultKind || undefined,
         scope: scope && scope !== 'global' ? scope : undefined,
         page_cursor: pageCursor || undefined
-      }
+      },
+      signal,
     })
     return response.data
   },
@@ -943,6 +975,7 @@ export const libraryApi = {
     sortBy = 'name',
     sortOrder = 'asc',
     forceRefresh = false,
+    signal = undefined,
   } = {}) => {
     const response = await apiClient.get('/library/circle-browser/files', {
       params: {
@@ -954,6 +987,7 @@ export const libraryApi = {
         sort_order: sortOrder,
         force_refresh: forceRefresh || undefined,
       },
+      signal,
     })
     return response.data
   },
@@ -971,12 +1005,13 @@ export const libraryApi = {
     return response.data
   },
 
-  getStats: async (forceRefresh = false, libraryId = null) => {
+  getStats: async (forceRefresh = false, libraryId = null, options = {}) => {
     const response = await apiClient.get('/library/browser/stats', {
       params: {
         force_refresh: forceRefresh,
         library_id: libraryId || undefined
-      }
+      },
+      signal: options.signal,
     })
     return response.data
   },
@@ -1042,7 +1077,9 @@ export const libraryApi = {
     if (Object.prototype.hasOwnProperty.call(options, 'includeDirs')) {
       payload.include_dirs = Boolean(options.includeDirs)
     }
-    const response = await apiClient.post('/library/browser/folder-contents', payload)
+    const response = await apiClient.post('/library/browser/folder-contents', payload, {
+      signal: options.signal,
+    })
     return response.data
   },
 
@@ -1196,7 +1233,9 @@ export const libraryApi = {
       batch_id: options.batchId || '',
       rename_context: options.renameContext || '',
       skip_index_mutation: options.skipIndexMutation ?? false
-    })
+    }, options.skipIndexMutation
+      ? { signal: options.signal }
+      : mutationRequestConfig(options))
     return response.data
   },
 
@@ -1208,11 +1247,15 @@ export const libraryApi = {
       batch_id: options.batchId || '',
       rename_context: options.renameContext || '',
       skip_index_mutation: options.skipIndexMutation ?? false
-    }, {
-      // 批量重命名场景下默认 axios 60s 不一定够，给到 5 分钟
-      timeout: options.timeout || 5 * 60 * 1000,
-      signal: options.signal
-    })
+    }, options.skipIndexMutation
+      ? {
+          timeout: options.timeout || 5 * 60 * 1000,
+          signal: options.signal,
+        }
+      : mutationRequestConfig({
+          ...options,
+          timeout: options.timeout || 5 * 60 * 1000,
+        }))
     return response.data
   },
 
@@ -1220,10 +1263,10 @@ export const libraryApi = {
     const response = await apiClient.post('/library/browser/index-move-batch', {
       library_id: libraryId,
       moves
-    }, {
+    }, mutationRequestConfig({
+      ...options,
       timeout: options.timeout || 60 * 1000,
-      signal: options.signal
-    })
+    }))
     return response.data
   },
 
@@ -1231,7 +1274,7 @@ export const libraryApi = {
     const payload = { path }
     if (libraryId) payload.library_id = libraryId
     if (options.batchId) payload.batch_id = options.batchId
-    const response = await apiClient.post('/library/api-rename', payload)
+    const response = await apiClient.post('/library/api-rename', payload, mutationRequestConfig(options))
     return response.data
   },
 
@@ -1247,7 +1290,7 @@ export const libraryApi = {
       confirmed,
       skip_activity_log: options.skipActivityLog ?? false,
       batch_id: options.batchId || ''
-    })
+    }, confirmed ? mutationRequestConfig(options) : { signal: options.signal })
     return response.data
   },
 
@@ -1264,7 +1307,7 @@ export const libraryApi = {
       skip_activity_log: options.skipActivityLog ?? false,
       batch_id: options.batchId || '',
       known_items: options.knownItems || []
-    })
+    }, confirmed ? mutationRequestConfig(options) : { signal: options.signal })
     return response.data
   },
 
@@ -1275,17 +1318,18 @@ export const libraryApi = {
       skip_activity_log: options.skipActivityLog ?? false,
       batch_id: options.batchId || '',
       known_items: options.knownItems || []
-    })
+    }, confirmed ? mutationRequestConfig(options) : { signal: options.signal })
     return response.data
   },
 
-  batchApiRename: async (paths, libraryId = null) => {
+  batchApiRename: async (paths, libraryId = null, options = {}) => {
     const payload = { paths }
     if (libraryId) payload.library_id = libraryId
-    const response = await apiClient.post('/library/batch-api-rename', payload, {
+    const response = await apiClient.post('/library/batch-api-rename', payload, mutationRequestConfig({
+      ...options,
       // 批量 API 重命名会串行刷新 DLsite 元数据，大批量时不能让 axios 本地超时误判失败。
-      timeout: 0
-    })
+      timeout: 0,
+    }))
     return response.data
   },
 
@@ -1335,11 +1379,14 @@ export const libraryApi = {
       target_path: targetPath || '',
       conflict_strategy: options.conflictStrategy || 'suffix',
       overwrite: !!options.overwrite
-    }, {
-      // 同卷移动通常很快，但大目录移动后的库存索引追赶 / 慢盘元数据刷新可能超过默认 60s。
-      // 库存移动是明确的用户操作，交给后端返回真实结果，不让 axios 本地误判超时。
-      timeout: options.timeout ?? 0
-    })
+    }, mutationRequestConfig({
+      ...options,
+      config: {
+        // 同卷移动通常很快，但大目录移动后的库存索引追赶 / 慢盘元数据刷新可能超过默认 60s。
+        // 库存移动是明确的用户操作，交给后端返回真实结果，不让 axios 本地误判超时。
+        timeout: options.timeout ?? 0
+      },
+    }))
     return response.data
   },
 
