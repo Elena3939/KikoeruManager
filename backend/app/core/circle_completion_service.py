@@ -209,7 +209,9 @@ class CircleCompletionService:
     _COMPLETION_RECENT_REDIS_TTL_SECONDS = 30
     _COMPLETION_BUILD_LOCK_SECONDS = 12
     _COMPLETION_ALIAS_REDIS_TTL_SECONDS = 86400
-    _COMPLETION_CACHE_SCHEMA_VERSION = 6
+    # 封面缓存键从展示 RJ 统一为图片 URL 中的真实 RJ；升级版本让 Redis / L1
+    # 中仍指向旧文件名的社团视图立即失效并按新键重建。
+    _COMPLETION_CACHE_SCHEMA_VERSION = 8
 
     def __init__(self):
         self.metadata_service = MetadataService()
@@ -2117,11 +2119,22 @@ class CircleCompletionService:
         local_cover_url = ""
         local_thumb_url = ""
         if image_cache_service is not None:
-            cover_cache_rjcode = (
-                image_cache_service.extract_image_rjcode(normalized_remote_cover)
-                or stored_display_rjcode
-                or row.canonical_rjcode
+            cover_cache_rjcode = image_cache_service.cache_rjcode_for_url(
+                normalized_remote_cover,
+                stored_display_rjcode or row.canonical_rjcode,
             )
+            if cover_cache_rjcode and cover_cache_rjcode != stored_display_rjcode:
+                # 兼容旧版本：它把翻译展示 RJ 当缓存文件名，当前读路径则按图片
+                # URL 的真实 RJ 取文件。只复制本地旧文件，不在浏览路径触网。
+                image_cache_service.restore_from_legacy_alias(
+                    cover_cache_rjcode,
+                    [stored_display_rjcode],
+                )
+                image_cache_service.restore_from_legacy_alias(
+                    cover_cache_rjcode,
+                    [stored_display_rjcode],
+                    variant="list",
+                )
             local_cover_url = image_cache_service.get_local_url(
                 cover_cache_rjcode,
                 allow_missing=True,
@@ -2155,6 +2168,7 @@ class CircleCompletionService:
             "has_asmr_one": bool(row.has_asmr_one),
             "asmr_available_rjcode": row.asmr_available_rjcode,
             "image_url": local_cover_url or normalized_remote_cover,
+            "remote_image_url": normalized_remote_cover,
             "thumb_image_url": local_thumb_url or self._normalize_dlsite_thumb_url(
                 normalized_remote_cover,
                 stored_display_rjcode or row.canonical_rjcode,
@@ -2211,7 +2225,6 @@ class CircleCompletionService:
             item["source_compare"] = source_compare
         if include_heavy_fields:
             item["owned_paths"] = list((getattr(owned_row, "owned_paths", None) or []) if owned_row else [])
-            item["remote_image_url"] = normalized_remote_cover
         return item
 
     def _build_completion_compare_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
@@ -3031,11 +3044,20 @@ class CircleCompletionService:
                     display_rjcode or canonical,
                     is_unreleased=self._is_future_release_date(release_date),
                 )
-                cover_cache_rjcode = (
-                    image_cache_service.extract_image_rjcode(normalized_cover)
-                    or display_rjcode
-                    or canonical
+                cover_cache_rjcode = image_cache_service.cache_rjcode_for_url(
+                    normalized_cover,
+                    display_rjcode or canonical,
                 )
+                if cover_cache_rjcode and cover_cache_rjcode != display_rjcode:
+                    image_cache_service.restore_from_legacy_alias(
+                        cover_cache_rjcode,
+                        [display_rjcode],
+                    )
+                    image_cache_service.restore_from_legacy_alias(
+                        cover_cache_rjcode,
+                        [display_rjcode],
+                        variant="list",
+                    )
                 local_cover_url = image_cache_service.get_local_url(
                     cover_cache_rjcode,
                     allow_missing=True,
@@ -3054,6 +3076,7 @@ class CircleCompletionService:
                     "title": title or display_rjcode or canonical,
                     "linked_rjcodes": list(work.linked_rjcodes or []),
                     "image_url": local_cover_url or normalized_cover,
+                    "remote_image_url": normalized_cover,
                     "thumb_image_url": local_thumb_url or self._normalize_dlsite_thumb_url(
                         normalized_cover,
                         display_rjcode or canonical,
@@ -5996,6 +6019,76 @@ class CircleCompletionService:
         self._cover_cache_tasks[circle_id] = task
         return task
 
+    def _queue_circle_cover_alias_restore(
+        self,
+        circle_id: str,
+        image_cache_service: Any,
+        target_rjcode: Any,
+        legacy_rjcode: Any,
+    ) -> Optional[asyncio.Task]:
+        """后台补建历史 display RJ 封面别名，不阻塞社团浏览读路径。"""
+
+        target = image_cache_service.normalize_rjcode(target_rjcode)
+        legacy = image_cache_service.normalize_rjcode(legacy_rjcode)
+        if not target or not legacy or target == legacy:
+            return None
+        # 大多数作品不存在旧错名缓存；先做廉价 stat，避免为每行创建空任务。
+        if not (
+            image_cache_service.has_local(legacy)
+            or image_cache_service.has_local(legacy, variant="list")
+        ):
+            return None
+
+        scope = str(circle_id or target).strip() or target
+        pending = self._cover_alias_restore_pending.setdefault(scope, set())
+        pending.add((target, legacy))
+        existing = self._cover_alias_restore_tasks.get(scope)
+        if existing and not existing.done():
+            return existing
+
+        async def _runner() -> None:
+            try:
+                while True:
+                    pairs = self._cover_alias_restore_pending.pop(scope, set())
+                    if not pairs:
+                        return
+                    for target_code, legacy_code in pairs:
+                        # restore_from_legacy_alias 是流式磁盘复制；移到线程池避免阻塞
+                        # FastAPI 事件循环和 SSE。
+                        await asyncio.to_thread(
+                            image_cache_service.restore_from_legacy_alias,
+                            target_code,
+                            [legacy_code],
+                        )
+                        await asyncio.to_thread(
+                            image_cache_service.restore_from_legacy_alias,
+                            target_code,
+                            [legacy_code],
+                            variant="list",
+                        )
+            except Exception:
+                logger.warning(
+                    "[社团补全] 修复历史封面缓存别名失败 circle_id=%s",
+                    scope,
+                    exc_info=True,
+                )
+            finally:
+                current = asyncio.current_task()
+                if self._cover_alias_restore_tasks.get(scope) is current:
+                    self._cover_alias_restore_tasks.pop(scope, None)
+                self._cover_alias_restore_pending.pop(scope, None)
+
+        try:
+            task = asyncio.create_task(_runner(), name=f"circle-cover-alias-restore:{scope}")
+        except RuntimeError:
+            logger.debug(
+                "[社团补全] 当前无运行事件循环，跳过历史封面别名修复 circle_id=%s",
+                scope,
+            )
+            return None
+        self._cover_alias_restore_tasks[scope] = task
+        return task
+
     def _schedule_circle_bonus_refresh(
         self,
         circle_id: str,
@@ -6800,6 +6893,7 @@ class CircleCompletionService:
         # 把封面图同步缓存到本地 data/img/，避免前端每次都从 dlsite 加载，
         # dlsite 图片 CDN 在国内偶发抖动 / 代理掉链时整个社团页都会"白板"。
         # 卡片图和列表小图分开缓存：卡片图保留 RJxxxx.jpg，列表图写 RJxxxx_sam.jpg。
+        image_cache_service = get_circle_image_cache_service()
         cover_download_pairs: List[Tuple[str, str]] = []
         thumb_download_pairs: List[Tuple[str, str]] = []
         for canonical_rj, item in aggregated.items():
@@ -6807,14 +6901,17 @@ class CircleCompletionService:
             display_rj = self.normalize_rjcode(item.get("display_rjcode")) or canonical_rj
             if not display_rj or not cover_url.startswith(("http://", "https://")):
                 continue
-            cover_download_pairs.append((display_rj, cover_url))
+            cover_cache_rjcode = image_cache_service.cache_rjcode_for_url(cover_url, display_rj)
+            if not cover_cache_rjcode:
+                continue
+            cover_download_pairs.append((cover_cache_rjcode, cover_url))
             thumb_url = self._normalize_dlsite_thumb_url(
                 cover_url,
                 display_rj,
                 is_unreleased=self._is_future_release_date(item.get("release_date")),
             )
             if thumb_url.startswith(("http://", "https://")):
-                thumb_download_pairs.append((display_rj, thumb_url))
+                thumb_download_pairs.append((cover_cache_rjcode, thumb_url))
         if cover_download_pairs or thumb_download_pairs:
             # P6：封面缓存后台化。索引完成即可返回，封面下载不阻塞 progress。
             self._schedule_circle_cover_cache(circle_id, cover_download_pairs, thumb_download_pairs)
@@ -7410,11 +7507,17 @@ class CircleCompletionService:
                 # 优先返回本地缓存的 API path（/api/circle-completion/cover/RJxxxxxx.jpg），
                 # 没缓存就退回到 dlsite 公开 URL；前端 WorkCard.onCoverError 还有第二层
                 # fallback（按 RJ 推算多个 dlsite 地址），所以单点失败不会让整页白板。
-                cover_cache_rjcode = (
-                    image_cache_service.extract_image_rjcode(normalized_remote_cover)
-                    or stored_display_rjcode
-                    or row.canonical_rjcode
+                cover_cache_rjcode = image_cache_service.cache_rjcode_for_url(
+                    normalized_remote_cover,
+                    stored_display_rjcode or row.canonical_rjcode,
                 )
+                if cover_cache_rjcode and cover_cache_rjcode != stored_display_rjcode:
+                    self._queue_circle_cover_alias_restore(
+                        str(row.circle_id or ""),
+                        image_cache_service,
+                        cover_cache_rjcode,
+                        stored_display_rjcode,
+                    )
                 local_cover_url = image_cache_service.get_local_url(
                     cover_cache_rjcode,
                     allow_missing=True,
@@ -8200,6 +8303,7 @@ class CircleCompletionService:
 
             # 把刷新后的封面图同步到本地缓存。force_refresh=True 时强制重新拉一次，
             # 普通刷新有本地缓存会 short-circuit，几乎免费跳过。
+            image_cache_service = get_circle_image_cache_service()
             cover_pairs: List[Tuple[str, str]] = []
             thumb_pairs: List[Tuple[str, str]] = []
             for refreshed_row in rows:
@@ -8210,17 +8314,19 @@ class CircleCompletionService:
                 )
                 if not display_rj or not cover_url.startswith(("http://", "https://")):
                     continue
-                cover_pairs.append((display_rj, cover_url))
+                cover_cache_rjcode = image_cache_service.cache_rjcode_for_url(cover_url, display_rj)
+                if not cover_cache_rjcode:
+                    continue
+                cover_pairs.append((cover_cache_rjcode, cover_url))
                 thumb_url = self._normalize_dlsite_thumb_url(
                     cover_url,
                     display_rj,
                     is_unreleased=self._is_future_release_date(getattr(refreshed_row, "release_date", "")),
                 )
                 if thumb_url.startswith(("http://", "https://")):
-                    thumb_pairs.append((display_rj, thumb_url))
+                    thumb_pairs.append((cover_cache_rjcode, thumb_url))
             if cover_pairs or thumb_pairs:
                 try:
-                    image_cache_service = get_circle_image_cache_service()
                     await image_cache_service.download_many(
                         cover_pairs, force=bool(force_refresh),
                     )

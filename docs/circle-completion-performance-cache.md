@@ -29,6 +29,7 @@ Redis 不可用时会自动降级为 L1 + 数据库，不影响功能。
 
 - `/works` 返回的 `image_url` / `thumb_image_url` 优先使用 `/api/circle-completion/cover/{RJ}.jpg` 和 `/api/circle-completion/cover/{RJ}_sam.jpg`。
 - cover API 本地命中时直接返回 `data/img/` 文件；文件缺失时按 RJ 推导 DLsite CDN 地址，下载落盘后再返回。
+- Docker 环境优先使用 `DATA_PATH/img` 作为封面缓存目录；默认镜像里 `DATA_PATH=/app/data`，因此缓存会落到持久化卷 `/app/data/img`。
 - DLsite 图片路径里同时有目录 bucket RJ 和真实文件 RJ 时，缓存文件名取真实文件 RJ，避免翻译版 / 关联版显示 RJ 与封面 RJ 不一致导致 404。
 - 按需下载失败时仍返回 404，前端 `WorkCard` 保留原有 DLsite fallback，不影响功能。
 

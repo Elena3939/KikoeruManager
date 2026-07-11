@@ -20,7 +20,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
 import re
+import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -40,12 +43,19 @@ class CircleImageCacheService:
     READ_TIMEOUT = 15.0
     MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB，DLsite 240x240 缩略图通常 < 50KB
     URL_PATH_PREFIX = "/api/circle-completion/cover/"
+    MAX_TRANSIENT_RETRIES = 1
+    RETRY_DELAY_SECONDS = 0.4
+    ON_DEMAND_TOTAL_TIMEOUT_SECONDS = 12.0
+    FAILURE_COOLDOWN_SECONDS = 45.0
+    MAX_FAILURE_CACHE_ENTRIES = 1024
 
     def __init__(self) -> None:
         self._client: Optional[httpx.AsyncClient] = None
         self._client_lock: Optional[asyncio.Lock] = None
         self._cache_dir: Optional[Path] = None
         self._download_locks: Dict[str, asyncio.Lock] = {}
+        self._background_download_tasks: Dict[str, asyncio.Task] = {}
+        self._failed_until: Dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # 路径 / 命名
@@ -57,11 +67,16 @@ class CircleImageCacheService:
         if self._cache_dir is None:
             from ..config.settings import get_config_file_path
 
-            config_path = Path(get_config_file_path()).resolve()
-            data_dir = config_path.parent.parent if config_path.parent.name == "config" else config_path.parent
+            data_path = str(os.environ.get("DATA_PATH") or "").strip()
+            if data_path:
+                data_dir = Path(data_path).resolve()
+            else:
+                config_path = Path(get_config_file_path()).resolve()
+                data_dir = config_path.parent.parent if config_path.parent.name == "config" else config_path.parent
             cache_dir = data_dir / "img"
             try:
                 cache_dir.mkdir(parents=True, exist_ok=True)
+                logger.info("[社团补全/封面缓存] 使用缓存目录 path=%s", cache_dir)
             except OSError:
                 logger.warning(
                     "[社团补全/封面缓存] 创建缓存目录失败 path=%s", cache_dir, exc_info=True
@@ -84,6 +99,16 @@ class CircleImageCacheService:
         """
         matches = _RJCODE_PATTERN.findall(str(value or "").strip().upper())
         return matches[-1] if matches else ""
+
+    def cache_rjcode_for_url(self, source_url: Any, fallback_rjcode: Any = "") -> str:
+        """返回封面实际文件名对应的缓存键。
+
+        DLsite 图片 URL 同时包含目录 bucket 与图片所属作品 RJ。缓存键必须使用
+        URL 最后的作品 RJ，而不能使用当前展示的翻译版本 RJ；否则写入和读取会
+        落在两个不同文件名下。
+        """
+
+        return self.extract_image_rjcode(source_url) or self.normalize_rjcode(fallback_rjcode)
 
     @staticmethod
     def _normalize_variant(variant: str = "card") -> str:
@@ -131,6 +156,81 @@ class CircleImageCacheService:
             return local
         return str(fallback_url or "")
 
+    def restore_from_legacy_alias(
+        self,
+        target_rjcode: Any,
+        aliases: Iterable[Any],
+        *,
+        variant: str = "card",
+    ) -> Optional[Path]:
+        """把历史上按展示 RJ 写入的缓存补到图片实际 RJ 名下。
+
+        旧版本把翻译版 ``display_rjcode`` 当作缓存文件名，而视图读取使用
+        图片 URL 中的原作 RJ。这里仅在目标文件缺失时从已存在的旧别名流式复制，
+        通过原子替换落盘，不触发网络请求，也不删除原文件。
+        """
+
+        target = self.get_local_path(str(target_rjcode or ""), variant)
+        if target is None or self.has_local(str(target_rjcode or ""), variant):
+            return target
+
+        normalized_target = self.normalize_rjcode(target_rjcode)
+        for raw_alias in aliases or []:
+            alias = self.normalize_rjcode(raw_alias)
+            if not alias or alias == normalized_target:
+                continue
+            source = self.get_local_path(alias, variant)
+            if source is None:
+                continue
+            try:
+                if not source.is_file() or source.stat().st_size <= 0:
+                    continue
+            except OSError:
+                continue
+
+            tmp_path: Optional[Path] = None
+            try:
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=f".{target.name}.",
+                    suffix=".tmp",
+                    dir=str(target.parent),
+                )
+                tmp_path = Path(tmp_name)
+                copied = 0
+                with os.fdopen(fd, "wb") as target_fp:
+                    with source.open("rb") as source_fp:
+                        while chunk := source_fp.read(64 * 1024):
+                            copied += len(chunk)
+                            target_fp.write(chunk)
+                if copied <= 0:
+                    raise OSError("历史封面缓存为空")
+                if target.is_file() and target.stat().st_size > 0:
+                    return target
+                os.replace(tmp_path, target)
+                tmp_path = None
+                logger.info(
+                    "[社团补全/封面缓存] 已修复历史别名 target=%s alias=%s variant=%s",
+                    normalized_target,
+                    alias,
+                    self._normalize_variant(variant),
+                )
+                return target
+            except OSError:
+                logger.warning(
+                    "[社团补全/封面缓存] 修复历史别名失败 target=%s alias=%s variant=%s",
+                    normalized_target,
+                    alias,
+                    self._normalize_variant(variant),
+                    exc_info=True,
+                )
+            finally:
+                if tmp_path is not None:
+                    try:
+                        tmp_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+        return target
+
     def _parse_filename(self, filename: str) -> Tuple[str, str]:
         candidate = str(filename or "").strip()
         if not candidate or "/" in candidate or "\\" in candidate:
@@ -139,6 +239,48 @@ class CircleImageCacheService:
         if not match:
             return "", ""
         return match.group(1).upper(), "list" if match.group(2) else "card"
+
+    def _failure_key(self, rjcode: str, variant: str) -> str:
+        return self._filename_for(rjcode, variant)
+
+    def _download_lock_for(self, rjcode: str, variant: str) -> Optional[asyncio.Lock]:
+        key = self._filename_for(rjcode, variant)
+        if not key:
+            return None
+        lock = self._download_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._download_locks[key] = lock
+        return lock
+
+    def _is_in_failure_cooldown(self, rjcode: str, variant: str) -> bool:
+        key = self._failure_key(rjcode, variant)
+        if not key:
+            return False
+        until = self._failed_until.get(key, 0.0)
+        if until <= time.monotonic():
+            self._failed_until.pop(key, None)
+            return False
+        return True
+
+    def _remember_failure(self, rjcode: str, variant: str) -> None:
+        key = self._failure_key(rjcode, variant)
+        if not key:
+            return
+        now = time.monotonic()
+        if len(self._failed_until) >= self.MAX_FAILURE_CACHE_ENTRIES:
+            for cached_key, until in list(self._failed_until.items()):
+                if until <= now:
+                    self._failed_until.pop(cached_key, None)
+            if len(self._failed_until) >= self.MAX_FAILURE_CACHE_ENTRIES:
+                oldest_key = min(self._failed_until, key=self._failed_until.get)
+                self._failed_until.pop(oldest_key, None)
+        self._failed_until[key] = now + self.FAILURE_COOLDOWN_SECONDS
+
+    def _clear_failure(self, rjcode: str, variant: str) -> None:
+        key = self._failure_key(rjcode, variant)
+        if key:
+            self._failed_until.pop(key, None)
 
     def resolve_filename(self, filename: str) -> Optional[Path]:
         """供 API 路由使用：将外部传入的文件名映射回缓存目录下的真实路径。
@@ -203,18 +345,53 @@ class CircleImageCacheService:
             return None
         if self.has_local(rjcode, variant):
             return target
+        if self._is_in_failure_cooldown(rjcode, variant):
+            logger.debug(
+                "[社团补全/封面缓存] 命中失败冷却 rjcode=%s variant=%s",
+                rjcode,
+                variant,
+            )
+            return None
 
-        lock_key = self._filename_for(rjcode, variant)
-        lock = self._download_locks.get(lock_key)
+        lock = self._download_lock_for(rjcode, variant)
         if lock is None:
-            lock = asyncio.Lock()
-            self._download_locks[lock_key] = lock
+            return None
         async with lock:
             if self.has_local(rjcode, variant):
                 return target
-            for source_url in self._candidate_source_urls(rjcode, variant):
-                if await self.download_one(rjcode, source_url, variant=variant):
-                    return target if self.has_local(rjcode, variant) else None
+            if self._is_in_failure_cooldown(rjcode, variant):
+                return None
+            failures: List[str] = []
+            try:
+                # 首屏直接请求封面时，不能让多个候选地址和网络重试叠加成半分钟等待。
+                # 批量预热走 download_many，不受这个交互请求预算限制。
+                async with asyncio.timeout(self.ON_DEMAND_TOTAL_TIMEOUT_SECONDS):
+                    for source_url in self._candidate_source_urls(rjcode, variant):
+                        ok, outcome, retryable = await self._download_with_outcome(
+                            rjcode,
+                            source_url,
+                            variant=variant,
+                        )
+                        if ok:
+                            self._clear_failure(rjcode, variant)
+                            return target if self.has_local(rjcode, variant) else None
+                        if outcome:
+                            failures.append(outcome)
+                        # 同一 CDN 的传输异常通常意味着网络或代理暂时不可用；继续穷举
+                        # 同域候选只会把首屏卡成几十秒，直接进入短冷却即可。
+                        if retryable:
+                            break
+            except TimeoutError:
+                failures.append("total-timeout")
+            self._remember_failure(rjcode, variant)
+            logger.warning(
+                "[社团补全/封面缓存] 按需下载失败 rjcode=%s variant=%s outcomes=%s deadline_seconds=%s cooldown_seconds=%s",
+                rjcode,
+                variant,
+                ",".join(failures) or "unknown",
+                int(self.ON_DEMAND_TOTAL_TIMEOUT_SECONDS),
+                int(self.FAILURE_COOLDOWN_SECONDS),
+            )
             return None
 
     # ------------------------------------------------------------------
@@ -283,6 +460,10 @@ class CircleImageCacheService:
             return self._client
 
     async def close(self) -> None:
+        for task in list(self._background_download_tasks.values()):
+            if not task.done():
+                task.cancel()
+        self._background_download_tasks.clear()
         client = self._client
         self._client = None
         if client and not client.is_closed:
@@ -291,45 +472,83 @@ class CircleImageCacheService:
             except Exception:
                 logger.debug("[社团补全/封面缓存] 关闭 HTTP 客户端失败", exc_info=True)
 
-    async def download_one(
+    def schedule_download(
         self,
         rjcode: str,
         source_url: str,
         *,
         variant: str = "card",
         force: bool = False,
-    ) -> bool:
-        """下载单张封面到本地，返回是否成功（已存在算成功）。"""
+    ) -> Optional[asyncio.Task]:
+        """将非关键封面下载放到受控后台，不阻塞邮件等业务主链路。"""
 
-        normalized = self.normalize_rjcode(rjcode)
+        normalized = self.cache_rjcode_for_url(source_url, rjcode)
         if not normalized:
-            return False
+            return None
+        task_key = self._filename_for(normalized, variant)
+        if not task_key:
+            return None
+        existing = self._background_download_tasks.get(task_key)
+        if existing and not existing.done():
+            return existing
+
+        async def _runner() -> None:
+            try:
+                await self.download_one(normalized, source_url, variant=variant, force=force)
+            except Exception:
+                logger.warning(
+                    "[社团补全/封面缓存] 后台下载异常 rjcode=%s variant=%s",
+                    normalized,
+                    self._normalize_variant(variant),
+                    exc_info=True,
+                )
+            finally:
+                current = asyncio.current_task()
+                if self._background_download_tasks.get(task_key) is current:
+                    self._background_download_tasks.pop(task_key, None)
+
+        try:
+            task = asyncio.create_task(_runner(), name=f"circle-cover-download:{task_key}")
+        except RuntimeError:
+            logger.debug(
+                "[社团补全/封面缓存] 当前无运行事件循环，跳过后台下载 rjcode=%s",
+                normalized,
+            )
+            return None
+        self._background_download_tasks[task_key] = task
+        return task
+
+    async def _download_once(
+        self,
+        rjcode: str,
+        source_url: str,
+        *,
+        variant: str = "card",
+    ) -> Tuple[bool, str, bool]:
+        """执行一次下载，返回 ``成功 / 诊断 / 是否为瞬态失败``。"""
+
+        normalized = self.cache_rjcode_for_url(source_url, rjcode)
+        if not normalized:
+            return False, "invalid-rjcode", False
         url = str(source_url or "").strip()
         if not url.startswith(("http://", "https://")):
-            return False
+            return False, "invalid-url", False
 
         target_path = self.get_local_path(normalized, variant)
         if target_path is None:
-            return False
-        if not force and target_path.is_file():
-            try:
-                if target_path.stat().st_size > 0:
-                    return True
-            except OSError:
-                pass
+            return False, "invalid-target", False
 
-        tmp_path = target_path.with_suffix(target_path.suffix + ".tmp")
+        tmp_path: Optional[Path] = None
         try:
             client = await self._get_client()
             async with client.stream("GET", url) as response:
                 if response.status_code != 200:
-                    logger.debug(
-                        "[社团补全/封面缓存] 下载失败 rjcode=%s status=%s url=%s",
-                        normalized,
-                        response.status_code,
-                        url,
-                    )
-                    return False
+                    status = int(response.status_code)
+                    return False, f"status={status}", status == 429 or status >= 500
+
+                content_type = str(response.headers.get("Content-Type") or "").lower()
+                if content_type and not content_type.startswith("image/"):
+                    return False, f"content-type={content_type[:40]}", False
 
                 content_length = response.headers.get("Content-Length")
                 if content_length and content_length.isdigit():
@@ -340,11 +559,18 @@ class CircleImageCacheService:
                             normalized,
                             declared,
                         )
-                        return False
+                        return False, "declared-too-large", False
 
                 downloaded = 0
-                # 用 with open 同步写文件即可，httpx aiter_bytes 的 chunk 已经在内存里
-                with tmp_path.open("wb") as fp:
+                # 用唯一临时文件 + 原子 replace，避免并发下载同一封面时互相覆盖。
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    prefix=f".{target_path.name}.",
+                    suffix=".tmp",
+                    dir=target_path.parent,
+                    delete=False,
+                ) as fp:
+                    tmp_path = Path(fp.name)
                     async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
                         if not chunk:
                             continue
@@ -358,28 +584,79 @@ class CircleImageCacheService:
                 if downloaded == 0:
                     raise RuntimeError("封面下载内容为空")
 
-            # 原子替换：DLsite 偶尔 200 但内容是 1x1 的占位图；这里只防 0 字节，
-            # 真要更严还能加 PIL 校验，目前没必要。
-            try:
-                tmp_path.replace(target_path)
-            except OSError:
-                # Windows 上偶发，先 unlink 再 rename
-                if target_path.exists():
-                    target_path.unlink()
-                tmp_path.replace(target_path)
-            return True
+            # 原子替换不删除已有目标；另一并发请求或读者始终只会看到完整文件。
+            os.replace(tmp_path, target_path)
+            tmp_path = None
+            return True, "", False
+        except httpx.TransportError as exc:
+            return False, type(exc).__name__, True
         except Exception as exc:
-            logger.debug(
-                "[社团补全/封面缓存] 下载异常 rjcode=%s url=%s err=%s",
-                normalized,
-                url,
-                exc,
-            )
+            return False, type(exc).__name__, False
+        finally:
             try:
-                if tmp_path.exists():
+                if tmp_path is not None and tmp_path.exists():
                     tmp_path.unlink()
             except OSError:
                 pass
+
+    async def _download_with_outcome(
+        self,
+        rjcode: str,
+        source_url: str,
+        *,
+        variant: str = "card",
+    ) -> Tuple[bool, str, bool]:
+        """对瞬态网络错误执行有限重试，避免封面请求无限占用首屏。"""
+
+        outcome = "unknown"
+        retryable = False
+        for attempt in range(self.MAX_TRANSIENT_RETRIES + 1):
+            ok, outcome, retryable = await self._download_once(
+                rjcode,
+                source_url,
+                variant=variant,
+            )
+            if ok or not retryable or attempt >= self.MAX_TRANSIENT_RETRIES:
+                return ok, outcome, retryable
+            await asyncio.sleep(self.RETRY_DELAY_SECONDS * (attempt + 1))
+        return False, outcome, retryable
+
+    async def download_one(
+        self,
+        rjcode: str,
+        source_url: str,
+        *,
+        variant: str = "card",
+        force: bool = False,
+    ) -> bool:
+        """下载单张封面到本地，返回是否成功（已存在算成功）。"""
+
+        url = str(source_url or "").strip()
+        normalized = self.cache_rjcode_for_url(url, rjcode)
+        if not normalized or not url.startswith(("http://", "https://")):
+            return False
+        lock = self._download_lock_for(normalized, variant)
+        if lock is None:
+            return False
+        async with lock:
+            if not force and self.has_local(normalized, variant):
+                self._clear_failure(normalized, variant)
+                return True
+
+            ok, outcome, _ = await self._download_with_outcome(
+                normalized,
+                url,
+                variant=variant,
+            )
+            if ok:
+                self._clear_failure(normalized, variant)
+                return True
+            logger.debug(
+                "[社团补全/封面缓存] 下载失败 rjcode=%s variant=%s outcome=%s",
+                normalized,
+                self._normalize_variant(variant),
+                outcome,
+            )
             return False
 
     async def download_many(
@@ -392,8 +669,9 @@ class CircleImageCacheService:
     ) -> Dict[str, bool]:
         """批量并发下载封面。
 
-        - ``items`` 为 ``[(rjcode, source_url), ...]``，rjcode 已经去重无所谓，
-          函数内部会按 normalized rjcode 再去一次重，已存在的也会被快速 short-circuit。
+        - ``items`` 为 ``[(rjcode, source_url), ...]``；缓存键优先取 source URL 中的
+          实际图片 RJ，避免翻译版展示 RJ 与原图 RJ 不一致时写错文件名。
+        - 函数内部会按真实缓存键去重，已存在的也会被快速 short-circuit。
         - 失败不抛异常，结果以 ``{rjcode: bool}`` 返回，可用于 metric。
         """
 
@@ -401,11 +679,11 @@ class CircleImageCacheService:
         seen: Set[str] = set()
         deduped: List[Tuple[str, str]] = []
         for raw_rjcode, raw_url in items or []:
-            normalized = self.normalize_rjcode(raw_rjcode)
-            if not normalized or normalized in seen:
-                continue
             url = str(raw_url or "").strip()
             if not url.startswith(("http://", "https://")):
+                continue
+            normalized = self.cache_rjcode_for_url(url, raw_rjcode)
+            if not normalized or normalized in seen:
                 continue
             seen.add(normalized)
             deduped.append((normalized, url))

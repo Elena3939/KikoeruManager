@@ -197,10 +197,44 @@ def test_circle_image_cache_uses_real_image_rjcode_for_local_urls(tmp_path) -> N
     assert image_cache.resolve_filename("../RJ01201316_sam.jpg") is None
     assert image_cache.resolve_filename("RJ01201316_sam.jpg") == tmp_path / "RJ01201316_sam.jpg"
     assert image_cache._candidate_source_urls("RJ01201316", "list")[0].endswith("/RJ01202000/RJ01201316_img_sam.jpg")
+    assert image_cache.cache_rjcode_for_url(remote_url, "RJ01999999") == "RJ01201316"
+
+
+def test_circle_image_cache_restores_historical_display_alias(tmp_path) -> None:
+    image_cache = CircleImageCacheService()
+    image_cache._cache_dir = tmp_path
+    legacy_path = tmp_path / "RJ01099999.jpg"
+    legacy_path.write_bytes(b"legacy-cover")
+
+    restored = image_cache.restore_from_legacy_alias("RJ01012345", ["RJ01099999"])
+
+    assert restored == tmp_path / "RJ01012345.jpg"
+    assert restored.read_bytes() == b"legacy-cover"
+    assert legacy_path.read_bytes() == b"legacy-cover"
 
 
 @pytest.mark.asyncio
-async def test_paged_works_cover_cache_url_uses_image_file_rjcode(service: CircleCompletionService, db_session) -> None:
+async def test_circle_image_cache_bounds_on_demand_failure_wait(tmp_path) -> None:
+    image_cache = CircleImageCacheService()
+    image_cache._cache_dir = tmp_path
+    image_cache.ON_DEMAND_TOTAL_TIMEOUT_SECONDS = 0.01
+    image_cache._candidate_source_urls = lambda *_args: ["https://img.dlsite.jp/example.jpg"]
+
+    async def slow_download(*_args, **_kwargs):
+        await asyncio.sleep(0.2)
+        return False, "ReadTimeout", True
+
+    image_cache._download_with_outcome = slow_download
+
+    assert await asyncio.wait_for(
+        image_cache.ensure_local_for_filename("RJ01012345.jpg"),
+        timeout=0.1,
+    ) is None
+    assert image_cache._is_in_failure_cooldown("RJ01012345", "card")
+
+
+@pytest.mark.asyncio
+async def test_paged_works_cover_cache_url_uses_image_file_rjcode(service: CircleCompletionService, db_session, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     circle_id = "circle_cover_cache"
     db_session.add(
         CircleCatalog(
@@ -217,12 +251,21 @@ async def test_paged_works_cover_cache_url_uses_image_file_rjcode(service: Circl
     row.display_rjcode = "RJ01099999"
     row.image_url = "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01013000/RJ01012345_img_main.jpg"
     db_session.commit()
+    image_cache = CircleImageCacheService()
+    image_cache._cache_dir = tmp_path
+    (tmp_path / "RJ01099999.jpg").write_bytes(b"legacy-cover")
+    monkeypatch.setattr(circle_module, "get_circle_image_cache_service", lambda: image_cache)
 
     page = await service.list_circle_completion_works(circle_id, tab="missing", page=1, page_size=10, view_mode="card")
 
     assert page["items"][0]["display_rjcode"] == "RJ01099999"
     assert page["items"][0]["thumb_image_url"] == "/api/circle-completion/cover/RJ01012345_sam.jpg"
     assert page["items"][0]["image_url"] == "/api/circle-completion/cover/RJ01012345.jpg"
+    assert page["items"][0]["remote_image_url"].endswith("/RJ01013000/RJ01012345_img_main_240x240.jpg")
+    alias_task = service._cover_alias_restore_tasks.get(circle_id)
+    if alias_task is not None:
+        await alias_task
+    assert (tmp_path / "RJ01012345.jpg").read_bytes() == b"legacy-cover"
 
 
 @pytest.mark.asyncio

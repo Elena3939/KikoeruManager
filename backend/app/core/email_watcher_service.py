@@ -1098,8 +1098,13 @@ class EmailWatcherService:
         # 失败也不影响邮件流。
         if remote_cover_for_cache.startswith(("http://", "https://")) and display_rj_for_cache:
             try:
-                await get_circle_image_cache_service().download_one(
-                    display_rj_for_cache, remote_cover_for_cache,
+                image_cache_service = get_circle_image_cache_service()
+                image_cache_service.schedule_download(
+                    image_cache_service.cache_rjcode_for_url(
+                        remote_cover_for_cache,
+                        display_rj_for_cache,
+                    ),
+                    remote_cover_for_cache,
                 )
             except Exception:
                 logger.debug(

@@ -73,7 +73,7 @@ def upgrade() -> None:
             sa.Column("circle_id", sa.String(length=120), nullable=True, server_default=""),
             sa.Column("release_date", sa.String(length=20), nullable=True, server_default=""),
             sa.Column("gap_limit", sa.Integer(), nullable=True, server_default="500"),
-            sa.Column("mode", sa.String(length=20), nullable=True, server_default="normal"),
+            sa.Column("mode", sa.String(length=64), nullable=True, server_default="normal"),
             sa.Column("status", sa.String(length=24), nullable=True, server_default="pending"),
             sa.Column("job_id", sa.String(length=36), nullable=True, server_default=""),
             sa.Column("public_count", sa.Integer(), nullable=True, server_default="0"),

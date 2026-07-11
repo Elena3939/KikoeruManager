@@ -5,8 +5,8 @@ import logging
 import re
 import uuid
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime
-from sqlalchemy import or_
+from datetime import datetime, timedelta
+from sqlalchemy import or_, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
@@ -39,10 +39,12 @@ class DLsiteBonusProbeService:
     DEFAULT_DATE_RANGE_LIMIT = 80000
     DEFAULT_BATCH_SIZE = 100
     DEFAULT_CONCURRENCY = 1
-    DEFAULT_MAX_DATE_WORKERS = 3
-    DEFAULT_PRODUCT_INFO_CONCURRENCY = 2
-    DEFAULT_CACHE_LOOKUP_BATCH_SIZE = 500
+    DEFAULT_MAX_DATE_WORKERS = 6
+    DEFAULT_PRODUCT_INFO_CONCURRENCY = 6
+    DEFAULT_CACHE_LOOKUP_BATCH_SIZE = 1000
     DEFAULT_CACHE_WRITE_BATCH_SIZE = 100
+    DEFAULT_TEMP_TABLE_LOOKUP_THRESHOLD = 3000
+    DEFAULT_TEMP_TABLE_INSERT_BATCH_SIZE = 5000
     PROBE_STRATEGY_VERSION = "date-range-v4"
 
     def __init__(self) -> None:
@@ -83,9 +85,12 @@ class DLsiteBonusProbeService:
         return {
             "batch_size": min(max(1, int(batch_size or default_batch_size)), int(cfg.max_batch_size)),
             "concurrency": date_concurrency,
-            "product_info_concurrency": min(date_concurrency, self.DEFAULT_PRODUCT_INFO_CONCURRENCY),
+            "product_info_concurrency": self._product_info_concurrency_for_workers(date_concurrency),
             "max_active_jobs": max(1, int(cfg.max_active_jobs or 1)),
-            "cache_lookup_batch_size": max(100, int(cfg.cache_lookup_batch_size or self.DEFAULT_CACHE_LOOKUP_BATCH_SIZE)),
+            "cache_lookup_batch_size": min(
+                max(100, int(cfg.cache_lookup_batch_size or self.DEFAULT_CACHE_LOOKUP_BATCH_SIZE)),
+                3000,
+            ),
             "cache_write_batch_size": min(
                 max(20, int(cfg.cache_write_batch_size or self.DEFAULT_CACHE_WRITE_BATCH_SIZE)),
                 self.DEFAULT_CACHE_WRITE_BATCH_SIZE,
@@ -97,6 +102,15 @@ class DLsiteBonusProbeService:
 
     def _cache_write_batch_size(self) -> int:
         return int(self.resolve_probe_runtime_limits()["cache_write_batch_size"])
+
+    def _product_info_total_concurrency(self) -> int:
+        cfg = self._bonus_probe_config()
+        return max(1, min(int(getattr(cfg, "product_info_total_concurrency", self.DEFAULT_PRODUCT_INFO_CONCURRENCY) or 1), 12))
+
+    def _product_info_concurrency_for_workers(self, worker_count: int) -> int:
+        total_concurrency = self._product_info_total_concurrency()
+        workers = max(1, int(worker_count or 1))
+        return max(1, min(total_concurrency, (total_concurrency + workers - 1) // workers))
 
     def _active_job_slot(self) -> asyncio.Semaphore:
         max_active_jobs = int(self.resolve_probe_runtime_limits()["max_active_jobs"])
@@ -444,10 +458,191 @@ class DLsiteBonusProbeService:
                     candidates_by_number.setdefault(candidate_number, f"RJ{candidate_number:0{width}d}")
         return [candidates_by_number[number] for number in sorted(candidates_by_number)]
 
+    def _build_selected_release_date_range_candidates(
+        self,
+        target_rjcodes: Sequence[str],
+        *,
+        current_date_worknos: Sequence[str],
+        next_date_worknos: Sequence[str],
+    ) -> Tuple[List[str], int, bool]:
+        targets = []
+        for rjcode in self._dedupe(target_rjcodes):
+            number = self._rj_number(rjcode)
+            if not number or number[1] < 8:
+                continue
+            targets.append((number[0], number[1], rjcode))
+        if not targets:
+            return [], 0, False
+
+        current_numbers: Dict[int, set[int]] = {}
+        for rjcode in self._dedupe(current_date_worknos):
+            number = self._rj_number(rjcode)
+            if not number or number[1] < 8:
+                continue
+            current_numbers.setdefault(number[1], set()).add(number[0])
+
+        next_numbers: Dict[int, List[int]] = {}
+        for rjcode in self._dedupe(next_date_worknos):
+            number = self._rj_number(rjcode)
+            if not number or number[1] < 8:
+                continue
+            next_numbers.setdefault(number[1], []).append(number[0])
+        for values in next_numbers.values():
+            values.sort()
+
+        candidates_by_number: Dict[int, str] = {}
+        range_count = 0
+        missing_boundary = False
+        for target_number, width, _ in targets:
+            current_right = max(
+                (number for number in current_numbers.get(width, set()) if number > target_number),
+                default=None,
+            )
+            if current_right is None:
+                missing_boundary = True
+                continue
+            right_boundary = next(
+                (number for number in next_numbers.get(width, []) if number > current_right),
+                current_right,
+            )
+            range_count += max(0, right_boundary - target_number - 1)
+            public_numbers = current_numbers.get(width, set())
+            for number in range(target_number + 1, right_boundary):
+                if number in public_numbers:
+                    continue
+                candidates_by_number.setdefault(number, f"RJ{number:0{width}d}")
+
+        candidates = [candidates_by_number[number] for number in sorted(candidates_by_number)]
+        return candidates, range_count, missing_boundary
+
+    def _build_circle_neighbor_range_candidates(
+        self,
+        *,
+        circle_id: str,
+        maker_id: str,
+        anchor_worknos: Sequence[str],
+    ) -> Tuple[List[str], int]:
+        normalized_circle = str(circle_id or "").strip()
+        normalized_maker = str(maker_id or "").strip().upper()
+        anchors = self._dedupe(anchor_worknos)
+        if not normalized_circle or not normalized_maker or not anchors:
+            return [], 0
+
+        db = SessionLocal()
+        try:
+            rows = db.query(CircleWork).filter(CircleWork.circle_id == normalized_circle).all()
+            worknos = self._public_original_worknos_from_rows(rows)
+            if not worknos:
+                return [], 0
+            metadata_rows = (
+                db.query(WorkMetadata)
+                .filter(WorkMetadata.rjcode.in_(worknos))
+                .all()
+            )
+            public_numbers: List[Tuple[int, int, str]] = []
+            for metadata in metadata_rows:
+                if bool(metadata.is_bonus_work):
+                    continue
+                if str(metadata.maker_id or "").strip().upper() != normalized_maker:
+                    continue
+                number = self._rj_number(metadata.rjcode)
+                if not number:
+                    continue
+                public_numbers.append((number[0], number[1], self.normalize_rjcode(metadata.rjcode)))
+            public_numbers.sort(key=lambda item: item[0])
+        finally:
+            db.close()
+
+        if len(public_numbers) < 2:
+            return [], 0
+
+        candidates_by_number: Dict[int, str] = {}
+        range_count = 0
+        public_number_set = {item[0] for item in public_numbers}
+        for anchor in anchors:
+            anchor_number = self._rj_number(anchor)
+            if not anchor_number:
+                continue
+            left = None
+            right = None
+            for item in public_numbers:
+                if item[0] < anchor_number[0]:
+                    left = item
+                    continue
+                if item[0] > anchor_number[0]:
+                    right = item
+                    break
+            if left is None or right is None:
+                continue
+            width = max(left[1], right[1], anchor_number[1])
+            range_count += max(0, right[0] - left[0] - 1)
+            for number in range(left[0] + 1, right[0]):
+                if number in public_number_set:
+                    continue
+                candidates_by_number.setdefault(number, f"RJ{number:0{width}d}")
+
+        return [candidates_by_number[number] for number in sorted(candidates_by_number)], range_count
+
     def _chunk(self, values: Sequence[str], size: int) -> Iterable[List[str]]:
         safe_size = max(1, int(size or self.DEFAULT_BATCH_SIZE))
         for index in range(0, len(values), safe_size):
             yield list(values[index:index + safe_size])
+
+    def _cache_rows_by_rjcodes_sync(self, db, rjcodes: Sequence[str]) -> List[DLsiteBonusProbeCache]:
+        normalized = self._dedupe(rjcodes)
+        if not normalized:
+            return []
+        if self._should_use_temp_table_lookup(db, len(normalized)):
+            try:
+                return self._cache_rows_by_temp_table_sync(db, normalized)
+            except Exception:
+                logger.warning(
+                    "[DLsite特典探测] 临时表查询缓存失败，回退分批 IN: count=%s",
+                    len(normalized),
+                    exc_info=True,
+                )
+        return self._cache_rows_by_chunked_in_sync(db, normalized)
+
+    def _cache_rows_by_chunked_in_sync(self, db, normalized: Sequence[str]) -> List[DLsiteBonusProbeCache]:
+        rows: List[DLsiteBonusProbeCache] = []
+        batch_size = self._cache_lookup_batch_size()
+        for batch in self._chunk(normalized, batch_size):
+            rows.extend(
+                db.query(DLsiteBonusProbeCache)
+                .filter(DLsiteBonusProbeCache.rjcode.in_(batch))
+                .all()
+            )
+        return rows
+
+    def _should_use_temp_table_lookup(self, db, count: int) -> bool:
+        if count < self.DEFAULT_TEMP_TABLE_LOOKUP_THRESHOLD:
+            return False
+        try:
+            bind = db.get_bind()
+            dialect_name = str(getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
+        except Exception:
+            dialect_name = ""
+        return dialect_name == "postgresql"
+
+    def _cache_rows_by_temp_table_sync(self, db, normalized: Sequence[str]) -> List[DLsiteBonusProbeCache]:
+        temp_name = f"tmp_bonus_probe_rjcodes_{uuid.uuid4().hex}"
+        connection = db.connection()
+        connection.exec_driver_sql(f"CREATE TEMP TABLE {temp_name} (rjcode text PRIMARY KEY) ON COMMIT DROP")
+        try:
+            insert_sql = f"INSERT INTO {temp_name} (rjcode) VALUES (%s) ON CONFLICT DO NOTHING"
+            for batch in self._chunk(normalized, self.DEFAULT_TEMP_TABLE_INSERT_BATCH_SIZE):
+                connection.exec_driver_sql(insert_sql, [(rjcode,) for rjcode in batch])
+            return (
+                db.query(DLsiteBonusProbeCache)
+                .from_statement(text(
+                    f"SELECT c.* FROM {DLsiteBonusProbeCache.__tablename__} c "
+                    f"JOIN {temp_name} t ON t.rjcode = c.rjcode"
+                ))
+                .all()
+            )
+        finally:
+            with suppress(Exception):
+                connection.exec_driver_sql(f"DROP TABLE IF EXISTS {temp_name}")
 
     def _candidate_shard_key(self, rjcode: Any) -> int:
         number = self._rj_number(rjcode)
@@ -647,14 +842,8 @@ class DLsiteBonusProbeService:
             return features
         db = SessionLocal()
         try:
-            for batch in self._chunk(list(missing), self._cache_lookup_batch_size()):
-                rows = (
-                    db.query(DLsiteBonusProbeCache)
-                    .filter(DLsiteBonusProbeCache.rjcode.in_(batch))
-                    .all()
-                )
-                for row in rows:
-                    features[self.normalize_rjcode(row.rjcode)] = self._feature_from_cache_row(row)
+            for row in self._cache_rows_by_rjcodes_sync(db, missing):
+                features[self.normalize_rjcode(row.rjcode)] = self._feature_from_cache_row(row)
         finally:
             db.close()
         return features
@@ -969,13 +1158,22 @@ class DLsiteBonusProbeService:
             feature.exists
             and feature.is_hidden_bonus_audio
             and feature.maker_id == maker_id
-            and feature.work_type == "SOU"
             and int(feature.price or 0) == 0
             and not bool(feature.is_sale)
             and bool(feature.is_free)
             and bool(feature.is_oly)
             and int(feature.wishlist_count or 0) == 0
         )
+
+    def _selected_hidden_hit_matches_release_date(
+        self,
+        feature: DLsiteProductProbeFeature,
+        *,
+        release_date: str,
+    ) -> bool:
+        normalized_date = self.normalize_date(release_date)
+        feature_date = self.normalize_date(feature.release_date)
+        return bool(normalized_date and (not feature_date or feature_date == normalized_date))
 
     def _public_sou_matches(self, feature: DLsiteProductProbeFeature, *, maker_id: str, release_date: str) -> bool:
         return bool(
@@ -1125,27 +1323,44 @@ class DLsiteBonusProbeService:
         circle_id: str,
         maker_id: str,
         release_date: str,
-    ) -> Tuple[List[str], List[str], str]:
+    ) -> Tuple[List[str], List[str], List[str], str]:
         worknos = self._load_indexed_public_worknos(circle_id, maker_id, release_date)
         date_page_worknos: List[str] = []
+        date_page_boundary_worknos: List[str] = []
         parse_status = "not_requested"
         try:
             summaries, parse_status = await self.dlsite_service.list_new_work_summaries_by_date(release_date, max_pages=20)
             for summary in summaries:
                 summary_date = self.normalize_date(summary.release_date)
-                if summary.workno and (not summary_date or summary_date == release_date):
-                    date_page_worknos.append(summary.workno)
-                # 日期页可能解析不到 maker_id；这种条目不作为同社团端点，避免把当天全站新作拉进探测。
-                if str(summary.maker_id or "").strip().upper() != maker_id:
-                    continue
                 if summary_date and summary_date != release_date:
                     continue
                 if summary.workno:
-                    worknos.append(summary.workno)
+                    date_page_boundary_worknos.append(summary.workno)
+                    if str(summary.maker_id or "").strip().upper() == maker_id:
+                        date_page_worknos.append(summary.workno)
+                        worknos.append(summary.workno)
         except Exception as exc:
             parse_status = "date_page_error"
             logger.warning("[DLsite特典探测] 日期页公开作品抓取失败 date=%s maker=%s error=%s", release_date, maker_id, exc)
-        return self._dedupe(worknos), self._dedupe(date_page_worknos), parse_status
+        return self._dedupe(worknos), self._dedupe(date_page_worknos), self._dedupe(date_page_boundary_worknos), parse_status
+
+    async def _load_date_page_boundary_worknos(self, release_date: str) -> Tuple[List[str], str]:
+        normalized_date = self.normalize_date(release_date)
+        if not normalized_date:
+            return [], "not_requested"
+        try:
+            summaries, parse_status = await self.dlsite_service.list_new_work_summaries_by_date(normalized_date, max_pages=20)
+            worknos = []
+            for summary in summaries:
+                summary_date = self.normalize_date(summary.release_date)
+                if summary_date and summary_date != normalized_date:
+                    continue
+                if summary.workno:
+                    worknos.append(summary.workno)
+            return self._dedupe(worknos), parse_status
+        except Exception as exc:
+            logger.warning("[DLsite特典探测] 次日日期页公开作品抓取失败 date=%s error=%s", normalized_date, exc)
+            return [], "date_page_error"
 
     def _upsert_date_row(self, db, *, maker_id: str, circle_id: str, release_date: str, gap_limit: int) -> DLsiteBonusProbeDate:
         row = (
@@ -1232,6 +1447,7 @@ class DLsiteBonusProbeService:
             circle_id,
             maker_id,
             hidden_hits,
+            probe_release_date=release_date,
             target_original_rjcodes=target_original_rjcodes,
         )
         result["inserted_count"] = inserted_count
@@ -1422,12 +1638,95 @@ class DLsiteBonusProbeService:
         candidates.sort(key=lambda item: (item[0], item[1]))
         return candidates[0][2] if candidates else None
 
+    def _explicit_bonus_original_rjcodes_sync(self, db, *, circle_id: str, bonus_rjcode: str) -> set[str]:
+        normalized_circle = str(circle_id or "").strip()
+        normalized_bonus = self.normalize_rjcode(bonus_rjcode)
+        if not normalized_bonus:
+            return set()
+
+        originals: set[str] = set()
+        for row in (
+            db.query(WorkCanonicalLink)
+            .filter(
+                WorkCanonicalLink.linked_rjcode == normalized_bonus,
+                WorkCanonicalLink.link_type == "bonus",
+            )
+            .all()
+        ):
+            original = self.normalize_rjcode(row.canonical_rjcode)
+            if original and original != normalized_bonus:
+                originals.add(original)
+
+        if not normalized_circle:
+            return originals
+
+        bonus_row = (
+            db.query(CircleWork)
+            .filter(
+                CircleWork.circle_id == normalized_circle,
+                CircleWork.canonical_rjcode == normalized_bonus,
+            )
+            .first()
+        )
+        for linked in list((bonus_row.linked_rjcodes if bonus_row else []) or []):
+            original = self.normalize_rjcode(linked)
+            if original and original != normalized_bonus:
+                originals.add(original)
+
+        original_rows = (
+            db.query(CircleWork)
+            .filter(CircleWork.circle_id == normalized_circle, CircleWork.is_bonus_work == False)  # noqa: E712
+            .all()
+        )
+        for row in original_rows:
+            linked_rjcodes = {self.normalize_rjcode(value) for value in list(row.linked_rjcodes or [])}
+            if normalized_bonus not in linked_rjcodes:
+                continue
+            original = self.normalize_rjcode(row.canonical_rjcode)
+            if original and original != normalized_bonus:
+                originals.add(original)
+        return originals
+
+    def _filter_hidden_hits_for_target_links_sync(
+        self,
+        db,
+        *,
+        circle_id: str,
+        hidden_hits: Sequence[DLsiteProductProbeFeature],
+        target_original_rjcodes: Sequence[str],
+        release_date: str = "",
+        selected_anchor_candidates: Optional[Iterable[str]] = None,
+    ) -> List[DLsiteProductProbeFeature]:
+        target_set = set(self._dedupe(target_original_rjcodes))
+        if not target_set:
+            return list(hidden_hits or [])
+        filtered: List[DLsiteProductProbeFeature] = []
+        for feature in hidden_hits or []:
+            if not self._selected_hidden_hit_matches_release_date(
+                feature,
+                release_date=release_date,
+            ):
+                continue
+            linked_originals = self._explicit_bonus_original_rjcodes_sync(
+                db,
+                circle_id=circle_id,
+                bonus_rjcode=feature.workno,
+            )
+            if linked_originals:
+                if linked_originals & target_set:
+                    filtered.append(feature)
+                continue
+            filtered.append(feature)
+        return filtered
+
     def _load_reusable_hidden_bonus_features(
         self,
         *,
         circle_id: str,
         maker_id: str,
         release_date: str,
+        target_original_rjcodes: Optional[Sequence[str]] = None,
+        selected_anchor_candidates: Optional[Iterable[str]] = None,
     ) -> List[DLsiteProductProbeFeature]:
         normalized_maker = str(maker_id or "").strip().upper()
         normalized_date = self.normalize_date(release_date)
@@ -1451,11 +1750,7 @@ class DLsiteBonusProbeService:
             features_by_rjcode: Dict[str, DLsiteProductProbeFeature] = {}
             cache_rows = []
             if hit_rjcodes:
-                cache_rows.extend(
-                    db.query(DLsiteBonusProbeCache)
-                    .filter(DLsiteBonusProbeCache.rjcode.in_(hit_rjcodes))
-                    .all()
-                )
+                cache_rows.extend(self._cache_rows_by_rjcodes_sync(db, hit_rjcodes))
             cache_rows.extend(
                 db.query(DLsiteBonusProbeCache)
                 .filter(
@@ -1471,10 +1766,18 @@ class DLsiteBonusProbeService:
                     normalized_workno = self.normalize_rjcode(feature.workno)
                     if normalized_workno:
                         features_by_rjcode[normalized_workno] = feature
-            return [
+            features = [
                 features_by_rjcode[rjcode]
                 for rjcode in sorted(features_by_rjcode, key=lambda item: (self._candidate_shard_key(item), item))
             ]
+            return self._filter_hidden_hits_for_target_links_sync(
+                db,
+                circle_id=circle_id,
+                hidden_hits=features,
+                target_original_rjcodes=target_original_rjcodes or [],
+                release_date=normalized_date,
+                selected_anchor_candidates=selected_anchor_candidates,
+            )
         finally:
             db.close()
 
@@ -1486,6 +1789,7 @@ class DLsiteBonusProbeService:
         release_date: str,
         target_rjcodes: Sequence[str],
         hidden_hits: Sequence[DLsiteProductProbeFeature],
+        selected_anchor_candidates: Optional[Iterable[str]] = None,
     ) -> set[str]:
         normalized_targets = set(self._dedupe(target_rjcodes))
         if not circle_id or not normalized_targets or not hidden_hits:
@@ -1506,26 +1810,31 @@ class DLsiteBonusProbeService:
             target_rjcodes = self._dedupe(row.canonical_rjcode for row in target_rows)
             if not target_rjcodes:
                 return set()
-            metadata_by_rj = {
-                self.normalize_rjcode(metadata.rjcode): metadata
-                for metadata in db.query(WorkMetadata)
-                .filter(WorkMetadata.rjcode.in_(target_rjcodes))
-                .all()
-            }
             covered: set[str] = set()
             for feature in hidden_hits or []:
-                original_row = self._select_original_work_for_bonus(
-                    target_rows,
-                    metadata_by_rj,
-                    bonus_rjcode=feature.workno,
+                if not self._selected_hidden_hit_matches_release_date(
+                    feature,
+                    release_date=normalized_date,
+                ):
+                    continue
+                if not self._hidden_bonus_matches(
+                    feature,
                     maker_id=normalized_maker,
-                    release_date=feature.release_date or normalized_date,
-                    trust_request_release_date=True,
+                    release_date=normalized_date,
+                ):
+                    continue
+                linked_originals = self._explicit_bonus_original_rjcodes_sync(
+                    db,
+                    circle_id=circle_id,
+                    bonus_rjcode=feature.workno,
                 )
-                if original_row is not None:
-                    normalized_original = self.normalize_rjcode(original_row.canonical_rjcode)
-                    if normalized_original:
-                        covered.add(normalized_original)
+                explicit_targets = linked_originals & normalized_targets
+                if explicit_targets:
+                    covered.update(explicit_targets)
+                    continue
+                if linked_originals:
+                    continue
+                covered.update(normalized_targets)
             return covered
         finally:
             db.close()
@@ -1651,10 +1960,12 @@ class DLsiteBonusProbeService:
         maker_id: str,
         features: Sequence[DLsiteProductProbeFeature],
         *,
+        probe_release_date: str = "",
         target_original_rjcodes: Optional[Sequence[str]] = None,
     ) -> int:
         if not circle_id or not features:
             return 0
+        normalized_probe_date = self.normalize_date(probe_release_date)
         db = SessionLocal()
         inserted_or_updated = 0
         try:
@@ -1693,11 +2004,12 @@ class DLsiteBonusProbeService:
                 rjcode = self.normalize_rjcode(feature.workno)
                 if not rjcode:
                     continue
+                effective_release_date = self.normalize_date(feature.release_date) or normalized_probe_date
                 self._upsert_bonus_hit_index(
                     db,
                     circle_id=circle_id,
                     maker_id=maker_id,
-                    release_date=feature.release_date,
+                    release_date=effective_release_date,
                     bonus_rjcode=rjcode,
                 )
                 original_row = self._select_original_work_for_bonus(
@@ -1705,7 +2017,7 @@ class DLsiteBonusProbeService:
                     metadata_by_rj,
                     bonus_rjcode=rjcode,
                     maker_id=maker_id,
-                    release_date=feature.release_date,
+                    release_date=effective_release_date,
                     trust_request_release_date=bool(target_set),
                 )
                 original_rjcode = self.normalize_rjcode(original_row.canonical_rjcode) if original_row else ""
@@ -1716,7 +2028,7 @@ class DLsiteBonusProbeService:
                 metadata.work_name = feature.title or metadata.work_name or rjcode
                 metadata.maker_id = maker_id or metadata.maker_id or ""
                 metadata.maker_name = maker_name or metadata.maker_name or ""
-                metadata.release_date = feature.release_date or metadata.release_date or ""
+                metadata.release_date = feature.release_date or effective_release_date or metadata.release_date or ""
                 metadata.price_text = "0"
                 metadata.is_bonus_work = True
                 metadata.has_bonus = False
@@ -1769,7 +2081,7 @@ class DLsiteBonusProbeService:
                         circle_id=circle_id,
                         maker_id=maker_id,
                         original_rjcode=original_rjcode,
-                        release_date=feature.release_date,
+                        release_date=effective_release_date,
                         status="has_bonus",
                     )
                     self._upsert_bonus_canonical_link(
@@ -1995,11 +2307,21 @@ class DLsiteBonusProbeService:
             int(gap_limit or self.DEFAULT_GAP_LIMIT),
             self.DEFAULT_CIRCLE_EDGE_WINDOW,
         )
+        selected_anchor_candidates: set[str] = set()
         hidden_hits_by_rjcode: Dict[str, DLsiteProductProbeFeature] = {}
 
-        def remember_hidden_hits(features: Iterable[DLsiteProductProbeFeature]) -> None:
+        def remember_hidden_hits(
+            features: Iterable[DLsiteProductProbeFeature],
+            *,
+            enforce_selected_relevance: bool = False,
+        ) -> None:
             for feature in features or []:
                 if not self._hidden_bonus_matches(feature, maker_id=normalized_maker_id, release_date=normalized_date):
+                    continue
+                if enforce_selected_relevance and selected_scope and not self._selected_hidden_hit_matches_release_date(
+                    feature,
+                    release_date=normalized_date,
+                ):
                     continue
                 normalized_workno = self.normalize_rjcode(feature.workno)
                 if not normalized_workno:
@@ -2011,6 +2333,8 @@ class DLsiteBonusProbeService:
                 circle_id=normalized_circle_id,
                 maker_id=normalized_maker_id,
                 release_date=normalized_date,
+                target_original_rjcodes=normalized_target_rjcodes if selected_scope else None,
+                selected_anchor_candidates=selected_anchor_candidates,
             )
             if reusable_hidden_hits:
                 cached_hit_count += len(reusable_hidden_hits)
@@ -2025,60 +2349,11 @@ class DLsiteBonusProbeService:
                     release_date=normalized_date,
                     target_rjcodes=normalized_target_rjcodes,
                     hidden_hits=list(hidden_hits_by_rjcode.values()),
+                    selected_anchor_candidates=selected_anchor_candidates,
                 )
                 selected_cache_covered = set(normalized_target_rjcodes).issubset(covered_targets)
-                if selected_cache_covered:
-                    hidden_hits = list(hidden_hits_by_rjcode.values())
-                    result = {
-                        "circle_id": normalized_circle_id,
-                        "maker_id": normalized_maker_id,
-                        "release_date": normalized_date,
-                        "parse_status": "cached_hidden_bonus",
-                        "public_count": 0,
-                        "date_page_public_count": 0,
-                        "sou_public_count": 0,
-                        "gap_count": 0,
-                        "circle_gap_count": 0,
-                        "circle_edge_window": circle_edge_window,
-                        "date_page_range_count": 0,
-                        "date_page_range_limit": None,
-                        "date_page_range_unbounded": True,
-                        "selected_scope": True,
-                        "target_rjcodes": normalized_target_rjcodes,
-                        "probe_count": 0,
-                        "raw_probe_count": 0,
-                        "candidate_filter_stats": {
-                            "input": 0,
-                            "cached": 0,
-                            "active": 0,
-                            "cooldown": 0,
-                            "selected": 0,
-                            "leased": 0,
-                        },
-                        "candidate_shard_count": 0,
-                        "selected_cache_covered": True,
-                        "selected_probe_stopped_on_hit": False,
-                        "candidate_shards": [],
-                        "cached_hit_count": cached_hit_count,
-                        "request_count": request_count,
-                        "hit_count": len(hidden_hits),
-                        "inserted_count": inserted_count,
-                        "budget_reached": False,
-                        "hit_rjcodes": [feature.workno for feature in hidden_hits],
-                        "reused_hit_index": bool(reusable_hidden_hits),
-                    }
-                    return self._finish_probe_date_result(
-                        circle_id=normalized_circle_id,
-                        maker_id=normalized_maker_id,
-                        release_date=normalized_date,
-                        gap_limit=gap_limit,
-                        mode_key=mode_key,
-                        hidden_hits=hidden_hits,
-                        target_original_rjcodes=normalized_target_rjcodes,
-                        result=result,
-                    )
 
-            public_worknos, date_page_worknos, parse_status = await self._load_public_worknos_for_date(
+            public_worknos, date_page_worknos, date_page_boundary_worknos, parse_status = await self._load_public_worknos_for_date(
                 normalized_circle_id,
                 normalized_maker_id,
                 normalized_date,
@@ -2106,17 +2381,33 @@ class DLsiteBonusProbeService:
                 if self._public_sou_matches(feature, maker_id=normalized_maker_id, release_date=normalized_date)
             ]
             if selected_scope:
-                circle_candidates = self._build_anchor_edge_candidates(
-                    normalized_target_rjcodes,
-                    edge_window_limit=circle_edge_window,
-                )
+                circle_candidates = []
                 circle_gap_count = 0
                 circle_budget_reached = False
-                date_page_candidates, date_page_range_count, date_page_budget_reached = self._build_range_candidates(
-                    date_page_worknos,
-                    range_limit=self.DEFAULT_DATE_RANGE_LIMIT,
-                    enforce_limit=False,
+                next_date = (datetime.strptime(normalized_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+                next_date_page_worknos, next_parse_status = await self._load_date_page_boundary_worknos(next_date)
+                if self._parse_status_blocks_conclusion(next_parse_status):
+                    raise RuntimeError(f"DLsite 次日日期页解析异常，未产出特典结论：{next_date} ({next_parse_status})")
+                date_page_candidates, date_page_range_count, missing_date_boundary = self._build_selected_release_date_range_candidates(
+                    normalized_target_rjcodes,
+                    current_date_worknos=date_page_boundary_worknos,
+                    next_date_worknos=next_date_page_worknos,
                 )
+                date_page_budget_reached = bool(missing_date_boundary)
+                if not date_page_candidates:
+                    selected_anchor_candidates = set(
+                        self._build_anchor_edge_candidates(
+                            normalized_target_rjcodes,
+                            edge_window_limit=circle_edge_window,
+                        )
+                    )
+                    circle_candidates = list(selected_anchor_candidates)
+                    date_page_candidates, date_page_range_count = self._build_circle_neighbor_range_candidates(
+                        circle_id=normalized_circle_id,
+                        maker_id=normalized_maker_id,
+                        anchor_worknos=normalized_target_rjcodes,
+                    )
+                    date_page_budget_reached = bool(missing_date_boundary and not date_page_candidates)
             else:
                 circle_candidates, circle_gap_count, circle_budget_reached = self._build_gap_candidates(
                     sou_public,
@@ -2136,15 +2427,7 @@ class DLsiteBonusProbeService:
             gap_count = circle_gap_count
             budget_reached = bool(circle_budget_reached or date_page_budget_reached)
 
-            remember_hidden_hits(cached_candidate_features.values())
-            known_hidden_numbers = [
-                number[0]
-                for number in (
-                    self._rj_number(feature.workno)
-                    for feature in hidden_hits_by_rjcode.values()
-                )
-                if number
-            ]
+            remember_hidden_hits(cached_candidate_features.values(), enforce_selected_relevance=True)
             if selected_scope and hidden_hits_by_rjcode:
                 covered_targets = self._selected_targets_with_bonus_hits(
                     circle_id=normalized_circle_id,
@@ -2152,15 +2435,9 @@ class DLsiteBonusProbeService:
                     release_date=normalized_date,
                     target_rjcodes=normalized_target_rjcodes,
                     hidden_hits=list(hidden_hits_by_rjcode.values()),
+                    selected_anchor_candidates=selected_anchor_candidates,
                 )
                 selected_cache_covered = set(normalized_target_rjcodes).issubset(covered_targets)
-                if not selected_cache_covered and known_hidden_numbers:
-                    last_hidden_number = max(known_hidden_numbers)
-                    raw_probe_candidates = [
-                        candidate
-                        for candidate in raw_probe_candidates
-                        if (self._rj_number(candidate) or (0, 0))[0] > last_hidden_number
-                    ]
 
             def emit_probe_progress(checked_count: int, total_count: int) -> None:
                 if not probe_progress_callback:
@@ -2177,12 +2454,14 @@ class DLsiteBonusProbeService:
             candidate_shards: List[Dict[str, Any]] = []
             candidate_filter_stats = {"input": 0, "cached": 0, "active": 0, "cooldown": 0, "selected": 0, "leased": 0}
             leased_probe_candidates: List[str] = []
-            if not selected_cache_covered:
+            should_probe_candidates = bool(selected_scope or not selected_cache_covered)
+            if should_probe_candidates:
                 candidate_shards, candidate_filter_stats = await self._lease_candidate_shards(
                     raw_probe_candidates,
                     shard_size=batch_size,
                 )
                 leased_probe_candidates = self._merge_candidate_shards(candidate_shards)
+                emit_probe_progress(0, len(leased_probe_candidates))
                 checked_before = 0
                 try:
                     for shard in candidate_shards:
@@ -2202,18 +2481,7 @@ class DLsiteBonusProbeService:
                         cached_hits += shard_cached_hits
                         requests += shard_requests
                         checked_before += len(shard_candidates)
-                        remember_hidden_hits(shard_features.values())
-                        if selected_scope and hidden_hits_by_rjcode:
-                            covered_targets = self._selected_targets_with_bonus_hits(
-                                circle_id=normalized_circle_id,
-                                maker_id=normalized_maker_id,
-                                release_date=normalized_date,
-                                target_rjcodes=normalized_target_rjcodes,
-                                hidden_hits=list(hidden_hits_by_rjcode.values()),
-                            )
-                            if set(normalized_target_rjcodes).issubset(covered_targets):
-                                selected_probe_stopped_on_hit = True
-                                break
+                        remember_hidden_hits(shard_features.values(), enforce_selected_relevance=True)
                 finally:
                     await self._release_candidate_shards(candidate_shards)
             cached_hit_count += cached_hits
@@ -2222,6 +2490,19 @@ class DLsiteBonusProbeService:
             if has_errors:
                 raise RuntimeError(f"DLsite RJ 探测异常，未产出特典结论：{'; '.join(error_samples)}")
             hidden_hits = list(hidden_hits_by_rjcode.values())
+            if selected_scope:
+                db = SessionLocal()
+                try:
+                    hidden_hits = self._filter_hidden_hits_for_target_links_sync(
+                        db,
+                        circle_id=normalized_circle_id,
+                        hidden_hits=hidden_hits,
+                        target_original_rjcodes=normalized_target_rjcodes,
+                        release_date=normalized_date,
+                        selected_anchor_candidates=selected_anchor_candidates,
+                    )
+                finally:
+                    db.close()
             result = {
                 "circle_id": normalized_circle_id,
                 "maker_id": normalized_maker_id,
@@ -2367,7 +2648,7 @@ class DLsiteBonusProbeService:
         total = len(dates)
         date_order = {release_date: index for index, release_date in enumerate(dates)}
         worker_count = max(1, min(int(concurrency or self.DEFAULT_CONCURRENCY), total))
-        product_info_concurrency = min(worker_count, self.DEFAULT_PRODUCT_INFO_CONCURRENCY)
+        product_info_concurrency = self._product_info_concurrency_for_workers(worker_count)
         queue: asyncio.Queue[Tuple[int, str]] = asyncio.Queue()
         result_lock = asyncio.Lock()
         stop_event = asyncio.Event()

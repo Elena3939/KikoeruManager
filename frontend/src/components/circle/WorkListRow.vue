@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { FileText, LibraryBig, Server, X, PackageCheck, Layers, ExternalLink, Calendar, Gift } from 'lucide-vue-next'
 import { useViewport } from '../../composables/useViewport'
 
@@ -29,6 +29,8 @@ const props = defineProps({
 const emit = defineEmits(['select', 'preview', 'reimport', 'image-settled'])
 
 const { isMobile } = useViewport()
+const remoteCoverUrl = computed(() => String(props.item?.remote_image_url || '').trim())
+const imageFailed = ref(false)
 
 const displayCode = computed(() => {
   if (props.codeField) return props.item[props.codeField]
@@ -121,50 +123,104 @@ function dlsiteUrl(rjcode, suffix = '_img_sam.jpg') {
   return `https://img.dlsite.jp/modpub/images2/work/doujin/${folder}/${normalized}${suffix}`
 }
 
+function imageRjcode(value) {
+  const matches = String(value || '').match(/[RVB]J\d{6,8}/gi)
+  return matches?.length ? matches[matches.length - 1].toUpperCase() : ''
+}
+
+function comparableUrl(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  try {
+    return new URL(text, globalThis.location?.origin || 'http://localhost').href
+  } catch {
+    return text
+  }
+}
+
+function uniqueImageUrls(values) {
+  const seen = new Set()
+  return values.filter(value => {
+    const normalized = comparableUrl(value)
+    if (!normalized || seen.has(normalized)) return false
+    seen.add(normalized)
+    return true
+  })
+}
+
+function toThumbnailUrl(value) {
+  const url = String(value || '').trim()
+  if (!url.includes('img.dlsite.jp')) return ''
+  if (url.includes('_img_sam.jpg')) return url
+  return url
+    .replace('img.dlsite.jp/resize/images2/', 'img.dlsite.jp/modpub/images2/')
+    .replace('_img_main_240x240.jpg', '_img_sam.jpg')
+    .replace('_img_main.jpg', '_img_sam.jpg')
+}
+
+function toResizedUrl(value) {
+  const url = String(value || '').trim()
+  if (!url.includes('img.dlsite.jp')) return ''
+  if (url.includes('_img_main_240x240.jpg')) return url
+  return url
+    .replace('img.dlsite.jp/modpub/images2/', 'img.dlsite.jp/resize/images2/')
+    .replace('_img_sam.jpg', '_img_main_240x240.jpg')
+    .replace('_img_main.jpg', '_img_main_240x240.jpg')
+}
+
+function toMainUrl(value) {
+  const url = String(value || '').trim()
+  if (!url.includes('img.dlsite.jp')) return ''
+  return url
+    .replace('img.dlsite.jp/resize/images2/', 'img.dlsite.jp/modpub/images2/')
+    .replace('_img_main_240x240.jpg', '_img_main.jpg')
+    .replace('_img_sam.jpg', '_img_main.jpg')
+}
+
 const coverUrl = computed(() => {
   const stored = String(props.item[props.imageField] || '').trim()
   if (stored && (stored.startsWith('/api/') || stored.includes('/api/circle-completion/cover/'))) return stored
-  if (stored && stored.includes('img.dlsite.jp') && stored.includes('_img_main')) return stored.replace('_img_main', '_img_sam')
+  if (stored && stored.includes('img.dlsite.jp')) return toThumbnailUrl(stored)
+  if (remoteCoverUrl.value) return toThumbnailUrl(remoteCoverUrl.value)
   if (stored) return stored
-  const code = props.item.display_rjcode || props.item.canonical_rjcode || props.item.rjcode || ''
+  const code = imageRjcode(remoteCoverUrl.value) || props.item.display_rjcode || props.item.canonical_rjcode || props.item.rjcode || ''
   return dlsiteUrl(code, '_img_sam.jpg') || null
 })
 
+watch(coverUrl, () => {
+  imageFailed.value = false
+})
+
 function onImgError(e) {
-  const src = e.target.src || ''
-  const tried = Number(e.target.dataset.fallbackIndex || 0)
-
-  // 回退链: _img_sam → _img_main_240x240 → _img_main → 隐藏
-  if (src.includes('_img_sam.jpg')) {
-    if (tried === 0) {
-      const fallback = src.replace('_img_sam.jpg', '_img_main_240x240.jpg')
-        .replace('img.dlsite.jp/modpub/images2/', 'img.dlsite.jp/resize/images2/')
-      e.target.dataset.fallbackIndex = '1'
-      e.target.src = fallback
-      return
-    }
-    if (tried === 1) {
-      const fallback = src.replace('_img_main_240x240.jpg', '_img_main.jpg')
-        .replace('img.dlsite.jp/resize/images2/', 'img.dlsite.jp/modpub/images2/')
-      e.target.dataset.fallbackIndex = '2'
-      e.target.src = fallback
-      return
-    }
-  } else if (src.includes('_img_main_240x240.jpg')) {
-    if (tried === 0) {
-      const fallback = src.replace('_img_main_240x240.jpg', '_img_main.jpg')
-        .replace('img.dlsite.jp/resize/images2/', 'img.dlsite.jp/modpub/images2/')
-      e.target.dataset.fallbackIndex = '1'
-      e.target.src = fallback
-      return
-    }
+  const stored = String(props.item[props.imageField] || '').trim()
+  const rjcode = imageRjcode(remoteCoverUrl.value) || imageRjcode(stored) || props.item.display_rjcode || props.item.canonical_rjcode || props.item.rjcode || ''
+  const fallbacks = uniqueImageUrls([
+    toThumbnailUrl(remoteCoverUrl.value),
+    toResizedUrl(remoteCoverUrl.value),
+    toMainUrl(remoteCoverUrl.value),
+    toResizedUrl(stored),
+    toMainUrl(stored),
+    dlsiteUrl(rjcode, '_img_sam.jpg'),
+    dlsiteUrl(rjcode, '_img_main_240x240.jpg')?.replace('modpub/images2/', 'resize/images2/'),
+    dlsiteUrl(rjcode, '_img_main.jpg'),
+  ])
+  const current = comparableUrl(e.target.currentSrc || e.target.src)
+  let index = Number(e.target.dataset.fallbackIndex || 0)
+  while (index < fallbacks.length) {
+    const fallback = fallbacks[index]
+    index += 1
+    if (comparableUrl(fallback) === current) continue
+    e.target.dataset.fallbackIndex = String(index)
+    e.target.src = fallback
+    return
   }
-
-  e.target.style.display = 'none'
+  imageFailed.value = true
   emit('image-settled', displayCode.value)
 }
 
-function onImgLoad() {
+function onImgLoad(event) {
+  imageFailed.value = false
+  delete event.currentTarget.dataset.fallbackIndex
   emit('image-settled', displayCode.value)
 }
 </script>
@@ -188,7 +244,7 @@ function onImgLoad() {
     <!-- 左侧缩略图 -->
     <div class="wlr-thumb">
       <img
-        v-if="imageActive && coverUrl"
+        v-if="imageActive && coverUrl && !imageFailed"
         :src="coverUrl"
         class="wlr-thumb-img"
         loading="lazy"
