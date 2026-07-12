@@ -116,6 +116,41 @@ class ProcessedArchiveCleanupService:
                 "message": "清理服务已禁用"
             }
 
+        # 归档队列在完成前可能已有一部分目标成员落到 processed 目录。任何
+        # 队列状态不可读都必须使清理失败关闭，避免删掉恢复所依赖的唯一副本。
+        try:
+            from .deferred_archive_service import get_deferred_archive_service
+
+            deferred_archive_service = get_deferred_archive_service()
+            active_target_paths = await asyncio.to_thread(
+                deferred_archive_service.active_target_paths_sync
+            )
+        except Exception:
+            logger.warning("读取延后归档目标声明失败，跳过已处理压缩包清理", exc_info=True)
+            return {
+                "deleted_count": 0,
+                "freed_space_mb": 0,
+                "deleted_archives": [],
+                "message": "延后归档队列状态不可读，已安全跳过清理",
+            }
+
+        def _normalized_path(path: str) -> str:
+            return os.path.normcase(os.path.abspath(str(path or "")))
+
+        def _physical_paths(archive: ProcessedArchive) -> list[str]:
+            paths = [
+                str((item or {}).get("target_path") or "").strip()
+                for item in list(getattr(archive, "archive_manifest", None) or [])
+                if str((item or {}).get("target_path") or "").strip()
+            ]
+            if not paths:
+                current_path = str(getattr(archive, "current_path", "") or "").strip()
+                paths = [current_path] if current_path else []
+            return paths
+
+        def _uses_active_target(archive: ProcessedArchive) -> bool:
+            return any(_normalized_path(path) in active_target_paths for path in _physical_paths(archive))
+
         # === 阶段 A：短读事务 ===
         # 之前这里是一个跨循环长事务：循环里每删一个文件都 await asyncio.to_thread
         # 跑 os.remove，期间 SQLAlchemy session 把数据库事务连续持几分钟，
@@ -126,7 +161,11 @@ class ProcessedArchiveCleanupService:
             query = db.query(ProcessedArchive)
             if config.exclude_reprocessing:
                 query = query.filter(ProcessedArchive.status != 'reprocessing')
-            all_archives = query.order_by(ProcessedArchive.processed_at.asc()).all()
+            all_archives = [
+                archive
+                for archive in query.order_by(ProcessedArchive.processed_at.asc()).all()
+                if not _uses_active_target(archive)
+            ]
 
             archives_to_delete: List[ProcessedArchive] = []
             if config.strategy == 'age':
@@ -154,6 +193,9 @@ class ProcessedArchiveCleanupService:
 
             # 把 archive 关键字段拍成纯 dict，session 关闭后照样能用
             for archive in archives_to_delete:
+                manifest = [
+                    dict(item or {}) for item in list(getattr(archive, "archive_manifest", None) or [])
+                ]
                 archives_snapshot.append({
                     "id": archive.id,
                     "filename": archive.filename,
@@ -161,6 +203,7 @@ class ProcessedArchiveCleanupService:
                     "file_size": archive.file_size or 0,
                     "file_size_mb": (archive.file_size or 0) / (1024 * 1024),
                     "current_path": archive.current_path,
+                    "archive_manifest": manifest,
                     "processed_at": archive.processed_at.isoformat() if archive.processed_at else None,
                     "process_count": archive.process_count,
                 })
@@ -196,10 +239,31 @@ class ProcessedArchiveCleanupService:
             freed_space = 0
             for snap in archives_snapshot:
                 try:
-                    physical_path = snap.get("current_path")
-                    if physical_path and os.path.exists(physical_path):
-                        await asyncio.to_thread(os.remove, physical_path)
-                        logger.debug(f"删除文件: {physical_path}")
+                    physical_paths = [
+                        str((item or {}).get("target_path") or "").strip()
+                        for item in list(snap.get("archive_manifest") or [])
+                        if str((item or {}).get("target_path") or "").strip()
+                    ]
+                    if not physical_paths:
+                        physical_path = str(snap.get("current_path") or "").strip()
+                        physical_paths = [physical_path] if physical_path else []
+                    # 读取快照到实际删除之间可能恰好有新的归档作业预留同一路径。
+                    # 再次按持久化队列核验，避免清理与恢复作业交错。
+                    protected_by_queue = False
+                    for physical_path in physical_paths:
+                        if await asyncio.to_thread(
+                            deferred_archive_service.is_target_claimed_sync,
+                            physical_path,
+                        ):
+                            protected_by_queue = True
+                            break
+                    if protected_by_queue:
+                        logger.info("跳过仍受延后归档队列保护的压缩包: %s", snap.get("filename"))
+                        continue
+                    for physical_path in physical_paths:
+                        if os.path.exists(physical_path):
+                            await asyncio.to_thread(os.remove, physical_path)
+                            logger.debug(f"删除文件: {physical_path}")
                     successfully_deleted_ids.append(snap["id"])
                     freed_space += snap["file_size"]
                 except Exception as e:

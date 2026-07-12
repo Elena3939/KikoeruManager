@@ -91,8 +91,13 @@ def detect_archive_volume_group(
     else:
         siblings = list(sibling_names)
 
+    # 保留目录中真实的大小写。Docker/Linux 的文件系统大小写敏感，不能靠
+    # f"{base}.zip" 重新拼接路径，否则 Foo.ZIP + Foo.Z01 会漏掉主卷。
+    sibling_by_casefold = {str(name).casefold(): str(name) for name in siblings}
+
     def existing(name: str) -> str:
-        return os.path.join(directory, name)
+        actual = sibling_by_casefold.get(str(name).casefold(), str(name))
+        return os.path.join(directory, actual)
 
     def collect(pattern: str) -> List[str]:
         regex = re.compile(pattern, re.IGNORECASE)

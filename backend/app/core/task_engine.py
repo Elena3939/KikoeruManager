@@ -177,6 +177,8 @@ class Task:
     
     def complete(self):
         """完成任务"""
+        if self.is_cancelled():
+            return
         with self._set_state_silent():
             self.status = TaskStatus.COMPLETED
             self.completed_at = datetime.now()
@@ -186,6 +188,8 @@ class Task:
     
     def fail(self, error: str):
         """任务失败"""
+        if self.is_cancelled():
+            return
         with self._set_state_silent():
             self.status = TaskStatus.FAILED
             self.completed_at = datetime.now()
@@ -208,6 +212,8 @@ class Task:
     
     def resume(self):
         """恢复任务"""
+        if self.is_cancelled():
+            return
         with self._set_state_silent():
             self.status = TaskStatus.PROCESSING
             self._pause_event.set()
@@ -215,6 +221,8 @@ class Task:
 
     def set_waiting_retry(self, reason: str, retry_after: datetime = None):
         """设置等待重试状态"""
+        if self.is_cancelled():
+            return
         with self._set_state_silent():
             self.status = TaskStatus.WAITING_RETRY
             self.current_step = f"等待重试: {reason}"
@@ -811,6 +819,14 @@ class TaskEngine:
         action = str(metadata.get("conflict_resolution_action") or "").strip().upper()
         if not conflict_id or not action:
             return
+
+        state = str(state or "").strip()
+        if action == "RETRY" and state == TaskStatus.WAITING_MANUAL.value:
+            # 问题作品里触发的重试再次失败时，AUTO_PROCESS 会收口到 waiting_manual。
+            # 对原 conflict 来说这已经是本次重试终态，不能继续展示为“重试中”。
+            state = "failed"
+            if not error:
+                error = str(getattr(task, "error_message", "") or getattr(task, "current_step", "") or "重试失败，仍需人工处理").strip()
 
         try:
             from ..models.database import ConflictWork, get_db
@@ -1827,13 +1843,22 @@ class TaskEngine:
                         task.id,
                     )
                     return
-                if task.status == TaskStatus.FAILED:
+                if task.status in {TaskStatus.FAILED, TaskStatus.WAITING_MANUAL}:
+                    retry_error = str(task.error_message or "").strip()
+                    if not retry_error:
+                        retry_error = str(task.current_step or "").strip() or "重试失败，仍需人工处理"
                     conflict.status = "PENDING"
-                    next_metadata["resolution_error"] = str(task.error_message or "重试失败")
+                    next_metadata["retry_result"] = "failed"
+                    next_metadata["retry_failed_at"] = datetime.now().isoformat()
+                    next_metadata["retry_task_id"] = task.id
+                    next_metadata["resolution_task_state"] = "failed"
+                    next_metadata["resolution_progress"] = int(getattr(task, "progress", 0) or 0)
+                    next_metadata["resolution_step"] = str(getattr(task, "current_step", "") or "")
+                    next_metadata["resolution_error"] = retry_error
                     task_extract_reason = str((task.task_metadata or {}).get("extract_failure_reason") or "").strip()
                     if task_extract_reason:
                         next_metadata["extract_failure_reason"] = task_extract_reason
-                    next_metadata = self._sanitize_failure_metadata(next_metadata, str(task.error_message or ""))
+                    next_metadata = self._sanitize_failure_metadata(next_metadata, retry_error)
                     conflict.new_metadata = next_metadata
                     db.commit()
                     try:
@@ -1845,7 +1870,7 @@ class TaskEngine:
                             rjcode=conflict.rjcode or getattr(task, "rjcode", None),
                             task_id=task.id,
                             source_path=str(conflict.new_path or getattr(task, "source_path", "") or ""),
-                            error_message=str(task.error_message or "重试失败"),
+                            error_message=retry_error,
                             extra_detail=self._build_retry_conflict_activity_extra(task),
                         )
                     except Exception:
@@ -3848,6 +3873,19 @@ class TaskEngine:
             task = self.tasks[task_id]
             should_log_immediately = task.status == TaskStatus.PENDING and task_id not in self.processing
             task.cancel()
+            archive_job_id = str((task.task_metadata or {}).get("archive_queue_id") or "").strip()
+            if archive_job_id:
+                try:
+                    from .deferred_archive_service import get_deferred_archive_service
+
+                    asyncio.create_task(
+                        asyncio.to_thread(
+                            get_deferred_archive_service().request_cancel_sync,
+                            archive_job_id,
+                        )
+                    )
+                except Exception:
+                    logger.debug("取消延后归档作业失败: task_id=%s job_id=%s", task_id, archive_job_id, exc_info=True)
             if task.type == TaskType.HTTP_DOWNLOAD:
                 try:
                     from .http_download_service import get_http_download_service
@@ -3878,7 +3916,7 @@ class TaskEngine:
         if not task:
             return False
 
-        if task.status in [TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED]:
+        if task_id in self.processing or task.status in [TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED]:
             raise RuntimeError("任务仍在执行中，不能清理")
 
         self.tasks.pop(task_id, None)
@@ -4659,7 +4697,58 @@ class TaskEngine:
                 break
 
     async def _archive_source_file(self, task: Task):
-        """将源压缩包移动到已处理目录并记录"""
+        """将业务完成后的源压缩包加入低优先级、可恢复的归档队列。
+
+        入库结果已经落地，归档异常不能再把业务任务改写成失败。旧的同步实现仅
+        保留给 ``skip_archive`` 的历史记录更新路径，正常文件一律交给持久化队列。
+        """
+        if task.skip_archive:
+            return await self._archive_source_file_legacy(task)
+
+        source_path = str(getattr(task, "source_path", "") or "").strip()
+        if not source_path:
+            logger.warning("源压缩包路径为空，跳过延后归档: task_id=%s", getattr(task, "id", ""))
+            return {"queued": False, "status": "skipped", "reason": "missing_source_path"}
+
+        try:
+            from .deferred_archive_service import get_deferred_archive_service
+
+            result = await get_deferred_archive_service().enqueue_task(task)
+            if result.get("queued"):
+                logger.info(
+                    "[延后归档] 已入队 task_id=%s job_id=%s source=%s",
+                    task.id,
+                    result.get("job_id"),
+                    source_path,
+                )
+                return result
+            logger.info(
+                "[延后归档] 未创建归档作业 task_id=%s source=%s reason=%s",
+                task.id,
+                source_path,
+                result.get("reason") or result.get("status"),
+            )
+            return result
+        except Exception as exc:
+            # 归档是入库后的维护工作。保留源文件并记录状态，不能倒置业务成功结果。
+            metadata = dict(task.task_metadata or {})
+            metadata.update({
+                "archive_queue_status": "queue_failed",
+                "archive_last_error": str(exc),
+            })
+            task.task_metadata = metadata
+            task.touch_metadata("archive_queue_failed")
+            logger.warning(
+                "[延后归档] 入队失败，保留源文件 task_id=%s source=%s error=%s",
+                task.id,
+                source_path,
+                exc,
+                exc_info=True,
+            )
+            return {"queued": False, "status": "queue_failed", "reason": str(exc)}
+
+    async def _archive_source_file_legacy(self, task: Task):
+        """历史重新处理路径的归档记录更新实现。"""
         import shutil
         import uuid
         import os
@@ -5667,6 +5756,22 @@ class TaskEngine:
                         cleaned_library_id, cleaned_subtitle_dir, exc_info=True,
                     )
 
+            def invalidate_subtitle_folder_summary_cache() -> None:
+                if not library_id:
+                    return
+                try:
+                    from .linked_subtitle_import_service import (
+                        invalidate_target_folder_summary_cache_for_library,
+                    )
+
+                    invalidate_target_folder_summary_cache_for_library(library_id)
+                except Exception:
+                    logger.debug(
+                        "[RJ字幕·缓存] 目录摘要失效失败 library=%s",
+                        library_id,
+                        exc_info=True,
+                    )
+
             def append_progress_log(message: str, progress: Optional[int] = None, level: str = 'info'):
                 if not message:
                     return
@@ -5693,6 +5798,7 @@ class TaskEngine:
                 )
                 deleted_subtitles = int(cleanup_result.get('deleted_subtitles') or 0)
                 cleaned_subtitle_dir = str(cleanup_result.get('subtitle_dir') or '')
+                invalidate_subtitle_folder_summary_cache()
                 task.task_metadata.update({
                     'force_rerun_deleted_subtitles': deleted_subtitles,
                     'force_rerun_cleared_subtitle_dir': cleaned_subtitle_dir,
@@ -5785,6 +5891,9 @@ class TaskEngine:
                 should_cancel=task.is_cancelled,
             )
 
+            if task.is_cancelled():
+                raise asyncio.CancelledError()
+
             download_display_map = {
                 str(item.get('name') or ''): str(item.get('display_name') or item.get('name') or '')
                 for item in result.get('download_files', []) or []
@@ -5831,6 +5940,11 @@ class TaskEngine:
                 'ai_match_result': result.get('ai_match_result', {}),
                 'ai_match_error': result.get('ai_match_error', {}),
             })
+            if str(result.get('subtitle_dir') or '').strip():
+                invalidate_subtitle_folder_summary_cache()
+
+            if task.is_cancelled():
+                raise asyncio.CancelledError()
 
             deduped_count = int(result.get('content_deduped_count') or 0)
             if deduped_count > 0:
@@ -5862,6 +5976,8 @@ class TaskEngine:
                 return
 
             if result.get('awaiting_manual_match'):
+                if task.is_cancelled():
+                    raise asyncio.CancelledError()
                 enqueue_subtitle_index_replace(str(result.get('subtitle_dir') or ''))
                 task.progress = 100
                 task.status = TaskStatus.WAITING_MANUAL
@@ -5897,6 +6013,8 @@ class TaskEngine:
                         subtitle_dir=subtitle_dir,
                         subtitle_file_count=written_count,
                     )
+                    if task.is_cancelled():
+                        raise asyncio.CancelledError()
                 except Exception:
                     logger.warning("[%s] RJ 字幕抓取完成后同步社团字幕态失败", rjcode, exc_info=True)
             else:
@@ -5907,7 +6025,15 @@ class TaskEngine:
                 task.current_step = f"部分完成，写入 {written_count}，跳过 {skipped_count}，未匹配音频 {unmatched_count}"
             logger.info(f"[{rjcode}] RJ 字幕抓取完成，写入 {written_count} 个字幕")
 
+        except asyncio.CancelledError:
+            invalidate_subtitle_folder_summary_cache()
+            enqueue_cleaned_subtitle_index_delete()
+            raise
         except Exception as e:
+            if task.is_cancelled():
+                invalidate_subtitle_folder_summary_cache()
+                enqueue_cleaned_subtitle_index_delete()
+                raise asyncio.CancelledError()
             logger.error(f"[{rjcode}] RJ 字幕抓取任务失败: {e}", exc_info=True)
             try:
                 enqueue_cleaned_subtitle_index_delete()
