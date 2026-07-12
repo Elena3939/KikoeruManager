@@ -24,6 +24,30 @@
               <SettingsNumberStepper v-model="config.baidu_netdisk.max_download_load" :min="1" :max="5" />
             </SettingsFieldCard>
           </div>
+          <div class="mini-grid two">
+            <SettingsFieldCard label="转存并发数" hint="只限制分享转存请求，不影响 BaiduPCS-Go 下载并发；建议保持 1。">
+              <SettingsNumberStepper v-model="config.baidu_netdisk.transfer_max_concurrency" :min="1" :max="5" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="转存网络重试次数" hint="仅重试 SSL EOF、连接超时及 429/5xx，不重试分享失效等业务错误。">
+              <SettingsNumberStepper v-model="config.baidu_netdisk.transfer_retry_count" :min="0" :max="8" />
+            </SettingsFieldCard>
+          </div>
+          <SettingsToggleRow
+            v-model="config.baidu_netdisk.low_speed_refresh_enabled"
+            title="持续低速自动换链"
+            subtitle="SVIP 大文件持续低于阈值时，保留 BaiduPCS-Go 断点并重新获取下载线路。"
+          />
+          <div v-if="config.baidu_netdisk.low_speed_refresh_enabled" class="mini-grid three">
+            <SettingsFieldCard label="低速阈值" hint="窗口平均速度低于该值时开始判定，单位 MB/s。">
+              <SettingsNumberStepper v-model="config.baidu_netdisk.low_speed_threshold_mbps" :min="1" :max="20" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="持续时间" hint="连续低速达到该时长后换链，单位秒。">
+              <SettingsNumberStepper v-model="config.baidu_netdisk.low_speed_duration_seconds" :min="30" :max="1800" :step="30" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="最多换链次数" hint="达到上限后保留当前线路继续下载，避免无限重试。">
+              <SettingsNumberStepper v-model="config.baidu_netdisk.low_speed_refresh_limit" :min="0" :max="5" />
+            </SettingsFieldCard>
+          </div>
           <SettingsToggleRow v-model="config.baidu_netdisk.svip_speed_enabled" title="SVIP 高速提示" subtitle="账号为 SVIP 时，工作台和任务中心显示高速模式。" />
         </div>
       </div>

@@ -3,13 +3,15 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import time
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+import requests
 
 from app.api import routes
-from app.core.baidu_netdisk_service import BaiduNetdiskError, BaiduNetdiskService
+from app.core.baidu_netdisk_service import BaiduNetdiskError, BaiduNetdiskLowSpeedError, BaiduNetdiskService
 from app.core.task_engine import Task, TaskStatus, TaskType
 
 
@@ -788,6 +790,339 @@ async def test_baidu_web_transfer_uses_decoded_sekey(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_baidu_web_transfer_retries_ssl_eof_with_fresh_logids(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.baidu_netdisk.transfer_retry_count = 4
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+    web_logids = iter(["web-1", "web-2", "web-3"])
+    dp_logids = iter(["dp-1", "dp-2", "dp-3"])
+    monkeypatch.setattr(service, "_make_web_logid", lambda _cookie: next(web_logids))
+    monkeypatch.setattr(service, "_make_dp_logid", lambda: next(dp_logids))
+    monkeypatch.setattr(service, "_wait_baidu_transfer_retry", lambda *_args, **_kwargs: asyncio.sleep(0))
+    calls = []
+
+    async def fake_form_json(url, *_args, **_kwargs):
+        query = parse_qs(urlparse(url).query)
+        calls.append((query["logid"][0], query["dp-logid"][0]))
+        if len(calls) < 3:
+            raise requests.exceptions.SSLError("UNEXPECTED_EOF_WHILE_READING")
+        return {"errno": 0, "info": [{"errno": 0}]}
+
+    monkeypatch.setattr(service, "_fetch_form_json", fake_form_json)
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-transfer-retry-test",
+    )
+    row = {
+        "name": "RJ01449225.7z",
+        "fs_id": "970978578267394",
+        "share_numeric_id": "67834288070",
+        "share_uk": "1101216675428",
+        "randsk": "rand-sk",
+        "shorturl": "13EU1GlLvUULM43mkqhoZxA",
+        "status": "downloading",
+    }
+
+    result = await service._transfer_share_item_with_retry(
+        task,
+        row,
+        "BDUSS=test; BDCLND=rand-sk",
+        "/km_test",
+        share_url="https://pan.baidu.com/s/13EU1GlLvUULM43mkqhoZxA",
+        pass_code="",
+        download_files=[row],
+        started=time.monotonic(),
+        cancel_event=asyncio.Event(),
+    )
+
+    assert result["errno"] == 0
+    assert calls == [("web-1", "dp-1"), ("web-2", "dp-2"), ("web-3", "dp-3")]
+    assert row["transfer_attempt"] == 3
+    assert row["transfer_status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_baidu_web_transfer_business_error_is_not_retried(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.baidu_netdisk.transfer_retry_count = 4
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+    calls = 0
+
+    async def fake_form_json(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {"errno": -9, "errmsg": "分享文件不存在"}
+
+    monkeypatch.setattr(service, "_fetch_form_json", fake_form_json)
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-transfer-business-error-test",
+    )
+    row = {
+        "name": "missing.7z",
+        "fs_id": "1",
+        "share_numeric_id": "2",
+        "share_uk": "3",
+        "randsk": "rand-sk",
+        "status": "downloading",
+    }
+
+    with pytest.raises(BaiduNetdiskError, match="分享文件不存在"):
+        await service._transfer_share_item_with_retry(
+            task,
+            row,
+            "BDUSS=test; BDCLND=rand-sk",
+            "/km_test",
+            share_url="https://pan.baidu.com/s/test",
+            pass_code="",
+            download_files=[row],
+            started=time.monotonic(),
+            cancel_event=asyncio.Event(),
+        )
+
+    assert calls == 1
+    assert row["transfer_status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_baidu_web_transfer_is_globally_serialized(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.baidu_netdisk.transfer_max_concurrency = 1
+    config.baidu_netdisk.transfer_retry_count = 0
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+    active = 0
+    max_active = 0
+
+    async def fake_transfer(*_args, **_kwargs):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return {"errno": 0}
+
+    monkeypatch.setattr(service, "_transfer_share_item_by_web", fake_transfer)
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-transfer-concurrency-test",
+    )
+    rows = [{"name": f"RJ{index}.7z", "status": "downloading"} for index in range(8)]
+
+    await asyncio.gather(*[
+        service._transfer_share_item_with_retry(
+            task,
+            row,
+            "BDUSS=test",
+            f"/km_test_{index}",
+            share_url="https://pan.baidu.com/s/test",
+            pass_code="",
+            download_files=rows,
+            started=time.monotonic(),
+            cancel_event=asyncio.Event(),
+        )
+        for index, row in enumerate(rows)
+    ])
+
+    assert max_active == 1
+    assert all(row["transfer_status"] == "completed" for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_baidu_web_transfer_retry_wait_can_be_cancelled(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.baidu_netdisk.transfer_retry_count = 4
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    async def fail_transfer(*_args, **_kwargs):
+        raise requests.exceptions.SSLError("UNEXPECTED_EOF_WHILE_READING")
+
+    monkeypatch.setattr(service, "_transfer_share_item_by_web", fail_transfer)
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-transfer-cancel-test",
+    )
+    row = {"name": "RJ01449225.7z", "status": "downloading"}
+    cancel_event = asyncio.Event()
+    transfer_task = asyncio.create_task(service._transfer_share_item_with_retry(
+        task,
+        row,
+        "BDUSS=test",
+        "/km_test",
+        share_url="https://pan.baidu.com/s/test",
+        pass_code="",
+        download_files=[row],
+        started=time.monotonic(),
+        cancel_event=cancel_event,
+    ))
+    while row.get("transfer_status") != "retrying":
+        await asyncio.sleep(0)
+    cancel_event.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await transfer_task
+
+
+@pytest.mark.asyncio
+async def test_baidu_web_transfer_accepts_confirmed_remote_file_after_ssl_eof(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.baidu_netdisk.transfer_retry_count = 4
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+    calls = 0
+
+    async def fail_transfer(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise requests.exceptions.SSLError("UNEXPECTED_EOF_WHILE_READING")
+
+    async def confirm_transferred():
+        return True
+
+    monkeypatch.setattr(service, "_transfer_share_item_by_web", fail_transfer)
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-transfer-confirm-test",
+    )
+    row = {"name": "RJ01449225.7z", "status": "downloading"}
+
+    result = await service._transfer_share_item_with_retry(
+        task,
+        row,
+        "BDUSS=test",
+        "/km_test",
+        share_url="https://pan.baidu.com/s/test",
+        pass_code="",
+        download_files=[row],
+        started=time.monotonic(),
+        cancel_event=asyncio.Event(),
+        confirm_transferred=confirm_transferred,
+    )
+
+    assert calls == 1
+    assert result["confirmed_after_error"] is True
+    assert row["transfer_confirmed_after_error"] is True
+    assert any("已确认远端文件名称和大小一致" in item["message"] for item in task.task_metadata["progress_log"])
+
+
+@pytest.mark.asyncio
+async def test_baidu_remote_transfer_confirmation_requires_matching_size(monkeypatch, tmp_path):
+    service = BaiduNetdiskService()
+
+    async def fake_run(args, *, on_output=None, **_kwargs):
+        assert args[1:] == ["ls", "/km_test"]
+        on_output("- 123456 RJ01449225.7z")
+
+    monkeypatch.setattr(service, "_run_baidu_pcs_go_command", fake_run)
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-transfer-size-confirm-test",
+    )
+
+    matched = await service._confirm_remote_temporary_transfer_file(
+        "BaiduPCS-Go",
+        "/km_test",
+        "RJ01449225.7z",
+        123456,
+        env={},
+        log_path=str(tmp_path / "pcsgo.log"),
+        task=task,
+        cancel_event=asyncio.Event(),
+    )
+    mismatched = await service._confirm_remote_temporary_transfer_file(
+        "BaiduPCS-Go",
+        "/km_test",
+        "RJ01449225.7z",
+        654321,
+        env={},
+        log_path=str(tmp_path / "pcsgo.log"),
+        task=task,
+        cancel_event=asyncio.Event(),
+    )
+
+    assert matched is True
+    assert mismatched is False
+
+
+@pytest.mark.asyncio
+async def test_baidu_remote_transfer_confirmation_prefers_exact_web_list_size(monkeypatch, tmp_path):
+    service = BaiduNetdiskService()
+    pcsgo_calls = []
+
+    async def fake_fetch(url, *_args, **_kwargs):
+        assert url.startswith("https://pan.baidu.com/api/list?")
+        assert parse_qs(urlparse(url).query)["dir"] == ["/km_test"]
+        return {"errno": 0, "list": [{"server_filename": "RJ01449225.7z", "size": 123456}]}
+
+    async def fake_run(*_args, **_kwargs):
+        pcsgo_calls.append(True)
+
+    monkeypatch.setattr(service, "_fetch_json", fake_fetch)
+    monkeypatch.setattr(service, "_run_baidu_pcs_go_command", fake_run)
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-transfer-web-list-confirm-test",
+    )
+
+    matched = await service._confirm_remote_temporary_transfer_file(
+        "BaiduPCS-Go",
+        "/km_test",
+        "RJ01449225.7z",
+        123456,
+        row={"bdstoken": "token"},
+        cookie="BDUSS=test",
+        env={},
+        log_path=str(tmp_path / "pcsgo.log"),
+        task=task,
+        cancel_event=asyncio.Event(),
+    )
+
+    assert matched is True
+    assert pcsgo_calls == []
+
+
+def test_baidu_transfer_error_sanitizes_sensitive_query_parameters():
+    service = BaiduNetdiskService()
+    message = (
+        "https://pan.baidu.com/share/transfer?sekey=secret&logid=log-secret&dp-logid=dp-secret "
+        "randsk=rand-secret bdstoken=token-secret"
+    )
+
+    sanitized = service._sanitize_error(message)
+
+    assert "secret" not in sanitized
+    assert "sekey=***" in sanitized
+    assert "logid=***" in sanitized
+    assert "dp-logid=***" in sanitized
+    assert "randsk=***" in sanitized
+    assert "bdstoken=***" in sanitized
+
+
+@pytest.mark.asyncio
 async def test_baidu_download_uses_web_transfer_before_pcsgo_download(monkeypatch, tmp_path):
     service = BaiduNetdiskService()
     config = DummyConfig()
@@ -808,7 +1143,7 @@ async def test_baidu_download_uses_web_transfer_before_pcsgo_download(monkeypatc
         })
         return {"errno": 0}
 
-    async def fake_run_pcsgo(args, *, env, log_path, task, cancel_event, ignore_task_cancel=False, on_output=None, heartbeat_message="", max_runtime_seconds=0):
+    async def fake_run_pcsgo(args, *, env, log_path, task, cancel_event, ignore_task_cancel=False, on_output=None, abort_check=None, heartbeat_message="", max_runtime_seconds=0):
         pcsgo_commands.append(tuple(args[1:]))
         if len(args) > 1 and args[1] == "download":
             savedir = args[args.index("--saveto") + 1]
@@ -879,6 +1214,113 @@ async def test_baidu_download_uses_web_transfer_before_pcsgo_download(monkeypatc
     assert (tmp_path / "staging" / "RJ01534331.rar").read_bytes() == b"rar"
 
 
+@pytest.mark.asyncio
+async def test_baidu_low_speed_refresh_reuses_existing_pcsgo_checkpoint(monkeypatch, tmp_path):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.storage.temp_path = str(tmp_path / "temp")
+    config.baidu_netdisk.vip_type = 2
+    config.baidu_netdisk.low_speed_refresh_enabled = True
+    config.baidu_netdisk.low_speed_threshold_mbps = 3
+    config.baidu_netdisk.low_speed_duration_seconds = 180
+    config.baidu_netdisk.low_speed_refresh_limit = 2
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+    monkeypatch.setattr(service, "_resolve_baidu_pcs_go_path", lambda: "C:/fake/BaiduPCS-Go.exe")
+    monkeypatch.setattr(service, "_remote_temporary_transfer_dir", lambda _task: "/km_20260712_190054_9ae558")
+
+    transfer_calls = []
+    download_savedirs = []
+    download_abort_checks = []
+
+    async def fake_transfer(row, cookie, remote_tmp_dir, *, share_url, pass_code=""):
+        transfer_calls.append(remote_tmp_dir)
+        return {"errno": 0}
+
+    async def fake_run_pcsgo(
+        args,
+        *,
+        env,
+        log_path,
+        task,
+        cancel_event,
+        ignore_task_cancel=False,
+        on_output=None,
+        abort_check=None,
+        heartbeat_message="",
+        max_runtime_seconds=0,
+    ):
+        if args[1] != "download":
+            return
+        savedir = args[args.index("--saveto") + 1]
+        download_savedirs.append(savedir)
+        download_abort_checks.append(abort_check)
+        checkpoint = Path(savedir) / "RJ01648657.7z.BaiduPCS-Go-downloading"
+        if len(download_savedirs) == 1:
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint.write_bytes(b"existing-checkpoint")
+            if on_output:
+                on_output("下载中 600MiB/1GiB 58% 2MiB/s")
+            raise BaiduNetdiskLowSpeedError(2 * 1024 * 1024, 180, 600 * 1024 * 1024)
+        if len(download_savedirs) == 2:
+            assert checkpoint.read_bytes() == b"existing-checkpoint"
+            if on_output:
+                on_output("下载中 50MiB/1GiB 4% 1.5MiB/s")
+            raise BaiduNetdiskLowSpeedError(int(1.5 * 1024 * 1024), 180, 650 * 1024 * 1024)
+
+        assert checkpoint.read_bytes() == b"existing-checkpoint"
+        completed = Path(savedir) / "RJ01648657.7z"
+        completed.write_bytes(b"completed")
+
+    monkeypatch.setattr(service, "_transfer_share_item_by_web", fake_transfer)
+    monkeypatch.setattr(service, "_run_baidu_pcs_go_command", fake_run_pcsgo)
+
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-low-speed-refresh-test",
+    )
+    row = {
+        "name": "RJ01648657.7z",
+        "relative_path": "RJ01648657.7z",
+        "share_url": "https://pan.baidu.com/s/test?pwd=0402",
+        "pass_code": "0402",
+        "fs_id": "732325025154301",
+        "share_numeric_id": "60130084160",
+        "share_uk": "1635081079",
+        "randsk": "rand-sk",
+        "total": 1024 * 1024 * 1024,
+        "size": 1024 * 1024 * 1024,
+        "status": "downloading",
+        "progress": 0,
+        "downloaded": 0,
+    }
+    target_path = tmp_path / "staging" / "RJ01648657.7z"
+
+    await service._download_share_item_via_temporary_transfer(
+        task,
+        str(tmp_path / "staging"),
+        str(target_path),
+        row,
+        [row],
+        time.monotonic(),
+        asyncio.Event(),
+    )
+
+    assert transfer_calls == ["/km_20260712_190054_9ae558"]
+    assert len(download_savedirs) == 3
+    assert len(set(download_savedirs)) == 1
+    assert download_abort_checks[0] is not None
+    assert download_abort_checks[1] is not None
+    assert download_abort_checks[2] is None
+    assert target_path.read_bytes() == b"completed"
+    assert row["link_refresh_attempt"] == 2
+    assert row["checkpoint_bytes"] == 650 * 1024 * 1024
+    assert row["link_refresh_status"] == "completed"
+    assert any("复用旧断点" in item["message"] for item in task.task_metadata["progress_log"])
+
+
 def test_baidu_pcsgo_output_updates_download_runtime(monkeypatch):
     service = BaiduNetdiskService()
     monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: DummyConfig())
@@ -918,6 +1360,110 @@ def test_baidu_pcsgo_output_updates_download_runtime(monkeypatch):
     assert task.task_metadata["download_runtime"]["transferred_bytes"] == row["downloaded"]
     assert task.task_metadata["download_runtime"]["speed_bytes_per_sec"] == row["speed_bytes_per_sec"]
     assert any("BaiduPCS-Go" in item["message"] for item in task.task_metadata["progress_log"])
+
+
+def test_baidu_pcsgo_resume_progress_keeps_checkpoint_offset(monkeypatch):
+    service = BaiduNetdiskService()
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: DummyConfig())
+    checkpoint = 600 * 1024 * 1024
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-resume-progress-test",
+    )
+    row = {
+        "name": "RJ01648657.7z",
+        "relative_path": "RJ01648657.7z",
+        "status": "downloading",
+        "progress": 58,
+        "downloaded": checkpoint,
+        "total": 1024 * 1024 * 1024,
+        "size": 1024 * 1024 * 1024,
+        "speed_bytes_per_sec": 0,
+    }
+
+    service._update_pcsgo_transfer_progress(
+        task,
+        row,
+        [row],
+        time.monotonic() - 5,
+        "下载中 10MiB/1GiB 1% 4MiB/s",
+        {
+            "last_emit_at": 0.0,
+            "last_log_at": 0.0,
+            "resume_checkpoint_bytes": checkpoint,
+        },
+    )
+
+    assert row["downloaded"] == checkpoint + 10 * 1024 * 1024
+    assert row["progress"] >= 59
+
+
+def test_baidu_low_speed_window_uses_downloaded_byte_delta():
+    service = BaiduNetdiskService()
+    row = {
+        "downloaded": 100 * 1024 * 1024,
+        "total": 1024 * 1024 * 1024,
+    }
+    state = {}
+
+    assert service._check_baidu_low_speed(
+        row,
+        state,
+        threshold_bytes=3 * 1024 * 1024,
+        duration_seconds=180,
+        now=0,
+    ) is None
+
+    row["downloaded"] += 2 * 1024 * 1024 * 180
+    error = service._check_baidu_low_speed(
+        row,
+        state,
+        threshold_bytes=3 * 1024 * 1024,
+        duration_seconds=180,
+        now=180,
+    )
+
+    assert isinstance(error, BaiduNetdiskLowSpeedError)
+    assert error.average_speed_bytes == 2 * 1024 * 1024
+    assert error.checkpoint_bytes == row["downloaded"]
+    assert row["low_speed_window_bytes_per_sec"] == 2 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_baidu_pcsgo_command_aborts_only_current_process_for_low_speed(tmp_path):
+    service = BaiduNetdiskService()
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-low-speed-process-abort-test",
+    )
+    checks = 0
+
+    def abort_check():
+        nonlocal checks
+        checks += 1
+        if checks >= 2:
+            return BaiduNetdiskLowSpeedError(1024 * 1024, 180, 256 * 1024 * 1024)
+        return None
+
+    started = time.monotonic()
+    with pytest.raises(BaiduNetdiskLowSpeedError):
+        await service._run_baidu_pcs_go_command(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            env=os.environ.copy(),
+            log_path=str(tmp_path / "baidupcs-go.log"),
+            task=task,
+            cancel_event=asyncio.Event(),
+            abort_check=abort_check,
+        )
+
+    assert time.monotonic() - started < 10
+    assert not task.is_cancelled()
 
 
 def test_baidu_upload_args_and_remote_dir_are_normalized(monkeypatch):
@@ -1386,6 +1932,7 @@ async def test_baidu_start_download_uses_pcsgo_temporary_transfer_and_cleans_rem
         cancel_event,
         ignore_task_cancel=False,
         on_output=None,
+        abort_check=None,
         heartbeat_message="",
         max_runtime_seconds=0,
     ):
@@ -1851,6 +2398,7 @@ async def test_baidu_start_download_cancels_and_retries_remote_cleanup(monkeypat
         cancel_event,
         ignore_task_cancel=False,
         on_output=None,
+        abort_check=None,
         heartbeat_message="",
         max_runtime_seconds=0,
     ):
@@ -1980,6 +2528,7 @@ async def test_baidu_start_download_prefers_raw_selected_items_without_preview(m
         cancel_event,
         ignore_task_cancel=False,
         on_output=None,
+        abort_check=None,
         heartbeat_message="",
         max_runtime_seconds=0,
     ):

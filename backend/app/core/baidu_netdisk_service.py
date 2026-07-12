@@ -59,10 +59,25 @@ _BAIDU_PREVIEW_TOTAL_TIMEOUT_SECONDS = 38.0
 _BAIDU_PREVIEW_ITEM_TIMEOUT_SECONDS = 24.0
 _BAIDU_PREVIEW_HTTP_TIMEOUT_SECONDS = 8.0
 _BAIDU_PREVIEW_MAX_CONCURRENCY = 4
+_BAIDU_LOW_SPEED_MIN_FILE_SIZE_BYTES = 512 * 1024 * 1024
+_BAIDU_TRANSFER_RETRY_DELAYS_SECONDS = (0, 2, 5, 12, 30)
 
 
 class BaiduNetdiskError(ValueError):
     """百度网盘下载的可预期业务错误。"""
+
+
+class BaiduNetdiskLowSpeedError(BaiduNetdiskError):
+    """BaiduPCS-Go 持续低速，需要保留断点并重新获取下载线路。"""
+
+    def __init__(self, average_speed_bytes: int, window_seconds: int, checkpoint_bytes: int):
+        self.average_speed_bytes = max(0, int(average_speed_bytes or 0))
+        self.window_seconds = max(0, int(window_seconds or 0))
+        self.checkpoint_bytes = max(0, int(checkpoint_bytes or 0))
+        super().__init__(
+            f"BaiduPCS-Go 持续低速：近 {self.window_seconds} 秒平均 "
+            f"{self.average_speed_bytes / 1024 / 1024:.2f} MB/s"
+        )
 
 
 def _now_iso() -> str:
@@ -264,6 +279,8 @@ class BaiduNetdiskService:
         self._raw_preview_cache: Dict[str, Dict[str, Any]] = {}
         self._download_slot_lock = threading.Lock()
         self._download_slot_active = 0
+        self._transfer_slot_lock = threading.Lock()
+        self._transfer_slot_active = 0
 
     def _config(self):
         return get_config().baidu_netdisk
@@ -2605,14 +2622,16 @@ class BaiduNetdiskService:
                 browser_like=use_requests,
             )
             if use_requests:
-                response = requests.post(
-                    url,
-                    data={key: str(value or "") for key, value in (data or {}).items()},
-                    headers=headers,
-                    timeout=timeout,
-                )
-                response.raise_for_status()
-                return response.json()
+                headers["Connection"] = "close"
+                with requests.Session() as session:
+                    response = session.post(
+                        url,
+                        data={key: str(value or "") for key, value in (data or {}).items()},
+                        headers=headers,
+                        timeout=timeout,
+                    )
+                    response.raise_for_status()
+                    return response.json()
             request = Request(url, data=body, headers=headers)
             with urlopen(request, timeout=timeout) as response:
                 body_text = response.read().decode("utf-8", errors="replace")
@@ -4169,6 +4188,164 @@ class BaiduNetdiskService:
                 with self._download_slot_lock:
                     self._download_slot_active = max(0, self._download_slot_active - 1)
 
+    def _baidu_transfer_limits(self) -> tuple[int, int]:
+        cfg = self._config()
+        max_concurrency = self._bounded_pcsgo_int(
+            getattr(cfg, "transfer_max_concurrency", 1),
+            default=1,
+            minimum=1,
+            maximum=5,
+        )
+        retry_count = self._bounded_pcsgo_int(
+            getattr(cfg, "transfer_retry_count", 4),
+            default=4,
+            minimum=0,
+            maximum=8,
+        )
+        return max_concurrency, retry_count
+
+    @contextlib.asynccontextmanager
+    async def _acquire_global_transfer_slot(
+        self,
+        task,
+        row: Dict[str, Any],
+        cancel_event: asyncio.Event,
+    ) -> AsyncIterator[None]:
+        limit, _retry_count = self._baidu_transfer_limits()
+        row["transfer_status"] = "waiting"
+        row["waiting_transfer_slot"] = True
+        acquired = False
+        try:
+            while True:
+                await self._check_task_active(task, cancel_event)
+                limit, _retry_count = self._baidu_transfer_limits()
+                with self._transfer_slot_lock:
+                    if self._transfer_slot_active < limit:
+                        self._transfer_slot_active += 1
+                        acquired = True
+                        break
+                await asyncio.sleep(0.25)
+            row["waiting_transfer_slot"] = False
+            row["transfer_slot_limit"] = limit
+            row["transfer_status"] = "transferring"
+            yield
+        finally:
+            row["waiting_transfer_slot"] = False
+            if acquired:
+                with self._transfer_slot_lock:
+                    self._transfer_slot_active = max(0, self._transfer_slot_active - 1)
+
+    def _is_transient_baidu_transfer_error(self, exc: Exception) -> bool:
+        if isinstance(exc, (
+            requests.exceptions.SSLError,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ConnectTimeout,
+            requests.exceptions.ReadTimeout,
+        )):
+            return True
+        if isinstance(exc, requests.exceptions.HTTPError):
+            response = getattr(exc, "response", None)
+            return int(getattr(response, "status_code", 0) or 0) in {429, 500, 502, 503, 504}
+        return False
+
+    async def _wait_baidu_transfer_retry(
+        self,
+        task,
+        cancel_event: asyncio.Event,
+        delay_seconds: int,
+    ) -> None:
+        deadline = time.monotonic() + max(0, delay_seconds)
+        while True:
+            await self._check_task_active(task, cancel_event)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                await asyncio.wait_for(cancel_event.wait(), timeout=min(0.5, remaining))
+            except asyncio.TimeoutError:
+                continue
+            await self._check_task_active(task, cancel_event)
+
+    async def _transfer_share_item_with_retry(
+        self,
+        task,
+        row: Dict[str, Any],
+        cookie: str,
+        remote_tmp_dir: str,
+        *,
+        share_url: str,
+        pass_code: str,
+        download_files: List[Dict[str, Any]],
+        started: float,
+        cancel_event: asyncio.Event,
+        confirm_transferred: Optional[Callable[[], Any]] = None,
+    ) -> Dict[str, Any]:
+        _max_concurrency, retry_count = self._baidu_transfer_limits()
+        total_attempts = retry_count + 1
+        transfer_row = dict(row)
+        row.update({
+            "transfer_attempt": 0,
+            "transfer_retry_limit": retry_count,
+            "transfer_next_retry_seconds": 0,
+        })
+        async with self._acquire_global_transfer_slot(task, row, cancel_event):
+            for attempt in range(1, total_attempts + 1):
+                await self._check_task_active(task, cancel_event)
+                row.update({
+                    "transfer_status": "transferring",
+                    "transfer_attempt": attempt,
+                    "transfer_next_retry_seconds": 0,
+                })
+                self._refresh_runtime(task, download_files, started=started, current=row)
+                try:
+                    result = await self._transfer_share_item_by_web(
+                        transfer_row,
+                        cookie,
+                        remote_tmp_dir,
+                        share_url=share_url,
+                        pass_code=pass_code,
+                    )
+                    row["transfer_status"] = "completed"
+                    self._refresh_runtime(task, download_files, started=started, current=row)
+                    return result
+                except Exception as exc:
+                    is_transient = self._is_transient_baidu_transfer_error(exc)
+                    if is_transient and confirm_transferred is not None:
+                        with contextlib.suppress(Exception):
+                            if await confirm_transferred():
+                                row.update({
+                                    "transfer_status": "completed",
+                                    "transfer_next_retry_seconds": 0,
+                                    "transfer_confirmed_after_error": True,
+                                })
+                                self._append_log(
+                                    task,
+                                    "百度转存响应中断，但已确认远端文件名称和大小一致，继续高速下载",
+                                    "warning",
+                                )
+                                self._refresh_runtime(task, download_files, started=started, current=row)
+                                return {"errno": 0, "confirmed_after_error": True}
+                    if not is_transient or attempt >= total_attempts:
+                        row["transfer_status"] = "failed"
+                        self._refresh_runtime(task, download_files, started=started, current=row)
+                        raise
+                    delay = _BAIDU_TRANSFER_RETRY_DELAYS_SECONDS[
+                        min(attempt, len(_BAIDU_TRANSFER_RETRY_DELAYS_SECONDS) - 1)
+                    ]
+                    row.update({
+                        "transfer_status": "retrying",
+                        "transfer_next_retry_seconds": delay,
+                    })
+                    self._append_log(
+                        task,
+                        f"百度转存连接异常，{delay} 秒后重试 {attempt}/{retry_count}："
+                        f"{self._sanitize_error(exc)}",
+                        "warning",
+                    )
+                    self._refresh_runtime(task, download_files, started=started, current=row)
+                    await self._wait_baidu_transfer_retry(task, cancel_event, delay)
+        raise BaiduNetdiskError("百度分享转存重试流程异常结束")
+
     def _network_download_budget_limit(self) -> int:
         cfg = getattr(get_config(), "resource_budget", None)
         if cfg is None or not bool(getattr(cfg, "enabled", True)):
@@ -4267,6 +4444,68 @@ class BaiduNetdiskService:
             "--retry",
             "5",
         ]
+
+    def _baidu_low_speed_refresh_policy(self, row: Dict[str, Any]) -> tuple[bool, int, int, int]:
+        cfg = self._config()
+        total_bytes = _safe_int(row.get("total") or row.get("size"))
+        enabled = bool(getattr(cfg, "low_speed_refresh_enabled", True))
+        enabled = enabled and self._is_svip() and total_bytes >= _BAIDU_LOW_SPEED_MIN_FILE_SIZE_BYTES
+        threshold_mbps = self._bounded_pcsgo_int(
+            getattr(cfg, "low_speed_threshold_mbps", 3),
+            default=3,
+            minimum=1,
+            maximum=20,
+        )
+        duration_seconds = self._bounded_pcsgo_int(
+            getattr(cfg, "low_speed_duration_seconds", 180),
+            default=180,
+            minimum=30,
+            maximum=1800,
+        )
+        refresh_limit = self._bounded_pcsgo_int(
+            getattr(cfg, "low_speed_refresh_limit", 2),
+            default=2,
+            minimum=0,
+            maximum=5,
+        )
+        return enabled and refresh_limit > 0, threshold_mbps * 1024 * 1024, duration_seconds, refresh_limit
+
+    def _check_baidu_low_speed(
+        self,
+        row: Dict[str, Any],
+        state: Dict[str, Any],
+        *,
+        threshold_bytes: int,
+        duration_seconds: int,
+        now: Optional[float] = None,
+    ) -> Optional[BaiduNetdiskLowSpeedError]:
+        current_time = float(now if now is not None else time.monotonic())
+        downloaded = max(0, _safe_int(row.get("downloaded")))
+        samples = state.setdefault("speed_samples", [])
+        last_sample_at = float(state.get("last_sample_at") or 0)
+        if not samples or current_time - last_sample_at >= 1:
+            samples.append((current_time, downloaded))
+            state["last_sample_at"] = current_time
+
+        cutoff = current_time - max(1, int(duration_seconds))
+        while len(samples) > 2 and float(samples[1][0]) <= cutoff:
+            samples.pop(0)
+        if len(samples) < 2:
+            return None
+
+        first_at, first_bytes = samples[0]
+        window_seconds = current_time - float(first_at)
+        if window_seconds < duration_seconds:
+            return None
+
+        average_speed = max(0, int((downloaded - int(first_bytes)) / max(window_seconds, 1)))
+        state["window_speed_bytes_per_sec"] = average_speed
+        state["window_seconds"] = int(window_seconds)
+        row["low_speed_window_bytes_per_sec"] = average_speed
+        row["low_speed_window_seconds"] = int(window_seconds)
+        if average_speed >= max(1, int(threshold_bytes)):
+            return None
+        return BaiduNetdiskLowSpeedError(average_speed, int(window_seconds), downloaded)
 
     def _baidu_pcs_go_upload_args(self, pcsgo_path: str, source_paths: List[str], remote_dir: str, conflict_policy: str) -> List[str]:
         max_parallel, max_upload_load = self._baidu_pcs_go_upload_limits()
@@ -4380,12 +4619,28 @@ class BaiduNetdiskService:
             )
             task.update_progress(max(2, task.progress), "已创建百度网盘临时目录，开始转存")
             await self._check_task_active(task, cancel_event)
-            await self._transfer_share_item_by_web(
+            await self._transfer_share_item_with_retry(
+                task,
                 row,
                 cookie,
                 remote_tmp_dir,
                 share_url=share_url,
                 pass_code=pass_code,
+                download_files=download_files,
+                started=started,
+                cancel_event=cancel_event,
+                confirm_transferred=lambda: self._confirm_remote_temporary_transfer_file(
+                    pcsgo_path,
+                    remote_tmp_dir,
+                    expected_name,
+                    expected_size,
+                    row=row,
+                    cookie=cookie,
+                    env=env,
+                    log_path=log_path,
+                    task=task,
+                    cancel_event=cancel_event,
+                ),
             )
             self._append_log(task, f"百度网盘分享文件已转存到临时目录 {remote_tmp_dir}", "info")
             max_parallel, _max_download_load = self._baidu_pcs_go_download_limits()
@@ -4396,24 +4651,97 @@ class BaiduNetdiskService:
                 "info",
             )
             task.update_progress(max(2, task.progress), "百度网盘转存完成，开始高速下载")
-            progress_state = {"last_emit_at": 0.0, "last_log_at": 0.0}
+            low_speed_enabled, low_speed_threshold, low_speed_duration, refresh_limit = (
+                self._baidu_low_speed_refresh_policy(row)
+            )
+            row.update({
+                "link_refresh_attempt": 0,
+                "link_refresh_limit": refresh_limit if low_speed_enabled else 0,
+                "link_refresh_status": "monitoring" if low_speed_enabled else "disabled",
+                "low_speed_threshold_bytes_per_sec": low_speed_threshold if low_speed_enabled else 0,
+                "low_speed_duration_seconds": low_speed_duration if low_speed_enabled else 0,
+            })
             async with get_resource_budget_service().acquire("network_download", reason="baidu.pcsgo_download"):
-                await self._run_baidu_pcs_go_command(
-                    self._baidu_pcs_go_download_args(pcsgo_path, remote_tmp_dir, savedir),
-                    env=env,
-                    log_path=log_path,
-                    task=task,
-                    cancel_event=cancel_event,
-                    heartbeat_message="BaiduPCS-Go 正在高速下载临时目录",
-                    on_output=lambda line: self._update_pcsgo_transfer_progress(
-                        task,
-                        row,
-                        download_files,
-                        started,
-                        line,
-                        progress_state,
-                    ),
-                )
+                total_attempts = refresh_limit + 1 if low_speed_enabled else 1
+                for attempt_index in range(total_attempts):
+                    resume_checkpoint_bytes = max(0, _safe_int(row.get("checkpoint_bytes"))) if attempt_index > 0 else 0
+                    progress_state = {
+                        "last_emit_at": 0.0,
+                        "last_log_at": 0.0,
+                        "resume_checkpoint_bytes": resume_checkpoint_bytes,
+                    }
+                    low_speed_state: Dict[str, Any] = {}
+                    should_monitor_low_speed = low_speed_enabled and attempt_index < refresh_limit
+                    if attempt_index > 0:
+                        checkpoint_bytes = max(0, _safe_int(row.get("downloaded")))
+                        row.update({
+                            "link_refresh_attempt": attempt_index,
+                            "link_refresh_status": "resuming",
+                            "checkpoint_bytes": checkpoint_bytes,
+                        })
+                        self._append_log(
+                            task,
+                            f"百度线路已刷新 {attempt_index}/{refresh_limit}，复用旧断点 "
+                            f"{checkpoint_bytes / 1024 / 1024:.2f} MB 继续下载",
+                            "info",
+                        )
+                    if low_speed_enabled and not should_monitor_low_speed and attempt_index >= refresh_limit:
+                        row["link_refresh_status"] = "limit_reached"
+                        self._append_log(
+                            task,
+                            f"百度线路刷新已达上限 {refresh_limit} 次，保留当前断点并继续下载",
+                            "warning",
+                        )
+                    self._refresh_runtime(task, download_files, started=started, current=row)
+                    try:
+                        await self._run_baidu_pcs_go_command(
+                            self._baidu_pcs_go_download_args(pcsgo_path, remote_tmp_dir, savedir),
+                            env=env,
+                            log_path=log_path,
+                            task=task,
+                            cancel_event=cancel_event,
+                            heartbeat_message="BaiduPCS-Go 正在高速下载临时目录",
+                            on_output=lambda line: self._update_pcsgo_transfer_progress(
+                                task,
+                                row,
+                                download_files,
+                                started,
+                                line,
+                                progress_state,
+                            ),
+                            abort_check=(
+                                lambda: self._check_baidu_low_speed(
+                                    row,
+                                    low_speed_state,
+                                    threshold_bytes=low_speed_threshold,
+                                    duration_seconds=low_speed_duration,
+                                )
+                            ) if should_monitor_low_speed else None,
+                        )
+                        row["link_refresh_status"] = "completed"
+                        break
+                    except BaiduNetdiskLowSpeedError as exc:
+                        refresh_number = attempt_index + 1
+                        row.update({
+                            "link_refresh_attempt": refresh_number,
+                            "link_refresh_status": "refreshing",
+                            "checkpoint_bytes": exc.checkpoint_bytes,
+                            "low_speed_window_bytes_per_sec": exc.average_speed_bytes,
+                            "low_speed_window_seconds": exc.window_seconds,
+                            "speed_bytes_per_sec": 0,
+                        })
+                        task.current_step = f"持续低速，正在刷新百度线路 {refresh_number}/{refresh_limit}"
+                        task.mark_changed("progress")
+                        self._append_log(
+                            task,
+                            f"检测到持续低速：近 {exc.window_seconds} 秒平均 "
+                            f"{exc.average_speed_bytes / 1024 / 1024:.2f} MB/s，"
+                            f"保留 {exc.checkpoint_bytes / 1024 / 1024:.2f} MB 断点并刷新百度线路 "
+                            f"{refresh_number}/{refresh_limit}",
+                            "warning",
+                        )
+                        self._refresh_runtime(task, download_files, started=started, current=row)
+                        await self._check_task_active(task, cancel_event)
             downloaded_path = self._find_baidu_pcs_go_downloaded_file(savedir, expected_name, expected_size)
             if not downloaded_path:
                 tail = self._read_text_tail(log_path)
@@ -4500,6 +4828,80 @@ class BaiduNetdiskService:
             "未找到",
             "没有找到",
         ))
+
+    async def _confirm_remote_temporary_transfer_file(
+        self,
+        pcsgo_path: str,
+        remote_tmp_dir: str,
+        expected_name: str,
+        expected_size: int,
+        *,
+        row: Optional[Dict[str, Any]] = None,
+        cookie: str = "",
+        env: Dict[str, str],
+        log_path: str,
+        task,
+        cancel_event: asyncio.Event,
+    ) -> bool:
+        expected_base = os.path.basename(str(expected_name or "").replace("\\", "/").rstrip("/"))
+        expected_bytes = max(0, int(expected_size or 0))
+        if not expected_base or expected_bytes <= 0:
+            return False
+        if cookie:
+            query = urlencode({
+                "dir": remote_tmp_dir,
+                "order": "name",
+                "desc": "0",
+                "showempty": "0",
+                "web": "1",
+                "page": "1",
+                "num": "100",
+                "channel": "chunlei",
+                "app_id": "250528",
+                "bdstoken": str((row or {}).get("bdstoken") or ""),
+                "logid": self._make_web_logid(cookie),
+                "clienttype": "0",
+            })
+            with contextlib.suppress(Exception):
+                data = await self._fetch_json(
+                    f"https://pan.baidu.com/api/list?{query}",
+                    cookie,
+                    timeout=20,
+                    referer="https://pan.baidu.com/disk/home",
+                    use_requests=True,
+                )
+                if _safe_int(data.get("errno", data.get("err_no", 0)), 0) == 0:
+                    for item in list(data.get("list") or []):
+                        if not isinstance(item, dict):
+                            continue
+                        name = str(item.get("server_filename") or item.get("name") or "").strip()
+                        size = _safe_int(item.get("size") or item.get("size_bytes"))
+                        if name == expected_base and size == expected_bytes:
+                            return True
+        output_lines: List[str] = []
+        try:
+            await self._run_baidu_pcs_go_command(
+                [pcsgo_path, "ls", remote_tmp_dir],
+                env=env,
+                log_path=log_path,
+                task=task,
+                cancel_event=cancel_event,
+                on_output=output_lines.append,
+                heartbeat_message="正在确认百度转存结果",
+                max_runtime_seconds=30,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return False
+        for raw_line in output_lines:
+            line = str(raw_line or "").strip()
+            if expected_base not in line:
+                continue
+            size_text = line.replace(expected_base, " ")
+            if re.search(rf"(?<!\d){expected_bytes}(?!\d)", size_text):
+                return True
+        return False
 
     async def _cleanup_remote_temporary_transfer_dir(
         self,
@@ -4659,6 +5061,7 @@ class BaiduNetdiskService:
         cancel_event: asyncio.Event,
         ignore_task_cancel: bool = False,
         on_output: Optional[Callable[[str], None]] = None,
+        abort_check: Optional[Callable[[], Optional[Exception]]] = None,
         heartbeat_message: str = "",
         max_runtime_seconds: int = 0,
     ) -> None:
@@ -4712,6 +5115,15 @@ class BaiduNetdiskService:
                     code = proc.poll()
                     if code is not None:
                         break
+                    abort_error = abort_check() if abort_check else None
+                    if abort_error is not None:
+                        with contextlib.suppress(Exception):
+                            proc.terminate()
+                        with contextlib.suppress(Exception):
+                            await asyncio.to_thread(proc.wait, timeout=5)
+                        with contextlib.suppress(Exception):
+                            proc.kill()
+                        raise abort_error
                     if max_runtime_seconds and time.monotonic() - command_started_at >= max_runtime_seconds:
                         with contextlib.suppress(Exception):
                             proc.terminate()
@@ -4846,13 +5258,19 @@ class BaiduNetdiskService:
         if size_match:
             downloaded = self._parse_pcsgo_size(size_match.group("done"), size_match.group("done_unit"))
             total = self._parse_pcsgo_size(size_match.group("total"), size_match.group("total_unit"))
+            effective_total = max(total, int(row.get("total") or row.get("size") or 0))
+            resume_checkpoint = max(0, _safe_int(state.get("resume_checkpoint_bytes")))
+            if resume_checkpoint and downloaded < resume_checkpoint:
+                downloaded += resume_checkpoint
+                if effective_total:
+                    downloaded = min(effective_total, downloaded)
             if downloaded >= int(row.get("downloaded") or 0):
                 row["downloaded"] = downloaded
             if total > int(row.get("total") or 0):
                 row["total"] = total
                 row["size"] = max(int(row.get("size") or 0), total)
-            if total > 0:
-                row["progress"] = max(int(row.get("progress") or 0), min(99, int(downloaded / total * 100)))
+            if effective_total > 0:
+                row["progress"] = max(int(row.get("progress") or 0), min(99, int(downloaded / effective_total * 100)))
             parsed_any = True
 
         speed_match = re.search(
@@ -4863,6 +5281,9 @@ class BaiduNetdiskService:
         if speed_match:
             row["speed_bytes_per_sec"] = self._parse_pcsgo_size(speed_match.group("speed"), speed_match.group("unit"))
             parsed_any = True
+
+        if parsed_any and str(row.get("link_refresh_status") or "") == "resuming":
+            row["link_refresh_status"] = "monitoring"
 
         if "下载" in text or "转存" in text or "秒传" in text:
             if now - float(state.get("last_log_at") or 0) >= 12:
@@ -5146,8 +5567,15 @@ class BaiduNetdiskService:
         transferred = sum(int(row.get("downloaded") or (row.get("size") if row.get("status") == "completed" else 0) or 0) for row in download_files)
         speed = sum(int(row.get("speed_bytes_per_sec") or 0) for row in active)
         previous_runtime = dict(task.task_metadata.get("download_runtime") or {})
+        runtime_row = current if isinstance(current, dict) and current else (active[0] if active else {})
+        link_refresh_status = str(runtime_row.get("link_refresh_status") or previous_runtime.get("link_refresh_status") or "")
+        transfer_status = str(runtime_row.get("transfer_status") or previous_runtime.get("transfer_status") or "")
+        if transfer_status in {"waiting", "transferring", "retrying"}:
+            runtime_status = transfer_status
+        else:
+            runtime_status = "refreshing" if link_refresh_status in {"refreshing", "resuming"} else "downloading"
         runtime = {
-            "status": "downloading",
+            "status": runtime_status,
             "total_files": len(download_files),
             "completed_files": len(completed),
             "failed_files": len(failed),
@@ -5156,10 +5584,34 @@ class BaiduNetdiskService:
             "transferred_bytes": transferred,
             "total_bytes": total_bytes,
             "speed_bytes_per_sec": speed,
-            "current_file_name": str((current or {}).get("name") or (active[0].get("name") if active else "") or ""),
-            "current_relative_path": str((current or {}).get("relative_path") or ""),
+            "current_file_name": str(runtime_row.get("name") or ""),
+            "current_relative_path": str(runtime_row.get("relative_path") or ""),
             "elapsed_seconds": int(time.monotonic() - started),
             "speed_label": "百度网盘 SVIP 高速" if self._is_svip() else "百度网盘下载",
+            "link_refresh_attempt": _safe_int(runtime_row.get("link_refresh_attempt", previous_runtime.get("link_refresh_attempt"))),
+            "link_refresh_limit": _safe_int(runtime_row.get("link_refresh_limit", previous_runtime.get("link_refresh_limit"))),
+            "link_refresh_status": link_refresh_status,
+            "transfer_status": transfer_status,
+            "transfer_attempt": _safe_int(runtime_row.get("transfer_attempt", previous_runtime.get("transfer_attempt"))),
+            "transfer_retry_limit": _safe_int(
+                runtime_row.get("transfer_retry_limit", previous_runtime.get("transfer_retry_limit"))
+            ),
+            "transfer_next_retry_seconds": _safe_int(
+                runtime_row.get("transfer_next_retry_seconds", previous_runtime.get("transfer_next_retry_seconds"))
+            ),
+            "checkpoint_bytes": _safe_int(runtime_row.get("checkpoint_bytes", previous_runtime.get("checkpoint_bytes"))),
+            "low_speed_window_bytes_per_sec": _safe_int(
+                runtime_row.get("low_speed_window_bytes_per_sec", previous_runtime.get("low_speed_window_bytes_per_sec"))
+            ),
+            "low_speed_window_seconds": _safe_int(
+                runtime_row.get("low_speed_window_seconds", previous_runtime.get("low_speed_window_seconds"))
+            ),
+            "low_speed_threshold_bytes_per_sec": _safe_int(
+                runtime_row.get("low_speed_threshold_bytes_per_sec", previous_runtime.get("low_speed_threshold_bytes_per_sec"))
+            ),
+            "low_speed_duration_seconds": _safe_int(
+                runtime_row.get("low_speed_duration_seconds", previous_runtime.get("low_speed_duration_seconds"))
+            ),
         }
         task.task_metadata["download_files"] = download_files
         task.task_metadata["download_runtime"] = runtime
@@ -5168,7 +5620,20 @@ class BaiduNetdiskService:
         else:
             unit = 90 / max(len(download_files), 1)
             task.progress = max(task.progress, min(95, int(2 + len(completed) * unit + sum(int(row.get("progress") or 0) for row in active) / 100 * unit)))
-        task.current_step = runtime["current_file_name"] or f"百度网盘下载中 {len(completed)}/{len(download_files)}"
+        if runtime_status == "waiting":
+            task.current_step = f"等待百度转存槽：{runtime['current_file_name'] or '未命名文件'}"
+        elif runtime_status == "transferring":
+            task.current_step = f"正在百度转存：{runtime['current_file_name'] or '未命名文件'}"
+        elif runtime_status == "retrying":
+            task.current_step = (
+                f"百度转存连接异常，等待重试 {runtime['transfer_attempt']}/{runtime['transfer_retry_limit']}"
+            )
+        elif runtime_status == "refreshing":
+            task.current_step = (
+                f"持续低速，正在刷新百度线路 {runtime['link_refresh_attempt']}/{runtime['link_refresh_limit']}"
+            )
+        else:
+            task.current_step = runtime["current_file_name"] or f"百度网盘下载中 {len(completed)}/{len(download_files)}"
         task.mark_changed("progress")
 
     def _append_log(self, task, message: str, level: str = "info") -> None:
@@ -5336,6 +5801,16 @@ class BaiduNetdiskService:
         text = re.sub(r"(BDUSS(?:_BFESS)?=)[^;\s]+", r"\1***", text)
         text = re.sub(r"(STOKEN=)[^;\s]+", r"\1***", text)
         text = re.sub(r"(BDCLND=)[^;\s]+", r"\1***", text)
+        text = re.sub(
+            r"(?i)([?&](?:sekey|logid|dp-logid|randsk|bdstoken)=)[^&\s]+",
+            r"\1***",
+            text,
+        )
+        text = re.sub(
+            r"(?i)\b(sekey|logid|dp-logid|randsk|bdstoken)\s*[:=]\s*([^&,;\s}]+)",
+            lambda match: f"{match.group(1)}=***",
+            text,
+        )
         return text
 
     async def cancel_task(self, task_id: str) -> None:
