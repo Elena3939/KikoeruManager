@@ -590,7 +590,7 @@ export const logApi = {
     const suffix = query.toString()
     return apiUrl(`/logs/stream${suffix ? `?${suffix}` : ''}`)
   },
-  search: async (q = '', levels = [], limit = 500, cursor = 0, options = {}) => {
+  search: async (q = '', levels = [], limit = 500, cursor = '', options = {}) => {
     const params = { limit, cursor }
     if (q) params.q = q
     if (levels.length) params.levels = levels.join(',')
@@ -2086,7 +2086,8 @@ export const rjSubtitleApi = {
       library_id: options.libraryId || undefined,
       scan_depth: options.scanDepth ?? 3
     }, {
-      timeout: options.timeout ?? RJ_SUBTITLE_SCAN_TIMEOUT
+      timeout: options.timeout ?? RJ_SUBTITLE_SCAN_TIMEOUT,
+      signal: options.signal,
     })
     return response.data
   },
@@ -2157,12 +2158,16 @@ export const rjSubtitleApi = {
       ai_match_mode: options.aiMatchMode || options.ai_match_mode || 'rule_ai_auto',
       ai_confidence_threshold: options.aiConfidenceThreshold ?? options.ai_confidence_threshold ?? null,
       batch_context: options.batchContext || null
+    }, {
+      signal: options.signal,
     })
     return response.data
   },
 
-  status: async () => {
-    const response = await apiClient.get('/rj-subtitle/status')
+  status: async (options = {}) => {
+    const response = await apiClient.get('/rj-subtitle/status', {
+      signal: options.signal,
+    })
     return response.data
   },
 
@@ -2204,9 +2209,11 @@ export const rjSubtitleApi = {
     return response.data
   },
 
-  checkSubtitleAvailability: async (rjcode) => {
+  checkSubtitleAvailability: async (rjcode, options = {}) => {
     const response = await apiClient.post('/rj-subtitle/subtitle-availability', {
       rjcode
+    }, {
+      signal: options.signal,
     })
     return response.data
   },
@@ -2215,6 +2222,8 @@ export const rjSubtitleApi = {
     const response = await apiClient.post('/rj-subtitle/folder-subtitle-state', {
       folder_path: folderPath,
       library_id: options.libraryId || undefined
+    }, {
+      signal: options.signal,
     })
     return response.data
   }

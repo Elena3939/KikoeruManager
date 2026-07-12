@@ -16,8 +16,11 @@ import shutil
 import tempfile
 import uuid
 from collections import defaultdict
+from copy import deepcopy
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,9 @@ class RJSubtitleService:
     SUBTITLE_EXTENSIONS = {'.lrc', '.vtt', '.srt', '.ass', '.ssa'}
     AUDIO_EXTENSIONS = {'.wav', '.mp3', '.flac', '.m4a', '.ogg', '.wma', '.aac'}
     CHINESE_LANGS = {'CHI_HANS', 'CHI_SIMP', 'CHI_HANT', 'CHI_TRAD'}
+    _AVAILABILITY_CACHE_SCHEMA_VERSION = "v1"
+    _AVAILABILITY_CACHE_L1_MAX_SIZE = 512
+    _AVAILABILITY_CACHE_L1_TTL_SECONDS = 30
     # CJK 字符标记：子串匹配即可（几乎不会出现误命中）
     _CHINESE_MARKERS_CJK = frozenset([
         '中文', '汉化', '字幕', '中字', '简中', '简体', '繁中', '繁體', '繁体',
@@ -41,6 +47,13 @@ class RJSubtitleService:
 
         self.asmr_service = get_asmr_download_service()
         self.subtitle_service = get_subtitle_sync_service()
+        self._subtitle_availability_cache = TTLCache(
+            max_size=self._AVAILABILITY_CACHE_L1_MAX_SIZE,
+            ttl_seconds=self._AVAILABILITY_CACHE_L1_TTL_SECONDS,
+            name="rj_subtitle.availability",
+        )
+        self._subtitle_availability_inflight: Dict[str, asyncio.Task] = {}
+        self._subtitle_availability_inflight_lock = asyncio.Lock()
 
     def extract_rjcode(self, value: str) -> Optional[str]:
         """从路径或名称中提取 RJ 号"""
@@ -930,6 +943,146 @@ class RJSubtitleService:
 
         return best_source, attempts
 
+    def _get_subtitle_availability_cache_state(self) -> Tuple[TTLCache, Dict[str, asyncio.Task], asyncio.Lock]:
+        """兼容测试中绕过 __init__ 构造的轻量 service。"""
+        if not hasattr(self, "_subtitle_availability_cache"):
+            self._subtitle_availability_cache = TTLCache(
+                max_size=self._AVAILABILITY_CACHE_L1_MAX_SIZE,
+                ttl_seconds=self._AVAILABILITY_CACHE_L1_TTL_SECONDS,
+                name="rj_subtitle.availability",
+            )
+        if not hasattr(self, "_subtitle_availability_inflight"):
+            self._subtitle_availability_inflight = {}
+        if not hasattr(self, "_subtitle_availability_inflight_lock"):
+            self._subtitle_availability_inflight_lock = asyncio.Lock()
+        return (
+            self._subtitle_availability_cache,
+            self._subtitle_availability_inflight,
+            self._subtitle_availability_inflight_lock,
+        )
+
+    def _subtitle_availability_redis_service(self):
+        try:
+            from .redis_service import get_redis_service
+
+            service = get_redis_service()
+            return service if service.is_enabled() else None
+        except Exception:
+            logger.debug("[RJ字幕·缓存] 获取 Redis 服务失败", exc_info=True)
+            return None
+
+    def _get_cached_subtitle_availability(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        cache, _inflight, _lock = self._get_subtitle_availability_cache_state()
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict):
+            return deepcopy(cached)
+
+        service = self._subtitle_availability_redis_service()
+        if service is None:
+            return None
+        try:
+            cached = service.get_json("rj-subtitle", "subtitle-availability", cache_key)
+        except Exception:
+            logger.debug("[RJ字幕·缓存] Redis 读取可用性失败 key=%s", cache_key, exc_info=True)
+            return None
+        if not isinstance(cached, dict):
+            return None
+        cache[cache_key] = deepcopy(cached)
+        return deepcopy(cached)
+
+    def _set_cached_subtitle_availability(self, cache_key: str, payload: Dict[str, Any]) -> None:
+        cache, _inflight, _lock = self._get_subtitle_availability_cache_state()
+        cache[cache_key] = deepcopy(payload)
+        service = self._subtitle_availability_redis_service()
+        if service is None:
+            return
+        try:
+            service.set_json(
+                "rj-subtitle",
+                "subtitle-availability",
+                cache_key,
+                payload,
+                ttl_seconds=service.short_cache_ttl_seconds(),
+            )
+        except Exception:
+            logger.debug("[RJ字幕·缓存] Redis 写入可用性失败 key=%s", cache_key, exc_info=True)
+
+    @staticmethod
+    def _can_cache_subtitle_absence(attempts: List[Dict[str, Any]]) -> bool:
+        """仅缓存完整成功查询后的无字幕结论，绝不缓存网络/鉴权等不稳定失败。"""
+        if not attempts:
+            return False
+        for attempt in attempts:
+            if not isinstance(attempt, dict):
+                return False
+            if str(attempt.get("reason") or "").strip():
+                return False
+            if "subtitle_count" not in attempt:
+                return False
+            try:
+                if int(attempt.get("subtitle_count") or 0) > 0:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        return True
+
+    async def probe_cached_subtitle_availability(self, rjcode: str) -> Dict[str, Any]:
+        """读取远程字幕可用性，使用 L1/L2 缓存和同 RJ 单飞避免请求风暴。"""
+        normalized_rjcode = str(rjcode or "").strip().upper()
+        if not normalized_rjcode:
+            raise ValueError("RJ号不能为空")
+        cache_key = f"{self._AVAILABILITY_CACHE_SCHEMA_VERSION}|{normalized_rjcode}"
+        cached = self._get_cached_subtitle_availability(cache_key)
+        if cached is not None:
+            return cached
+
+        cache, inflight, lock = self._get_subtitle_availability_cache_state()
+
+        async def load() -> Dict[str, Any]:
+            source, attempts = await self.find_best_subtitle_source(normalized_rjcode)
+            payload = {
+                "rjcode": normalized_rjcode,
+                "has_subtitle": bool(source),
+                "selected_source": {
+                    "rjcode": source.get("rjcode", ""),
+                    "lang": source.get("lang", ""),
+                    "work_type": source.get("work_type", ""),
+                    "title": source.get("title", ""),
+                    "subtitle_count": len(source.get("subtitle_files", []) or []),
+                } if source else None,
+                "attempts": list(attempts or []),
+            }
+            if source or self._can_cache_subtitle_absence(payload["attempts"]):
+                self._set_cached_subtitle_availability(cache_key, payload)
+            return payload
+
+        async with lock:
+            cached = self._get_cached_subtitle_availability(cache_key)
+            if cached is not None:
+                return cached
+            task = inflight.get(cache_key)
+            if task is None:
+                task = asyncio.create_task(
+                    load(),
+                    name=f"rj-subtitle-availability:{normalized_rjcode}",
+                )
+                inflight[cache_key] = task
+
+                # 所有 HTTP 等待者都可能先断开；完成回调负责回收单飞槽位，
+                # 不能依赖某个等待者最终走到 finally。
+                def cleanup_inflight(completed_task: asyncio.Task) -> None:
+                    if inflight.get(cache_key) is completed_task:
+                        inflight.pop(cache_key, None)
+
+                task.add_done_callback(cleanup_inflight)
+
+        try:
+            # 一个 HTTP 请求断开时不能取消共享的远程探测；其他等待者及 L2 缓存仍可复用结果。
+            return deepcopy(await asyncio.shield(task))
+        finally:
+            # done callback 已负责回收；保留 finally 仅让调用方取消自己的等待。
+            pass
+
     def _build_audio_index(self, audio_files: List[Any], enable_metadata_match: bool = True) -> List[Dict]:
         audio_index = []
         for audio_item in audio_files:
@@ -1499,6 +1652,7 @@ class RJSubtitleService:
         task_id: str = "",
         rjcode: str = "",
         progress_callback: Optional[Callable[[int, str], None]] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Any]:
         from ..config.settings import get_config
         from .ai_subtitle_match_service import AI_ACTIVE_MODES, get_ai_subtitle_match_service, normalize_ai_match_mode
@@ -1519,12 +1673,15 @@ class RJSubtitleService:
                 },
             }
 
+        if should_cancel and should_cancel():
+            raise asyncio.CancelledError()
+
         if progress_callback:
             progress_callback(86, 'AI 分析字幕配对')
 
         audio_index = self._build_audio_index(audio_files, enable_metadata_match=enable_metadata_match)
         subtitle_groups = self._group_subtitles(subtitle_files)
-        return await get_ai_subtitle_match_service().build_auto_match_result(
+        result = await get_ai_subtitle_match_service().build_auto_match_result(
             config=ai_config,
             audio_index=audio_index,
             subtitle_groups=subtitle_groups,
@@ -1535,6 +1692,9 @@ class RJSubtitleService:
             task_id=task_id,
             rjcode=rjcode,
         )
+        if should_cancel and should_cancel():
+            raise asyncio.CancelledError()
+        return result
 
     def _is_synology_error_code(self, exc: Exception, code: int) -> bool:
         message = str(exc)
@@ -2679,7 +2839,11 @@ class RJSubtitleService:
                     subtitle['media_download_url'],
                     dest_path,
                     progress_callback=download_progress,
+                    cancel_check=should_cancel,
                 )
+
+                if should_cancel and should_cancel():
+                    raise asyncio.CancelledError()
 
                 if ok:
                     downloaded_files.append({
@@ -2775,6 +2939,7 @@ class RJSubtitleService:
                 task_id=task_id,
                 rjcode=rjcode,
                 progress_callback=progress_callback,
+                should_cancel=should_cancel,
             )
             match_result = ai_result.get('match_result') or match_result
             ai_metadata = ai_result.get('metadata') or {}
@@ -2979,7 +3144,11 @@ class RJSubtitleService:
                     subtitle['media_download_url'],
                     dest_path,
                     progress_callback=download_progress,
+                    cancel_check=should_cancel,
                 )
+
+                if should_cancel and should_cancel():
+                    raise asyncio.CancelledError()
 
                 if ok:
                     downloaded_files.append({
@@ -3074,6 +3243,7 @@ class RJSubtitleService:
                 task_id=task_id,
                 rjcode=rjcode,
                 progress_callback=progress_callback,
+                should_cancel=should_cancel,
             )
             match_result = ai_result.get('match_result') or match_result
             ai_metadata = ai_result.get('metadata') or {}

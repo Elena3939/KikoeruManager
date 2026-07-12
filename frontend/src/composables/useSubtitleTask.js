@@ -1,6 +1,6 @@
 import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { rjSubtitleApi } from '../api'
+import { isCanceledApiRequest, rjSubtitleApi } from '../api'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { normalizeTaskCenterRealtimePayloads } from './taskCenterEventUtils'
 import { useRealtimeEvents } from './useRealtimeEvents'
@@ -1414,11 +1414,12 @@ export function useSubtitleTask ({
 
   // ─── Async API functions ─────────────────────────────────────────────────
   async function refreshRJSubtitleStatus (showMessage = false, options = {}) {
-    const { silent = false } = options
+    const { silent = false, signal } = options
     clearSubtitleStatusPoll()
     if (!silent) subtitleTasksLoading.value = true
     try {
-      const data = await rjSubtitleApi.status()
+      const data = await rjSubtitleApi.status({ signal })
+      if (signal?.aborted) return
       const detailTaskIds = new Set([
         subtitleActiveTaskId.value,
         subtitleInspectorInfo.value.taskId
@@ -1451,6 +1452,7 @@ export function useSubtitleTask ({
       scheduleSubtitleStatusPoll(effectiveSubtitleTasks.value)
       if (showMessage) ElMessage.success('字幕任务状态已刷新')
     } catch (error) {
+      if (signal?.aborted || isCanceledApiRequest(error)) return
       if (!silent) {
         ElMessage.error('获取字幕任务状态失败: ' + (error.response?.data?.detail || error.message))
       }

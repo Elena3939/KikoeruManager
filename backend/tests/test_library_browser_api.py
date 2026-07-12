@@ -36,6 +36,55 @@ class _FakeJsonRequest:
         return self._payload
 
 
+def test_legacy_library_mutations_invalidate_subtitle_folder_summary_cache(monkeypatch):
+    library = SimpleNamespace(id="library-a")
+    invalidated = []
+
+    class _Manager:
+        def get_library_definition(self, library_id):
+            return library if library_id == library.id else None
+
+        def find_local_library_for_path(self, _path):
+            return library
+
+        async def rename(self, _library_id, old_path, new_name):
+            return {"new_path": f"{old_path}-{new_name}"}
+
+        async def delete(self, _library_id, _path, *, confirmed=False):
+            return {"deleted": bool(confirmed)}
+
+        async def batch_delete(self, _library_id, paths, *, confirmed=False):
+            return {
+                "success_count": len(paths) if confirmed else 0,
+                "failed_paths": [],
+            }
+
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: _Manager())
+    monkeypatch.setattr(
+        routes_module,
+        "_invalidate_rj_subtitle_folder_summary_cache",
+        lambda library_id: invalidated.append(library_id),
+    )
+
+    asyncio.run(routes_module.rename_library_file(_FakeJsonRequest({
+        "path": "D:/library/RJ00000001",
+        "new_name": "RJ00000001 renamed",
+        "library_id": library.id,
+    })))
+    asyncio.run(routes_module.delete_library_file(_FakeJsonRequest({
+        "path": "D:/library/RJ00000001",
+        "confirmed": True,
+        "library_id": library.id,
+    })))
+    asyncio.run(routes_module.batch_delete_library_items(_FakeJsonRequest({
+        "paths": ["D:/library/RJ00000001", "D:/library/RJ00000002"],
+        "confirmed": True,
+        "library_id": library.id,
+    })))
+
+    assert invalidated == [library.id, library.id, library.id]
+
+
 def test_legacy_folder_contents_keeps_non_library_realtime_io(monkeypatch, tmp_path):
     source_dir = tmp_path / "incoming"
     nested_dir = source_dir / "nested"
