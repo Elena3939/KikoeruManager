@@ -18,6 +18,7 @@ import logging
 from ..config.settings import get_config
 from ..core.archive_detection import has_embedded_zip_archive
 from ..core.task_engine import Task, TaskType, get_task_engine
+from .deferred_archive_service import get_deferred_archive_service
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,14 @@ class FileProcessor:
 
         try:
             # 1. 检查文件是否已处理
+            # 先检查持久化归档声明，不能先走文件名规范化，否则可能改掉队列冻结的源路径。
+            if await get_deferred_archive_service().is_source_claimed(file_path):
+                logger.info("[FileProcessor] 文件已由空闲归档队列声明，跳过重复入库: %s", file_path)
+                if mark_processed:
+                    mark_processed(file_path)
+                if isinstance(report, dict):
+                    report["skipped_deferred_archive_count"] = int(report.get("skipped_deferred_archive_count") or 0) + 1
+                return None
             if is_processed and is_processed(file_path):
                 logger.debug(f"[FileProcessor] 文件已处理，跳过: {file_path}")
                 if isinstance(report, dict):
@@ -136,6 +145,13 @@ class FileProcessor:
 
             # 5. 检查是否已在任务队列中
             engine = get_task_engine()
+            if await get_deferred_archive_service().is_source_claimed(file_path):
+                logger.info("[FileProcessor] 文件已由空闲归档队列声明，跳过重复入库: %s", file_path)
+                if mark_processed:
+                    mark_processed(file_path)
+                if isinstance(report, dict):
+                    report["skipped_deferred_archive_count"] = int(report.get("skipped_deferred_archive_count") or 0) + 1
+                return None
             existing = any(
                 t.source_path == file_path and t.status.value in ["pending", "processing"]
                 for t in engine.get_all_tasks()
@@ -237,6 +253,9 @@ class FileProcessor:
 
                 # 检查是否已处理
                 if is_processed and is_processed(file_path):
+                    continue
+
+                if await get_deferred_archive_service().is_source_claimed(file_path):
                     continue
 
                 # 检查是否是压缩包

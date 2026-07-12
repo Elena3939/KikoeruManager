@@ -692,6 +692,8 @@ class ProcessedArchive(Base):
     process_count = Column(Integer, default=1)  # 处理次数
     task_id = Column(String(36))  # 关联的任务ID
     status = Column(String(20), default='completed')  # completed, reprocessing
+    # 新归档队列会冻结每个分卷的实际目标路径。旧记录保持空列表并回退 current_path。
+    archive_manifest = Column(JSON, default=list)
     
     __table_args__ = (
         Index('idx_filename', 'filename'),  # 文件名索引用于去重查询
@@ -728,8 +730,32 @@ class ProcessedArchive(Base):
             'processed_at': processed_at_str,
             'process_count': self.process_count,
             'task_id': self.task_id,
-            'status': self.status
+            'status': self.status,
+            'archive_manifest': self.archive_manifest or [],
         }
+
+class DeferredArchiveJob(Base):
+    """等待系统空闲后搬运源压缩包的持久化工作记录。"""
+    __tablename__ = 'deferred_archive_jobs'
+
+    id = Column(String(36), primary_key=True)
+    idempotency_key = Column(String(128), nullable=False, unique=True)
+    task_id = Column(String(36), index=True)
+    rjcode = Column(String(20), index=True)
+    status = Column(String(24), nullable=False, default='pending', index=True)
+    source_manifest = Column(JSON, nullable=False, default=list)
+    target_manifest = Column(JSON, nullable=False, default=list)
+    available_at = Column(DateTime, nullable=False, default=get_local_now, index=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text)
+    lease_owner = Column(String(120))
+    lease_epoch = Column(BigInteger, nullable=False, default=0)
+    lease_until = Column(DateTime, index=True)
+    cancel_requested = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, default=get_local_now)
+    updated_at = Column(DateTime, nullable=False, default=get_local_now, onupdate=get_local_now)
+    completed_at = Column(DateTime)
+
 
 class PasswordEntry(Base):
     """密码库表 - 存储解压密码"""
@@ -4004,6 +4030,36 @@ def _migrate_library_index_consistency_tables(conn) -> None:
 
 
 def _migrate_compat_schema(conn) -> None:
+    # ``Base.metadata.create_all`` 只覆盖新部署。这里同时照顾没有先跑 Alembic
+    # 的既有 PostgreSQL 部署，避免延后归档队列在重启后丢失恢复能力。
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS deferred_archive_jobs (
+            id VARCHAR(36) PRIMARY KEY,
+            idempotency_key VARCHAR(128) NOT NULL,
+            task_id VARCHAR(36),
+            rjcode VARCHAR(20),
+            status VARCHAR(24) NOT NULL DEFAULT 'pending',
+            source_manifest JSONB NOT NULL DEFAULT '[]'::jsonb,
+            target_manifest JSONB NOT NULL DEFAULT '[]'::jsonb,
+            available_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            lease_owner VARCHAR(120),
+            lease_epoch BIGINT NOT NULL DEFAULT 0,
+            lease_until TIMESTAMP WITHOUT TIME ZONE,
+            cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP WITHOUT TIME ZONE
+        )
+    """))
+    for sql in (
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_deferred_archive_jobs_idempotency ON deferred_archive_jobs(idempotency_key)",
+        "CREATE INDEX IF NOT EXISTS idx_deferred_archive_jobs_ready ON deferred_archive_jobs(status, available_at, id)",
+        "CREATE INDEX IF NOT EXISTS idx_deferred_archive_jobs_lease ON deferred_archive_jobs(lease_until, id)",
+        "CREATE INDEX IF NOT EXISTS idx_deferred_archive_jobs_task ON deferred_archive_jobs(task_id)",
+    ):
+        conn.execute(text(sql))
     existing_tables = _existing_tables(conn, (
         "processed_archives",
         "notification_templates",
@@ -4024,8 +4080,16 @@ def _migrate_compat_schema(conn) -> None:
     ]
     compat_index_definitions = _load_index_definitions(conn, _index_names_from_specs(compat_index_specs))
     if "processed_archives" in existing_tables:
-        existing_columns = _existing_columns(conn, "processed_archives", ("volume_count",))
+        existing_columns = _existing_columns(conn, "processed_archives", ("volume_count", "archive_manifest"))
         _add_column_if_missing(conn, "processed_archives", "volume_count", "INTEGER", "1", existing_columns=existing_columns)
+        _add_column_if_missing(
+            conn,
+            "processed_archives",
+            "archive_manifest",
+            "JSONB",
+            "'[]'::jsonb",
+            existing_columns=existing_columns,
+        )
     if "notification_templates" in existing_tables:
         existing_columns = _existing_columns(conn, "notification_templates", ("editor_mode", "blocks"))
         _add_column_if_missing(conn, "notification_templates", "editor_mode", "VARCHAR(20)", "'html'", existing_columns=existing_columns)

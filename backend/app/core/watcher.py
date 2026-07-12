@@ -15,6 +15,8 @@ import logging
 
 from ..config.settings import get_config
 from ..core.task_engine import Task, TaskType, get_task_engine
+from .archive_volume_utils import get_archive_volume_paths
+from .deferred_archive_service import get_deferred_archive_service
 from .file_processor import get_file_processor
 
 logger = logging.getLogger(__name__)
@@ -280,47 +282,29 @@ class FolderWatcher:
                     if task.status.value == "completed":
                         try:
                             source_path = task.source_path
+                            archive_status = str((task.task_metadata or {}).get("archive_queue_status") or "").strip()
+                            archive_enabled = bool(
+                                getattr(getattr(self.config, "auto_process", None), "archive", False)
+                            )
+                            if archive_enabled and archive_status != "completed":
+                                # 入队失败、尚未入队或等待归档时都必须保留源文件；否则
+                                # watcher 会删除唯一的可恢复压缩包。
+                                logger.warning(
+                                    "跳过 watcher 删除，归档尚未安全完成: path=%s status=%s",
+                                    source_path,
+                                    archive_status or "unknown",
+                                )
+                                return
+                            archive_service = get_deferred_archive_service()
+                            if await archive_service.is_source_claimed(source_path):
+                                # 延后归档已冻结完整分卷清单；只能由队列在安全发布后删源。
+                                logger.info("跳过 watcher 删除，源压缩包已由空闲归档队列声明: %s", source_path)
+                                return
                             source_dir = os.path.dirname(source_path)
-                            source_basename = os.path.basename(source_path).lower()
-
-                            # 收集所有分卷文件（与 _archive_source_file 保持一致）
-                            files_to_delete = []
-                            if os.path.exists(source_path):
-                                files_to_delete.append(source_path)
-
-                            # 检测分卷模式并收集同组文件
-                            base_name = None
-                            zip_main = re.search(r'^(.*)\.zip$', source_basename, re.IGNORECASE)
-                            rar_main = re.search(r'^(.*)\.rar$', source_basename, re.IGNORECASE)
-                            seven_z_main = re.search(r'^(.*)\.7z$', source_basename, re.IGNORECASE)
-                            seven_z_001 = re.search(r'^(.*)\.7z\.001$', source_basename, re.IGNORECASE)
-                            part1_match = re.search(r'^(.*)\.part1\.(rar|zip|7z|exe)$', source_basename, re.IGNORECASE)
-                            if zip_main:
-                                base_name = zip_main.group(1)
-                            elif rar_main:
-                                base_name = rar_main.group(1)
-                            elif seven_z_main:
-                                base_name = seven_z_main.group(1)
-                            elif seven_z_001:
-                                base_name = seven_z_001.group(1)
-                            elif part1_match:
-                                base_name = part1_match.group(1)
-
-                            if base_name and os.path.isdir(source_dir):
-                                for entry in os.scandir(source_dir):
-                                    ename = entry.name.lower()
-                                    if entry.path == source_path:
-                                        continue
-                                    is_sibling = (
-                                        re.search(rf'^{re.escape(base_name)}\.z\d{{2}}$', ename, re.IGNORECASE) or
-                                        re.search(rf'^{re.escape(base_name)}\.r\d{{2}}$', ename, re.IGNORECASE) or
-                                        re.search(rf'^{re.escape(base_name)}\.7z\.\d{{3}}$', ename, re.IGNORECASE) or
-                                        re.search(rf'^{re.escape(base_name)}\.part\d+\.(rar|zip|7z|exe)$', ename, re.IGNORECASE) or
-                                        re.search(rf'^{re.escape(base_name)}\.part\d+$', ename, re.IGNORECASE) or
-                                        re.search(rf'^{re.escape(base_name)}\.e\d{{2}}$', ename, re.IGNORECASE)
-                                    )
-                                    if is_sibling and entry.path not in files_to_delete:
-                                        files_to_delete.append(entry.path)
+                            files_to_delete = [
+                                path for path in get_archive_volume_paths(source_path)
+                                if os.path.exists(path)
+                            ]
 
                             # 删除所有相关文件
                             for fp in files_to_delete:
@@ -400,6 +384,8 @@ class FolderWatcher:
                     continue
 
                 if self.handler._is_archive(file_path):
+                    if await get_deferred_archive_service().is_source_claimed(file_path):
+                        continue
                     engine = get_task_engine()
                     existing = any(
                         t.source_path == file_path and t.status.value in ["pending", "processing"]
