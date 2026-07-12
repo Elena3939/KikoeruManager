@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import html
 import json
 import logging
 import os
@@ -247,6 +248,8 @@ class CircleCompletionService:
         # P6 / P7：把"写库后才跑的耗时工作"挪到后台。同 circle_id 同时只跑一个，避免连续点击索引
         # 触发并发任务竞争 DLsite / 图片 CDN，并让上层任务真正能"用户点击 → 索引完成"快速返回。
         self._cover_cache_tasks: Dict[str, asyncio.Task] = {}
+        self._cover_alias_restore_tasks: Dict[str, asyncio.Task] = {}
+        self._cover_alias_restore_pending: Dict[str, Set[Tuple[str, str]]] = {}
         self._bonus_refresh_tasks: Dict[str, asyncio.Task] = {}
         # 本地拥有态全量快照只允许后台维护；单社团索引点击路径必须走当前社团局部核对。
         # 线上日志显示首次全量 await 会在 "同步本地拥有态索引" 卡 80s+，期间前端轮询和 SSE 都会被拖慢。
@@ -4643,9 +4646,78 @@ class CircleCompletionService:
 
         return snapshot
 
-    async def _search_dlsite_circle_works(self, keyword: str, max_pages: int = 2) -> tuple[List[str], str]:
+    @staticmethod
+    def _extract_dlsite_search_page_identity(text: Any) -> tuple[List[str], List[Dict[str, str]]]:
+        """只从 DLsite 真实作品链接和 maker 链接提取候选，拒绝页面级 RJ 扫描。"""
+        source = str(text or "")
+        worknos: List[str] = []
+        seen_worknos: Set[str] = set()
+        for match in re.finditer(
+            r"/(?:work|announce)/=/product_id/([RVB]J\d{6,8})\.html",
+            source,
+            re.IGNORECASE,
+        ):
+            workno = str(match.group(1) or "").strip().upper()
+            if workno and workno not in seen_worknos:
+                seen_worknos.add(workno)
+                worknos.append(workno)
+
+        makers: List[Dict[str, str]] = []
+        seen_makers: Set[Tuple[str, str]] = set()
+        maker_pattern = re.compile(
+            r"<a\b[^>]*href=[\"'][^\"']*/circle/profile/=/maker_id/(RG\d+)\.html[^\"']*[\"'][^>]*>(.*?)</a>",
+            re.IGNORECASE | re.DOTALL,
+        )
+        for match in maker_pattern.finditer(source):
+            maker_id = str(match.group(1) or "").strip().upper()
+            maker_name = html.unescape(re.sub(r"<[^>]+>", "", match.group(2) or "")).strip()
+            key = (maker_id, maker_name)
+            if not maker_id or not maker_name or key in seen_makers:
+                continue
+            seen_makers.add(key)
+            makers.append({"maker_id": maker_id, "maker_name": maker_name})
+        return worknos, makers
+
+    def _choose_dlsite_maker_identity(
+        self,
+        circle_query: str,
+        maker_hits: List[Dict[str, str]],
+    ) -> Dict[str, str]:
+        """从结构化 maker 链接中选择唯一匹配身份；同名多 ID 时拒绝猜测。"""
+        normalized_query = self.normalize_circle_name(circle_query)
+        exact: Dict[str, str] = {}
+        loose: Dict[str, str] = {}
+        for item in maker_hits or []:
+            maker_id = self._normalize_maker_id(item.get("maker_id"))
+            maker_name = str(item.get("maker_name") or "").strip()
+            if not maker_id or not re.fullmatch(r"RG\d+", maker_id, re.IGNORECASE):
+                continue
+            normalized_name = self.normalize_circle_name(maker_name)
+            if normalized_query and normalized_name == normalized_query:
+                exact[maker_id] = maker_name
+            elif self._circle_name_loose_match(circle_query, maker_name):
+                loose[maker_id] = maker_name
+
+        matches = exact or loose
+        if len(matches) > 1:
+            raise ValueError(
+                "DLsite 搜索到多个同名社团，无法自动确定 maker_id："
+                + "、".join(sorted(matches))
+            )
+        if not matches:
+            return {"maker_id": "", "maker_name": ""}
+        maker_id, maker_name = next(iter(matches.items()))
+        return {"maker_id": maker_id, "maker_name": maker_name}
+
+    async def _search_dlsite_circle_works(
+        self,
+        keyword: str,
+        max_pages: int = 2,
+    ) -> tuple[List[str], str, List[Dict[str, str]]]:
         found: List[str] = []
         seen = set()
+        maker_hits: List[Dict[str, str]] = []
+        seen_makers: Set[Tuple[str, str]] = set()
         failure_reason = ""
         client = await self.dlsite_service._get_client()
         headers = self.dlsite_service._get_browser_headers()
@@ -4698,7 +4770,12 @@ class CircleCompletionService:
                     logger.warning("[社团补全] DLsite 社团搜索失败 keyword=%s page=%s: %s", keyword, page, exc)
                     failure_reason = f"DLsite 关键字搜索失败（第 {page} 页）: {str(exc)}"
                     break
-                matches = re.findall(r"[RVB]J\d{6,8}", text, re.IGNORECASE)
+                matches, page_makers = self._extract_dlsite_search_page_identity(text)
+                for item in page_makers:
+                    key = (item["maker_id"], item["maker_name"])
+                    if key not in seen_makers:
+                        seen_makers.add(key)
+                        maker_hits.append(item)
                 new_count = 0
                 for match in matches:
                     normalized = self.normalize_rjcode(match)
@@ -4710,14 +4787,20 @@ class CircleCompletionService:
                     break
         finally:
             pass
-        return found, failure_reason
+        return found, failure_reason, maker_hits
 
-    async def _search_dlsite_announce_works(self, keyword: str, max_pages: int = 3) -> tuple[List[str], str]:
+    async def _search_dlsite_announce_works(
+        self,
+        keyword: str,
+        max_pages: int = 3,
+    ) -> tuple[List[str], str, List[Dict[str, str]]]:
         keyword = str(keyword or "").strip()
         if not keyword:
-            return [], ""
+            return [], "", []
         found: List[str] = []
         seen: Set[str] = set()
+        maker_hits: List[Dict[str, str]] = []
+        seen_makers: Set[Tuple[str, str]] = set()
         failure_reason = ""
         client = await self.dlsite_service._get_client()
         headers = self.dlsite_service._get_browser_headers()
@@ -4739,7 +4822,8 @@ class CircleCompletionService:
         #   是辅助来源，社团原作 + 翻译版主要靠 maker_id profile + Kikoeru 直连覆盖，
         #   这里宁可漏抓也不能引入大量伪候选拖累 fetch_candidate 链路。
         any_redirect_aborted = False
-        for template in url_templates:
+        no_match_aborted = False
+        for template_index, template in enumerate(url_templates):
             attempt_found: List[str] = []
             attempt_seen: Set[str] = set()
             redirect_aborted = False
@@ -4775,7 +4859,16 @@ class CircleCompletionService:
                         failure_reason = f"DLsite 预告搜索返回 HTTP {response.status_code}（第 {page} 页）"
                         logger.warning("[社团补全] DLsite 预告搜索失败 keyword=%s page=%s status=%s url=%s", keyword, page, response.status_code, url)
                         break
-                    matches = re.findall(r"[RVB]J\d{6,8}", response.text or "", re.IGNORECASE)
+                    page_worknos, page_makers = self._extract_dlsite_search_page_identity(response.text)
+                    for item in page_makers:
+                        key = (item["maker_id"], item["maker_name"])
+                        if key not in seen_makers:
+                            seen_makers.add(key)
+                            maker_hits.append(item)
+                    page_identity = self._choose_dlsite_maker_identity(keyword, page_makers)
+                    matches = page_worknos if page_identity.get("maker_id") else []
+                except ValueError:
+                    raise
                 except Exception as exc:
                     failure_reason = f"DLsite 预告搜索失败（第 {page} 页）: {str(exc)}"
                     logger.warning("[社团补全] DLsite 预告搜索异常 keyword=%s page=%s url=%s: %s", keyword, page, url, exc)
@@ -4788,6 +4881,10 @@ class CircleCompletionService:
                         attempt_seen.add(normalized)
                         attempt_found.append(normalized)
                         new_count += 1
+                if not matches:
+                    if template_index == 0 and page == 1 and not attempt_found:
+                        no_match_aborted = True
+                    break
                 if new_count == 0:
                     empty_streak += 1
                 else:
@@ -4801,13 +4898,15 @@ class CircleCompletionService:
                 # 域名实测不返 redirect、直接 200 + 全站新作列表），无价值。
                 any_redirect_aborted = True
                 break
+            if no_match_aborted:
+                break
             for rj in attempt_found:
                 if rj not in seen:
                     seen.add(rj)
                     found.append(rj)
             if found:
                 break
-        return found, failure_reason
+        return found, failure_reason, maker_hits
 
     async def _list_dlsite_maker_announce_worknos(self, maker_id: str, max_pages: int = 20) -> tuple[List[str], str]:
         normalized_maker_id = str(maker_id or "").strip().upper()
@@ -5044,6 +5143,15 @@ class CircleCompletionService:
         profile_rjcodes: Set[str] = set()
         source_mode = "keyword"
         failure_messages: List[str] = []
+        keyword_rjcodes: List[str] = []
+        keyword_failure_reason = ""
+        keyword_maker_hits: List[Dict[str, str]] = []
+        keyword_search_completed = False
+        announce_rjcodes: List[str] = []
+        announce_failure_reason = ""
+        announce_maker_hits: List[Dict[str, str]] = []
+        announce_search_completed = False
+        maker_identity_source = "seed" if normalized_maker_id else ""
 
         def absorb_summary(summary: DLsiteWorkSummary, *, from_profile: bool) -> bool:
             workno = self.normalize_rjcode(summary.workno)
@@ -5073,6 +5181,60 @@ class CircleCompletionService:
         #     fetch_candidate 的 maker_id 白名单失效，关键字搜索抓到的全站推荐位 RJ
         #     就会跨过过滤进入候选，导致"25 个作品的社团变 42 个候选"那种污染。
         profile_parse_status = "ok" if not normalized_maker_id else "skipped"
+
+        if not normalized_maker_id:
+            direct_maker_match = re.search(r"\b(RG\d+)\b", str(circle_query or ""), re.IGNORECASE)
+            if direct_maker_match:
+                normalized_maker_id = direct_maker_match.group(1).upper()
+                maker_identity_source = "direct_query"
+                source_mode = "direct_maker_id"
+
+        if not normalized_maker_id:
+            keyword_rjcodes, keyword_failure_reason, keyword_maker_hits = await self._search_dlsite_circle_works(circle_query)
+            keyword_search_completed = True
+            if keyword_failure_reason:
+                failure_messages.append(keyword_failure_reason)
+            keyword_identity = self._choose_dlsite_maker_identity(circle_query, keyword_maker_hits)
+            if keyword_identity.get("maker_id"):
+                normalized_maker_id = self._normalize_maker_id(keyword_identity["maker_id"])
+                maker_identity_source = "keyword_search"
+                source_mode = "keyword_identity"
+                if progress_callback:
+                    progress_callback(
+                        42,
+                        "已从 DLsite 作品搜索确认社团身份",
+                        dlsite_maker_id=normalized_maker_id,
+                        dlsite_maker_name=keyword_identity.get("maker_name") or "",
+                        dlsite_identity_source=maker_identity_source,
+                    )
+
+        if not normalized_maker_id:
+            announce_rjcodes, announce_failure_reason, announce_maker_hits = await self._search_dlsite_announce_works(circle_query)
+            announce_search_completed = True
+            if announce_failure_reason:
+                failure_messages.append(announce_failure_reason)
+            announce_identity = self._choose_dlsite_maker_identity(circle_query, announce_maker_hits)
+            if announce_identity.get("maker_id"):
+                normalized_maker_id = self._normalize_maker_id(announce_identity["maker_id"])
+                maker_identity_source = "announce_search"
+                source_mode = "announce_identity"
+                if progress_callback:
+                    progress_callback(
+                        43,
+                        "已从 DLsite 预告搜索确认社团身份",
+                        dlsite_maker_id=normalized_maker_id,
+                        dlsite_maker_name=announce_identity.get("maker_name") or "",
+                        dlsite_identity_source=maker_identity_source,
+                    )
+
+        if (
+            not normalized_maker_id
+            and keyword_failure_reason
+            and announce_failure_reason
+            and not keyword_rjcodes
+            and not announce_rjcodes
+        ):
+            raise ValueError("DLsite 社团搜索暂时不可用，无法验证社团身份，请稍后重试")
 
         if normalized_maker_id:
             try:
@@ -5134,7 +5296,9 @@ class CircleCompletionService:
             #     这时 maker_id 大概率仍然有效，**保留它**！让下面 fetch_candidate 用
             #     maker_id 严格白名单卡过关键字搜索结果，避免全站推荐位 RJ 污染候选。
             should_reset_maker_id = bool(
-                normalized_maker_id and profile_parse_status == "empty"
+                normalized_maker_id
+                and profile_parse_status == "empty"
+                and maker_identity_source not in {"keyword_search", "announce_search", "direct_query"}
             )
             if should_reset_maker_id:
                 logger.warning(
@@ -5164,32 +5328,19 @@ class CircleCompletionService:
                 )
                 if source_mode.startswith("maker_profile"):
                     source_mode = "keyword_with_strict_maker"
-            keyword_rjcodes, keyword_failure_reason = await self._search_dlsite_circle_works(circle_query)
-            if keyword_failure_reason:
-                failure_messages.append(keyword_failure_reason)
+            if not keyword_search_completed:
+                keyword_rjcodes, keyword_failure_reason, keyword_maker_hits = await self._search_dlsite_circle_works(circle_query)
+                keyword_search_completed = True
+                if keyword_failure_reason:
+                    failure_messages.append(keyword_failure_reason)
             absorb_rjcodes(keyword_rjcodes, from_profile=False)
+            if announce_search_completed and normalized_maker_id:
+                absorb_rjcodes(announce_rjcodes, from_profile=False)
             if progress_callback:
                 progress_callback(
                     44,
                     "已回退关键字搜索 DLsite",
                     dlsite_profile_total=len(dlsite_summaries),
-                    dlsite_source_mode=source_mode,
-                    dlsite_failure_reason=" / ".join(failure_messages),
-                )
-
-        announce_rjcodes, announce_failure_reason = await self._search_dlsite_announce_works(circle_query)
-        if announce_failure_reason:
-            failure_messages.append(announce_failure_reason)
-        if announce_rjcodes:
-            added_count = absorb_rjcodes(announce_rjcodes, from_profile=False)
-            source_mode = f"{source_mode}+announce"
-            if progress_callback:
-                progress_callback(
-                    45,
-                    "已补充 DLsite 发售预告作品",
-                    dlsite_profile_total=len(dlsite_summaries),
-                    dlsite_announce_total=len(announce_rjcodes),
-                    dlsite_announce_added=added_count,
                     dlsite_source_mode=source_mode,
                     dlsite_failure_reason=" / ".join(failure_messages),
                 )

@@ -32,6 +32,7 @@
 - 续跑时会跳过已完成作品级结论的原作，只扫描未判明的作品和发售日。
 - 同一发售日被多个调度来源同时命中时，必须先按 RJ 数字区间切成稳定 range shard，并通过 active lease 排除正在查询的 RJ，避免不同 worker 重复请求同一格或漏掉相邻区间。
 - `dlsite_bonus_probe_cache` 写入先进入 Redis dirty buffer，再低批次回写 PostgreSQL。`price` / `wishlist_count` 数据库列必须是 `BIGINT`，启动兼容迁移会强制校验 `udt_name=int8`；回写失败会 ACK 当前批次，避免毒数据反复重放打爆 DB / 日志，后续任务仍可重新从 DLsite 或 Redis overlay 补缓存。
+- PostgreSQL / Redis 历史缓存中的 `is_hidden_bonus_audio` 不能作为永久真值；读取时必须按当前 `exists / probe_status / maker_id / price / is_sale / is_free / is_oly / wishlist_count` 结构规则重算，避免旧版错误标记让已缓存候选永久跳过真实特典。
 - 缓存批量读取不能把几万 / 几十万 RJ 一次性塞进 `IN (...)`。小批量按 `bonus_probe.cache_lookup_batch_size` 分批（默认 1000，上限 3000），PostgreSQL 且数量达到 3000 时使用临时表 `JOIN` 回查，失败再回退分批 `IN`。
 
 ## 异常规则

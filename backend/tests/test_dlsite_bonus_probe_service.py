@@ -1063,6 +1063,104 @@ def test_load_cached_features_reads_redis_overlay(monkeypatch) -> None:
     assert features["RJ01000001"].is_hidden_bonus_audio is True
 
 
+def test_legacy_postgres_cache_reclassifies_hidden_bonus() -> None:
+    service = _service()
+    row = DLsiteBonusProbeCache(
+        rjcode="RJ01201745",
+        exists=True,
+        probe_status="ok",
+        maker_id="RG68316",
+        release_date="",
+        work_type="SOU",
+        price=0,
+        is_sale=False,
+        is_free=True,
+        is_oly=True,
+        wishlist_count=0,
+        is_hidden_bonus_audio=False,
+        title="♪早期限定4大特典♪",
+    )
+
+    feature = service._feature_from_cache_row(row)
+
+    assert feature.is_hidden_bonus_audio is True
+
+
+def test_legacy_redis_cache_reclassifies_hidden_bonus() -> None:
+    service = _service()
+
+    feature = service._feature_from_cache_payload({
+        "rjcode": "RJ01201745",
+        "exists": True,
+        "probe_status": "ok",
+        "maker_id": "RG68316",
+        "release_date": "",
+        "work_type": "SOU",
+        "price": 0,
+        "is_sale": False,
+        "is_free": True,
+        "is_oly": True,
+        "wishlist_count": 0,
+        "is_hidden_bonus_audio": False,
+        "title": "♪早期限定4大特典♪",
+    })
+
+    assert feature.is_hidden_bonus_audio is True
+
+
+def test_cache_reclassification_preserves_raw_boolean_wishlist_semantics() -> None:
+    service = _service()
+
+    feature = service._feature_from_cache_payload({
+        "rjcode": "RJ01201745",
+        "exists": True,
+        "probe_status": "ok",
+        "maker_id": "RG68316",
+        "price": 0,
+        "is_sale": False,
+        "is_free": True,
+        "is_oly": True,
+        "wishlist_count": 0,
+        "is_hidden_bonus_audio": True,
+        "raw_summary_json": {"raw_wishlist_count": False},
+    })
+
+    assert feature.is_hidden_bonus_audio is False
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"probe_status": "missing"}, False),
+        ({"exists": False}, False),
+        ({"price": 100}, False),
+        ({"is_sale": True}, False),
+        ({"is_free": False}, False),
+        ({"is_oly": False}, False),
+        ({"wishlist_count": 1}, False),
+    ],
+)
+def test_legacy_cache_reclassification_keeps_non_bonus_false(overrides, expected) -> None:
+    service = _service()
+    payload = {
+        "rjcode": "RJ01201745",
+        "exists": True,
+        "probe_status": "ok",
+        "maker_id": "RG68316",
+        "price": 0,
+        "is_sale": False,
+        "is_free": True,
+        "is_oly": True,
+        "wishlist_count": 0,
+        "is_hidden_bonus_audio": True,
+    }
+    payload.update(overrides)
+
+    feature = service._feature_from_cache_payload(payload)
+
+    assert feature.is_hidden_bonus_audio is expected
+
+
 @pytest.mark.asyncio
 async def test_load_or_probe_features_uses_redis_overlay_before_http(monkeypatch) -> None:
     service = _service()
@@ -1655,6 +1753,9 @@ async def test_probe_date_error_does_not_write_original_no_bonus_state(db_sessio
     async def fake_public_worknos(*_args, **_kwargs):
         return ["RJ01000001"], ["RJ01000001"], ["RJ01000001"], "ok"
 
+    async def fake_next_date_worknos(*_args, **_kwargs):
+        return ["RJ01000001"], "ok"
+
     async def fake_load_or_probe(rjcodes, **_kwargs):
         return {
             "RJ01000001": DLsiteProductProbeFeature(
@@ -1713,6 +1814,9 @@ async def test_probe_date_budget_reached_returns_incomplete_without_no_bonus_sta
 
     async def fake_public_worknos(*_args, **_kwargs):
         return ["RJ01000001", "RJ02000000"], ["RJ01000001", "RJ02000000"], ["RJ01000001", "RJ02000000"], "ok"
+
+    async def fake_next_date_worknos(*_args, **_kwargs):
+        return ["RJ02000000"], "ok"
 
     async def fake_load_or_probe(rjcodes, **_kwargs):
         return {

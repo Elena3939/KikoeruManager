@@ -43,7 +43,18 @@ class _MockHttpxClient:
 
     async def get(self, url: str, **_kwargs: Any) -> _MockResponse:
         self.calls.append(url)
-        return self.route_handler(url)
+        result = self.route_handler(url)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+
+def _work_card(rjcode: str, maker_id: str, maker_name: str) -> str:
+    return (
+        f'<dd class="work_name"><a href="https://www.dlsite.com/maniax/work/=/product_id/{rjcode}.html">作品</a></dd>'
+        f'<dd class="maker_name"><a href="https://www.dlsite.com/maniax/circle/profile/=/maker_id/{maker_id}.html">'
+        f'{maker_name}</a></dd>'
+    )
 
 
 @pytest.fixture
@@ -61,7 +72,9 @@ async def test_announce_search_aborts_entire_function_when_first_template_redire
     bug 现场：home-touch 域名不返 redirect 但内容也是回退页，伪候选会被 commit。
     """
     # 全站新作页面里出现的 RJ（page 1 抓到的"伪候选"）
-    fake_recommended_rjcodes_html = " ".join(f"RJ0162{n:04d}" for n in range(0, 30))
+    fake_recommended_rjcodes_html = "".join(
+        _work_card(f"RJ0162{n:04d}", "RG99999", "いっしんふらん") for n in range(0, 30)
+    )
 
     def route_handler(url: str) -> _MockResponse:
         # 第一个 template /maniax/announce/list/day/=/keyword/...
@@ -93,7 +106,7 @@ async def test_announce_search_aborts_entire_function_when_first_template_redire
         lambda: {"User-Agent": "test"},
     )
 
-    found, failure_reason = await service._search_dlsite_announce_works("いっしんふらん", max_pages=3)
+    found, failure_reason, _maker_hits = await service._search_dlsite_announce_works("いっしんふらん", max_pages=3)
 
     # ★ 核心不变量：redirect 触发后整函数返空，伪候选**绝不能**进入 found
     assert found == [], f"redirect 后竟然 commit 了 {len(found)} 个伪候选: {found[:5]}"
@@ -113,7 +126,10 @@ async def test_announce_search_keeps_results_when_no_redirect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """没看到 redirect 的正常路径必须保留结果（不能被 abort 修复误伤）。"""
-    legit_rjcodes_html = "公告页 RJ01234567 RJ01234568 RJ01234569 三个真社团预告"
+    legit_rjcodes_html = "".join(
+        _work_card(rjcode, "RG12345", "常世常闇々")
+        for rjcode in ["RJ01234567", "RJ01234568", "RJ01234569"]
+    )
 
     def route_handler(url: str) -> _MockResponse:
         if "/maniax/announce/list/day/=/keyword/" in url:
@@ -136,12 +152,13 @@ async def test_announce_search_keeps_results_when_no_redirect(
         lambda: {"User-Agent": "test"},
     )
 
-    found, _failure_reason = await service._search_dlsite_announce_works("常世常闇々", max_pages=3)
+    found, _failure_reason, maker_hits = await service._search_dlsite_announce_works("常世常闇々", max_pages=3)
 
     # 无 redirect 的合法路径，必须保留 page 1 命中的 3 个 RJ
     assert sorted(found) == ["RJ01234567", "RJ01234568", "RJ01234569"], (
         f"正常路径不应被新修复误伤，实际 found = {found}"
     )
+    assert maker_hits == [{"maker_id": "RG12345", "maker_name": "常世常闇々"}]
 
 
 @pytest.mark.asyncio
@@ -154,7 +171,10 @@ async def test_announce_search_first_template_failure_falls_back_to_second(
     保证修复只针对"redirect 信号 = 强证明 keyword 0 命中"这种确定信号 abort，
     其他失败仍然有 backup 通道。
     """
-    home_touch_rjcodes_html = "home-touch 真返结果 RJ09999991 RJ09999992"
+    home_touch_rjcodes_html = "".join(
+        _work_card(rjcode, "RG88888", "正常社团")
+        for rjcode in ["RJ09999991", "RJ09999992"]
+    )
 
     def route_handler(url: str) -> _MockResponse:
         if "/maniax/announce/list/day/=/keyword/" in url:
@@ -178,7 +198,7 @@ async def test_announce_search_first_template_failure_falls_back_to_second(
         lambda: {"User-Agent": "test"},
     )
 
-    found, _failure_reason = await service._search_dlsite_announce_works("正常社团", max_pages=3)
+    found, _failure_reason, maker_hits = await service._search_dlsite_announce_works("正常社团", max_pages=3)
 
     # 第一个 template 5xx，第二个 template 应该被尝试且其结果保留
     assert sorted(found) == ["RJ09999991", "RJ09999992"], (
@@ -187,3 +207,36 @@ async def test_announce_search_first_template_failure_falls_back_to_second(
     # 验证两个 template 都被请求过
     home_touch_calls = [url for url in mock_client.calls if "home-touch" in url]
     assert len(home_touch_calls) >= 1, "home-touch fallback 没有被尝试"
+    assert maker_hits == [{"maker_id": "RG88888", "maker_name": "正常社团"}]
+
+
+@pytest.mark.asyncio
+async def test_announce_search_rejects_home_touch_default_page_after_primary_timeout(
+    service: CircleCompletionService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """主入口超时后，即使 home-touch 返回全站作品，也不能产生社团候选。"""
+    default_page = "".join(
+        _work_card(f"RJ0167{n:04d}", "RG77777", "全站推荐社团") for n in range(0, 20)
+    )
+
+    def route_handler(url: str):
+        if "/maniax/announce/list/day/=/keyword/" in url:
+            return TimeoutError("request timed out")
+        if "home-touch/announce/list/day" in url:
+            return _MockResponse(200, text=default_page)
+        return _MockResponse(404)
+
+    mock_client = _MockHttpxClient(route_handler)
+
+    async def fake_get_client() -> _MockHttpxClient:
+        return mock_client
+
+    monkeypatch.setattr(service.dlsite_service, "_get_client", fake_get_client)
+    monkeypatch.setattr(service.dlsite_service, "_get_browser_headers", lambda: {"User-Agent": "test"})
+
+    found, failure_reason, maker_hits = await service._search_dlsite_announce_works("おほ声の館", max_pages=3)
+
+    assert found == []
+    assert all(item["maker_id"] != "RG62099" for item in maker_hits)
+    assert "timed out" in failure_reason

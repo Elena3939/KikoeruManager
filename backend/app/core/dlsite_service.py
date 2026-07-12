@@ -209,6 +209,26 @@ class DLsiteProductProbeFeature:
         }
 
 
+def normalize_product_probe_feature_classification(
+    feature: DLsiteProductProbeFeature,
+) -> DLsiteProductProbeFeature:
+    """按当前结构规则重算特典标记，兼容历史错误缓存。"""
+    raw_summary = feature.raw_summary_json or {}
+    wishlist_count = raw_summary.get("raw_wishlist_count", feature.wishlist_count)
+    wishlist_is_zero = not isinstance(wishlist_count, bool) and wishlist_count == 0
+    feature.is_hidden_bonus_audio = bool(
+        feature.exists
+        and feature.probe_status == "ok"
+        and feature.maker_id
+        and int(feature.price or 0) == 0
+        and not bool(feature.is_sale)
+        and bool(feature.is_free)
+        and bool(feature.is_oly)
+        and wishlist_is_zero
+    )
+    return feature
+
+
 # ============ 列表页 summary 分类规则（用于 _classify_listing_summary_audio） ============
 # 命中即判 True。这些都是 DLsite 列表 chip / icon 上专属于音声 / ASMR 作品的强信号。
 # 注意：``ASMR`` 也是一种音声分类标签，列表层有专属 chip；不需要靠正文 tag 强匹配。
@@ -2473,12 +2493,7 @@ class DLsiteApiService:
                 "raw_wishlist_count": wishlist_value,
             },
         )
-        feature.is_hidden_bonus_audio = bool(
-            maker_id
-            and price == 0
-            and self._product_info_indicates_bonus_work(product)
-        )
-        return feature
+        return normalize_product_probe_feature_classification(feature)
 
     async def probe_product_info_features(
         self,

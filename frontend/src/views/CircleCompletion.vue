@@ -7752,6 +7752,22 @@ function getUploadBackgroundTargetLabel(task) {
   min-height: 0;
   overflow: hidden;
 }
+.circle-tabs :deep(.works-pager.km-pagination-wrap) {
+  box-sizing: border-box;
+  flex-shrink: 0;
+  padding-right: 4px;
+  padding-bottom: 12px;
+  padding-left: 4px;
+}
+.circle-tabs :deep(.works-pager.km-pagination-wrap .el-pagination.is-background .el-pager li.is-active) {
+  box-shadow:
+    0 1px 4px rgba(15, 23, 42, 0.07),
+    0 0 0 1px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px) scale(1.04);
+}
+.circle-tabs :deep(.works-pager.km-pagination-wrap .el-pagination.is-background .el-pager li.is-active:hover) {
+  transform: translateY(-1px) scale(1.04);
+}
 .info-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));

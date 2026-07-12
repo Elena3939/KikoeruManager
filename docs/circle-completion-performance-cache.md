@@ -28,13 +28,22 @@ Redis 不可用时会自动降级为 L1 + 数据库，不影响功能。
 ## 封面缓存
 
 - `/works` 返回的 `image_url` / `thumb_image_url` 优先使用 `/api/circle-completion/cover/{RJ}.jpg` 和 `/api/circle-completion/cover/{RJ}_sam.jpg`。
-- cover API 本地命中时直接返回 `data/img/` 文件；文件缺失时按 RJ 推导 DLsite CDN 地址，下载落盘后再返回。
+- cover API 本地命中时直接返回 `data/img/` 文件；文件缺失时立即返回 `404`，由前端回退到 DLsite 远程封面，同时后端按文件名去重创建补图任务。补图任务完成后，后续请求自然命中本地缓存，首屏图片请求不再等待 CDN。
 - Docker 环境优先使用 `DATA_PATH/img` 作为封面缓存目录；默认镜像里 `DATA_PATH=/app/data`，因此缓存会落到持久化卷 `/app/data/img`。
 - DLsite 图片路径里同时有目录 bucket RJ 和真实文件 RJ 时，缓存文件名取真实文件 RJ，避免翻译版 / 关联版显示 RJ 与封面 RJ 不一致导致 404。
 - 按需下载失败时仍返回 404，前端 `WorkCard` 保留原有 DLsite fallback，不影响功能。
 
+## DLsite 社团身份发现
+
+- 社团身份不依赖库存索引；库存只在作品目录建立后投影本地收录态。
+- 未知 maker ID 的社团先请求 DLsite 正式作品搜索页，只解析真实作品链接和 `.maker_name` 中的 `/circle/profile/=/maker_id/RG*.html`，不再对整页扫描全部 RJ。
+- 名称标准化后只接受唯一 maker ID；同名对应多个 RG 时直接返回歧义错误，不自动选择。
+- 作品搜索没有身份结果时可检查预告搜索，但预告结果同样必须含名称匹配的 maker 链接；`home-touch` 返回的全站预告页不会产生候选。
+- maker ID 确认后只抓 maker 专属 profile 和 maker 专属 announce；已有 maker ID 的路径跳过身份搜索，保持原有快速路径。
+- 搜索和预告同时发生网络异常时返回“DLsite 社团搜索暂时不可用”，不能误报为社团不存在。
+
 ## 验证入口
 
-- 后端：`backend` 下执行 `..\.venv\Scripts\python.exe -m pytest tests\test_circle_completion_paged_view.py tests\test_circle_completion_bonus_grouping.py -q --basetemp .pytest-codex-circle-cache-final`
+- 后端：`backend` 下执行 `.\venv\Scripts\python.exe -m pytest tests/test_circle_completion_announce_search.py tests/test_circle_completion_maker_discovery.py tests/test_circle_completion_paged_view.py tests/test_circle_completion_bonus_grouping.py -q`
 - 前端：`frontend` 下执行 `npm run build`
 - 浏览器：打开 `http://localhost:5556/circle-completion`，点击多个社团，再执行分页 `1 -> 2 -> 3 -> 2`，观察卡片是否保留、是否出现整体跳高或空白重建。

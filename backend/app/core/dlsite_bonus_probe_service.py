@@ -23,7 +23,11 @@ from ..models.database import (
     WorkCanonicalLink,
     WorkMetadata,
 )
-from .dlsite_service import DLsiteProductProbeFeature, get_dlsite_service
+from .dlsite_service import (
+    DLsiteProductProbeFeature,
+    get_dlsite_service,
+    normalize_product_probe_feature_classification,
+)
 from .resource_budget_service import get_resource_budget_service
 
 logger = logging.getLogger(__name__)
@@ -735,7 +739,7 @@ class DLsiteBonusProbeService:
             self._active_probe_rjcodes.difference_update(leased)
 
     def _feature_from_cache_row(self, row: DLsiteBonusProbeCache) -> DLsiteProductProbeFeature:
-        return DLsiteProductProbeFeature(
+        feature = DLsiteProductProbeFeature(
             workno=self.normalize_rjcode(row.rjcode),
             exists=bool(row.exists),
             probe_status=row.probe_status or "missing",
@@ -752,6 +756,7 @@ class DLsiteBonusProbeService:
             raw_summary_json=dict(row.raw_summary_json or {}),
             error_message=row.error_message or "",
         )
+        return normalize_product_probe_feature_classification(feature)
 
     def _cache_bool(self, value: Any) -> bool:
         if isinstance(value, str):
@@ -779,7 +784,7 @@ class DLsiteBonusProbeService:
         return datetime.now()
 
     def _feature_from_cache_payload(self, payload: Dict[str, Any]) -> DLsiteProductProbeFeature:
-        return DLsiteProductProbeFeature(
+        feature = DLsiteProductProbeFeature(
             workno=self.normalize_rjcode(payload.get("rjcode") or payload.get("workno")),
             exists=self._cache_bool(payload.get("exists")),
             probe_status=str(payload.get("probe_status") or "missing"),
@@ -796,6 +801,7 @@ class DLsiteBonusProbeService:
             raw_summary_json=dict(payload.get("raw_summary_json") or {}),
             error_message=str(payload.get("error_message") or ""),
         )
+        return normalize_product_probe_feature_classification(feature)
 
     def _upsert_cache_row(self, db, feature: DLsiteProductProbeFeature) -> None:
         workno = self.normalize_rjcode(feature.workno)

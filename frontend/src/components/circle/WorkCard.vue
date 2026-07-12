@@ -361,18 +361,18 @@ function onCoverLoad(event) {
 /* ── 选中指示器光环 ── */
 .work-card-select-ring {
   position: absolute;
-  inset: -2px;
-  border-radius: 16px;
-  border: 2px solid transparent;
+  inset: 0;
+  border-radius: inherit;
+  border: 3px solid transparent;
   pointer-events: none;
   z-index: 12;
   transition: border-color .22s ease, box-shadow .28s ease;
 }
 .work-card.selected .work-card-select-ring {
-  border-color: color-mix(in srgb, var(--circle-primary, #2563eb) 58%, transparent);
+  border-color: color-mix(in srgb, var(--circle-primary, #2563eb) 86%, transparent);
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--circle-surface, #ffffff) 88%, transparent),
-    0 0 0 3px color-mix(in srgb, var(--circle-primary, #2563eb) 12%, transparent);
+    inset 0 0 0 1px color-mix(in srgb, var(--circle-surface, #ffffff) 92%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--circle-primary, #2563eb) 20%, transparent);
   animation: selectRingPulse .5s cubic-bezier(.4,0,.2,1);
 }
 
@@ -418,14 +418,8 @@ function onCoverLoad(event) {
 .work-card:hover .work-cover {
   transform: scale(1.08);
 }
-.work-card.selected .work-cover {
-  filter: brightness(1.04) saturate(1.1);
-}
 .work-card.is-completion-dimmed .work-cover {
   filter: grayscale(1) saturate(0.22) brightness(0.74);
-}
-.work-card.is-completion-dimmed.selected .work-cover {
-  filter: grayscale(1) saturate(0.24) brightness(0.78);
 }
 .work-card.is-completion-dimmed .work-cover-wrapper::after {
   content: '';
@@ -477,12 +471,11 @@ function onCoverLoad(event) {
   background: var(--circle-work-card-hover-bg, linear-gradient(180deg, rgba(255, 255, 255, 1) 0%, rgba(246, 250, 255, 0.98) 100%));
 }
 .work-card.selected {
-  border-color: color-mix(in srgb, var(--circle-primary, #2563eb) 44%, transparent);
+  border-color: color-mix(in srgb, var(--circle-primary, #2563eb) 76%, transparent);
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--circle-surface, #ffffff) 88%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--circle-primary, #2563eb) 12%, transparent),
-    0 10px 24px color-mix(in srgb, var(--circle-primary, #2563eb) 14%, transparent);
-  background: var(--circle-work-card-selected-bg, radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 38%), linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(244, 248, 255, 0.98) 100%));
+    inset 0 0 0 1px color-mix(in srgb, var(--circle-primary, #2563eb) 16%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--circle-primary, #2563eb) 24%, transparent),
+    0 10px 24px color-mix(in srgb, var(--circle-primary, #2563eb) 18%, transparent);
   transform: translateY(-1px);
 }
 .work-card.selected::after {
@@ -492,7 +485,7 @@ function onCoverLoad(event) {
   height: 3px;
   z-index: 13;
   border-radius: 14px 14px 0 0;
-  background: linear-gradient(90deg, transparent, var(--circle-primary, #2563eb), transparent);
+  background: var(--circle-primary, #2563eb);
   pointer-events: none;
 }
 .work-card.selected:hover {
@@ -1007,29 +1000,26 @@ function onCoverLoad(event) {
 
 :global(html.kikoerumanager-dark .work-card.selected),
 :global(body.kikoerumanager-dark .work-card.selected) {
-  border-color: rgba(255, 255, 255, 0.78);
-  background:
-    radial-gradient(circle at top right, rgba(255, 255, 255, 0.16), transparent 42%),
-    linear-gradient(180deg, rgba(34, 39, 48, 0.98) 0%, rgba(23, 25, 31, 0.98) 100%);
+  border-color: rgba(96, 165, 250, 0.82);
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
-    0 0 0 2px rgba(255, 255, 255, 0.22),
-    0 0 24px rgba(255, 255, 255, 0.20),
+    inset 0 0 0 1px rgba(96, 165, 250, 0.18),
+    0 0 0 2px rgba(96, 165, 250, 0.24),
+    0 0 24px rgba(96, 165, 250, 0.18),
     0 18px 36px rgba(0, 0, 0, 0.36);
 }
 
 :global(html.kikoerumanager-dark .work-card.selected .work-card-select-ring),
 :global(body.kikoerumanager-dark .work-card.selected .work-card-select-ring) {
-  border-color: rgba(255, 255, 255, 0.86);
+  border-color: rgba(96, 165, 250, 0.92);
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.10),
-    0 0 0 3px rgba(255, 255, 255, 0.16),
-    0 0 18px rgba(255, 255, 255, 0.22);
+    inset 0 0 0 1px rgba(15, 23, 42, 0.48),
+    0 0 0 3px rgba(96, 165, 250, 0.16),
+    0 0 18px rgba(96, 165, 250, 0.22);
 }
 
 :global(html.kikoerumanager-dark .work-card.selected::after),
 :global(body.kikoerumanager-dark .work-card.selected::after) {
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.88), transparent);
+  background: rgba(96, 165, 250, 0.95);
 }
 
 :global(html.kikoerumanager-dark .work-card .work-title),
@@ -1188,7 +1178,7 @@ function onCoverLoad(event) {
   border-radius: 16px;
 }
 .work-card--lg .work-card-select-ring {
-  border-radius: 18px;
+  border-radius: inherit;
 }
 .work-card--lg .work-cover-wrapper {
   aspect-ratio: 4 / 3;
