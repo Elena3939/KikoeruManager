@@ -91,6 +91,11 @@ class ProcessingConfig(BaseModel):
     file_stable_checks: int = 3
     file_stable_interval: int = 2
     max_wait_time: int = 3600
+    # 归档是低优先级维护工作：只有普通任务清空一段时间后才允许运行。
+    archive_idle_delay_seconds: int = 60
+    archive_poll_interval_seconds: float = 3.0
+    archive_retry_delay_seconds: int = 300
+    archive_max_retry_count: int = 5
 
 class WatcherConfig(BaseModel):
     """监视器配置"""
@@ -353,8 +358,14 @@ class BaiduNetdiskConfig(BaseModel):
     cookie: str = ""
     max_parallel: int = 20
     max_download_load: int = 5
+    transfer_max_concurrency: int = 1
+    transfer_retry_count: int = 4
     conflict_policy: str = "resume"
     svip_speed_enabled: bool = True
+    low_speed_refresh_enabled: bool = True
+    low_speed_threshold_mbps: int = 3
+    low_speed_duration_seconds: int = 180
+    low_speed_refresh_limit: int = 2
     account_name: str = ""
     account_netdisk_name: str = ""
     account_avatar_url: str = ""

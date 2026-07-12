@@ -11,6 +11,10 @@ processing:
   file_stable_checks: 3
   file_stable_interval: 2
   max_wait_time: 3600
+  archive_idle_delay_seconds: 60
+  archive_poll_interval_seconds: 3
+  archive_retry_delay_seconds: 300
+  archive_max_retry_count: 5
 database:
   host: 127.0.0.1
   port: 5432
@@ -222,6 +226,13 @@ normal_process_sync_subtitle: true
 normal_process_rename: true
 normal_process_classify: true
 normal_process_move_subtitle: true
+baidu_netdisk:
+  transfer_max_concurrency: 1
+  transfer_retry_count: 4
+  low_speed_refresh_enabled: true
+  low_speed_threshold_mbps: 3
+  low_speed_duration_seconds: 180
+  low_speed_refresh_limit: 2
 existing_process_sync_subtitle: true
 existing_process_rename: true
 existing_process_classify: true
