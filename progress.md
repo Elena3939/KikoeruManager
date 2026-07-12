@@ -3503,3 +3503,356 @@
 - `frontend/src/api/apiCancellation.test.js`：新增取消分类回归测试。
 - `progress.md`：追加本轮修复和真实页面验证记录。
 - 回滚方式：反向应用 `frontend/src/api/index.js` 的 `isCanceledApiRequest()` 与拦截器早退分支，删除 `frontend/src/api/apiCancellation.test.js` 和本段进度记录。
+
+## 2026-07-11 - Task: 问题作品重试失败状态收口修复
+### What was done
+- 复现服务器现象：日志显示 `RJ01610657`、`RJ01650755`、`RJ01592997` 在重试后已解压失败并进入 `waiting_manual`，但问题作品仍保留 `PROCESSING`，前端因此显示“重试中”且进度 `100%`。
+- 修复问题作品重试任务收尾：`RETRY` 任务进入 `waiting_manual` 时按重试失败终态处理，原问题项恢复 `PENDING`，写入 `retry_result`、`resolution_error`、`resolution_progress` 和 `resolution_step`。
+- 修复 `/api/conflicts` 列表自愈：已有 `PROCESSING + RETRY + linked task waiting_manual` 的历史卡住项，列表加载时自动恢复为待处理，部署后刷新即可收口旧数据。
+- 修复最终进度覆盖：`RETRY` 的 `waiting_manual` 进度刷新转成 `failed`，避免收尾写入 `failed` 后又被最终通知覆盖回 `waiting_manual`。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\task_engine.py app\api\routes.py`：通过。
+- `git diff --check -- backend/app/core/task_engine.py backend/app/api/routes.py backend/tests/test_task_engine.py`：通过；仅有既有 LF/CRLF 提示。
+- 自定义不依赖 PostgreSQL 的项目 venv 脚本验证 `_finalize_conflict_resolution_task()`：模拟 `PROCESSING` conflict + `RETRY` task 进入 `WAITING_MANUAL`，确认 conflict 回到 `PENDING`、`resolution_task_state=failed`、`retry_result=failed`、`resolution_error=无正确密码`。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests/test_task_engine.py::TestTaskEngine::test_auto_process_extract_failure_moves_to_waiting_manual tests/test_task_engine.py::TestTaskEngine::test_finalize_conflict_retry_waiting_manual_restores_pending -q --basetemp .pytest-codex-conflict-retry-final2`：未完成；测试库 `kikoerumanager_test` PostgreSQL 连接超时，pytest 在 `conftest.py` 导入阶段失败，未执行用例。
+
+### Notes
+- `backend/app/core/task_engine.py`：把问题作品 `RETRY` 的 `waiting_manual` 视为重试失败终态，并避免最终进度刷新继续写 `waiting_manual`。
+- `backend/app/api/routes.py`：列表接口对旧 stuck `PROCESSING` retry 项做自愈恢复。
+- `progress.md`：追加本轮修复、验证和回滚记录。
+- 回滚方式：反向应用 `task_engine.py` 中 `RETRY waiting_manual` 状态转换和 `_finalize_conflict_resolution_task()` 的 waiting_manual 失败收口分支，以及 `routes.py` 中 `_is_retry_waiting_manual_done` 自愈分支；删除本段进度记录。
+
+## 2026-07-12 - Task: 修复 DLsite 历史缓存错误标记导致真实特典永久漏检
+### What was done
+- 根据服务器 `RJ01192535 / RJ01201745` 现场确认：候选范围已覆盖真实特典，但 PostgreSQL / Redis 旧缓存把符合官方结构的 `RJ01201745` 保存为 `is_hidden_bonus_audio=false`，任务因此把全部候选当已缓存跳过且不再发起 DLsite 请求。
+- 将隐藏特典结构判定收敛为统一纯函数，新鲜 `product/info/ajax` 响应、PostgreSQL 缓存和 Redis overlay 都按 `exists / probe_status / maker_id / price / is_sale / is_free / is_oly / wishlist_count` 重新计算，不再永久信任历史布尔标记。
+- 保留 DLsite 严格零值语义：若 `raw_summary_json.raw_wishlist_count` 存在则优先使用，布尔 `false` 不按数字 `0` 误判；缺少原始值的旧缓存才回退已归一整数。
+- 缓存读取只做内存自愈，不在大范围扫描读路径批量回写数据库，避免一次任务制造上万条额外写入；后续正常命中流程仍会写入命中索引与作品关联。
+- 同步特典探测文档，明确历史缓存标记必须按当前结构规则重算。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\dlsite_service.py app\core\dlsite_bonus_probe_service.py tests\test_dlsite_bonus_probe_service.py`：通过。
+- 定向缓存与 DLsite 结构回归：`20 passed`；覆盖 PostgreSQL 旧缓存、Redis 旧缓存、`RJ01201745` 空日期形态、布尔 `false` wishlist，以及 missing / 不存在 / 付费 / 在售 / 非免费 / 非 OLY / wishlist 非零防误判。
+- RG68316 相关链路串行回归：`4 passed`；覆盖已知特典对、远距离缓存复用和缓存特典计数。
+- 使用服务器 `RJ01201745` 真实缓存只读回放：将 `is_hidden_bonus_audio` 在内存模拟回旧 `false` 后，新代码重算为 `true`。
+- 完整运行 `test_dlsite_bonus_probe_service.py + test_circle_completion_paged_view.py`：`78 passed, 6 failed`；失败来自测试库并发建删表死锁及其 `relation does not exist` 级联、两个既有测试引用未定义 `fake_next_date_worknos`、分页测试访问当前实现不存在的 `_cover_alias_restore_tasks`，相关缓存命中用例单独串行重跑均通过。
+- `git diff --check -- backend/app/core/dlsite_service.py backend/app/core/dlsite_bonus_probe_service.py backend/tests/test_dlsite_bonus_probe_service.py docs/dlsite-bonus-probe.md`：通过；仅有既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/dlsite_service.py`：新增统一产品探测特典分类纯函数，新鲜响应也复用相同结构规则。
+- `backend/app/core/dlsite_bonus_probe_service.py`：PostgreSQL 和 Redis 缓存反序列化后统一重算特典分类。
+- `backend/tests/test_dlsite_bonus_probe_service.py`：补历史 DB / Redis 错误标记自愈、严格 wishlist 零值和非特典边界回归。
+- `docs/dlsite-bonus-probe.md`：记录历史缓存标记不得作为永久真值。
+- `progress.md`：追加本轮根因、实现和验证记录。
+- 回滚方式：反向应用上述四个业务文件中 `normalize_product_probe_feature_classification()`、缓存反序列化重算、对应测试和文档 hunk，并删除本段进度记录。
+
+## 2026-07-12 - Task: 修复社团补全底部分页按钮被裁切
+### What was done
+- 确认分页激活按钮会放大并产生向下阴影，而社团补全标签内容容器使用 `overflow: hidden`，分页行底部没有安全空间，导致按钮底边和阴影被父容器裁切。
+- 在社团补全标签页内统一为 `works-pager + km-pagination-wrap` 分页行增加底部安全区，并保留左右轻量间距；缺失作品、已满足作品、来源对比三个分页统一生效。
+- 未修改全站分页规范、虚拟列表高度和移动端折行逻辑，避免影响库存、任务中心等其它页面。
+
+### Testing
+- `cd frontend; npm run build`：通过，`4183 modules transformed`，预压缩完成。
+- `git diff --check -- frontend/src/views/CircleCompletion.vue`：通过；仅有既有 LF/CRLF 提示。
+
+### Notes
+- `frontend/src/views/CircleCompletion.vue`：为社团补全标签页内分页行增加 12px 底部安全区，避免激活按钮缩放与阴影被裁切。
+- `progress.md`：追加本轮分页裁切修复和验证记录。
+- 回滚方式：删除 `.circle-tabs :deep(.works-pager.km-pagination-wrap)` 样式块，并删除本段进度记录。
+
+## 2026-07-12 - Task: 优化社团补全分页激活按钮阴影
+### What was done
+- 确认灰色块来自全局分页激活态的 `0 10px 22px` 向下阴影和 `scale(1.08)` 放大，在社团补全浅色内容区显得过重。
+- 仅覆盖社团补全分页激活态，将阴影收紧为贴边轻阴影与细描边，并把放大幅度降为 `1.04`；同步覆盖 hover，避免悬停时恢复重阴影尺寸。
+- 未修改全站分页和暗色模式；库存等其它页面保持原样，暗色分页继续使用既有无外阴影表现。
+
+### Testing
+- `cd frontend; npm run build`：通过，`4183 modules transformed`，预压缩完成。
+- `git diff --check -- frontend/src/views/CircleCompletion.vue`：通过；仅有既有 LF/CRLF 提示。
+
+### Notes
+- `frontend/src/views/CircleCompletion.vue`：收紧社团补全分页激活按钮的阴影和缩放幅度。
+- `progress.md`：追加本轮分页视觉优化和验证记录。
+- 回滚方式：删除 `.circle-tabs :deep(.works-pager.km-pagination-wrap .el-pagination.is-background .el-pager li.is-active)` 及其 hover 覆盖，并删除本段进度记录。
+
+## 2026-07-12 - Task: 统一已有文件夹页面工作台布局
+### What was done
+- 将原有纵向处理侧栏重排为状态概览下方的横向操作台，处理概览、四阶段流程、执行选项和批量动作在宽屏并列展示，避免空数据时左右信息严重失衡。
+- 为目录区域补充独立工作区标题、扫描结果计数和紧凑空态高度，使页面层级与库存、问题作品等工作台保持一致。
+- 修正浅色模式下批量入库、查重和卡片操作按钮的禁用态，改用页面语义灰色，不再出现整块深黑按钮；同步补齐 1280、980、640 三档响应式重排。
+
+### Testing
+- `cd frontend; npm run build`：通过，`4183 modules transformed`，预压缩完成。
+- `git diff --check -- frontend/src/views/ExistingFolders.vue`：通过；仅有既有 LF/CRLF 提示。
+- 已通过根目录 `start-all.bat` 启动验证环境，后端 `5555` 正常监听；前端终端停留在交互状态且 `5556` 未监听，因此未完成真实页面截图验证，不将其记为已通过。
+
+### Notes
+- `frontend/src/views/ExistingFolders.vue`：重排已有文件夹操作台、目录工作区层级、禁用态和响应式布局。
+- `progress.md`：追加本轮视觉优化、构建证据和未完成的页面截图验证说明。
+- 回滚方式：反向应用 `frontend/src/views/ExistingFolders.vue` 本轮横向操作台、目录工作区标题、禁用态及响应式样式 hunk，并删除本段进度记录。
+
+## 2026-07-12 - Task: 恢复已有文件夹原布局并调整语义颜色
+### What was done
+- 按反馈完整撤销上一轮横向操作台、目录工作区标题和新增响应式重排，页面恢复原有左侧策略栏、右侧状态条与目录区域布局。
+- 仅调整页面颜色：主操作、开关和选中态统一为青绿色，第二个批量入库动作用靛蓝色区分，保留冲突橙色、成功绿色和危险红色语义。
+- 将浅色模式下原本显示为深黑块的禁用按钮改为语义灰色，暗色模式继续复用页面变量，不修改任何扫描、查重或入库逻辑。
+
+### Testing
+- `cd frontend; npm run build`：通过，`4183 modules transformed`，预压缩完成。
+- `git diff --check -- frontend/src/views/ExistingFolders.vue`：通过；仅有既有 LF/CRLF 提示。
+- `rg` 检查确认上一轮新增的 `pipeline-section-head`、`folder-workspace-head`、`display: contents` 和 1280px 布局断点均已移除。
+
+### Notes
+- `frontend/src/views/ExistingFolders.vue`：恢复原布局，仅保留主色、次操作色、选中态和禁用态颜色调整。
+- `progress.md`：追加布局回退与实际颜色调整记录，覆盖上一轮阶段性结论。
+- 回滚方式：反向应用 `ExistingFolders.vue` 中 `--ef-primary`、`--ef-accent-*`、`--ef-secondary-*`、按钮文字/阴影及禁用态颜色 hunk，并删除本段进度记录。
+
+## 2026-07-12 - Task: 优化高负荷下系统日志写入与实时刷新
+### What was done
+- 将应用文件日志和控制台输出改为进程内有界队列异步消费，业务线程不再同步等待日志磁盘写入；队列满时淘汰最旧记录并保留最新日志，避免日志爆量反向阻塞主业务。
+- 日志轮转、截断和备份清理会先排空并暂停 listener，文件操作完成后恢复消费，保持 Windows 文件句柄和现有日志管理接口兼容。
+- 将全历史检索移到独立 `system-log-search` 执行器，避免占满实时读取的 `system-log-io` 线程；SSE 增量检查正式使用 `runtime_buffer.log_stream_flush_ms`，不再固定等待 1 秒。
+- 日志流诊断新增异步 writer、实时读取池和历史搜索池的队列、线程、丢弃及存活状态；明确日志写盘不依赖 Redis，避免 Redis 故障日志递归依赖 Redis。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app/core/app_logging.py app/api/routes.py tests/test_app_logging.py`：通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests/test_app_logging.py -q --basetemp .pytest-tmp-codex-logs-async2`：`3 passed`；覆盖队列溢出保留最新记录、listener 停止前排空、真实子进程异步写盘与立即轮转后继续写入。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests/test_redis_config.py -q --basetemp .pytest-tmp-codex-logs-redis`：`19 passed`。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests/test_routes_maintenance_config.py -q --basetemp .pytest-tmp-codex-logs-routes`：`32 passed`。
+- 使用根目录 `start-all.bat` 重启后运行态验证：后端 `/api/health` 与前端 `5556` 均返回 `200`；日志诊断显示异步 writer 存活、队列 `0/10000`、丢弃 `0`，实时与历史执行器分别为 `2`、`1` worker。
+- 真实请求 `/api/logs/search` 成功扫描主日志并返回结果；连接 `/api/logs/stream?lines=50` 在 2 秒窗口内收到 `connected` 首包，断开后 `active_streams=0`、`total_connections=1`。
+- `git diff --check -- backend/app/core/app_logging.py backend/app/api/routes.py backend/tests/test_app_logging.py docs/runtime-buffer-control-plane.md`：通过；仅有既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/app_logging.py`：新增有界非阻塞日志队列、后台 listener、运行态诊断，并兼容轮转、截断和进程退出排空。
+- `backend/app/api/routes.py`：隔离实时日志与历史检索执行器，接通 SSE flush 配置并扩展日志诊断。
+- `backend/tests/test_app_logging.py`：新增异步写盘、队列溢出和日志轮转回归测试。
+- `docs/runtime-buffer-control-plane.md`：补充异步写盘、线程池隔离、诊断字段和不使用 Redis 的原因。
+- `progress.md`：追加本轮日志高负荷优化、验证和回滚记录。
+- 回滚方式：反向应用 `app_logging.py` 的队列 listener、`routes.py` 的 `_LOG_SEARCH_EXECUTOR`、`poll_interval` 和 writer 诊断 hunk，删除 `test_app_logging.py`，反向应用运行态缓冲文档对应段落，并删除本段进度记录。
+
+## 2026-07-12 - Task: 优化大文本系统日志搜索与分页
+### What was done
+- 将全历史日志搜索的数字匹配偏移改为不透明文件游标，游标携带查询签名、文件快照和字节位置；下一页从上次位置续扫，不再从文件头重复扫描并跳过旧命中。
+- 日志轮转、截断、查询条件或扫描窗口变化时自动失效旧游标并从最新快照重启，前端同步清空分页历史，避免把不同日志世代的结果拼在一起。
+- 浏览器取消检索后，后端通过协作取消信号终止仍在独立搜索线程中的扫描，避免旧请求继续占用唯一搜索 worker。
+- 将单行读取限制为 64KB 片段，支持关键词跨片段边界命中；无换行巨型日志不会再被 `readline()` 一次读入内存，响应单条仍限制为 16KB。
+- 前端使用游标栈实现上一页与下一页，保留页起点匹配数展示，不再用数字页偏移触发后端全量重扫。
+- 修复运行态暴露的日志启动反压：文件日志继续异步写盘，控制台输出从文件 listener 拆出，终端阻塞不会再卡住文件日志消费和后端启动。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests/test_log_search.py -q --basetemp .pytest-tmp-codex-log-search`：`4 passed`；覆盖连续三页无漏项、64KB 边界关键词、取消停扫和截断后游标失效。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests/test_log_search.py tests/test_app_logging.py tests/test_routes_maintenance_config.py -q --basetemp .pytest-tmp-codex-log-search-all`：`39 passed`。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests/test_app_logging.py tests/test_log_search.py -q --basetemp .pytest-tmp-codex-log-startup-fix`：`7 passed`。
+- `cd frontend; npm run build`：通过，`4183 modules transformed`，预压缩完成。
+- 使用根目录 `start-all.bat` 重启后 `/api/health` 返回 `200`，文件异步 writer 正常写入启动日志。
+- 使用本机约 `52MB` 的 `app.log + app.log.1 + app.log.2` 验证：稀有词跨 3 文件完整扫描成功；高频词连续两页分别返回 50 条，第二页 `matched_before=50`，首条紧接第一页末条，游标未重置。
+
+### Notes
+- `backend/app/api/routes.py`：新增日志搜索游标、文件快照、分片扫描和协作取消，并替换原数字 offset 搜索实现。
+- `backend/app/core/app_logging.py`：控制台输出与文件异步 listener 解耦，避免终端反压阻断文件日志和启动。
+- `backend/tests/test_log_search.py`：新增大文本搜索分页、超长行、取消和轮转边界回归。
+- `frontend/src/api/index.js`：日志搜索 cursor 默认值改为字符串。
+- `frontend/src/views/Logs.vue`：接入不透明游标和页面游标历史。
+- `docs/runtime-buffer-control-plane.md`：补充大文本搜索游标、取消和有界分片设计。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：反向应用 `routes.py` 的 `_LOG_SEARCH_CURSOR_VERSION` 至 `_search_log_snapshots()` 及 `search_logs()` 游标实现，恢复前端数字 cursor 分页，删除 `test_log_search.py`，反向应用 `app_logging.py` 的控制台解耦和对应文档段落，并删除本段进度记录。
+
+## 2026-07-12 - Task: 修复日志筛选布局并增加关键词高亮
+### What was done
+- 将日志筛选区从自由挤压的 flex 布局改为“级别、模块、搜索、操作组”四区网格，窄屏自动切为两列和单列，条数、全历史搜索与精简过程统一收进操作组。
+- 移除搜索框清空按钮固定 `right: 86px` 的错误定位：普通搜索时贴右 7px，全历史模式时为“清空 + 检索”分别预留位置，两按钮保持 7px 间距。
+- 日志终端新增关键词分段高亮，普通搜索和全历史搜索共用当前搜索词；折叠行、展开原始日志和任务进度行均支持高亮，仍保持文本节点渲染，不使用 `v-html`。
+- 高亮只对虚拟列表当前可见行即时拆分，不为全部历史结果预生成 HTML，避免搜索 500 条大文本时增加常驻内存。
+
+### Testing
+- `cd frontend; npm run build`：通过，`4183 modules transformed`，预压缩完成。
+- 本地浏览器验证普通搜索：输入 `LocalScanner` 后可见区生成 `25` 个高亮标记；浅色和暗色模式布局正常，清空按钮距离搜索框右侧均为 `7px`。
+- 本地浏览器验证全历史模式：清空按钮右侧预留 `72px`，检索按钮距离右侧 `5px`，两按钮间距 `7px`，无重叠；搜索结果继续显示 `25` 个可见高亮。
+- `git diff --check -- frontend/src/views/Logs.vue frontend/src/components/common/SystemLogTerminal.vue`：通过；仅有既有 LF/CRLF 提示。
+
+### Notes
+- `frontend/src/views/Logs.vue`：重排日志筛选工具栏，修正搜索框内按钮定位，并向终端传递搜索词。
+- `frontend/src/components/common/SystemLogTerminal.vue`：新增安全文本分段高亮和高亮样式。
+- `progress.md`：追加本轮日志 UI 优化、验证与回滚记录。
+- 回滚方式：反向应用 `Logs.vue` 的四区网格、搜索框按钮定位和 `highlight-terms` 传参，反向应用 `SystemLogTerminal.vue` 的 `highlightTerms`、`highlightedTextParts()`、模板 mark 节点及 `.terminal-search-highlight` 样式，并删除本段进度记录。
+
+## 2026-07-12 - Task: 强化社团补全作品整体选中态
+### What was done
+- 保留作品卡片原有底色和封面色彩，移除选中时对卡片背景与封面滤镜的改色，仅通过整卡蓝色描边、内圈和轻量外光表达选中状态。
+- 将卡片选中描边加粗并修正到卡片内部，避免被绘制裁切；顶部蓝色状态条同步加强，暗色模式改为一致的蓝色整卡选中态且不覆盖原卡片背景。
+- 列表模式同步取消选中背景改色，只保留整行边框、左侧蓝条与轻量外圈，确保卡片和列表交互语义一致。
+
+### Testing
+- `cd frontend; npm run build`：通过，`4183 modules transformed`，预压缩完成。
+- `git diff --check -- frontend/src/components/circle/WorkCard.vue frontend/src/components/circle/WorkListRow.vue`：通过；仅有既有 LF/CRLF 提示。
+- `rg` 检查确认卡片与列表的普通选中规则、暗色卡片选中规则均不再设置 `background`，卡片选中规则也不再修改封面 `filter`。
+
+### Notes
+- `frontend/src/components/circle/WorkCard.vue`：保留卡片本色，改为整卡描边、内圈、外光和顶部状态条表达选中态，并同步暗色模式。
+- `frontend/src/components/circle/WorkListRow.vue`：保留列表行本色，仅强化整行选中边界。
+- `progress.md`：追加本轮选中态修正、验证与回滚记录。
+- 回滚方式：反向应用 `WorkCard.vue` 中选中光环、选中卡片及暗色选中态 hunk，反向应用 `WorkListRow.vue` 的选中态 hunk，并删除本段进度记录。
+
+## 2026-07-12 - Task: 修复社团补全选中计数与卡片状态不同步
+### What was done
+- 修复作品使用关联显示 RJ 时，选中集合保存 canonical RJ、视口却只按显示 RJ 判断，导致“已选数量增加但卡片没有 selected 状态”的问题。
+- 卡片与列表的选中、状态闪烁和搜索定位统一同时匹配 canonical RJ、显示 RJ、作品 RJ 与来源对比 RJ；特典聚合成员也使用同一套匹配规则。
+- 保留上一轮整卡描边方案，选中状态命中后由卡片四周蓝色描边、内圈、外光和顶部状态条显示，不改变原卡片底色。
+
+### Testing
+- `cd frontend; npm run build`：通过，`4183 modules transformed`，预压缩完成。
+- `git diff --check -- frontend/src/components/circle/CircleWorksViewport.vue frontend/src/components/circle/WorkCard.vue frontend/src/components/circle/WorkListRow.vue`：通过；仅有既有 LF/CRLF 提示。
+- 差异检查确认普通作品、聚合特典、卡片模式和列表模式均改用统一作品代码集合匹配状态。
+
+### Notes
+- `frontend/src/components/circle/CircleWorksViewport.vue`：统一 canonical、显示及关联 RJ 的选中/闪烁/定位状态匹配。
+- `progress.md`：追加本轮状态传递根因、验证与回滚记录。
+- 回滚方式：反向应用 `CircleWorksViewport.vue` 中 `workStateCodeList`、`matchesWorkCodeSet` 及相关状态判断 hunk，并删除本段进度记录。
+
+## 2026-07-12 - Task: 修复日志续行时间戳缺失
+### What was done
+- 修复尾部日志窗口从 Python traceback 中间截断时无法找到异常主日志、整屏续行显示 `--:--:--` 的问题。
+- 后端仅在尾窗没有结构化日志边界时额外向前补读最多 512KB，找到 traceback 所属的真实时间和级别后再折叠，普通尾读成本不变。
+- 前端让普通续行继承上一条结构化日志时间；窗口开头的续行可继承下一条结构化日志时间，完全没有上下文时仍保持空时间。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests/test_routes_maintenance_config.py tests/test_log_search.py tests/test_app_logging.py -q --basetemp .pytest-tmp-codex-log-time-all`：`40 passed`；覆盖 400 行 traceback 仅取末尾 100 行仍保留 `2026-07-12 15:00:00` 和 `ERROR`。
+- `cd frontend; npm run build`：通过，`4183 modules transformed`，预压缩完成。
+- 使用根目录 `start-all.bat` 重启后，`GET /api/health` 返回 `200`，`GET /api/logs?lines=300` 正常返回带时间的结构化日志。
+- 本地浏览器验证日志页：当前虚拟窗口渲染 `25` 个 `.terminal-time` 节点，缺失时间节点为 `0`，未出现 `--:--:--`。
+
+### Notes
+- `backend/app/api/routes.py`：尾读窗口缺少结构化边界时有限向前补读 traceback 上下文。
+- `backend/tests/test_routes_maintenance_config.py`：新增长 traceback 尾窗时间与级别回归。
+- `frontend/src/views/Logs.vue`：为日志续行补充前后结构化时间继承。
+- `docs/runtime-buffer-control-plane.md`：记录 traceback 尾窗补读与时间继承规则。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：反向应用 `routes.py` 中 `_tail_lines()` 的有限上下文补读、`Logs.vue` 中 `parseLogLines()` 的时间继承、删除对应测试和文档段落，并删除本段进度记录。
+
+## 2026-07-12 - Task: 收紧封面、搜索建议与群晖容量慢请求
+### What was done
+- 社团封面本地缺失时立即返回 `404` 并创建按文件名去重的后台补图任务，前端继续使用既有 DLsite fallback，图片请求不再同步等待 CDN；同时补齐历史展示 RJ 封面别名恢复任务的实例状态。
+- 跨库搜索 `mode=suggest` 只读取库存索引，未就绪的远程库标记为 `skipped_suggest`，不再触发固定 5 秒的群晖搜索兜底。
+- 群晖库存容量改为按库存根路径对应 share 的 `volume_status` 读取所属卷容量，不再累加整台群晖所有卷；同库并发刷新合并为 singleflight，有旧缓存最多等待 350ms，冷请求最多等待 2s。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_circle_completion_paged_view.py::test_paged_works_cover_cache_url_uses_image_file_rjcode -q --basetemp .pytest-tmp-codex-verify`：`1 passed`。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_synology_remote_health.py tests\test_circle_completion_paged_view.py tests\test_routes_maintenance_config.py -q --basetemp .pytest-tmp-codex-full`：`59 passed`；覆盖 share 卷容量映射、未知 share 拒绝、容量 singleflight、suggest 禁止 fallback、封面缺失后台调度与去重。
+- 使用项目运行配置只读连接真实群晖验证：库存根路径 `/ASMR` 匹配 share `ASMR`，返回 `storage_scope=share_volume`、单卷 `total_size_bytes=15349525921792`、`free_size_bytes=3425589309440`，未再累加其它卷。
+
+### Notes
+- `backend/app/api/routes.py`：新增群晖容量冷请求截止与刷新 singleflight，suggest 模式跳过远程 fallback，封面缺失改为后台调度。
+- `backend/app/core/library_manager.py`：按库存根路径匹配群晖 share，并从 `volume_status` 返回单卷容量。
+- `backend/app/core/circle_image_cache_service.py`：新增缺失封面的后台去重补齐入口。
+- `backend/app/core/circle_completion_service.py`：补齐历史封面别名恢复任务和待处理集合的实例状态。
+- `backend/tests/test_synology_remote_health.py`：新增 share 容量映射与未知 share 回归测试。
+- `backend/tests/test_circle_completion_paged_view.py`：新增后台补图去重测试，并验证历史别名恢复任务。
+- `backend/tests/test_routes_maintenance_config.py`：新增容量 singleflight、suggest 快路径和封面缺失调度回归测试。
+- `docs/circle-completion-performance-cache.md`：更新封面缺失时的非阻塞行为。
+- `docs/library-remote-read-performance.md`：记录远程搜索建议与群晖容量统计、缓存、超时契约。
+- `progress.md`：追加本轮实现、验证与回滚边界。
+- 回滚点：仅反向应用本轮 `_LIBRARY_STORAGE_INFO_COLD_TIMEOUT_SECONDS` / `_LIBRARY_STORAGE_INFO_REFRESH_TASKS`、`skipped_suggest` / `fallback_attempted`、`schedule_ensure_for_filename()`、`get_storage_info(root_path)` 与 `_cover_alias_restore_*` 对应 hunk，删除本轮新增测试和 `docs/library-remote-read-performance.md`，恢复封面文档原句，并删除本段进度记录；不要回退这些共享文件中的其它未提交改动。
+
+## 2026-07-12 - Task: 百度网盘持续低速自动换链并复用旧断点
+### What was done
+- 为 SVIP 大文件下载增加基于真实下载字节增量的持续低速检测；默认文件不少于 512 MiB、连续 180 秒低于 3 MB/s 时触发换链。
+- 换链仅终止当前 BaiduPCS-Go 子进程，保持同一个远端临时转存目录、工作目录和 savedir，重新执行 locate 获取线路并复用 `.BaiduPCS-Go-downloading` 旧断点，不重复转存分享文件。
+- 单文件默认最多换链 2 次；达到上限后关闭低速中止并保留当前断点继续下载，避免无限重试。续传输出若从零重新计数，会叠加旧断点字节，保证任务进度不倒退。
+- 下载运行态新增换链次数、换链上限、断点字节、低速窗口速度和换链状态；设置页新增开关、阈值、持续时间和最大换链次数。
+
+### Testing
+- `$env:PYTHONPATH='backend'; $env:PYTHONIOENCODING='utf-8'; backend\venv\Scripts\python.exe -m pytest backend\tests\test_baidu_netdisk_service.py -q --basetemp backend/.pytest-tmp-baidu`：`53 passed`；覆盖低速窗口、真实子进程中止、同 savedir 连续两次换链、旧断点存在、续传进度偏移和最终不无限重试。
+- `$env:PYTHONPATH='backend'; $env:PYTHONIOENCODING='utf-8'; backend\venv\Scripts\python.exe -m pytest backend\tests\test_baidu_netdisk_service.py backend\tests\test_baidu_netdisk_account_api.py backend\tests\test_task_notification_service.py backend\tests\test_routes_maintenance_config.py -q --basetemp backend/.pytest-tmp-baidu-final`：`97 passed`。
+- `cd frontend; npm.cmd run build`：通过，`4183 modules transformed`，预压缩完成。
+- 项目 Python `py_compile` 覆盖百度下载服务、配置模型和测试文件；`git diff --check` 通过，仅有既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/baidu_netdisk_service.py`：新增持续低速检测、子进程内部中止、同目录 locate 换链、断点进度偏移和运行态字段。
+- `backend/app/config/settings.py`、`backend/config/config.yaml`：新增低速换链默认配置。
+- `backend/tests/test_baidu_netdisk_service.py`：新增低速判定、子进程中止、换链上限和旧断点续传回归。
+- `frontend/src/components/settings/BaiduNetdiskSettingsPanel.vue`：新增持续低速自动换链设置项。
+- `docs/baidu-netdisk-low-speed-refresh.md`：记录换链、断点复用、配置和运行态契约。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：仅反向应用上述文件中的 `low_speed_*`、`link_refresh_*`、`BaiduNetdiskLowSpeedError`、`abort_check` 和对应设置页 / 测试 / 文档 hunk，并删除本段进度记录；不要回退这些共享文件中的其它未提交改动。
+
+## 2026-07-12 - Task: 百度分享转存串行化并补强 SSL EOF 恢复
+### What was done
+- 百度分享 `/share/transfer` 新增独立全局转存槽，默认只允许 1 个请求执行；转存完成立即释放，不改变 BaiduPCS-Go 每文件 20 线程及现有全局下载文件数限制。
+- 转存遇到 SSL EOF、连接/读取超时、HTTP 429 或 5xx 时，使用新 Session、新 `logid` 和新 `dp-logid` 按 2、5、12、30 秒退避重试；分享失效、提取码错误等业务错误不重试，取消或暂停可立即中断等待。
+- 网络响应丢失后先查询远端临时目录，只有文件名和精确字节数一致才确认实际转存成功并继续下载；不匹配时继续正常重试。
+- 任务运行态新增转存等待、执行、重试、尝试次数和下次等待时间；错误日志补齐 `sekey`、`logid`、`dp-logid`、`randsk`、`bdstoken` 脱敏，设置页开放转存并发与网络重试次数。
+
+### Testing
+- `$env:PYTHONPATH='backend'; $env:PYTHONIOENCODING='utf-8'; backend\venv\Scripts\python.exe -m pytest backend\tests\test_baidu_netdisk_service.py -q --basetemp backend/.pytest-tmp-baidu-transfer`：`61 passed`；覆盖 8 文件转存峰值并发为 1、SSL EOF 重试与请求标识刷新、业务错误不重试、取消中断、个人网盘精确列表确认、BaiduPCS-Go 兜底确认、大小不匹配拒绝和敏感参数脱敏。
+- `$env:PYTHONPATH='backend'; $env:PYTHONIOENCODING='utf-8'; backend\venv\Scripts\python.exe -m pytest backend\tests\test_baidu_netdisk_service.py backend\tests\test_baidu_netdisk_account_api.py backend\tests\test_task_notification_service.py backend\tests\test_routes_maintenance_config.py -q --basetemp backend/.pytest-tmp-baidu-transfer-final`：`105 passed`。
+- `cd frontend; npm.cmd run build`：通过，`4183 modules transformed`，预压缩完成。
+- 项目 Python `py_compile` 覆盖百度下载服务和配置模型；`git diff --check` 通过，仅有既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/baidu_netdisk_service.py`：新增转存槽、瞬时网络重试、远端结果确认、运行态和错误脱敏。
+- `backend/app/config/settings.py`、`backend/config/config.yaml`：新增转存并发与重试默认配置。
+- `backend/tests/test_baidu_netdisk_service.py`：新增转存并发、重试、取消、确认和脱敏回归测试。
+- `frontend/src/components/settings/BaiduNetdiskSettingsPanel.vue`：新增转存并发与重试次数设置项。
+- `docs/baidu-netdisk-low-speed-refresh.md`：补充转存稳定性、下载限制不变和运行态契约。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：仅反向应用上述文件中的 `transfer_*`、`_acquire_global_transfer_slot()`、`_transfer_share_item_with_retry()`、`_confirm_remote_temporary_transfer_file()`、转存敏感参数脱敏及对应设置页 / 测试 / 文档 hunk，并删除本段进度记录；不要回退共享文件中的低速断点续传或其它未提交改动。
+
+## 2026-07-12 - Task: 修复社团补全 DLsite 身份发现与预告污染
+### What was done
+- 将未知社团的身份发现改为解析 DLsite 搜索结果中的真实作品链接和 maker profile 链接，不再依赖库存，也不再对整个 HTML 页面扫描所有 RJ。
+- 名称匹配后只接受唯一 `RG` maker ID；同名对应多个 maker ID 时明确拒绝自动选择，支持直接输入 `RG` 或包含 maker ID 的 DLsite 链接。
+- maker ID 确认后继续复用现有 maker profile、maker announce、音声分类和元数据链路；已有 maker ID 的社团完全跳过身份搜索，保持原快速路径。
+- 预告搜索仅接收包含名称匹配 maker 链接的结构化作品结果；官方入口正常但无匹配时不请求 `home-touch`，网络失败回退时也会拒绝全站默认预告页。
+- 搜索与预告同时网络失败且没有任何结构化候选时返回“DLsite 社团搜索暂时不可用”，不再误报为社团名称无效。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app/core/circle_completion_service.py tests/test_circle_completion_announce_search.py tests/test_circle_completion_maker_discovery.py`：通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests/test_circle_completion_announce_search.py tests/test_circle_completion_maker_discovery.py tests/test_circle_completion_paged_view.py tests/test_circle_completion_bonus_grouping.py -q --basetemp .pytest-tmp-codex-maker-final`：`31 passed`。
+- 使用项目实际 DLsite 客户端在线冒烟：搜索 `おほ声の館` 首页提取 30 个真实作品链接，唯一身份解析为 `RG62099`，无失败原因。
+- `git diff --check -- backend/app/core/circle_completion_service.py backend/tests/test_circle_completion_announce_search.py backend/tests/test_circle_completion_maker_discovery.py docs/circle-completion-performance-cache.md`：通过；仅有既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/circle_completion_service.py`：新增结构化搜索页解析、唯一 maker 身份选择、直接 RG 输入、安全预告回退和外部不可用错误语义。
+- `backend/tests/test_circle_completion_announce_search.py`：将预告回归改为结构化 maker 匹配，并覆盖主入口超时后拒绝全站默认页。
+- `backend/tests/test_circle_completion_maker_discovery.py`：新增页面噪音拒绝、同名 maker 歧义、无库存身份发现及已有 maker 快速路径回归。
+- `docs/circle-completion-performance-cache.md`：补充不依赖库存的 DLsite 身份发现、唯一性验证和安全降级约束。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：反向应用 `circle_completion_service.py` 的 `_extract_dlsite_search_page_identity()`、`_choose_dlsite_maker_identity()`、两条搜索返回结构及 `_collect_dlsite_circle_candidates()` 身份发现 hunk，恢复预告测试旧签名，删除 `test_circle_completion_maker_discovery.py`，反向应用对应文档段落，并删除本段进度记录。
+
+## 2026-07-12 - Task: 收口字幕工作台关闭竞态并完成延后归档迁移验证
+### What was done
+- 字幕工作台扫描、可用性检查、目录状态、任务状态和检查器读取统一接入会话 token 与 AbortSignal；关闭时先失效会话并中止请求，晚到扫描回调、自动入队和任务创建不再继续写回当前工作台。
+- 取消与清理拆开：先取消活跃字幕任务，再等待 worker 退出 processing 集合并有限重试清理；冲突不再静默吞掉，未退出任务保留供后续重试。
+- 修复字幕可用性接口重复 Axios config，并让 `/rj-subtitle/start`、`/rj-subtitle/status` 正确透传取消信号。
+- 补齐旧版库存 rename/delete/batch-delete 与批量 API 重命名后的字幕目录摘要缓存失效；修复 Redis L2 key 混入进程内 generation 导致跨实例无法命中的问题，Redis 共享版本不可用时才使用本地 generation。
+- 在本机隔离 PostgreSQL 测试库 `kikoerumanager_archive_migration_test` 完成延后归档迁移 upgrade、downgrade、upgrade，并核对 revision、表、JSONB 字段和索引。
+- 延后归档补充 worker 启停、前台任务到达时让出 lease、双 owner 防并发认领和同名目标后缀预留回归。
+
+### Testing
+- `cd frontend; npm test -- --run src/api/apiCancellation.test.js`：`6 passed`。
+- `cd frontend; npm run build`：通过，`4183 modules transformed`，预压缩完成。
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\rj_subtitle_service.py app\core\linked_subtitle_import_service.py app\core\task_engine.py app\api\routes.py`：通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_linked_subtitle_import_service.py tests\test_task_engine.py -q --basetemp .pytest-tmp-subtitle-rerun`：`57 passed`。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_task_engine_cancellation.py -q --basetemp .pytest-tmp-task-cancellation`：`2 passed`。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_deferred_archive_service.py tests\test_processed_archive_cleanup.py tests\test_archive_volume_utils.py tests\test_processed_archives_scan.py tests\test_task_engine.py tests\test_task_engine_cancellation.py -q --basetemp .pytest-tmp-archive-final`：`48 passed`；覆盖 worker 启停、前台抢占、双 owner lease、目标冲突、过期 lease 恢复和归档完成链路。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_library_index_self_mutation.py tests\test_library_index_remote_scanner.py tests\test_library_index_mutation_service.py tests\test_library_index_generation.py -q --basetemp .pytest-tmp-library-index`：`44 passed`。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_library_browser_api.py::test_legacy_library_mutations_invalidate_subtitle_folder_summary_cache -q --basetemp .pytest-tmp-library-routes`：`1 passed`。
+- 隔离 PostgreSQL：全新库升级到 `20260712_0001_deferred_archive_queue`；降级后 `deferred_archive_jobs` 与 `processed_archives.archive_manifest` 均不存在；重新升级后队列表 17 列、`archive_manifest` 为 JSONB、4 个指定索引齐全。
+- `git diff --check`：通过，仅有既有 LF/CRLF 提示。
+
+### Notes
+- `frontend/src/views/Library.vue`：新增字幕选择会话取消边界、关闭时取消/等待清理、自动入队与任务创建的 token/signal 复核。
+- `frontend/src/api/index.js`：修复重复 Axios config，并为字幕 start/status/availability/folder-state/scan 透传 signal。
+- `frontend/src/composables/useSubtitleTask.js`：字幕状态刷新支持取消且取消后不写回任务状态。
+- `frontend/src/api/apiCancellation.test.js`：覆盖字幕查询、状态和创建接口的取消信号透传。
+- `backend/app/api/routes.py`：补齐旧库存写接口和批量 API 重命名的目录摘要缓存失效。
+- `backend/app/core/linked_subtitle_import_service.py`：修正 Redis 共享版本与本地 generation 的缓存 key 语义，并保留失效期间慢扫描不回写旧缓存。
+- `backend/tests/test_linked_subtitle_import_service.py`：新增失效期间 inflight 结果不缓存回写测试。
+- `backend/tests/test_task_engine_cancellation.py`：新增取消终态不可被 complete/fail 覆盖、processing 集合未退出不可清理测试；避免修改用户标记为 skip-worktree 的原测试文件。
+- `backend/tests/test_deferred_archive_service.py`：新增 worker 启停、前台抢占释放 lease、双 owner 防重复认领和同名目标预留回归。
+- `backend/tests/test_library_browser_api.py`：新增旧库存写接口缓存失效回归。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：仅反向应用上述文件中字幕 session/AbortSignal、取消后清理重试、旧库存接口缓存失效、`_target_folder_summary_has_shared_version()` 与对应测试 hunk，并删除本段进度记录；不要回退延后归档、字幕缓存基础或共享文件中的其它未提交改动。隔离测试库可单独删除，不影响运行库。

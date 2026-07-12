@@ -1473,9 +1473,9 @@ function getConflictTypeLabel(conflictType) {
   --ef-border: #e2e8f0;
   --ef-border-soft: rgba(15, 23, 42, 0.08);
   --ef-border-strong: rgba(15, 23, 42, 0.18);
-  --ef-primary: #111827;
-  --ef-primary-hover: #1f2937;
-  --ef-primary-soft: rgba(15, 23, 42, 0.06);
+  --ef-primary: #0f766e;
+  --ef-primary-hover: #115e59;
+  --ef-primary-soft: rgba(13, 148, 136, 0.1);
   --ef-shadow: 0 10px 26px rgba(15, 23, 42, 0.04);
   --ef-shadow-hover: 0 18px 36px rgba(15, 23, 42, 0.1);
   --ef-conflict-bg: #fff7ed;
@@ -1494,11 +1494,13 @@ function getConflictTypeLabel(conflictType) {
   --ef-danger-border: #fca5a5;
   --ef-positive-text: #047857;
   --ef-negative-text: #b45309;
-  --ef-accent-bg: #111827;
-  --ef-accent-bg-hover: #020617;
+  --ef-accent-bg: #0f766e;
+  --ef-accent-bg-hover: #115e59;
+  --ef-secondary-bg: #4f46e5;
+  --ef-secondary-bg-hover: #4338ca;
   --ef-accent-text: #ffffff;
-  --ef-switch-on: #111827;
-  --ef-switch-on-hover: #020617;
+  --ef-switch-on: #0f766e;
+  --ef-switch-on-hover: #115e59;
   --ef-recommend-bg: linear-gradient(180deg, #f0fdf4 0%, #ffffff 100%);
   --ef-recommend-border: #bbf7d0;
   --ef-recommend-active: #047857;
@@ -1520,9 +1522,9 @@ function getConflictTypeLabel(conflictType) {
   --ef-border: rgba(255, 255, 255, 0.12);
   --ef-border-soft: rgba(255, 255, 255, 0.08);
   --ef-border-strong: rgba(255, 255, 255, 0.2);
-  --ef-primary: #2a2b30;
-  --ef-primary-hover: #34363c;
-  --ef-primary-soft: rgba(255, 255, 255, 0.1);
+  --ef-primary: #0f766e;
+  --ef-primary-hover: #0d9488;
+  --ef-primary-soft: rgba(45, 212, 191, 0.14);
   --ef-shadow: 0 18px 42px rgba(0, 0, 0, 0.34);
   --ef-shadow-hover: 0 24px 54px rgba(0, 0, 0, 0.44);
   --ef-conflict-bg: rgba(127, 29, 29, 0.16);
@@ -1541,11 +1543,13 @@ function getConflictTypeLabel(conflictType) {
   --ef-danger-border: rgba(251, 113, 133, 0.38);
   --ef-positive-text: #34d399;
   --ef-negative-text: #fbbf24;
-  --ef-accent-bg: #2a2b30;
-  --ef-accent-bg-hover: #34363c;
+  --ef-accent-bg: #0f766e;
+  --ef-accent-bg-hover: #0d9488;
+  --ef-secondary-bg: #4f46e5;
+  --ef-secondary-bg-hover: #6366f1;
   --ef-accent-text: #f8fafc;
-  --ef-switch-on: #2a2b30;
-  --ef-switch-on-hover: #34363c;
+  --ef-switch-on: #0f766e;
+  --ef-switch-on-hover: #0d9488;
   --ef-recommend-bg: linear-gradient(180deg, rgba(5, 150, 105, 0.18) 0%, rgba(16, 16, 18, 0.9) 100%);
   --ef-recommend-border: rgba(52, 211, 153, 0.38);
   --ef-recommend-active: #34d399;
@@ -1641,12 +1645,12 @@ function getConflictTypeLabel(conflictType) {
   cursor: not-allowed;
 }
 
-/* primary：黑灰渐变 + shimmer 高光（对齐 ASMR 同步页 page-head-btn.primary） */
+/* primary：页面主色渐变 + shimmer 高光 */
 .ef-head-btn.primary {
   background: linear-gradient(135deg, var(--ef-primary), var(--ef-primary-hover));
-  color: var(--ef-surface);
+  color: var(--ef-accent-text);
   border-color: transparent;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
+  box-shadow: 0 8px 18px rgba(15, 118, 110, 0.2);
 }
 .ef-head-btn.primary::before {
   content: '';
@@ -1662,7 +1666,7 @@ function getConflictTypeLabel(conflictType) {
 }
 .ef-head-btn.primary:hover {
   background: linear-gradient(135deg, var(--ef-primary-hover), var(--ef-primary));
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.28), 0 0 0 4px rgba(15, 23, 42, 0.05);
+  box-shadow: 0 14px 28px rgba(15, 118, 110, 0.26), 0 0 0 4px rgba(13, 148, 136, 0.08);
 }
 .ef-head-btn.primary:hover::before { left: 130%; }
 
@@ -2158,11 +2162,11 @@ function getConflictTypeLabel(conflictType) {
   transition: transform 0.12s ease;
 }
 .side-ep-action:disabled {
-  background: #222328;
-  border-color: rgba(255, 255, 255, 0.18);
-  color: #e2e8f0;
+  background: var(--ef-surface-muted);
+  border-color: var(--ef-border-soft);
+  color: var(--ef-faint);
   cursor: not-allowed;
-  opacity: 1;
+  opacity: 0.62;
   box-shadow: none;
 }
 .side-ep-action.primary {
@@ -2177,24 +2181,24 @@ function getConflictTypeLabel(conflictType) {
   box-shadow: none;
 }
 .side-ep-action.accent {
-  background: var(--ef-accent-bg);
-  border-color: var(--ef-accent-bg);
+  background: var(--ef-secondary-bg);
+  border-color: var(--ef-secondary-bg);
   color: var(--ef-accent-text);
 }
 .side-ep-action.accent:hover:not(:disabled) {
-  background: var(--ef-accent-bg-hover);
-  border-color: var(--ef-accent-bg-hover);
+  background: var(--ef-secondary-bg-hover);
+  border-color: var(--ef-secondary-bg-hover);
 }
 .side-ep-action.primary:disabled {
-  background: #2f3036;
-  border-color: rgba(255, 255, 255, 0.2);
-  color: #f8fafc;
+  background: var(--ef-surface-muted);
+  border-color: var(--ef-border-soft);
+  color: var(--ef-faint);
   box-shadow: none;
 }
 .side-ep-action.accent:disabled {
-  background: #2f3036;
-  border-color: rgba(255, 255, 255, 0.2);
-  color: #f8fafc;
+  background: var(--ef-surface-muted);
+  border-color: var(--ef-border-soft);
+  color: var(--ef-faint);
   box-shadow: none;
 }
 .side-ep-action:disabled svg,
@@ -2299,10 +2303,10 @@ function getConflictTypeLabel(conflictType) {
 }
 .bulk-action:active:not(:disabled) { transform: scale(0.96); transition: transform 0.12s ease; }
 .bulk-action:disabled {
-  background: #222328;
-  border-color: rgba(255, 255, 255, 0.18);
-  color: #e2e8f0;
-  opacity: 1;
+  background: var(--ef-surface-muted);
+  border-color: var(--ef-border-soft);
+  color: var(--ef-faint);
+  opacity: 0.62;
   cursor: not-allowed;
 }
 .bulk-action.primary {
@@ -2315,9 +2319,9 @@ function getConflictTypeLabel(conflictType) {
   border-color: var(--ef-accent-bg-hover);
 }
 .bulk-action.primary:disabled {
-  background: #2f3036;
-  border-color: rgba(255, 255, 255, 0.2);
-  color: #f8fafc;
+  background: var(--ef-surface-muted);
+  border-color: var(--ef-border-soft);
+  color: var(--ef-faint);
 }
 .bulk-action:disabled svg,
 .bulk-action:disabled .bulk-action-icon {
@@ -2372,7 +2376,7 @@ function getConflictTypeLabel(conflictType) {
 .select-toggle { width: 26px; height: 26px; border-radius: 8px; border: 1px solid var(--ef-border-strong); background: var(--ef-surface); color: var(--ef-faint); display: grid; place-items: center; flex: 0 0 auto; cursor: pointer; transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease, box-shadow 0.25s ease; }
 .select-toggle:hover { border-color: var(--ef-primary); color: var(--ef-primary); background: var(--ef-surface-soft); transform: scale(1.06); }
 .select-toggle:active { transform: scale(0.92); transition: transform 0.1s ease; }
-.select-toggle.active { background: var(--ef-primary); color: var(--ef-surface); border-color: var(--ef-primary); box-shadow: 0 4px 10px rgba(15,23,42,0.2); }
+.select-toggle.active { background: var(--ef-primary); color: var(--ef-accent-text); border-color: var(--ef-primary); box-shadow: 0 4px 10px rgba(15,118,110,0.22); }
 .select-toggle.active:hover { background: var(--ef-primary-hover); }
 .select-toggle:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 
@@ -2427,18 +2431,18 @@ function getConflictTypeLabel(conflictType) {
 .card-action:hover { transform: translateY(-1px) scale(1.03); background: var(--ef-surface-soft); border-color: var(--ef-border-strong); box-shadow: var(--ef-shadow); }
 .card-action:active:not(:disabled) { transform: scale(0.96); transition: transform 0.12s ease; }
 .card-action:disabled {
-  background: #222328;
-  border-color: rgba(255, 255, 255, 0.18);
-  color: #e2e8f0;
-  opacity: 1;
+  background: var(--ef-surface-muted);
+  border-color: var(--ef-border-soft);
+  color: var(--ef-faint);
+  opacity: 0.62;
   cursor: not-allowed;
 }
-.card-action.primary { background: var(--ef-primary); color: var(--ef-surface); border-color: var(--ef-primary); box-shadow: var(--ef-shadow); }
+.card-action.primary { background: var(--ef-primary); color: var(--ef-accent-text); border-color: var(--ef-primary); box-shadow: var(--ef-shadow); }
 .card-action.primary:hover { background: var(--ef-primary-hover); box-shadow: var(--ef-shadow-hover); }
 .card-action.primary:disabled {
-  background: #2f3036;
-  border-color: rgba(255, 255, 255, 0.2);
-  color: #f8fafc;
+  background: var(--ef-surface-muted);
+  border-color: var(--ef-border-soft);
+  color: var(--ef-faint);
   box-shadow: none;
 }
 .card-action.warning { background: var(--ef-warning-bg); color: var(--ef-warning-text); border-color: var(--ef-warning-border); }
