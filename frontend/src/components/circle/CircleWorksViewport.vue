@@ -161,8 +161,7 @@ function bonusCvLabel(bonus) {
 }
 
 function isItemSelected(item) {
-  const code = String(item?.canonical_rjcode || '').trim()
-  return Boolean(code && props.selectedCodes?.has?.(code))
+  return matchesWorkCodeSet(item, props.selectedCodes)
 }
 
 function hasRenderedBonuses(bonuses) {
@@ -243,6 +242,23 @@ function bonusCodeList(item) {
     .map(member => bonusCode(member))
     .filter(Boolean)
     .filter((code, index, array) => array.indexOf(code) === index)
+}
+
+function workStateCodeList(item) {
+  return bonusMembers(item)
+    .flatMap(member => [
+      member?.canonical_rjcode,
+      member?.display_rjcode,
+      member?.rjcode,
+      member?.source_compare?.work_rjcode,
+    ])
+    .map(value => String(value || '').trim())
+    .filter(Boolean)
+    .filter((code, index, array) => array.indexOf(code) === index)
+}
+
+function matchesWorkCodeSet(item, codeSet) {
+  return workStateCodeList(item).some(code => codeSet?.has?.(code))
 }
 
 function hasLocalDownloadReadyBonus(item) {
@@ -437,9 +453,9 @@ const itemViewModels = computed(() => pagedGroups.value.map((group, index) => {
       code: bonusCodeValue,
       owned: bonusOwned,
       dimmed: groupOwned && !bonusOwned,
-      selected: bonusCodes.some(code => props.selectedCodes?.has?.(code)),
-      flashed: bonusCodes.some(code => props.flashedCodes?.has?.(code)),
-      located: bonusCodes.some(code => props.locatedCodes?.has?.(code)),
+      selected: matchesWorkCodeSet(bonus, props.selectedCodes),
+      flashed: matchesWorkCodeSet(bonus, props.flashedCodes),
+      located: matchesWorkCodeSet(bonus, props.locatedCodes),
     }
   })
   return {
@@ -452,9 +468,9 @@ const itemViewModels = computed(() => pagedGroups.value.map((group, index) => {
     itemOwned,
     groupOwned,
     completionDimmed,
-    selected: itemCodes.some(value => props.selectedCodes?.has?.(value)) || Boolean(code && props.selectedCodes?.has?.(code)),
-    flashed: itemCodes.some(value => props.flashedCodes?.has?.(value)) || Boolean(code && props.flashedCodes?.has?.(code)),
-    located: itemCodes.some(value => props.locatedCodes?.has?.(value)) || Boolean(code && props.locatedCodes?.has?.(code)),
+    selected: matchesWorkCodeSet(item, props.selectedCodes),
+    flashed: matchesWorkCodeSet(item, props.flashedCodes),
+    located: matchesWorkCodeSet(item, props.locatedCodes),
   }
 }))
 const rowViewModels = computed(() => {
@@ -545,9 +561,9 @@ function viewModelForBonus(item, fallbackIndex) {
     item,
     key: itemKey(item, fallbackIndex),
     code,
-    selected: codes.some(value => props.selectedCodes?.has?.(value)),
-    flashed: codes.some(value => props.flashedCodes?.has?.(value)),
-    located: codes.some(value => props.locatedCodes?.has?.(value)),
+    selected: matchesWorkCodeSet(item, props.selectedCodes),
+    flashed: matchesWorkCodeSet(item, props.flashedCodes),
+    located: matchesWorkCodeSet(item, props.locatedCodes),
   }
 }
 

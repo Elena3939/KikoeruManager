@@ -368,14 +368,21 @@ function onImgLoad(event) {
 }
 
 .work-list-row.is-selected {
-  background:
-    radial-gradient(circle at 0 50%, color-mix(in srgb, var(--circle-primary, #2563eb) 14%, transparent), transparent 42%),
-    var(--circle-selected-bg, rgba(248, 251, 255, 0.96));
-  border-color: color-mix(in srgb, var(--circle-primary, #2563eb) 34%, transparent);
+  border-color: color-mix(in srgb, var(--circle-primary, #2563eb) 72%, transparent);
   box-shadow:
-    inset 3px 0 0 color-mix(in srgb, var(--circle-primary, #2563eb) 70%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--circle-primary, #2563eb) 12%, transparent),
+    inset 4px 0 0 color-mix(in srgb, var(--circle-primary, #2563eb) 92%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--circle-primary, #2563eb) 14%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--circle-primary, #2563eb) 14%, transparent),
     0 6px 14px color-mix(in srgb, var(--circle-primary, #2563eb) 12%, transparent);
+}
+
+:global(html.kikoerumanager-dark) .work-list-row.is-selected {
+  border-color: rgba(96, 165, 250, 0.72);
+  box-shadow:
+    inset 4px 0 0 rgba(96, 165, 250, 0.95),
+    inset 0 0 0 1px rgba(96, 165, 250, 0.16),
+    0 0 0 2px rgba(96, 165, 250, 0.14),
+    0 8px 18px rgba(0, 0, 0, 0.24);
 }
 
 .work-list-row.status-flash {

@@ -234,6 +234,34 @@ async def test_circle_image_cache_bounds_on_demand_failure_wait(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_circle_image_cache_background_ensure_is_deduplicated(tmp_path) -> None:
+    image_cache = CircleImageCacheService()
+    image_cache._cache_dir = tmp_path
+    release = asyncio.Event()
+    calls = 0
+
+    async def slow_ensure(_filename):
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        return None
+
+    image_cache.ensure_local_for_filename = slow_ensure
+
+    first = image_cache.schedule_ensure_for_filename("RJ01012345.jpg")
+    second = image_cache.schedule_ensure_for_filename("RJ01012345.jpg")
+    await asyncio.sleep(0)
+
+    assert first is not None
+    assert second is first
+    assert calls == 1
+
+    release.set()
+    await first
+    assert image_cache._background_download_tasks == {}
+
+
+@pytest.mark.asyncio
 async def test_paged_works_cover_cache_url_uses_image_file_rjcode(service: CircleCompletionService, db_session, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     circle_id = "circle_cover_cache"
     db_session.add(

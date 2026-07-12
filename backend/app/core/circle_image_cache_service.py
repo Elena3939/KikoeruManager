@@ -518,6 +518,40 @@ class CircleImageCacheService:
         self._background_download_tasks[task_key] = task
         return task
 
+    def schedule_ensure_for_filename(self, filename: str) -> Optional[asyncio.Task]:
+        """后台补齐缺失封面；同一文件只保留一个在途任务。"""
+
+        rjcode, variant = self._parse_filename(filename)
+        if not rjcode or self.has_local(rjcode, variant):
+            return None
+        task_key = self._filename_for(rjcode, variant)
+        if not task_key:
+            return None
+        existing = self._background_download_tasks.get(task_key)
+        if existing and not existing.done():
+            return existing
+
+        async def _runner() -> None:
+            try:
+                await self.ensure_local_for_filename(filename)
+            except Exception:
+                logger.warning(
+                    "[社团补全/封面缓存] 后台按需下载异常 filename=%s",
+                    filename,
+                    exc_info=True,
+                )
+            finally:
+                current = asyncio.current_task()
+                if self._background_download_tasks.get(task_key) is current:
+                    self._background_download_tasks.pop(task_key, None)
+
+        try:
+            task = asyncio.create_task(_runner(), name=f"circle-cover-ensure:{task_key}")
+        except RuntimeError:
+            return None
+        self._background_download_tasks[task_key] = task
+        return task
+
     async def _download_once(
         self,
         rjcode: str,
