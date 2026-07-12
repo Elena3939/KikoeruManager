@@ -1,10 +1,12 @@
+import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
 from starlette.responses import PlainTextResponse
 
 from app.api import routes
-from app.config.settings import AppConfig, DatabaseConfig, ResourceBudgetConfig
+from app.config.settings import AppConfig, DatabaseConfig, ResourceBudgetConfig, RedisConfig, BonusProbeConfig
 
 
 def test_notification_cleanup_config_reads_notification_center(monkeypatch):
@@ -29,7 +31,41 @@ def test_resource_budget_config_defaults_are_conservative():
         archive_inspect=0,
         remote_fs=4,
         network_download=5,
-        sqlite_write=1,
+        database_write=4,
+        library_index_write=1,
+        bonus_probe_database_write=1,
+    )
+
+
+def test_redis_and_bonus_probe_defaults_use_parallel_probe_workers():
+    config = AppConfig()
+
+    assert config.redis == RedisConfig(
+        enabled=True,
+        required=True,
+        url="redis://localhost:6379/0",
+        namespace="kikoerumanager",
+        environment="prod",
+        socket_timeout_seconds=2.0,
+        connect_timeout_seconds=2.0,
+        runtime_ttl_seconds=259200,
+        short_cache_ttl_seconds=60,
+        event_stream_maxlen=50000,
+        dirty_stream_maxlen=200000,
+    )
+    assert config.bonus_probe == BonusProbeConfig(
+        max_active_jobs=1,
+        normal_batch_size=500,
+        normal_concurrency=6,
+        deep_batch_size=500,
+        deep_concurrency=6,
+        new_release_batch_size=100,
+        new_release_concurrency=6,
+        max_batch_size=500,
+        max_concurrency=6,
+        product_info_total_concurrency=6,
+        cache_lookup_batch_size=1000,
+        cache_write_batch_size=100,
     )
 
 
@@ -37,16 +73,24 @@ def test_database_config_defaults_are_nas_safe():
     config = AppConfig()
 
     assert config.database == DatabaseConfig(
-        journal_mode="WAL",
-        synchronous="FULL",
-        busy_timeout_ms=60000,
-        wal_autocheckpoint=500,
-        cache_size_kb=20000,
-        pool_size=2,
-        max_overflow=2,
+        host="127.0.0.1",
+        port=5432,
+        database="kikoerumanager",
+        username="kikoerumanager",
+        password="",
+        sslmode="prefer",
+        connect_timeout_seconds=10,
+        pool_size=10,
+        max_overflow=20,
         pool_recycle_seconds=1800,
-        startup_quick_check=True,
-        startup_integrity_check=False,
+        pool_timeout_seconds=30,
+        statement_timeout_ms=120000,
+        startup_health_check=True,
+        slow_query_monitor_enabled=True,
+        slow_query_threshold_ms=500,
+        auto_explain_enabled=False,
+        auto_explain_threshold_ms=1000,
+        search_backend="pg_trgm",
     )
 
 
@@ -63,10 +107,16 @@ def test_get_config_includes_resource_budget(client, monkeypatch):
         "archive_inspect": 0,
         "remote_fs": 4,
         "network_download": 5,
-        "sqlite_write": 1,
+        "database_write": 4,
+        "library_index_write": 1,
+        "bonus_probe_database_write": 1,
     }
-    assert response.json()["database"]["synchronous"] == "FULL"
-    assert response.json()["database"]["busy_timeout_ms"] == 60000
+    assert response.json()["redis"]["url"] == "redis://localhost:6379/0"
+    assert response.json()["bonus_probe"]["max_active_jobs"] == 1
+    assert response.json()["database"]["host"] == "127.0.0.1"
+    assert response.json()["database"]["database"] == "kikoerumanager"
+    assert response.json()["database"]["password"] == ""
+    assert response.json()["database"]["statement_timeout_ms"] == 120000
 
 
 def test_update_config_validates_resource_budget(client, monkeypatch):
@@ -89,7 +139,7 @@ def test_update_config_validates_resource_budget(client, monkeypatch):
                 "archive_inspect": 3,
                 "remote_fs": 3,
                 "network_download": 4,
-                "sqlite_write": 1,
+                "database_write": 1,
             }
         },
     )
@@ -102,8 +152,51 @@ def test_update_config_validates_resource_budget(client, monkeypatch):
         "archive_inspect": 3,
         "remote_fs": 3,
         "network_download": 4,
-        "sqlite_write": 1,
+        "database_write": 1,
+        "library_index_write": 1,
+        "bonus_probe_database_write": 1,
     }
+
+
+def test_update_config_validates_redis_and_bonus_probe(client, monkeypatch):
+    captured = {}
+
+    def fake_save_config(payload):
+        captured.update(payload)
+        return True
+
+    monkeypatch.setattr("app.config.settings.save_config", fake_save_config)
+    monkeypatch.setattr(routes, "get_config", lambda: AppConfig())
+    monkeypatch.setattr(routes, "_read_redis_url_from_disk", lambda: "redis://:secret@localhost:6379/0")
+    monkeypatch.setattr(routes, "_read_redis_url_from_runtime", lambda: "")
+
+    response = client.post(
+        "/api/config",
+        json={
+            "redis": {
+                "enabled": True,
+                "required": False,
+                "url": "redis://:********@localhost:6379/0",
+                "namespace": "Prekikoeru",
+                "environment": "dev",
+            },
+            "bonus_probe": {
+                "max_active_jobs": 0,
+                "normal_batch_size": 1000,
+                "normal_concurrency": 9,
+                "max_batch_size": 200,
+                "max_concurrency": 2,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["redis"]["url"] == "redis://:secret@localhost:6379/0"
+    assert captured["redis"]["namespace"] == "kikoerumanager"
+    assert captured["redis"]["required"] is False
+    assert captured["bonus_probe"]["max_active_jobs"] == 1
+    assert captured["bonus_probe"]["normal_batch_size"] == 200
+    assert captured["bonus_probe"]["normal_concurrency"] == 2
 
 
 def test_database_maintenance_health_returns_503_on_failed_check(client, monkeypatch):
@@ -121,6 +214,109 @@ def test_database_maintenance_health_returns_503_on_failed_check(client, monkeyp
     assert response.status_code == 503
     assert response.json()["ok"] is False
     assert response.json()["messages"] == ["database disk image is malformed"]
+
+
+def test_database_maintenance_performance_endpoint(client, monkeypatch):
+    def fake_snapshot(*, limit=10):
+        return {
+            "backend": "postgresql",
+            "limit": limit,
+            "pg_stat_statements": {"queryable": True},
+            "slow_queries": [{"queryid": "1", "calls": 2, "query": "SELECT 1"}],
+            "table_stats": [{"table": "activity_logs", "seq_scan_percent": 0.0}],
+            "search_status": {"all_ready": True, "domains": []},
+            "advice": [],
+        }
+
+    monkeypatch.setattr("app.core.database_maintenance_service.performance_snapshot", fake_snapshot)
+
+    response = client.get("/api/database/maintenance/performance", params={"limit": 5})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["backend"] == "postgresql"
+    assert payload["limit"] == 5
+    assert payload["pg_stat_statements"]["queryable"] is True
+    assert payload["slow_queries"][0]["query"] == "SELECT 1"
+    assert payload["search_status"]["all_ready"] is True
+
+
+def test_database_maintenance_search_status_endpoint(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.database_maintenance_service.search_status_snapshot",
+        lambda: {
+            "backend": "postgresql",
+            "default_search_backend": "pg_trgm",
+            "pg_trgm_enabled": True,
+            "domains": [{"domain": "activity_logs", "search_enabled": True}],
+            "all_ready": True,
+        },
+    )
+
+    response = client.get("/api/database/maintenance/search-status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["default_search_backend"] == "pg_trgm"
+    assert payload["domains"][0]["domain"] == "activity_logs"
+
+
+def test_database_maintenance_reset_pg_stat_statements_conflict(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.core.database_maintenance_service.reset_pg_stat_statements",
+        lambda: {"ok": False, "reset": False, "error": "pg_stat_statements 不可查询"},
+    )
+
+    response = client.post("/api/database/maintenance/pg-stat-statements/reset")
+
+    assert response.status_code == 409
+    assert response.json()["ok"] is False
+    assert response.json()["error"] == "pg_stat_statements 不可查询"
+
+
+def test_activity_log_search_uses_plain_searchable_text_expression():
+    captured = {}
+
+    class Result:
+        def fetchall(self):
+            return [("log-1",)]
+
+    class FakeDb:
+        def execute(self, statement, params):
+            captured["statement"] = str(statement)
+            captured["params"] = params
+            return Result()
+
+    ids, backend = routes._run_activity_log_id_search(FakeDb(), "RJ_100%", 10)
+
+    assert ids == ["log-1"]
+    assert backend == "postgresql_pg_trgm"
+    assert "WHERE searchable_text ILIKE" in captured["statement"]
+    assert "COALESCE(searchable_text" not in captured["statement"]
+    assert captured["params"]["p"] == "%RJ!_100!%%"
+
+
+def test_password_search_uses_expression_trigram_index():
+    clause = routes._password_search_filter("RJ_100%")
+    normalized_sql = " ".join(str(clause).split())
+
+    assert (
+        "COALESCE(rjcode, '') || ' ' || COALESCE(filename, '') || ' ' || "
+        "COALESCE(password, '') || ' ' || COALESCE(description, '')"
+    ) in normalized_sql
+    assert "ILIKE :password_search_pattern ESCAPE '!'" in normalized_sql
+    assert " OR " not in f" {normalized_sql.upper()} "
+    assert clause.compile().params["password_search_pattern"] == "%RJ!_100!%%"
+
+
+def test_processed_archive_search_uses_single_column_trigram_filters():
+    clause = routes._processed_archive_search_filter("RJ_100%")
+    normalized_sql = " ".join(str(clause).split())
+
+    assert "rjcode ILIKE :processed_archive_search_pattern ESCAPE '!'" in normalized_sql
+    assert "filename ILIKE :processed_archive_search_pattern ESCAPE '!'" in normalized_sql
+    assert "COALESCE" not in normalized_sql
+    assert clause.compile().params["processed_archive_search_pattern"] == "%RJ!_100!%%"
 
 
 def test_notification_cleanup_config_clamps_invalid_values(monkeypatch):
@@ -313,6 +509,23 @@ def test_resource_budget_snapshot_endpoint(client, monkeypatch):
     assert response.json()["resources"]["remote_fs"]["active"] == 2
 
 
+def test_redis_status_endpoint(client, monkeypatch):
+    class Service:
+        def diagnostics(self):
+            return {"enabled": True, "available": True, "url_masked": "redis://:********@localhost:6379/0"}
+
+    monkeypatch.setattr(
+        "app.core.redis_service.get_redis_service",
+        lambda: Service(),
+    )
+
+    response = client.get("/api/system/redis/status")
+
+    assert response.status_code == 200
+    assert response.json()["available"] is True
+    assert "secret" not in response.text
+
+
 def test_system_storage_info_uses_ttl_cache(client, monkeypatch):
     routes._SYSTEM_STORAGE_INFO_CACHE.update({"key": None, "expires_at": 0.0, "payload": None})
 
@@ -362,17 +575,18 @@ def test_system_storage_info_uses_ttl_cache(client, monkeypatch):
 
 def test_library_storage_info_returns_cached_value_when_refresh_times_out(client, monkeypatch):
     routes._LIBRARY_STORAGE_INFO_CACHE.clear()
+    routes._LIBRARY_STORAGE_INFO_REFRESH_TASKS.clear()
 
     class Library:
         id = "nas"
         name = "NAS"
         type = "synology_filestation"
         synology = object()
+        root_path = "/NAS"
 
     class SlowClient:
-        async def get_storage_info(self):
-            import asyncio
-
+        async def get_storage_info(self, root_path):
+            assert root_path == "/NAS"
             await asyncio.sleep(0.05)
             return {
                 "total_size_bytes": 20,
@@ -414,6 +628,106 @@ def test_library_storage_info_returns_cached_value_when_refresh_times_out(client
     assert payload["free_size_bytes"] == 60
     assert payload["stale"] is True
     assert payload["stale_reason"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_library_storage_info_cold_requests_share_singleflight(monkeypatch):
+    routes._LIBRARY_STORAGE_INFO_CACHE.clear()
+    routes._LIBRARY_STORAGE_INFO_REFRESH_TASKS.clear()
+    calls = 0
+
+    class Library:
+        id = "nas"
+        name = "NAS"
+        type = "synology_filestation"
+        synology = object()
+        root_path = "/ASMR"
+
+    class Client:
+        async def get_storage_info(self, root_path):
+            nonlocal calls
+            calls += 1
+            assert root_path == "/ASMR"
+            await asyncio.sleep(0.01)
+            return {
+                "total_size_bytes": 100,
+                "used_size_bytes": 40,
+                "free_size_bytes": 60,
+                "free_space_gb": 0,
+                "volumes": [],
+            }
+
+    class Manager:
+        def get_library_definition(self, library_id):
+            assert library_id == "nas"
+            return Library()
+
+        def get_cached_synology_client(self, synology):
+            return Client()
+
+    monkeypatch.setattr(routes, "get_library_manager", lambda: Manager())
+    monkeypatch.setattr(routes, "_LIBRARY_STORAGE_INFO_COLD_TIMEOUT_SECONDS", 0.2)
+
+    first, second = await asyncio.gather(
+        routes.get_library_storage_info("nas"),
+        routes.get_library_storage_info("nas"),
+    )
+
+    assert first["free_size_bytes"] == 60
+    assert second["free_size_bytes"] == 60
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_global_search_suggest_never_runs_remote_fallback(monkeypatch):
+    class Manager:
+        def list_libraries(self):
+            return [{
+                "id": "nas",
+                "name": "NAS",
+                "type": "synology_filestation",
+                "root_path": "/ASMR",
+            }]
+
+        async def list_files(self, *_args, **_kwargs):
+            raise AssertionError("suggest 模式不得触发远程搜索")
+
+    class Service:
+        def get_status(self, _library_id):
+            return None
+
+    monkeypatch.setattr(routes, "get_library_manager", lambda: Manager())
+    monkeypatch.setattr(routes, "get_library_index_service", lambda: Service())
+
+    payload = await routes.global_search_library_index(keyword="missing", mode="suggest", limit=6)
+
+    assert payload["items"] == []
+    assert payload["fallback_used"] is False
+    assert payload["library_status"][0]["search_mode"] == "skipped_suggest"
+
+
+def test_circle_cover_miss_schedules_background_download(client, monkeypatch, tmp_path):
+    from app.core import circle_image_cache_service
+
+    scheduled = []
+
+    class ImageCache:
+        def resolve_filename(self, filename):
+            return tmp_path / filename
+
+        def schedule_ensure_for_filename(self, filename):
+            scheduled.append(filename)
+
+    monkeypatch.setattr(
+        circle_image_cache_service,
+        "get_circle_image_cache_service",
+        lambda: ImageCache(),
+    )
+
+    response = client.get("/api/circle-completion/cover/RJ01012345.jpg")
+
+    assert response.status_code == 404
+    assert scheduled == ["RJ01012345.jpg"]
 
 
 def test_remote_fs_health_snapshot_endpoint(client, monkeypatch):
@@ -589,3 +903,26 @@ def test_log_file_signature_changes_when_log_grows(tmp_path):
     assert first[0] < second[0]
     assert second[0] == log_file.stat().st_size
     assert second != first
+
+
+def test_tail_lines_reads_traceback_context_for_timestamp(tmp_path):
+    log_file = tmp_path / "app.log"
+    traceback_lines = [
+        f'  File "D:/app/service_{index}.py", line {index}, in run'
+        for index in range(400)
+    ]
+    log_file.write_text(
+        "2026-07-12 15:00:00 [ERROR] app.worker - 处理失败\n"
+        "Traceback (most recent call last):\n"
+        + "\n".join(traceback_lines)
+        + "\nRuntimeError: failed\n",
+        encoding="utf-8",
+    )
+
+    result = routes._tail_lines(str(log_file), 100)
+
+    assert len(result) == 1
+    assert result[0].startswith(routes._LOG_TRACEBACK_BLOCK_PREFIX)
+    payload = json.loads(result[0][len(routes._LOG_TRACEBACK_BLOCK_PREFIX):])
+    assert payload["time"] == "2026-07-12 15:00:00"
+    assert payload["level"] == "ERROR"

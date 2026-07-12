@@ -21,6 +21,7 @@ const props = defineProps({
   title: { type: String, default: 'system.log' },
   subtitle: { type: String, default: 'kikoerumanager - system stream' },
   lines: { type: Array, default: () => [] },
+  highlightTerms: { type: Array, default: () => [] },
   status: { type: String, default: 'idle' },
   errorMessage: { type: String, default: '' },
   taskStatus: { type: String, default: '' },
@@ -43,6 +44,16 @@ const lineCount = computed(() => safeLines.value.length)
 const terminalHeight = computed(() => `${Math.max(260, Number(props.maxHeight || 380))}px`)
 const connectionStatus = computed(() => String(props.status || 'idle').trim().toLowerCase())
 const isFinished = computed(() => ['completed', 'failed', 'cancelled', 'canceled'].includes(String(props.taskStatus || '').trim().toLowerCase()))
+const normalizedHighlightTerms = computed(() => Array.from(new Set(
+  (Array.isArray(props.highlightTerms) ? props.highlightTerms : [])
+    .map((term) => String(term || '').trim().toLowerCase())
+    .filter(Boolean),
+)).sort((left, right) => right.length - left.length))
+const highlightPattern = computed(() => {
+  if (!normalizedHighlightTerms.value.length) return null
+  const escaped = normalizedHighlightTerms.value.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  return new RegExp(`(${escaped.join('|')})`, 'giu')
+})
 
 const statusMeta = computed(() => {
   const status = connectionStatus.value
@@ -307,6 +318,20 @@ function handleScroll() {
   if (userPinnedHistory.value) autoScroll.value = false
 }
 
+function highlightedTextParts(value) {
+  const text = String(value || '')
+  const pattern = highlightPattern.value
+  if (!text || !pattern) return [{ value: text, highlighted: false }]
+  const terms = normalizedHighlightTerms.value
+  return text
+    .split(pattern)
+    .filter((part) => part !== '')
+    .map((part) => ({
+      value: part,
+      highlighted: terms.includes(part.toLowerCase()),
+    }))
+}
+
 function syncScrollPinState() {
   const el = scrollRef.value
   if (!el) return
@@ -455,7 +480,10 @@ onBeforeUnmount(() => {
             >
               <span class="terminal-inline-progress-head">
                 <span class="terminal-inline-progress-title">
-                  {{ safeLines[virtualRow.index]?.taskProgress?.title || '处理中' }}
+                  <template v-for="(part, partIndex) in highlightedTextParts(safeLines[virtualRow.index]?.taskProgress?.title || '处理中')" :key="`progress-title-${virtualRow.key}-${partIndex}`">
+                    <mark v-if="part.highlighted" class="terminal-search-highlight">{{ part.value }}</mark>
+                    <template v-else>{{ part.value }}</template>
+                  </template>
                 </span>
                 <span class="terminal-inline-progress-state">
                   {{ progressToneLabel(safeLines[virtualRow.index]?.taskProgress?.tone) }} · 持续 {{ safeLines[virtualRow.index]?.taskProgress?.durationLabel || '00:00:00' }} · {{ clampProgress(safeLines[virtualRow.index]?.progress) }}%
@@ -464,7 +492,12 @@ onBeforeUnmount(() => {
               <span class="terminal-inline-progress-bar" :style="{ '--inline-progress': `${clampProgress(safeLines[virtualRow.index]?.progress)}%` }">
                 <span />
               </span>
-              <span class="terminal-inline-progress-detail">{{ logMessage(safeLines[virtualRow.index]) || '处理中' }}</span>
+              <span class="terminal-inline-progress-detail">
+                <template v-for="(part, partIndex) in highlightedTextParts(logMessage(safeLines[virtualRow.index]) || '处理中')" :key="`progress-detail-${virtualRow.key}-${partIndex}`">
+                  <mark v-if="part.highlighted" class="terminal-search-highlight">{{ part.value }}</mark>
+                  <template v-else>{{ part.value }}</template>
+                </template>
+              </span>
             </span>
             <span
               v-else
@@ -474,10 +507,20 @@ onBeforeUnmount(() => {
               <span class="terminal-message-text">
                 <template v-if="isLineExpanded(safeLines[virtualRow.index], virtualRow.index)">
                   <template v-for="(token, tokenIndex) in shellTokens(visibleLineMessage(safeLines[virtualRow.index], virtualRow.index))" :key="`${virtualRow.key}-${tokenIndex}`">
-                    <span :class="`terminal-token is-${token.type}`">{{ token.value }}</span>
+                    <span :class="`terminal-token is-${token.type}`">
+                      <template v-for="(part, partIndex) in highlightedTextParts(token.value)" :key="`${virtualRow.key}-${tokenIndex}-${partIndex}`">
+                        <mark v-if="part.highlighted" class="terminal-search-highlight">{{ part.value }}</mark>
+                        <template v-else>{{ part.value }}</template>
+                      </template>
+                    </span>
                   </template>
                 </template>
-                <template v-else>{{ visibleLineMessage(safeLines[virtualRow.index], virtualRow.index) }}</template>
+                <template v-else>
+                  <template v-for="(part, partIndex) in highlightedTextParts(visibleLineMessage(safeLines[virtualRow.index], virtualRow.index))" :key="`${virtualRow.key}-${partIndex}`">
+                    <mark v-if="part.highlighted" class="terminal-search-highlight">{{ part.value }}</mark>
+                    <template v-else>{{ part.value }}</template>
+                  </template>
+                </template>
               </span>
             </span>
           </div>
@@ -793,6 +836,18 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.terminal-search-highlight {
+  margin: 0 1px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 3px;
+  background: #fde047;
+  color: #111827;
+  font: inherit;
+  font-weight: 900;
+  box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.28);
 }
 
 .terminal-line.has-inline-progress .terminal-message {

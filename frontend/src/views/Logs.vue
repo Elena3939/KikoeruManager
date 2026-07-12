@@ -48,8 +48,8 @@
         </button>
     </AppPageHeader>
 
-    <div class="logs-toolbar flex flex-wrap items-center gap-3 px-4 py-3 mb-3.5 border border-slate-200 rounded-2xl bg-white shadow-sm">
-      <div class="flex items-center gap-2">
+    <div class="logs-toolbar px-4 py-3 mb-3.5 border border-slate-200 rounded-2xl bg-white shadow-sm">
+      <div class="logs-filter-group is-levels">
         <span class="logs-toolbar-label text-[12.5px] font-semibold text-slate-500 whitespace-nowrap">级别</span>
         <div class="flex gap-1.5">
           <button
@@ -66,7 +66,7 @@
         </div>
       </div>
 
-      <div class="flex items-center gap-2">
+      <div class="logs-filter-group is-module">
         <span class="logs-toolbar-label text-[12.5px] font-semibold text-slate-500 whitespace-nowrap">模块</span>
         <el-select
           v-model="selectedModules"
@@ -82,14 +82,13 @@
         </el-select>
       </div>
 
-      <div class="relative flex-1 min-w-[300px] max-w-[540px] flex items-center">
+      <div class="logs-search-box" :class="{ 'is-full-search': isFullSearch }">
         <Search :size="13" class="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
         <input
           ref="searchInputRef"
           v-model="searchKeyword"
           type="text"
-          class="logs-search-input w-full h-[32px] pl-7 border border-slate-200 rounded-lg bg-white text-[13px] text-slate-800 outline-none placeholder-slate-400 transition focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
-          :class="isFullSearch ? 'pr-[134px]' : 'pr-20'"
+          class="logs-search-input"
           :placeholder="isFullSearch ? '全历史检索关键词（回车立即检索）' : '搜索当前日志内容…'"
           @input="onSearchInput"
           @keydown.enter.prevent="doFullSearch(true)"
@@ -97,50 +96,52 @@
         <button
           v-if="searchKeyword"
           type="button"
-          class="logs-search-clear absolute right-[86px] top-1/2 -translate-y-1/2 text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 hover:bg-slate-200 transition"
+          class="logs-search-clear"
           @click="clearSearchKeyword"
         >清空</button>
         <button
           v-if="isFullSearch"
           type="button"
-          class="logs-search-submit absolute right-1 top-1/2 inline-flex h-[26px] min-w-[58px] -translate-y-1/2 items-center justify-center gap-1 whitespace-nowrap rounded-md border px-3 text-[12px] font-semibold leading-none transition active:-translate-y-1/2 active:scale-95"
+          class="logs-search-submit"
           @click="doFullSearch(true)"
         >检索</button>
       </div>
 
-      <div class="flex items-center gap-2 ml-auto" :class="{ 'opacity-50 pointer-events-none': isFullSearch }">
-        <span class="logs-toolbar-label text-[12.5px] font-semibold text-slate-500 whitespace-nowrap">条数</span>
-        <AppDropdown
-          v-model="logLimit"
-          :options="logLimitOptions"
-          :width="110"
-          :menu-min-width="130"
-          :show-trigger-badge="false"
-          @update:model-value="onLimitChange"
-        />
+      <div class="logs-toolbar-actions">
+        <div class="logs-limit-control" :class="{ 'opacity-50 pointer-events-none': isFullSearch }">
+          <span class="logs-toolbar-label text-[12.5px] font-semibold text-slate-500 whitespace-nowrap">条数</span>
+          <AppDropdown
+            v-model="logLimit"
+            :options="logLimitOptions"
+            :width="110"
+            :menu-min-width="130"
+            :show-trigger-badge="false"
+            @update:model-value="onLimitChange"
+          />
+        </div>
+
+        <button
+          type="button"
+          class="logs-toggle-btn"
+          :class="{ 'is-active': isFullSearch }"
+          @click="toggleFullSearch"
+        >
+          <FileSearch :size="12" />
+          {{ isSearchLoading ? '检索中…' : isFullSearch ? '全历史模式' : '搜索全历史' }}
+          <span v-if="fullSearchTotal > 0" class="text-[10px] text-indigo-400">{{ fullSearchTotal }}</span>
+        </button>
+
+        <button
+          type="button"
+          class="logs-toggle-btn"
+          :class="{ 'is-active is-compact': compactProcessLogs }"
+          @click="toggleCompactProcessLogs"
+        >
+          <SlidersHorizontal :size="12" />
+          {{ compactProcessLogs ? '精简过程已开' : '精简过程' }}
+          <span v-if="compactProcessLogs && hiddenProcessNoiseCount > 0" class="text-[10px] text-emerald-500">{{ hiddenProcessNoiseCount }}</span>
+        </button>
       </div>
-
-      <button
-        type="button"
-        class="logs-toggle-btn"
-        :class="{ 'is-active': isFullSearch }"
-        @click="toggleFullSearch"
-      >
-        <FileSearch :size="12" />
-        {{ isSearchLoading ? '检索中…' : isFullSearch ? '全历史模式' : '搜索全历史' }}
-        <span v-if="fullSearchTotal > 0" class="text-[10px] text-indigo-400">{{ fullSearchTotal }}</span>
-      </button>
-
-      <button
-        type="button"
-        class="logs-toggle-btn"
-        :class="{ 'is-active is-compact': compactProcessLogs }"
-        @click="toggleCompactProcessLogs"
-      >
-        <SlidersHorizontal :size="12" />
-        {{ compactProcessLogs ? '精简过程已开' : '精简过程' }}
-        <span v-if="compactProcessLogs && hiddenProcessNoiseCount > 0" class="text-[10px] text-emerald-500">{{ hiddenProcessNoiseCount }}</span>
-      </button>
 
       <div class="logs-status-row w-full flex flex-wrap items-center gap-2">
         <span class="logs-status-chip is-info">模式 {{ lastFetchMode }}</span>
@@ -169,6 +170,7 @@
         title="system.log"
         :subtitle="terminalSubtitle"
         :lines="terminalLines"
+        :highlight-terms="searchTerms"
         :status="terminalStatus"
         :error-message="terminalErrorMessage"
         :max-height="terminalMaxHeight"
@@ -403,13 +405,15 @@ const terminalStatus = ref('idle')
 const terminalErrorMessage = ref('')
 const isFullSearch = ref(false)
 const fullSearchTotal = ref(0)
-const fullSearchCursor = ref(0)
+const fullSearchCursor = ref('')
 const fullSearchHasMore = ref(false)
 const fullSearchPageStart = ref(0)
 const FULL_SEARCH_PAGE_SIZE = 500
 const MIN_FULL_SEARCH_KEYWORD_LENGTH = 2
 const isSearchLoading = ref(false)
 let fullSearchRequestSeq = 0
+let fullSearchCurrentCursor = ''
+let fullSearchPageHistory = []
 
 const parseCache = new Map()
 // 后端搜索状态（用于头部小标签展示，不进入 render path 修改）
@@ -1047,15 +1051,39 @@ function parseLogLine(line) {
 function parseLogLines(lines, keyPrefix = '') {
   // 改用"键前缀 + 单调自增 id"作为 Vue :key，干掉原先 FNV 哈希的逐字符计算。
   // 同时避免长消息生成几百字节的 key，让 virtual-list diff 更轻。
-  return lines.map((line) => {
+  const parsedLines = lines.map((line) => {
     const parsed = parseLogLine(line)
     const id = ++logIdCounter
     return {
       ...parsed,
       id,
       key: `${keyPrefix}${id}`,
+      hasOwnTime: Boolean(parsed.time),
     }
   })
+
+  let previousTime = ''
+  for (const log of parsedLines) {
+    if (log.hasOwnTime) {
+      previousTime = log.time
+    } else if (previousTime) {
+      log.time = previousTime
+      log.timeInherited = true
+    }
+  }
+
+  let nextTime = ''
+  for (let index = parsedLines.length - 1; index >= 0; index -= 1) {
+    const log = parsedLines[index]
+    if (log.hasOwnTime) {
+      nextTime = log.time
+    } else if (!log.time && nextTime) {
+      log.time = nextTime
+      log.timeInherited = true
+    }
+    delete log.hasOwnTime
+  }
+  return parsedLines
 }
 
 function togglePause() {
@@ -1317,7 +1345,9 @@ async function clearLogs() {
     lastLogSignature = ''
     nextOffset = resumeOffset
     incrementalCount.value = 0
-    fullSearchCursor.value = 0
+    fullSearchCursor.value = ''
+    fullSearchCurrentCursor = ''
+    fullSearchPageHistory = []
     fullSearchHasMore.value = false
     fullSearchTotal.value = 0
     fullSearchPageStart.value = 0
@@ -1408,16 +1438,14 @@ async function doFullSearch(reset = true) {
     ElMessage.warning(`检索关键词至少 ${MIN_FULL_SEARCH_KEYWORD_LENGTH} 个字符`)
     return
   }
-  const cursor = reset ? 0 : fullSearchPageStart.value
-  await gotoFullSearchPage(cursor)
+  await gotoFullSearchPage(reset ? '' : fullSearchCurrentCursor, { resetHistory: reset })
 }
 
 // 全历史搜索的取消控制：用户连续输入或翻页时，旧请求立即 abort，
-// 后端 streaming 扫描在 socket 关闭时 asyncio.to_thread 仍会跑完一轮，
-// 但前端不会再被旧响应覆盖（串号 + signal 双保险）。
+// 后端会在 socket 关闭后协作终止扫描；前端仍用串号 + signal 防止旧响应覆盖。
 let fullSearchAbortController = null
 
-async function gotoFullSearchPage(cursor) {
+async function gotoFullSearchPage(cursor = '', { resetHistory = false } = {}) {
   const keyword = searchKeyword.value.trim()
   const broadLevelFilter = selectedLevels.value.length > 2
   if (!keyword && broadLevelFilter) return
@@ -1442,11 +1470,14 @@ async function gotoFullSearchPage(cursor) {
       { maxScanMb: 32, signal: controller ? controller.signal : undefined },
     )
     if (requestSeq !== fullSearchRequestSeq) return
+    if (data?.cancelled) return false
     const lines = Array.isArray(data.logs) ? data.logs : []
     fullSearchTotal.value = data.total_matched ?? lines.length
-    fullSearchCursor.value = typeof data.next_cursor === 'number' ? data.next_cursor : (cursor + lines.length)
+    fullSearchCursor.value = String(data.next_cursor || '')
     fullSearchHasMore.value = !!data.has_more
-    fullSearchPageStart.value = cursor
+    fullSearchPageStart.value = Number(data.matched_before || 0)
+    fullSearchCurrentCursor = data.cursor_reset ? '' : String(cursor || '')
+    if (resetHistory || data.cursor_reset) fullSearchPageHistory = []
     // 后端透传的扫描预算 / 触顶状态：用于头部小标签
     const scanBytes = Number(data?.scan_bytes || 0)
     lastSearchScanMb.value = scanBytes > 0 ? Number((scanBytes / 1024 / 1024).toFixed(1)) : 0
@@ -1454,6 +1485,7 @@ async function gotoFullSearchPage(cursor) {
     logIdCounter = 0
     logs.value = parseLogLines(lines, `search-${cursor}-`)
     lastFetchMs.value = Math.round(performance.now() - t0)
+    return true
   } catch (err) {
     // 用户取消的旧请求（AbortController.abort）：静默
     if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') return
@@ -1464,6 +1496,7 @@ async function gotoFullSearchPage(cursor) {
     } else {
       ElMessage.error('全历史检索失败')
     }
+    return false
   } finally {
     if (requestSeq === fullSearchRequestSeq) {
       isSearchLoading.value = false
@@ -1473,13 +1506,19 @@ async function gotoFullSearchPage(cursor) {
 
 async function loadNextFullSearchPage() {
   if (!isFullSearch.value || !fullSearchHasMore.value) return
-  await gotoFullSearchPage(fullSearchCursor.value)
+  const previous = {
+    cursor: fullSearchCurrentCursor,
+    pageStart: fullSearchPageStart.value,
+  }
+  const loaded = await gotoFullSearchPage(fullSearchCursor.value)
+  if (loaded && fullSearchPageStart.value > previous.pageStart) fullSearchPageHistory.push(previous)
 }
 
 async function loadPrevFullSearchPage() {
-  if (!isFullSearch.value) return
-  const prev = Math.max(0, fullSearchPageStart.value - FULL_SEARCH_PAGE_SIZE)
-  await gotoFullSearchPage(prev)
+  if (!isFullSearch.value || !fullSearchPageHistory.length) return
+  const previous = fullSearchPageHistory.pop()
+  const loaded = await gotoFullSearchPage(previous.cursor)
+  if (!loaded) fullSearchPageHistory.push(previous)
 }
 
 async function toggleFullSearch() {
@@ -1491,7 +1530,9 @@ async function toggleFullSearch() {
   if (isFullSearch.value) {
     isFullSearch.value = false
     fullSearchTotal.value = 0
-    fullSearchCursor.value = 0
+    fullSearchCursor.value = ''
+    fullSearchCurrentCursor = ''
+    fullSearchPageHistory = []
     fullSearchHasMore.value = false
     fullSearchPageStart.value = 0
     lastSearchScanMb.value = 0
@@ -1634,6 +1675,148 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.logs-toolbar {
+  display: grid;
+  grid-template-columns: max-content minmax(170px, 220px) minmax(260px, 1fr) max-content;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.logs-filter-group,
+.logs-limit-control,
+.logs-toolbar-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.logs-filter-group.is-levels {
+  white-space: nowrap;
+}
+
+.logs-toolbar-actions {
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.logs-search-box {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.logs-search-input {
+  width: 100%;
+  height: 32px;
+  min-width: 0;
+  padding: 0 56px 0 28px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  outline: none;
+  background: #ffffff;
+  color: #1e293b;
+  font-size: 13px;
+  transition: all 0.2s ease;
+}
+
+.logs-search-box.is-full-search .logs-search-input {
+  padding-right: 132px;
+}
+
+.logs-search-input::placeholder {
+  color: #94a3b8;
+}
+
+.logs-search-input:focus {
+  border-color: #a5b4fc;
+  box-shadow: 0 0 0 3px rgba(199, 210, 254, 0.48);
+}
+
+.logs-search-clear,
+.logs-search-submit {
+  position: absolute;
+  top: 50%;
+  display: inline-flex;
+  height: 24px;
+  transform: translateY(-50%);
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1;
+  transition: all 0.2s ease;
+}
+
+.logs-search-clear {
+  right: 7px;
+  padding: 0 8px;
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.logs-search-box.is-full-search .logs-search-clear {
+  right: 72px;
+}
+
+.logs-search-clear:hover {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.logs-search-submit {
+  right: 5px;
+  min-width: 60px;
+  padding: 0 10px;
+  border: 1px solid #c7d2fe;
+}
+
+.logs-status-row {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 1280px) {
+  .logs-toolbar {
+    grid-template-columns: minmax(0, 1fr) minmax(220px, 1fr);
+  }
+
+  .logs-filter-group.is-levels,
+  .logs-toolbar-actions {
+    justify-content: flex-start;
+  }
+
+  .logs-toolbar-actions {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 760px) {
+  .logs-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .logs-filter-group,
+  .logs-toolbar-actions {
+    flex-wrap: wrap;
+  }
+
+  .logs-search-box,
+  .logs-filter-group.is-module,
+  .logs-toolbar-actions,
+  .logs-limit-control {
+    width: 100%;
+  }
+
+  .logs-toolbar-actions {
+    justify-content: space-between;
+  }
+}
+
 .logs-toolbar-btn,
 .log-manager-action-btn {
   display: inline-flex;
