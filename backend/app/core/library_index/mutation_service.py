@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable, Optional
 
-from sqlalchemy import and_, exists, func, or_
+from sqlalchemy import and_, case, exists, func, or_
 
 from ...models.database import (
     LibraryIndexEntry,
@@ -934,8 +934,14 @@ class LibraryIndexMutationService:
                 ).first()
                 if aggregate is None:
                     continue
-                totals = db.query(
-                    LibraryIndexEntry.size,
+                total_size, file_count = db.query(
+                    func.coalesce(
+                        func.sum(
+                            func.greatest(func.coalesce(LibraryIndexEntry.size, 0), 0)
+                        ),
+                        0,
+                    ),
+                    func.count(LibraryIndexEntry.id),
                 ).filter(
                     LibraryIndexEntry.library_id == library_id,
                     LibraryIndexEntry.generation == generation,
@@ -943,33 +949,41 @@ class LibraryIndexMutationService:
                     LibraryIndexEntry.entry_type == "file",
                     LibraryIndexEntry.relative_path >= ancestor + "/",
                     LibraryIndexEntry.relative_path < ancestor + "0",
-                ).all()
-                aggregate.size = sum(max(0, int(row[0] or 0)) for row in totals)
-                aggregate.file_count = len(totals)
+                ).one()
+                aggregate.size = int(total_size or 0)
+                aggregate.file_count = int(file_count or 0)
                 aggregate.materialized_seq = seq
                 aggregate.indexed_at = int(time.time() * 1000)
 
-            stats = db.query(
-                LibraryIndexEntry.entry_type,
-                LibraryIndexEntry.relative_path,
-                LibraryIndexEntry.parent_path,
-                LibraryIndexEntry.size,
+            # 不能把整个库存索引拉回 Python 再求和。216k 条索引会放大每次字幕
+            # 重命名/删除后的 materialize 事务并阻塞数据库连接池。
+            total_entries, total_size_bytes, folder_count = db.query(
+                func.count(LibraryIndexEntry.id),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                LibraryIndexEntry.entry_type == "file",
+                                func.greatest(func.coalesce(LibraryIndexEntry.size, 0), 0),
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ),
+                func.count(LibraryIndexEntry.id).filter(
+                    LibraryIndexEntry.entry_type == "dir",
+                    LibraryIndexEntry.relative_path != "",
+                    func.coalesce(LibraryIndexEntry.parent_path, "") == "",
+                ),
             ).filter(
                 LibraryIndexEntry.library_id == library_id,
                 LibraryIndexEntry.generation == generation,
                 LibraryIndexEntry.materialized_seq <= seq,
-            ).all()
-            status.total_entries = len(stats)
-            status.total_size_bytes = sum(
-                max(0, int(row.size or 0)) for row in stats if row.entry_type == "file"
-            )
-            status.folder_count = sum(
-                1
-                for row in stats
-                if row.entry_type == "dir"
-                and bool(row.relative_path)
-                and str(row.parent_path or "") == ""
-            )
+            ).one()
+            status.total_entries = int(total_entries or 0)
+            status.total_size_bytes = int(total_size_bytes or 0)
+            status.folder_count = int(folder_count or 0)
             db.query(LibraryIndexPendingMask).filter(
                 LibraryIndexPendingMask.library_id == library_id,
                 LibraryIndexPendingMask.ledger_seq == seq,

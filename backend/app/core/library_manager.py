@@ -1021,84 +1021,60 @@ class SynologyFileStationClient:
     def device_id(self) -> str:
         return self._device_id
 
-    async def get_storage_info(self) -> dict[str, Any]:
-        api_name = "SYNO.Core.System"
-        self._check_remote_circuit(api_name)
-        try:
-            session = self._ensure_session()
-            if not self._sid:
-                await self._login(session)
-            path, version = await self._resolve_api_route(session, api_name, default_path="entry.cgi", default_version=1)
-            url = f"{self.config.base_url.rstrip('/')}/webapi/{path.lstrip('/')}"
-            params = {
-                "api": api_name,
-                "method": "info",
-                "version": str(version),
-                "type": "storage",
-                "_sid": self._sid,
-            }
-            async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
-                data = await self._read_response_payload(response, api_name)
-            if not data.get("success"):
-                raise SynologyError(_format_synology_error(api_name, "查询群晖存储信息", data))
-        except SynologyError:
-            raise
-        except Exception as exc:
-            self._raise_wrapped_transport_error(api_name, "查询存储信息", exc)
-        storage = data.get("data") or {}
-        volumes = (
-            storage.get("vol_info")
-            or storage.get("volume_info")
-            or storage.get("volumes")
-            or []
-        )
-        if isinstance(volumes, dict):
-            volumes = list(volumes.values())
+    async def get_storage_info(self, root_path: str) -> dict[str, Any]:
+        normalized_root = "/" + str(root_path or "").strip().strip("/")
+        share_name = normalized_root.strip("/").split("/", 1)[0]
+        if not share_name:
+            raise SynologyError("库存根路径未指定群晖共享文件夹，无法确定所属存储空间")
 
-        total_size = 0
-        used_size = 0
-        normalized_volumes: list[dict[str, Any]] = []
-        for item in volumes:
+        data = await self._request(
+            "SYNO.FileStation.List",
+            "list_share",
+            2,
+            {
+                "offset": 0,
+                "limit": 1000,
+                "sort_by": "name",
+                "sort_direction": "asc",
+                "additional": '["volume_status"]',
+            },
+        )
+        matched_share: Optional[dict[str, Any]] = None
+        for item in data.get("shares") or []:
             if not isinstance(item, dict):
                 continue
-            total_value = int(
-                item.get("total_size")
-                or item.get("size_total")
-                or item.get("total")
-                or 0
-            )
-            used_value = int(
-                item.get("used_size")
-                or item.get("size_used")
-                or item.get("used")
-                or 0
-            )
-            free_value = int(
-                item.get("free_size")
-                or item.get("size_free")
-                or item.get("free")
-                or max(0, total_value - used_value)
-                or 0
-            )
-            if total_value <= 0 and free_value > 0 and used_value > 0:
-                total_value = free_value + used_value
-            if used_value <= 0 and total_value > 0 and free_value > 0:
-                used_value = max(0, total_value - free_value)
-            total_size += max(0, total_value)
-            used_size += max(0, used_value)
-            normalized_volumes.append({
-                **item,
-                "total_size": max(0, total_value),
-                "used_size": max(0, used_value),
-                "free_size": max(0, free_value),
-            })
-        free_size = max(0, total_size - used_size)
+            item_path = "/" + str(item.get("path") or item.get("name") or "").strip().strip("/")
+            if item_path.casefold() == f"/{share_name}".casefold():
+                matched_share = item
+                break
+        if matched_share is None:
+            raise SynologyError(f"未找到库存根路径对应的群晖共享文件夹: /{share_name}")
+
+        additional = matched_share.get("additional") or {}
+        volume_status = additional.get("volume_status") or matched_share.get("volume_status") or {}
+        if not isinstance(volume_status, dict):
+            volume_status = {}
+        total_size = max(0, int(volume_status.get("totalspace") or volume_status.get("total_size") or 0))
+        free_size = max(0, int(volume_status.get("freespace") or volume_status.get("free_size") or 0))
+        if total_size <= 0:
+            raise SynologyError(f"群晖未返回共享文件夹 /{share_name} 所属存储空间的容量")
+        free_size = min(free_size, total_size)
+        used_size = max(0, total_size - free_size)
+        normalized_volume = {
+            **volume_status,
+            "total_size": total_size,
+            "used_size": used_size,
+            "free_size": free_size,
+        }
         return {
             "total_size_bytes": total_size,
             "used_size_bytes": used_size,
             "free_size_bytes": free_size,
             "free_space_gb": round(free_size / (1024 ** 3), 2) if free_size > 0 else 0,
-            "volumes": normalized_volumes,
+            "storage_scope": "share_volume",
+            "share_name": str(matched_share.get("name") or share_name),
+            "share_path": str(matched_share.get("path") or f"/{share_name}"),
+            "volumes": [normalized_volume],
         }
 
     async def test_connection(self, folder_path: str) -> dict[str, Any]:
