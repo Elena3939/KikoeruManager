@@ -1947,7 +1947,7 @@ import { classifyLibraryEntryKind, libraryEntryIconFor, libraryEntryMetaFor } fr
 
 import { ElMessage } from 'element-plus'
 
-import { aiSubtitleMatchApi, asmrSyncApi, baiduNetdiskApi, configApi, libraryApi, localUploadApi, rjSubtitleApi, taskApi, taskCenterApi, synologyOtpRequired } from '../api'
+import { aiSubtitleMatchApi, asmrSyncApi, baiduNetdiskApi, configApi, isCanceledApiRequest, libraryApi, localUploadApi, rjSubtitleApi, taskApi, taskCenterApi, synologyOtpRequired } from '../api'
 
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
@@ -3901,6 +3901,41 @@ const subtitleSelectionScanCurrent = ref('')
 
 const subtitleSelectionRequestToken = ref(0)
 
+let subtitleSelectionAbortController = null
+
+function createSubtitleSelectionAbortError () {
+  const error = new Error('字幕工作台请求已取消')
+  error.name = 'AbortError'
+  return error
+}
+
+function beginSubtitleSelectionSession () {
+  subtitleSelectionAbortController?.abort()
+  const controller = new AbortController()
+  const requestToken = ++subtitleSelectionRequestToken.value
+  subtitleSelectionAbortController = controller
+  return { requestToken, signal: controller.signal }
+}
+
+function cancelSubtitleSelectionSession () {
+  subtitleSelectionRequestToken.value += 1
+  subtitleSelectionAbortController?.abort()
+  subtitleSelectionAbortController = null
+}
+
+function assertSubtitleSelectionSession (requestToken, signal) {
+  if (signal?.aborted || (requestToken && subtitleSelectionRequestToken.value !== requestToken)) {
+    throw createSubtitleSelectionAbortError()
+  }
+}
+
+function isSubtitleSelectionCanceled (error, requestToken, signal) {
+  return signal?.aborted ||
+    (requestToken && subtitleSelectionRequestToken.value !== requestToken) ||
+    error?.name === 'AbortError' ||
+    isCanceledApiRequest(error)
+}
+
 const subtitleSelectionSourceItems = ref([])
 
 const subtitleScannedSelectionItems = ref([])
@@ -4007,6 +4042,101 @@ const subtitleInspectorLastSelectedId = ref('')
 const subtitleRouteFocusKey = ref('')
 
 const subtitleInspectorLoadSeq = ref(0)
+
+let subtitleInspectorAbortController = null
+const subtitleInspectorRequestInflight = new Map()
+
+function createSubtitleInspectorAbortError () {
+  const error = new Error('字幕工作台读取已取消')
+  error.name = 'AbortError'
+  return error
+}
+
+function beginSubtitleInspectorRequest () {
+  subtitleInspectorAbortController?.abort()
+  const controller = new AbortController()
+  subtitleInspectorAbortController = controller
+  return controller
+}
+
+function waitForSubtitleInspectorRequest (entry, signal) {
+  entry.waiters += 1
+
+  return new Promise((resolve, reject) => {
+    let finished = false
+    const release = () => {
+      signal?.removeEventListener('abort', onAbort)
+      entry.waiters = Math.max(0, entry.waiters - 1)
+      if (entry.waiters === 0 && !entry.settled && subtitleInspectorRequestInflight.get(entry.key) === entry) {
+        subtitleInspectorRequestInflight.delete(entry.key)
+        entry.controller.abort()
+      }
+    }
+    const onAbort = () => {
+      if (finished) return
+      finished = true
+      release()
+      reject(createSubtitleInspectorAbortError())
+    }
+
+    if (signal?.aborted) {
+      onAbort()
+      return
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    entry.promise.then(
+      value => {
+        if (finished) return
+        finished = true
+        release()
+        resolve(value)
+      },
+      error => {
+        if (finished) return
+        finished = true
+        release()
+        reject(error)
+      }
+    )
+  })
+}
+
+function requestSubtitleInspectorData (key, request, signal) {
+  if (signal?.aborted) return Promise.reject(createSubtitleInspectorAbortError())
+
+  let entry = subtitleInspectorRequestInflight.get(key)
+  if (!entry || entry.controller.signal.aborted) {
+    const controller = new AbortController()
+    entry = {
+      key,
+      controller,
+      promise: null,
+      waiters: 0,
+      settled: false
+    }
+    entry.promise = Promise.resolve().then(() => request(controller.signal))
+    subtitleInspectorRequestInflight.set(key, entry)
+    entry.promise.then(
+      () => {
+        entry.settled = true
+        if (subtitleInspectorRequestInflight.get(key) === entry) subtitleInspectorRequestInflight.delete(key)
+      },
+      () => {
+        entry.settled = true
+        if (subtitleInspectorRequestInflight.get(key) === entry) subtitleInspectorRequestInflight.delete(key)
+      }
+    )
+  }
+
+  return waitForSubtitleInspectorRequest(entry, signal)
+}
+
+function cancelSubtitleInspectorRequests () {
+  subtitleInspectorAbortController?.abort()
+  subtitleInspectorAbortController = null
+  for (const entry of subtitleInspectorRequestInflight.values()) entry.controller.abort()
+  subtitleInspectorRequestInflight.clear()
+}
 
 const subtitlePreferencesLoaded = ref(false)
 
@@ -6177,6 +6307,8 @@ function getSubtitleSelectionExistingChips (item) {
 
 function clearSubtitleInspectorState () {
 
+  cancelSubtitleInspectorRequests()
+
   subtitleInspectorLoadSeq.value += 1
 
   subtitleInspectorLoading.value = false
@@ -7653,6 +7785,10 @@ onBeforeUnmount(() => {
   unbindPathBreadcrumbResizeObserver()
 
   stopLibraryPolling()
+
+  cancelSubtitleSelectionSession()
+
+  cancelSubtitleInspectorRequests()
 
   invalidateDirectoryViewRequests()
 
@@ -13413,7 +13549,7 @@ function canRetryCreateSubtitleTaskForSelection(item) {
 
 
 
-async function ensureRJSubtitleAvailabilityForItem (item) {
+async function ensureRJSubtitleAvailabilityForItem (item, options = {}) {
 
   const rjcode = String(item?.rjcode || '').trim().toUpperCase()
 
@@ -13433,7 +13569,11 @@ async function ensureRJSubtitleAvailabilityForItem (item) {
 
 
 
-  const data = await rjSubtitleApi.checkSubtitleAvailability(rjcode)
+  const data = await rjSubtitleApi.checkSubtitleAvailability(rjcode, {
+
+    signal: options.signal
+
+  })
 
   const selectedSource = data?.selected_source || null
 
@@ -13479,7 +13619,7 @@ async function ensureRJSubtitleAvailabilityForItem (item) {
 
 
 
-async function ensureRJSubtitleExistingStateForItem (item) {
+async function ensureRJSubtitleExistingStateForItem (item, options = {}) {
 
   const folderPath = String(item?.folder_path || '').trim()
 
@@ -13505,7 +13645,9 @@ async function ensureRJSubtitleExistingStateForItem (item) {
 
   const data = await rjSubtitleApi.checkFolderSubtitleState(folderPath, {
 
-    libraryId
+    libraryId,
+
+    signal: options.signal
 
   })
 
@@ -13529,7 +13671,7 @@ async function ensureRJSubtitleExistingStateForItem (item) {
 
 async function resolveRJSubtitleItems (paths, options = {}) {
 
-  const { onChunk, onProgress, onTargetResult } = options
+  const { onChunk, onProgress, onTargetResult, signal } = options
 
   const scanTargets = uniqueSubtitleScanTargets(paths)
 
@@ -13542,6 +13684,8 @@ async function resolveRJSubtitleItems (paths, options = {}) {
   const scanDepth = normalizeRJSubtitleScanDepth(subtitleOptions.value.scanDepth)
 
   const pushResolvedScanItem = async (rawItem, scanTargetPath, libraryId) => {
+
+    if (signal?.aborted) throw createSubtitleSelectionAbortError()
 
     const item = rawItem || {}
 
@@ -13585,6 +13729,8 @@ async function resolveRJSubtitleItems (paths, options = {}) {
 
   for (const target of scanTargets) {
 
+    if (signal?.aborted) throw createSubtitleSelectionAbortError()
+
     const path = target.path
 
     const libraryId = target.library_id || selectedLibraryId.value
@@ -13605,7 +13751,11 @@ async function resolveRJSubtitleItems (paths, options = {}) {
 
         scanDepth,
 
+        signal,
+
         onEvent: async event => {
+
+          if (signal?.aborted) throw createSubtitleSelectionAbortError()
 
           if (!event || typeof event !== 'object') return
 
@@ -13689,6 +13839,8 @@ async function resolveRJSubtitleItems (paths, options = {}) {
 
     } catch (error) {
 
+      if (signal?.aborted || isCanceledApiRequest(error)) throw error
+
       console.error('扫描 RJ 字幕候选失败:', path, error)
 
       finalTargetStatus = 'failed'
@@ -13711,13 +13863,17 @@ async function resolveRJSubtitleItems (paths, options = {}) {
 
     if (itemEventCount === 0 && collected.length === collectedBeforeTarget && extractRJCode(path)) {
 
+      if (signal?.aborted) throw createSubtitleSelectionAbortError()
+
       try {
 
         const fallbackData = await rjSubtitleApi.scan(path, {
 
           libraryId,
 
-          scanDepth
+          scanDepth,
+
+          signal
 
         })
 
@@ -13767,6 +13923,8 @@ async function resolveRJSubtitleItems (paths, options = {}) {
 
       } catch (fallbackError) {
 
+        if (signal?.aborted || isCanceledApiRequest(fallbackError)) throw fallbackError
+
         console.error('RJ 字幕候选兜底扫描失败:', path, fallbackError)
 
         if (!finalTargetStatus || finalTargetStatus === 'no_match') {
@@ -13815,9 +13973,9 @@ async function resolveRJSubtitleItems (paths, options = {}) {
 
 async function autoQueueScannedSubtitleItem (item, options = {}) {
 
-  const { requestToken = 0, batchContext = null } = options
+  const { requestToken = 0, signal, batchContext = null } = options
 
-  if (requestToken && subtitleSelectionRequestToken.value !== requestToken) return
+  assertSubtitleSelectionSession(requestToken, signal)
 
 
 
@@ -13861,9 +14019,9 @@ async function autoQueueScannedSubtitleItem (item, options = {}) {
 
   try {
 
-    const availability = await ensureRJSubtitleAvailabilityForItem(item)
+    const availability = await ensureRJSubtitleAvailabilityForItem(item, { signal })
 
-    if (requestToken && subtitleSelectionRequestToken.value !== requestToken) return
+    assertSubtitleSelectionSession(requestToken, signal)
 
     if (!availability.hasSubtitle) {
 
@@ -13893,11 +14051,17 @@ async function autoQueueScannedSubtitleItem (item, options = {}) {
 
     })
 
+    assertSubtitleSelectionSession(requestToken, signal)
+
     const data = await submitRJSubtitleTasks([item], {
 
       silent: true,
 
       refresh: false,
+
+      requestToken,
+
+      signal,
 
       batchContext: batchContext
 
@@ -13913,7 +14077,7 @@ async function autoQueueScannedSubtitleItem (item, options = {}) {
 
     })
 
-    if (requestToken && subtitleSelectionRequestToken.value !== requestToken) return
+    assertSubtitleSelectionSession(requestToken, signal)
 
     const skippedItem = Array.isArray(data?.skipped_items)
 
@@ -14051,7 +14215,7 @@ async function autoQueueScannedSubtitleItem (item, options = {}) {
 
   } catch (error) {
 
-    if (requestToken && subtitleSelectionRequestToken.value !== requestToken) return
+    if (isSubtitleSelectionCanceled(error, requestToken, signal)) return
 
     incrementSubtitleScanSession('createFailed')
 
@@ -14127,9 +14291,53 @@ function handleSubtitleBackgroundCardAction (action) {
 
 
 
+function isSubtitleTaskStillRunningError (error) {
+
+  const detail = String(error?.response?.data?.detail || error?.message || '')
+
+  return /仍在执行中|不能清理/.test(detail)
+
+}
+
+
+
+async function clearSubtitleTaskAfterCancellation (taskId, maxAttempts = 20) {
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+
+    try {
+
+      await rjSubtitleApi.clearTask(taskId)
+
+      return true
+
+    } catch (error) {
+
+      if (error?.response?.status === 404) return true
+
+      if (!isSubtitleTaskStillRunningError(error)) throw error
+
+      if (attempt + 1 >= maxAttempts) return false
+
+      await new Promise(resolve => setTimeout(resolve, 150))
+
+    }
+
+  }
+
+  return false
+
+}
+
+
+
 async function closeSubtitleTaskPanel () {
 
   if (subtitleTaskPanelClosing.value) return
+
+  cancelSubtitleSelectionSession()
+
+  cancelSubtitleInspectorRequests()
 
   subtitleTaskPanelClosing.value = true
 
@@ -14151,13 +14359,39 @@ async function closeSubtitleTaskPanel () {
 
     if (cancellableTaskIds.length) {
 
-      await Promise.allSettled(cancellableTaskIds.map(taskId => rjSubtitleApi.cancel(taskId)))
+      const cancelResults = await Promise.allSettled(cancellableTaskIds.map(taskId => rjSubtitleApi.cancel(taskId)))
+
+      cancelResults.forEach((result, index) => {
+
+        if (result.status === 'rejected') {
+
+          console.warn('取消字幕任务失败:', cancellableTaskIds[index], result.reason)
+
+        }
+
+      })
 
     }
 
     if (liveTasks.length) {
 
-      await Promise.allSettled(liveTasks.map(task => rjSubtitleApi.clearTask(task.id)))
+      const clearResults = await Promise.allSettled(liveTasks.map(task => clearSubtitleTaskAfterCancellation(task.id)))
+
+      clearResults.forEach((result, index) => {
+
+        const taskId = liveTasks[index].id
+
+        if (result.status === 'rejected') {
+
+          console.warn('清理字幕任务失败，保留任务供后续重试:', taskId, result.reason)
+
+        } else if (!result.value) {
+
+          console.info('字幕任务仍在退出 worker，保留任务供后续重试清理:', taskId)
+
+        }
+
+      })
 
     }
 
@@ -14199,7 +14433,7 @@ async function closeSubtitleTaskPanel () {
 
 async function openSubtitleTaskPanel () {
 
-  subtitleSelectionRequestToken.value += 1
+  cancelSubtitleSelectionSession()
 
   subtitleDialogBackgroundActive.value = false
 
@@ -15596,7 +15830,7 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
 
   const { scanCurrentFolder = false } = options
 
-  const requestToken = ++subtitleSelectionRequestToken.value
+  const { requestToken, signal } = beginSubtitleSelectionSession()
 
   const pendingAutoQueueJobs = []
 
@@ -15650,7 +15884,9 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
 
   try {
 
-    await refreshRJSubtitleStatus(false, { silent: true })
+    await refreshRJSubtitleStatus(false, { silent: true, signal })
+
+    assertSubtitleSelectionSession(requestToken, signal)
 
     const scanTargets = uniqueSubtitleScanTargets(directItems)
 
@@ -15676,6 +15912,8 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
 
       scannedItems = await resolveRJSubtitleItems(scanTargets, {
 
+        signal,
+
         onChunk: async chunkItem => {
 
           if (subtitleSelectionRequestToken.value !== requestToken) return
@@ -15686,7 +15924,7 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
 
           updateSubtitleSelectionFromScanned(subtitleSelectionSourceItems.value, incrementalScannedItems, { sync: true })
 
-          startAutoQueueScannedSubtitleItem(chunkItem, pendingAutoQueueJobs, { requestToken, batchContext })
+          startAutoQueueScannedSubtitleItem(chunkItem, pendingAutoQueueJobs, { requestToken, signal, batchContext })
 
         },
 
@@ -15722,6 +15960,8 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
 
       scannedItems = await resolveRJSubtitleItems([currentPath.value], {
 
+        signal,
+
         onChunk: async chunkItem => {
 
           if (subtitleSelectionRequestToken.value !== requestToken) return
@@ -15730,7 +15970,7 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
 
           updateSubtitleSelectionFromScanned(subtitleSelectionSourceItems.value, subtitleScannedSelectionItems.value, { sync: true })
 
-          startAutoQueueScannedSubtitleItem(chunkItem, pendingAutoQueueJobs, { requestToken, batchContext }, '当前目录扫描命中后自动入任务失败')
+          startAutoQueueScannedSubtitleItem(chunkItem, pendingAutoQueueJobs, { requestToken, signal, batchContext }, '当前目录扫描命中后自动入任务失败')
 
         },
 
@@ -15762,7 +16002,7 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
 
 
 
-    if (subtitleSelectionRequestToken.value !== requestToken) return
+    assertSubtitleSelectionSession(requestToken, signal)
 
     if (pendingAutoQueueJobs.length) {
 
@@ -15770,7 +16010,7 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
 
     }
 
-    if (subtitleSelectionRequestToken.value !== requestToken) return
+    assertSubtitleSelectionSession(requestToken, signal)
 
     subtitleScannedSelectionItems.value = uniqueSubtitleItems(scannedItems)
 
@@ -15778,7 +16018,13 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
 
     await submitSubtitleBatchParentLog(batchContext)
 
-    await refreshRJSubtitleStatus(false, { silent: true })
+    assertSubtitleSelectionSession(requestToken, signal)
+
+    await refreshRJSubtitleStatus(false, { silent: true, signal })
+
+  } catch (error) {
+
+    if (!isSubtitleSelectionCanceled(error, requestToken, signal)) throw error
 
   } finally {
 
@@ -15839,6 +16085,8 @@ async function rescanSubtitleSelectionTarget (target) {
 
   if (!canRetrySubtitleScanResult(target) || subtitleScanRetryingPath.value) return
 
+  const { requestToken, signal } = beginSubtitleSelectionSession()
+
   subtitleScanRetryingPath.value = buildSubtitleScanTargetResultKey(target)
 
   subtitleSelectionScanTotal.value = 1
@@ -15865,7 +16113,11 @@ async function rescanSubtitleSelectionTarget (target) {
 
     const rescannedItems = await resolveRJSubtitleItems([target], {
 
+      signal,
+
       onChunk: chunkItem => {
+
+        if (subtitleSelectionRequestToken.value !== requestToken) return
 
         subtitleScannedSelectionItems.value = uniqueSubtitleItems([
 
@@ -15881,11 +16133,15 @@ async function rescanSubtitleSelectionTarget (target) {
 
       onTargetResult: result => {
 
+        if (subtitleSelectionRequestToken.value !== requestToken) return
+
         upsertSubtitleScanTargetResult(result)
 
       },
 
       onProgress: progress => {
+
+        if (subtitleSelectionRequestToken.value !== requestToken) return
 
         subtitleSelectionScanDone.value = Number(progress?.done || 0)
 
@@ -15896,6 +16152,8 @@ async function rescanSubtitleSelectionTarget (target) {
       }
 
     })
+
+    assertSubtitleSelectionSession(requestToken, signal)
 
     if (rescannedItems.length) {
 
@@ -15909,9 +16167,11 @@ async function rescanSubtitleSelectionTarget (target) {
 
       for (const rescannedItem of rescannedItems) {
 
-        await autoQueueScannedSubtitleItem(rescannedItem)
+        await autoQueueScannedSubtitleItem(rescannedItem, { requestToken, signal })
 
       }
+
+      assertSubtitleSelectionSession(requestToken, signal)
 
       removeSubtitleScanTargetResult(target)
 
@@ -15922,6 +16182,8 @@ async function rescanSubtitleSelectionTarget (target) {
     }
 
   } catch (error) {
+
+    if (isSubtitleSelectionCanceled(error, requestToken, signal)) return
 
     upsertSubtitleScanTargetResult({
 
@@ -15939,9 +16201,13 @@ async function rescanSubtitleSelectionTarget (target) {
 
   } finally {
 
-    subtitleScanRetryingPath.value = ''
+    if (subtitleSelectionRequestToken.value === requestToken) {
 
-    subtitleSelectionScanCurrent.value = ''
+      subtitleScanRetryingPath.value = ''
+
+      subtitleSelectionScanCurrent.value = ''
+
+    }
 
   }
 
@@ -15951,7 +16217,23 @@ async function rescanSubtitleSelectionTarget (target) {
 
 async function submitRJSubtitleTasks (items, options = {}) {
 
-  const { silent = false, refresh = true, skipIfExistingSubtitlesOverride = null, forceRerun = false, batchContext: batchContextOverride = null } = options
+  const {
+
+    silent = false,
+
+    refresh = true,
+
+    skipIfExistingSubtitlesOverride = null,
+
+    forceRerun = false,
+
+    batchContext: batchContextOverride = null,
+
+    requestToken = 0,
+
+    signal
+
+  } = options
 
   const rawItems = Array.isArray(items) ? items : []
 
@@ -16065,6 +16347,8 @@ async function submitRJSubtitleTasks (items, options = {}) {
 
   try {
 
+    assertSubtitleSelectionSession(requestToken, signal)
+
     const data = await rjSubtitleApi.start(executableItems, {
 
       overwriteExisting: subtitleOptions.value.overwriteExisting,
@@ -16085,9 +16369,29 @@ async function submitRJSubtitleTasks (items, options = {}) {
 
       aiConfidenceThreshold: subtitleOptions.value.aiConfidenceThreshold,
 
-      batchContext
+      batchContext,
+
+      signal
 
     })
+
+    if (signal?.aborted || (requestToken && subtitleSelectionRequestToken.value !== requestToken)) {
+
+      const createdTaskIds = (Array.isArray(data?.tasks) ? data.tasks : [])
+
+        .map(task => String(task?.task_id || '').trim())
+
+        .filter(Boolean)
+
+      if (createdTaskIds.length) {
+
+        await Promise.allSettled(createdTaskIds.map(taskId => rjSubtitleApi.cancel(taskId)))
+
+      }
+
+      throw createSubtitleSelectionAbortError()
+
+    }
 
     ;(Array.isArray(data?.tasks) ? data.tasks : []).forEach(createdTask => {
 
@@ -16149,7 +16453,7 @@ async function submitRJSubtitleTasks (items, options = {}) {
 
     })
 
-    if (refresh) await refreshRJSubtitleStatus(false, { silent: true })
+    if (refresh) await refreshRJSubtitleStatus(false, { silent: true, signal })
 
     const firstCreatedTaskId = data.tasks?.[0]?.task_id
 
@@ -16187,13 +16491,19 @@ async function submitRJSubtitleTasks (items, options = {}) {
 
   } catch (error) {
 
+    if (isSubtitleSelectionCanceled(error, requestToken, signal)) throw error
+
     if (!silent) ElMessage.error('创建字幕任务失败: ' + (error.response?.data?.detail || error.message))
 
     throw error
 
   } finally {
 
-    subtitleSubmitting.value = false
+    if (!requestToken || subtitleSelectionRequestToken.value === requestToken) {
+
+      subtitleSubmitting.value = false
+
+    }
 
   }
 
@@ -16205,7 +16515,7 @@ async function startSingleRJSubtitle (item) {
 
   if (!item?.folder_path) return
 
-  const requestToken = ++subtitleSelectionRequestToken.value
+  const { requestToken, signal } = beginSubtitleSelectionSession()
 
   const pendingAutoQueueJobs = []
 
@@ -16269,7 +16579,9 @@ async function startSingleRJSubtitle (item) {
 
   try {
 
-    await refreshRJSubtitleStatus(false, { silent: true })
+    await refreshRJSubtitleStatus(false, { silent: true, signal })
+
+    assertSubtitleSelectionSession(requestToken, signal)
 
     const existingTask = findSubtitleTaskBySelection(item)
 
@@ -16289,6 +16601,8 @@ async function startSingleRJSubtitle (item) {
 
     const scannedItems = await resolveRJSubtitleItems([item], {
 
+      signal,
+
       onChunk: async chunkItem => {
 
         if (subtitleSelectionRequestToken.value !== requestToken) return
@@ -16297,7 +16611,7 @@ async function startSingleRJSubtitle (item) {
 
         updateSubtitleSelectionFromScanned(subtitleSelectionSourceItems.value, subtitleScannedSelectionItems.value, { sync: true })
 
-        startAutoQueueScannedSubtitleItem(chunkItem, pendingAutoQueueJobs, { requestToken, batchContext }, '单项扫描命中后自动入任务失败')
+        startAutoQueueScannedSubtitleItem(chunkItem, pendingAutoQueueJobs, { requestToken, signal, batchContext }, '单项扫描命中后自动入任务失败')
 
       },
 
@@ -16329,7 +16643,7 @@ async function startSingleRJSubtitle (item) {
 
     }
 
-    if (subtitleSelectionRequestToken.value !== requestToken) return
+    assertSubtitleSelectionSession(requestToken, signal)
 
     subtitleScannedSelectionItems.value = uniqueSubtitleItems(scannedItems)
 
@@ -16337,7 +16651,9 @@ async function startSingleRJSubtitle (item) {
 
     await submitSubtitleBatchParentLog(batchContext)
 
-    await refreshRJSubtitleStatus(false, { silent: true })
+    assertSubtitleSelectionSession(requestToken, signal)
+
+    await refreshRJSubtitleStatus(false, { silent: true, signal })
 
     const resolvedItem = scannedItems.find(candidate => buildSubtitleSelectionKey(candidate) === buildSubtitleSelectionKey(item)) || null
 
@@ -16363,13 +16679,19 @@ async function startSingleRJSubtitle (item) {
 
   } catch (error) {
 
+    if (isSubtitleSelectionCanceled(error, requestToken, signal)) return
+
     ElMessage.error('启动字幕任务失败: ' + (error.response?.data?.detail || error.message))
 
   } finally {
 
-    subtitleSelectionLoading.value = false
+    if (subtitleSelectionRequestToken.value === requestToken) {
 
-    subtitleSelectionScanCurrent.value = ''
+      subtitleSelectionLoading.value = false
+
+      subtitleSelectionScanCurrent.value = ''
+
+    }
 
   }
 
@@ -18120,6 +18442,8 @@ async function forceCreateSubtitleTaskForSelection (item) {
 
   if (!item?.folder_path) return
 
+  const { requestToken, signal } = beginSubtitleSelectionSession()
+
   const forceKey = buildSubtitleSelectionKey(item)
 
   subtitleForceQueueKey.value = forceKey
@@ -18138,7 +18462,9 @@ async function forceCreateSubtitleTaskForSelection (item) {
 
     })
 
-    const availability = await ensureRJSubtitleAvailabilityForItem(item)
+    const availability = await ensureRJSubtitleAvailabilityForItem(item, { signal })
+
+    assertSubtitleSelectionSession(requestToken, signal)
 
     if (!availability.hasSubtitle) {
 
@@ -18168,13 +18494,19 @@ async function forceCreateSubtitleTaskForSelection (item) {
 
     })
 
+    assertSubtitleSelectionSession(requestToken, signal)
+
     const data = await submitRJSubtitleTasks([item], {
 
       silent: false,
 
       refresh: true,
 
-      skipIfExistingSubtitlesOverride: true
+      skipIfExistingSubtitlesOverride: true,
+
+      requestToken,
+
+      signal
 
     })
 
@@ -18278,6 +18610,8 @@ async function forceCreateSubtitleTaskForSelection (item) {
 
   } catch (error) {
 
+    if (isSubtitleSelectionCanceled(error, requestToken, signal)) return
+
     incrementSubtitleScanSession('createFailed')
 
     upsertSubtitleSelectionEntry(item, {
@@ -18290,7 +18624,7 @@ async function forceCreateSubtitleTaskForSelection (item) {
 
   } finally {
 
-    subtitleForceQueueKey.value = ''
+    if (subtitleSelectionRequestToken.value === requestToken) subtitleForceQueueKey.value = ''
 
   }
 
@@ -20024,6 +20358,8 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
 
   }
 
+  const controller = beginSubtitleInspectorRequest()
+
 
 
   subtitleInspectorLoading.value = true
@@ -20034,7 +20370,11 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
 
     try {
 
-      existingState = await ensureRJSubtitleExistingStateForItem(item)
+      existingState = await ensureRJSubtitleExistingStateForItem(item, {
+
+        signal: controller.signal
+
+      })
 
     } catch (error) {
 
@@ -20090,9 +20430,37 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
 
     const [subtitleData, audioData] = await Promise.all([
 
-      libraryApi.browserFolderContents(inspectorLibraryId, subtitleDir, { preferIndex: false }),
+      requestSubtitleInspectorData(
 
-      libraryApi.browserFolderContents(inspectorLibraryId, item.folder_path, { preferIndex: false })
+        `subtitle-folder-contents:${inspectorLibraryId}:${subtitleDir}`,
+
+        signal => libraryApi.browserFolderContents(inspectorLibraryId, subtitleDir, {
+
+          preferIndex: false,
+
+          signal
+
+        }),
+
+        controller.signal
+
+      ),
+
+      requestSubtitleInspectorData(
+
+        `subtitle-folder-contents:${inspectorLibraryId}:${item.folder_path}`,
+
+        signal => libraryApi.browserFolderContents(inspectorLibraryId, item.folder_path, {
+
+          preferIndex: false,
+
+          signal
+
+        }),
+
+        controller.signal
+
+      )
 
     ])
 
@@ -20162,7 +20530,11 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
 
   } catch (error) {
 
-    if (error instanceof TypeError && /parentNode/.test(error.message || '')) {
+    if (controller.signal.aborted || isCanceledApiRequest(error)) {
+
+      return
+
+    } else if (error instanceof TypeError && /parentNode/.test(error.message || '')) {
 
       console.warn('[subtitle-inspector] 忽略 Vue 过渡残留错误:', error.message)
 
@@ -20193,6 +20565,12 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
     }
 
   } finally {
+
+    if (subtitleInspectorAbortController === controller) {
+
+      subtitleInspectorAbortController = null
+
+    }
 
     if (loadSeq === subtitleInspectorLoadSeq.value) {
 
@@ -20242,6 +20620,8 @@ async function inspectSubtitleTask (task, options = {}) {
 
   }
 
+  const controller = beginSubtitleInspectorRequest()
+
   subtitleInspectorLoading.value = true
 
   try {
@@ -20252,9 +20632,37 @@ async function inspectSubtitleTask (task, options = {}) {
 
     const [subtitleData, audioData] = await Promise.all([
 
-      libraryApi.browserFolderContents(subtitleLibraryId, task.subtitle_dir, { preferIndex: false }),
+      requestSubtitleInspectorData(
 
-      libraryApi.browserFolderContents(audioLibraryId, task.folder_path, { preferIndex: false })
+        `subtitle-folder-contents:${subtitleLibraryId}:${task.subtitle_dir}`,
+
+        signal => libraryApi.browserFolderContents(subtitleLibraryId, task.subtitle_dir, {
+
+          preferIndex: false,
+
+          signal
+
+        }),
+
+        controller.signal
+
+      ),
+
+      requestSubtitleInspectorData(
+
+        `subtitle-folder-contents:${audioLibraryId}:${task.folder_path}`,
+
+        signal => libraryApi.browserFolderContents(audioLibraryId, task.folder_path, {
+
+          preferIndex: false,
+
+          signal
+
+        }),
+
+        controller.signal
+
+      )
 
     ])
 
@@ -20324,7 +20732,11 @@ async function inspectSubtitleTask (task, options = {}) {
 
   } catch (error) {
 
-    if (error instanceof TypeError && /parentNode/.test(error.message || '')) {
+    if (controller.signal.aborted || isCanceledApiRequest(error)) {
+
+      return
+
+    } else if (error instanceof TypeError && /parentNode/.test(error.message || '')) {
 
       console.warn('[subtitle-inspector] 忽略 Vue 过渡残留错误:', error.message)
 
@@ -20345,6 +20757,12 @@ async function inspectSubtitleTask (task, options = {}) {
     }
 
   } finally {
+
+    if (subtitleInspectorAbortController === controller) {
+
+      subtitleInspectorAbortController = null
+
+    }
 
     if (loadSeq === subtitleInspectorLoadSeq.value) {
 

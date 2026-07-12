@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -11,8 +12,49 @@ from app.core.linked_subtitle_import_service import (
     LinkedSubtitleImportAlreadyRunning,
     LinkedSubtitleImportService,
 )
+from app.core.rj_subtitle_service import RJSubtitleService
 import app.core.linked_subtitle_import_service as linked_subtitle_module
 from app.models.database import ConflictWork
+
+
+class _SubtitleCacheRedisClient:
+    def __init__(self):
+        self.values = {}
+
+    def get(self, key):
+        return self.values.get(key)
+
+    def incr(self, key):
+        value = int(self.values.get(key) or 0) + 1
+        self.values[key] = str(value)
+        return value
+
+
+class _SubtitleCacheRedisService:
+    def __init__(self):
+        self.client_obj = _SubtitleCacheRedisClient()
+        self.json_values = {}
+        self.set_calls = []
+
+    def is_enabled(self):
+        return True
+
+    def client(self, *, required=False):
+        return self.client_obj
+
+    def key(self, *parts):
+        return ':'.join(str(part) for part in parts if str(part))
+
+    def short_cache_ttl_seconds(self):
+        return 45
+
+    def get_json(self, module, type_name, item_id):
+        return deepcopy(self.json_values.get((module, type_name, item_id)))
+
+    def set_json(self, module, type_name, item_id, payload, *, ttl_seconds=None):
+        self.json_values[(module, type_name, item_id)] = deepcopy(payload)
+        self.set_calls.append((item_id, ttl_seconds))
+        return True
 
 
 def test_prefer_deepest_target_rj_candidate_keeps_inner_same_rj_folder():
@@ -902,3 +944,145 @@ async def test_execute_pending_import_resets_status_when_long_io_fails(db_sessio
     assert refreshed.status == "PENDING"
     assert refreshed.analysis_info["execution_status"] == "failed"
     assert "模拟解压失败" in refreshed.analysis_info["execution_error"]
+
+
+@pytest.mark.asyncio
+async def test_subtitle_availability_cache_singleflight_and_returns_copies():
+    service = object.__new__(RJSubtitleService)
+    service._subtitle_availability_redis_service = lambda: None
+    calls = 0
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def find_best_subtitle_source(rjcode):
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return {
+            "rjcode": rjcode,
+            "lang": "CHI_HANS",
+            "work_type": "translation",
+            "title": "缓存字幕",
+            "subtitle_files": [{"name": "track.srt"}],
+        }, []
+
+    service.find_best_subtitle_source = find_best_subtitle_source
+    first = asyncio.create_task(service.probe_cached_subtitle_availability("rj01234567"))
+    await started.wait()
+    second = asyncio.create_task(service.probe_cached_subtitle_availability("RJ01234567"))
+    await asyncio.sleep(0)
+    assert calls == 1
+
+    release.set()
+    first_result, second_result = await asyncio.gather(first, second)
+    assert first_result == second_result
+    assert first_result["has_subtitle"] is True
+
+    first_result["selected_source"]["title"] = "被调用方修改"
+    cached = await service.probe_cached_subtitle_availability("RJ01234567")
+    assert calls == 1
+    assert cached["selected_source"]["title"] == "缓存字幕"
+
+
+@pytest.mark.asyncio
+async def test_subtitle_availability_does_not_cache_unstable_absence():
+    service = object.__new__(RJSubtitleService)
+    service._subtitle_availability_redis_service = lambda: None
+    calls = 0
+
+    async def find_best_subtitle_source(_rjcode):
+        nonlocal calls
+        calls += 1
+        return None, [{
+            "rjcode": "RJ01234567",
+            "subtitle_count": 0,
+            "reason": "查询异常: timeout",
+        }]
+
+    service.find_best_subtitle_source = find_best_subtitle_source
+    await service.probe_cached_subtitle_availability("RJ01234567")
+    await service.probe_cached_subtitle_availability("RJ01234567")
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_target_folder_summary_cache_uses_redis_version_after_invalidation():
+    redis_service = _SubtitleCacheRedisService()
+    service = object.__new__(LinkedSubtitleImportService)
+    service.library_manager = SimpleNamespace(
+        get_library_definition=lambda _library_id: SimpleNamespace(type="local"),
+    )
+    service._target_folder_summary_redis_service = lambda: redis_service
+    calls = 0
+
+    async def summarize_target_folder(library_id, folder_path):
+        nonlocal calls
+        calls += 1
+        return {
+            "library_id": library_id,
+            "folder_path": folder_path,
+            "existing_subtitle_count": calls,
+        }
+
+    service.summarize_target_folder = summarize_target_folder
+    first = await service.summarize_target_folder_cached("library-a", "D:/library/RJ01234567")
+    second = await service.summarize_target_folder_cached("library-a", "D:/library/RJ01234567")
+    assert calls == 1
+    assert first == second
+    assert redis_service.set_calls[-1][1] == 45
+
+    assert service.invalidate_target_folder_summary_cache("library-a") == 1
+    refreshed = await service.summarize_target_folder_cached("library-a", "D:/library/RJ01234567")
+    assert calls == 2
+    assert refreshed["existing_subtitle_count"] == 2
+
+    l2_only_service = object.__new__(LinkedSubtitleImportService)
+    l2_only_service.library_manager = service.library_manager
+    l2_only_service._target_folder_summary_redis_service = lambda: redis_service
+    l2_only_service.summarize_target_folder = AsyncMock(side_effect=AssertionError("应直接命中 Redis L2"))
+    from_l2 = await l2_only_service.summarize_target_folder_cached("library-a", "D:/library/RJ01234567")
+    assert from_l2 == refreshed
+
+
+@pytest.mark.asyncio
+async def test_target_folder_summary_inflight_result_is_not_cached_after_invalidation():
+    redis_service = _SubtitleCacheRedisService()
+    service = object.__new__(LinkedSubtitleImportService)
+    service.library_manager = SimpleNamespace(
+        get_library_definition=lambda _library_id: SimpleNamespace(type="local"),
+    )
+    service._target_folder_summary_redis_service = lambda: redis_service
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def summarize_target_folder(library_id, folder_path):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            started.set()
+            await release.wait()
+        return {
+            "library_id": library_id,
+            "folder_path": folder_path,
+            "existing_subtitle_count": calls,
+        }
+
+    service.summarize_target_folder = summarize_target_folder
+    stale_read = asyncio.create_task(
+        service.summarize_target_folder_cached("library-a", "D:/library/RJ01234567")
+    )
+    await started.wait()
+
+    service.invalidate_target_folder_summary_cache("library-a")
+    release.set()
+    stale_result = await stale_read
+
+    assert stale_result["existing_subtitle_count"] == 1
+    assert redis_service.set_calls == []
+
+    refreshed = await service.summarize_target_folder_cached("library-a", "D:/library/RJ01234567")
+    assert calls == 2
+    assert refreshed["existing_subtitle_count"] == 2
+    assert len(redis_service.set_calls) == 1

@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import hashlib
 import logging
 import os
 import re
@@ -7,6 +8,7 @@ import shutil
 import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
@@ -19,6 +21,7 @@ from .kikoeru_duplicate_service import get_kikoeru_service
 from .library_manager import SynologyFileStationClient, get_library_manager
 from .rj_subtitle_service import get_rj_subtitle_service
 from .task_engine import Task, TaskStatus, TaskType, get_task_engine
+from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +81,9 @@ class LinkedSubtitleImportService:
     ARCHIVE_PRECHECK_TIMEOUT_SECONDS = float(
         os.getenv("KIKOERUMANAGER_LINKED_SUBTITLE_PRECHECK_TIMEOUT_SECONDS", "300") or 300
     )
+    _FOLDER_SUMMARY_CACHE_SCHEMA_VERSION = "v1"
+    _FOLDER_SUMMARY_CACHE_L1_MAX_SIZE = 512
+    _FOLDER_SUMMARY_CACHE_L1_TTL_SECONDS = 30
 
     def __init__(self):
         self.extract_service = ExtractService()
@@ -87,6 +93,13 @@ class LinkedSubtitleImportService:
         self.kikoeru_service = get_kikoeru_service()
         self._archive_preview_inflight: Dict[str, asyncio.Task] = {}
         self._archive_preview_inflight_lock = asyncio.Lock()
+        self._target_folder_summary_cache = TTLCache(
+            max_size=self._FOLDER_SUMMARY_CACHE_L1_MAX_SIZE,
+            ttl_seconds=self._FOLDER_SUMMARY_CACHE_L1_TTL_SECONDS,
+            name="linked_subtitle.target_folder_summary",
+        )
+        self._target_folder_summary_inflight: Dict[str, asyncio.Task] = {}
+        self._target_folder_summary_inflight_lock = asyncio.Lock()
 
     def _get_archive_preview_inflight(self) -> Tuple[Dict[str, asyncio.Task], asyncio.Lock]:
         if not hasattr(self, "_archive_preview_inflight"):
@@ -904,6 +917,7 @@ class LinkedSubtitleImportService:
             self._cleanup_empty_workbench_shell(workbench_root_dir)
             # 索引同步：只重扫 subtitles 子目录（避免重扫整个 RJ 100+ 文件）
             self._notify_index_after_subtitle_publish(library, target_subtitle_dir)
+            self.invalidate_target_folder_summary_cache(library_id)
             return target_subtitle_dir
 
         target_folder = os.path.abspath(normalized_target_folder)
@@ -938,6 +952,7 @@ class LinkedSubtitleImportService:
             logger.warning("[字幕补配] 清理本地工作台目录失败: %s", workbench_root_dir, exc_info=True)
         # 索引同步：只重扫 subtitles 子目录（避免重扫整个 RJ 100+ 文件）
         self._notify_index_after_subtitle_publish(library, target_subtitle_dir)
+        self.invalidate_target_folder_summary_cache(library_id)
         return target_subtitle_dir
 
     def _notify_index_after_subtitle_publish(
@@ -1599,6 +1614,215 @@ class LinkedSubtitleImportService:
         if not normalized_library_id or not normalized_folder_path:
             return None
         return await self._summarize_candidate(normalized_library_id, normalized_folder_path)
+
+    def _get_target_folder_summary_cache_state(self) -> Tuple[TTLCache, Dict[str, asyncio.Task], asyncio.Lock]:
+        """兼容测试中绕过 __init__ 构造的轻量 service。"""
+        if not hasattr(self, "_target_folder_summary_cache"):
+            self._target_folder_summary_cache = TTLCache(
+                max_size=self._FOLDER_SUMMARY_CACHE_L1_MAX_SIZE,
+                ttl_seconds=self._FOLDER_SUMMARY_CACHE_L1_TTL_SECONDS,
+                name="linked_subtitle.target_folder_summary",
+            )
+        if not hasattr(self, "_target_folder_summary_inflight"):
+            self._target_folder_summary_inflight = {}
+        if not hasattr(self, "_target_folder_summary_inflight_lock"):
+            self._target_folder_summary_inflight_lock = asyncio.Lock()
+        return (
+            self._target_folder_summary_cache,
+            self._target_folder_summary_inflight,
+            self._target_folder_summary_inflight_lock,
+        )
+
+    def _get_target_folder_summary_generations(self) -> Dict[str, int]:
+        """Redis 不可用时仍以进程内版本隔离失效前的慢扫描结果。"""
+        if not hasattr(self, "_target_folder_summary_generations"):
+            self._target_folder_summary_generations = {}
+        return self._target_folder_summary_generations
+
+    def _target_folder_summary_redis_service(self):
+        try:
+            from .redis_service import get_redis_service
+
+            service = get_redis_service()
+            return service if service.is_enabled() else None
+        except Exception:
+            logger.debug("[字幕补配·缓存] 获取 Redis 服务失败", exc_info=True)
+            return None
+
+    def _normalize_target_folder_summary_path(self, library_id: str, folder_path: str) -> str:
+        library = self.library_manager.get_library_definition(library_id)
+        raw_path = str(folder_path or "").strip()
+        if getattr(library, "type", "") == "synology_filestation":
+            return self.library_manager._normalize_remote_path(raw_path)
+        return os.path.normcase(os.path.abspath(raw_path))
+
+    def _target_folder_summary_library_version(self, library_id: str) -> int:
+        service = self._target_folder_summary_redis_service()
+        if service is None:
+            return 0
+        try:
+            client = service.client(required=False)
+            if client is None:
+                return 0
+            raw_version = client.get(service.key("rj-subtitle", "folder-summary-version", library_id))
+            return max(0, int(raw_version or 0))
+        except Exception:
+            logger.debug("[字幕补配·缓存] 读取目录摘要版本失败 library=%s", library_id, exc_info=True)
+            return 0
+
+    def _target_folder_summary_has_shared_version(self) -> bool:
+        service = self._target_folder_summary_redis_service()
+        if service is None:
+            return False
+        try:
+            return service.client(required=False) is not None
+        except Exception:
+            return False
+
+    def _target_folder_summary_cache_key(
+        self,
+        library_id: str,
+        folder_path: str,
+        version: int,
+        generation: int,
+    ) -> str:
+        path_hash = hashlib.sha1(folder_path.encode("utf-8", errors="replace")).hexdigest()
+        return "|".join([
+            str(library_id),
+            f"s{self._FOLDER_SUMMARY_CACHE_SCHEMA_VERSION}",
+            f"v{max(0, int(version or 0))}",
+            f"g{max(0, int(generation or 0))}",
+            path_hash,
+        ])
+
+    def _get_cached_target_folder_summary(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        cache, _inflight, _lock = self._get_target_folder_summary_cache_state()
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict):
+            return deepcopy(cached)
+
+        service = self._target_folder_summary_redis_service()
+        if service is None:
+            return None
+        try:
+            cached = service.get_json("rj-subtitle", "folder-summary", cache_key)
+        except Exception:
+            logger.debug("[字幕补配·缓存] Redis 读取目录摘要失败 key=%s", cache_key, exc_info=True)
+            return None
+        if not isinstance(cached, dict):
+            return None
+        cache[cache_key] = deepcopy(cached)
+        return deepcopy(cached)
+
+    def _set_cached_target_folder_summary(self, cache_key: str, payload: Dict[str, Any]) -> None:
+        cache, _inflight, _lock = self._get_target_folder_summary_cache_state()
+        cache[cache_key] = deepcopy(payload)
+        service = self._target_folder_summary_redis_service()
+        if service is None:
+            return
+        try:
+            service.set_json(
+                "rj-subtitle",
+                "folder-summary",
+                cache_key,
+                payload,
+                ttl_seconds=service.short_cache_ttl_seconds(),
+            )
+        except Exception:
+            logger.debug("[字幕补配·缓存] Redis 写入目录摘要失败 key=%s", cache_key, exc_info=True)
+
+    def invalidate_target_folder_summary_cache(self, library_id: str) -> int:
+        """使一个库存下的字幕目录摘要立即失效，并跨进程推进 Redis 版本。"""
+        normalized_library_id = str(library_id or "").strip()
+        if not normalized_library_id:
+            return 0
+        cache, _inflight, _lock = self._get_target_folder_summary_cache_state()
+        generations = self._get_target_folder_summary_generations()
+        generations[normalized_library_id] = int(generations.get(normalized_library_id, 0) or 0) + 1
+        removed = cache.invalidate_predicate(
+            lambda key: isinstance(key, str) and key.startswith(f"{normalized_library_id}|")
+        )
+        service = self._target_folder_summary_redis_service()
+        if service is None:
+            return removed
+        try:
+            client = service.client(required=False)
+            if client is not None:
+                client.incr(service.key("rj-subtitle", "folder-summary-version", normalized_library_id))
+        except Exception:
+            logger.debug("[字幕补配·缓存] 推进目录摘要版本失败 library=%s", normalized_library_id, exc_info=True)
+        return removed
+
+    async def summarize_target_folder_cached(
+        self,
+        library_id: str,
+        folder_path: str,
+    ) -> Optional[Dict[str, Any]]:
+        """目录字幕摘要的 L1/L2 缓存入口；同路径并发读取只执行一次真实扫描。"""
+        normalized_library_id = str(library_id or "").strip()
+        normalized_folder_path = str(folder_path or "").strip()
+        if not normalized_library_id or not normalized_folder_path:
+            return None
+        normalized_folder_path = self._normalize_target_folder_summary_path(
+            normalized_library_id,
+            normalized_folder_path,
+        )
+        version = self._target_folder_summary_library_version(normalized_library_id)
+        generation = int(self._get_target_folder_summary_generations().get(normalized_library_id, 0) or 0)
+        cache_generation = 0 if self._target_folder_summary_has_shared_version() else generation
+        cache_key = self._target_folder_summary_cache_key(
+            normalized_library_id,
+            normalized_folder_path,
+            version,
+            cache_generation,
+        )
+        cached = self._get_cached_target_folder_summary(cache_key)
+        if cached is not None:
+            return cached
+
+        cache, inflight, lock = self._get_target_folder_summary_cache_state()
+
+        async def load() -> Optional[Dict[str, Any]]:
+            summary = await self.summarize_target_folder(
+                normalized_library_id,
+                normalized_folder_path,
+            )
+            if isinstance(summary, dict):
+                current_generation = int(
+                    self._get_target_folder_summary_generations().get(normalized_library_id, 0) or 0
+                )
+                current_version = self._target_folder_summary_library_version(normalized_library_id)
+                if current_generation == generation and current_version == version:
+                    self._set_cached_target_folder_summary(cache_key, summary)
+                return summary
+            return None
+
+        async with lock:
+            cached = self._get_cached_target_folder_summary(cache_key)
+            if cached is not None:
+                return cached
+            task = inflight.get(cache_key)
+            if task is None:
+                task = asyncio.create_task(
+                    load(),
+                    name=f"rj-subtitle-folder-summary:{normalized_library_id}",
+                )
+                inflight[cache_key] = task
+
+                # 调用方可能全部取消；由完成回调回收槽位，避免过期后继续复用旧 task。
+                def cleanup_inflight(completed_task: asyncio.Task) -> None:
+                    if inflight.get(cache_key) is completed_task:
+                        inflight.pop(cache_key, None)
+
+                task.add_done_callback(cleanup_inflight)
+
+        try:
+            # 调用方取消只结束自己的等待，不能取消其他工作台读取正在共享的真实扫描。
+            result = await asyncio.shield(task)
+            return deepcopy(result) if isinstance(result, dict) else None
+        finally:
+            # done callback 已负责回收；shield 保证调用方断开不会取消共享扫描。
+            pass
 
     async def _summarize_remote_candidate(self, library: Any, folder_path: str) -> Dict[str, Any]:
         if not getattr(library, "synology", None):
@@ -3567,19 +3791,10 @@ class LinkedSubtitleImportService:
         source_path: str,
         task_id: str,
     ) -> None:
-        """``_archive_source_after_execute`` 的"无 ORM 依赖"后台版本。
+        """以 plain 字段将字幕补配源包持久化加入延后归档队列。
 
-        ★ 性能修复（修复用户痛点："导入实际成功了，但前端 60s 超时没打开工作台"）：
-        源压缩包归档可能涉及跨卷移动 GB 级文件，串行 ``await`` 会把 HTTP 响应阻塞
-        几十秒到几分钟。HTTP 60s 默认 timeout 切断后，前端拿不到 ``task.id`` →
-        无法 ``openImportedTask`` 跳转工作台，用户感受是"卡死"。
-
-        实际上字幕补配 + 工作台创建在 ``db.commit()`` 时已经完成；源文件归档只是
-        把原始压缩包从 input 目录搬到 archive 目录，**不影响**工作台后续配对流程。
-        因此可以 ``asyncio.create_task`` fire-and-forget 后台跑，让主请求立刻返回。
-
-        本方法接收 plain dict 字段而非 ORM 对象，避免 caller 的 ``db.close()`` 后
-        SQLAlchemy detach 导致属性访问报错。
+        这里不再 fire-and-forget 实际文件搬运：只做一次短事务入队，HTTP 响应仍能
+        立即返回工作台任务，同时进程重启不会丢失待归档源文件。
         """
         try:
             if not source_path or not os.path.exists(source_path):
@@ -3727,10 +3942,8 @@ class LinkedSubtitleImportService:
         finally:
             write_db.close()
 
-        # ★ 性能修复：源压缩包归档（可能跨卷搬 GB 文件）改为后台异步执行，
-        # 让 HTTP 响应立刻返回 task.id 给前端跳转工作台。归档本身耗时数十秒
-        # 到数分钟时会把响应卡过 60s HTTP timeout，前端虽然显示"超时"但
-        # backend 实际已经成功导入，工作台没打开造成"卡死"假象。
+        # 只持久化入队，不在 HTTP 请求内复制 GB 级源包。这样工作台任务能立即
+        # 返回，且关机/重启后仍可继续归档。
         engine = get_task_engine()
         if archive_task_id:
             original_task = engine.get_task(archive_task_id)
@@ -3744,17 +3957,14 @@ class LinkedSubtitleImportService:
                 else:
                     original_task.current_step = "目标目录为空，已按新作品直接导入字幕"
 
-        # fire-and-forget：在主流程返回后继续执行归档，不阻塞 HTTP 响应
         try:
-            asyncio.create_task(
-                self._archive_source_after_execute_async(
-                    source_path=archive_source_path,
-                    task_id=archive_task_id,
-                )
+            await self._archive_source_after_execute_async(
+                source_path=archive_source_path,
+                task_id=archive_task_id,
             )
         except Exception:
             logger.warning(
-                "[字幕补配] 调度后台源文件归档失败（不影响主流程） source=%s",
+                "[字幕补配] 源文件延后归档入队失败（不影响主流程） source=%s",
                 archive_source_path, exc_info=True,
             )
 
@@ -3769,3 +3979,31 @@ def get_linked_subtitle_import_service() -> LinkedSubtitleImportService:
     if _linked_subtitle_import_service is None:
         _linked_subtitle_import_service = LinkedSubtitleImportService()
     return _linked_subtitle_import_service
+
+
+def invalidate_target_folder_summary_cache_for_library(library_id: str) -> int:
+    """使库存目录摘要缓存失效，但不为普通库存写操作额外构造重型服务实例。"""
+    normalized_library_id = str(library_id or "").strip()
+    if not normalized_library_id:
+        return 0
+
+    service = _linked_subtitle_import_service
+    if service is not None:
+        return service.invalidate_target_folder_summary_cache(normalized_library_id)
+
+    try:
+        from .redis_service import get_redis_service
+
+        redis_service = get_redis_service()
+        if not redis_service.is_enabled():
+            return 0
+        client = redis_service.client(required=False)
+        if client is not None:
+            client.incr(redis_service.key("rj-subtitle", "folder-summary-version", normalized_library_id))
+    except Exception:
+        logger.debug(
+            "[字幕补配·缓存] 推进未实例化服务的目录摘要版本失败 library=%s",
+            normalized_library_id,
+            exc_info=True,
+        )
+    return 0
