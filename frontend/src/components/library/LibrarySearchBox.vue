@@ -1,5 +1,11 @@
 <template>
-  <div ref="rootRef" class="lib-search-box" :class="{ 'is-open': isPopupOpen, 'is-filter-open': isFilterMenuOpen }">
+  <div
+    ref="rootRef"
+    class="lib-search-box"
+    :class="{ 'is-open': isPopupOpen, 'is-filter-open': isFilterMenuOpen }"
+    @mouseenter="onSearchPointerEnter"
+    @mouseleave="onSearchPointerLeave"
+  >
     <div class="lib-search">
       <button
         type="button"
@@ -282,8 +288,10 @@ let debounceTimer = null
 let activeAbort = null
 let activeRequestId = 0
 let blurTimer = null
+let pointerInsideSearch = false
 
 const DEBOUNCE_MS = 220
+const BLUR_CLOSE_DELAY_MS = 280
 
 watch(() => props.modelValue, (next) => {
   if ((next || '') !== innerKeyword.value) innerKeyword.value = next || ''
@@ -414,12 +422,32 @@ function onInputFocus () {
 }
 
 function onInputBlur () {
-  // 延迟收起，让 click 事件先触发到 list row
-  if (blurTimer) clearTimeout(blurTimer)
+  scheduleBlurClose()
+}
+
+function cancelBlurClose () {
+  if (!blurTimer) return
+  clearTimeout(blurTimer)
+  blurTimer = null
+}
+
+function scheduleBlurClose () {
+  cancelBlurClose()
   blurTimer = setTimeout(() => {
-    isPopupOpen.value = false
     blurTimer = null
-  }, 120)
+    if (pointerInsideSearch) return
+    isPopupOpen.value = false
+  }, BLUR_CLOSE_DELAY_MS)
+}
+
+function onSearchPointerEnter () {
+  pointerInsideSearch = true
+  cancelBlurClose()
+}
+
+function onSearchPointerLeave () {
+  pointerInsideSearch = false
+  if (document.activeElement !== inputRef.value) scheduleBlurClose()
 }
 
 function onInputKeydown (event) {
@@ -656,6 +684,16 @@ onBeforeUnmount(() => {
   flex: 1 1 240px;
   min-width: 220px;
   max-width: 360px;
+}
+
+.lib-search-box.is-open::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: 0;
+  z-index: 59;
+  height: 8px;
 }
 
 .lib-search {

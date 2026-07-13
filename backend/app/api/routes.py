@@ -8335,6 +8335,44 @@ def _detect_global_index_rjcode(keyword: str) -> Optional[str]:
     return None
 
 
+def _collapse_exact_rj_descendants(
+    items: list[Dict[str, Any]],
+    matched_rjcode: Optional[str],
+) -> list[Dict[str, Any]]:
+    """完整 RJ 搜索只保留每个真实收录位置的最上层作品目录。
+
+    库存索引会把作品 RJ 传播到其后代目录。若直接展示 find_by_rjcode 的
+    全部结果，特典、台本、图片等子目录会挤满搜索建议。这里按库和路径
+    折叠已命中作品目录的后代，同时保留同库不同路径、多库收录的位置。
+    """
+    normalized_rj = str(matched_rjcode or "").strip().upper()
+    if not normalized_rj:
+        return items
+
+    kept: list[Dict[str, Any]] = []
+    kept_roots: Dict[str, list[str]] = {}
+    for item in items:
+        item_rj = str(item.get("rjcode") or "").strip().upper()
+        if item_rj != normalized_rj or item.get("entry_type") != "dir":
+            kept.append(item)
+            continue
+
+        library_id = str(item.get("library_id") or "")
+        relative_path = str(item.get("relative_path") or "").replace("\\", "/").strip("/")
+        roots = kept_roots.setdefault(library_id, [])
+        if relative_path and any(
+            relative_path == root or relative_path.startswith(f"{root}/")
+            for root in roots
+        ):
+            continue
+
+        kept.append(item)
+        if relative_path:
+            roots.append(relative_path)
+
+    return kept
+
+
 def _resolve_global_index_library_scope(
     manager,
     library_ids_csv: Optional[str],
@@ -8848,6 +8886,7 @@ async def global_search_library_index(
         )
 
     merged_items.sort(key=_sort_item)
+    merged_items = _collapse_exact_rj_descendants(merged_items, matched_rjcode)
     truncated = len(merged_items) > capped_limit
     capped_items = merged_items[:capped_limit]
 
@@ -9073,6 +9112,7 @@ async def global_search_library_index_stream(
             )
 
         index_items.sort(key=_sort_item)
+        index_items = _collapse_exact_rj_descendants(index_items, matched_rjcode)
 
         # 决定是否要跑 Phase 3：仅当索引零命中 + 有未就绪库
         will_run_fallback = bool(unready_library_infos) and not index_items
@@ -10700,6 +10740,44 @@ class LibraryBrowserListFoldersRequest(BaseModel):
     include_files: bool = False
 
 
+class LibraryBrowserNavigationSnapshotRequest(BaseModel):
+    """移动弹窗的版本化索引导航快照请求。"""
+    library_id: str
+    path: Optional[str] = ""
+    include_files: bool = True
+    include_ancestors: bool = True
+
+
+@app.post("/api/library/browser/navigation-snapshot")
+async def get_library_browser_navigation_snapshot(request: LibraryBrowserNavigationSnapshotRequest):
+    if not str(request.library_id or "").strip():
+        raise HTTPException(status_code=400, detail="缺少 library_id")
+    try:
+        manager = get_library_manager()
+        payload = await asyncio.to_thread(
+            manager.navigation_snapshot_via_index,
+            request.library_id,
+            request.path or None,
+            include_files=bool(request.include_files),
+            include_ancestors=bool(request.include_ancestors),
+        )
+        if payload is None:
+            return {
+                "library_id": request.library_id,
+                "index_available": False,
+                "browse_via_index": False,
+            }
+        payload["index_available"] = True
+        return payload
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.warning("读取移动弹窗索引导航快照失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"读取索引导航快照失败: {str(e)}")
+
+
 @app.post("/api/library/browser/list-folders")
 async def list_library_browser_folders(request: LibraryBrowserListFoldersRequest):
     """供"移动到..."/"指定上传子目录"对话框使用：列出指定路径下的一级子项（默认仅子目录，可选包含文件）。
@@ -10742,6 +10820,7 @@ class LibraryBrowserMoveRequest(BaseModel):
     target_path: Optional[str] = ""
     conflict_strategy: Optional[str] = "suffix"  # suffix / overwrite / skip
     overwrite: bool = False  # 兼容旧字段
+    move_plan_id: Optional[str] = None
 
 
 @app.post("/api/library/browser/move-preview")
@@ -10819,10 +10898,39 @@ async def move_library_browser_items(request: LibraryBrowserMoveRequest, raw_req
             for effect in source_effects
         }
         mutation_service = get_library_index_mutation_service()
+        idempotency_key = _request_idempotency_key(raw_request)
+        lookup = getattr(mutation_service, "get_operation_by_idempotency_key", None)
+
+        def replay_existing_move():
+            if not callable(lookup) or lookup(idempotency_key) is None:
+                return None
+            prepared = mutation_service.prepare(
+                kind="move",
+                effects_by_library=effects_by_library,
+                idempotency_key=idempotency_key,
+            )
+            return _prepared_replay_response(prepared)
+
+        replay = replay_existing_move()
+        if replay is not None:
+            return replay
+
+        plan_valid = manager.validate_move_preview_plan(
+            request.move_plan_id or "",
+            source_library_id=request.source_library_id,
+            target_library_id=request.target_library_id,
+            paths=list(request.paths or []),
+            target_path=request.target_path or target_library.root_path,
+        ) if request.move_plan_id else None
+        if plan_valid is False:
+            replay = replay_existing_move()
+            if replay is not None:
+                return replay
+            raise HTTPException(status_code=409, detail="目录索引已变化，请重新确认移动冲突")
         prepared = mutation_service.prepare(
             kind="move",
             effects_by_library=effects_by_library,
-            idempotency_key=_request_idempotency_key(raw_request),
+            idempotency_key=idempotency_key,
         )
         replay = _prepared_replay_response(prepared)
         if replay is not None:

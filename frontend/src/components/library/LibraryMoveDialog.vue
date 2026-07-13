@@ -427,6 +427,7 @@ import {
 import { ElMessage } from 'element-plus'
 
 import { libraryApi } from '../../api'
+import { useLibraryIndexStateStore } from '../../stores/libraryIndexState'
 import LibraryMoveNavNode from './LibraryMoveNavNode.vue'
 import AppEmptyState from '../common/AppEmptyState.vue'
 
@@ -449,6 +450,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['update:visible', 'submit', 'close'])
+const libraryIndexStateStore = useLibraryIndexStateStore()
 
 const currentLibraryId = ref('')
 const currentPath = ref('')
@@ -461,11 +463,14 @@ const searchKeyword = ref('')
 const pathInput = ref('')
 const listScrollRef = ref(null)
 let folderSizeHydrateToken = 0
+let folderLoadToken = 0
+let folderLoadAbort = null
 
 const conflictDialogOpen = ref(false)
 const pendingTargetSnapshot = ref(null)
 const conflictChecking = ref(false)
 const moveConflicts = ref([])
+const moveConflictTotal = ref(0)
 
 // 左侧导航宽度 + 拖拽状态
 const navWidth = ref(NAV_DEFAULT_WIDTH)
@@ -474,6 +479,7 @@ const navResizeStart = { x: 0, width: NAV_DEFAULT_WIDTH }
 
 // 库存导航树状态： navTreeState[libraryId] = { rootExpanded, rootChildren, rootLoading, rootError, nodes: { [path]: { expanded, children, loading, error } } }
 const navTreeState = reactive({})
+const navTreeVersionByLibrary = reactive({})
 
 const CONFLICT_PREVIEW_MAX = 8
 
@@ -525,7 +531,7 @@ const currentLevelConflictCount = computed(() => moveConflictNameSet.value.size)
 
 const currentLevelConflictNamesText = computed(() => Array.from(moveConflictNameSet.value).join('、'))
 
-const moveConflictCount = computed(() => moveConflicts.value.length)
+const moveConflictCount = computed(() => Math.max(moveConflicts.value.length, moveConflictTotal.value))
 
 const moveConflictsPreview = computed(() => moveConflicts.value.slice(0, CONFLICT_PREVIEW_MAX))
 
@@ -616,6 +622,19 @@ let indexSearchAbort = null
 // 是否处于索引搜索模式：搜索框非空 且 索引已 ready
 const inIndexSearchMode = computed(() => indexReady.value && String(searchKeyword.value || '').trim().length > 0)
 const isRemoteCurrentLibrary = computed(() => currentLibrary.value?.type === 'synology_filestation')
+const currentIndexStatus = computed(() => libraryIndexStateStore.statusFor(currentLibraryId.value))
+
+function statusHasUsableSnapshot (status) {
+  const rawStatus = String(status?.status || '')
+  if (rawStatus === 'ready') return true
+  return rawStatus === 'syncing' && Number(status?.total_entries || 0) > 0
+}
+
+function indexViewTokenFromStatus (status) {
+  const libraryId = String(status?.library_id || currentLibraryId.value || '')
+  if (!libraryId) return ''
+  return `${libraryId}:${Number(status?.active_generation || status?.index_generation || 1)}:${Number(status?.view_revision || 0)}`
+}
 
 const filteredFolders = computed(() => {
   if (inIndexSearchMode.value) {
@@ -697,18 +716,38 @@ watch(searchKeyword, (keyword) => {
 
 // 切换库时自动检查索引状态
 watch(currentLibraryId, (id) => {
-  indexReady.value = false
+  indexReady.value = statusHasUsableSnapshot(libraryIndexStateStore.statusFor(id))
   if (isRemoteCurrentLibrary.value) return
-  if (id) checkIndexReady(id)
+  if (id && !indexReady.value) checkIndexReady(id)
+})
+
+watch(currentIndexStatus, (status) => {
+  indexReady.value = statusHasUsableSnapshot(status)
+  const libraryId = String(status?.library_id || currentLibraryId.value || '')
+  const nextToken = indexViewTokenFromStatus(status)
+  const previousToken = navTreeVersionByLibrary[libraryId]
+  if (!props.visible || !libraryId || !nextToken || !previousToken || nextToken === previousToken) return
+  delete navTreeState[libraryId]
+  navTreeVersionByLibrary[libraryId] = nextToken
+  loadFolders(currentPath.value || '').catch(error => {
+    console.warn('索引版本变化后刷新移动弹窗失败:', error)
+  })
 })
 
 // 检查当前库索引状态（ready/syncing/error/idle → 只有 ready 才走索引搜索）
 async function checkIndexReady (libraryId) {
   if (!libraryId) { indexReady.value = false; return }
   if (isRemoteCurrentLibrary.value) { indexReady.value = false; return }
+  const cached = libraryIndexStateStore.statusFor(libraryId)
+  if (statusHasUsableSnapshot(cached)) {
+    indexReady.value = true
+    return
+  }
   try {
     const data = await libraryApi.getIndexStatus(libraryId)
-    indexReady.value = String(data?.status || '') === 'ready'
+    libraryIndexStateStore.applyStatusSnapshot(data, 'http')
+    libraryIndexStateStore.recordIndexViews({ index_view: data })
+    indexReady.value = statusHasUsableSnapshot(data)
   } catch (_) {
     indexReady.value = false
   }
@@ -820,6 +859,9 @@ async function initFromProps () {
 
 function resetState () {
   folderSizeHydrateToken += 1
+  folderLoadToken += 1
+  if (folderLoadAbort) { try { folderLoadAbort.abort() } catch (_) {} }
+  folderLoadAbort = null
   currentLibraryId.value = ''
   currentPath.value = ''
   rootPath.value = ''
@@ -838,8 +880,11 @@ function resetState () {
   pendingTargetSnapshot.value = null
   conflictChecking.value = false
   moveConflicts.value = []
+  moveConflictTotal.value = 0
   indexSearchToken += 1
   if (indexSearchTimer) { clearTimeout(indexSearchTimer); indexSearchTimer = null }
+  if (indexSearchAbort) { try { indexSearchAbort.abort() } catch (_) {} }
+  indexSearchAbort = null
 }
 
 function ensureLibraryEntry (libraryId) {
@@ -871,15 +916,68 @@ function isLibraryExpanded (libraryId) {
   return Boolean(navTreeState[libraryId]?.rootExpanded)
 }
 
+function simplifiedDirectoryRows (rows) {
+  return (Array.isArray(rows) ? rows : [])
+    .filter(item => item?.is_directory !== false)
+    .map(item => ({ name: item.name, path: item.path }))
+}
+
+function applyNavigationSnapshot (libraryId, data) {
+  if (!data?.browse_via_index) return false
+  if (!libraryIndexStateStore.isIndexViewResponseCurrent(data)) return false
+  libraryIndexStateStore.recordIndexViews(data)
+  const nextToken = String(data.view_token || indexViewTokenFromStatus(data.index_view) || '')
+  if (nextToken && navTreeVersionByLibrary[libraryId] !== nextToken) {
+    delete navTreeState[libraryId]
+    navTreeVersionByLibrary[libraryId] = nextToken
+  }
+  const snapshotRoot = data?.browse_root_path || data?.library_root_path || ''
+  if (snapshotRoot && libraryId === currentLibraryId.value) rootPath.value = snapshotRoot
+  for (const branch of Array.isArray(data?.tree_children) ? data.tree_children : []) {
+    const branchPath = String(branch?.path || '')
+    if (!branchPath) continue
+    const children = simplifiedDirectoryRows(branch?.folders)
+    if (snapshotRoot && normalizePath(branchPath) === normalizePath(snapshotRoot)) {
+      const entry = ensureLibraryEntry(libraryId)
+      entry.rootChildren = children
+      entry.rootExpanded = true
+    } else {
+      const node = ensureNodeEntry(libraryId, branchPath)
+      node.children = children
+      node.expanded = true
+    }
+  }
+  indexReady.value = true
+  return true
+}
+
+async function requestNavigationSnapshot (libraryId, path, options = {}) {
+  try {
+    const data = await libraryApi.browserNavigationSnapshot(libraryId, path, options)
+    if (!data?.index_available || !data?.browse_via_index) return null
+    if (!libraryIndexStateStore.isIndexViewResponseCurrent(data)) return null
+    if (options.applySnapshot !== false && !applyNavigationSnapshot(libraryId, data)) return null
+    return data
+  } catch (error) {
+    if (error?.name === 'CanceledError' || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') throw error
+    return null
+  }
+}
+
 async function loadNavChildrenForRoot (lib) {
   const entry = ensureLibraryEntry(lib.id)
   if (entry.rootLoading) return
   entry.rootLoading = true
   entry.rootError = ''
   try {
-    const data = await libraryApi.browserListFolders(lib.id, '')
+    const indexed = await requestNavigationSnapshot(lib.id, '', {
+      includeFiles: false,
+      includeAncestors: false,
+    })
+    const data = indexed || await libraryApi.browserListFolders(lib.id, '')
     const baseRoot = data?.browse_root_path || data?.library_root_path || lib.root_path || lib.path || ''
-    entry.rootChildren = (data?.folders || []).map(item => ({ name: item.name, path: item.path }))
+    const currentEntry = ensureLibraryEntry(lib.id)
+    currentEntry.rootChildren = simplifiedDirectoryRows(data?.folders)
     if (baseRoot && lib.id === currentLibraryId.value && !rootPath.value) {
       rootPath.value = baseRoot
     }
@@ -887,7 +985,7 @@ async function loadNavChildrenForRoot (lib) {
     entry.rootError = err?.response?.data?.detail || err?.message || '读取目录失败'
     entry.rootChildren = []
   } finally {
-    entry.rootLoading = false
+    ensureLibraryEntry(lib.id).rootLoading = false
   }
 }
 
@@ -897,13 +995,17 @@ async function loadNavChildrenForPath (libraryId, path) {
   node.loading = true
   node.error = ''
   try {
-    const data = await libraryApi.browserListFolders(libraryId, path)
-    node.children = (data?.folders || []).map(item => ({ name: item.name, path: item.path }))
+    const indexed = await requestNavigationSnapshot(libraryId, path, {
+      includeFiles: false,
+      includeAncestors: false,
+    })
+    const data = indexed || await libraryApi.browserListFolders(libraryId, path)
+    ensureNodeEntry(libraryId, path).children = simplifiedDirectoryRows(data?.folders)
   } catch (err) {
     node.error = err?.response?.data?.detail || err?.message || '读取目录失败'
     node.children = []
   } finally {
-    node.loading = false
+    ensureNodeEntry(libraryId, path).loading = false
   }
 }
 
@@ -942,6 +1044,13 @@ async function selectLibraryRoot (lib) {
 
 async function loadFolders (path) {
   if (!currentLibraryId.value) return
+  if (folderLoadAbort) {
+    try { folderLoadAbort.abort() } catch (_) {}
+  }
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+  folderLoadAbort = controller
+  const requestToken = ++folderLoadToken
+  const requestLibraryId = currentLibraryId.value
   const token = ++folderSizeHydrateToken
   loading.value = true
   error.value = ''
@@ -952,16 +1061,26 @@ async function loadFolders (path) {
     const targetPath = path || ''
     const knownRoot = rootPath.value || ''
     const isAtRoot = !targetPath || (knownRoot && normalizePath(targetPath) === normalizePath(knownRoot))
-    const data = await libraryApi.browserListFolders(
-      currentLibraryId.value,
+    const indexed = await requestNavigationSnapshot(requestLibraryId, targetPath, {
+      includeFiles: true,
+      includeAncestors: true,
+      applySnapshot: false,
+      signal: controller ? controller.signal : undefined,
+    })
+    if (requestToken !== folderLoadToken || requestLibraryId !== currentLibraryId.value) return
+    if (indexed) applyNavigationSnapshot(requestLibraryId, indexed)
+    const data = indexed || await libraryApi.browserListFolders(
+      requestLibraryId,
       targetPath,
       {
         computeSize: false,
         computeSizeCap: FOLDER_SIZE_COMPUTE_CAP,
         // 右侧文件列表既显示子目录也显示文件（参考库存页风格），文件不可作为目标
-        includeFiles: true
+        includeFiles: true,
+        signal: controller ? controller.signal : undefined,
       }
     )
+    if (requestToken !== folderLoadToken || requestLibraryId !== currentLibraryId.value) return
     rootPath.value = data?.browse_root_path || data?.library_root_path || ''
     currentPath.value = data?.current_path || rootPath.value
     pathInput.value = currentPath.value
@@ -980,10 +1099,15 @@ async function loadFolders (path) {
       })
     }
   } catch (err) {
+    if (err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED') return
+    if (requestToken !== folderLoadToken) return
     folders.value = []
     error.value = err?.response?.data?.detail || err?.message || '读取目录失败'
   } finally {
-    loading.value = false
+    if (requestToken === folderLoadToken) {
+      loading.value = false
+      if (folderLoadAbort === controller) folderLoadAbort = null
+    }
   }
 }
 
@@ -1190,6 +1314,7 @@ function handleCancel () {
   conflictDialogOpen.value = false
   pendingTargetSnapshot.value = null
   moveConflicts.value = []
+  moveConflictTotal.value = 0
   emit('update:visible', false)
   emit('close')
 }
@@ -1213,7 +1338,8 @@ async function handleSubmit () {
   }
   const snapshot = {
     targetLibraryId: currentLibraryId.value,
-    targetPath: effectiveTargetPath.value
+    targetPath: effectiveTargetPath.value,
+    movePlanId: ''
   }
   conflictChecking.value = true
   try {
@@ -1224,6 +1350,8 @@ async function handleSubmit () {
       effectiveTargetPath.value
     )
     const conflicts = Array.isArray(preview?.conflicts) ? preview.conflicts : []
+    moveConflictTotal.value = Number(preview?.conflict_count || conflicts.length)
+    snapshot.movePlanId = String(preview?.move_plan_id || '')
     if (conflicts.length) {
       moveConflicts.value = conflicts
       pendingTargetSnapshot.value = snapshot
@@ -1231,6 +1359,7 @@ async function handleSubmit () {
       return
     }
     moveConflicts.value = []
+    moveConflictTotal.value = 0
     emit('submit', { ...snapshot, conflictStrategy: 'suffix' })
   } catch (err) {
     ElMessage.error('移动预检失败：' + (err?.response?.data?.detail || err?.message || '未知错误'))
@@ -1244,6 +1373,7 @@ function confirmConflict (strategy) {
   conflictDialogOpen.value = false
   pendingTargetSnapshot.value = null
   moveConflicts.value = []
+  moveConflictTotal.value = 0
   if (!snapshot) return
   emit('submit', { ...snapshot, conflictStrategy: strategy })
 }
@@ -1252,6 +1382,7 @@ function cancelConflict () {
   conflictDialogOpen.value = false
   pendingTargetSnapshot.value = null
   moveConflicts.value = []
+  moveConflictTotal.value = 0
 }
 
 function formatFolderSize (folder) {
@@ -1353,6 +1484,8 @@ function resetNavWidth () {
 }
 
 onBeforeUnmount(() => {
+  if (folderLoadAbort) { try { folderLoadAbort.abort() } catch (_) {} }
+  if (indexSearchAbort) { try { indexSearchAbort.abort() } catch (_) {} }
   // 兜底卸载时清理拖拽监听，避免泄漏
   if (typeof window !== 'undefined') {
     window.removeEventListener('pointermove', onSplitterPointerMove)

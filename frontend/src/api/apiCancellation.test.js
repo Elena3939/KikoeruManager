@@ -11,7 +11,7 @@ vi.mock('axios', () => ({
   },
 }))
 
-const { isCanceledApiRequest, rjSubtitleApi } = await import('./index')
+const { isCanceledApiRequest, libraryApi, rjSubtitleApi } = await import('./index')
 
 describe('API 请求取消判定', () => {
   it.each([
@@ -67,6 +67,43 @@ describe('API 请求取消判定', () => {
     )
     expect(apiClient.get).toHaveBeenCalledWith(
       '/rj-subtitle/status',
+      { signal: controller.signal },
+    )
+  })
+
+  it('向移动弹窗目录接口透传取消信号', async () => {
+    apiClient.post = vi.fn().mockResolvedValue({ data: { folders: [] } })
+    const controller = new AbortController()
+
+    await libraryApi.browserNavigationSnapshot('library-a', '/library/Circle', {
+      includeFiles: true,
+      includeAncestors: true,
+      signal: controller.signal,
+    })
+    await libraryApi.browserListFolders('library-a', '/library/Circle', {
+      includeFiles: true,
+      signal: controller.signal,
+    })
+
+    expect(apiClient.post).toHaveBeenNthCalledWith(
+      1,
+      '/library/browser/navigation-snapshot',
+      {
+        library_id: 'library-a',
+        path: '/library/Circle',
+        include_files: true,
+        include_ancestors: true,
+      },
+      { signal: controller.signal },
+    )
+    expect(apiClient.post).toHaveBeenNthCalledWith(
+      2,
+      '/library/browser/list-folders',
+      {
+        library_id: 'library-a',
+        path: '/library/Circle',
+        include_files: true,
+      },
       { signal: controller.signal },
     )
   })

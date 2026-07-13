@@ -11,6 +11,7 @@ from app.config.settings import LibraryConfigItem, StorageConfig
 from app.core import library_index as library_index_module
 from app.core import library_folder_completion_service as folder_completion_module
 from app.core import library_manager as library_manager_module
+from app.core import redis_service as redis_service_module
 from app.core.metadata_service import MetadataService
 from app.core.library_index.types import IndexEntry
 
@@ -516,6 +517,105 @@ def test_local_inventory_reads_prefer_usable_index_snapshot(monkeypatch, tmp_pat
     assert [item["name"] for item in folders_after_delete["folders"]] == ["RJ01000001"]
 
 
+def test_move_navigation_snapshot_uses_versioned_index_and_redis_cache(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    circle_path = library_root / "Circle"
+    library = library_manager_module.LibraryDefinition(
+        id="local-move-nav",
+        name="移动导航",
+        type="local",
+        path=str(library_root),
+        enabled=True,
+    )
+
+    def entry(relative_path, entry_type):
+        return IndexEntry(
+            library_id=library.id,
+            entry_type=entry_type,
+            relative_path=relative_path,
+            absolute_path=str(library_root / Path(relative_path)),
+            name=relative_path.rsplit("/", 1)[-1],
+            parent_path=relative_path.rsplit("/", 1)[0] if "/" in relative_path else "",
+            size=10,
+            file_count=1,
+            mtime=1000,
+            depth=relative_path.count("/") + 1,
+            indexed_at=1000,
+        )
+
+    entries = {
+        item.relative_path: item
+        for item in [
+            entry("Circle", "dir"),
+            entry("Circle/RJ01000001", "dir"),
+            entry("Circle/RJ01000001/track.wav", "file"),
+        ]
+    }
+
+    class FakeIndexService:
+        list_calls = 0
+
+        def has_usable_snapshot(self, _library_id):
+            return True
+
+        def has_library_entries(self, _library_id):
+            return True
+
+        def get_status(self, _library_id):
+            return SimpleNamespace(
+                status="syncing",
+                total_entries=3,
+                active_generation=4,
+                view_revision=9,
+                accepted_seq=12,
+                materialized_seq=11,
+                state_revision=13,
+            )
+
+        def get_entry(self, _library_id, relative_path):
+            return entries.get(relative_path)
+
+        def list_children_page(self, _library_id, parent_path="", entry_type=None, **_kwargs):
+            self.list_calls += 1
+            rows = [item for item in entries.values() if (item.parent_path or "") == (parent_path or "")]
+            if entry_type:
+                rows = [item for item in rows if item.entry_type == entry_type]
+            return {"entries": rows, "total": len(rows)}
+
+    class FakeRedis:
+        def __init__(self):
+            self.values = {}
+
+        def get_json(self, module, type_name, item_id):
+            return self.values.get((module, type_name, item_id))
+
+        def set_json(self, module, type_name, item_id, payload, **_kwargs):
+            self.values[(module, type_name, item_id)] = payload
+            return True
+
+        def short_cache_ttl_seconds(self):
+            return 60
+
+    service = FakeIndexService()
+    redis = FakeRedis()
+    manager = object.__new__(library_manager_module.LibraryManager)
+    monkeypatch.setattr(manager, "get_library_definition", lambda _library_id: library)
+    monkeypatch.setattr(manager, "_validate_local_index_entries_for_read", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("导航快照不得逐项校验磁盘")))
+    monkeypatch.setattr(library_index_module, "get_library_index_service", lambda: service)
+    monkeypatch.setattr(redis_service_module, "get_redis_service", lambda: redis)
+
+    first = manager.navigation_snapshot_via_index(library.id, str(circle_path), include_files=True)
+    second = manager.navigation_snapshot_via_index(library.id, str(circle_path), include_files=True)
+
+    assert first["browse_via_index"] is True
+    assert first["cache_source"] == "postgresql"
+    assert first["view_token"] == f"{library.id}:4:9"
+    assert [item["name"] for item in first["folders"]] == ["RJ01000001"]
+    assert [branch["relative_path"] for branch in first["tree_children"]] == ["", "Circle"]
+    assert second["cache_source"] == "redis"
+    assert service.list_calls == 2
+
+
 def test_local_listing_counts_descendants_only_for_current_page(monkeypatch, tmp_path):
     local_root = tmp_path / "library"
     local_root.mkdir()
@@ -1002,6 +1102,207 @@ def test_local_move_preview_allows_same_name_folder_merge(monkeypatch, tmp_path)
     assert (target_dir / "new.wav").read_bytes() == b"new"
 
 
+def test_local_move_preview_prefers_index_and_versions_redis_plan(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    source_dir = library_root / "source" / "Circle"
+    target_dir = library_root / "target" / "Circle"
+    source_dir.mkdir(parents=True)
+    target_dir.mkdir(parents=True)
+    (source_dir / "new.wav").write_bytes(b"new")
+    (source_dir / "track.wav").write_bytes(b"source")
+    (target_dir / "old.wav").write_bytes(b"old")
+    (target_dir / "track.wav").write_bytes(b"target")
+
+    library = library_manager_module.LibraryDefinition(
+        id="local-index-preview",
+        name="索引预检",
+        type="local",
+        path=str(library_root),
+        enabled=True,
+    )
+
+    def entry(relative_path, entry_type):
+        return IndexEntry(
+            library_id=library.id,
+            entry_type=entry_type,
+            relative_path=relative_path,
+            absolute_path=str(library_root / Path(relative_path)),
+            name=relative_path.rsplit("/", 1)[-1],
+            parent_path=relative_path.rsplit("/", 1)[0] if "/" in relative_path else "",
+            size=1,
+            file_count=1,
+            mtime=1000,
+            depth=relative_path.count("/") + 1,
+            indexed_at=1000,
+        )
+
+    entries = {
+        item.relative_path: item
+        for item in [
+            entry("source", "dir"),
+            entry("source/Circle", "dir"),
+            entry("source/Circle/new.wav", "file"),
+            entry("source/Circle/track.wav", "file"),
+            entry("target", "dir"),
+            entry("target/Circle", "dir"),
+            entry("target/Circle/old.wav", "file"),
+            entry("target/Circle/track.wav", "file"),
+        ]
+    }
+
+    class FakeIndexService:
+        view_revision = 7
+
+        def get_status(self, _library_id):
+            return SimpleNamespace(
+                active_generation=2,
+                view_revision=self.view_revision,
+                accepted_seq=5,
+                materialized_seq=5,
+                state_revision=8,
+            )
+
+        def get_entry(self, _library_id, relative_path):
+            return entries.get(relative_path)
+
+        def list_subtree_entries(self, _library_id, relative_path, **_kwargs):
+            return [
+                item for item in entries.values()
+                if item.relative_path == relative_path or item.relative_path.startswith(relative_path + "/")
+            ]
+
+    class FakeRedis:
+        def __init__(self):
+            self.values = {}
+
+        def set_json(self, module, type_name, item_id, payload, **_kwargs):
+            self.values[(module, type_name, item_id)] = payload
+            return True
+
+        def get_json(self, module, type_name, item_id):
+            return self.values.get((module, type_name, item_id))
+
+        def short_cache_ttl_seconds(self):
+            return 60
+
+    service = FakeIndexService()
+    redis = FakeRedis()
+    manager = object.__new__(library_manager_module.LibraryManager)
+    monkeypatch.setattr(manager, "get_library_definition", lambda _library_id: library)
+    monkeypatch.setattr(manager, "_index_service_if_ready", lambda _library: service)
+    monkeypatch.setattr(redis_service_module, "get_redis_service", lambda: redis)
+
+    preview = manager._preview_move_local_items_via_index(
+        library,
+        library,
+        [str(source_dir)],
+        str(library_root / "target"),
+    )
+
+    assert preview["preview_source"] == "index"
+    assert preview["conflict_count"] == 1
+    assert preview["conflicts"][0]["relative_path"].replace("\\", "/") == "Circle/track.wav"
+    assert preview["merge_folder_count"] == 1
+    assert preview["move_plan_id"]
+    assert manager.validate_move_preview_plan(
+        preview["move_plan_id"],
+        source_library_id=library.id,
+        target_library_id=library.id,
+        paths=[str(source_dir)],
+        target_path=str(library_root / "target"),
+    ) is True
+
+    service.view_revision = 8
+    assert manager.validate_move_preview_plan(
+        preview["move_plan_id"],
+        source_library_id=library.id,
+        target_library_id=library.id,
+        paths=[str(source_dir)],
+        target_path=str(library_root / "target"),
+    ) is False
+
+
+def test_local_move_index_preview_uses_platform_filename_case_semantics(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    source_dir = library_root / "source" / "Circle"
+    target_dir = library_root / "target" / "Circle"
+    source_dir.mkdir(parents=True)
+    target_dir.mkdir(parents=True)
+    (source_dir / "Track.wav").write_bytes(b"source")
+    (target_dir / "track.wav").write_bytes(b"target")
+
+    library = library_manager_module.LibraryDefinition(
+        id="local-case-preview",
+        name="大小写冲突预检",
+        type="local",
+        path=str(library_root),
+        enabled=True,
+    )
+
+    def entry(relative_path, entry_type):
+        return IndexEntry(
+            library_id=library.id,
+            entry_type=entry_type,
+            relative_path=relative_path,
+            absolute_path=str(library_root / Path(relative_path)),
+            name=relative_path.rsplit("/", 1)[-1],
+            parent_path=relative_path.rsplit("/", 1)[0] if "/" in relative_path else "",
+            size=1,
+            file_count=1,
+            mtime=1000,
+            depth=relative_path.count("/") + 1,
+            indexed_at=1000,
+        )
+
+    entries = {
+        item.relative_path: item
+        for item in [
+            entry("source", "dir"),
+            entry("source/Circle", "dir"),
+            entry("source/Circle/Track.wav", "file"),
+            entry("target", "dir"),
+            entry("target/Circle", "dir"),
+            entry("target/Circle/track.wav", "file"),
+        ]
+    }
+
+    class FakeIndexService:
+        def get_status(self, _library_id):
+            return SimpleNamespace(
+                active_generation=1,
+                view_revision=1,
+                accepted_seq=1,
+                materialized_seq=1,
+                state_revision=1,
+            )
+
+        def get_entry(self, _library_id, relative_path):
+            return entries.get(relative_path)
+
+        def list_subtree_entries(self, _library_id, relative_path, **_kwargs):
+            return [
+                item for item in entries.values()
+                if item.relative_path == relative_path or item.relative_path.startswith(relative_path + "/")
+            ]
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    service = FakeIndexService()
+    monkeypatch.setattr(manager, "_index_service_if_ready", lambda _library: service)
+    monkeypatch.setattr(manager, "_store_move_preview_plan", lambda payload: payload)
+
+    preview = manager._preview_move_local_items_via_index(
+        library,
+        library,
+        [str(source_dir)],
+        str(library_root / "target"),
+    )
+
+    case_insensitive = os.path.normcase("Track.wav") == os.path.normcase("track.wav")
+    assert preview["conflict_count"] == (1 if case_insensitive else 0)
+    if case_insensitive:
+        assert preview["conflicts"][0]["relative_path"].replace("\\", "/") == "Circle/Track.wav"
+
+
 def test_local_move_preview_reports_child_file_conflict_before_folder_merge(monkeypatch, tmp_path):
     library_root = tmp_path / "library"
     source_parent = library_root / "source"
@@ -1051,6 +1352,79 @@ def test_local_move_preview_reports_child_file_conflict_before_folder_merge(monk
     assert not source_dir.exists()
     assert (target_dir / "track.wav").read_bytes() == b"old"
     assert (target_dir / "track_1.wav").read_bytes() == b"new"
+
+
+@pytest.mark.parametrize(("existing_on_lookup", "expect_plan_checked"), [(1, False), (2, True)])
+def test_library_browser_move_replays_committed_request_around_stale_plan_check(
+    monkeypatch,
+    tmp_path,
+    existing_on_lookup,
+    expect_plan_checked,
+):
+    library_root = tmp_path / "library"
+    source_path = library_root / "source" / "Circle"
+    target_path = library_root / "target"
+    source_path.mkdir(parents=True)
+    target_path.mkdir(parents=True)
+    captured = {}
+
+    library = SimpleNamespace(
+        id="local-a",
+        type="local",
+        root_path=str(library_root),
+    )
+
+    class FakeLibraryManager:
+        def get_library_definition(self, _library_id):
+            return library
+
+        def validate_move_preview_plan(self, *_args, **_kwargs):
+            captured["plan_checked"] = True
+            return False
+
+        async def move_local_items(self, **_kwargs):
+            raise AssertionError("幂等回放不应再次执行文件系统移动")
+
+    class FakeMutationService:
+        def get_operation_by_idempotency_key(self, idempotency_key):
+            captured["lookup_key"] = idempotency_key
+            captured["lookup_count"] = captured.get("lookup_count", 0) + 1
+            if captured["lookup_count"] < existing_on_lookup:
+                return None
+            return {"operation_id": "move-operation"}
+
+        def prepare(self, **kwargs):
+            captured["prepare"] = kwargs
+            return SimpleNamespace(
+                operation_id="move-operation",
+                replayed=True,
+                state="committed",
+                result={
+                    "operation_id": "move-operation",
+                    "operation_state": "committed",
+                    "success_count": 1,
+                },
+            )
+
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
+    monkeypatch.setattr(routes_module, "get_library_index_mutation_service", lambda: FakeMutationService())
+
+    response = asyncio.run(routes_module.move_library_browser_items(
+        routes_module.LibraryBrowserMoveRequest(
+            source_library_id=library.id,
+            target_library_id=library.id,
+            paths=[str(source_path)],
+            target_path=str(target_path),
+            move_plan_id="stale-plan",
+        ),
+        _FakeJsonRequest({}, headers={"Idempotency-Key": "move-key"}),
+    ))
+
+    assert response["operation_state"] == "committed"
+    assert response["success_count"] == 1
+    assert captured["lookup_key"] == "move-key"
+    assert captured["prepare"]["idempotency_key"] == "move-key"
+    assert ("plan_checked" in captured) is expect_plan_checked
 
 
 def test_subtitle_manual_match_rename_can_skip_index_mutation(monkeypatch):

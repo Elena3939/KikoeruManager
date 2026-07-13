@@ -22699,6 +22699,42 @@ function refreshAfterMoveInBackground (sourceLibraryId, targetLibraryId) {
 
 }
 
+function moveIndexFencesMaterialized (result) {
+  const fences = Array.isArray(result?.index_fences) ? result.index_fences : []
+  if (!fences.length) return false
+  return fences.every(fence => {
+    const libraryId = String(fence?.library_id || '')
+    const acceptedSeq = Number(fence?.accepted_seq || 0)
+    const status = libraryIndexStateStore.statusFor(libraryId) || libraryIndexStateStore.indexViewFor(libraryId)
+    return acceptedSeq > 0 && Number(status?.materialized_seq || 0) >= acceptedSeq
+  })
+}
+
+async function waitForMoveIndexFences (result, timeoutMs = 8000) {
+  const fences = Array.isArray(result?.index_fences) ? result.index_fences : []
+  if (!fences.length) return false
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (moveIndexFencesMaterialized(result)) return true
+    await new Promise(resolve => window.setTimeout(resolve, 120))
+  }
+  return moveIndexFencesMaterialized(result)
+}
+
+function refreshAfterMoveFenceInBackground (result, sourceLibraryId, targetLibraryId) {
+  waitForMoveIndexFences(result)
+    .then(materialized => {
+      if (!materialized) {
+        refreshAfterMoveInBackground(sourceLibraryId, targetLibraryId)
+        return
+      }
+      refreshLibrary({ silent: true, forceRefresh: false }).catch(error => {
+        ElMessage.warning('移动已完成，但刷新列表失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
+      })
+    })
+    .catch(() => refreshAfterMoveInBackground(sourceLibraryId, targetLibraryId))
+}
+
 
 
 function refreshCurrentLibraryAndStatsInBackground (messagePrefix = '操作已完成', options = {}) {
@@ -22732,7 +22768,7 @@ function refreshAfterMutationInBackground ({ deletedBytes = 0, deletedFolderCoun
 
 
 
-async function executeLibraryMove ({ sourceLibraryId, targetLibraryId, targetPath, items, conflictStrategy = 'suffix' }) {
+async function executeLibraryMove ({ sourceLibraryId, targetLibraryId, targetPath, items, conflictStrategy = 'suffix', movePlanId = '' }) {
 
   const result = await libraryApi.browserMove(
 
@@ -22744,7 +22780,7 @@ async function executeLibraryMove ({ sourceLibraryId, targetLibraryId, targetPat
 
     targetPath,
 
-    { conflictStrategy }
+    { conflictStrategy, movePlanId }
 
   )
 
@@ -22766,7 +22802,7 @@ async function executeLibraryMove ({ sourceLibraryId, targetLibraryId, targetPat
 
   clearSelection()
 
-  refreshAfterMoveInBackground(sourceLibraryId, targetLibraryId)
+  refreshAfterMoveFenceInBackground(result, sourceLibraryId, targetLibraryId)
 
   return result
 
@@ -22791,12 +22827,13 @@ async function handleMoveSubmit (payload) {
   const targetPath = payload.targetPath
 
   const conflictStrategy = payload.conflictStrategy || 'suffix'
+  const movePlanId = payload.movePlanId || ''
 
   moveDialogState.value = { ...moveDialogState.value, submitting: true }
 
   try {
 
-    await executeLibraryMove({ sourceLibraryId, targetLibraryId, targetPath, items, conflictStrategy })
+    await executeLibraryMove({ sourceLibraryId, targetLibraryId, targetPath, items, conflictStrategy, movePlanId })
 
     closeMoveDialog()
 
