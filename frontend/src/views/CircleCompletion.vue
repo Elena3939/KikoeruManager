@@ -1053,6 +1053,7 @@ import CircleWorksViewport from '../components/circle/CircleWorksViewport.vue'
 import { normalizeTaskCenterRealtimePayloads } from '../composables/taskCenterEventUtils'
 import { showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 import { useRealtimeEvents } from '../composables/useRealtimeEvents'
+import { reconcileCircleCompletionOwnedState } from '../utils/circleCompletionOwnedState'
 
 const route = useRoute()
 const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'kikoerumanager.circleCompletion.targetSubdirs'
@@ -3952,6 +3953,40 @@ function patchBonusProbeJobFromTaskEvent(payload = {}) {
   persistBonusProbeJobState()
 }
 
+function reconcileRefreshedOwnedState(refreshedItems = []) {
+  const currentItems = Array.isArray(detail.works) ? detail.works : []
+  const reconciled = reconcileCircleCompletionOwnedState(currentItems, refreshedItems, activeTab.value)
+  if (!reconciled.gainedCodes.length && !reconciled.lostCodes.length) return
+
+  const previousGroupCount = currentItems.length
+  detail.works = reconciled.items
+  const ownedDelta = reconciled.gainedCodes.length - reconciled.lostCodes.length
+  detail.owned_count = Math.max(0, Number(detail.owned_count || 0) + ownedDelta)
+  detail.missing_count = Math.max(0, Number(detail.missing_count || 0) - ownedDelta)
+  if (detail.owned_stats) {
+    detail.owned_stats = {
+      ...detail.owned_stats,
+      total: Math.max(0, Number(detail.owned_stats.total || 0) + ownedDelta),
+    }
+  }
+
+  if (activeTab.value === 'missing' || activeTab.value === 'owned') {
+    const groupDelta = reconciled.items.length - previousGroupCount
+    circleWorksPage.total = Math.max(0, Number(circleWorksPage.total || 0) + groupDelta)
+    circleWorksPage.page_count = Math.max(
+      1,
+      Math.ceil(circleWorksPage.total / Math.max(1, Number(circleWorksPage.page_size || worksPageSize.value || 10))),
+    )
+  }
+
+  const movedCodes = new Set([...reconciled.gainedCodes, ...reconciled.lostCodes])
+  selectedCanonicals.value = new Set([...selectedCanonicals.value].filter(code => !movedCodes.has(String(code || '').toUpperCase())))
+  selectedDownloadableCanonicals.value = new Set([...selectedDownloadableCanonicals.value].filter(code => !movedCodes.has(String(code || '').toUpperCase())))
+  selectedRequestedRjcodes.value = Object.fromEntries(
+    Object.entries(selectedRequestedRjcodes.value).filter(([code]) => !movedCodes.has(String(code || '').toUpperCase())),
+  )
+}
+
 function isTerminalTaskStatus(status) {
   return ['completed', 'failed', 'cancelled', 'canceled'].includes(String(status || '').trim().toLowerCase())
 }
@@ -4105,6 +4140,7 @@ async function pollRefreshJob(jobId, options = {}) {
     if (result.status === 'completed') {
       refreshingCurrentCircle.value = false
       await Promise.all([refreshActiveCircle({ summaryOnly: false }), loadRecentCircles()])
+      reconcileRefreshedOwnedState(result.result?.items)
       const changedCodes = (Array.isArray(result.result?.items) ? result.result.items : [])
         .filter(item => item?.changed)
         .map(item => item.canonical_rjcode)
