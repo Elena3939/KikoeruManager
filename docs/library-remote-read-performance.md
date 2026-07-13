@@ -5,6 +5,20 @@
 - `GET /api/library/index/global-search?mode=suggest` 只读取可用库存索引，不触发本地递归或群晖 `SYNO.FileStation.Search` 兜底。
 - 未建索引或远程库存会在 `library_status[].search_mode` 返回 `skipped_suggest`，`fallback_used=false`。
 - 完整搜索仍可在索引零命中时走受控 fallback；建议下拉不能用完整搜索替代，否则会重新引入固定等待远程超时的问题。
+- 输入完整 RJ 时，索引结果按真实收录位置折叠：保留作品根目录和同库不同路径 / 多库副本，不展示继承同一 RJ 的特典、台本、图片等后代目录。
+- 搜索框与建议面板之间保留可悬停桥接区；输入框失焦后，仅在鼠标确实离开搜索区域时延迟收起建议。
+
+## “移动到...”窗口
+
+- `POST /api/library/browser/navigation-snapshot` 只从可用的 PostgreSQL 库存索引生成当前目录、当前一级子项和祖先展开节点；索引可用时不对每个条目执行 `stat/isdir`，深路径打开不再产生逐层请求瀑布。
+- 导航快照的 Redis 逻辑 key 为 `library/move-nav/{library_id}-{generation}-{view_revision}-{request_hash}`，TTL 使用统一短缓存；`generation` 或 `view_revision` 变化后自然切换新 key。Redis 未启用、读取失败或写入失败时直接读取 PostgreSQL 索引，不能影响目录导航。
+- 前端目录请求使用 AbortSignal、递增 token 和索引视图版本校验。旧请求、旧库请求或晚到的旧 `view_revision` 不允许覆盖当前目录；索引导航不可用或快照过旧时回退 `/api/library/browser/list-folders`。
+- `POST /api/library/browser/move-preview` 优先比较源、目标的索引子树，目录合并不算冲突；文件同名、文件/目录类型不一致、目标位于源目录内部才进入冲突确认。单棵子树达到 `100000` 条、索引缺项或顶层磁盘状态与索引不一致时回退真实文件系统预检。
+- 索引预检结果使用 `library/move-plan/{uuid}` 保存 60～300 秒短期计划，并绑定源库、目标库、源路径、目标路径、索引 generation 和 view revision。计划明确过时时移动接口返回 `409` 要求重新确认；Redis 不可用或计划自然过期时不阻断移动，最终仍由文件系统执行和校验。
+- 相同 `Idempotency-Key` 的已登记移动优先回放已有结果，即使原计划此时已过期也不会重复移动或误报 `409`。
+- 移动成功后前端先移除当前视图中的源行，并等待返回的 `index_fences` 被 SSE / 索引状态更新到 `materialized_seq >= accepted_seq`；物化完成后做普通索引刷新，8 秒仍未完成才强制刷新列表和统计。
+
+职责边界固定为：PostgreSQL 库存索引是导航和冲突预检读模型，Redis 只做短期加速与计划传递，真实文件系统是移动执行和最终存在性判断依据。
 
 ## 群晖库存容量
 

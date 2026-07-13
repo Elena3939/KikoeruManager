@@ -1367,7 +1367,21 @@ export const libraryApi = {
       }
       if (options.includeFiles !== undefined) payload.include_files = !!options.includeFiles
     }
-    const response = await apiClient.post('/library/browser/list-folders', payload)
+    const response = await apiClient.post(
+      '/library/browser/list-folders',
+      payload,
+      options?.signal ? { signal: options.signal } : undefined
+    )
+    return response.data
+  },
+
+  browserNavigationSnapshot: async (libraryId, path = '', options = {}) => {
+    const response = await apiClient.post('/library/browser/navigation-snapshot', {
+      library_id: libraryId,
+      path: path || '',
+      include_files: options.includeFiles !== false,
+      include_ancestors: options.includeAncestors !== false,
+    }, options.signal ? { signal: options.signal } : undefined)
     return response.data
   },
 
@@ -1378,7 +1392,8 @@ export const libraryApi = {
       paths,
       target_path: targetPath || '',
       conflict_strategy: options.conflictStrategy || 'suffix',
-      overwrite: !!options.overwrite
+      overwrite: !!options.overwrite,
+      move_plan_id: options.movePlanId || undefined
     }, mutationRequestConfig({
       ...options,
       config: {

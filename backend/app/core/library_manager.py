@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import codecs
+import hashlib
 import json
 import logging
 import os
@@ -6603,6 +6604,162 @@ class LibraryManager:
             )
         raise RuntimeError(f"不支持此库存类型的目录浏览: {library.type}")
 
+    def navigation_snapshot_via_index(
+        self,
+        library_id: str,
+        path: Optional[str] = None,
+        *,
+        include_files: bool = True,
+        include_ancestors: bool = True,
+    ) -> Optional[dict[str, Any]]:
+        """移动弹窗专用的纯索引导航快照。
+
+        索引可用时不对目标目录和直接子项执行 ``stat/isdir``。最终移动预检与
+        执行仍会检查真实文件系统；这里仅负责快速构建可浏览的目录树读模型。
+        Redis 只缓存带 generation/view_revision 的短期快照，不作为事实源。
+        """
+        library = self.get_library_definition(library_id)
+        if library.type != "local":
+            return None
+        service = self._index_service_if_ready(library)
+        if service is None:
+            return None
+        if hasattr(service, "has_library_entries") and not service.has_library_entries(library.id):
+            return None
+
+        browse_root = os.path.abspath(library.browse_root_path or library.root_path)
+        target_path = os.path.abspath(path) if path else browse_root
+        if not self._local_path_is_within_root(target_path, browse_root):
+            raise PermissionError("只能浏览当前库存根目录内的文件夹")
+        target_relative = self._index_parent_path_for_target(library, target_path)
+        if target_relative is None:
+            raise PermissionError("只能浏览当前库存根目录内的文件夹")
+        browse_relative = self._index_parent_path_for_target(library, browse_root) or ""
+        if target_relative:
+            target_entry = service.get_entry(library.id, target_relative)
+            if not target_entry or target_entry.entry_type != "dir":
+                return None
+
+        status = service.get_status(library.id)
+        active_generation = int(getattr(status, "active_generation", 1) or 1)
+        view_revision = int(getattr(status, "view_revision", 0) or 0)
+        materialized_seq = int(getattr(status, "materialized_seq", 0) or 0)
+        view_token = f"{library.id}:{active_generation}:{view_revision}"
+        cache_identity = hashlib.sha1(
+            f"{target_relative}|{int(include_files)}|{int(include_ancestors)}".encode("utf-8")
+        ).hexdigest()
+        cache_item_id = f"{library.id}-{active_generation}-{view_revision}-{cache_identity}"
+
+        try:
+            from .redis_service import get_redis_service
+
+            redis_service = get_redis_service()
+            cached = redis_service.get_json("library", "move-nav", cache_item_id)
+            if isinstance(cached, dict):
+                return {**cached, "cache_source": "redis"}
+        except Exception:
+            redis_service = None
+            logger.debug("读取移动弹窗导航 Redis 缓存失败", exc_info=True)
+
+        relative_parents = [target_relative]
+        if include_ancestors:
+            relative_parents = [browse_relative]
+            cursor = browse_relative
+            relative_tail = target_relative[len(browse_relative):].strip("/") if browse_relative else target_relative
+            for segment in [part for part in relative_tail.split("/") if part]:
+                cursor = f"{cursor}/{segment}".strip("/")
+                relative_parents.append(cursor)
+
+        def absolute_parent(relative_parent: str) -> str:
+            if not relative_parent:
+                return browse_root
+            return os.path.abspath(os.path.join(library.root_path, *relative_parent.split("/")))
+
+        def map_entry(entry) -> dict[str, Any]:
+            try:
+                modified_time = (
+                    datetime.fromtimestamp((entry.mtime or 0) / 1000.0).isoformat()
+                    if entry.mtime else None
+                )
+            except (OSError, ValueError, OverflowError):
+                modified_time = None
+            is_directory = entry.entry_type == "dir"
+            return {
+                "name": entry.name,
+                "path": entry.absolute_path,
+                "relative_path": entry.relative_path,
+                "is_directory": is_directory,
+                "modified_time": modified_time,
+                "size": int(entry.size or 0),
+                "size_status": "ready",
+                "file_count": int(entry.file_count or 0) if is_directory else 1,
+                "folder_count": None if is_directory else 0,
+                "size_via_index": bool(is_directory),
+                "browse_via_index": True,
+            }
+
+        tree_children: list[dict[str, Any]] = []
+        current_folders: list[dict[str, Any]] = []
+        for relative_parent in relative_parents:
+            is_current = relative_parent == target_relative
+            payload = service.list_children_page(
+                library.id,
+                relative_parent,
+                entry_type=None if (is_current and include_files) else "dir",
+                sort_by="name",
+                sort_order="asc",
+                offset=0,
+                limit=None,
+            )
+            mapped = [
+                map_entry(entry)
+                for entry in list(payload.get("entries") or [])
+                if not self._should_skip_entry(getattr(entry, "name", ""))
+            ]
+            if is_current:
+                current_folders = mapped
+            tree_children.append({
+                "path": absolute_parent(relative_parent),
+                "relative_path": relative_parent,
+                "folders": [item for item in mapped if item.get("is_directory")],
+            })
+
+        result = {
+            "library_id": library.id,
+            "library_name": library.name,
+            "library_type": library.type,
+            "library_root_path": library.root_path,
+            "current_path": target_path,
+            "browse_root_path": browse_root,
+            "parent_path": None if os.path.normcase(target_path) == os.path.normcase(browse_root) else os.path.dirname(target_path),
+            "folders": current_folders,
+            "tree_children": tree_children,
+            "browse_via_index": True,
+            "cache_source": "postgresql",
+            "index_view": {
+                "library_id": library.id,
+                "index_generation": active_generation,
+                "accepted_seq": int(getattr(status, "accepted_seq", 0) or 0),
+                "materialized_seq": materialized_seq,
+                "state_revision": int(getattr(status, "state_revision", 0) or 0),
+                "view_revision": view_revision,
+                "stats_as_of_seq": materialized_seq,
+            },
+            "view_token": view_token,
+        }
+        if redis_service is not None:
+            try:
+                redis_service.set_json(
+                    "library",
+                    "move-nav",
+                    cache_item_id,
+                    result,
+                    ttl_seconds=redis_service.short_cache_ttl_seconds(),
+                )
+            except Exception:
+                logger.debug("写入移动弹窗导航 Redis 缓存失败", exc_info=True)
+        return result
+
     def _list_local_folders_only(
         self,
         library: LibraryDefinition,
@@ -6880,6 +7037,15 @@ class LibraryManager:
             raise RuntimeError("仅支持本地库内/之间移动")
         if target_library.type != "local":
             raise RuntimeError("仅支持移动到本地库")
+        indexed = await asyncio.to_thread(
+            self._preview_move_local_items_via_index,
+            source_library,
+            target_library,
+            list(paths),
+            target_path,
+        )
+        if indexed is not None:
+            return indexed
         return await asyncio.to_thread(
             self._preview_move_local_items_sync,
             source_library,
@@ -6887,6 +7053,276 @@ class LibraryManager:
             list(paths),
             target_path,
         )
+
+    @staticmethod
+    def _move_index_view(service: Any, library_id: str) -> dict[str, Any]:
+        status = service.get_status(library_id)
+        return {
+            "library_id": library_id,
+            "index_generation": int(getattr(status, "active_generation", 1) or 1),
+            "accepted_seq": int(getattr(status, "accepted_seq", 0) or 0),
+            "materialized_seq": int(getattr(status, "materialized_seq", 0) or 0),
+            "state_revision": int(getattr(status, "state_revision", 0) or 0),
+            "view_revision": int(getattr(status, "view_revision", 0) or 0),
+        }
+
+    def _store_move_preview_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            from .redis_service import get_redis_service
+
+            redis_service = get_redis_service()
+            plan_id = uuid.uuid4().hex
+            stored = redis_service.set_json(
+                "library",
+                "move-plan",
+                plan_id,
+                payload,
+                ttl_seconds=max(60, min(redis_service.short_cache_ttl_seconds() * 2, 300)),
+            )
+            if stored:
+                return {**payload, "move_plan_id": plan_id}
+        except Exception:
+            logger.debug("写入移动预检 Redis 计划失败", exc_info=True)
+        return payload
+
+    def validate_move_preview_plan(
+        self,
+        plan_id: str,
+        *,
+        source_library_id: str,
+        target_library_id: str,
+        paths: list[str],
+        target_path: Optional[str],
+    ) -> Optional[bool]:
+        """校验短期预检计划；Redis 不可用或计划过期返回 None，不阻断移动。"""
+        normalized_plan_id = str(plan_id or "").strip()
+        if not normalized_plan_id:
+            return None
+        try:
+            from .redis_service import get_redis_service
+
+            payload = get_redis_service().get_json("library", "move-plan", normalized_plan_id)
+        except Exception:
+            logger.debug("读取移动预检 Redis 计划失败", exc_info=True)
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        expected_paths = sorted(os.path.normcase(os.path.abspath(path)) for path in paths)
+        stored_paths = sorted(
+            os.path.normcase(os.path.abspath(path))
+            for path in list(payload.get("source_paths") or [])
+        )
+        if (
+            str(payload.get("source_library_id") or "") != str(source_library_id or "")
+            or str(payload.get("target_library_id") or "") != str(target_library_id or "")
+            or stored_paths != expected_paths
+            or os.path.normcase(os.path.abspath(payload.get("target_path") or ""))
+            != os.path.normcase(os.path.abspath(target_path or ""))
+        ):
+            return False
+
+        stored_views = {
+            str(item.get("library_id") or ""): item
+            for item in list(payload.get("index_views") or [])
+            if isinstance(item, dict)
+        }
+        for library_id in {source_library_id, target_library_id}:
+            library = self.get_library_definition(library_id)
+            service = self._index_service_if_ready(library)
+            stored = stored_views.get(library_id)
+            if service is None or not stored:
+                return False
+            current = self._move_index_view(service, library_id)
+            if (
+                int(current.get("index_generation") or 0) != int(stored.get("index_generation") or 0)
+                or int(current.get("view_revision") or 0) != int(stored.get("view_revision") or 0)
+            ):
+                return False
+        return True
+
+    def _preview_move_local_items_via_index(
+        self,
+        source_library: LibraryDefinition,
+        target_library: LibraryDefinition,
+        paths: list[str],
+        target_path: Optional[str],
+    ) -> Optional[dict[str, Any]]:
+        """用库存索引比较源/目标子树，避免预检阶段递归扫盘。
+
+        只对目标目录和每个顶层源做存在性检查；索引缺失或单棵子树超过
+        安全上限时返回 ``None``，调用方回退到原文件系统预检。
+        """
+        source_service = self._index_service_if_ready(source_library)
+        target_service = self._index_service_if_ready(target_library)
+        if source_service is None or target_service is None:
+            return None
+
+        target_root = os.path.abspath(target_library.root_path)
+        target_dir = os.path.abspath(target_path) if target_path else target_root
+        if not self._local_path_is_within_root(target_dir, target_root):
+            raise PermissionError("目标目录必须在所选库存内")
+        if not os.path.isdir(target_dir):
+            raise FileNotFoundError(f"目标目录不存在: {target_dir}")
+        target_parent_relative = self._index_parent_path_for_target(target_library, target_dir)
+        if target_parent_relative is None:
+            return None
+        if target_parent_relative:
+            target_parent_entry = target_service.get_entry(target_library.id, target_parent_relative)
+            if not target_parent_entry or target_parent_entry.entry_type != "dir":
+                return None
+
+        conflicts: list[dict[str, Any]] = []
+        merge_folders: list[dict[str, Any]] = []
+        conflict_count = 0
+        merge_folder_count = 0
+        subtree_limit = 100001
+
+        for raw in paths:
+            source_path = os.path.abspath(raw)
+            self._assert_local_path_in_library(source_library, source_path)
+            if not os.path.exists(source_path):
+                raise FileNotFoundError(f"源路径不存在: {source_path}")
+            if os.path.normcase(os.path.dirname(source_path)) == os.path.normcase(target_dir):
+                continue
+            if os.path.isdir(source_path):
+                source_norm = os.path.normcase(source_path)
+                target_norm = os.path.normcase(target_dir)
+                if target_norm == source_norm or target_norm.startswith(source_norm + os.sep):
+                    conflict_count += 1
+                    conflicts.append({
+                        "path": source_path,
+                        "source_path": source_path,
+                        "existing_path": target_dir,
+                        "name": os.path.basename(source_path),
+                        "is_directory": True,
+                        "existing_is_directory": True,
+                        "relative_path": os.path.basename(source_path),
+                        "conflict_type": "invalid_target",
+                        "reason": "无法将目录移入自身或其子目录",
+                    })
+                    continue
+
+            source_relative = self._index_parent_path_for_target(source_library, source_path)
+            if source_relative is None:
+                return None
+            source_entry = source_service.get_entry(source_library.id, source_relative)
+            if not source_entry:
+                return None
+            source_is_directory_on_disk = os.path.isdir(source_path)
+            if (source_entry.entry_type == "dir") != source_is_directory_on_disk:
+                return None
+            destination_path = os.path.join(target_dir, os.path.basename(source_path))
+            destination_relative = self._index_parent_path_for_target(target_library, destination_path)
+            if destination_relative is None:
+                return None
+            destination_entry = target_service.get_entry(target_library.id, destination_relative)
+            if destination_entry is None:
+                if os.path.exists(destination_path):
+                    return None
+                continue
+            if not os.path.exists(destination_path):
+                return None
+
+            source_is_dir = source_entry.entry_type == "dir"
+            destination_is_dir = destination_entry.entry_type == "dir"
+            if not source_is_dir or not destination_is_dir:
+                conflict_count += 1
+                if len(conflicts) < 200:
+                    conflicts.append({
+                        "path": source_path,
+                        "source_path": source_path,
+                        "existing_path": destination_path,
+                        "name": os.path.basename(source_path),
+                        "relative_path": os.path.basename(source_path),
+                        "is_directory": source_is_dir,
+                        "existing_is_directory": destination_is_dir,
+                        "conflict_type": "type_mismatch" if source_is_dir != destination_is_dir else "name_conflict",
+                        "reason": "目标位置已存在同名项",
+                    })
+                continue
+
+            source_entries = source_service.list_subtree_entries(
+                source_library.id,
+                source_relative,
+                include_self=True,
+                limit=subtree_limit,
+            )
+            destination_entries = target_service.list_subtree_entries(
+                target_library.id,
+                destination_relative,
+                include_self=True,
+                limit=subtree_limit,
+            )
+            if len(source_entries) >= subtree_limit or len(destination_entries) >= subtree_limit:
+                return None
+
+            def suffix_map(entries, root_relative: str) -> dict[str, tuple[str, Any]]:
+                root = str(root_relative or "").strip("/")
+                mapped = {}
+                for entry in entries:
+                    relative = str(entry.relative_path or "").strip("/")
+                    suffix = "" if relative == root else relative[len(root) + 1:]
+                    key = os.path.normcase(suffix.replace("/", os.sep))
+                    mapped[key] = (suffix, entry)
+                return mapped
+
+            source_by_suffix = suffix_map(source_entries, source_relative)
+            destination_by_suffix = suffix_map(destination_entries, destination_relative)
+            for suffix_key, (suffix, source_child) in source_by_suffix.items():
+                destination_match = destination_by_suffix.get(suffix_key)
+                if destination_match is None:
+                    continue
+                _, destination_child = destination_match
+                relative_display = os.path.join(os.path.basename(source_path), *suffix.split("/")) if suffix else os.path.basename(source_path)
+                source_child_is_dir = source_child.entry_type == "dir"
+                destination_child_is_dir = destination_child.entry_type == "dir"
+                if source_child_is_dir and destination_child_is_dir:
+                    merge_folder_count += 1
+                    if len(merge_folders) < 200:
+                        merge_folders.append({
+                            "path": source_child.absolute_path,
+                            "source_path": source_child.absolute_path,
+                            "existing_path": destination_child.absolute_path,
+                            "name": source_child.name,
+                            "relative_path": relative_display,
+                            "is_directory": True,
+                            "existing_is_directory": True,
+                        })
+                    continue
+                conflict_count += 1
+                if len(conflicts) < 200:
+                    conflicts.append({
+                        "path": source_child.absolute_path,
+                        "source_path": source_child.absolute_path,
+                        "existing_path": destination_child.absolute_path,
+                        "name": source_child.name,
+                        "relative_path": relative_display,
+                        "is_directory": source_child_is_dir,
+                        "existing_is_directory": destination_child_is_dir,
+                        "conflict_type": "type_mismatch" if source_child_is_dir != destination_child_is_dir else "name_conflict",
+                        "reason": "目标位置已存在同名项",
+                    })
+
+        payload = {
+            "source_library_id": source_library.id,
+            "source_paths": [os.path.abspath(path) for path in paths],
+            "target_path": target_dir,
+            "target_library_id": target_library.id,
+            "conflict_count": conflict_count,
+            "merge_folder_count": merge_folder_count,
+            "has_conflicts": conflict_count > 0,
+            "conflicts": conflicts,
+            "conflicts_truncated": conflict_count > len(conflicts),
+            "merge_folders": merge_folders,
+            "merge_folders_truncated": merge_folder_count > len(merge_folders),
+            "preview_source": "index",
+            "index_views": [
+                self._move_index_view(source_service, source_library.id),
+                self._move_index_view(target_service, target_library.id),
+            ],
+        }
+        return self._store_move_preview_plan(payload)
 
     def _preview_move_local_items_sync(
         self,

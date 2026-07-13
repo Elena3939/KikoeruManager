@@ -706,6 +706,43 @@ async def test_global_search_suggest_never_runs_remote_fallback(monkeypatch):
     assert payload["library_status"][0]["search_mode"] == "skipped_suggest"
 
 
+def test_global_search_exact_rj_collapses_descendant_directories():
+    items = [
+        {
+            "library_id": "local",
+            "entry_type": "dir",
+            "relative_path": "circle/[RJ01624471] work",
+            "rjcode": "RJ01624471",
+        },
+        {
+            "library_id": "local",
+            "entry_type": "dir",
+            "relative_path": "circle/[RJ01624471] work/05_特典",
+            "rjcode": "RJ01624471",
+        },
+        {
+            "library_id": "local",
+            "entry_type": "dir",
+            "relative_path": "archive/[RJ01624471] another copy",
+            "rjcode": "RJ01624471",
+        },
+        {
+            "library_id": "nas",
+            "entry_type": "dir",
+            "relative_path": "ASMR/[RJ01624471] remote copy",
+            "rjcode": "RJ01624471",
+        },
+    ]
+
+    collapsed = routes._collapse_exact_rj_descendants(items, "RJ01624471")
+
+    assert [item["relative_path"] for item in collapsed] == [
+        "circle/[RJ01624471] work",
+        "archive/[RJ01624471] another copy",
+        "ASMR/[RJ01624471] remote copy",
+    ]
+
+
 def test_circle_cover_miss_schedules_background_download(client, monkeypatch, tmp_path):
     from app.core import circle_image_cache_service
 
