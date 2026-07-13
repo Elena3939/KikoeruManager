@@ -38,9 +38,12 @@ const activeImageKeys = ref(new Set())
 const loadingImageKeys = ref(new Set())
 const queuedImageKeys = ref([])
 const activeBonusDetail = ref(null)
+const failedBonusImageKeys = ref(new Set())
+const viewportScrolling = ref(false)
 
 let resizeObserver = null
 let motionTimer = null
+let scrollIdleTimer = null
 const imageLoadTimers = new Map()
 const MAX_ACTIVE_IMAGES = 8
 
@@ -367,6 +370,7 @@ const groupedItems = computed(() => {
 })
 
 watch(groupedItems, groups => {
+  failedBonusImageKeys.value = new Set()
   const activeCodes = new Set(bonusCodeList(activeBonusDetail.value))
   if (!activeCodes.size) return
   for (const group of groups) {
@@ -491,7 +495,10 @@ const virtualRowHeight = computed(() => {
   const bodyHeight = viewportWidth.value <= 640 ? 150 : 164
   return coverHeight + bodyHeight + gridGap.value
 })
-const virtualOverscan = computed(() => isCardMode.value ? 2 : 10)
+const virtualOverscan = computed(() => {
+  if (!isCardMode.value) return 10
+  return pagedGroups.value.length >= 50 || columnCount.value >= 6 ? 1 : 2
+})
 const gridTemplateColumns = computed(() => `repeat(${columnCount.value}, minmax(0, 1fr))`)
 
 const rowVirtualizer = useVirtualizer(computed(() => ({
@@ -593,6 +600,33 @@ function bonusReleaseLabel(item) {
 
 function bonusCoverUrl(item) {
   return String(item?.[props.imageField] || item?.image_url || item?.thumb_image_url || '').trim()
+}
+
+function hasBonusImageFailed(key) {
+  return failedBonusImageKeys.value.has(String(key || ''))
+}
+
+function onBonusCoverLoad(event, key) {
+  delete event.currentTarget.dataset.mainFallback
+  markImageSettled(key)
+}
+
+function onBonusCoverError(event, item, key) {
+  const image = event.currentTarget
+  const mainCover = bonusMainCoverUrl(item)
+  if (mainCover && image.dataset.mainFallback !== '1') {
+    image.dataset.mainFallback = '1'
+    image.src = mainCover
+    return
+  }
+
+  const normalizedKey = String(key || '')
+  if (normalizedKey) {
+    const failed = new Set(failedBonusImageKeys.value)
+    failed.add(normalizedKey)
+    failedBonusImageKeys.value = failed
+  }
+  markImageSettled(key)
 }
 
 function buildDlsiteImageUrl(rjcode, variant = 'main') {
@@ -703,6 +737,15 @@ function triggerViewportMotion() {
   })
 }
 
+function handleViewportScroll() {
+  if (!viewportScrolling.value) viewportScrolling.value = true
+  if (scrollIdleTimer) window.clearTimeout(scrollIdleTimer)
+  scrollIdleTimer = window.setTimeout(() => {
+    viewportScrolling.value = false
+    scrollIdleTimer = null
+  }, 120)
+}
+
 function scrollToTop(options = {}) {
   nextTick(() => {
     rowVirtualizer.value.scrollToOffset(0)
@@ -753,6 +796,10 @@ onBeforeUnmount(() => {
   if (motionTimer) {
     window.clearTimeout(motionTimer)
     motionTimer = null
+  }
+  if (scrollIdleTimer) {
+    window.clearTimeout(scrollIdleTimer)
+    scrollIdleTimer = null
   }
   for (const timer of imageLoadTimers.values()) {
     window.clearTimeout(timer)
@@ -822,14 +869,14 @@ onBeforeUnmount(() => {
               >
                 <span class="circle-bonus-gift-cover">
                   <img
-                    v-if="isImageActive(bonusViewModel.key) && bonusCoverUrl(bonusViewModel.item)"
+                    v-if="isImageActive(bonusViewModel.key) && !hasBonusImageFailed(bonusViewModel.key) && bonusCoverUrl(bonusViewModel.item)"
                     :src="bonusCoverUrl(bonusViewModel.item)"
                     loading="lazy"
                     decoding="async"
                     fetchpriority="low"
                     referrerpolicy="no-referrer"
-                    @load="markImageSettled(bonusViewModel.key)"
-                    @error="markImageSettled(bonusViewModel.key)"
+                    @load="onBonusCoverLoad($event, bonusViewModel.key)"
+                    @error="onBonusCoverError($event, bonusViewModel.item, bonusViewModel.key)"
                   />
                   <Gift v-else :size="16" />
                 </span>
@@ -921,14 +968,14 @@ onBeforeUnmount(() => {
                 >
                   <span class="circle-bonus-gift-cover">
                     <img
-                      v-if="isImageActive(itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`)) && bonusCoverUrl(bonus)"
+                      v-if="isImageActive(itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`)) && !hasBonusImageFailed(itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`)) && bonusCoverUrl(bonus)"
                       :src="bonusCoverUrl(bonus)"
                       loading="lazy"
                       decoding="async"
                       fetchpriority="low"
                       referrerpolicy="no-referrer"
-                      @load="markImageSettled(itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`))"
-                      @error="markImageSettled(itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`))"
+                      @load="onBonusCoverLoad($event, itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`))"
+                      @error="onBonusCoverError($event, bonus, itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`))"
                     />
                     <Gift v-else :size="15" />
                   </span>
@@ -1016,7 +1063,13 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div v-else ref="scrollRef" class="circle-work-scroll">
+      <div
+        v-else
+        ref="scrollRef"
+        class="circle-work-scroll"
+        :class="{ 'is-scrolling': viewportScrolling }"
+        @scroll.passive="handleViewportScroll"
+      >
         <div class="circle-work-virtual-canvas" :style="virtualCanvasStyle">
           <div
             v-for="virtualRow in virtualRows"
@@ -1080,14 +1133,14 @@ onBeforeUnmount(() => {
                   >
                     <span class="circle-bonus-gift-cover">
                       <img
-                        v-if="isImageActive(bonusViewModel.key) && bonusCoverUrl(bonusViewModel.item)"
+                        v-if="isImageActive(bonusViewModel.key) && !hasBonusImageFailed(bonusViewModel.key) && bonusCoverUrl(bonusViewModel.item)"
                         :src="bonusCoverUrl(bonusViewModel.item)"
                         loading="lazy"
                         decoding="async"
                         fetchpriority="low"
                         referrerpolicy="no-referrer"
-                        @load="markImageSettled(bonusViewModel.key)"
-                        @error="markImageSettled(bonusViewModel.key)"
+                        @load="onBonusCoverLoad($event, bonusViewModel.key)"
+                        @error="onBonusCoverError($event, bonusViewModel.item, bonusViewModel.key)"
                       />
                       <Gift v-else :size="16" />
                     </span>
@@ -1179,14 +1232,14 @@ onBeforeUnmount(() => {
                     >
                       <span class="circle-bonus-gift-cover">
                         <img
-                          v-if="isImageActive(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`)) && bonusCoverUrl(bonus)"
+                          v-if="isImageActive(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`)) && !hasBonusImageFailed(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`)) && bonusCoverUrl(bonus)"
                           :src="bonusCoverUrl(bonus)"
                           loading="lazy"
                           decoding="async"
                           fetchpriority="low"
                           referrerpolicy="no-referrer"
-                          @load="markImageSettled(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`))"
-                          @error="markImageSettled(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`))"
+                          @load="onBonusCoverLoad($event, itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`))"
+                          @error="onBonusCoverError($event, bonus, itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`))"
                         />
                         <Gift v-else :size="15" />
                       </span>
@@ -1393,6 +1446,13 @@ onBeforeUnmount(() => {
 
 .circle-work-plain-cell.is-card {
   min-height: 278px;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 300px;
+}
+
+.circle-work-plain-cell.is-list {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 60px;
 }
 
 .circle-work-bundle {
@@ -2309,6 +2369,20 @@ onBeforeUnmount(() => {
 .circle-work-viewport :deep(.work-card) {
   height: 100%;
   animation: none;
+  will-change: auto;
+}
+
+.circle-work-scroll.is-scrolling :deep(.work-card),
+.circle-work-scroll.is-scrolling :deep(.work-cover),
+.circle-work-scroll.is-scrolling .circle-bonus-gift,
+.circle-work-scroll.is-scrolling .circle-bonus-gift::before,
+.circle-work-scroll.is-scrolling .circle-bonus-gift::after {
+  transition: none !important;
+  animation-play-state: paused !important;
+}
+
+.circle-work-scroll.is-scrolling :deep(.work-cover-shine) {
+  display: none;
 }
 
 .circle-work-viewport :deep(.work-actions) {

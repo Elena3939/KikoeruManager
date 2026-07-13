@@ -3856,3 +3856,108 @@
 - `backend/tests/test_library_browser_api.py`：新增旧库存写接口缓存失效回归。
 - `progress.md`：追加本轮实现、验证与回滚记录。
 - 回滚方式：仅反向应用上述文件中字幕 session/AbortSignal、取消后清理重试、旧库存接口缓存失效、`_target_folder_summary_has_shared_version()` 与对应测试 hunk，并删除本段进度记录；不要回退延后归档、字幕缓存基础或共享文件中的其它未提交改动。隔离测试库可单独删除，不影响运行库。
+
+## 2026-07-13 - Task: 优化库存搜索建议结果与悬停稳定性
+### What was done
+- 完整 RJ 搜索会按真实收录位置折叠结果：保留作品根目录、同库不同位置和多库副本，隐藏继承同一 RJ 的特典、台本、图片等后代目录；同步建议接口和全屏流式搜索使用同一规则。
+- 搜索框失焦关闭改为尊重鼠标所在区域，鼠标进入搜索区域会取消待执行的关闭；输入框与下拉之间新增 8px 可悬停桥接区，离开后再延迟收起。
+- 补充后端目录折叠和前端失焦悬停回归测试，并同步搜索读路径文档。
+
+### Testing
+- `$env:PYTHONPATH='backend'; $env:PYTHONIOENCODING='utf-8'; backend\venv\Scripts\python.exe -m pytest backend\tests\test_routes_maintenance_config.py -q --basetemp backend/.pytest-tmp-library-search`：`37 passed`。
+- `cd frontend; npm.cmd test -- --run src/components/library/LibrarySearchBox.test.js`：`1 passed`。
+- `cd frontend; npm.cmd run build`：通过，`4183 modules transformed`，预压缩完成。
+- 使用本地运行页面 `http://localhost:5556/library` 验证完整 RJ `RJ01649758` 仅展示作品根目录并显示“命中 1”；页面控制台无 error。
+- 项目 Python `py_compile` 覆盖 `backend/app/api/routes.py`；`git diff --check` 通过，仅有既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/api/routes.py`：新增完整 RJ 后代目录折叠，并接入同步与流式跨库搜索结果收口。
+- `backend/tests/test_routes_maintenance_config.py`：覆盖同一作品后代折叠、同库不同位置和多库副本保留。
+- `frontend/src/components/library/LibrarySearchBox.vue`：新增搜索区域悬停状态、失焦延迟关闭和下拉间隙桥接区。
+- `frontend/src/components/library/LibrarySearchBox.test.js`：覆盖鼠标已进入搜索区域时失焦不提前收起、真正离开后关闭。
+- `docs/library-remote-read-performance.md`：记录完整 RJ 结果折叠和搜索建议悬停契约。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：反向应用 `_collapse_exact_rj_descendants()` 及两个调用点，移除 `LibrarySearchBox.vue` 的 pointer/blur/bridge hunk，删除 `LibrarySearchBox.test.js`，反向应用对应测试与文档 hunk，并删除本段进度记录。
+
+## 2026-07-13 - Task: 优化库存移动窗口索引导航与移动预检
+### What was done
+- 新增移动窗口版本化导航快照：一次返回当前目录和祖先展开节点，索引可用时不再逐项读取磁盘属性；Redis 按库存、索引 generation、view revision 和请求参数做短缓存，失败时直接回 PostgreSQL 索引。
+- 移动冲突预检改为索引子树优先，保留顶层真实文件系统校验；目录合并、文件冲突、类型冲突和非法子目录目标使用现有业务语义，超大子树、索引缺失或磁盘不一致时回退原文件系统预检。
+- 预检结果生成短期 Redis 移动计划并绑定请求与索引版本；明确过时返回 409，Redis 不可用或计划过期不阻断真实移动；已登记的相同幂等请求优先回放，避免网络重试重复移动或被过期计划误伤。
+- 移动窗口接入 AbortSignal、请求 token 和索引视图版本校验，旧请求、跨库晚到请求及旧 revision 不再覆盖当前目录；移动完成后等待索引 fence 物化再普通刷新，8 秒超时才回退强制刷新。
+- 索引冲突比较按运行平台文件名大小写语义处理，并补齐导航缓存、旧快照、移动计划、幂等竞态和 Windows 大小写冲突回归。
+
+### Testing
+- `$env:PYTHONPATH='backend'; $env:PYTHONIOENCODING='utf-8'; backend\venv\Scripts\python.exe -m pytest backend\tests\test_library_browser_api.py backend\tests\test_routes_maintenance_config.py -q --basetemp backend/.pytest-tmp-library-move-final-2`：`71 passed`。
+- `cd frontend; npm.cmd test -- --run`：`7` 个测试文件、`21 passed`。
+- `cd frontend; npm.cmd run build`：通过，`4183 modules transformed`，预压缩完成。
+- 项目 Python `py_compile` 覆盖 `backend/app/core/library_manager.py` 和 `backend/app/api/routes.py`。
+- 本地运行页面验证移动弹窗可正常打开且索引目录完成加载；导航快照接口首次返回 `cache_source=postgresql`，同版本再次请求返回 `cache_source=redis`，新浏览器控制台无 error。
+- `git diff --check`：通过，仅有既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/library_manager.py`：新增索引导航快照、Redis 短缓存、索引子树冲突预检、移动计划版本校验和平台文件名比较。
+- `backend/app/api/routes.py`：新增导航快照接口、移动计划透传校验及幂等结果优先回放。
+- `backend/tests/test_library_browser_api.py`：覆盖导航 Redis 缓存、索引预检、计划过时、幂等并发和大小写冲突语义。
+- `frontend/src/api/index.js`、`frontend/src/api/apiCancellation.test.js`：接入导航快照、目录请求取消信号和移动计划字段，并验证请求透传。
+- `frontend/src/components/library/LibraryMoveDialog.vue`、`frontend/src/components/library/LibraryMoveDialog.test.js`：接入一次性索引树快照、版本缓存、请求竞态保护、旧快照降级和移动计划提交。
+- `frontend/src/views/Library.vue`：移动完成后按索引 fence 等待物化，超时才强制刷新。
+- `docs/library-remote-read-performance.md`：记录导航、Redis、索引预检、降级、幂等和 fence 刷新契约。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：反向应用 `navigation_snapshot_via_index()`、`_preview_move_local_items_via_index()`、移动计划校验及对应路由 hunk，移除 `LibraryMoveDialog.vue` 的快照/token/version 逻辑和 `Library.vue` 的 fence 等待，删除 `LibraryMoveDialog.test.js` 中对应测试并反向应用 API、后端测试和文档 hunk；不要回退同一共享文件中的库存搜索建议优化或其它未提交改动。
+
+## 2026-07-13 - Task: 修复社团补全附属特典卡封面破图
+### What was done
+- 附属特典卡的小图加载失败时立即切换到同一特典主图，解决本地 `_sam` 缓存首次返回 404 后持续显示浏览器破图图标的问题。
+- 主图回退仍失败时改为礼物占位；社团作品数据刷新后清空失败态，允许重新加载已经补齐的缓存。
+- 卡片、列表、虚拟滚动和移动端普通渲染四条附属特典展示路径统一使用相同回退行为。
+
+### Testing
+- `cd frontend; npx vitest run --config vitest.config.js src/components/circle/CircleWorksViewport.test.js`：`1 passed`，覆盖小图失败回退主图、主图失败显示占位。
+- `cd frontend; npm run build`：通过，`4183 modules transformed`，预压缩完成。
+
+### Notes
+- `frontend/src/components/circle/CircleWorksViewport.vue`：新增附属特典封面失败态和小图到主图的回退处理。
+- `frontend/src/components/circle/CircleWorksViewport.test.js`：新增附属特典封面回退回归测试。
+- `docs/circle-completion-performance-cache.md`：补充附属特典卡封面缓存失败时的前端展示契约。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：反向应用 `CircleWorksViewport.vue` 中 `failedBonusImageKeys`、`onBonusCoverLoad()`、`onBonusCoverError()` 及四处模板事件改动，删除 `CircleWorksViewport.test.js`，反向应用封面缓存文档对应条目，并删除本段进度记录。
+
+## 2026-07-13 - Task: 优化社团补全大页滚动性能
+### What was done
+- 宽屏卡片视图在单页不少于 50 条或达到 6 列以上时，把虚拟列表预渲染范围从两行收紧为一行，避免超宽屏一次挂载几十张额外卡片。
+- 滚动期间暂停卡片过渡、封面闪光和附属特典常驻动画，停止滚动 120ms 后恢复；社团补全视口内的作品卡不再永久占用 `will-change` 合成图层；小屏普通布局通过 `content-visibility` 跳过屏外卡片绘制。
+- 新增 100 条宽屏数据回归，确认只挂载可见行和一行预渲染卡片，并验证滚动态样式开关。
+
+### Testing
+- `cd frontend; npx vitest run --config vitest.config.js src/components/circle/CircleWorksViewport.test.js src/utils/circleCompletionOwnedState.test.js`：`2` 个测试文件、`4 passed`。
+- `cd frontend; npm test -- --run`：`9` 个测试文件、`25 passed`。
+- `cd frontend; npm run build`：通过，`4184 modules transformed`，预压缩完成。
+- `git diff --check`：通过，仅有既有 LF/CRLF 提示。
+
+### Notes
+- `frontend/src/components/circle/CircleWorksViewport.vue`：收紧宽屏大页 overscan，增加低频滚动态并暂停高成本视觉效果。
+- `frontend/src/components/circle/CircleWorksViewport.test.js`：新增 100 条宽屏虚拟挂载上限和滚动态回归。
+- `docs/circle-completion-paged-loading.md`：记录大页虚拟渲染、滚动动效和合成图层约束。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：反向应用 `virtualOverscan`、`viewportScrolling`、`handleViewportScroll()`、滚动容器事件及 `.is-scrolling` / `will-change` 样式 hunk，删除对应大页测试和文档段落，并删除本段进度记录；保留同文件中的附属特典封面回退修复。
+
+## 2026-07-13 - Task: 修复手动刷新拥有态后的缺失与已满足迁移
+### What was done
+- 刷新任务完成并重读当前分页后，使用任务结果中的 `local_owned / has_kikoeru` 做最终对账，避免旧分页快照把状态已变化的作品继续留在错误 Tab。
+- 普通作品和附属特典使用统一分组语义：任一附属成员变为已拥有时，整个作品组从缺失页移除并进入已满足语义；反向变化同样处理。
+- 对账时同步当前分页总数、缺失/已拥有统计和选择集合，已迁移作品不会继续保留选中态。
+
+### Testing
+- `cd frontend; npx vitest run --config vitest.config.js src/components/circle/CircleWorksViewport.test.js src/utils/circleCompletionOwnedState.test.js`：`2` 个测试文件、`4 passed`；覆盖普通作品和附属特典的拥有态迁移。
+- `cd frontend; npm test -- --run`：`9` 个测试文件、`25 passed`。
+- `cd frontend; npm run build`：通过，`4184 modules transformed`，预压缩完成。
+- `git diff --check`：通过，仅有既有 LF/CRLF 提示。
+
+### Notes
+- `frontend/src/views/CircleCompletion.vue`：刷新任务完成后执行拥有态最终对账，并同步分页统计与选择态。
+- `frontend/src/utils/circleCompletionOwnedState.js`：新增普通作品与附属特典分组的拥有态对账逻辑。
+- `frontend/src/utils/circleCompletionOwnedState.test.js`：覆盖缺失转已满足和附属特典带动作品组迁移。
+- `docs/circle-completion-paged-loading.md`：记录手动刷新任务结果的前端最终对账契约。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：移除 `reconcileRefreshedOwnedState()` 及刷新任务完成后的调用，删除 `circleCompletionOwnedState.js` 和对应测试，反向应用文档拥有态对账条目，并删除本段进度记录；不要回退同文件中的社团补全分页、任务轮询或其它未提交改动。
