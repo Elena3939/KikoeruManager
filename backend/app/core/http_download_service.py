@@ -10,6 +10,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -2589,7 +2590,9 @@ class HttpDownloadService:
             return 0
         if existing <= 0:
             return 0
-        if total_size and existing >= total_size:
+        if total_size and existing > total_size:
+            return 0
+        if total_size and existing == total_size:
             return total_size
         aligned = (existing // 16) * 16
         if aligned != existing:
@@ -2597,6 +2600,67 @@ class HttpDownloadService:
                 with tmp_path.open("ab") as target:
                     target.truncate(aligned)
         return max(0, aligned)
+
+    def _validate_transferit_download_size(self, file_path: str | Path, expected_size: int = 0) -> int:
+        path = Path(file_path)
+        if not path.is_file():
+            raise HttpDownloadError("Transfer.it 下载完成后未找到输出文件")
+        try:
+            actual_size = int(path.stat().st_size)
+        except OSError as exc:
+            raise HttpDownloadError(f"Transfer.it 下载文件大小读取失败: {self._sanitize_error(exc)}") from exc
+        if expected_size > 0 and actual_size != expected_size:
+            raise HttpDownloadError(f"Transfer.it 下载不完整: {actual_size}/{expected_size} bytes")
+        return actual_size
+
+    def _publish_transferit_download(
+        self,
+        source_path: str | Path,
+        final_path: str | Path,
+        expected_size: int = 0,
+    ) -> str:
+        source = Path(source_path)
+        final = Path(final_path)
+        self._validate_transferit_download_size(source, expected_size)
+        final.parent.mkdir(parents=True, exist_ok=True)
+        part = final.with_name(final.name + ".part")
+        try:
+            if source.resolve() != part.resolve():
+                shutil.copyfile(source, part)
+            self._validate_transferit_download_size(part, expected_size)
+            os.replace(part, final)
+        except Exception:
+            with contextlib.suppress(OSError):
+                part.unlink()
+            raise
+        return str(final)
+
+    def _quarantine_incomplete_transferit_final(self, final_path: str | Path, expected_size: int = 0) -> None:
+        final = Path(final_path)
+        if expected_size <= 0 or not final.is_file():
+            return
+        try:
+            final_size = int(final.stat().st_size)
+        except OSError:
+            return
+        if final_size == expected_size:
+            return
+
+        part = final.with_name(final.name + ".part")
+        try:
+            part_size = int(part.stat().st_size) if part.is_file() else 0
+            if part_size >= final_size:
+                final.unlink()
+            else:
+                os.replace(final, part)
+            logger.warning(
+                "Transfer.it 检测到历史未完成正式文件，已迁回断点文件: path=%s actual=%s expected=%s",
+                final,
+                final_size,
+                expected_size,
+            )
+        except OSError as exc:
+            raise HttpDownloadError(f"Transfer.it 历史未完成文件隔离失败: {self._sanitize_error(exc)}") from exc
 
     def _transferit_node_row(self, item: Any, index: int, relative_dir: str = "") -> Optional[Dict[str, Any]]:
         if isinstance(item, dict):
@@ -4988,6 +5052,7 @@ class HttpDownloadService:
         filename = self._sanitize_filename(item.get("filename") or os.path.basename(final_path) or "transferit-download")
         relative_path = str(item.get("relative_path") or filename).replace("\\", "/")
         expected_size = int(item.get("size_bytes") or item.get("total") or item.get("size") or 0)
+        self._quarantine_incomplete_transferit_final(final_path, expected_size)
         gid = f"transferit:{self._transferit_row_identity(item) or item.get('share_id') or filename}"
         row = {
             "gid": gid,
@@ -5029,20 +5094,36 @@ class HttpDownloadService:
             if not hasattr(client, "api") or not hasattr(getattr(client, "api", None), "fetch_transfer") or not hasattr(getattr(client, "api", None), "get_download_url"):
                 password = self._transferit_password(raw_url)
                 try:
-                    download_dir = os.path.dirname(final_path) or target_dir
-                    if password:
-                        result = client.download(raw_url, download_dir, password=password)
-                    else:
-                        result = client.download(raw_url, download_dir)
-                    expected_path = os.path.join(download_dir, filename)
-                    if expected_path != final_path and os.path.exists(expected_path) and not os.path.exists(final_path):
-                        os.replace(expected_path, final_path)
-                        return final_path
-                    paths = list(getattr(result, "paths", []) or [])
-                    file_paths = [path for path in paths if os.path.isfile(path)]
-                    if file_paths:
-                        return file_paths[0]
-                    return expected_path
+                    fallback_root = Path(self._storage_temp_root()) / "transferit_fallback"
+                    fallback_root.mkdir(parents=True, exist_ok=True)
+                    with tempfile.TemporaryDirectory(prefix="download_", dir=fallback_root) as staging_dir:
+                        if password:
+                            result = client.download(raw_url, staging_dir, password=password)
+                        else:
+                            result = client.download(raw_url, staging_dir)
+                        staging_root = Path(staging_dir).resolve()
+                        candidates: List[Path] = []
+                        for value in list(getattr(result, "paths", []) or []):
+                            candidate = Path(str(value or ""))
+                            if not candidate.is_file():
+                                continue
+                            try:
+                                candidate.resolve().relative_to(staging_root)
+                            except ValueError:
+                                continue
+                            candidates.append(candidate)
+                        expected_path = Path(staging_dir, filename)
+                        if expected_path.is_file() and expected_path not in candidates:
+                            candidates.append(expected_path)
+                        if not candidates:
+                            candidates = [path for path in Path(staging_dir).rglob("*") if path.is_file()]
+                        if len(candidates) != 1:
+                            raise HttpDownloadError("Transfer.it 下载完成后无法唯一确定输出文件")
+                        staged_path = candidates[0]
+                        resolved_final_path = final_path
+                        if item.get("metadata_fallback"):
+                            resolved_final_path = os.path.join(target_dir, self._sanitize_filename(staged_path.name))
+                        return self._publish_transferit_download(staged_path, resolved_final_path, expected_size)
                 finally:
                     self._close_transferit_client(client)
 
@@ -5193,12 +5274,10 @@ class HttpDownloadService:
                                     "transferit_node_handle": selected.handle,
                                 })
                         target.flush()
-                if total_size and written < total_size:
+                if total_size and written != total_size:
                     raise HttpDownloadError(f"Transfer.it 下载不完整: {written}/{total_size} bytes")
-                if out_path.exists():
-                    with contextlib.suppress(OSError):
-                        out_path.unlink()
-                tmp_path.replace(out_path)
+                self._validate_transferit_download_size(tmp_path, total_size)
+                os.replace(tmp_path, out_path)
                 return str(out_path)
             finally:
                 stream_state["response"] = None
@@ -5280,18 +5359,10 @@ class HttpDownloadService:
             final_path = downloaded_path
             filename = self._sanitize_filename(os.path.basename(final_path) or filename)
         elif downloaded_path and os.path.isfile(downloaded_path) and downloaded_path != final_path and not os.path.exists(final_path):
-            os.replace(downloaded_path, final_path)
-        if not os.path.exists(final_path):
-            matches = [
-                os.path.join(target_dir, name)
-                for name in os.listdir(target_dir)
-                if os.path.isfile(os.path.join(target_dir, name))
-            ]
-            if len(matches) == 1:
-                os.replace(matches[0], final_path)
+            final_path = self._publish_transferit_download(downloaded_path, final_path, expected_size)
         if not os.path.exists(final_path):
             raise HttpDownloadError("Transfer.it 下载完成后未找到输出文件")
-        size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
+        size = self._validate_transferit_download_size(final_path, expected_size)
         row.update({
             "gid": gid,
             "name": os.path.basename(final_path) or filename,

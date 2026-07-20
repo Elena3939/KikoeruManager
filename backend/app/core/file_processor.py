@@ -51,6 +51,10 @@ class FileProcessor:
         """动态获取最新配置"""
         return get_config()
 
+    @staticmethod
+    def _has_active_aria2_sidecar(file_path: str) -> bool:
+        return os.path.isfile(f"{file_path}.aria2")
+
     # ========== 公共接口 ==========
 
     async def process_file(
@@ -86,6 +90,10 @@ class FileProcessor:
         original_path = file_path
 
         try:
+            if self._has_active_aria2_sidecar(file_path):
+                logger.info("[FileProcessor] 检测到 aria2 未完成标记，跳过处理: %s", file_path)
+                return None
+
             # 1. 检查文件是否已处理
             # 先检查持久化归档声明，不能先走文件名规范化，否则可能改掉队列冻结的源路径。
             if await get_deferred_archive_service().is_source_claimed(file_path):
@@ -111,6 +119,9 @@ class FileProcessor:
                     logger.error(f"[FileProcessor] 等待文件稳定超时: {file_path}")
                     if mark_processed:
                         mark_processed(file_path)
+                    return None
+                if self._has_active_aria2_sidecar(file_path):
+                    logger.info("[FileProcessor] 文件稳定后仍存在 aria2 未完成标记，跳过处理: %s", file_path)
                     return None
 
             # 3. 检测分卷组
@@ -321,6 +332,10 @@ class FileProcessor:
         Returns:
             是否是压缩包（True/False），如果是非首卷分卷文件返回 False
         """
+        if self._has_active_aria2_sidecar(file_path):
+            logger.debug("[FileProcessor] 跳过 aria2 下载中的文件: %s", file_path)
+            return False
+
         filename = Path(file_path).name.lower()
         ext = Path(file_path).suffix.lower()
 
