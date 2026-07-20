@@ -390,6 +390,98 @@ async def test_common_preview_uses_kikoeru_hit_to_block_translation_as_new_work(
 
 
 @pytest.mark.asyncio
+async def test_common_preview_uses_ready_linked_target_for_subtitle_supplement_when_kikoeru_unavailable():
+    service = object.__new__(LinkedSubtitleImportService)
+    service.EXISTING_SUBTITLE_REASON = LinkedSubtitleImportService.EXISTING_SUBTITLE_REASON
+    service.REMOTE_PENDING_REASON = LinkedSubtitleImportService.REMOTE_PENDING_REASON
+    service.subtitle_service = SimpleNamespace(
+        extract_rjcode=lambda value: str(value or "").strip().upper()
+    )
+    service.dlsite_service = SimpleNamespace(
+        get_translation_info=AsyncMock(),
+        get_product_info=AsyncMock(return_value={}),
+        get_linked_works=AsyncMock(return_value={}),
+    )
+    service.kikoeru_service = SimpleNamespace(check_duplicate=AsyncMock(return_value=None))
+    service.search_target_candidates = AsyncMock(return_value={
+        "candidates": [{
+            "library_id": "asmr",
+            "folder_path": "/library/RJ01609723",
+            "ready_for_import": True,
+            "existing_subtitle_count": 0,
+            "total_files": 12,
+        }],
+        "search_status": "ready",
+        "search_reason": "",
+    })
+
+    preview = await service._build_common_preview(
+        source_rjcode="RJ01625472",
+        source_label="RJ01625472.7z",
+        subtitle_count=1,
+        preferred_library_id=None,
+        _prefetched_translation=(
+            SimpleNamespace(is_original=False, original_workno="RJ01609723", lang="CHI_HANS"),
+            "RJ01609723",
+        ),
+    )
+
+    assert preview["kikoeru_route_confident"] is False
+    assert preview["target_state_source"] == "ready_library_index"
+    assert preview["target_has_work"] is True
+    assert preview["target_needs_subtitle"] is True
+    assert preview["target_route_confident"] is True
+    assert preview["can_stage_pending"] is True
+    assert preview["can_execute"] is True
+    assert preview["treat_as_new_work"] is False
+
+
+@pytest.mark.asyncio
+async def test_common_preview_uses_ready_linked_target_for_duplicate_when_subtitle_exists():
+    service = object.__new__(LinkedSubtitleImportService)
+    service.EXISTING_SUBTITLE_REASON = LinkedSubtitleImportService.EXISTING_SUBTITLE_REASON
+    service.REMOTE_PENDING_REASON = LinkedSubtitleImportService.REMOTE_PENDING_REASON
+    service.subtitle_service = SimpleNamespace(
+        extract_rjcode=lambda value: str(value or "").strip().upper()
+    )
+    service.dlsite_service = SimpleNamespace(
+        get_translation_info=AsyncMock(),
+        get_product_info=AsyncMock(return_value={}),
+        get_linked_works=AsyncMock(return_value={}),
+    )
+    service.kikoeru_service = SimpleNamespace(check_duplicate=AsyncMock(return_value=None))
+    service.search_target_candidates = AsyncMock(return_value={
+        "candidates": [{
+            "library_id": "asmr",
+            "folder_path": "/library/RJ01609723",
+            "ready_for_import": False,
+            "existing_subtitle_count": 3,
+            "total_files": 15,
+        }],
+        "search_status": "ready",
+        "search_reason": "",
+    })
+
+    preview = await service._build_common_preview(
+        source_rjcode="RJ01625472",
+        source_label="RJ01625472.7z",
+        subtitle_count=1,
+        preferred_library_id=None,
+        _prefetched_translation=(
+            SimpleNamespace(is_original=False, original_workno="RJ01609723", lang="CHI_HANS"),
+            "RJ01609723",
+        ),
+    )
+
+    assert preview["target_has_work"] is True
+    assert preview["target_has_subtitle"] is True
+    assert preview["target_needs_subtitle"] is False
+    assert preview["can_stage_pending"] is False
+    assert preview["stage_reason"] == LinkedSubtitleImportService.EXISTING_SUBTITLE_REASON
+    assert service._is_existing_subtitle_duplicate_preview(preview) is True
+
+
+@pytest.mark.asyncio
 async def test_common_preview_marks_unverified_translation_page_as_uncertain():
     service = object.__new__(LinkedSubtitleImportService)
     service.EXISTING_SUBTITLE_REASON = LinkedSubtitleImportService.EXISTING_SUBTITLE_REASON

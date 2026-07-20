@@ -1160,6 +1160,22 @@ class LinkedSubtitleImportService:
         target_exists_in_kikoeru = bool(preview.get("kikoeru_has_work"))
         target_needs_subtitle_in_kikoeru = bool(preview.get("kikoeru_needs_subtitle"))
         kikoeru_route_confident = bool(preview.get("kikoeru_route_confident", True))
+        if candidates:
+            target_has_work = True
+            target_has_subtitle = all(
+                int(item.get("existing_subtitle_count") or 0) > 0 for item in candidates
+            )
+            target_needs_subtitle = not target_has_subtitle
+            target_route_confident = True
+        else:
+            target_has_work = bool(preview.get("target_has_work", target_exists_in_kikoeru))
+            target_has_subtitle = bool(preview.get("target_has_subtitle"))
+            target_needs_subtitle = bool(
+                preview.get("target_needs_subtitle", target_needs_subtitle_in_kikoeru)
+            )
+            target_route_confident = bool(
+                preview.get("target_route_confident", kikoeru_route_confident)
+            )
 
         stage_reason = str(preview.get("stage_reason") or "")
         source_subtitle_probe_status = str(preview.get("source_subtitle_probe_status") or "").strip().lower()
@@ -1182,7 +1198,8 @@ class LinkedSubtitleImportService:
                 bool(source_rjcode)
                 and (
                     target_needs_subtitle_in_kikoeru
-                    or not kikoeru_route_confident
+                    or target_needs_subtitle
+                    or not target_route_confident
                 )
                 and (subtitle_count > 0 or can_probe_later)
             )
@@ -1192,7 +1209,8 @@ class LinkedSubtitleImportService:
                 and (subtitle_count > 0 or can_probe_later)
                 and (
                     target_needs_subtitle_in_kikoeru
-                    or not kikoeru_route_confident
+                    or target_needs_subtitle
+                    or not target_route_confident
                 )
             )
 
@@ -1200,8 +1218,8 @@ class LinkedSubtitleImportService:
         if (
             is_manual_subtitle_source
             and bool(source_rjcode)
-            and kikoeru_route_confident
-            and not target_exists_in_kikoeru
+            and target_route_confident
+            and not target_has_work
             and not candidates
             and candidate_search_status != "pending_remote"
         ):
@@ -1242,6 +1260,10 @@ class LinkedSubtitleImportService:
             "selected_candidate": selected_candidate,
             "candidate_count": len(candidates),
             "ready_candidate_count": len(ready_candidates),
+            "target_has_work": target_has_work,
+            "target_has_subtitle": target_has_subtitle,
+            "target_needs_subtitle": target_needs_subtitle,
+            "target_route_confident": target_route_confident,
             "treat_as_new_work": treat_as_new_work,
             "should_queue_pending": should_queue_pending,
             "stage_reason": stage_reason,
@@ -2124,16 +2146,24 @@ class LinkedSubtitleImportService:
         selected_candidate = ready_candidates[0] if len(ready_candidates) == 1 else None
         has_local_target_candidate = bool(candidates)
         has_ready_target_candidate = bool(ready_candidates)
+        local_target_has_subtitle = bool(
+            candidates
+            and all(int(item.get("existing_subtitle_count") or 0) > 0 for item in candidates)
+        )
+        target_has_work = bool(target_exists_in_kikoeru or has_local_target_candidate)
+        target_has_subtitle = bool(target_has_subtitle_in_kikoeru or local_target_has_subtitle)
+        target_needs_subtitle = bool(target_has_work and not target_has_subtitle)
+        target_route_confident = bool(kikoeru_route_confident or has_local_target_candidate)
 
         treat_as_new_work = (
             bool(source_rjcode)
-            and kikoeru_route_confident
+            and target_route_confident
             and not dlsite_linkage_uncertain
             and (
                 not target_rjcode
                 or (
                     candidate_search_status != "pending_remote"
-                    and not target_exists_in_kikoeru
+                    and not target_has_work
                     and not candidates
                 )
             )
@@ -2148,7 +2178,7 @@ class LinkedSubtitleImportService:
         elif is_manual_subtitle_source:
             # 小包强制激活路径：subtitle_count 可能为 0（包内字幕未在预检阶段提取），
             # 只要 Kikoeru 确认目标需要字幕就允许进队列，后续在字幕补配页再决定。
-            _manual_needs_subtitle = target_needs_subtitle_in_kikoeru or not kikoeru_route_confident
+            _manual_needs_subtitle = target_needs_subtitle or not target_route_confident
             if is_small_archive and not subtitle_count:
                 should_queue_pending = bool(source_rjcode) and _manual_needs_subtitle
             else:
@@ -2165,13 +2195,13 @@ class LinkedSubtitleImportService:
             stage_reason = uncertain_dlsite_translation.get("reason") or self.DLSITE_LINKAGE_UNCERTAIN_REASON
         elif treat_as_new_work:
             stage_reason = "未命中任何关联作品，按新作直接解压入库"
-        elif not kikoeru_route_confident:
+        elif not target_route_confident:
             stage_reason = ""
         elif kikoeru_target_is_empty_shell:
             stage_reason = "字幕补配时发现服务器作品为空壳"
         elif not is_linked_subtitle_source:
             stage_reason = "当前作品不是可补配到原作的翻译作品"
-        elif target_has_subtitle_in_kikoeru:
+        elif target_has_subtitle:
             # Kikoeru 原作已有字幕：当前翻译作没有字幕补配价值，统一走"原作已有字幕"
             # 重复路径，由 _is_existing_subtitle_duplicate_preview 识别后转入 LINKED_WORK 问题作品。
             stage_reason = self.EXISTING_SUBTITLE_REASON
@@ -2180,8 +2210,8 @@ class LinkedSubtitleImportService:
         execute_reason = ""
         if stage_reason:
             execute_reason = stage_reason
-        elif not kikoeru_route_confident:
-            execute_reason = "Kikoeru 查询结果不稳定，暂不自动降级为普通解压，稍后重试"
+        elif not target_route_confident:
+            execute_reason = "关联作品库存状态不稳定，暂不自动降级为普通解压，稍后重试"
         elif candidate_search_status == "pending_remote":
             execute_reason = candidate_search_reason or self.REMOTE_PENDING_REASON
         elif not subtitle_count:
@@ -2224,6 +2254,11 @@ class LinkedSubtitleImportService:
             "kikoeru_source_title": getattr(source_kikoeru_result, "title", "") if source_kikoeru_result else "",
             "kikoeru_target_found": target_exists_in_kikoeru,
             "kikoeru_subtitle_file_count": target_subtitle_count,
+            "target_has_work": target_has_work,
+            "target_has_subtitle": target_has_subtitle,
+            "target_needs_subtitle": target_needs_subtitle,
+            "target_route_confident": target_route_confident,
+            "target_state_source": "ready_library_index" if has_local_target_candidate else "kikoeru",
             "dlsite_linkage_uncertain": dlsite_linkage_uncertain,
             "dlsite_linkage_uncertain_reason": uncertain_dlsite_translation.get("reason", ""),
             "dlsite_fallback_source": uncertain_dlsite_translation.get("fallback_source", ""),
@@ -3121,9 +3156,9 @@ class LinkedSubtitleImportService:
             return False
         if not bool(preview.get("is_linked_subtitle_source") or preview.get("is_translation_work")):
             return False
-        if not bool(preview.get("kikoeru_route_confident", True)):
+        if not bool(preview.get("target_route_confident", preview.get("kikoeru_route_confident", True))):
             return True
-        if not bool(preview.get("kikoeru_has_work")) and str(preview.get("candidate_search_status") or "").strip().lower() != "pending_remote":
+        if not bool(preview.get("target_has_work", preview.get("kikoeru_has_work"))) and str(preview.get("candidate_search_status") or "").strip().lower() != "pending_remote":
             return False
         if str(preview.get("stage_reason") or "").strip():
             return False
@@ -3148,7 +3183,7 @@ class LinkedSubtitleImportService:
         if not target_rjcode:
             return self._refresh_preview_execution_state(next_preview)
 
-        if not bool(next_preview.get("kikoeru_route_confident", True)):
+        if not bool(next_preview.get("target_route_confident", next_preview.get("kikoeru_route_confident", True))):
             rebuilt_preview = await self._build_common_preview(
                 source_rjcode=str(next_preview.get("source_rjcode") or "").strip(),
                 source_label=str(next_preview.get("source_label") or "").strip(),

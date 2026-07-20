@@ -1575,6 +1575,37 @@ class TaskEngine:
         next_metadata.pop("manual_retry_ignore_garbled", None)
         return next_metadata
 
+    def _mark_rename_failure_checkpoint(
+        self,
+        task: Task,
+        rename_source_path: str,
+        *,
+        archive_source_path: str = "",
+        archive_enabled: Optional[bool] = None,
+        filter_enabled: Optional[bool] = None,
+        classify_enabled: Optional[bool] = None,
+    ) -> None:
+        """保留重命名输入目录，供问题作品重试从重命名阶段继续。"""
+        checkpoint_path = str(rename_source_path or "").strip()
+        metadata = dict(task.task_metadata or {})
+        metadata.update({
+            "failure_stage": "rename",
+            "resume_from_stage": "rename",
+            "rename_retry_source_path": checkpoint_path,
+            "rename_retry_original_source_path": str(task.source_path or "").strip(),
+        })
+        if archive_source_path:
+            metadata["rename_retry_archive_source_path"] = str(archive_source_path).strip()
+        if archive_enabled is not None:
+            metadata["rename_retry_archive_enabled"] = bool(archive_enabled)
+        if filter_enabled is not None:
+            metadata["rename_retry_filter_enabled"] = bool(filter_enabled)
+        if classify_enabled is not None:
+            metadata["rename_retry_classify_enabled"] = bool(classify_enabled)
+        task.task_metadata = metadata
+        task.output_path = checkpoint_path or task.output_path
+        task.touch_metadata("rename_failure_checkpoint")
+
     def _record_problem_work_for_task_failure(self, task: Task, rjcode: Optional[str], reason: str):
         """把导入流程中的失败统一写入问题作品，避免任务中心失败但问题作品页为空。"""
         from .classifier import SmartClassifier
@@ -1599,6 +1630,12 @@ class TaskEngine:
         failure_stage = self._infer_failure_stage(task, reason)
         conflict_type = "EXTRACT_FAILED" if failure_stage == "extract" else "PROCESS_FAILED"
         metadata = dict(task.task_metadata or {})
+        retry_source_path = str(metadata.get("rename_retry_source_path") or "").strip()
+        problem_source_path = (
+            retry_source_path
+            if failure_stage == "rename" and retry_source_path and os.path.exists(retry_source_path)
+            else source_path
+        )
         available_actions = ["RETRY", "SKIP"]
         # extract_service._maybe_raise_disguised_volume_set 命中"伪装多卷"时
         # 会往 task_metadata["disguised_volume_set"] 写 detection payload。
@@ -1616,8 +1653,11 @@ class TaskEngine:
             "failed_task_id": task.id,
             "failed_step": str(task.current_step or "").strip(),
             "failed_progress": int(task.progress or 0),
+            "retry_source_path": problem_source_path,
         })
         metadata = self._sanitize_failure_metadata(metadata, reason)
+        task.task_metadata = metadata
+        task.touch_metadata("failure_stage")
 
         classifier = SmartClassifier()
         classifier._add_to_conflict_works(
@@ -1625,7 +1665,7 @@ class TaskEngine:
             normalized_rjcode or None,
             conflict_type,
             "",
-            source_path,
+            problem_source_path,
             metadata,
             status="PENDING",
         )
@@ -1704,7 +1744,11 @@ class TaskEngine:
             return False
         if not bool(preview.get("is_translation_work")):
             return False
-        if not bool(preview.get("kikoeru_has_work") or preview.get("kikoeru_target_found")):
+        if not bool(
+            preview.get("target_has_work")
+            or preview.get("kikoeru_has_work")
+            or preview.get("kikoeru_target_found")
+        ):
             return False
         if bool(preview.get("kikoeru_target_is_empty_shell")):
             return False
@@ -1755,8 +1799,14 @@ class TaskEngine:
             "failure_stage": "linked_subtitle_precheck",
             "error_message": reason,
             "subtitle_count": int(preview.get("subtitle_count") or 0),
-            "kikoeru_has_work": bool(preview.get("kikoeru_has_work") or preview.get("kikoeru_target_found")),
-            "kikoeru_needs_subtitle": bool(preview.get("kikoeru_needs_subtitle")),
+            "kikoeru_has_work": bool(
+                preview.get("target_has_work")
+                or preview.get("kikoeru_has_work")
+                or preview.get("kikoeru_target_found")
+            ),
+            "kikoeru_needs_subtitle": bool(
+                preview.get("target_needs_subtitle", preview.get("kikoeru_needs_subtitle"))
+            ),
             "available_actions": ["SKIP"],
         }
         linked_works_info = []
@@ -2265,6 +2315,44 @@ class TaskEngine:
         except Exception:
             logger.warning("[清理] 删除任务临时解压目录失败: task_id=%s path=%s", task.id, target, exc_info=True)
 
+    async def _finalize_filter_recovery(
+        self,
+        task: Task,
+        path_transforms: list[dict[str, str]],
+        *,
+        library_id: str = "",
+    ) -> None:
+        metadata = dict(task.task_metadata or {})
+        filtered_items = list(metadata.get("filtered_items") or [])
+        recovery_summary = dict(metadata.get("filter_recovery") or {})
+        if not filtered_items or not task.output_path or int(recovery_summary.get("version") or 0) != 1:
+            return
+        from .filter_recovery_service import get_filter_recovery_service
+
+        service = get_filter_recovery_service()
+        finalized_items = await asyncio.to_thread(
+            service.finalize_task,
+            task.id,
+            final_root=task.output_path,
+            library_id=library_id,
+            path_transforms=path_transforms,
+        )
+        if not finalized_items:
+            return
+        finalized_by_id = {
+            str(item.get("recovery_id") or ""): item
+            for item in finalized_items
+            if item.get("recovery_id")
+        }
+        metadata["filtered_items"] = [
+            {**item, **finalized_by_id.get(str(item.get("recovery_id") or ""), {})}
+            for item in filtered_items
+        ]
+        metadata["filter_recovery"] = service.public_summary(task.id)
+        metadata["filter_path_transforms"] = list(path_transforms or [])
+        task.task_metadata = metadata
+        task.touch_metadata("filter_recovery_finalized")
+
     async def _stabilize_extract_subtask_conflict_source(self, task: Task, source_path: str, classifier) -> str:
         metadata = dict(task.task_metadata or {})
         if not metadata.get("is_extract_subtask"):
@@ -2674,10 +2762,18 @@ class TaskEngine:
 
                                 if _is_small_subtitle_candidate:
                                     _preview_subtitle_count = int(preview.get("subtitle_count") or 0)
-                                    _kikoeru_has_work = bool(preview.get("kikoeru_has_work") or preview.get("kikoeru_target_found"))
-                                    _kikoeru_needs_subtitle = bool(preview.get("kikoeru_needs_subtitle"))
+                                    _kikoeru_has_work = bool(
+                                        preview.get("target_has_work")
+                                        or preview.get("kikoeru_has_work")
+                                        or preview.get("kikoeru_target_found")
+                                    )
+                                    _kikoeru_needs_subtitle = bool(
+                                        preview.get("target_needs_subtitle", preview.get("kikoeru_needs_subtitle"))
+                                    )
                                     _kikoeru_empty_shell = bool(preview.get("kikoeru_target_is_empty_shell"))
-                                    _kikoeru_confident = bool(preview.get("kikoeru_route_confident"))
+                                    _kikoeru_confident = bool(
+                                        preview.get("target_route_confident", preview.get("kikoeru_route_confident"))
+                                    )
                                     if (
                                         _kikoeru_has_work
                                         and not _kikoeru_needs_subtitle
@@ -3053,7 +3149,18 @@ class TaskEngine:
                     task.update_progress(60, "重命名文件夹")
                     from .rename_service import RenameService
                     rename_service = RenameService()
-                    renamed_path = await rename_service.rename(extracted_path, task)
+                    try:
+                        renamed_path = await rename_service.rename(extracted_path, task)
+                    except Exception:
+                        self._mark_rename_failure_checkpoint(
+                            task,
+                            extracted_path,
+                            archive_source_path=task.source_path,
+                            archive_enabled=bool(config.auto_process.archive and not task.skip_archive),
+                            filter_enabled=bool(config.auto_process.filter),
+                            classify_enabled=bool(config.auto_process.classify),
+                        )
+                        raise
                     logger.debug(f"[{rjcode}] 重命名后路径: {renamed_path}")
                 else:
                     logger.info(f"[{rjcode}] 步骤[重命名]已禁用，跳过")
@@ -3076,6 +3183,7 @@ class TaskEngine:
                         "filtered_items": list((filter_result or {}).get("filtered_items") or []),
                         "filtered_count": int((filter_result or {}).get("filtered_count") or 0),
                         "filtered_size": int((filter_result or {}).get("filtered_size") or 0),
+                        "filter_recovery": dict((filter_result or {}).get("filter_recovery") or {}),
                     }
                 else:
                     logger.info(f"[{rjcode}] 步骤[过滤]已禁用，跳过")
@@ -3086,11 +3194,15 @@ class TaskEngine:
 
                 # 步骤5: 扁平化
                 logger.debug(f"[{rjcode}] 步骤5: 扁平化")
+                filter_path_transforms: list[dict[str, str]] = []
                 if config.rename.flatten_single_subfolder:
                     task.update_progress(78, "扁平化文件夹结构")
                     from .rename_service import RenameService
                     rename_service = RenameService()
-                    renamed_path = rename_service._flatten_single_subfolder(renamed_path)
+                    renamed_path = rename_service._flatten_single_subfolder(
+                        renamed_path,
+                        operation_sink=filter_path_transforms,
+                    )
                     logger.debug(f"[{rjcode}] 扁平化后路径: {renamed_path}")
 
                 if config.rename.remove_empty_folders:
@@ -3126,6 +3238,16 @@ class TaskEngine:
                     if not config.auto_process.classify:
                         logger.info(f"[{rjcode}] 步骤[智能分类]已禁用，跳过")
                     task.output_path = renamed_path
+
+                await self._finalize_filter_recovery(
+                    task,
+                    filter_path_transforms,
+                    library_id=(
+                        str((task.task_metadata or {}).get("target_library_id") or "")
+                        if config.auto_process.classify and task.auto_classify
+                        else ""
+                    ),
+                )
 
                 # 步骤7: 归档压缩包
                 logger.debug(f"[{rjcode}] 步骤7: 归档压缩包")
@@ -3178,6 +3300,19 @@ class TaskEngine:
 
                 existing_folder_path = task.source_path
                 logger.debug(f"[{rjcode}] 处理已存在文件夹: {existing_folder_path}")
+                resume_from_rename = str(
+                    (task.task_metadata or {}).get("resume_from_stage") or ""
+                ).strip().lower() == "rename"
+                retry_filter_enabled = (
+                    bool((task.task_metadata or {}).get("rename_retry_filter_enabled"))
+                    if resume_from_rename and "rename_retry_filter_enabled" in (task.task_metadata or {})
+                    else bool(config.process_existing.filter)
+                )
+                retry_classify_enabled = (
+                    bool((task.task_metadata or {}).get("rename_retry_classify_enabled"))
+                    if resume_from_rename and "rename_retry_classify_enabled" in (task.task_metadata or {})
+                    else bool(config.process_existing.classify)
+                )
 
                 effective_existing_rjcode = self._get_effective_rjcode(task, existing_folder_path)
                 rjcode = self._sync_task_rjcode(
@@ -3271,7 +3406,11 @@ class TaskEngine:
 
                 # 步骤1: 获取元数据
                 logger.debug(f"[{rjcode}] 步骤1: 获取元数据")
-                if config.process_existing.fetch_metadata:
+                if resume_from_rename:
+                    metadata = dict(task.task_metadata or {})
+                    task.update_progress(45, "准备重新重命名")
+                    logger.info(f"[{rjcode}] 从重命名失败断点继续，复用已获取元数据")
+                elif config.process_existing.fetch_metadata:
                     task.update_progress(30, "获取元数据")
                     metadata = await metadata_service.fetch(extracted_path, task)
                     effective_rjcode = self._get_effective_rjcode(task, extracted_path)
@@ -3299,11 +3438,15 @@ class TaskEngine:
 
                 # 步骤2: 重命名
                 logger.debug(f"[{rjcode}] 步骤2: 重命名")
-                if config.process_existing.rename:
+                if resume_from_rename or config.process_existing.rename:
                     task.update_progress(50, "重命名文件夹")
                     from .rename_service import RenameService
                     rename_service = RenameService()
-                    renamed_path = await rename_service.rename(extracted_path, task)
+                    try:
+                        renamed_path = await rename_service.rename(extracted_path, task)
+                    except Exception:
+                        self._mark_rename_failure_checkpoint(task, extracted_path)
+                        raise
                     logger.debug(f"[{rjcode}] 重命名后路径: {renamed_path}")
                 else:
                     logger.info(f"[{rjcode}] 步骤[重命名]已禁用，跳过")
@@ -3315,7 +3458,7 @@ class TaskEngine:
 
                 # 步骤3: 过滤
                 logger.debug(f"[{rjcode}] 步骤3: 过滤")
-                if config.process_existing.filter:
+                if retry_filter_enabled:
                     task.update_progress(70, "过滤文件中")
                     filter_result = await filter_service.filter(renamed_path, task)
                     task.task_metadata = {
@@ -3326,6 +3469,7 @@ class TaskEngine:
                         "filtered_items": list((filter_result or {}).get("filtered_items") or []),
                         "filtered_count": int((filter_result or {}).get("filtered_count") or 0),
                         "filtered_size": int((filter_result or {}).get("filtered_size") or 0),
+                        "filter_recovery": dict((filter_result or {}).get("filter_recovery") or {}),
                     }
                 else:
                     logger.info(f"[{rjcode}] 步骤[过滤]已禁用，跳过")
@@ -3335,11 +3479,15 @@ class TaskEngine:
                     return
 
                 logger.debug(f"[{rjcode}] 步骤4: 扁平化")
+                filter_path_transforms: list[dict[str, str]] = []
                 if config.rename.flatten_single_subfolder:
                     task.update_progress(75, "扁平化文件夹结构")
                     from .rename_service import RenameService
                     rename_service = RenameService()
-                    renamed_path = rename_service._flatten_single_subfolder(renamed_path)
+                    renamed_path = rename_service._flatten_single_subfolder(
+                        renamed_path,
+                        operation_sink=filter_path_transforms,
+                    )
                     logger.debug(f"[{rjcode}] 扁平化后路径: {renamed_path}")
 
                 if config.rename.remove_empty_folders:
@@ -3349,7 +3497,7 @@ class TaskEngine:
                 # 步骤4.5: 从 Subtitles 目录导入 LRC 字幕（如果存在且启用）
                 subtitle_folder = None
                 subtitle_base = getattr(getattr(config, 'storage', None), 'asmr_subtitle_path', '')
-                if config.process_existing.import_lrc and subtitle_base:
+                if not resume_from_rename and config.process_existing.import_lrc and subtitle_base:
                     try:
                         if os.path.exists(subtitle_base) and rjcode:
                             # 查找匹配 RJ 号的字幕文件夹
@@ -3423,7 +3571,7 @@ class TaskEngine:
 
                 # 步骤5: 智能分类
                 logger.debug(f"[{rjcode}] 步骤5: 智能分类")
-                if config.process_existing.classify and task.auto_classify:
+                if retry_classify_enabled and task.auto_classify:
                     task.update_progress(80, "智能分类")
                     final_path = await classifier.classify_and_move(renamed_path, metadata, task)
                     task.output_path = final_path
@@ -3432,6 +3580,29 @@ class TaskEngine:
                     if not config.process_existing.classify:
                         logger.info(f"[{rjcode}] 步骤[智能分类]已禁用，跳过")
                     task.output_path = renamed_path
+
+                await self._finalize_filter_recovery(
+                    task,
+                    filter_path_transforms,
+                    library_id=(
+                        str((task.task_metadata or {}).get("target_library_id") or "")
+                        if retry_classify_enabled and task.auto_classify
+                        else ""
+                    ),
+                )
+
+                if resume_from_rename:
+                    await self._archive_rename_retry_source(task)
+                    nested_subtitle_filenames = list(
+                        (task.task_metadata or {}).get("nested_subtitle_archive_filenames") or []
+                    )
+                    if nested_subtitle_filenames and task.output_path and rjcode:
+                        await self._queue_nested_subtitle_archives(
+                            task,
+                            rjcode,
+                            task.output_path,
+                            nested_subtitle_filenames,
+                        )
 
                 if task.output_path and rjcode and rjcode != "未知":
                     try:
@@ -3460,7 +3631,13 @@ class TaskEngine:
                     task.output_path = await service.extract(task)
                 elif task.type == TaskType.FILTER:
                     service = FilterService()
-                    await service.filter(task.source_path, task)
+                    filter_result = await service.filter(task.source_path, task)
+                    task.task_metadata = {
+                        **(task.task_metadata or {}),
+                        **dict(filter_result or {}),
+                    }
+                    task.output_path = task.source_path
+                    await self._finalize_filter_recovery(task, [], library_id="")
                 elif task.type == TaskType.METADATA:
                     service = MetadataService()
                     task.task_metadata = await service.fetch(task.source_path, task)
@@ -3512,9 +3689,12 @@ class TaskEngine:
                 logger.info(f"[{rjcode}] 任务已取消")
         except Exception as e:
             logger.error(f"[{rjcode}] 任务失败: {e}", exc_info=True)
+            failure_stage = self._infer_failure_stage(task, str(e))
             if task.type in {TaskType.EXTRACT, TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:
                 self._record_problem_work_for_task_failure(task, rjcode, str(e))
             task.fail(str(e))
+            if failure_stage == "rename" and task.status == TaskStatus.FAILED:
+                task.current_step = f"重命名失败: {e}"
             await asyncio.to_thread(
                 self._refresh_conflict_resolution_progress,
                 task,
@@ -3918,6 +4098,9 @@ class TaskEngine:
 
         if task_id in self.processing or task.status in [TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED]:
             raise RuntimeError("任务仍在执行中，不能清理")
+
+        from .filter_recovery_service import get_filter_recovery_service
+        get_filter_recovery_service().cleanup_task(task_id, strict=True)
 
         self.tasks.pop(task_id, None)
         self.processing.discard(task_id)
@@ -4484,6 +4667,21 @@ class TaskEngine:
         if task.type == TaskType.HTTP_DOWNLOAD:
             logger.info("HTTP 下载任务失败/部分成功不清理下载根目录: %s", task.output_path)
             return
+
+        metadata = dict(task.task_metadata or {})
+        rename_retry_source_path = str(metadata.get("rename_retry_source_path") or "").strip()
+        if (
+            task.status == TaskStatus.FAILED
+            and str(metadata.get("failure_stage") or "").strip().lower() == "rename"
+            and rename_retry_source_path
+            and os.path.isdir(rename_retry_source_path)
+        ):
+            logger.info(
+                "重命名失败保留解压断点，等待从重命名阶段重试: task_id=%s path=%s",
+                task.id,
+                rename_retry_source_path,
+            )
+            return
         
         # 对于 PROCESS_EXISTING_FOLDER 类型，成功完成的任务不需要清理
         # 因为文件夹是直接从已有目录处理的，不是临时文件
@@ -4746,6 +4944,51 @@ class TaskEngine:
                 exc_info=True,
             )
             return {"queued": False, "status": "queue_failed", "reason": str(exc)}
+
+    async def _archive_rename_retry_source(self, task: Task) -> None:
+        """重命名断点恢复成功后，归档初次解压使用的原压缩包。"""
+        metadata = dict(task.task_metadata or {})
+        if not bool(metadata.get("rename_retry_archive_enabled")):
+            return
+        source_path = str(metadata.get("rename_retry_archive_source_path") or "").strip()
+        if not source_path or not os.path.isfile(source_path):
+            logger.warning(
+                "[重命名重试] 原压缩包不存在，跳过归档 task_id=%s source=%s",
+                task.id,
+                source_path,
+            )
+            return
+
+        try:
+            from .deferred_archive_service import get_deferred_archive_service
+
+            result = await get_deferred_archive_service().enqueue_source(
+                source_path,
+                task_id=task.id,
+                rjcode=str(task.rjcode or ""),
+            )
+            metadata.update({
+                "archive_queue_id": result.get("job_id") or metadata.get("archive_queue_id") or "",
+                "archive_queue_status": result.get("status") or ("pending" if result.get("queued") else "skipped"),
+                "archive_volume_count": int(result.get("volume_count") or 0),
+                "archive_queued_at": datetime.now().isoformat(),
+            })
+            task.task_metadata = metadata
+            task.touch_metadata("archive_queued")
+        except Exception as exc:
+            metadata.update({
+                "archive_queue_status": "queue_failed",
+                "archive_last_error": str(exc),
+            })
+            task.task_metadata = metadata
+            task.touch_metadata("archive_queue_failed")
+            logger.warning(
+                "[重命名重试] 原压缩包归档入队失败 task_id=%s source=%s error=%s",
+                task.id,
+                source_path,
+                exc,
+                exc_info=True,
+            )
 
     async def _archive_source_file_legacy(self, task: Task):
         """历史重新处理路径的归档记录更新实现。"""

@@ -57,11 +57,13 @@
         :get-recovered-notice="getRecoveredNotice"
         :get-d-lsite-failure-reason="getDLsiteFailureReason"
         :get-output-path="getOutputPath"
+        :restoring-recovery-id="restoringRecoveryId"
         @open-route="openTaskRoute"
         @action="handleTaskAction"
         @update:tree-filter-mode="(v) => (treeFilterMode = v)"
         @expand-section="setTreeSectionExpanded"
         @toggle-node="toggleTreeNode"
+        @restore-filtered="handleRestoreFilteredItem"
       />
     </section>
   </div>
@@ -89,6 +91,7 @@ import TasksHeader from '../components/tasks/TasksHeader.vue'
 import TasksFilters from '../components/tasks/TasksFilters.vue'
 import TaskListPane from '../components/tasks/TaskListPane.vue'
 import TaskDetailPane from '../components/tasks/TaskDetailPane.vue'
+import { countRemovedFilterEntries, isRestoredFilterEntry } from '../components/tasks/_filterRecovery.js'
 import { useViewport } from '../composables/useViewport'
 import {
   applyTaskCenterEventPatch,
@@ -112,6 +115,7 @@ const pageDirection = ref('next')
 const selectedItemId = ref('')
 const selectedItemDetail = ref(null)
 const detailLoading = ref(false)
+const restoringRecoveryId = ref('')
 const shouldAutoSelectVisibleTask = ref(true)
 const currentDomain = ref('all')
 const currentStatus = ref('all')
@@ -720,7 +724,19 @@ function buildTreeRows(treeItems = []) {
   const nodeMap = new Map()
   const ensureNode = (key, label, type, parentKey = '') => {
     if (nodeMap.has(key)) return nodeMap.get(key)
-    const node = { key, label, type, status: 'default', removedByDirectory: '', sizeText: '', children: [] }
+    const node = {
+      key,
+      label,
+      type,
+      status: 'default',
+      removedByDirectory: '',
+      sizeText: '',
+      recoveryId: '',
+      recoveryStatus: '',
+      restoredAt: '',
+      restoredPath: '',
+      children: [],
+    }
     nodeMap.set(key, node)
     if (parentKey && nodeMap.has(parentKey)) nodeMap.get(parentKey).children.push(node)
     else roots.push(node)
@@ -741,6 +757,10 @@ function buildTreeRows(treeItems = []) {
         node.status = item?.status || node.status
         node.removedByDirectory = item?.removedByDirectory || node.removedByDirectory || ''
         node.sizeText = item?.sizeText || formatBytes(item?.size)
+        node.recoveryId = item?.recoveryId || node.recoveryId || ''
+        node.recoveryStatus = item?.recoveryStatus || node.recoveryStatus || ''
+        node.restoredAt = item?.restoredAt || node.restoredAt || ''
+        node.restoredPath = item?.restoredPath || node.restoredPath || ''
       }
       parentKey = joined
     })
@@ -789,6 +809,10 @@ function buildTreeRows(treeItems = []) {
         status: node.status,
         removedByDirectory: node.removedByDirectory,
         sizeText: node.sizeText,
+        recoveryId: node.recoveryId,
+        recoveryStatus: node.recoveryStatus,
+        restoredAt: node.restoredAt,
+        restoredPath: node.restoredPath,
         depth,
         hasChildren,
         childCount: node.children.length,
@@ -1057,8 +1081,12 @@ function mapFilteredItems(item) {
       key: relativePath,
       relative_path: relativePath,
       type,
-      status: 'removed',
+      status: asObject.recovery_status === 'restored' ? 'restored' : 'removed',
       removedDirect: true,
+      recoveryId: String(asObject.recovery_id || ''),
+      recoveryStatus: String(asObject.recovery_status || ''),
+      restoredAt: String(asObject.restored_at || ''),
+      restoredPath: String(asObject.restored_path || ''),
       sizeText: asObject.size !== undefined && asObject.size !== null
         ? formatBytes(asObject.size)
         : formatBytes(asObject.size_bytes),
@@ -1068,11 +1096,13 @@ function mapFilteredItems(item) {
   for (const current of Array.isArray(metadata.filtered_items) ? metadata.filtered_items : []) {
     pushFilteredItem(current)
   }
-  for (const current of Array.isArray(metadata.filtered_files) ? metadata.filtered_files : []) {
-    pushFilteredItem(current, 'file')
-  }
-  for (const current of Array.isArray(metadata.filtered_dirs) ? metadata.filtered_dirs : []) {
-    pushFilteredItem(current, 'dir')
+  if (!mapped.length) {
+    for (const current of Array.isArray(metadata.filtered_files) ? metadata.filtered_files : []) {
+      pushFilteredItem(current, 'file')
+    }
+    for (const current of Array.isArray(metadata.filtered_dirs) ? metadata.filtered_dirs : []) {
+      pushFilteredItem(current, 'dir')
+    }
   }
   return mapped
 }
@@ -1135,6 +1165,9 @@ function buildFileTreeArraySignature(rows) {
       row.type,
       row.size,
       row.size_bytes,
+      row.recovery_id,
+      row.recovery_status,
+      row.restored_at,
     ].join('|')
     for (let i = 0; i < text.length; i += 1) {
       checksum = ((checksum * 31) + text.charCodeAt(i)) >>> 0
@@ -1218,8 +1251,14 @@ function buildTaskFileTreeSections(item) {
     const path = withTaskFileTreeRoot(removed?.relative_path || removed?.name || '', rootLabel)
     if (!path) continue
     const previous = mergedMap.get(path)
-    mergedMap.set(path, { ...(previous || {}), ...removed, relative_path: path, status: 'removed' })
-    if (removed?.type === 'dir') removedDirectoryPaths.push(path)
+    const restored = isRestoredFilterEntry(removed)
+    mergedMap.set(path, {
+      ...(previous || {}),
+      ...removed,
+      relative_path: path,
+      status: restored ? 'restored' : 'removed',
+    })
+    if (removed?.type === 'dir' && !restored) removedDirectoryPaths.push(path)
   }
   for (const removedDirPath of removedDirectoryPaths) {
     for (const [path, entry] of mergedMap.entries()) {
@@ -1233,8 +1272,8 @@ function buildTaskFileTreeSections(item) {
   }
 
   const mergedItems = Array.from(mergedMap.values())
-  const removedCount = mergedItems.filter((entry) => entry.status === 'removed').length
-  const directRemovedCount = removedItems.length
+  const removedCount = countRemovedFilterEntries(mergedItems)
+  const directRemovedCount = countRemovedFilterEntries(removedItems)
   const effectiveFilterMode = treeFilterMode.value === 'removed' && removedCount > 0 ? 'removed' : 'all'
   const filtered = effectiveFilterMode === 'removed'
     ? mergedItems.filter((entry) => entry.status === 'removed')
@@ -1370,6 +1409,35 @@ async function handleTaskAction(item, action) {
   } catch (error) {
     console.error('执行任务动作失败:', error)
     ElMessage.error('操作失败: ' + (error.response?.data?.detail || error.message))
+  }
+}
+
+async function handleRestoreFilteredItem({ entry }) {
+  const item = selectedItem.value
+  const recoveryId = String(entry?.recoveryId || '').trim()
+  if (!item || !recoveryId) return
+  const isDirectory = entry?.type === 'dir'
+  try {
+    await showSystemConfirm({
+      title: isDirectory ? '还原过滤目录' : '还原过滤文件',
+      message: `确认把「${entry.label || '该过滤项'}」还原到最终入库位置？`,
+      description: '目标存在同名内容时会停止还原，不会覆盖现有库存。',
+      confirmText: '还原',
+    })
+  } catch (_) {
+    return
+  }
+  try {
+    restoringRecoveryId.value = recoveryId
+    const result = await taskCenterApi.restoreFilteredItem(item.id, recoveryId)
+    ElMessage.success(result?.message || '过滤项已还原')
+    await fetchSelectedItemDetail(item.id, { force: true })
+    await refreshTaskCenter(false, { silent: true })
+  } catch (error) {
+    console.error('还原过滤项失败:', error)
+    ElMessage.error('还原失败: ' + (error.response?.data?.detail || error.message))
+  } finally {
+    restoringRecoveryId.value = ''
   }
 }
 

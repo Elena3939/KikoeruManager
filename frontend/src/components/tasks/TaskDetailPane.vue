@@ -276,8 +276,12 @@
               v-for="entry in section.rows"
               :key="`${item.id}-${section.key}-${entry.key}`"
               class="task-file-tree-row tree-row"
-              :class="{ 'tree-row-filtered': entry.status === 'removed' }"
+              :class="{
+                'tree-row-filtered': entry.status === 'removed',
+                'tree-row-restored': entry.status === 'restored',
+              }"
               :style="{ paddingLeft: `${entry.depth * 16 + 8}px` }"
+              @contextmenu.prevent.stop="openRestoreMenu($event, entry)"
             >
               <div class="tree-main">
                 <button
@@ -290,7 +294,13 @@
                 </button>
                 <span v-else class="expander-spacer" />
 
-                <span class="tree-main-target" :class="{ 'tree-main-target-filtered': entry.status === 'removed' }">
+                <span
+                  class="tree-main-target"
+                  :class="{
+                    'tree-main-target-filtered': entry.status === 'removed',
+                    'tree-main-target-restored': entry.status === 'restored',
+                  }"
+                >
                   <component :is="getTreeRowIconComponent(entry)" :size="20" class="tree-icon" :class="getTreeRowIconClass(entry)" />
 
                   <span class="tree-name">
@@ -298,6 +308,7 @@
                     <span v-if="entry.status === 'removed'" class="tree-removed-badge">
                       {{ entry.removedByDirectory ? '随目录删除' : '已删除' }}
                     </span>
+                    <span v-else-if="entry.status === 'restored'" class="tree-restored-badge">已还原</span>
                   </span>
                 </span>
               </div>
@@ -346,9 +357,38 @@
       <AppEmptyState description="选择左侧任务查看详情" size="lg" />
     </div>
   </div>
+
+  <Teleport to="body">
+    <div
+      v-if="restoreMenu"
+      class="task-filter-restore-menu"
+      :style="{ left: `${restoreMenu.x}px`, top: `${restoreMenu.y}px` }"
+      @click.stop
+      @contextmenu.prevent.stop
+    >
+      <button
+        type="button"
+        class="task-filter-restore-menu__action"
+        :disabled="!restoreMenu.availability.enabled || restoringRecoveryId === restoreMenu.entry.recoveryId"
+        @click="restoreSelectedEntry"
+      >
+        <RefreshCw
+          v-if="restoringRecoveryId === restoreMenu.entry.recoveryId"
+          :size="15"
+          class="animate-spin"
+        />
+        <RotateCcw v-else :size="15" :stroke-width="2.3" />
+        <span>{{ restoreMenu.entry.type === 'dir' ? '还原目录' : '还原文件' }}</span>
+      </button>
+      <div v-if="!restoreMenu.availability.enabled" class="task-filter-restore-menu__hint">
+        {{ restoreMenu.availability.reason }}
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <script setup>
+import { onMounted, onUnmounted, ref } from 'vue'
 import {
   AlertTriangle,
   ArrowRight,
@@ -370,8 +410,9 @@ import StatusPill from '../dashboard/StatusPill.vue'
 import { getTaskDomainMeta } from '../common/taskDomainMeta.js'
 import { getHttpDownloadDisplayMeta } from '../common/httpDownloadPlatformMeta.js'
 import { classifyLibraryEntryKind, libraryEntryIconFor } from '../library/_libraryFileKind.js'
+import { getFilterRestoreAvailability } from './_filterRecovery.js'
 
-defineProps({
+const props = defineProps({
   item: { type: Object, default: null },
   detailLoading: { type: Boolean, default: false },
   fileTreeSections: { type: Array, default: () => [] },
@@ -384,9 +425,59 @@ defineProps({
   getRecoveredNotice: { type: Function, required: true },
   getDLsiteFailureReason: { type: Function, required: true },
   getOutputPath: { type: Function, required: true },
+  restoringRecoveryId: { type: String, default: '' },
 })
 
-defineEmits(['open-route', 'action', 'update:treeFilterMode', 'expand-section', 'toggle-node'])
+const emit = defineEmits([
+  'open-route',
+  'action',
+  'update:treeFilterMode',
+  'expand-section',
+  'toggle-node',
+  'restore-filtered',
+])
+
+const restoreMenu = ref(null)
+
+function openRestoreMenu(event, entry) {
+  if (!['removed', 'restored'].includes(entry?.status)) {
+    restoreMenu.value = null
+    return
+  }
+  const width = 210
+  const height = 86
+  restoreMenu.value = {
+    entry,
+    availability: getFilterRestoreAvailability(entry, props.item),
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - width - 8)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - height - 8)),
+  }
+}
+
+function closeRestoreMenu() {
+  restoreMenu.value = null
+}
+
+function restoreSelectedEntry() {
+  const current = restoreMenu.value
+  if (!current?.availability?.enabled || props.restoringRecoveryId === current.entry.recoveryId) return
+  emit('restore-filtered', { entry: current.entry })
+  closeRestoreMenu()
+}
+
+onMounted(() => {
+  document.addEventListener('click', closeRestoreMenu)
+  document.addEventListener('contextmenu', closeRestoreMenu)
+  window.addEventListener('resize', closeRestoreMenu)
+  window.addEventListener('scroll', closeRestoreMenu, true)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', closeRestoreMenu)
+  document.removeEventListener('contextmenu', closeRestoreMenu)
+  window.removeEventListener('resize', closeRestoreMenu)
+  window.removeEventListener('scroll', closeRestoreMenu, true)
+})
 
 function domainMeta(domain) {
   return getTaskDomainMeta(domain)
@@ -737,6 +828,16 @@ function actionToneClass(action) {
   box-shadow: none;
 }
 
+.tree-row-restored {
+  border-color: rgba(16, 185, 129, 0.18);
+  background: rgba(236, 253, 245, 0.5);
+}
+
+.tree-main-target-restored,
+.tree-row-restored .tree-size {
+  color: #047857;
+}
+
 .tree-main {
   position: relative;
   z-index: 1;
@@ -933,6 +1034,76 @@ function actionToneClass(action) {
   vertical-align: 1px;
 }
 
+.tree-restored-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 18px;
+  align-items: center;
+  padding: 0 6px;
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  border-radius: 5px;
+  background: rgba(209, 250, 229, 0.8);
+  color: #047857;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+:global(.task-filter-restore-menu) {
+  position: fixed;
+  z-index: 2600;
+  width: 210px;
+  padding: 6px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 14px 34px -14px rgba(15, 23, 42, 0.38);
+}
+
+:global(.task-filter-restore-menu__action) {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0 9px;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+:global(.task-filter-restore-menu__action:hover:not(:disabled)) {
+  background: #ecfdf5;
+  transform: translateY(-2px) scale(1.02);
+}
+
+:global(.task-filter-restore-menu__action:active:not(:disabled)) {
+  transform: scale(0.96);
+}
+
+:global(.task-filter-restore-menu__action:disabled) {
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
+:global(.task-filter-restore-menu__action:focus),
+:global(.task-filter-restore-menu__action:focus-visible) {
+  outline: none;
+  box-shadow: none;
+}
+
+:global(.task-filter-restore-menu__hint) {
+  padding: 3px 9px 5px;
+  color: #94a3b8;
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
 .tree-size {
   position: relative;
   z-index: 1;
@@ -1086,5 +1257,35 @@ function actionToneClass(action) {
   border-color: rgba(148, 163, 184, 0.24);
   background: rgba(15, 23, 42, 0.72);
   color: #cbd5e1;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-row-restored) {
+  border-color: rgba(52, 211, 153, 0.2);
+  background: rgba(6, 78, 59, 0.18);
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-restored-badge) {
+  border-color: rgba(52, 211, 153, 0.28);
+  background: rgba(6, 78, 59, 0.46);
+  color: #6ee7b7;
+}
+
+:global(html.kikoerumanager-dark body .task-filter-restore-menu) {
+  border-color: var(--km-dark-border);
+  background: var(--km-dark-elevated);
+  box-shadow: 0 18px 42px -16px rgba(0, 0, 0, 0.72);
+}
+
+:global(html.kikoerumanager-dark body .task-filter-restore-menu__action) {
+  color: #6ee7b7;
+}
+
+:global(html.kikoerumanager-dark body .task-filter-restore-menu__action:hover:not(:disabled)) {
+  background: rgba(6, 78, 59, 0.42);
+}
+
+:global(html.kikoerumanager-dark body .task-filter-restore-menu__action:disabled),
+:global(html.kikoerumanager-dark body .task-filter-restore-menu__hint) {
+  color: var(--km-dark-text-muted);
 }
 </style>
