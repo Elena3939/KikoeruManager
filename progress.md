@@ -3961,3 +3961,173 @@
 - `docs/circle-completion-paged-loading.md`：记录手动刷新任务结果的前端最终对账契约。
 - `progress.md`：追加本轮实现、验证与回滚记录。
 - 回滚方式：移除 `reconcileRefreshedOwnedState()` 及刷新任务完成后的调用，删除 `circleCompletionOwnedState.js` 和对应测试，反向应用文档拥有态对账条目，并删除本段进度记录；不要回退同文件中的社团补全分页、任务轮询或其它未提交改动。
+
+## 2026-07-14 - Task: 修复 HTTP 下载半成品被误当作完成文件
+### What was done
+- Transfer.it 下载完成改为同时校验请求正常结束和实际文件字节数完全等于服务端声明值；兼容下载先写隔离临时目录，再通过 `.part` 原子发布正式文件名，删除“目录中唯一文件即视为完成”的危险兜底。
+- Transfer.it 重试会把历史版本遗留、大小不符的正式文件迁回 `.part`，继续断点下载；超过远端声明大小的异常断点文件不再直接发布。
+- 文件处理器发现同名 `.aria2` 侧车时跳过压缩包识别和解压任务创建，侧车消失后才允许消费，避免普通 HTTP / aria2 下载中的数据文件被提前解压。
+- 补充 HTTP 下载完成判定文档，明确单文件、多文件、临时文件和失败态边界。
+
+### Testing
+- `backend\\venv\\Scripts\\python.exe -m pytest --noconftest --basetemp backend/.pytest-codex-http-transferit-finish ... -q`：`7 passed`，覆盖 Transfer.it 兼容下载隔离、大小不符、断点续传、历史半成品隔离和 aria2 侧车保护。
+- `backend\\venv\\Scripts\\python.exe -m pytest --noconftest --basetemp backend/.pytest-codex-http-download-junit backend/tests/test_http_download_service.py -q`：`113 passed`。
+- `backend\\venv\\Scripts\\python.exe -m pytest --noconftest --basetemp backend/.pytest-codex-baidu-notify backend/tests/test_baidu_netdisk_service.py backend/tests/test_task_notification_service.py -q`：`66 passed`。
+- 项目 Python `py_compile` 覆盖 `backend/app/core/http_download_service.py` 和 `backend/app/core/file_processor.py`。
+- `git diff --check`：通过，仅有既有 LF/CRLF 提示。
+- `test_baidu_netdisk_account_api.py` 的 `2` 个 API 用例依赖项目 `conftest` 提供的 PostgreSQL `client` fixture；本机测试库连接超时，未将环境初始化失败记为代码通过。
+
+### Notes
+- `backend/app/core/http_download_service.py`：收紧 Transfer.it 完成判定、兼容下载隔离、原子发布和历史半成品续传处理。
+- `backend/app/core/file_processor.py`：阻止带 `.aria2` 未完成标记的文件进入压缩包处理链。
+- `backend/tests/test_http_download_service.py`：新增下载中断、大小不符、异常断点、历史半成品和 aria2 侧车回归测试。
+- `docs/INTRODUCTION.md`、`docs/http-download-completion.md`：记录下载完成条件、临时文件发布和失败语义。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：反向应用 `http_download_service.py` 中 Transfer.it 校验、隔离与发布 hunk，移除 `file_processor.py` 的 `.aria2` 侧车判断，删除对应测试和 `docs/http-download-completion.md`，反向应用 `docs/INTRODUCTION.md` 对应条目，并删除本段进度记录。
+
+## 2026-07-15 - Task: 为库存页增加当前目录新建文件夹
+### What was done
+- 库存页当前路径工具栏新增“新建文件夹”，通过统一系统输入弹窗命名，并明确展示实际创建位置。
+- 新建操作固定落在当前库存的当前真实目录；本地文件系统和群晖 FileStation 均支持，同时拒绝只读库存、路径越界、非法名称和同名冲突。
+- 本地创建接入库存索引 mutation 账本，前端即时显示返回目录并只等待单路径索引 fence；不触发整库扫描、强制刷新或库存统计重算。
+
+### Testing
+- `backend\venv\Scripts\python.exe -m py_compile backend\app\core\library_manager.py backend\app\api\routes.py backend\tests\test_library_browser_api.py`：通过。
+- `cd backend; venv\Scripts\python.exe -m pytest --noconftest tests\test_library_browser_api.py -q -k "create_folder_targets_current_directory" --basetemp .pytest-codex-create-folder`：`1 passed`，覆盖当前具体目录创建、单路径索引通知、同名冲突和越界名称拒绝。
+- 项目 Python 冒烟：真实临时目录创建成功；重复名称抛出 `FileExistsError`；`../outside` 名称被拒绝，未发生路径越界。
+- `cd frontend; npm.cmd run build`：通过，`4184 modules transformed`，预压缩完成。
+- `backend\venv\Scripts\python.exe -m pytest tests\test_library_browser_api.py -q -k "library_browser_endpoints_support_multi_library" --maxfail=1`：未启动用例，本机 PostgreSQL 测试库连接超时；未将环境失败记为测试通过。
+- `git diff --check`：通过，仅有既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/library_manager.py`：新增真实目录目标解析、本地创建、群晖创建和单路径索引追赶。
+- `backend/app/api/routes.py`：新增库存浏览器创建目录接口，并接入本地 mutation 幂等账本。
+- `backend/tests/test_library_browser_api.py`：覆盖实际创建、同名冲突和非法名称越界保护。
+- `frontend/src/api/index.js`：新增库存浏览器创建目录请求。
+- `frontend/src/views/Library.vue`：新增当前目录入口、命名交互、即时行反馈和低开销索引 fence 刷新。
+- `docs/library-create-folder.md`：记录创建位置、名称校验、库存类型和性能边界。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：移除 `create_library_browser_folder()` 路由和 `LibraryManager.resolve_create_folder_target()` / `LibraryManager.create_folder()`，删除前端 `browserCreateFolder()`、工具栏按钮及 `createFolderInCurrentDirectory()`，删除对应测试与 `docs/library-create-folder.md`，并删除本段进度记录；不要回退同一共享文件中的库存搜索、字幕或其它未提交改动。
+
+## 2026-07-15 - Task: 支持同语言不同译者 RJ 的库存关联搜索
+### What was done
+- 将社团补全拥有态拆成“库存真实 RJ”和“同语言关联 RJ”：`owned_rjcodes` 只保留真实命中，旧快照优先从实际库存路径恢复 RJ，避免把未落盘的译者版本显示成精确拥有。
+- 完整简中或繁中 RJ 搜索会按同一 canonical、同一语言组扩展其他译者 RJ；结果保留实际收录 RJ，并标记“简中关联”或“繁中关联”，不会跨简繁、原作、英文或未知语言串联。
+- 关联搜索只读本地 PostgreSQL 关系和拥有态快照，使用 5 分钟 TTL/LRU；库存索引通过单次 `IN` 查询批量命中。拥有态路径可直接返回，只有全部快照零命中时才进入最多 8 个 RJ 的远程并发兜底。
+
+### Testing
+- 项目 Python `py_compile` 覆盖库存搜索路由、社团补全服务、库存索引 service/store 及新增后端测试：通过。
+- `cd backend; ..\.venv\Scripts\python.exe -m pytest --noconftest tests\test_circle_completion_owned_sync.py tests\test_routes_maintenance_config.py::test_global_search_marks_same_language_translation_as_related tests\test_routes_maintenance_config.py::test_global_search_exact_rj_collapses_descendant_directories -q --basetemp .pytest-codex-translation-rj`：`7 passed`。
+- `cd frontend; npm.cmd test -- --run src/components/library/_libraryFileKind.test.js src/components/library/LibrarySearchBox.test.js`：`2` 个测试文件、`2 passed`。
+- `cd frontend; npm.cmd run build`：通过，`4184 modules transformed`，预压缩完成。
+- 后端目标 pytest 在加载 `backend/tests/conftest.py` 时因本机 PostgreSQL 测试库 `kikoerumanager_test` 连接超时而退出，未执行用例；未将环境失败记为测试通过。
+- `git diff --check`：通过，仅有既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/circle_completion_service.py`：新增同语言翻译 RJ 映射和缓存，收紧真实拥有 RJ 语义并兼容旧快照。
+- `backend/app/core/library_index/service.py`、`backend/app/core/library_index/snapshot_store.py`：新增一次 SQL 的批量 RJ 精确查询。
+- `backend/app/api/routes.py`：库存同步/流式全局搜索接入翻译关联、拥有态零 HTTP 结果和受控远程兜底。
+- `frontend/src/components/library/LibrarySearchBox.vue`、`frontend/src/components/library/LibrarySearchOverlay.vue`、`frontend/src/components/library/_libraryFileKind.js`：保留关联结果并展示实际 RJ 与关联标签。
+- `backend/tests/test_circle_completion_owned_sync.py`、`backend/tests/test_routes_maintenance_config.py`、`frontend/src/components/library/_libraryFileKind.test.js`：覆盖真实拥有 RJ、简繁隔离、批量关联命中和前端过滤。
+- `docs/library-translation-rj-search.md`：记录匹配语义、数据来源和 HTTP/IO 性能边界。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：反向应用上述后端关联搜索、批量索引和拥有态语义 hunk，移除前端关联标签与过滤放行，删除对应测试和 `docs/library-translation-rj-search.md`，并删除本段进度记录；不要回退共享文件中的新建文件夹、HTTP 下载或其它未提交改动。
+
+## 2026-07-16 - Task: 修复按社团分类后的索引闪烁与整页递归重扫
+### What was done
+- 根据服务器 `17:50` 实际操作时间线确认：分类只移动 2 个目录，但完成回调误用 `force_refresh=true`，额外提交当前页 20 个顶层目录的索引子树重扫；物化期间列表总数短暂从 `658` 变成 `638`，完成后才恢复。
+- 本地移动结果现在透传 mutation 的 `operation_id`、`operation_state` 和 `index_fences`；单项及批量社团分类登记 fence、即时移除源行，并等待索引物化后再刷新。
+- 社团分类完成后的列表刷新改为普通静默索引读取，不再触发当前页 20 棵子树的强制读修补；API 重命名后无需移动的场景也会等待重命名 fence。
+
+### Testing
+- 服务器日志只读核查：`POST /api/library/batch-auto-circle-group` 耗时 `1.710s`；随后出现 `path_count=20` 的 `self_mutation_upsert`、`ASMR files=1165` 子树扫描、列表总数 `658 -> 638 -> 658` 和 `2.145s` 事件循环停顿，已定位到误触发整页强制刷新。
+- 服务器 PostgreSQL 只读核查：`local-library-3` 当前 `ready`，`accepted_seq=materialized_seq=88`，最终顶层目录数 `658`；本次 2 个 move mutation 后紧跟 1 个 `path_count=20` 的无关 upsert mutation。
+- 项目 Python `py_compile` 覆盖 `library_manager.py` 和相关后端测试：通过。
+- `backend/venv/Scripts/python.exe -m pytest --noconftest tests/test_library_browser_api.py -q -k "notify_index_move_batch_filters_workbench_subtitles_but_indexes_audio or local_move_returns_index_fence_for_frontend_refresh or record_index_move_many_returns_finalize_response"`：`3 passed`。
+- 库存浏览测试文件在 `--noconftest` 下：`35 passed`，另 `2` 项因缺少项目 `client` fixture 未执行；库存索引数据库测试组因本机测试库连接超时停止，未计为通过。
+- `frontend npm test -- --run src/stores/libraryIndexState.test.js src/components/library/LibraryIndexBadge.test.js`：`2` 个测试文件、`4 passed`。
+- `frontend npm run build`：通过，`4184 modules transformed`，预压缩完成。
+- `git diff --check`：通过，仅有既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/library_manager.py`：让本地移动索引 mutation 返回 fence，并随移动结果透传给调用方。
+- `backend/tests/test_library_browser_api.py`：覆盖 mutation finalize 响应透传、移动响应 fence 和字幕最终移动提交兼容。
+- `frontend/src/views/Library.vue`：社团分类消费并等待 fence，移除完成后的整页强制刷新。
+- `docs/library-remote-read-performance.md`：记录社团分类的 fence、普通刷新和禁止整页子树重扫契约。
+- `progress.md`：追加本轮调查、修复、验证与回滚记录。
+- 回滚方式：反向应用 `library_manager.py` 中 move mutation 返回值和移动结果 fence hunk，移除 `Library.vue` 的 `registerAutoCircleGroupIndexMutation()` 及两处 fence 等待并恢复原刷新调用，删除对应后端测试和文档段落，再删除本段进度记录；不要回退同一共享文件中的新建文件夹、翻译 RJ 搜索或其它未提交改动。
+
+## 2026-07-16 - Task: 支持解压过滤文件回溯与任务中心右键还原
+### What was done
+- 解压入库过滤改为持久化恢复：目录只扫描一次，父目录命中会归并子项；同盘使用原子移动，跨盘使用暂存、流式复制、大小校验和失败回滚。
+- 恢复清单按任务保存在 `data/filter-recovery`，记录扁平化路径变换和最终本地/群晖库存目标；任务删除前严格清理恢复内容。
+- 任务中心文件树新增右键还原、旧任务/随目录删除禁用提示、已还原状态、同名冲突阻止和实时刷新；还原结果同步任务快照、库存索引和操作历史。
+
+### Testing
+- `cd backend; ..\.venv\Scripts\python.exe -m pytest tests/test_filter_recovery_service.py -q --noconftest --basetemp=..\.pytest-tmp-filter-recovery-final5`：`11 passed`，覆盖文件/目录恢复、父目录归并、发布失败回滚、路径越界、同名冲突、远程上传、路径变换、任务收尾和任务删除清理。
+- `cd frontend; npm.cmd test`：`11` 个测试文件、`31 passed`，包含右键菜单真实点击与恢复状态判断。
+- `cd frontend; npm.cmd run build`：通过，`4185 modules transformed`，预压缩完成。
+- 项目 Python AST 解析覆盖恢复服务、过滤器、分类器、重命名、任务引擎、任务中心与路由：通过。
+- 常规后端 pytest 在加载仓库 `conftest.py` 时因本机 PostgreSQL 测试库 `kikoerumanager_test` 连接超时而退出；附带任务中心既有测试在 `--noconftest` 下持续等待外部运行态超时，已停止且未计为通过。
+- `git diff --check`：通过，仅有既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/filter_recovery_service.py`：新增恢复区、原子清单、本地/群晖还原、冲突校验、任务同步、索引通知和审计记录。
+- `backend/app/core/filter_service.py`：合并目录扫描与过滤计划，将直接命中项移入恢复区并归并父子命中。
+- `backend/app/core/rename_service.py`：记录单层目录扁平化变换，供恢复路径重放。
+- `backend/app/core/classifier.py`：把默认解析后的实际目标库存 ID 回写任务，保证远程恢复能识别库存类型。
+- `backend/app/core/task_engine.py`：在入库收尾绑定恢复目标，支持独立过滤任务，并在删除任务前清理恢复数据。
+- `backend/app/core/task_center_service.py`、`backend/app/core/task_center_event_service.py`：透传恢复清理错误并即时广播还原事件。
+- `backend/app/api/routes.py`：新增过滤项还原接口，并让问题作品的保留新版/合并流程保存和绑定恢复数据。
+- `backend/tests/test_filter_recovery_service.py`：新增恢复存储、性能路径、安全边界和任务生命周期单元测试。
+- `frontend/src/api/index.js`：新增任务过滤项还原请求。
+- `frontend/src/views/Tasks.vue`：保留恢复字段、更新文件树统计并执行确认与刷新。
+- `frontend/src/components/tasks/TaskDetailPane.vue`：新增右键菜单、禁用原因、加载锁和已还原视觉状态。
+- `frontend/src/components/tasks/_filterRecovery.js`、`frontend/src/components/tasks/_filterRecovery.test.js`：集中恢复可用性规则并覆盖菜单交互。
+- `docs/INTRODUCTION.md`、`docs/filter-file-recovery.md`：记录用户行为、存储生命周期、API 和同盘/跨盘性能边界。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：删除 `filter_recovery_service.py`、`test_filter_recovery_service.py`、`_filterRecovery.js`、`_filterRecovery.test.js` 和 `docs/filter-file-recovery.md`；反向移除 `filtered-items/{recovery_id}/restore` 路由、过滤恢复字段、扁平化 `operation_sink`、任务收尾/清理调用、前端右键菜单及还原 API，并反向删除 `docs/INTRODUCTION.md` 本功能条目和本段记录。共享文件中已有库存搜索、新建目录、HTTP 下载等改动不得回退。
+
+## 2026-07-16 - Task: 修复移动弹窗目录搜索并按库存类型走高性能数据源
+### What was done
+- 移动弹窗搜索从“仅过滤当前已加载目录”改为真实全库目录搜索：本地库存直接使用 PostgreSQL 库存索引，群晖库存使用 FileStation 原生搜索。
+- 搜索请求固定收窄到当前目标库存和目录类型，增加 300ms 防抖、200 条结果上限、输入变化立即取消旧请求；本地索引未就绪时不再触发全盘递归兜底。
+- 搜索结果展示相对父路径，可直接选中为移动目标或双击进入；移动弹窗恢复展示全部可写库存，群晖之间移动时也能搜索目标目录。
+
+### Testing
+- 运行态 API 实测：对 `remote-library-4` 搜索 `すいーとみるく`，约 `2.0s` 返回 6 个真实群晖目录，包含顶层社团目录及其作品子目录。
+- `cd frontend; npm.cmd test -- --run src/components/library/LibraryMoveDialog.test.js`：`4 passed`，覆盖索引导航、旧快照降级、本地索引搜索防抖和群晖真实搜索。
+- `cd frontend; npm.cmd test`：`11` 个测试文件、`33 passed`。
+- `cd frontend; npm.cmd run build`：通过，`4185 modules transformed`，预压缩完成。
+
+### Notes
+- `frontend/src/components/library/LibraryMoveDialog.vue`：按本地/群晖库存分流搜索数据源，补取消、防抖、父路径展示和可写库存范围。
+- `frontend/src/components/library/LibraryMoveDialog.test.js`：新增本地索引与群晖远程搜索测试。
+- `frontend/src/api/index.js`：库存索引搜索支持传入 `AbortSignal`。
+- `docs/library-remote-read-performance.md`：记录移动弹窗搜索的数据源、性能边界和禁止递归兜底规则。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：反向移除 `LibraryMoveDialog.vue` 的 `inDirectorySearchMode`、本地/群晖搜索分流、请求取消、结果父路径和 `moveLibraries` 改动，移除 `searchIndex()` 的 `signal` 参数及新增测试，并删除文档与本段进度记录；不要回退共享文件中的过滤恢复、新建目录或其它未提交改动。
+
+## 2026-07-16 - Task: 修复解压入库重命名断点重试与关联作品预检
+### What was done
+- 解压和元数据获取完成后发生重命名异常时，任务固定保留在“重命名失败”阶段，并保留本次解压目录作为可重试断点。
+- 问题作品重试按失败阶段分流：重命名失败改用已有目录处理任务，复用首次元数据和自动入库的过滤/分类/归档开关并从重命名继续，不重新解压、不重新执行重复预检；成功后继续分类、社团拥有态同步和原压缩包延后归档。
+- 关联作品预检把 ready 库存目标目录纳入确定性状态：目标无字幕进入补配，目标已有字幕按关联作品重复处理；Kikoeru 查询不可用但库存目标明确时不再误判为状态不确定。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_task_engine.py --basetemp .pytest-tmp-codex-task-final -q`：`28 passed`，原任务引擎测试全部通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_import_rename_retry.py --basetemp .pytest-tmp-codex-rename-final2 -q`：`5 passed`，覆盖断点保留、失败问题路径、重命名续跑、沿用自动入库分类开关和重试路由分流。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_linked_subtitle_import_service.py --basetemp .pytest-tmp-codex-linked-full -q`：`29 passed`，覆盖关联原作补配、已有字幕重复和既有字幕工作台行为。
+- 项目后端虚拟环境 AST 解析覆盖 `task_engine.py`、`routes.py`、`linked_subtitle_import_service.py`、`classifier.py`：通过。
+- `git diff --check`：通过，仅有工作树既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/task_engine.py`：记录重命名失败断点、保留失败目录、从重命名继续并在成功后归档原压缩包。
+- `backend/app/api/routes.py`：问题作品重试按 `failure_stage=rename` 改为已有目录断点任务，避免清理和重新解压。
+- `backend/app/core/linked_subtitle_import_service.py`：合并 ready 库存候选与 Kikoeru 状态，明确关联作品补配和重复判定。
+- `backend/app/core/classifier.py`：普通关联查重跳过逻辑读取统一的目标缺字幕状态。
+- `backend/tests/test_import_rename_retry.py`：新增断点保留、失败问题路径、重命名续跑和重试路由测试。
+- `backend/tests/test_linked_subtitle_import_service.py`：新增 Kikoeru 不可用时的关联目标补配与重复测试。
+- `docs/import-rename-retry.md`：记录重命名断点重试和关联预检行为。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚点：本轮开始前工作树；若本轮以独立提交落库，执行 `git revert <本轮提交哈希>`。手工回滚时仅反向移除上述重命名断点字段/分流、关联目标状态字段、对应测试和文档，不得整体回退这些共享文件中的既有未提交改动。

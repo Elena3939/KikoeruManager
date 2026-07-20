@@ -139,7 +139,11 @@ class RenameService:
 
         return japanese_metadata
 
-    def _flatten_single_subfolder(self, path: str) -> str:
+    def _flatten_single_subfolder(
+        self,
+        path: str,
+        operation_sink: Optional[list[dict[str, str]]] = None,
+    ) -> str:
         """
         扁平化单一层级文件夹
         递归检查所有子文件夹，如果某个文件夹只有一个子文件夹（没有文件或其他内容），
@@ -166,6 +170,15 @@ class RenameService:
                 # 如果只有一个项目且是文件夹，则扁平化
                 if len(items) == 1 and items[0].is_dir():
                     subfolder = items[0]
+                    if operation_sink is not None:
+                        try:
+                            parent_relative = current_path.relative_to(root_path).as_posix()
+                        except ValueError:
+                            parent_relative = ""
+                        operation_sink.append({
+                            "parent_relative_path": "" if parent_relative == "." else parent_relative,
+                            "removed_segment": subfolder.name,
+                        })
                     logger.info(f"扁平化 (层 {current_depth + 1}/{max_depth}): {current_path.name} 只有一个子文件夹 {subfolder.name}，正在合并...")
 
                     # 创建临时路径

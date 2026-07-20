@@ -22,6 +22,7 @@ _IMMEDIATE_REASONS = frozenset({
     "failed",
     "cancelled",
     "cleanup",
+    "filtered_item_restored",
     "connected",
 })
 

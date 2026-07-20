@@ -2314,7 +2314,15 @@ class TaskCenterService:
                 engine.cancel_task(engine_task_id)
                 return {"success": True, "message": "任务已取消"}
             if normalized_action == "delete":
-                if await asyncio.to_thread(engine.remove_task, engine_task_id):
+                try:
+                    removed = await asyncio.to_thread(engine.remove_task, engine_task_id)
+                except Exception as exc:
+                    from .filter_recovery_service import FilterRecoveryError
+
+                    if isinstance(exc, FilterRecoveryError):
+                        raise ValueError(str(exc)) from exc
+                    raise
+                if removed:
                     return {"success": True, "message": "任务记录已删除"}
                 raise ValueError("任务不存在")
             if normalized_action == "retry_waiting":

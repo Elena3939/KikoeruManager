@@ -3212,6 +3212,32 @@ async def execute_task_center_action(item_id: str, payload: TaskCenterActionRequ
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+
+@app.post("/api/task-center/{item_id}/filtered-items/{recovery_id}/restore")
+async def restore_task_center_filtered_item(item_id: str, recovery_id: str):
+    """把解压入库任务中进入恢复区的过滤项写回最终库存。"""
+    from ..core.filter_recovery_service import (
+        FilterRecoveryConflictError,
+        FilterRecoveryError,
+        get_filter_recovery_service,
+    )
+
+    try:
+        return await get_filter_recovery_service().restore_item(item_id, recovery_id)
+    except FilterRecoveryConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except FilterRecoveryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error(
+            "还原任务过滤项失败: item_id=%s recovery_id=%s error=%s",
+            item_id,
+            recovery_id,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=f"还原过滤项失败: {str(exc)}")
+
 @app.get("/api/tasks/{task_id}", response_model=TaskResponse, deprecated=True, summary="兼容层：获取原始引擎任务")
 async def get_task(task_id: str):
     """兼容层：获取原始引擎任务详情，新功能请改用 /api/task-center/item。"""
@@ -6295,7 +6321,16 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
         if conflict.conflict_type not in {"EXTRACT_FAILED", "PROCESS_FAILED"}:
             raise HTTPException(status_code=400, detail="只有失败问题项支持重试")
 
-        source_path = str(conflict.new_path or "").strip()
+        conflict_metadata = dict(conflict.new_metadata or {})
+        failed_task_id = str(conflict.task_id or "").strip()
+        failure_stage = str(conflict_metadata.get("failure_stage") or "").strip().lower()
+        is_rename_retry = failure_stage == "rename"
+        source_path = str(
+            conflict_metadata.get("rename_retry_source_path")
+            or conflict_metadata.get("retry_source_path")
+            or conflict.new_path
+            or ""
+        ).strip()
         if not source_path:
             raise HTTPException(status_code=400, detail="缺少待重试的源路径")
         if not os.path.exists(source_path):
@@ -6377,8 +6412,8 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
                 existing_task.task_metadata["manual_retry_filename_encoding"] = specified_filename_encoding
             if ignore_garbled:
                 existing_task.task_metadata["manual_retry_ignore_garbled"] = True
-            if conflict.task_id:
-                existing_task.task_metadata["retry_failed_task_id"] = str(conflict.task_id)
+            if failed_task_id:
+                existing_task.task_metadata["retry_failed_task_id"] = failed_task_id
             db.commit()
             return {
                 "success": True,
@@ -6387,16 +6422,36 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
                 "already_running": True,
             }
 
-        source_task_type = str((conflict.new_metadata or {}).get("source_task_type") or TaskType.AUTO_PROCESS.value).strip()
+        source_task_type = str(conflict_metadata.get("source_task_type") or TaskType.AUTO_PROCESS.value).strip()
         retry_task_type = TaskType(source_task_type) if source_task_type in {task_type.value for task_type in TaskType} else TaskType.AUTO_PROCESS
+        if is_rename_retry:
+            retry_task_type = TaskType.PROCESS_EXISTING_FOLDER
 
-        if conflict.task_id:
-            engine.cleanup_retry_output_artifacts(str(conflict.task_id), source_path)
+        if failed_task_id and not is_rename_retry:
+            engine.cleanup_retry_output_artifacts(failed_task_id, source_path)
+
+        retry_metadata = dict(conflict_metadata) if is_rename_retry else {}
+        for key in (
+            "failure_stage",
+            "error_message",
+            "failed_step",
+            "failed_progress",
+            "resolution_error",
+            "resolution_task_state",
+            "resolution_task_id",
+        ):
+            retry_metadata.pop(key, None)
+        if is_rename_retry:
+            retry_metadata.update({
+                "resume_from_stage": "rename",
+                "skip_duplicate_precheck": True,
+            })
 
         task = Task(
             task_type=retry_task_type,
             source_path=source_path,
             auto_classify=True,
+            metadata=retry_metadata,
         )
         task.task_metadata["retry_conflict_id"] = conflict.id
         task.task_metadata["retry_conflict_source_path"] = source_path
@@ -6415,8 +6470,8 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             task.task_metadata["manual_retry_filename_encoding"] = specified_filename_encoding
         if ignore_garbled:
             task.task_metadata["manual_retry_ignore_garbled"] = True
-        if conflict.task_id:
-            task.task_metadata["retry_failed_task_id"] = str(conflict.task_id)
+        if failed_task_id:
+            task.task_metadata["retry_failed_task_id"] = failed_task_id
         if conflict.rjcode:
             task.task_metadata["inferred_rjcode"] = conflict.rjcode
 
@@ -7146,10 +7201,18 @@ async def resolve_conflict(conflict_id: str, action: dict):
                 renamed_path = await rename_service.rename(extracted_path, task)
                 
                 task.update_progress(75, "过滤文件中")
-                await filter_service.filter(renamed_path, task)
+                filter_result = await filter_service.filter(renamed_path, task)
+                task.task_metadata = {
+                    **(task.task_metadata or {}),
+                    **dict(filter_result or {}),
+                }
                 
+                filter_path_transforms: list[dict[str, str]] = []
                 if config.rename.flatten_single_subfolder:
-                    renamed_path = rename_service._flatten_single_subfolder(renamed_path)
+                    renamed_path = rename_service._flatten_single_subfolder(
+                        renamed_path,
+                        operation_sink=filter_path_transforms,
+                    )
                     logger.info(f"保留新版 - 扁平化后路径: {renamed_path}")
 
                 if config.rename.remove_empty_folders:
@@ -7167,6 +7230,12 @@ async def resolve_conflict(conflict_id: str, action: dict):
 
                 task.update_progress(85, "移动到库存")
                 final_path = await classifier.classify_and_move(renamed_path, metadata, task)
+                task.output_path = final_path
+                await get_task_engine()._finalize_filter_recovery(
+                    task,
+                    filter_path_transforms,
+                    library_id=str((task.task_metadata or {}).get("target_library_id") or ""),
+                )
                 
                 # 归档不再占用问题作品处理请求；统一进入可恢复的空闲归档队列。
                 await get_task_engine()._archive_source_file(task)
@@ -7229,6 +7298,8 @@ async def resolve_conflict(conflict_id: str, action: dict):
                     source_path=conflict.new_path,
                     auto_classify=True
                 )
+                engine._ensure_task_context(task)
+                engine.tasks[task.id] = task
 
                 extract_service = ExtractService()
                 filter_service = FilterService()
@@ -7244,10 +7315,18 @@ async def resolve_conflict(conflict_id: str, action: dict):
                     rename_service = RenameService()
                     renamed_path = await rename_service.rename(extracted_path, task)
 
-                    await filter_service.filter(renamed_path, task)
+                    filter_result = await filter_service.filter(renamed_path, task)
+                    task.task_metadata = {
+                        **(task.task_metadata or {}),
+                        **dict(filter_result or {}),
+                    }
 
+                    filter_path_transforms: list[dict[str, str]] = []
                     if config.rename.flatten_single_subfolder:
-                        renamed_path = rename_service._flatten_single_subfolder(renamed_path)
+                        renamed_path = rename_service._flatten_single_subfolder(
+                            renamed_path,
+                            operation_sink=filter_path_transforms,
+                        )
 
                     if config.rename.remove_empty_folders:
                         rename_service.remove_empty_folders(renamed_path, remove_root=False)
@@ -7270,6 +7349,14 @@ async def resolve_conflict(conflict_id: str, action: dict):
                     metadata['work_name'] = f"{metadata.get('work_name', '')}({counter})"
 
                     final_path = await classifier.classify_and_move(renamed_path, metadata, task)
+                    task.output_path = final_path
+                    await engine._finalize_filter_recovery(
+                        task,
+                        filter_path_transforms,
+                        library_id=str((task.task_metadata or {}).get("target_library_id") or ""),
+                    )
+                    task.update_progress(100, "问题作品合并完成")
+                    task.complete()
                     os.remove(conflict.new_path)
                     logger.info(f"合并完成：新版本已保存为 {final_path}")
                     
@@ -8353,7 +8440,8 @@ def _collapse_exact_rj_descendants(
     kept_roots: Dict[str, list[str]] = {}
     for item in items:
         item_rj = str(item.get("rjcode") or "").strip().upper()
-        if item_rj != normalized_rj or item.get("entry_type") != "dir":
+        is_related_translation = item.get("search_match_type") == "related_translation"
+        if (item_rj != normalized_rj and not is_related_translation) or item.get("entry_type") != "dir":
             kept.append(item)
             continue
 
@@ -8371,6 +8459,92 @@ def _collapse_exact_rj_descendants(
             roots.append(relative_path)
 
     return kept
+
+
+async def _resolve_global_index_translation_relation(matched_rjcode: Optional[str]) -> Dict[str, Any]:
+    normalized = str(matched_rjcode or "").strip().upper()
+    empty = {
+        "query_rjcode": normalized,
+        "group_key": "",
+        "group_label": "",
+        "search_rjcodes": [normalized] if normalized else [],
+        "related_rjcodes": [],
+        "owned_locations": [],
+    }
+    if not normalized:
+        return empty
+    try:
+        from ..core.circle_completion_service import get_circle_completion_service
+
+        relation = await asyncio.to_thread(
+            get_circle_completion_service().get_inventory_translation_search_relation,
+            normalized,
+        )
+        return relation if isinstance(relation, dict) else empty
+    except Exception:
+        logger.warning("[索引搜索] 解析翻译 RJ 关联失败：rj=%s", normalized, exc_info=True)
+        return empty
+
+
+def _annotate_translation_search_item(
+    item: Dict[str, Any],
+    relation: Dict[str, Any],
+) -> Dict[str, Any]:
+    query_rjcode = str(relation.get("query_rjcode") or "").strip().upper()
+    actual_rjcode = str(item.get("rjcode") or "").strip().upper()
+    related_rjcodes = {
+        str(code or "").strip().upper()
+        for code in relation.get("related_rjcodes") or []
+        if str(code or "").strip()
+    }
+    if query_rjcode and actual_rjcode == query_rjcode:
+        item["search_match_type"] = "exact"
+    elif actual_rjcode and actual_rjcode in related_rjcodes:
+        item["search_match_type"] = "related_translation"
+    else:
+        return item
+    item["search_query_rjcode"] = query_rjcode
+    item["search_actual_rjcode"] = actual_rjcode
+    item["search_relation_group"] = str(relation.get("group_key") or "")
+    item["search_relation_label"] = str(relation.get("group_label") or "")
+    return item
+
+
+def _build_owned_translation_relation_items(
+    relation: Dict[str, Any],
+    library_lookup: Dict[str, Dict[str, Any]],
+) -> list[Dict[str, Any]]:
+    query_rjcode = str(relation.get("query_rjcode") or "").strip().upper()
+    items: list[Dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for location in relation.get("owned_locations") or []:
+        library_id = str(location.get("library_id") or "").strip()
+        path = str(location.get("path") or "").strip()
+        actual_rjcode = str(location.get("actual_rjcode") or "").strip().upper()
+        if not library_id or not path or not actual_rjcode or actual_rjcode == query_rjcode:
+            continue
+        library_info = library_lookup.get(library_id)
+        if not library_info:
+            continue
+        item = _fallback_entry_to_uniform_item(
+            {
+                "path": path,
+                "name": os.path.basename(path.rstrip("/\\")) or path,
+                "is_directory": True,
+                "rjcode": actual_rjcode,
+            },
+            library_info,
+        )
+        if item is None:
+            continue
+        item["source"] = "owned_relation"
+        _annotate_translation_search_item(item, relation)
+        key = (library_id, str(item.get("relative_path") or item.get("absolute_path") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(item)
+    return items
 
 
 def _resolve_global_index_library_scope(
@@ -8547,7 +8721,7 @@ def _fallback_entry_to_uniform_item(
 async def _global_search_fallback_one_library(
     manager,
     library_info: Dict[str, Any],
-    keyword: str,
+    keywords: Any,
     normalized_entry_type: Optional[str],
     fetch_limit: int,
 ) -> tuple[str, list[Dict[str, Any]], Optional[str]]:
@@ -8562,8 +8736,17 @@ async def _global_search_fallback_one_library(
     if not library_id:
         return library_id, [], "missing_library_id"
     search_kind = _entry_type_to_search_kind(normalized_entry_type)
-    try:
-        data = await asyncio.wait_for(
+
+    if isinstance(keywords, str):
+        search_keywords = [keywords]
+    else:
+        search_keywords = [str(item or "").strip() for item in list(keywords or [])]
+    search_keywords = list(dict.fromkeys(item for item in search_keywords if item))[:8]
+    if not search_keywords:
+        return library_id, [], None
+
+    async def _search_one(keyword: str) -> Dict[str, Any]:
+        return await asyncio.wait_for(
             manager.list_files(
                 library_id,
                 page=1,
@@ -8577,23 +8760,42 @@ async def _global_search_fallback_one_library(
             ),
             timeout=_GLOBAL_FALLBACK_PER_LIBRARY_TIMEOUT_S,
         )
-    except asyncio.TimeoutError:
+
+    results = await asyncio.gather(
+        *[_search_one(keyword) for keyword in search_keywords],
+        return_exceptions=True,
+    )
+    payloads: list[Dict[str, Any]] = []
+    errors: list[str] = []
+    for result in results:
+        if isinstance(result, asyncio.TimeoutError):
+            errors.append("timeout")
+            continue
+        if isinstance(result, Exception):
+            errors.append(str(result) or result.__class__.__name__)
+            continue
+        payloads.append(result)
+    if errors:
         logger.info(
-            "[索引搜索] 兜底搜索超时：library_id=%s keyword=%r",
-            library_id, keyword,
+            "[索引搜索] 兜底部分失败：library_id=%s keywords=%s errors=%s",
+            library_id,
+            search_keywords,
+            errors,
         )
-        return library_id, [], "timeout"
-    except Exception as exc:  # noqa: BLE001 - 单库异常不能拖垮整体
-        logger.warning(
-            "[索引搜索] 兜底搜索异常：library_id=%s keyword=%r err=%s",
-            library_id, keyword, exc, exc_info=True,
-        )
-        return library_id, [], (str(exc) or exc.__class__.__name__)
+    if not payloads:
+        return library_id, [], errors[0] if errors else None
 
     items: list[Dict[str, Any]] = []
-    for raw_entry in (data.get("files") or []):
-        normalized = _fallback_entry_to_uniform_item(raw_entry, library_info)
-        if normalized is not None:
+    seen: set[str] = set()
+    for data in payloads:
+        for raw_entry in (data.get("files") or []):
+            normalized = _fallback_entry_to_uniform_item(raw_entry, library_info)
+            if normalized is None:
+                continue
+            key = str(normalized.get("relative_path") or normalized.get("absolute_path") or normalized.get("name") or "")
+            if key in seen:
+                continue
+            seen.add(key)
             items.append(normalized)
     return library_id, items, None
 
@@ -8668,6 +8870,8 @@ async def global_search_library_index(
     service = get_library_index_service()
     normalized_entry_type = _normalize_global_index_entry_type(entry_type)
     matched_rjcode = _detect_global_index_rjcode(keyword_raw)
+    translation_relation = await _resolve_global_index_translation_relation(matched_rjcode)
+    search_rjcodes = list(translation_relation.get("search_rjcodes") or [])
 
     # ===== Phase 1：先抓每个库的索引就绪状态，决定走索引还是走兜底 =====
     library_status_map: Dict[str, Dict[str, Any]] = {}
@@ -8743,12 +8947,20 @@ async def global_search_library_index(
             rj_entries: list[Any] = []
             name_entries: list[Any] = []
             if matched_rjcode:
-                rj_entries = service.find_by_rjcode(
-                    matched_rjcode,
-                    scope_param,
-                    entry_type="dir" if normalized_entry_type in (None, "dir") else normalized_entry_type,
-                    limit=fetch_limit,
-                ) or []
+                if len(search_rjcodes) > 1 and hasattr(service, "find_by_rjcodes"):
+                    rj_entries = service.find_by_rjcodes(
+                        search_rjcodes,
+                        scope_param,
+                        entry_type="dir" if normalized_entry_type in (None, "dir") else normalized_entry_type,
+                        limit=fetch_limit,
+                    ) or []
+                else:
+                    rj_entries = service.find_by_rjcode(
+                        matched_rjcode,
+                        scope_param,
+                        entry_type="dir" if normalized_entry_type in (None, "dir") else normalized_entry_type,
+                        limit=fetch_limit,
+                    ) or []
                 # RJ 已命中：跳过 find_by_name 的全表扫描（性能关键）
             else:
                 name_entries = service.find_by_name(
@@ -8803,7 +9015,15 @@ async def global_search_library_index(
             continue
         seen_index.add(key)
         info = library_lookup.get(entry.library_id, {})
-        index_items.append(_index_entry_to_uniform_item(entry, info))
+        item = _index_entry_to_uniform_item(entry, info)
+        index_items.append(_annotate_translation_search_item(item, translation_relation))
+
+    owned_relation_items = _build_owned_translation_relation_items(
+        translation_relation,
+        library_lookup,
+    )
+    if owned_relation_items:
+        index_items.extend(owned_relation_items)
 
     # ===== Phase 3：仅在索引一无所获时才跑兜底扫描 =====
     # - 索引命中（index_items 非空）：未就绪的库标 skipped_index_hit，**不扫描**
@@ -8833,7 +9053,11 @@ async def global_search_library_index(
             results = await asyncio.gather(
                 *[
                     _global_search_fallback_one_library(
-                        manager, info, keyword_raw, normalized_entry_type, fetch_limit,
+                        manager,
+                        info,
+                        search_rjcodes or [keyword_raw],
+                        normalized_entry_type,
+                        fetch_limit,
                     )
                     for info in unready_library_infos
                 ],
@@ -8851,7 +9075,10 @@ async def global_search_library_index(
                     "fallback_failed" if err else "fallback"
                 )
                 library_status_map[library_id_done]["fallback_error"] = err
-            fallback_items.extend(items_done)
+            fallback_items.extend(
+                _annotate_translation_search_item(item, translation_relation)
+                for item in items_done
+            )
 
     # ===== Phase 4：合并 + 去重 + 排序 + 裁剪 =====
     seen_global: set[tuple[str, str]] = set()
@@ -8871,6 +9098,7 @@ async def global_search_library_index(
             matched_rjcode is not None
             and (item.get("rjcode") or "").upper() == matched_rjcode
         )
+        relation_rank = 1 if item.get("search_match_type") == "related_translation" else 0
         is_dir = item.get("entry_type") == "dir"
         depth = item.get("depth")
         depth_val = depth if isinstance(depth, int) else 99
@@ -8879,6 +9107,7 @@ async def global_search_library_index(
         name_lower = str(item.get("name") or "").lower()
         return (
             0 if is_rj_hit else 1,
+            relation_rank,
             0 if is_index else 1,
             0 if is_dir else 1,
             depth_val,
@@ -8901,6 +9130,9 @@ async def global_search_library_index(
         "library_scope": library_ids_list,
         "library_status": library_status,
         "matched_rjcode": matched_rjcode,
+        "related_rjcodes": list(translation_relation.get("related_rjcodes") or []),
+        "search_relation_group": str(translation_relation.get("group_key") or ""),
+        "search_relation_label": str(translation_relation.get("group_label") or ""),
         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
         "mode": normalized_mode,
         # 让前端区分：是否走过 fallback、有几个库走 fallback、有几个 fallback 失败
@@ -8989,6 +9221,8 @@ async def global_search_library_index_stream(
         service = get_library_index_service()
         normalized_entry_type = _normalize_global_index_entry_type(entry_type)
         matched_rjcode = _detect_global_index_rjcode(keyword_raw)
+        translation_relation = await _resolve_global_index_translation_relation(matched_rjcode)
+        search_rjcodes = list(translation_relation.get("search_rjcodes") or [])
 
         # === Phase 1：库就绪状态分组 ===
         library_status_map: Dict[str, Dict[str, Any]] = {}
@@ -9040,12 +9274,20 @@ async def global_search_library_index_stream(
                 rj_inner: list[Any] = []
                 name_inner: list[Any] = []
                 if matched_rjcode:
-                    rj_inner = service.find_by_rjcode(
-                        matched_rjcode,
-                        scope_param,
-                        entry_type="dir" if normalized_entry_type in (None, "dir") else normalized_entry_type,
-                        limit=fetch_limit,
-                    ) or []
+                    if len(search_rjcodes) > 1 and hasattr(service, "find_by_rjcodes"):
+                        rj_inner = service.find_by_rjcodes(
+                            search_rjcodes,
+                            scope_param,
+                            entry_type="dir" if normalized_entry_type in (None, "dir") else normalized_entry_type,
+                            limit=fetch_limit,
+                        ) or []
+                    else:
+                        rj_inner = service.find_by_rjcode(
+                            matched_rjcode,
+                            scope_param,
+                            entry_type="dir" if normalized_entry_type in (None, "dir") else normalized_entry_type,
+                            limit=fetch_limit,
+                        ) or []
                 else:
                     name_inner = service.find_by_name(
                         scope_param,
@@ -9090,7 +9332,19 @@ async def global_search_library_index_stream(
                 continue
             seen_global.add(key)
             info = library_lookup.get(entry.library_id, {})
-            index_items.append(_index_entry_to_uniform_item(entry, info))
+            item = _index_entry_to_uniform_item(entry, info)
+            index_items.append(_annotate_translation_search_item(item, translation_relation))
+
+        owned_relation_items = _build_owned_translation_relation_items(
+            translation_relation,
+            library_lookup,
+        )
+        for item in owned_relation_items:
+            key = (item.get("library_id") or "", item.get("relative_path") or item.get("absolute_path") or "")
+            if key in seen_global:
+                continue
+            seen_global.add(key)
+            index_items.append(item)
 
         def _sort_item(item: Dict[str, Any]):
             rj_key = (item.get("library_id") or "", item.get("relative_path") or "")
@@ -9098,6 +9352,7 @@ async def global_search_library_index_stream(
                 matched_rjcode is not None
                 and (item.get("rjcode") or "").upper() == matched_rjcode
             )
+            relation_rank = 1 if item.get("search_match_type") == "related_translation" else 0
             is_dir = item.get("entry_type") == "dir"
             depth = item.get("depth")
             depth_val = depth if isinstance(depth, int) else 99
@@ -9105,6 +9360,7 @@ async def global_search_library_index_stream(
             name_lower = str(item.get("name") or "").lower()
             return (
                 0 if is_rj_hit else 1,
+                relation_rank,
                 0 if is_index else 1,
                 0 if is_dir else 1,
                 depth_val,
@@ -9133,6 +9389,9 @@ async def global_search_library_index_stream(
             "library_scope": library_ids_list,
             "library_status": [library_status_map[lid] for lid in library_ids_list],
             "matched_rjcode": matched_rjcode,
+            "related_rjcodes": list(translation_relation.get("related_rjcodes") or []),
+            "search_relation_group": str(translation_relation.get("group_key") or ""),
+            "search_relation_label": str(translation_relation.get("group_label") or ""),
             "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
             "mode": normalized_mode,
             "limit": capped_limit,
@@ -9158,7 +9417,11 @@ async def global_search_library_index_stream(
         per_task_info: Dict[asyncio.Task, Dict[str, Any]] = {
             asyncio.create_task(
                 _global_search_fallback_one_library(
-                    manager, info, keyword_raw, normalized_entry_type, fetch_limit,
+                    manager,
+                    info,
+                    search_rjcodes or [keyword_raw],
+                    normalized_entry_type,
+                    fetch_limit,
                 )
             ): info
             for info in unready_library_infos
@@ -9191,7 +9454,10 @@ async def global_search_library_index_stream(
                 yield json.dumps({
                     "type": "library",
                     "library_id": library_id_done,
-                    "items": deduped,
+                    "items": [
+                        _annotate_translation_search_item(item, translation_relation)
+                        for item in deduped
+                    ],
                     "error": err,
                     "library_status": library_status_map.get(library_id_done),
                     "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
@@ -9879,6 +10145,97 @@ async def cancel_library_browser_filter_delete_preview(request: Request):
     except Exception as e:
         logger.error(f"取消过滤删除预审失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"取消过滤删除预审失败: {str(e)}")
+
+
+@app.post("/api/library/browser/create-folder")
+async def create_library_browser_folder(request: Request):
+    prepared = None
+    mutation_service = None
+    try:
+        data = await request.json()
+        library_id = str(data.get("library_id") or "").strip()
+        parent_path = str(data.get("parent_path") or "").strip()
+        name = str(data.get("name") or "").strip()
+        if not library_id:
+            raise HTTPException(status_code=400, detail="缺少 library_id")
+        if not name:
+            raise HTTPException(status_code=400, detail="请输入文件夹名称")
+
+        manager = get_library_manager()
+        library, _, target_path, _ = manager.resolve_create_folder_target(
+            library_id,
+            parent_path or None,
+            name,
+        )
+        mutation_effect = None
+        if library.type == "local":
+            mutation_effect = {
+                "kind": "upsert",
+                "relative_path": _local_relative_path(library, target_path),
+                "scope": "subtree",
+            }
+            mutation_service = get_library_index_mutation_service()
+            prepared = mutation_service.prepare(
+                kind="create_folder",
+                effects_by_library={library.id: [mutation_effect]},
+                idempotency_key=_request_idempotency_key(request),
+            )
+            replay = _prepared_replay_response(prepared)
+            if replay is not None:
+                return replay
+
+        try:
+            if prepared is not None:
+                mutation_service.mark_filesystem_started(prepared.operation_id)
+            result = await manager.create_folder(
+                library_id,
+                parent_path or None,
+                name,
+                skip_index_mutation=prepared is not None,
+            )
+            _invalidate_rj_subtitle_folder_summary_cache(library_id)
+        except Exception as exc:
+            if prepared is not None:
+                mutation_service.fail_prepared(prepared.operation_id, exc)
+            raise
+
+        if prepared is not None:
+            try:
+                result = mutation_service.finalize(
+                    prepared.operation_id,
+                    actual_effects_by_library={library.id: [mutation_effect]},
+                    actual_result=result,
+                )
+            except Exception as exc:
+                mutation_service.mark_reconcile_required(prepared.operation_id, exc)
+                return JSONResponse(
+                    status_code=202,
+                    content={
+                        **result,
+                        "operation_id": prepared.operation_id,
+                        "operation_state": "reconcile_required",
+                        "reconciliation_pending": True,
+                    },
+                )
+        return result
+    except HTTPException:
+        raise
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except NotADirectoryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        _log_synology_err(f"新建库存文件夹失败: {exc}", exc)
+        raise HTTPException(
+            status_code=_synology_http_status(exc),
+            detail=f"新建文件夹失败: {str(exc)}",
+        )
 
 
 @app.post("/api/library/browser/rename")

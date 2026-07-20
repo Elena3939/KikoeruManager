@@ -199,7 +199,7 @@ class SmartClassifier:
             return False
         if not bool(preview.get("is_translation_work")):
             return False
-        if not bool(preview.get("kikoeru_needs_subtitle")):
+        if not bool(preview.get("target_needs_subtitle", preview.get("kikoeru_needs_subtitle"))):
             return False
         if bool(preview.get("kikoeru_target_is_empty_shell")):
             return False
@@ -305,6 +305,10 @@ class SmartClassifier:
         manager = get_library_manager()
         target_library_id = task.task_metadata.get('target_library_id') if getattr(task, 'task_metadata', None) else None
         target_library = manager.get_library_definition(target_library_id)
+        task.task_metadata = {
+            **(task.task_metadata or {}),
+            "target_library_id": target_library.id,
+        }
         
         if existing and not (resolution in {"KEEP_NEW", "MERGE"} and resolution_existing_path and os.path.abspath(existing['path']) == os.path.abspath(str(resolution_existing_path))):
             # 使用DUPLICATE类型（解压后的重复检测，已有元数据但统一标记为重复）
