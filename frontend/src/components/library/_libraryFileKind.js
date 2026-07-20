@@ -138,7 +138,8 @@ export function applyLibraryFrontendFilter (items, options = {}) {
       const itemRj = String(item.rjcode || '').toUpperCase()
       const nameHit = itemName.includes(lowerKeyword)
       const rjHit = rj && itemRj === rj
-      if (!nameHit && !rjHit) continue
+      const relatedTranslationHit = item.search_match_type === 'related_translation'
+      if (!nameHit && !rjHit && !relatedTranslationHit) continue
     }
 
     const isDir = isDirectoryItem(item)

@@ -127,11 +127,7 @@ async def test_sync_local_owned_index_writes_related_circle_work_canonical(monke
     added_by_canonical = {row.canonical_rjcode: row for row in write_session.added}
     assert result["owned_count"] == 2
     assert set(added_by_canonical) == {"RJ22222222", "RJ99999999"}
-    assert set(added_by_canonical["RJ99999999"].owned_rjcodes) == {
-        "RJ11111111",
-        "RJ22222222",
-        "RJ99999999",
-    }
+    assert added_by_canonical["RJ99999999"].owned_rjcodes == ["RJ11111111"]
     assert added_by_canonical["RJ99999999"].owned_paths == ["/library/RaRo/[RaRo][RJ11111111]"]
     assert write_session.deleted is True
     assert write_session.committed is True
@@ -163,7 +159,7 @@ def test_upsert_library_owned_rows_from_current_index_items():
     assert len(session.added) == 1
     row = session.added[0]
     assert row.canonical_rjcode == "RJ99999999"
-    assert set(row.owned_rjcodes) == {"RJ11111111", "RJ22222222", "RJ99999999"}
+    assert row.owned_rjcodes == ["RJ11111111"]
     assert row.primary_folder_path == "/library/シルトクレーテ/[RJ11111111]"
     assert row.folder_count == 1
     assert row.folder_size == 1024
@@ -171,6 +167,57 @@ def test_upsert_library_owned_rows_from_current_index_items():
     assert row.owned_paths == ["/library/シルトクレーテ/[RJ11111111]"]
     assert row.has_local_subtitles is True
     assert row.subtitle_file_count == 3
+
+
+def test_inventory_translation_search_relation_only_expands_same_language_group(monkeypatch):
+    service = CircleCompletionService()
+    canonical = "RJ01700001"
+    simplified_query = "RJ01700002"
+    simplified_owned = "RJ01700003"
+    traditional = "RJ01700004"
+    link_rows = [
+        SimpleNamespace(canonical_rjcode=canonical, linked_rjcode=canonical, link_type="original", lang="JPN"),
+        SimpleNamespace(canonical_rjcode=canonical, linked_rjcode=simplified_query, link_type="translation", lang="CHI_HANS"),
+        SimpleNamespace(canonical_rjcode=canonical, linked_rjcode=simplified_owned, link_type="translation", lang="CHI_SIMP"),
+        SimpleNamespace(canonical_rjcode=canonical, linked_rjcode=traditional, link_type="translation", lang="CHI_HANT"),
+    ]
+    owned_path = f"/library/翻译社团/[翻译社团][{simplified_owned}]"
+    owned_row = SimpleNamespace(
+        canonical_rjcode=canonical,
+        owned_rjcodes=[canonical, simplified_query, simplified_owned, traditional],
+        primary_folder_path=owned_path,
+        library_id="default-local",
+        owned_paths=[owned_path],
+    )
+    query_results = iter([[link_rows[1]], link_rows, [owned_row]])
+
+    class Query:
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def all(self):
+            return next(query_results)
+
+    class Session:
+        def query(self, *_args, **_kwargs):
+            return Query()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(circle_module, "SessionLocal", lambda: Session())
+
+    relation = service.get_inventory_translation_search_relation(simplified_query)
+
+    assert relation["group_key"] == "simplified"
+    assert relation["group_label"] == "简中"
+    assert relation["search_rjcodes"] == [simplified_query, simplified_owned]
+    assert traditional not in relation["search_rjcodes"]
+    assert relation["owned_locations"] == [{
+        "library_id": "default-local",
+        "path": owned_path,
+        "actual_rjcode": simplified_owned,
+    }]
 
 
 def test_apply_library_index_owned_state_skips_when_ready_index_unavailable(monkeypatch):

@@ -114,6 +114,13 @@
                       <div class="lib-panel-row-title">
                         <span class="lib-panel-row-name" v-html="renderHighlightedName(item)"></span>
                         <span v-if="item.rjcode" class="lib-panel-row-rj">{{ item.rjcode }}</span>
+                        <span
+                          v-if="item.search_match_type === 'related_translation'"
+                          class="lib-panel-row-relation"
+                          :title="`搜索 ${item.search_query_rjcode}，实际收录 ${item.search_actual_rjcode || item.rjcode}`"
+                        >
+                          {{ item.search_relation_label || '翻译' }}关联
+                        </span>
                       </div>
                       <div class="lib-panel-row-sub">
                         <span
@@ -474,7 +481,7 @@ watch(isFilterMenuOpen, (next) => {
 
 function isRjHit (item) {
   if (!matchedRjcode.value || !item) return false
-  return (item.rjcode || '').toUpperCase() === matchedRjcode.value
+  return (item.rjcode || '').toUpperCase() === matchedRjcode.value || item.search_match_type === 'related_translation'
 }
 
 function formatPath (item) {
@@ -1152,6 +1159,17 @@ onBeforeUnmount(() => {
   transition: background 0.22s ease, color 0.22s ease;
 }
 
+.lib-panel-row-relation {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border: 1px solid rgba(16, 185, 129, 0.26);
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.1);
+  color: #047857;
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .lib-panel-row-sub {
   display: flex;
   align-items: center;
@@ -1432,6 +1450,7 @@ onBeforeUnmount(() => {
 }
 
 :global(html.kikoerumanager-dark) .lib-panel-row-rj,
+:global(html.kikoerumanager-dark) .lib-panel-row-relation,
 :global(html.kikoerumanager-dark) .lib-panel-row-lib {
   background: var(--km-dark-field) !important;
   color: var(--km-dark-text) !important;

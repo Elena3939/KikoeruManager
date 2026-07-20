@@ -158,6 +158,13 @@
               <div class="lib-suggest-row-title">
                 <span class="lib-suggest-row-name" v-html="renderHighlightedName(item)"></span>
                 <span v-if="item.rjcode" class="lib-suggest-row-rj">{{ item.rjcode }}</span>
+                <span
+                  v-if="item.search_match_type === 'related_translation'"
+                  class="lib-suggest-row-relation"
+                  :title="`搜索 ${item.search_query_rjcode}，实际收录 ${item.search_actual_rjcode || item.rjcode}`"
+                >
+                  {{ item.search_relation_label || '翻译' }}关联
+                </span>
               </div>
               <div class="lib-suggest-row-sub">
                 <span
@@ -323,7 +330,7 @@ const moreButtonLabel = computed(() => {
 
 function isRjHit (item) {
   if (!matchedRjcode.value || !item) return false
-  return (item.rjcode || '').toUpperCase() === matchedRjcode.value
+  return (item.rjcode || '').toUpperCase() === matchedRjcode.value || item.search_match_type === 'related_translation'
 }
 
 // 行图标 / 颜色 / 是否 fill：与库存页主文件树同一套色盘（参见 _libraryFileKind.js）
@@ -1095,6 +1102,17 @@ onBeforeUnmount(() => {
   letter-spacing: 0.2px;
 }
 
+.lib-suggest-row-relation {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border: 1px solid rgba(16, 185, 129, 0.24);
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.1);
+  color: #047857;
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .lib-suggest-row-sub {
   display: flex;
   align-items: center;
@@ -1404,6 +1422,7 @@ onBeforeUnmount(() => {
 
 :global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-head-count,
 :global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row-rj,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row-relation,
 :global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-lib-chip,
 :global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-foot-hint kbd {
   background: var(--km-dark-field) !important;

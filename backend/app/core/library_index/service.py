@@ -1676,6 +1676,22 @@ class LibraryIndexService:
             library_id, rjcode, entry_type=entry_type, limit=limit,
         )
 
+    def find_by_rjcodes(
+        self,
+        rjcodes: Sequence[str],
+        library_id: Optional[Union[str, Sequence[str]]] = None,
+        *,
+        entry_type: Optional[str] = 'dir',
+        limit: int = 100,
+    ) -> list[IndexEntry]:
+        """批量按 RJ 精确查，避免关联翻译号逐个建立数据库会话。"""
+        return self._store.find_by_rjcodes(
+            library_id,
+            rjcodes,
+            entry_type=entry_type,
+            limit=limit,
+        )
+
     def find_by_name(
         self,
         library_id: Optional[Union[str, Sequence[str]]],

@@ -3060,7 +3060,7 @@ class LibraryManager:
         source_library: LibraryDefinition,
         target_library: LibraryDefinition,
         moved_items: list[dict[str, Any]],
-    ) -> bool:
+    ) -> Optional[dict[str, Any]]:
         return self._record_index_move_many(
             source_library,
             target_library,
@@ -3073,12 +3073,12 @@ class LibraryManager:
         source_library: LibraryDefinition,
         target_library: LibraryDefinition,
         moved_items: list[dict[str, Any]],
-    ) -> None:
+    ) -> Optional[dict[str, Any]]:
         items = [dict(item or {}) for item in moved_items or [] if item]
         if not items:
-            return
+            return None
         try:
-            self._record_index_move_many(
+            return self._record_index_move_many(
                 source_library,
                 target_library,
                 items,
@@ -3092,6 +3092,7 @@ class LibraryManager:
                 len(items),
                 exc_info=True,
             )
+            return None
 
     def _flush_index_delete_many_now(
         self,
@@ -3496,14 +3497,13 @@ class LibraryManager:
         moved_items: list[dict[str, Any]],
         *,
         sync: bool = False,
-    ) -> None:
+    ) -> Optional[dict[str, Any]]:
         if not self._library_uses_inventory_index(source_library) and not self._library_uses_inventory_index(target_library):
-            return
+            return None
         try:
             if sync:
-                self._flush_index_move_many_now(source_library, target_library, moved_items)
-            else:
-                self._enqueue_index_move_many(source_library, target_library, moved_items)
+                return self._flush_index_move_many_now(source_library, target_library, moved_items)
+            return self._enqueue_index_move_many(source_library, target_library, moved_items)
         except Exception:
             logger.debug(
                 "[索引] 本地移动索引追赶调度失败 source=%s target=%s",
@@ -3511,6 +3511,7 @@ class LibraryManager:
                 target_library.id,
                 exc_info=True,
             )
+            return None
 
     def notify_index_move_batch(
         self,
@@ -3545,12 +3546,12 @@ class LibraryManager:
         submit_error = ""
         if indexable_items:
             try:
-                submitted = self._record_index_move_many(
+                submitted = bool(self._record_index_move_many(
                     library,
                     library,
                     indexable_items,
                     source="subtitle_final_move",
-                )
+                ))
             except Exception as exc:
                 submit_error = str(exc)
                 logger.warning(
@@ -4430,7 +4431,7 @@ class LibraryManager:
         moved_items: list[dict[str, Any]],
         *,
         source: str,
-    ) -> bool:
+    ) -> Optional[dict[str, Any]]:
         effects_by_library: dict[str, list[dict[str, Any]]] = {}
         for item in moved_items or []:
             source_path = str(item.get("source") or item.get("old_path") or item.get("from") or "").strip()
@@ -4460,7 +4461,7 @@ class LibraryManager:
             if effects
         }
         if not effects_by_library:
-            return False
+            return None
         from .library_index import get_library_index_mutation_service
 
         service = get_library_index_mutation_service()
@@ -4470,12 +4471,11 @@ class LibraryManager:
             idempotency_key=f"{source}:{uuid.uuid4()}",
         )
         service.mark_filesystem_started(prepared.operation_id)
-        service.finalize(
+        return service.finalize(
             prepared.operation_id,
             actual_effects_by_library=effects_by_library,
             actual_result={"source": source, "move_count": len(moved_items or [])},
         )
-        return True
 
     def _build_index_search_result(
         self,
@@ -6093,6 +6093,91 @@ class LibraryManager:
         )
         return self._set_cached_remote_search_result(cache_key, result)
 
+    def resolve_create_folder_target(
+        self,
+        library_id: str,
+        parent_path: Optional[str],
+        name: str,
+    ) -> tuple[LibraryDefinition, str, str, str]:
+        """解析库存新建目录目标，并保证目标只能落在当前 browse root 内。"""
+        library = self.get_library_definition(library_id)
+        if not library.writable:
+            raise PermissionError("当前库存为只读，不能新建文件夹")
+
+        safe_name = self._validate_remote_new_name(name)
+        if library.type == "local":
+            browse_root = os.path.abspath(library.browse_root_path or library.root_path)
+            raw_parent = str(parent_path or "").strip()
+            resolved_parent = (
+                os.path.abspath(raw_parent)
+                if raw_parent and os.path.isabs(raw_parent)
+                else os.path.abspath(os.path.join(browse_root, raw_parent))
+            )
+            if not self._local_path_is_within_root(resolved_parent, browse_root):
+                raise PermissionError("新建文件夹失败：目标路径超出当前库存浏览根目录")
+            target_path = os.path.abspath(os.path.join(resolved_parent, safe_name))
+            if not self._local_path_is_within_root(target_path, browse_root):
+                raise PermissionError("新建文件夹失败：目标路径超出当前库存浏览根目录")
+            return library, resolved_parent, target_path, safe_name
+
+        _, resolved_parent = self._resolve_remote_operation_path(
+            library,
+            parent_path,
+            action="新建文件夹",
+            new_name=safe_name,
+        )
+        target_path = self._normalize_remote_path(
+            str(PurePosixPath(resolved_parent) / safe_name)
+        )
+        return library, resolved_parent, target_path, safe_name
+
+    async def create_folder(
+        self,
+        library_id: str,
+        parent_path: Optional[str],
+        name: str,
+        *,
+        skip_index_mutation: bool = False,
+    ) -> dict[str, Any]:
+        library, resolved_parent, target_path, safe_name = self.resolve_create_folder_target(
+            library_id,
+            parent_path,
+            name,
+        )
+        if library.type == "local":
+            def _create_local_folder() -> None:
+                if not os.path.isdir(resolved_parent):
+                    raise FileNotFoundError("当前目录不存在或已被移动")
+                if os.path.exists(target_path):
+                    raise FileExistsError("同名文件或文件夹已存在")
+                os.mkdir(target_path)
+
+            await asyncio.to_thread(_create_local_folder)
+            self._invalidate_local_browse_caches(library.id)
+            if not skip_index_mutation:
+                self._notify_index_self_mutation_upsert_subtree(library, target_path)
+        else:
+            client = self.get_cached_synology_client(library.synology)
+            if await self._remote_path_exists(client, target_path):
+                raise FileExistsError("同名文件或文件夹已存在")
+            try:
+                await client.create_folder(resolved_parent, safe_name)
+            except Exception as exc:
+                if client._is_error_code(exc, 117) or client._is_error_code(exc, 414):
+                    raise FileExistsError("同名文件或文件夹已存在") from exc
+                raise
+
+        self._append_stats_log(library, "INFO", f"新建文件夹 path={target_path}")
+        return {
+            "message": "文件夹创建成功",
+            "library_id": library.id,
+            "library_type": library.type,
+            "parent_path": resolved_parent,
+            "path": target_path,
+            "name": safe_name,
+            "is_directory": True,
+        }
+
     async def rename(
         self,
         library_id: str,
@@ -7557,6 +7642,7 @@ class LibraryManager:
         moved_index_items: list[dict[str, str]] = []
         deleted_index_paths: list[str] = []
         replace_index_paths: dict[str, tuple[LibraryDefinition, set[str]]] = {}
+        index_mutation: Optional[dict[str, Any]] = None
 
         def queue_replace_index(library: LibraryDefinition, path: str) -> None:
             if not path:
@@ -7632,7 +7718,7 @@ class LibraryManager:
 
         # 索引同步：普通移动走 fast-path；目录合并会影响已有目标目录，改为 delete 源 + replace 目标。
         if moved_index_items and not skip_index_mutation:
-            self._notify_index_self_mutation_move_batch(
+            index_mutation = self._notify_index_self_mutation_move_batch(
                 source_library,
                 target_library,
                 moved_index_items,
@@ -7656,7 +7742,7 @@ class LibraryManager:
             f"批量移动 -> {target_library.id}:{target_dir} success={len(success)} skipped={len(skipped)} failed={len(failed)}",
         )
 
-        return {
+        result = {
             "message": "批量移动完成",
             "success_count": len(success),
             "skipped_count": len(skipped),
@@ -7667,6 +7753,13 @@ class LibraryManager:
             "target_path": target_dir,
             "target_library_id": target_library.id,
         }
+        if index_mutation:
+            result.update({
+                "operation_id": index_mutation.get("operation_id"),
+                "operation_state": index_mutation.get("operation_state"),
+                "index_fences": list(index_mutation.get("index_fences") or []),
+            })
+        return result
 
     async def open_folder(self, library_id: str, path: str, force_local: bool = False) -> dict[str, Any]:
         library = self.get_library_definition(library_id)

@@ -233,6 +233,11 @@ class CircleCompletionService:
         self._completion_page_cache: TTLCache = TTLCache(max_size=512, ttl_seconds=60, name="circle.completion_page")
         self._completion_codes_cache: TTLCache = TTLCache(max_size=256, ttl_seconds=60, name="circle.completion_codes")
         self._completion_recent_cache: TTLCache = TTLCache(max_size=128, ttl_seconds=30, name="circle.completion_recent")
+        self._inventory_translation_search_cache: TTLCache = TTLCache(
+            max_size=2048,
+            ttl_seconds=300,
+            name="circle.inventory_translation_search",
+        )
         self._completion_state_singleflight_lock = asyncio.Lock()
         self._completion_redis_lock_tokens: Dict[str, str] = {}
         self._completion_redis_lock_guard = threading.Lock()
@@ -1158,6 +1163,140 @@ class CircleCompletionService:
             return {"key": "original", "label": "原作优先", "short_label": "原作"}
         return {"key": "other", "label": "其他语言", "short_label": "其他"}
 
+    def get_inventory_translation_search_relation(self, rjcode: str) -> Dict[str, Any]:
+        """把翻译 RJ 展开为同原作、同语言组的库存搜索别名。
+
+        这里只读 PostgreSQL 的关联表和本地拥有态快照，不触发 DLsite HTTP，
+        也不扫描库存目录。原作、英文及未知语言保持精确搜索，避免关联范围过宽。
+        """
+        from sqlalchemy import or_ as sa_or
+
+        normalized_rj = self.normalize_rjcode(rjcode)
+        empty_result = {
+            "query_rjcode": normalized_rj,
+            "group_key": "",
+            "group_label": "",
+            "search_rjcodes": [normalized_rj] if normalized_rj else [],
+            "related_rjcodes": [],
+            "owned_locations": [],
+        }
+        if not re.fullmatch(r"RJ\d{4,12}", normalized_rj or "", re.IGNORECASE):
+            return empty_result
+
+        cached = self._inventory_translation_search_cache.get(normalized_rj)
+        if cached is not None:
+            return deepcopy(cached)
+
+        db = SessionLocal()
+        try:
+            anchor_rows = (
+                db.query(WorkCanonicalLink)
+                .filter(
+                    sa_or(
+                        WorkCanonicalLink.linked_rjcode == normalized_rj,
+                        WorkCanonicalLink.canonical_rjcode == normalized_rj,
+                    )
+                )
+                .all()
+            )
+            canonical_rjcodes = sorted({
+                self.normalize_rjcode(row.canonical_rjcode)
+                for row in anchor_rows
+                if self.normalize_rjcode(row.canonical_rjcode)
+            })
+            if not canonical_rjcodes:
+                self._inventory_translation_search_cache[normalized_rj] = empty_result
+                return deepcopy(empty_result)
+
+            link_rows = (
+                db.query(WorkCanonicalLink)
+                .filter(WorkCanonicalLink.canonical_rjcode.in_(canonical_rjcodes))
+                .all()
+            )
+            link_meta_by_rj: Dict[str, Dict[str, Any]] = {}
+            for row in link_rows:
+                linked_rjcode = self.normalize_rjcode(row.linked_rjcode)
+                if not linked_rjcode:
+                    continue
+                link_meta_by_rj[linked_rjcode] = {
+                    "link_type": str(row.link_type or "").strip().lower(),
+                    "lang": self._normalize_lang_code(row.lang),
+                }
+
+            query_meta = link_meta_by_rj.get(normalized_rj) or {}
+            if not query_meta and normalized_rj in canonical_rjcodes:
+                query_meta = {"link_type": "original", "lang": "JPN"}
+            query_group = self._variant_group(
+                query_meta.get("link_type"),
+                query_meta.get("lang"),
+            )
+            group_key = str(query_group.get("key") or "")
+            if group_key not in {"simplified", "traditional"}:
+                result = {
+                    **empty_result,
+                    "group_key": group_key,
+                    "group_label": str(query_group.get("short_label") or ""),
+                }
+                self._inventory_translation_search_cache[normalized_rj] = result
+                return deepcopy(result)
+
+            related_rjcodes = sorted({
+                linked_rjcode
+                for linked_rjcode, meta in link_meta_by_rj.items()
+                if self._variant_group(meta.get("link_type"), meta.get("lang")).get("key") == group_key
+            })
+            search_rjcodes = [normalized_rj, *[
+                candidate for candidate in related_rjcodes if candidate != normalized_rj
+            ]]
+
+            owned_locations: List[Dict[str, Any]] = []
+            owned_rows = (
+                db.query(LibraryOwnedWork)
+                .filter(LibraryOwnedWork.canonical_rjcode.in_(canonical_rjcodes))
+                .all()
+            )
+            related_set = set(search_rjcodes)
+            for owned_row in owned_rows:
+                actual_owned_rjcodes = {
+                    self.normalize_rjcode(candidate)
+                    for candidate in list(owned_row.owned_rjcodes or [])
+                } & related_set
+                paths = list(owned_row.owned_paths or [])
+                primary_path = str(owned_row.primary_folder_path or "").strip()
+                if primary_path and primary_path not in paths:
+                    paths.insert(0, primary_path)
+                for path_value in paths:
+                    path = str(path_value or "").strip()
+                    if not path:
+                        continue
+                    path_rjcodes = {
+                        match.upper()
+                        for match in re.findall(r"RJ\d{4,12}", path, re.IGNORECASE)
+                    }
+                    actual_rjcode = next(iter(sorted(path_rjcodes & related_set)), "")
+                    if not actual_rjcode and len(actual_owned_rjcodes) == 1:
+                        actual_rjcode = next(iter(actual_owned_rjcodes))
+                    if not actual_rjcode:
+                        continue
+                    owned_locations.append({
+                        "library_id": str(owned_row.library_id or "").strip(),
+                        "path": path,
+                        "actual_rjcode": actual_rjcode,
+                    })
+
+            result = {
+                "query_rjcode": normalized_rj,
+                "group_key": group_key,
+                "group_label": str(query_group.get("short_label") or ""),
+                "search_rjcodes": search_rjcodes,
+                "related_rjcodes": [code for code in search_rjcodes if code != normalized_rj],
+                "owned_locations": owned_locations,
+            }
+            self._inventory_translation_search_cache[normalized_rj] = result
+            return deepcopy(result)
+        finally:
+            db.close()
+
     def _infer_variant_badge_from_metadata(self, rjcode: str, metadata_map: Dict[str, Dict[str, Any]]) -> str:
         metadata = metadata_map.get(rjcode) or {}
         title = str(metadata.get("work_name") or "").strip().lower()
@@ -2052,9 +2191,9 @@ class CircleCompletionService:
                 metadata_map,
             )
         preferred_group = self._variant_group(preferred_variant.get("link_type"), preferred_variant.get("lang"))
-        local_owned_rjcodes = list((owned_row.owned_rjcodes or []) if owned_row else [])
+        local_owned_rjcodes = self._actual_owned_rjcodes(owned_row)
         normalized_local_owned_rjcodes: List[str] = []
-        for candidate in [*local_owned_rjcodes, row.display_rjcode, row.canonical_rjcode]:
+        for candidate in local_owned_rjcodes:
             normalized_candidate = self.normalize_rjcode(candidate)
             if normalized_candidate and normalized_candidate not in normalized_local_owned_rjcodes:
                 normalized_local_owned_rjcodes.append(normalized_candidate)
@@ -3317,6 +3456,31 @@ class CircleCompletionService:
         if owned_rjcodes:
             return owned_rjcodes[0]
         return canonical or ""
+
+    def _actual_owned_rjcodes(self, owned_row: Optional[LibraryOwnedWork]) -> List[str]:
+        """优先从真实库存路径恢复 RJ，兼容旧快照曾把整条关联链写进 owned_rjcodes。"""
+        if owned_row is None:
+            return []
+        path_rjcodes: List[str] = []
+        paths = [
+            *list(owned_row.owned_paths or []),
+            owned_row.primary_folder_path,
+            owned_row.subtitle_dir,
+        ]
+        for path_value in paths:
+            for matched in re.findall(r"RJ\d{4,12}", str(path_value or ""), re.IGNORECASE):
+                normalized = self.normalize_rjcode(matched)
+                if normalized and normalized not in path_rjcodes:
+                    path_rjcodes.append(normalized)
+        if path_rjcodes:
+            return path_rjcodes
+
+        stored_rjcodes: List[str] = []
+        for candidate in list(owned_row.owned_rjcodes or []):
+            normalized = self.normalize_rjcode(candidate)
+            if normalized and normalized not in stored_rjcodes:
+                stored_rjcodes.append(normalized)
+        return stored_rjcodes
 
     def _build_local_download_session_map(self, db, works: List[CircleWork], link_map_by_canonical: Dict[str, Dict[str, Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
         lookup_rjcodes: List[str] = []
@@ -5664,10 +5828,6 @@ class CircleCompletionService:
                         "subtitle_dir": "",
                     })
                     bucket["owned_rjcodes"].add(normalized_rj)
-                    if canonical != normalized_rj:
-                        bucket["owned_rjcodes"].add(canonical)
-                    if target_canonical != normalized_rj:
-                        bucket["owned_rjcodes"].add(target_canonical)
                     path = str(hit.get("path") or "").strip()
                     if path and path not in bucket["owned_paths"]:
                         bucket["owned_paths"].append(path)
@@ -5816,10 +5976,6 @@ class CircleCompletionService:
                 row = db.query(LibraryOwnedWork).filter(LibraryOwnedWork.canonical_rjcode == c).first()
                 owned_rjcodes = set(row.owned_rjcodes or []) if row else set()
                 owned_rjcodes.add(normalized_rj)
-                if c != normalized_rj:
-                    # 覆盖 canonical 自身也存进 owned_rjcodes，便于 owned_rjcodes 里既能看到
-                    # 入库的具体 RJ，又能看到该作品的 canonical RJ。
-                    owned_rjcodes.add(c)
                 if row is None:
                     row = LibraryOwnedWork(canonical_rjcode=c)
                     db.add(row)
@@ -5936,7 +6092,6 @@ class CircleCompletionService:
                     db.add(row)
                 owned_rjcodes = set(row.owned_rjcodes or [])
                 owned_rjcodes.add(normalized_rj)
-                owned_rjcodes.add(c)
                 row.owned_rjcodes = sorted(code for code in owned_rjcodes if code)
                 row.primary_folder_path = folder_path or row.primary_folder_path
                 row.library_id = library_id or row.library_id
@@ -6106,9 +6261,6 @@ class CircleCompletionService:
                 if str(path or "").strip()
             ]
             owned_rjcodes = {
-                normalized_canonical,
-                self.normalize_rjcode(item.get("display_rjcode")),
-                *[self.normalize_rjcode(code) for code in list(item.get("linked_rjcodes") or [])],
                 *[self.normalize_rjcode(code) for code in list(item.get("kikoeru_found_rjcodes") or [])],
             }
             owned_rjcodes.discard("")
@@ -7617,7 +7769,7 @@ class CircleCompletionService:
                     _age = now_local_for_view.timestamp() - row_anchor.timestamp()
                     _is_new = 0 <= _age <= new_work_window_seconds
                 item["is_new_work"] = _is_new
-                item["owned_rjcodes"] = list((owned_row.owned_rjcodes or []) if owned_row else [])
+                item["owned_rjcodes"] = self._actual_owned_rjcodes(owned_row)
                 item["primary_folder_path"] = owned_row.primary_folder_path if owned_row else ""
                 item["has_dlsite"] = True
                 local_download = local_download_session_map.get(self.normalize_rjcode(row.canonical_rjcode)) or {}
@@ -7727,9 +7879,9 @@ class CircleCompletionService:
                     "group_label": preferred_group["label"],
                     "group_short_label": preferred_group["short_label"],
                 }
-                local_owned_rjcodes = list((owned_row.owned_rjcodes or []) if owned_row else [])
+                local_owned_rjcodes = self._actual_owned_rjcodes(owned_row)
                 normalized_local_owned_rjcodes: List[str] = []
-                for candidate in [*local_owned_rjcodes, row.display_rjcode, row.canonical_rjcode]:
+                for candidate in local_owned_rjcodes:
                     normalized_candidate = self.normalize_rjcode(candidate)
                     if normalized_candidate and normalized_candidate not in normalized_local_owned_rjcodes:
                         normalized_local_owned_rjcodes.append(normalized_candidate)

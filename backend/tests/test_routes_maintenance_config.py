@@ -706,6 +706,70 @@ async def test_global_search_suggest_never_runs_remote_fallback(monkeypatch):
     assert payload["library_status"][0]["search_mode"] == "skipped_suggest"
 
 
+@pytest.mark.asyncio
+async def test_global_search_marks_same_language_translation_as_related(monkeypatch):
+    query_rjcode = "RJ01700002"
+    actual_rjcode = "RJ01700003"
+
+    class Manager:
+        def list_libraries(self):
+            return [{
+                "id": "local",
+                "name": "本地库存",
+                "type": "local",
+                "root_path": "D:/library",
+            }]
+
+    class Service:
+        def get_status(self, _library_id):
+            return SimpleNamespace(status="ready", total_entries=1)
+
+        def has_usable_snapshot(self, _library_id):
+            return True
+
+        def find_by_rjcodes(self, rjcodes, library_id=None, entry_type="dir", limit=100):
+            assert rjcodes == [query_rjcode, actual_rjcode]
+            assert library_id == "local"
+            return [SimpleNamespace(
+                library_id="local",
+                entry_type="dir",
+                name=f"[{actual_rjcode}] 翻译作",
+                relative_path=f"circle/[{actual_rjcode}] 翻译作",
+                absolute_path=f"D:/library/circle/[{actual_rjcode}] 翻译作",
+                parent_path="circle",
+                depth=1,
+                size=1024,
+                file_count=4,
+                mtime=1,
+                rjcode=actual_rjcode,
+            )]
+
+    async def fake_relation(_matched_rjcode):
+        return {
+            "query_rjcode": query_rjcode,
+            "group_key": "simplified",
+            "group_label": "简中",
+            "search_rjcodes": [query_rjcode, actual_rjcode],
+            "related_rjcodes": [actual_rjcode],
+            "owned_locations": [],
+        }
+
+    monkeypatch.setattr(routes, "get_library_manager", lambda: Manager())
+    monkeypatch.setattr(routes, "get_library_index_service", lambda: Service())
+    monkeypatch.setattr(routes, "_resolve_global_index_translation_relation", fake_relation)
+
+    payload = await routes.global_search_library_index(
+        keyword=query_rjcode,
+        mode="suggest",
+        limit=6,
+    )
+
+    assert payload["related_rjcodes"] == [actual_rjcode]
+    assert payload["items"][0]["rjcode"] == actual_rjcode
+    assert payload["items"][0]["search_match_type"] == "related_translation"
+    assert payload["items"][0]["search_relation_label"] == "简中"
+
+
 def test_global_search_exact_rj_collapses_descendant_directories():
     items = [
         {
