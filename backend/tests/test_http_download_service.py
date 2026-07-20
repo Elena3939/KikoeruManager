@@ -16,6 +16,7 @@ from app.core.http_download_service import (
     sanitize_http_download_metadata,
     sanitize_http_download_preview,
 )
+from app.core.file_processor import FileProcessor
 from app.core.notification_helper import build_download_notification_extra
 from app.config.settings import HttpDownloaderConfig
 from app.core.task_engine import Task, TaskType
@@ -3287,6 +3288,7 @@ async def test_download_transferit_item_uses_library_download(monkeypatch, tmp_p
 
         def download(self, link, output_dir):
             assert link == "https://transfer.it/t/iVqeTDhlyRbA"
+            assert Path(output_dir) != target_dir
             Path(output_dir, "pack.zip").write_bytes(b"ok")
 
     monkeypatch.setitem(__import__("sys").modules, "transferit", type("Module", (), {"Transferit": FakeTransferit}))
@@ -3302,6 +3304,98 @@ async def test_download_transferit_item_uses_library_download(monkeypatch, tmp_p
 
     assert row["status"] == "completed"
     assert row["size"] == 2
+    assert (target_dir / "pack.zip").read_bytes() == b"ok"
+    assert not (target_dir / "pack.zip.part").exists()
+
+
+@pytest.mark.asyncio
+async def test_download_transferit_fallback_does_not_publish_interrupted_file(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path, retry_count=1)
+    service = HttpDownloadService()
+    target_dir = tmp_path / "downloads"
+    target_dir.mkdir()
+
+    class FakeTransferit:
+        def download(self, _link, output_dir):
+            Path(output_dir, "pack.zip").write_bytes(b"partial")
+            raise RuntimeError("fatal download failure")
+
+    monkeypatch.setitem(__import__("sys").modules, "transferit", type("Module", (), {"Transferit": FakeTransferit}))
+
+    with pytest.raises(RuntimeError, match="fatal download failure"):
+        await service._download_transferit_item({
+            "original_url": "https://transfer.it/t/iVqeTDhlyRbA",
+            "filename": "pack.zip",
+            "target_dir": str(target_dir),
+            "final_path": str(target_dir / "pack.zip"),
+            "relative_path": "pack.zip",
+            "size_bytes": 16,
+        })
+
+    assert not (target_dir / "pack.zip").exists()
+    assert not (target_dir / "pack.zip.part").exists()
+
+
+@pytest.mark.asyncio
+async def test_download_transferit_fallback_rejects_size_mismatch(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path, retry_count=1)
+    service = HttpDownloadService()
+    target_dir = tmp_path / "downloads"
+    target_dir.mkdir()
+
+    class FakeTransferit:
+        def download(self, _link, output_dir):
+            Path(output_dir, "pack.zip").write_bytes(b"short")
+
+    monkeypatch.setitem(__import__("sys").modules, "transferit", type("Module", (), {"Transferit": FakeTransferit}))
+
+    with pytest.raises(HttpDownloadError, match="下载不完整: 5/16 bytes"):
+        await service._download_transferit_item({
+            "original_url": "https://transfer.it/t/iVqeTDhlyRbA",
+            "filename": "pack.zip",
+            "target_dir": str(target_dir),
+            "final_path": str(target_dir / "pack.zip"),
+            "relative_path": "pack.zip",
+            "size_bytes": 16,
+        })
+
+    assert not (target_dir / "pack.zip").exists()
+    assert not (target_dir / "pack.zip.part").exists()
+
+
+def test_transferit_resume_offset_restarts_oversized_part(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    part_path = tmp_path / "pack.zip.part"
+    part_path.write_bytes(b"123456789")
+
+    assert service._transferit_resume_offset(part_path, 8) == 0
+
+
+def test_transferit_incomplete_final_is_quarantined_for_resume(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    final_path = tmp_path / "pack.zip"
+    part_path = tmp_path / "pack.zip.part"
+    final_path.write_bytes(b"partial")
+    part_path.write_bytes(b"old")
+
+    service._quarantine_incomplete_transferit_final(final_path, 16)
+
+    assert not final_path.exists()
+    assert part_path.read_bytes() == b"partial"
+
+
+def test_file_processor_skips_archive_with_aria2_sidecar(tmp_path):
+    archive_path = tmp_path / "pack.zip"
+    sidecar_path = tmp_path / "pack.zip.aria2"
+    archive_path.write_bytes(b"archive")
+    sidecar_path.write_bytes(b"control")
+    processor = FileProcessor()
+
+    assert processor.is_archive(str(archive_path)) is False
+    sidecar_path.unlink()
+    assert processor.is_archive(str(archive_path)) is True
 
 
 @pytest.mark.asyncio
