@@ -79,7 +79,7 @@
               </button>
             </template>
           </template>
-          <span v-else class="path-empty text-[12px] text-slate-400 px-2">请在左侧选择一个本地库存</span>
+          <span v-else class="path-empty text-[12px] text-slate-400 px-2">请在左侧选择一个库存</span>
         </div>
 
         <!-- 搜索框 -->
@@ -89,7 +89,7 @@
             v-model="searchKeyword"
             type="text"
             class="search-input"
-            :placeholder="currentLibrary ? (indexReady ? `在「${currentLibrary.name}」中全库搜索` : `在「${currentLibrary.name}」中搜索`) : '搜索'"
+            :placeholder="currentLibrary ? `在「${currentLibrary.name}」中全库搜索` : '搜索'"
             :disabled="!currentLibraryId || submitting"
             spellcheck="false"
           />
@@ -103,13 +103,13 @@
           class="explorer-nav flex flex-col min-w-0"
           :style="{ width: navWidth + 'px' }"
         >
-          <div class="nav-section-title px-4 pt-3 pb-1">本地库存</div>
+          <div class="nav-section-title px-4 pt-3 pb-1">可写库存</div>
           <div class="nav-scroll flex-1 min-h-0 overflow-y-auto no-scrollbar pb-3">
-            <div v-if="!localLibraries.length" class="px-4 py-6 text-[12px] text-slate-400">
-              没有可用的本地库存
+            <div v-if="!moveLibraries.length" class="px-4 py-6 text-[12px] text-slate-400">
+              没有可用的可写库存
             </div>
             <ul v-else class="nav-tree">
-              <li v-for="lib in localLibraries" :key="lib.id" class="nav-item">
+              <li v-for="lib in moveLibraries" :key="lib.id" class="nav-item">
                 <div
                   class="nav-row"
                   :class="{
@@ -240,28 +240,28 @@
             tabindex="0"
             @keydown="handleListKeydown"
           >
-            <div v-if="inIndexSearchMode && indexLoading" class="fm-state fm-state-col fm-loading-state">
+            <div v-if="inDirectorySearchMode && indexLoading" class="fm-state fm-state-col fm-loading-state">
               <Loader2 :size="48" :stroke-width="2" class="fm-loading-icon" />
               <span class="fm-loading-title">正在搜索</span>
               <span class="fm-loading-desc">「{{ searchKeyword }}」</span>
             </div>
-            <div v-else-if="inIndexSearchMode && indexError" class="fm-state fm-state-col">
+            <div v-else-if="inDirectorySearchMode && indexError" class="fm-state fm-state-col">
               <AlertCircle :size="22" :stroke-width="2" class="text-rose-500" />
               <span class="text-rose-600">{{ indexError }}</span>
             </div>
-            <div v-else-if="loading && !inIndexSearchMode" class="fm-state fm-state-col fm-loading-state">
+            <div v-else-if="loading && !inDirectorySearchMode" class="fm-state fm-state-col fm-loading-state">
               <Loader2 :size="48" :stroke-width="2" class="fm-loading-icon" />
               <span class="fm-loading-title">正在读取目录</span>
               <span class="fm-loading-desc">同步库存子项中…</span>
             </div>
-            <div v-else-if="error && !inIndexSearchMode" class="fm-state fm-state-col">
+            <div v-else-if="error && !inDirectorySearchMode" class="fm-state fm-state-col">
               <AlertCircle :size="22" :stroke-width="2" class="text-rose-500" />
               <span class="text-rose-600">{{ error }}</span>
               <button type="button" class="fm-retry-btn" @click="reload">重试</button>
             </div>
             <div v-else-if="!filteredFolders.length" class="fm-empty-wrap">
               <AppEmptyState
-                :description="inIndexSearchMode ? `没有匹配「${searchKeyword}」的目录` : (searchKeyword ? '没有匹配的子目录' : '此目录下没有子目录')"
+                :description="inDirectorySearchMode ? `没有匹配「${searchKeyword}」的目录` : '此目录下没有子目录'"
                 size="default"
               >
                 <span class="text-[11px] text-slate-400">点击"移动到此处"将移到当前目录</span>
@@ -274,6 +274,7 @@
               :data-folder-index="idx"
               class="fm-row"
               :class="{
+                'fm-row-search-result': inDirectorySearchMode,
                 'fm-row-selected': selectedFolderPath === folder.path,
                 'fm-row-self': isSourceFolder(folder.path),
                 'fm-row-conflict': !isSourceFolder(folder.path) && moveConflictNameSet.has(normalizeNameKey(folder.name)),
@@ -293,7 +294,10 @@
                     :class="folderIconClass(folder)"
                   />
                 </span>
-                <span class="fm-name">{{ folder.name }}</span>
+                <span class="fm-name-stack">
+                  <span class="fm-name">{{ folder.name }}</span>
+                  <span v-if="inDirectorySearchMode" class="fm-search-path">{{ searchResultParentText(folder) }}</span>
+                </span>
                 <!-- 源不再用文字 chip 标识，依靠左侧 2px 琥珀色细条 + opacity 表达 -->
                 <span v-if="!isSourceFolder(folder.path) && moveConflictNameSet.has(normalizeNameKey(folder.name))" class="fm-tag fm-tag-conflict">冲突</span>
                 <span v-else-if="isFolderEntry(folder) && !isSourceFolder(folder.path) && moveMergeNameSet.has(normalizeNameKey(folder.name))" class="fm-tag fm-tag-merge">合并</span>
@@ -535,11 +539,11 @@ const moveConflictCount = computed(() => Math.max(moveConflicts.value.length, mo
 
 const moveConflictsPreview = computed(() => moveConflicts.value.slice(0, CONFLICT_PREVIEW_MAX))
 
-const localLibraries = computed(() =>
-  (Array.isArray(props.libraries) ? props.libraries : []).filter(lib => lib?.type === 'local' && lib?.id && lib?.writable !== false)
+const moveLibraries = computed(() =>
+  (Array.isArray(props.libraries) ? props.libraries : []).filter(lib => lib?.id && lib?.writable !== false)
 )
 
-const currentLibrary = computed(() => localLibraries.value.find(item => item.id === currentLibraryId.value) || null)
+const currentLibrary = computed(() => moveLibraries.value.find(item => item.id === currentLibraryId.value) || null)
 
 const rootLabel = computed(() => currentLibrary.value?.name || '本地库')
 
@@ -619,8 +623,8 @@ let indexSearchToken = 0
 let indexSearchTimer = null
 let indexSearchAbort = null
 
-// 是否处于索引搜索模式：搜索框非空 且 索引已 ready
-const inIndexSearchMode = computed(() => indexReady.value && String(searchKeyword.value || '').trim().length > 0)
+// 搜索框非空即进入真实全库搜索；本地库存走 PostgreSQL 索引，群晖库存走 FileStation Search。
+const inDirectorySearchMode = computed(() => String(searchKeyword.value || '').trim().length > 0)
 const isRemoteCurrentLibrary = computed(() => currentLibrary.value?.type === 'synology_filestation')
 const currentIndexStatus = computed(() => libraryIndexStateStore.statusFor(currentLibraryId.value))
 
@@ -637,8 +641,8 @@ function indexViewTokenFromStatus (status) {
 }
 
 const filteredFolders = computed(() => {
-  if (inIndexSearchMode.value) {
-    // 索引搜索模式：显示全库跨目录结果（已由 sortFolderList 排序）
+  if (inDirectorySearchMode.value) {
+    // 全库搜索模式：显示跨目录结果（已由 sortFolderList 排序）
     return sortFolderList(Array.isArray(indexResults.value) ? [...indexResults.value] : [])
   }
   // 常规模式：当前目录文本过滤 + 排序
@@ -692,26 +696,43 @@ function mapIndexEntry (entry) {
     modified_time: entry?.mtime || null,
     is_directory: entry?.entry_type === 'dir',
     rjcode: entry?.rjcode || '',
-    source: 'index',
+    source: entry?.source || 'index',
   }
 }
 
-// watch searchKeyword：索引 ready 时 debounce 300ms 触发全库搜索；否则依赖 filteredFolders 计算属性文本过滤
-watch(searchKeyword, (keyword) => {
+function cancelDirectorySearchRequest () {
+  if (indexSearchAbort) {
+    try { indexSearchAbort.abort() } catch (_) {}
+  }
+  indexSearchAbort = null
+}
+
+function scheduleDirectorySearch (keyword) {
   const trimmed = String(keyword || '').trim()
   if (indexSearchTimer) { clearTimeout(indexSearchTimer); indexSearchTimer = null }
-  if (!indexReady.value) return  // 索引未就绪，走 filteredFolders 本地过滤，无需触发请求
+  cancelDirectorySearchRequest()
+  indexSearchToken += 1
   if (!trimmed) {
     indexResults.value = []
     indexLoading.value = false
     indexError.value = ''
-    indexSearchToken += 1
+    return
+  }
+  if (!currentLibraryId.value) return
+  if (!isRemoteCurrentLibrary.value && !indexReady.value) {
+    indexResults.value = []
+    indexLoading.value = false
+    indexError.value = '当前库存索引尚未可用，完成索引重建后即可全库搜索'
     return
   }
   indexResults.value = []
   indexError.value = ''
   indexLoading.value = true
-  indexSearchTimer = setTimeout(() => { runIndexSearch(trimmed) }, 300)
+  indexSearchTimer = setTimeout(() => { runDirectorySearch(trimmed) }, 300)
+}
+
+watch(searchKeyword, (keyword) => {
+  scheduleDirectorySearch(keyword)
 })
 
 // 切换库时自动检查索引状态
@@ -722,7 +743,11 @@ watch(currentLibraryId, (id) => {
 })
 
 watch(currentIndexStatus, (status) => {
+  const wasReady = indexReady.value
   indexReady.value = statusHasUsableSnapshot(status)
+  if (!wasReady && indexReady.value && !isRemoteCurrentLibrary.value && inDirectorySearchMode.value) {
+    scheduleDirectorySearch(searchKeyword.value)
+  }
   const libraryId = String(status?.library_id || currentLibraryId.value || '')
   const nextToken = indexViewTokenFromStatus(status)
   const previousToken = navTreeVersionByLibrary[libraryId]
@@ -753,33 +778,54 @@ async function checkIndexReady (libraryId) {
   }
 }
 
-async function runIndexSearch (keyword) {
+async function runDirectorySearch (keyword) {
   if (!currentLibraryId.value) return
-  if (indexSearchAbort) { try { indexSearchAbort.abort() } catch (_) {} }
+  cancelDirectorySearchRequest()
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
   indexSearchAbort = controller
   const token = ++indexSearchToken
+  const libraryId = currentLibraryId.value
+  const remote = isRemoteCurrentLibrary.value
   indexLoading.value = true
   indexError.value = ''
   let accumulated = []
   try {
+    if (!remote) {
+      const data = await libraryApi.searchIndex({
+        libraryId,
+        name: keyword,
+        entryType: 'dir',
+        limit: 200,
+        signal: controller ? controller.signal : undefined,
+      })
+      if (token !== indexSearchToken || libraryId !== currentLibraryId.value) return
+      indexResults.value = Array.isArray(data?.items)
+        ? data.items.map(mapIndexEntry).filter(item => item.path)
+        : []
+      return
+    }
     for await (const event of libraryApi.searchIndexGlobalStream({
       keyword,
-      libraryIds: [currentLibraryId.value],
+      libraryIds: [libraryId],
       entryType: 'dir',
       mode: 'full',
       limit: 200,
       signal: controller ? controller.signal : undefined,
     })) {
-      if (token !== indexSearchToken) return
+      if (token !== indexSearchToken || libraryId !== currentLibraryId.value) return
       if (event?.type === 'initial') {
         accumulated = Array.isArray(event.items) ? event.items.map(mapIndexEntry).filter(i => i.path) : []
         indexResults.value = accumulated
+        if (event.error && !accumulated.length && !event.will_run_fallback) {
+          indexError.value = event.error?.message || '搜索失败，请稍后重试'
+        }
         if (!event.will_run_fallback) indexLoading.value = false
       } else if (event?.type === 'library') {
         const newItems = Array.isArray(event.items) ? event.items.map(mapIndexEntry).filter(i => i.path) : []
         accumulated = [...accumulated, ...newItems]
         indexResults.value = accumulated
+        indexLoading.value = false
+        if (event.error && !accumulated.length) indexError.value = `搜索失败：${event.error}`
       } else if (event?.type === 'done') {
         indexLoading.value = false
       }
@@ -790,7 +836,10 @@ async function runIndexSearch (keyword) {
     indexError.value = err?.response?.data?.detail || err?.message || '搜索失败，请稍后重试'
     indexResults.value = []
   } finally {
-    if (token === indexSearchToken) indexLoading.value = false
+    if (token === indexSearchToken) {
+      indexLoading.value = false
+      if (indexSearchAbort === controller) indexSearchAbort = null
+    }
   }
 }
 
@@ -839,7 +888,7 @@ watch(() => props.sourceLibraryId, async () => {
 
 watch(() => props.libraries, async () => {
   if (!props.visible) return
-  if (!localLibraries.value.length) return
+  if (!moveLibraries.value.length) return
   if (!currentLibraryId.value) {
     await initFromProps()
   }
@@ -847,10 +896,10 @@ watch(() => props.libraries, async () => {
 
 async function initFromProps () {
   resetState()
-  // 默认选中源所在库（若属于本地库列表）；否则选第一个本地库
+  // 默认选中源所在库；否则选第一个可写库存。
   const wantId = String(props.sourceLibraryId || '').trim()
-  let initial = localLibraries.value.find(item => item.id === wantId)
-  if (!initial) initial = localLibraries.value[0] || null
+  let initial = moveLibraries.value.find(item => item.id === wantId)
+  if (!initial) initial = moveLibraries.value[0] || null
   if (!initial) return
   currentLibraryId.value = initial.id
   const initialPath = String(props.initialPath || '').trim()
@@ -1155,7 +1204,7 @@ function hydrateFolderSizesInBackground ({ token, libraryId, path }) {
 
 async function ensureNavPathVisible (libraryId, path) {
   if (!libraryId || !path || !rootPath.value) return
-  const lib = localLibraries.value.find(item => item.id === libraryId)
+  const lib = moveLibraries.value.find(item => item.id === libraryId)
   if (!lib) return
   const root = rootPath.value.replace(/[\\/]+$/, '')
   if (!root || normalizePath(path) === normalizePath(root)) {
@@ -1307,6 +1356,14 @@ function folderRowTitle (folder) {
   if (moveConflictNameSet.value.has(key)) return `与源存在文件冲突 · ${path}`
   if (moveMergeNameSet.value.has(key)) return `同名文件夹将自动合并 · ${path}`
   return path
+}
+
+function searchResultParentText (folder) {
+  const relativePath = String(folder?.relative_path || '').replace(/^[\\/]+|[\\/]+$/g, '')
+  if (!relativePath) return '库存根目录'
+  const parts = relativePath.split(/[\\/]+/).filter(Boolean)
+  parts.pop()
+  return parts.length ? parts.join(' / ') : '库存根目录'
 }
 
 function handleCancel () {
@@ -1987,6 +2044,8 @@ onBeforeUnmount(() => {
 
 .fm-row:hover { background: rgba(15, 23, 42, 0.04); }
 
+.fm-row-search-result { height: 44px; }
+
 .fm-cell {
   display: flex;
   align-items: center;
@@ -2028,13 +2087,29 @@ onBeforeUnmount(() => {
 .fm-file-icon-text { color: #8b5cf6; }
 .fm-file-icon-default { color: #94a3b8; }
 
-.fm-name {
+.fm-name-stack {
   flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.fm-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 500;
+}
+
+.fm-search-path {
+  overflow: hidden;
+  color: #94a3b8;
+  font-size: 10.5px;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fm-tag {

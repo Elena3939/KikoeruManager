@@ -37,6 +37,41 @@ class _FakeJsonRequest:
         return self._payload
 
 
+def test_library_manager_create_folder_targets_current_directory(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    current_dir = library_root / "circle" / "RJ00000001"
+    current_dir.mkdir(parents=True)
+    library = library_manager_module.LibraryDefinition(
+        id="local-create",
+        name="本地创建测试",
+        type="local",
+        path=str(library_root),
+    )
+    manager = object.__new__(library_manager_module.LibraryManager)
+    index_targets = []
+    monkeypatch.setattr(manager, "get_library_definition", lambda _library_id: library)
+    monkeypatch.setattr(manager, "_invalidate_local_browse_caches", lambda *_args: None)
+    monkeypatch.setattr(manager, "_append_stats_log", lambda *_args: None)
+    monkeypatch.setattr(
+        manager,
+        "_notify_index_self_mutation_upsert_subtree",
+        lambda _library, path: index_targets.append(path),
+    )
+
+    result = asyncio.run(manager.create_folder("local-create", str(current_dir), "自定义目录"))
+
+    created_path = current_dir / "自定义目录"
+    assert result["path"] == str(created_path)
+    assert created_path.is_dir()
+    assert index_targets == [str(created_path)]
+
+    with pytest.raises(FileExistsError, match="同名"):
+        asyncio.run(manager.create_folder("local-create", str(current_dir), "自定义目录"))
+    with pytest.raises(ValueError, match="非法路径字符"):
+        manager.resolve_create_folder_target("local-create", str(current_dir), "../越界目录")
+    assert not (library_root / "越界目录").exists()
+
+
 def test_legacy_library_mutations_invalidate_subtitle_folder_summary_cache(monkeypatch):
     library = SimpleNamespace(id="library-a")
     invalidated = []
@@ -182,6 +217,42 @@ def test_library_browser_endpoints_support_multi_library(client, monkeypatch, tm
     stats_response = client.get("/api/library/browser/stats", params={"force_refresh": "true"})
     assert stats_response.status_code == 200
     assert "all_libraries" in stats_response.json()
+
+    create_response = client.post(
+        "/api/library/browser/create-folder",
+        headers={"Idempotency-Key": "test-create-library-folder"},
+        json={
+            "library_id": "local-a",
+            "parent_path": str(target_dir),
+            "name": "自定义目录",
+        },
+    )
+    assert create_response.status_code == 200
+    assert create_response.json()["path"] == str(target_dir / "自定义目录")
+    assert (target_dir / "自定义目录").is_dir()
+
+    duplicate_response = client.post(
+        "/api/library/browser/create-folder",
+        headers={"Idempotency-Key": "test-create-library-folder-duplicate"},
+        json={
+            "library_id": "local-a",
+            "parent_path": str(target_dir),
+            "name": "自定义目录",
+        },
+    )
+    assert duplicate_response.status_code == 409
+
+    invalid_name_response = client.post(
+        "/api/library/browser/create-folder",
+        headers={"Idempotency-Key": "test-create-library-folder-invalid"},
+        json={
+            "library_id": "local-a",
+            "parent_path": str(target_dir),
+            "name": "../越界目录",
+        },
+    )
+    assert invalid_name_response.status_code == 400
+    assert not (local_root / "越界目录").exists()
 
 
 def test_library_browser_video_preview_keeps_range_response_uncompressed(client, monkeypatch, tmp_path):
@@ -1100,6 +1171,107 @@ def test_local_move_preview_allows_same_name_folder_merge(monkeypatch, tmp_path)
     assert not source_dir.exists()
     assert (target_dir / "old.wav").read_bytes() == b"old"
     assert (target_dir / "new.wav").read_bytes() == b"new"
+
+
+def test_local_move_returns_index_fence_for_frontend_refresh(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    source_dir = library_root / "[Circle][RJ123456] Work"
+    target_dir = library_root / "Circle"
+    source_dir.mkdir(parents=True)
+    target_dir.mkdir()
+    (source_dir / "track.wav").write_bytes(b"audio")
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    monkeypatch.setattr(manager, "_local_top_level_delta", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(manager, "_invalidate_local_search_cache", lambda _library_id: None)
+    monkeypatch.setattr(manager, "_notify_index_self_mutation_delete_batch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(manager, "_enqueue_index_replace_subtree_many", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(manager, "_append_stats_log", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        manager,
+        "_notify_index_self_mutation_move_batch",
+        lambda *_args, **_kwargs: {
+            "operation_id": "circle-move-operation",
+            "operation_state": "committed",
+            "index_fences": [{
+                "library_id": "local-a",
+                "accepted_seq": 12,
+                "materialized_seq": 11,
+            }],
+        },
+    )
+
+    library = library_manager_module.LibraryDefinition(
+        id="local-a",
+        name="本地 A",
+        type="local",
+        path=str(library_root),
+        enabled=True,
+    )
+
+    result = manager._move_local_items_sync(
+        library,
+        library,
+        [str(source_dir)],
+        str(target_dir),
+        "suffix",
+    )
+
+    assert result["operation_id"] == "circle-move-operation"
+    assert result["operation_state"] == "committed"
+    assert result["index_fences"][0]["accepted_seq"] == 12
+    assert result["moved"][0]["destination"] == str(target_dir / source_dir.name)
+
+
+def test_record_index_move_many_returns_finalize_response(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    source_path = library_root / "old" / "RJ123456"
+    destination = library_root / "Circle" / "RJ123456"
+    destination.mkdir(parents=True)
+
+    library = library_manager_module.LibraryDefinition(
+        id="local-a",
+        name="本地 A",
+        type="local",
+        path=str(library_root),
+        enabled=True,
+    )
+    manager = object.__new__(library_manager_module.LibraryManager)
+    captured = {}
+
+    class FakeMutationService:
+        def prepare(self, **kwargs):
+            captured["prepare"] = kwargs
+            return SimpleNamespace(operation_id="circle-move-operation")
+
+        def mark_filesystem_started(self, operation_id):
+            captured["filesystem_started"] = operation_id
+
+        def finalize(self, operation_id, **kwargs):
+            captured["finalize"] = {"operation_id": operation_id, **kwargs}
+            return {
+                "operation_id": operation_id,
+                "operation_state": "committed",
+                "index_fences": [{"library_id": library.id, "accepted_seq": 12}],
+            }
+
+    monkeypatch.setattr(
+        library_index_module,
+        "get_library_index_mutation_service",
+        lambda: FakeMutationService(),
+    )
+
+    response = manager._record_index_move_many(
+        library,
+        library,
+        [{"source": str(source_path), "destination": str(destination)}],
+        source="self_mutation_move",
+    )
+
+    assert response["operation_id"] == "circle-move-operation"
+    assert response["index_fences"][0]["accepted_seq"] == 12
+    effects = captured["finalize"]["actual_effects_by_library"][library.id]
+    assert [effect["kind"] for effect in effects] == ["move", "reconcile"]
 
 
 def test_local_move_preview_prefers_index_and_versions_redis_plan(monkeypatch, tmp_path):

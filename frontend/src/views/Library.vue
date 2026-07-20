@@ -450,6 +450,36 @@
 
         <div class="lib-path-right">
 
+          <StatefulButton
+
+            v-if="libraryViewMode === 'directory'"
+
+            unstyled
+
+            type="button"
+
+            class="lib-btn lib-btn-icon-tinted lib-icon-create-folder"
+
+            :disabled="!canCreateFolder"
+
+            :show-default-icons="false"
+
+            :success-hold="0"
+
+            :title="canCreateFolder ? '在当前具体目录下新建文件夹' : '当前视图不能新建文件夹'"
+
+            @click="createFolderInCurrentDirectory"
+
+          >
+
+            <IconLoaderCircle v-if="isCreatingFolder" class="animate-spin" :size="14" :stroke-width="2.2" />
+
+            <IconFolderPlus v-else :size="14" :stroke-width="2.2" />
+
+            <span>新建文件夹</span>
+
+          </StatefulButton>
+
           <div class="lib-scope-switch" role="tablist" aria-label="工具栏作用范围">
 
             <button
@@ -1931,6 +1961,10 @@ import {
 
   FolderOpen as IconFolderOpen,
 
+  FolderPlus as IconFolderPlus,
+
+  LoaderCircle as IconLoaderCircle,
+
   ChevronLeft as IconChevronLeft,
 
   ChevronRight as IconChevronRight,
@@ -2874,6 +2908,8 @@ const currentPath = ref('')
 const browseRootPath = ref('')
 
 const parentPath = ref('')
+
+const isCreatingFolder = ref(false)
 
 const computingSizeId = ref(null)
 
@@ -4654,6 +4690,15 @@ const isCircleViewActive = computed(() => libraryViewMode.value === 'circle')
 const circleViewPathType = computed(() => isCircleViewActive.value ? circleDecodeVirtualPath(circleVirtualCurrentPath.value).type : '')
 
 const isCircleRootView = computed(() => circleViewPathType.value === 'root')
+
+const canCreateFolder = computed(() => (
+  libraryViewMode.value === 'directory' &&
+  Boolean(selectedLibraryId.value) &&
+  Boolean(currentPath.value || browseRootPath.value) &&
+  currentLibrary.value?.writable !== false &&
+  !loading.value &&
+  !isCreatingFolder.value
+))
 
 const currentLibraryStatsLabel = computed(() => isCircleViewActive.value ? '社团聚合' : labels.currentLibrary)
 
@@ -9572,6 +9617,10 @@ async function runAutoCircleGroupForRow (row) {
 
     data = await libraryApi.autoCircleGroup(targetLibraryId, currentPath)
 
+    if (data?.skipped && Array.isArray(renameData?.index_fences) && renameData.index_fences.length) {
+      data = { ...data, result: renameData }
+    }
+
     if (data?.need_api_rename) {
 
       throw new Error('API 重命名后仍未识别到社团前缀，请检查重命名模板')
@@ -9603,6 +9652,7 @@ async function autoCircleGroup (row) {
   try {
 
     const data = await runAutoCircleGroupForRow(row)
+    const indexMutation = registerAutoCircleGroupIndexMutation(data, row)
 
     if (data?.skipped) {
 
@@ -9618,7 +9668,9 @@ async function autoCircleGroup (row) {
       pruneRowsFromCurrentViewByPaths([row.path])
     }
 
-    refreshCurrentLibraryAndStatsInBackground()
+    if (indexMutation) await waitForMoveIndexFences(indexMutation)
+
+    refreshCurrentLibraryAndStatsInBackground('按社团分类已完成', { forceRefresh: false })
 
   } catch (error) {
 
@@ -22721,6 +22773,24 @@ async function waitForMoveIndexFences (result, timeoutMs = 8000) {
   return moveIndexFencesMaterialized(result)
 }
 
+function registerAutoCircleGroupIndexMutation (data, row) {
+  const mutation = data?.result
+  if (!Array.isArray(mutation?.index_fences) || !mutation.index_fences.length) return null
+
+  const movedPaths = (Array.isArray(mutation.moved) ? mutation.moved : [])
+    .map(item => item?.source)
+    .filter(Boolean)
+  const libraryId = String(row?.library_id || selectedLibraryId.value || '').trim()
+
+  libraryIndexStateStore.registerMutationResponse(mutation, {
+    libraryId,
+    deletedPaths: (movedPaths.length ? movedPaths : [row?.path])
+      .filter(Boolean)
+      .map(path => ({ libraryId, path, scope: 'subtree' })),
+  })
+  return mutation
+}
+
 function refreshAfterMoveFenceInBackground (result, sourceLibraryId, targetLibraryId) {
   waitForMoveIndexFences(result)
     .then(materialized => {
@@ -22842,6 +22912,166 @@ async function handleMoveSubmit (payload) {
     ElMessage.error('批量移动失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
 
     moveDialogState.value = { ...moveDialogState.value, submitting: false }
+
+  }
+
+}
+
+
+
+async function createFolderInCurrentDirectory () {
+
+  if (!canCreateFolder.value) return false
+
+  const targetLibraryId = selectedLibraryId.value
+
+  const targetParentPath = currentPath.value || browseRootPath.value
+
+  let folderName = ''
+
+  try {
+
+    folderName = await showSystemPrompt({
+
+      title: '新建文件夹',
+
+      message: '文件夹会实际创建在当前具体目录下。',
+
+      currentLabel: '创建位置',
+
+      currentValue: targetParentPath,
+
+      placeholder: '输入文件夹名称',
+
+      confirmText: '创建文件夹',
+
+      validator: value => {
+
+        const name = String(value || '').trim()
+
+        if (!name) return '请输入文件夹名称'
+
+        if (name === '.' || name === '..') return '文件夹名称非法'
+
+        if (/[\\/\u0000]/.test(name)) return '文件夹名称不能包含路径分隔符'
+
+        return true
+
+      }
+
+    })
+
+  } catch (_) {
+
+    return true
+
+  }
+
+  const normalizedName = String(folderName || '').trim()
+
+  if (!normalizedName) return false
+
+  isCreatingFolder.value = true
+
+  try {
+
+    const data = await libraryApi.browserCreateFolder(
+
+      targetLibraryId,
+
+      targetParentPath,
+
+      normalizedName
+
+    )
+
+    libraryIndexStateStore.registerMutationResponse(data, { libraryId: targetLibraryId })
+
+    if (
+      libraryViewMode.value === 'directory' &&
+      selectedLibraryId.value === targetLibraryId &&
+      (currentPath.value || browseRootPath.value) === targetParentPath
+    ) {
+
+      const createdPath = data?.path || ''
+
+      if (createdPath && !files.value.some(item => item?.path === createdPath)) {
+
+        files.value = [{
+
+          id: `created:${targetLibraryId}:${createdPath}`,
+
+          library_id: targetLibraryId,
+
+          name: data?.name || normalizedName,
+
+          path: createdPath,
+
+          is_directory: true,
+
+          type: 'folder',
+
+          size: 0,
+
+          size_status: 'ready',
+
+          file_count: 0,
+
+          folder_count: 0,
+
+          modified_time: new Date().toISOString()
+
+        }, ...files.value].slice(0, pageSize.value)
+
+        totalFiles.value += 1
+
+      }
+
+    }
+
+    ElMessage.success(`文件夹“${data?.name || normalizedName}”已创建`)
+
+    const refreshCreatedFolder = () => {
+
+      if (
+        libraryViewMode.value !== 'directory' ||
+        selectedLibraryId.value !== targetLibraryId ||
+        (currentPath.value || browseRootPath.value) !== targetParentPath
+      ) return
+
+      refreshLibrary({ silent: true, forceRefresh: false }).catch((error) => {
+
+        console.warn('新建文件夹后的当前目录增量刷新失败', error)
+
+      })
+
+    }
+
+    if (Array.isArray(data?.index_fences) && data.index_fences.length) {
+
+      waitForMoveIndexFences(data).then(materialized => {
+
+        if (materialized) refreshCreatedFolder()
+
+      })
+
+    } else {
+
+      refreshCreatedFolder()
+
+    }
+
+    return true
+
+  } catch (error) {
+
+    ElMessage.error('新建文件夹失败: ' + (error.response?.data?.detail || error.message || '未知错误'))
+
+    return false
+
+  } finally {
+
+    isCreatingFolder.value = false
 
   }
 
@@ -23313,6 +23543,7 @@ async function handleBatchAutoCircleGroup () {
   batchAutoCircleRunningIds.value = new Set(targetRows.map(row => row.id).filter(Boolean))
 
   const results = []
+  const indexMutations = []
 
   try {
 
@@ -23338,6 +23569,8 @@ async function handleBatchAutoCircleGroup () {
       if (itemPath) handledPaths.add(itemPath)
 
       const row = rowByPath.get(itemPath)
+      const indexMutation = registerAutoCircleGroupIndexMutation(item, row)
+      if (indexMutation) indexMutations.push(indexMutation)
 
       if (item?.need_api_rename && row) {
 
@@ -23394,6 +23627,8 @@ async function handleBatchAutoCircleGroup () {
         try {
 
           const data = await runAutoCircleGroupForRow(row)
+          const indexMutation = registerAutoCircleGroupIndexMutation(data, row)
+          if (indexMutation) indexMutations.push(indexMutation)
 
           results.push({
             path: row.path,
@@ -23456,7 +23691,11 @@ async function handleBatchAutoCircleGroup () {
       .filter(item => item.success && !item.skipped)
       .map(item => item.path))
 
-    refreshCurrentLibraryAndStatsInBackground()
+    if (indexMutations.length) {
+      await Promise.all(indexMutations.map(mutation => waitForMoveIndexFences(mutation)))
+    }
+
+    refreshCurrentLibraryAndStatsInBackground('批量按社团分类已完成', { forceRefresh: false })
 
   } catch (error) {
 
@@ -26421,6 +26660,7 @@ function statsStatusTextDisplay (stats) {
 .lib-btn-icon-tinted.lib-icon-stats svg { color: #4f46e5; }
 .lib-btn-icon-tinted.lib-icon-index-refresh svg { color: #4f46e5; }
 .lib-btn-icon-tinted.lib-icon-select svg { color: #0f766e; }
+.lib-btn-icon-tinted.lib-icon-create-folder svg { color: #0f766e; }
 .lib-btn-icon-tinted.lib-icon-subtitle svg,
 .lib-btn-icon-tinted.lib-icon-subtitle-batch svg { color: #059669; }
 .lib-btn-icon-tinted.lib-icon-filter-delete svg { color: #d97706; }

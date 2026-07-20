@@ -185,6 +185,13 @@ export const taskCenterApi = {
   action: async (itemId, action) => {
     const response = await apiClient.post(`/task-center/${encodeURIComponent(itemId)}/action`, { action })
     return response.data
+  },
+
+  restoreFilteredItem: async (itemId, recoveryId) => {
+    const response = await apiClient.post(
+      `/task-center/${encodeURIComponent(itemId)}/filtered-items/${encodeURIComponent(recoveryId)}/restore`
+    )
+    return response.data
   }
 }
 
@@ -781,6 +788,7 @@ export const libraryApi = {
     name = null,
     entryType = null,
     limit = 100,
+    signal = undefined,
   } = {}) => {
     const response = await apiClient.get('/library/index/search', {
       params: {
@@ -790,6 +798,7 @@ export const libraryApi = {
         entry_type: entryType || undefined,
         limit,
       },
+      signal,
     })
     return response.data
   },
@@ -1221,6 +1230,15 @@ export const libraryApi = {
 
   rename: async (path, newName) => {
     const response = await apiClient.post('/library/rename', { path, new_name: newName })
+    return response.data
+  },
+
+  browserCreateFolder: async (libraryId, parentPath, name, options = {}) => {
+    const response = await apiClient.post('/library/browser/create-folder', {
+      library_id: libraryId,
+      parent_path: parentPath || '',
+      name
+    }, mutationRequestConfig(options))
     return response.data
   },
 

@@ -10,6 +10,8 @@
 
 ## “移动到...”窗口
 
+- 目录搜索不再过滤当前已加载层级：本地库存直接查询 PostgreSQL `library_index_entries` 的 `pg_trgm` 索引；群晖库存按当前 `library_id` 调用 `SYNO.FileStation.Search`，只返回目录。前端固定 300ms 防抖、200 条上限，并在关键词变化或清空时立即取消旧请求，禁止前端递归展开整棵目录树。
+- 搜索结果保留真实绝对路径和相对父路径，可直接选为移动目标或双击进入；本地索引未形成可用快照时明确提示重建，不允许静默退化为本地文件系统全库扫描。
 - `POST /api/library/browser/navigation-snapshot` 只从可用的 PostgreSQL 库存索引生成当前目录、当前一级子项和祖先展开节点；索引可用时不对每个条目执行 `stat/isdir`，深路径打开不再产生逐层请求瀑布。
 - 导航快照的 Redis 逻辑 key 为 `library/move-nav/{library_id}-{generation}-{view_revision}-{request_hash}`，TTL 使用统一短缓存；`generation` 或 `view_revision` 变化后自然切换新 key。Redis 未启用、读取失败或写入失败时直接读取 PostgreSQL 索引，不能影响目录导航。
 - 前端目录请求使用 AbortSignal、递增 token 和索引视图版本校验。旧请求、旧库请求或晚到的旧 `view_revision` 不允许覆盖当前目录；索引导航不可用或快照过旧时回退 `/api/library/browser/list-folders`。
@@ -19,6 +21,12 @@
 - 移动成功后前端先移除当前视图中的源行，并等待返回的 `index_fences` 被 SSE / 索引状态更新到 `materialized_seq >= accepted_seq`；物化完成后做普通索引刷新，8 秒仍未完成才强制刷新列表和统计。
 
 职责边界固定为：PostgreSQL 库存索引是导航和冲突预检读模型，Redis 只做短期加速与计划传递，真实文件系统是移动执行和最终存在性判断依据。
+
+## 按社团分类
+
+- 单项和批量分类复用本地移动的增量 mutation；移动结果必须透传 `operation_id`、`operation_state` 和 `index_fences`，前端先移除源行，再等待 `materialized_seq >= accepted_seq` 后读取新快照。
+- 分类完成后的列表刷新固定使用 `force_refresh=false`。`force_refresh=true` 会把当前页所有顶层目录提交为读修补子树，社团目录可能包含上千文件，会造成无关递归扫描、索引中间水位闪烁和事件循环延迟。
+- fence 等待只约束视图发布时间，不替代 mutation materializer；超时后仍只做普通索引读取，不用整页强制刷新制造第二批扫描任务。
 
 ## 群晖库存容量
 

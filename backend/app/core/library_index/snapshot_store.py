@@ -2318,6 +2318,59 @@ class SnapshotStore:
             return [self._row_to_entry(row) for row in rows]
         return [self._row_to_entry(row) for row in rows]
 
+    def find_by_rjcodes(
+        self,
+        library_id: Optional[Union[str, Sequence[str]]],
+        rjcodes: Sequence[str],
+        *,
+        entry_type: Optional[str] = 'dir',
+        limit: int = 100,
+    ) -> list[IndexEntry]:
+        """批量按 RJ 精确查询，一次 SQL 覆盖同语言翻译关联号。"""
+        normalized_rjcodes: list[str] = []
+        for value in rjcodes or ():
+            normalized = _extract_rjcode(str(value or "")) or str(value or "").strip().upper()
+            if normalized and normalized not in normalized_rjcodes:
+                normalized_rjcodes.append(normalized)
+        if not normalized_rjcodes:
+            return []
+
+        scope_ids: Optional[list[str]]
+        if library_id is None:
+            scope_ids = None
+        elif isinstance(library_id, str):
+            scope_ids = [library_id] if library_id else None
+        else:
+            scope_ids = [str(item) for item in library_id if item]
+            if not scope_ids:
+                scope_ids = None
+
+        with self._read_session() as db:
+            query = self._active_view_query(
+                db,
+                db.query(LibraryIndexEntry),
+                library_ids=scope_ids,
+            )
+            filters = [LibraryIndexEntry.rjcode.in_(normalized_rjcodes)]
+            if scope_ids:
+                if len(scope_ids) == 1:
+                    filters.append(LibraryIndexEntry.library_id == scope_ids[0])
+                else:
+                    filters.append(LibraryIndexEntry.library_id.in_(scope_ids))
+            if entry_type:
+                filters.append(LibraryIndexEntry.entry_type == entry_type)
+            rows = (
+                query
+                .filter(*filters)
+                .order_by(
+                    LibraryIndexEntry.depth.asc(),
+                    LibraryIndexEntry.relative_path.asc(),
+                )
+                .limit(limit)
+                .all()
+            )
+        return [self._row_to_entry(row) for row in rows]
+
     def _repair_missing_rjcode_rows(
         self,
         rjcode: str,
