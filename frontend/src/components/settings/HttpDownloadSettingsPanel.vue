@@ -1390,18 +1390,20 @@ async function clearAllPikPakTransfers() {
     const deletedCount = Number(result?.deleted_count || 0)
     const failedCount = Number(result?.failed_account_count || 0)
     selectedPikPakFileIds.value = []
+    pikpakFiles.value = []
     clearPikPakTreeCache()
-    pikpakStatus.value = await httpDownloadApi.pikpakStatus({ includeFiles: false, limit: 1, forceRefresh: true })
-    ensureSelectedPikPakAccount(pikpakStatus.value)
-    if (pikpakManagerVisible.value) {
-      await refreshPikPakManager(true)
-    }
     const suffix = failedCount ? `，${failedCount} 个账号失败` : ''
     pikpakMessage.value = `✓ 已清空 ${deletedCount} 项${suffix}`
     if (failedCount) {
       ElMessage.warning(pikpakMessage.value.slice(2))
     } else {
       ElMessage.success(pikpakMessage.value.slice(2))
+    }
+    try {
+      pikpakStatus.value = await httpDownloadApi.pikpakStatus({ includeFiles: false, limit: 1, forceRefresh: false })
+      ensureSelectedPikPakAccount(pikpakStatus.value)
+    } catch (refreshError) {
+      console.debug('清空完成后读取 PikPak 缓存状态失败:', refreshError)
     }
   } catch (error) {
     setPikPakError(error, '清空 PikPak 转存空间失败')
