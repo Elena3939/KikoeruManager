@@ -16674,6 +16674,7 @@ class CircleCompletionRefreshSelectedRequest(BaseModel):
     circle_id: str
     canonical_rjcodes: List[str]
     force_refresh: bool = False
+    owned_only: bool = False
 
 
 class CircleCompletionRefreshSelectedJobRequest(BaseModel):
@@ -16681,6 +16682,7 @@ class CircleCompletionRefreshSelectedJobRequest(BaseModel):
     circle_name: str = ""
     canonical_rjcodes: List[str]
     force_refresh: bool = False
+    owned_only: bool = False
 
 
 class CircleCompletionDownloadStartRequest(BaseModel):
@@ -19781,6 +19783,7 @@ async def circle_completion_refresh_selected(
             "circle_id": payload.circle_id,
             "selected_count": len(payload.canonical_rjcodes or []),
             "force_refresh": bool(payload.force_refresh),
+            "owned_only": bool(payload.owned_only),
             "deprecated_sync_api": True,
         }
         logger.warning(
@@ -19788,21 +19791,29 @@ async def circle_completion_refresh_selected(
             payload.circle_id,
             len(payload.canonical_rjcodes or []),
         )
-        force_refresh, force_refresh_reason = _resolve_circle_completion_force_refresh(
-            payload.circle_id,
-            bool(payload.force_refresh),
-        )
-        result = await get_circle_completion_service().refresh_circle_works(
-            payload.circle_id,
-            payload.canonical_rjcodes,
-            force_refresh=force_refresh,
-        )
+        if payload.owned_only:
+            force_refresh, force_refresh_reason = False, "owned_only"
+            result = await get_circle_completion_service().refresh_circle_owned_state(
+                payload.circle_id,
+                payload.canonical_rjcodes,
+            )
+        else:
+            force_refresh, force_refresh_reason = _resolve_circle_completion_force_refresh(
+                payload.circle_id,
+                bool(payload.force_refresh),
+            )
+            result = await get_circle_completion_service().refresh_circle_works(
+                payload.circle_id,
+                payload.canonical_rjcodes,
+                force_refresh=force_refresh,
+            )
         return {
             "success": True,
             **result,
             "meta": {
                 "force_refresh": bool(force_refresh),
                 "force_refresh_reason": force_refresh_reason,
+                "owned_only": bool(payload.owned_only),
             },
         }
     except ValueError as exc:
@@ -19824,10 +19835,15 @@ async def circle_completion_refresh_selected_start(request: CircleCompletionRefr
             raise ValueError("缺少社团标识")
         if not canonical_rjcodes:
             raise ValueError("没有选中要刷新的作品")
-        force_refresh, force_refresh_reason = _resolve_circle_completion_force_refresh(
-            circle_id,
-            bool(request.force_refresh),
-        )
+        owned_only = bool(request.owned_only)
+        if owned_only:
+            force_refresh, force_refresh_reason = False, "owned_only"
+        else:
+            force_refresh, force_refresh_reason = _resolve_circle_completion_force_refresh(
+                circle_id,
+                bool(request.force_refresh),
+            )
+        source_action = "refresh_owned" if owned_only else "refresh_selected"
 
         task = Task(
             task_type=TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED,
@@ -19840,19 +19856,20 @@ async def circle_completion_refresh_selected_start(request: CircleCompletionRefr
                 "selected_count": len(canonical_rjcodes),
                 "force_refresh": bool(force_refresh),
                 "force_refresh_reason": force_refresh_reason,
+                "owned_only": owned_only,
                 "task_domain": "circle_completion",
                 "source_page": "circle-completion",
-                "source_action": "refresh_selected",
+                "source_action": source_action,
                 "source_label": circle_name or circle_id,
-                "business_key": f"{circle_id}:refresh_selected",
+                "business_key": f"{circle_id}:{source_action}",
                 "progress_log": [],
             },
         )
         task.ensure_business_context("circle_completion", {
             "source_page": "circle-completion",
-            "source_action": "refresh_selected",
+            "source_action": source_action,
             "source_label": circle_name or circle_id,
-            "business_key": f"{circle_id}:refresh_selected",
+            "business_key": f"{circle_id}:{source_action}",
         })
         await get_task_engine().submit(task)
         return {
@@ -19871,6 +19888,7 @@ async def circle_completion_refresh_selected_start(request: CircleCompletionRefr
             "meta": {
                 "force_refresh": bool(force_refresh),
                 "force_refresh_reason": force_refresh_reason,
+                "owned_only": owned_only,
             },
             "result": {},
             "progress_log": [],
@@ -19914,6 +19932,7 @@ async def circle_completion_refresh_selected_job_status(job_id: str):
                 **dict(metadata.get("refresh_meta") or {}),
                 "force_refresh": bool(metadata.get("force_refresh")),
                 "force_refresh_reason": str(metadata.get("force_refresh_reason") or ""),
+                "owned_only": bool(metadata.get("owned_only")),
             },
             "result": dict(metadata.get("refresh_result") or {}),
             "progress_log": list(metadata.get("progress_log") or []),
