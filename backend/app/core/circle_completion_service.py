@@ -8210,6 +8210,197 @@ class CircleCompletionService:
                 pass
         return self._download_preview_job_snapshot(payload)
 
+    async def refresh_circle_owned_state(
+        self,
+        circle_id: str,
+        canonical_rjcodes: List[str],
+        *,
+        progress_callback: Optional[Callable[..., None]] = None,
+        cancel_callback: Optional[Callable[[], bool]] = None,
+    ) -> Dict[str, Any]:
+        """只从 ready 库存索引批量刷新本地拥有态，不触发任何外部请求。"""
+        from .activity_log_service import log_circle_completion_event
+
+        normalized_codes: List[str] = []
+        for value in canonical_rjcodes or []:
+            code = self.normalize_rjcode(value)
+            if code and code not in normalized_codes:
+                normalized_codes.append(code)
+        if not circle_id:
+            raise ValueError("缺少社团标识")
+        if not normalized_codes:
+            raise ValueError("没有选中要刷新的作品")
+
+        def report(progress: int, step: str, **meta: Any) -> None:
+            if progress_callback:
+                progress_callback(progress, step, **meta)
+
+        report(5, "读取选中作品", total_count=len(normalized_codes), processed_count=0)
+        db = SessionLocal()
+        try:
+            catalog = db.query(CircleCatalog).filter(CircleCatalog.circle_id == circle_id).first()
+            if catalog is None:
+                raise ValueError("社团不存在")
+            rows = (
+                db.query(CircleWork)
+                .filter(
+                    CircleWork.circle_id == circle_id,
+                    CircleWork.canonical_rjcode.in_(normalized_codes),
+                )
+                .all()
+            )
+            if not rows:
+                raise ValueError("没有找到选中的作品")
+            db.expunge_all()
+        finally:
+            db.close()
+
+        if cancel_callback and cancel_callback():
+            raise RuntimeError("用户取消")
+
+        items_by_canonical: Dict[str, Dict[str, Any]] = {}
+        before_by_canonical: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            canonical = self.normalize_rjcode(row.canonical_rjcode)
+            if not canonical:
+                continue
+            source_flags = {flag for flag in str(row.source_mask or "").split(",") if flag}
+            items_by_canonical[canonical] = {
+                "display_rjcode": self.normalize_rjcode(row.display_rjcode) or canonical,
+                "asmr_available_rjcode": self.normalize_rjcode(row.asmr_available_rjcode),
+                "linked_rjcodes": list(row.linked_rjcodes or []),
+                "kikoeru_found_rjcodes": list(row.kikoeru_found_rjcodes or []),
+                "source_flags": source_flags,
+            }
+            before_by_canonical[canonical] = {
+                "has_kikoeru": bool(row.has_kikoeru),
+                "found_rjcodes": sorted(self.normalize_rjcode(code) for code in list(row.kikoeru_found_rjcodes or []) if self.normalize_rjcode(code)),
+                "subtitle_rjcodes": sorted(self.normalize_rjcode(code) for code in list(row.kikoeru_subtitle_rjcodes or []) if self.normalize_rjcode(code)),
+            }
+
+        report(30, "批量查询库存索引", total_count=len(rows), processed_count=0)
+        owned_stats = self._apply_library_index_owned_state_to_items(items_by_canonical)
+        if not owned_stats.get("ready_index_available"):
+            raise ValueError("库存索引尚未就绪，无法刷新本地拥有状态")
+        if cancel_callback and cancel_callback():
+            raise RuntimeError("用户取消")
+
+        report(
+            75,
+            "写入本地拥有状态",
+            total_count=len(rows),
+            processed_count=0,
+            kikoeru_owned_count=int(owned_stats.get("owned_count") or 0),
+        )
+        refreshed_items: List[Dict[str, Any]] = []
+        write_db = SessionLocal()
+        try:
+            now_ts = datetime.now()
+            for row in rows:
+                canonical = self.normalize_rjcode(row.canonical_rjcode)
+                item = items_by_canonical.get(canonical)
+                if not item:
+                    continue
+                found_rjcodes = [
+                    code
+                    for code in (self.normalize_rjcode(value) for value in list(item.get("kikoeru_found_rjcodes") or []))
+                    if code
+                ]
+                subtitle_rjcodes = [
+                    code
+                    for code in (self.normalize_rjcode(value) for value in list(item.get("kikoeru_subtitle_rjcodes") or []))
+                    if code
+                ]
+                source_flags = set(item.get("source_flags") or set())
+                if item.get("local_owned"):
+                    source_flags.add("kikoeru")
+                else:
+                    source_flags.discard("kikoeru")
+
+                previous = before_by_canonical.get(canonical) or {}
+                changed = (
+                    bool(previous.get("has_kikoeru")) != bool(item.get("local_owned"))
+                    or list(previous.get("found_rjcodes") or []) != sorted(found_rjcodes)
+                    or list(previous.get("subtitle_rjcodes") or []) != sorted(subtitle_rjcodes)
+                )
+                row.has_kikoeru = bool(item.get("local_owned"))
+                row.kikoeru_found_rjcodes = found_rjcodes
+                row.kikoeru_subtitle_rjcodes = subtitle_rjcodes
+                row.source_mask = ",".join(sorted(source_flags))
+                row.updated_at = now_ts
+                write_db.merge(row)
+
+                refreshed_items.append({
+                    "canonical_rjcode": canonical,
+                    "title": str(row.title or ""),
+                    "display_rjcode": str(row.display_rjcode or canonical),
+                    "has_kikoeru": bool(item.get("local_owned")),
+                    "local_owned": bool(item.get("local_owned")),
+                    "server_match_rjcodes": found_rjcodes,
+                    "server_match_primary_rjcode": found_rjcodes[0] if found_rjcodes else "",
+                    "subtitle_present": bool(subtitle_rjcodes),
+                    "local_subtitle_present": bool(item.get("local_subtitle_present")),
+                    "local_folder_size": int(item.get("local_folder_size") or 0),
+                    "local_file_count": int(item.get("local_file_count") or 0),
+                    "subtitle_file_count": int(item.get("subtitle_file_count") or 0),
+                    "subtitle_dir": str(item.get("subtitle_dir") or ""),
+                    "changed": changed,
+                    "change_count": 1 if changed else 0,
+                })
+
+            self._upsert_library_owned_rows_from_items(
+                write_db,
+                items_by_canonical,
+                prune_unmatched=True,
+            )
+            catalog.last_local_sync_at = now_ts
+            catalog.updated_at = now_ts
+            write_db.merge(catalog)
+            write_db.commit()
+        except Exception:
+            write_db.rollback()
+            raise
+        finally:
+            write_db.close()
+
+        changed_count = sum(1 for item in refreshed_items if item.get("changed"))
+        owned_count = int(owned_stats.get("owned_count") or 0)
+        report(
+            100,
+            "本地拥有状态刷新完成",
+            total_count=len(rows),
+            processed_count=len(rows),
+            changed_count=changed_count,
+            kikoeru_owned_count=owned_count,
+            owned_only=True,
+        )
+        log_circle_completion_event(
+            "refresh_selected_works",
+            summary=f"批量刷新本地拥有状态完成：{catalog.circle_name or circle_id}，共 {len(rows)} 个",
+            circle_id=circle_id,
+            circle_name=catalog.circle_name,
+            detail={
+                "selected_count": len(normalized_codes),
+                "refreshed_count": len(rows),
+                "changed_count": changed_count,
+                "kikoeru_owned_count": owned_count,
+                "owned_only": True,
+                "canonical_rjcodes": normalized_codes[:200],
+            },
+        )
+        self.invalidate_completion_view_cache(circle_id)
+        return {
+            "circle_id": circle_id,
+            "circle_name": catalog.circle_name,
+            "selected_count": len(normalized_codes),
+            "refreshed_count": len(rows),
+            "changed_count": changed_count,
+            "asmr_available_count": sum(1 for row in rows if row.has_asmr_one),
+            "kikoeru_owned_count": owned_count,
+            "owned_only": True,
+            "items": refreshed_items,
+        }
+
     async def refresh_circle_works(
         self,
         circle_id: str,
@@ -8604,44 +8795,21 @@ class CircleCompletionService:
                     force_refresh=bool(force_refresh),
                 )
 
-            # 把刷新后的封面图同步到本地缓存。force_refresh=True 时强制重新拉一次，
-            # 普通刷新有本地缓存会 short-circuit，几乎免费跳过。
-            image_cache_service = get_circle_image_cache_service()
-            cover_pairs: List[Tuple[str, str]] = []
-            thumb_pairs: List[Tuple[str, str]] = []
-            for refreshed_row in rows:
-                cover_url = str(refreshed_row.image_url or "").strip()
-                display_rj = (
-                    self.normalize_rjcode(refreshed_row.display_rjcode)
-                    or self.normalize_rjcode(refreshed_row.canonical_rjcode)
-                )
-                if not display_rj or not cover_url.startswith(("http://", "https://")):
-                    continue
-                cover_cache_rjcode = image_cache_service.cache_rjcode_for_url(cover_url, display_rj)
-                if not cover_cache_rjcode:
-                    continue
-                cover_pairs.append((cover_cache_rjcode, cover_url))
-                thumb_url = self._normalize_dlsite_thumb_url(
-                    cover_url,
-                    display_rj,
-                    is_unreleased=self._is_future_release_date(getattr(refreshed_row, "release_date", "")),
-                )
-                if thumb_url.startswith(("http://", "https://")):
-                    thumb_pairs.append((cover_cache_rjcode, thumb_url))
-            if cover_pairs or thumb_pairs:
-                try:
-                    await image_cache_service.download_many(
-                        cover_pairs, force=bool(force_refresh),
-                    )
-                    await image_cache_service.download_many(
-                        thumb_pairs, variant="list", force=bool(force_refresh),
-                    )
-                except Exception:
-                    logger.warning("[社团补全] refresh 阶段缓存封面失败", exc_info=True)
-
             # === 阶段 C：短写事务 ===
             # 把脱管的 rows / catalog 一次性 merge 回库并 commit；写锁仅在 commit 期间
             # 短暂持有，全程不阻塞其他写库的接口（任务中心、操作日志、邮件监听等）。
+            # 封面由 /cover 缺失回退链路按需缓存。状态刷新不能在结果落库前等待
+            # 非关键图片网络 IO，否则单个封面连接卡住会让整个任务停在 93%。
+            if cancel_callback and cancel_callback():
+                raise RuntimeError("用户取消")
+            report(
+                95,
+                "写入刷新结果",
+                total_count=total,
+                processed_count=refreshed_count,
+                asmr_available_count=asmr_available_count,
+                kikoeru_owned_count=kikoeru_owned_count,
+            )
             now_ts = datetime.now()
             catalog.last_indexed_at = now_ts
             catalog.updated_at = now_ts
@@ -8676,6 +8844,16 @@ class CircleCompletionService:
             # 卡死的条目永远救不回来。这里透传 force 让 lazy_refresh 重新拉一次
             # product/info/ajax，DLsite 端 24h cache + inflight 去重防止雪崩。
             # ``index_circle_catalog`` 默认链路保持 force=False，是增量补救语义。
+            if cancel_callback and cancel_callback():
+                raise RuntimeError("用户取消")
+            report(
+                97,
+                "更新特典状态",
+                total_count=total,
+                processed_count=refreshed_count,
+                asmr_available_count=asmr_available_count,
+                kikoeru_owned_count=kikoeru_owned_count,
+            )
             bonus_lookup_rjcodes: List[str] = []
             for refreshed_row in rows:
                 for code in [

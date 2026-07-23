@@ -5005,7 +5005,7 @@ async function startIndexCircleJob({ circleQuery: targetQuery, circleQueries: ra
   }
 }
 
-async function refreshSelectedCircleIndex(targetCodes = null) {
+async function refreshSelectedCircleIndex(targetCodes = null, options = {}) {
   const circleId = String(activeCircleId.value || detail.circle_id || '').trim()
   if (!circleId) {
     ElMessage.warning('当前还没有选中社团')
@@ -5022,16 +5022,18 @@ async function refreshSelectedCircleIndex(targetCodes = null) {
     ElMessage.warning('已有批量刷新任务在跑')
     return
   }
+  const ownedOnly = Boolean(options?.ownedOnly)
   refreshingCurrentCircle.value = true
   try {
     const result = await circleCompletionApi.startRefreshSelectedWorks({
       circle_id: circleId,
       circle_name: detail.circle_name || '',
       canonical_rjcodes: codes,
-      force_refresh: false
+      force_refresh: false,
+      owned_only: ownedOnly
     })
     applyRefreshJob(result)
-    if (result.meta?.force_refresh) {
+    if (!ownedOnly && result.meta?.force_refresh) {
       ElMessage.info(result.meta.force_refresh_reason === 'auto_threshold'
         ? '1 分钟内连续刷新达到 3 次，本次已自动强制刷新并跳过缓存'
         : '本次已使用强制刷新')
@@ -5072,7 +5074,7 @@ async function refreshCurrentCircleBonusOwnedState() {
       return
     }
     ElMessage.info(`已找到 ${codes.length} 个特典，开始刷新本地拥有状态`)
-    await refreshSelectedCircleIndex(codes)
+    await refreshSelectedCircleIndex(codes, { ownedOnly: true })
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '获取当前社团特典失败')
   } finally {

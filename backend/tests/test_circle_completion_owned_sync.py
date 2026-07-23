@@ -5,8 +5,10 @@ from types import SimpleNamespace
 import pytest
 
 from app.core import circle_completion_service as circle_module
+from app.core import activity_log_service as activity_log_module
 from app.core import library_manager as library_manager_module
 from app.core.circle_completion_service import CircleCompletionService
+from app.core.task_engine import TaskEngine
 from app.models.database import LibraryOwnedWork
 
 
@@ -240,6 +242,222 @@ def test_apply_library_index_owned_state_skips_when_ready_index_unavailable(monk
         "ready_index_available": False,
     }
     assert "local_owned" not in item
+
+
+@pytest.mark.asyncio
+async def test_refresh_circle_owned_state_uses_one_local_index_batch(monkeypatch):
+    service = CircleCompletionService()
+    circle_id = "RG_OWNED_FAST"
+    catalog = SimpleNamespace(circle_id=circle_id, circle_name="本地拥有态测试社团")
+    rows = [
+        SimpleNamespace(
+            circle_id=circle_id,
+            canonical_rjcode="RJ01000001",
+            display_rjcode="RJ01000001",
+            title="新增拥有",
+            source_mask="dlsite",
+            linked_rjcodes=["RJ01000001"],
+            has_kikoeru=False,
+            kikoeru_found_rjcodes=[],
+            kikoeru_subtitle_rjcodes=[],
+            has_dlsite=True,
+            has_asmr_one=False,
+            asmr_available_rjcode=None,
+            updated_at=None,
+        ),
+        SimpleNamespace(
+            circle_id=circle_id,
+            canonical_rjcode="RJ01000002",
+            display_rjcode="RJ01000002",
+            title="取消拥有",
+            source_mask="dlsite,kikoeru",
+            linked_rjcodes=["RJ01000002"],
+            has_kikoeru=True,
+            kikoeru_found_rjcodes=["RJ01000002"],
+            kikoeru_subtitle_rjcodes=["RJ01000002"],
+            has_dlsite=True,
+            has_asmr_one=False,
+            asmr_available_rjcode=None,
+            updated_at=None,
+        ),
+    ]
+
+    class Query:
+        def __init__(self, *, first_value=None, all_values=None):
+            self.first_value = first_value
+            self.all_values = list(all_values or [])
+
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def first(self):
+            return self.first_value
+
+        def all(self):
+            return list(self.all_values)
+
+    class ReadSession:
+        def __init__(self):
+            self.query_count = 0
+
+        def query(self, *_entities):
+            self.query_count += 1
+            if self.query_count == 1:
+                return Query(first_value=catalog)
+            return Query(all_values=rows)
+
+        def expunge_all(self):
+            pass
+
+        def close(self):
+            pass
+
+    class WriteSession:
+        def __init__(self):
+            self.merged = []
+            self.committed = False
+
+        def merge(self, row):
+            self.merged.append(row)
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            raise AssertionError("本用例不应回滚")
+
+        def close(self):
+            pass
+
+    read_session = ReadSession()
+    write_session = WriteSession()
+    sessions = iter([read_session, write_session])
+
+    monkeypatch.setattr(circle_module, "SessionLocal", lambda: next(sessions))
+    monkeypatch.setattr(activity_log_module, "log_circle_completion_event", lambda *_args, **_kwargs: None)
+    index_batches = []
+    owned_writes = []
+
+    def fake_apply(items_by_canonical):
+        index_batches.append(set(items_by_canonical))
+        gained = items_by_canonical["RJ01000001"]
+        gained.update({
+            "has_kikoeru": True,
+            "kikoeru_found_rjcodes": ["RJ01000001"],
+            "kikoeru_subtitle_rjcodes": [],
+            "local_owned": True,
+            "local_subtitle_present": False,
+            "local_folder_size": 1024,
+            "local_file_count": 4,
+            "subtitle_file_count": 0,
+            "subtitle_dir": "",
+            "owned_paths": ["/library/RJ01000001"],
+            "primary_library_id": "local-main",
+        })
+        lost = items_by_canonical["RJ01000002"]
+        lost.update({
+            "has_kikoeru": False,
+            "kikoeru_found_rjcodes": [],
+            "kikoeru_subtitle_rjcodes": [],
+            "local_owned": False,
+            "local_subtitle_present": False,
+            "local_folder_size": 0,
+            "local_file_count": 0,
+            "subtitle_file_count": 0,
+            "subtitle_dir": "",
+            "owned_paths": [],
+            "primary_library_id": "",
+        })
+        return {
+            "owned_count": 1,
+            "subtitle_count": 0,
+            "hit_count": 1,
+            "ready_index_available": True,
+        }
+
+    monkeypatch.setattr(service, "_apply_library_index_owned_state_to_items", fake_apply)
+    monkeypatch.setattr(
+        service,
+        "_upsert_library_owned_rows_from_items",
+        lambda _db, items, **kwargs: owned_writes.append((set(items), kwargs)) or len(items),
+    )
+    progress = []
+
+    result = await service.refresh_circle_owned_state(
+        circle_id,
+        ["RJ01000001", "RJ01000002"],
+        progress_callback=lambda value, step, **_meta: progress.append((value, step)),
+    )
+
+    assert index_batches == [{"RJ01000001", "RJ01000002"}]
+    assert result["refreshed_count"] == 2
+    assert result["changed_count"] == 2
+    assert result["kikoeru_owned_count"] == 1
+    assert result["owned_only"] is True
+    assert progress[-1] == (100, "本地拥有状态刷新完成")
+    assert owned_writes == [(
+        {"RJ01000001", "RJ01000002"},
+        {"prune_unmatched": True},
+    )]
+    assert write_session.committed is True
+    rows_by_code = {row.canonical_rjcode: row for row in rows}
+    assert rows_by_code["RJ01000001"].has_kikoeru is True
+    assert rows_by_code["RJ01000001"].kikoeru_found_rjcodes == ["RJ01000001"]
+    assert rows_by_code["RJ01000002"].has_kikoeru is False
+    assert rows_by_code["RJ01000002"].kikoeru_found_rjcodes == []
+    assert rows_by_code["RJ01000002"].source_mask == "dlsite"
+
+
+@pytest.mark.asyncio
+async def test_owned_only_task_skips_full_remote_refresh(monkeypatch):
+    calls = []
+
+    class Service:
+        async def refresh_circle_owned_state(self, circle_id, codes, **kwargs):
+            calls.append(("owned", circle_id, list(codes), kwargs))
+            return {
+                "circle_id": circle_id,
+                "circle_name": "本地拥有态测试社团",
+                "refreshed_count": len(codes),
+                "changed_count": 1,
+                "kikoeru_owned_count": 1,
+                "owned_only": True,
+                "items": [],
+            }
+
+        async def refresh_circle_works(self, *_args, **_kwargs):
+            raise AssertionError("只刷新拥有态时不应进入远程状态刷新")
+
+    class Task:
+        def __init__(self):
+            self.progress = 0
+            self.current_step = ""
+            self.task_metadata = {
+                "circle_id": "RG_OWNED_FAST",
+                "circle_name": "本地拥有态测试社团",
+                "canonical_rjcodes": ["RJ01000001"],
+                "owned_only": True,
+                "progress_log": [],
+            }
+
+        def update_progress(self, progress, step):
+            self.progress = progress
+            self.current_step = step
+
+        def is_cancelled(self):
+            return False
+
+    monkeypatch.setattr(circle_module, "get_circle_completion_service", lambda: Service())
+    task = Task()
+
+    await TaskEngine._process_circle_completion_refresh_selected(SimpleNamespace(), task)
+
+    assert len(calls) == 1
+    assert calls[0][:3] == ("owned", "RG_OWNED_FAST", ["RJ01000001"])
+    assert task.progress == 100
+    assert task.current_step == "本地拥有状态刷新完成"
+    assert task.task_metadata["owned_only"] is True
+    assert task.task_metadata["refreshed_count"] == 1
 
 
 def test_upsert_library_owned_rows_prunes_current_unmatched_snapshot():

@@ -6538,13 +6538,23 @@ class TaskEngine:
             }
             append_progress_log(step, progress)
 
-        result = await get_circle_completion_service().refresh_circle_works(
-            circle_id,
-            canonical_rjcodes,
-            force_refresh=bool(task.task_metadata.get('force_refresh')),
-            progress_callback=progress_callback,
-            cancel_callback=task.is_cancelled,
-        )
+        owned_only = bool(task.task_metadata.get('owned_only'))
+        circle_service = get_circle_completion_service()
+        if owned_only:
+            result = await circle_service.refresh_circle_owned_state(
+                circle_id,
+                canonical_rjcodes,
+                progress_callback=progress_callback,
+                cancel_callback=task.is_cancelled,
+            )
+        else:
+            result = await circle_service.refresh_circle_works(
+                circle_id,
+                canonical_rjcodes,
+                force_refresh=bool(task.task_metadata.get('force_refresh')),
+                progress_callback=progress_callback,
+                cancel_callback=task.is_cancelled,
+            )
 
         task.task_metadata = {
             **(task.task_metadata or {}),
@@ -6554,9 +6564,11 @@ class TaskEngine:
             'refreshed_count': int(result.get('refreshed_count') or 0),
             'changed_count': int(result.get('changed_count') or 0),
             'force_refresh': bool(task.task_metadata.get('force_refresh')),
+            'owned_only': owned_only,
         }
-        task.update_progress(100, "批量刷新完成")
-        append_progress_log("批量刷新完成", 100, 'success')
+        completed_step = "本地拥有状态刷新完成" if owned_only else "批量刷新完成"
+        task.update_progress(100, completed_step)
+        append_progress_log(completed_step, 100, 'success')
 
     async def _process_circle_completion_bonus_probe(self, task: Task):
         """处理 DLsite 隐藏特典探测任务。"""
