@@ -519,6 +519,15 @@ const gridClass = computed(() => {
   overflow: hidden;
 }
 
+:global(.subtitle-workbench-dialog .subtitle-left-rail-content) {
+  overflow: hidden;
+}
+
+:global(.subtitle-workbench-dialog .subtitle-left-rail-content .subtitle-scan-rail-root) {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 :deep(.subtitle-task-stage-root),
 :deep(.subtitle-inspector-workbench-root) {
   height: 100%;
