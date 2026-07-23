@@ -146,11 +146,6 @@ class ASMRResourceService:
         previous_downloaded = int(previous.get("downloaded") or 0)
         previous_speed = int(previous.get("speed_bytes_per_sec") or 0)
         try:
-            aggregate_elapsed = max(0.001, (now - datetime.fromisoformat(started_at)).total_seconds())
-        except Exception:
-            aggregate_elapsed = 0.001
-            started_at = now.isoformat()
-        try:
             previous_updated = datetime.fromisoformat(previous_updated_at) if previous_updated_at else None
         except Exception:
             previous_updated = None
@@ -203,10 +198,38 @@ class ASMRResourceService:
             item for item in ordered_files
             if 0 < int(item.get("downloaded") or 0) < max(1, int(item.get("total") or 0))
         ]
-        aggregate_speed = sum(max(0, int(item.get("speed_bytes_per_sec") or 0)) for item in active_items)
-        if aggregate_speed <= 0 and transferred_bytes > 0:
-            aggregate_speed = int(transferred_bytes / aggregate_elapsed)
+        aggregate_speed = 0
         remaining_bytes = max(0, aggregate_total - transferred_bytes)
+        # 总速度必须按整个任务的字节增量采样。逐文件平均速度会把已启动但未实际并发传输的文件全部相加，
+        # 在增强下载中会明显高于真实网络吞吐（例如 30 个文件的平均速度被累加）。
+        previous_aggregate_at = str(runtime.get("speed_sample_at") or "").strip()
+        previous_aggregate_bytes = int(runtime.get("speed_sample_transferred_bytes") or transferred_bytes)
+        try:
+            aggregate_sample_at = datetime.fromisoformat(previous_aggregate_at) if previous_aggregate_at else None
+        except Exception:
+            aggregate_sample_at = None
+        aggregate_sample_speed = 0
+        if aggregate_sample_at is not None:
+            sample_elapsed = max(0.001, (now - aggregate_sample_at).total_seconds())
+            sample_delta = max(0, transferred_bytes - previous_aggregate_bytes)
+            if sample_elapsed >= 0.35 and sample_delta > 0:
+                aggregate_sample_speed = int(sample_delta / sample_elapsed)
+        if aggregate_sample_speed > 0:
+            previous_aggregate_speed = int(runtime.get("speed_bytes_per_sec") or 0)
+            aggregate_speed = (
+                int(previous_aggregate_speed * 0.35 + aggregate_sample_speed * 0.65)
+                if previous_aggregate_speed > 0
+                else aggregate_sample_speed
+            )
+        elif aggregate_sample_at is not None:
+            try:
+                sample_age = (now - aggregate_sample_at).total_seconds()
+            except Exception:
+                sample_age = 0
+            if sample_age >= 1.5:
+                aggregate_speed = 0
+            else:
+                aggregate_speed = int(runtime.get("speed_bytes_per_sec") or 0)
         aggregate_eta = int(remaining_bytes / aggregate_speed) if aggregate_speed > 0 and remaining_bytes > 0 else 0
 
         task.task_metadata["download_runtime"] = {
@@ -225,6 +248,8 @@ class ASMRResourceService:
             "progress": int(transferred_bytes / aggregate_total * 100) if aggregate_total else 0,
             "speed_bytes_per_sec": aggregate_speed,
             "eta_seconds": aggregate_eta,
+            "speed_sample_at": now.isoformat(),
+            "speed_sample_transferred_bytes": transferred_bytes,
         }
 
     def _finalize_download_runtime(self, task, status: str = "completed") -> None:
@@ -1307,6 +1332,32 @@ class ASMRResourceService:
             "postprocess_options": postprocess_options,
         }
 
+    def _build_retry_download_metadata(
+        self,
+        session: Dict[str, Any],
+        retry_paths: set[str],
+    ) -> Dict[str, Any]:
+        statistics = dict(session.get("statistics") or {})
+        download_root = str(
+            session.get("local_download_root")
+            or statistics.get("download_root")
+            or ""
+        ).strip()
+        if not download_root or not os.path.isdir(download_root):
+            raise ValueError("原下载缓存目录不存在，无法断点续传；请重新创建增强下载任务")
+
+        failure_summary = dict(session.get("failure_summary") or {})
+        remaining_failed_resources = [
+            dict(item)
+            for item in failure_summary.get("failed_resources") or []
+            if str(item.get("relative_path") or "").strip() not in retry_paths
+        ]
+        return {
+            "download_root": download_root,
+            "remaining_failed_resources": remaining_failed_resources,
+            "session_selected_resource_count": len(session.get("selected_resources") or []),
+        }
+
     async def retry_failed_session(self, session_id: str) -> Dict[str, Any]:
         from .activity_log_service import log_asmr_sync_event
         from .task_engine import Task, TaskType, get_task_engine
@@ -1320,6 +1371,14 @@ class ASMRResourceService:
             raise ValueError("会话中没有可重试资源")
 
         retry_options = self._build_retry_task_options(session)
+        retry_metadata = self._build_retry_download_metadata(
+            session,
+            {
+                str(item.get("relative_path") or "").strip()
+                for item in retry_resources
+                if str(item.get("relative_path") or "").strip()
+            },
+        )
         latest_task_metadata = dict(retry_options.get("latest_task_metadata") or {})
         engine = get_task_engine()
         task = Task(
@@ -1333,7 +1392,9 @@ class ASMRResourceService:
                 "session_id": session_id,
                 "selected_resources": retry_resources,
                 "selected_resource_count": len(retry_resources),
-                "download_root": str((session.get("statistics") or {}).get("download_root") or session.get("local_download_root") or session.get("target_path") or ""),
+                "download_root": retry_metadata["download_root"],
+                "remaining_failed_resources": retry_metadata["remaining_failed_resources"],
+                "session_selected_resource_count": retry_metadata["session_selected_resource_count"],
                 "queue_priority": int(session.get("queue_priority") or 100),
                 "upload_options": retry_options.get("upload_options") or {},
                 "postprocess_options": retry_options.get("postprocess_options") or {},
@@ -1394,6 +1455,7 @@ class ASMRResourceService:
         from .task_engine import Task, TaskType, get_task_engine
 
         retry_options = self._build_retry_task_options(session)
+        retry_metadata = self._build_retry_download_metadata(session, target_paths)
         latest_task_metadata = dict(retry_options.get("latest_task_metadata") or {})
         engine = get_task_engine()
         task = Task(
@@ -1407,7 +1469,9 @@ class ASMRResourceService:
                 "session_id": session_id,
                 "selected_resources": retry_resources,
                 "selected_resource_count": len(retry_resources),
-                "download_root": str((session.get("statistics") or {}).get("download_root") or session.get("local_download_root") or session.get("target_path") or ""),
+                "download_root": retry_metadata["download_root"],
+                "remaining_failed_resources": retry_metadata["remaining_failed_resources"],
+                "session_selected_resource_count": retry_metadata["session_selected_resource_count"],
                 "queue_priority": int(session.get("queue_priority") or 100),
                 "upload_options": retry_options.get("upload_options") or {},
                 "postprocess_options": retry_options.get("postprocess_options") or {},
@@ -2135,6 +2199,7 @@ class ASMRResourceService:
         metadata = dict(task.task_metadata or {})
         rjcode = self.normalize_rjcode(metadata.get("rjcode") or task.rjcode or "")
         session_id = str(metadata.get("session_id") or "").strip()
+        source_action = str(metadata.get("source_action") or "").strip()
         selected_resources = list(metadata.get("selected_resources") or [])
         if not rjcode:
             raise ValueError("缺少 RJ 号")
@@ -2198,6 +2263,9 @@ class ASMRResourceService:
         os.makedirs(temp_root, exist_ok=True)
         download_base_path = str(metadata.get("download_base_path") or "").strip()
         download_root = str(metadata.get("download_root") or "").strip()
+        is_retry_download = source_action in {"retry_failed_resources", "retry_failed_resource_item"}
+        if is_retry_download and (not download_root or not os.path.isdir(download_root)):
+            raise ValueError("原下载缓存目录不存在，无法断点续传；请重新创建增强下载任务")
         if not download_root:
             if download_base_path:
                 download_root = os.path.join(download_base_path, f"{rjcode}_{task.id[:8]}")
@@ -2217,7 +2285,6 @@ class ASMRResourceService:
         state_lock = asyncio.Lock()
         completed_count = 0
         total_files = max(len(selected_resources), 1)
-        source_action = str(metadata.get("source_action") or "").strip()
         reimport_only = source_action in {"reimport_local_download_root", "reimport_downloaded_session"}
         if reimport_only:
             verify_md5 = bool(metadata.get("verify_md5_after_download", False))
@@ -2482,6 +2549,20 @@ class ASMRResourceService:
                 if result.get("upload_path"):
                     uploaded_files.append({"name": result.get("name"), "upload_path": result.get("upload_path"), "relative_path": result.get("relative_path")})
 
+            carried_failed_files = [
+                dict(item)
+                for item in metadata.get("remaining_failed_resources") or []
+                if str(item.get("relative_path") or "").strip()
+            ]
+            if carried_failed_files:
+                failed_by_path = {
+                    str(item.get("relative_path") or "").strip(): item
+                    for item in carried_failed_files
+                }
+                for item in failed_files:
+                    failed_by_path[str(item.get("relative_path") or "").strip()] = item
+                failed_files = list(failed_by_path.values())
+
             duration_ms = int((datetime.now() - started_at).total_seconds() * 1000)
             total_bytes = sum(int(item.get("size_bytes") or 0) for item in success_files)
             uploaded_bytes = sum(int(item.get("size_bytes") or 0) for item in uploaded_files)
@@ -2497,6 +2578,23 @@ class ASMRResourceService:
                 "failed": len([item for item in success_files if item.get("upload_status") == "failed"]),
             }
             retry_summary = {"network_retry_count": max_retries, "failed_resource_count": len(failed_files)}
+            session_selected_resource_count = max(
+                len(selected_resources),
+                int(metadata.get("session_selected_resource_count") or 0),
+            )
+            session_success_count = max(0, session_selected_resource_count - len(failed_files))
+            session_performance_metrics = {
+                "selected_resource_count": session_selected_resource_count,
+                "success_count": session_success_count,
+                "failed_count": len(failed_files),
+                "duration_ms": duration_ms,
+                "downloaded_bytes": total_bytes,
+                "uploaded_count": len(uploaded_files),
+                "uploaded_bytes": uploaded_bytes,
+                "average_speed_bytes": int(total_bytes / max(duration_ms / 1000, 1)) if total_bytes else 0,
+                "average_upload_speed_bytes": int(uploaded_bytes / max(duration_ms / 1000, 1)) if uploaded_bytes else 0,
+                "upload_runtime": dict(task.task_metadata.get("upload_runtime") or {}),
+            }
             self._finalize_download_runtime(task, "completed" if success_files else "failed")
             task.task_metadata.update(
                 {
@@ -2582,28 +2680,41 @@ class ASMRResourceService:
             self._upsert_resource_records(rjcode, work_info, persisted_resources, session_id=session_id)
 
             if not success_files:
+                has_previous_success = session_success_count > 0
+                session_failure_status = "partial_failed" if has_previous_success else "failed"
+                failure_message = (
+                    f"{rjcode} 本轮重试失败，会话仍已完成 {session_success_count} 个文件"
+                    if has_previous_success
+                    else f"{rjcode} 下载失败，没有任何文件成功"
+                )
                 if session_id:
                     self._update_session(
                         session_id,
-                        status="failed",
-                        statistics={**(task.task_metadata.get("performance_metrics") or {}), "download_root": download_root},
+                        status=session_failure_status,
+                        statistics={**session_performance_metrics, "download_root": download_root},
                         failure_summary={"failed_resources": failed_files},
                         local_download_ready=False,
                         local_download_root=download_root,
-                        local_downloaded_count=0,
+                        local_downloaded_count=session_success_count,
                     )
                     log_asmr_sync_event(
                         "session_partial_failed",
-                        status="failed",
-                        summary=f"{rjcode} 下载失败，没有任何文件成功",
+                        status="partial_success" if has_previous_success else "failed",
+                        summary=failure_message,
                         session_id=session_id,
                         rjcode=rjcode,
                         task_id=task.id,
                         detail={"resource_count": len(selected_resources), "target_path": upload_options["target_path"], "network_retry_count": max_retries, "exception_type": "all_failed"},
                     )
-                raise ValueError("没有任何文件下载成功")
+                raise ValueError("本轮没有任何文件下载成功" if has_previous_success else "没有任何文件下载成功")
 
-            if postprocess_options.get("enabled"):
+            if failed_files:
+                self._append_task_log(
+                    task,
+                    f"仍有 {len(failed_files)} 个文件未完成，保留原下载目录等待断点续传",
+                    "warning",
+                )
+            elif postprocess_options.get("enabled"):
                 if immediate_synology_upload and upload_options.get("target_path"):
                     final_output_path = str(upload_options.get("target_path") or "").strip()
                     task.task_metadata["final_output_path"] = final_output_path
@@ -2678,22 +2789,22 @@ class ASMRResourceService:
                 self._update_session(
                     session_id,
                     status=final_status,
-                    statistics={**(task.task_metadata.get("performance_metrics") or {}), "verify_summary": verify_summary, "upload_summary": upload_summary, "download_root": download_root},
+                    statistics={**session_performance_metrics, "verify_summary": verify_summary, "upload_summary": upload_summary, "download_root": download_root},
                     failure_summary={"failed_resources": failed_files, "verification_failures": verification_failures},
                     local_download_ready=bool(final_status == "completed" and persisted_local_root and persisted_local_count > 0),
                     local_download_root=persisted_local_root,
-                    local_downloaded_count=persisted_local_count,
+                    local_downloaded_count=session_success_count if persisted_local_root else 0,
                 )
                 log_asmr_sync_event(
                     "session_partial_failed" if final_status == "partial_failed" else "session_completed",
                     status="partial_success" if final_status == "partial_failed" else "success",
-                    summary=f"{rjcode} 增强下载完成，成功 {len(success_files)} 个，失败 {len(failed_files)} 个",
+                    summary=f"{rjcode} 增强下载完成，累计成功 {session_success_count} 个，失败 {len(failed_files)} 个",
                     session_id=session_id,
                     rjcode=rjcode,
                     task_id=task.id,
                     detail={
-                        "resource_count": len(selected_resources),
-                        "success_count": len(success_files),
+                        "resource_count": session_selected_resource_count,
+                        "success_count": session_success_count,
                         "failed_count": len(failed_files),
                         "downloaded_bytes": total_bytes,
                         "duration_ms": duration_ms,
@@ -2731,14 +2842,25 @@ class ASMRResourceService:
             self._finalize_upload_runtime(task, "failed")
             self._append_task_log(task, f"任务失败: {str(exc)}", "error")
             if session_id:
+                session_selected_resource_count = max(
+                    len(selected_resources),
+                    int(metadata.get("session_selected_resource_count") or 0),
+                )
+                session_success_count = max(0, session_selected_resource_count - len(failed_files))
                 self._update_session(
                     session_id,
-                    status="failed",
-                    statistics=task.task_metadata.get("performance_metrics") or {},
+                    status="partial_failed" if session_success_count > 0 else "failed",
+                    statistics={
+                        **(task.task_metadata.get("performance_metrics") or {}),
+                        "selected_resource_count": session_selected_resource_count,
+                        "success_count": session_success_count,
+                        "failed_count": len(failed_files),
+                        "download_root": download_root,
+                    },
                     failure_summary={"failed_resources": failed_files, "verification_failures": verification_failures},
                     local_download_ready=False,  # 下载失败/异常，不标记为可入库
                     local_download_root=download_root if os.path.isdir(download_root) else "",
-                    local_downloaded_count=len(success_files),
+                    local_downloaded_count=session_success_count,
                 )
             if os.path.isdir(download_root):
                 self._append_task_log(task, "已保留未完成下载片段，后续重试将优先尝试断点续传")

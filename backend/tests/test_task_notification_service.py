@@ -189,7 +189,23 @@ def test_baidu_netdisk_partial_success_is_failed_event():
         },
     )
 
-    assert task_notification_service._is_http_download_partial_success(task) is True
+    assert task_notification_service._is_download_partial_success(task) is True
+
+
+def test_asmr_enhanced_partial_success_is_failed_event():
+    task = SimpleNamespace(
+        id="asmr-partial",
+        type=SimpleNamespace(value="asmr_sync_download"),
+        status=SimpleNamespace(value="completed"),
+        task_metadata={
+            "download_mode": "enhanced",
+            "failed_files": [{"relative_path": "audio/02.wav", "reason": "断流"}],
+            "performance_metrics": {"success_count": 1, "failed_count": 1},
+        },
+    )
+
+    assert task_notification_service._is_download_partial_success(task) is True
+    assert task_notification_service._final_event_type("asmr-partial", "task", task) == "failed"
 
 
 def test_notification_business_key_column_allows_long_keys():
