@@ -22,7 +22,7 @@
       </div>
     </template>
 
-    <div class="grid content-start gap-3">
+    <div class="scan-rail-primary-stack grid content-start gap-3">
       <div v-if="ctx.subtitleScanSessionSummary.length" class="scan-session-summary">
         <div
           v-for="(item, idx) in ctx.subtitleScanSessionSummary"
@@ -44,16 +44,16 @@
       <AppEmptyState v-else-if="!ctx.subtitleDialogSelection.length" description="没有识别到 RJ 文件夹" size="sm" />
 
       <template v-else>
-        <section class="grid content-start gap-3">
+        <section class="scan-rail-section scan-rail-executable-section grid content-start gap-3">
           <div class="scan-rail-section-head">
             <div class="scan-rail-section-title">
-              <div class="text-[13px] font-semibold text-slate-900">可执行与已入任务</div>
+              <div class="scan-rail-section-label text-[13px] font-semibold text-slate-900">可执行 / 已入队</div>
               <span class="scan-rail-count-badge scan-rail-count-badge-sky">
                 <ListTodo class="h-3 w-3" :stroke-width="2.2" />
                 {{ ctx.subtitleExecutableSelectionItems.length }}
               </span>
               <button type="button" class="scan-rail-toggle scan-rail-toggle-subtle" @click="ctx.setSubtitleExecutableCollapsed(!ctx.subtitleExecutableCollapsed)">
-                <span class="scan-rail-toggle-text">{{ ctx.subtitleExecutableCollapsed ? '展开列表' : '收起列表' }}</span>
+                <span class="scan-rail-toggle-text">{{ ctx.subtitleExecutableCollapsed ? '展开' : '收起' }}</span>
                 <ChevronDown class="h-3.5 w-3.5 transition-transform duration-200" :class="{ '-rotate-90': ctx.subtitleExecutableCollapsed }" />
               </button>
             </div>
@@ -81,7 +81,15 @@
             </div>
           </div>
 
-          <AppEmptyState v-if="!ctx.subtitleExecutableCollapsed && !ctx.subtitleExecutableDisplayItems.length" description="当前没有可执行或已入任务的 RJ 目录" size="sm" />
+          <div v-if="!ctx.subtitleExecutableCollapsed && !ctx.subtitleExecutableDisplayItems.length" class="scan-rail-inline-empty">
+            <span class="scan-rail-inline-empty-icon">
+              <ListTodo class="h-4 w-4" :stroke-width="2.2" />
+            </span>
+            <div class="scan-rail-inline-empty-copy">
+              <strong>暂无可执行项目</strong>
+              <span>{{ ctx.subtitleSkippedSelectionItems.length ? '命中项已归入下方“被跳过”' : '当前没有待加入或已入任务的 RJ 目录' }}</span>
+            </div>
+          </div>
 
           <transition-group v-else-if="!ctx.subtitleExecutableCollapsed" name="subtitle-card-fade" tag="div" class="scan-rail-card-list">
             <button
@@ -168,18 +176,21 @@
           </div>
         </section>
 
-        <section v-if="ctx.subtitleSkippedSelectionItems.length" class="grid gap-3 border-t border-slate-100 pt-3">
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div class="inline-flex items-center gap-2">
-              <div class="text-[13px] font-semibold text-slate-900">被跳过</div>
+        <section v-if="ctx.subtitleSkippedSelectionItems.length" class="scan-rail-section scan-rail-skipped-section grid gap-3 border-t border-slate-100 pt-3">
+          <div class="scan-rail-section-head">
+            <div class="scan-rail-section-title">
+              <div class="scan-rail-section-label text-[13px] font-semibold text-slate-900">被跳过</div>
               <span class="scan-rail-count-badge scan-rail-count-badge-amber">
                 <Ban class="h-3 w-3" :stroke-width="2.2" />
                 {{ ctx.filteredSubtitleSkippedSelectionItems.length }}
               </span>
+              <button type="button" class="scan-rail-toggle scan-rail-section-collapse" @click="ctx.setSubtitleSkippedCollapsed(!ctx.subtitleSkippedCollapsed)">
+                <span>{{ ctx.subtitleSkippedCollapsed ? '展开' : '收起' }}</span>
+                <ChevronDown class="h-3.5 w-3.5 transition-transform duration-200" :class="{ '-rotate-90': ctx.subtitleSkippedCollapsed }" />
+              </button>
             </div>
 
-            <div class="flex flex-wrap items-center gap-2">
-              <div v-if="ctx.subtitleSkippedSelectionFilterOptions.length" class="flex flex-wrap gap-1.5">
+            <div v-if="ctx.subtitleSkippedSelectionFilterOptions.length" class="scan-rail-skipped-filter-grid">
                 <button
                   v-for="item in ctx.subtitleSkippedSelectionFilterOptions"
                   :key="item.key"
@@ -192,37 +203,32 @@
                   <span>{{ item.label }}</span>
                   <span class="scan-rail-filter-count">{{ item.value }}</span>
                 </button>
-              </div>
-              <button type="button" class="scan-rail-toggle" @click="ctx.setSubtitleSkippedCollapsed(!ctx.subtitleSkippedCollapsed)">
-                <span>{{ ctx.subtitleSkippedCollapsed ? '展开' : '收起' }}</span>
-                <ChevronDown class="h-3.5 w-3.5 transition-transform duration-200" :class="{ '-rotate-90': ctx.subtitleSkippedCollapsed }" />
-              </button>
             </div>
           </div>
 
-          <div v-if="!ctx.subtitleSkippedCollapsed" class="grid gap-2">
+          <div v-if="!ctx.subtitleSkippedCollapsed" class="scan-rail-skipped-list grid gap-2">
             <button
               v-for="item in getPagedSkippedSelectionItems(ctx.filteredSubtitleSkippedSelectionItems, subtitleSkippedSelectionPage)"
               :key="`${ctx.buildSubtitleSelectionKey(item)}-skipped`"
               type="button"
-              class="scan-rail-card group w-full rounded-[14px] border border-slate-200 bg-white px-3 py-2.5 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.01] hover:border-slate-300 hover:bg-white active:scale-[0.98]"
+              class="scan-rail-card group w-full rounded-[14px] border border-slate-200 bg-white px-3 py-2 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.01] hover:border-slate-300 hover:bg-white active:scale-[0.98]"
               :class="ctx.isSubtitleSelectionActive(item) ? 'border-slate-950' : ''"
               :title="item.folder_path"
               @click="ctx.focusSubtitleSelectionItem(item)"
             >
-              <div class="grid gap-1.5">
-                <div class="flex min-w-0 items-start gap-2">
+              <div class="scan-skipped-card-content">
+                <div class="scan-skipped-card-head">
                   <span class="scan-skipped-card-icon">
                     <FolderOpen class="h-3 w-3" :stroke-width="2.2" />
                   </span>
-                  <div class="min-w-0">
-                    <div class="text-[12.5px] font-semibold leading-[1.32] text-slate-900">{{ getDisplayFolderName(item) }}</div>
+                  <div class="scan-skipped-card-title-wrap">
+                    <div class="scan-rail-card-title scan-skipped-card-title">{{ getDisplayFolderName(item) }}</div>
+                    <div v-if="ctx.getLibraryLabelById(item.library_id)" class="scan-rail-card-source">
+                      来源 · {{ ctx.getLibraryLabelById(item.library_id) }}
+                    </div>
                   </div>
                 </div>
-                <div class="pl-6 text-[9.5px] leading-4 text-slate-500">
-                  <span v-if="ctx.getLibraryLabelById(item.library_id)">来源库：{{ ctx.getLibraryLabelById(item.library_id) }}</span>
-                </div>
-                <div class="flex flex-wrap gap-1.5 pl-6">
+                <div class="scan-skipped-card-meta">
                   <span class="scan-rail-tag scan-rail-tag-soft">
                     <component :is="getSkippedQueueIcon(item)" class="h-3 w-3" :class="getSkippedQueueIconClass(item)" :stroke-width="2.2" />
                     {{ ctx.getSubtitleSelectionQueueLabel(item) }}
@@ -236,8 +242,8 @@
                     {{ chip.label }}
                   </span>
                 </div>
-                <div v-if="item.queue_message" class="pl-6 text-[9.5px] leading-[1.35] text-slate-500">{{ item.queue_message }}</div>
-                <div class="flex flex-wrap items-center gap-1.5 pl-6">
+                <div v-if="item.queue_message" class="scan-rail-card-message scan-skipped-card-message">{{ item.queue_message }}</div>
+                <div class="scan-skipped-card-actions">
                   <button v-if="ctx.canInspectSubtitleSelectionFolder(item)" type="button" class="scan-rail-btn scan-rail-btn-primary" @click.stop="ctx.inspectSubtitleSelectionFolder(item)">检查字幕稿</button>
                   <button v-if="ctx.canForceCreateSubtitleTaskForSelection(item)" type="button" class="scan-rail-btn scan-rail-btn-success" :disabled="Boolean(ctx.subtitleForceQueueKey)" @click.stop="ctx.forceCreateSubtitleTaskForSelection(item)">创建一次任务</button>
                 </div>
@@ -313,7 +319,7 @@
             </span>
           </div>
 
-          <div class="scan-target-path">{{ item.path }}</div>
+          <div class="scan-target-path">{{ getScanTargetParentPath(item) }}</div>
 
           <div v-if="item.message || ctx.canRetrySubtitleScanResult(item)" class="scan-target-foot">
             <span v-if="item.message" class="scan-target-message">{{ item.message }}</span>
@@ -467,6 +473,20 @@ function getDisplayFolderName(item) {
   return parts[parts.length - 1] || folderName || folderPath
 }
 
+function getScanTargetParentPath(item) {
+  const path = String(item?.path || '').trim().replace(/[\\/]+$/, '')
+  if (!path) return '-'
+
+  const name = String(item?.name || '').trim()
+  if (!name) return path
+
+  const normalizedPath = path.replace(/\\/g, '/')
+  const normalizedName = name.replace(/\\/g, '/')
+  if (!normalizedPath.endsWith(`/${normalizedName}`)) return path
+
+  return normalizedPath.slice(0, -(normalizedName.length + 1)) || '/'
+}
+
 function getExistingChipClass(chip) {
   const label = String(chip?.label || '')
   if (label.includes('已匹配完成')) {
@@ -571,29 +591,92 @@ function getScanResultIcon(status) {
 .subtitle-scan-rail-root {
   align-content: start;
   grid-auto-rows: max-content;
-  height: auto;
+  gap: 10px;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 3px;
+  scrollbar-color: rgba(148, 163, 184, 0.42) transparent;
+  scrollbar-width: thin;
 }
 
 .subtitle-scan-rail-root > * {
   min-height: 0;
 }
 
+.subtitle-scan-rail-root::-webkit-scrollbar {
+  width: 5px;
+}
+
+.subtitle-scan-rail-root::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.subtitle-scan-rail-root::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.34);
+}
+
+.scan-rail-primary-stack {
+  min-width: 0;
+  gap: 10px;
+}
+
+.scan-rail-section {
+  min-width: 0;
+}
+
 .scan-rail-section-head {
   display: grid;
   align-content: start;
-  gap: 10px;
+  gap: 7px;
 }
 
 .scan-rail-section-title {
   display: flex;
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
 }
 
+.scan-rail-section-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scan-rail-section-collapse,
+.scan-rail-toggle-subtle {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
 .scan-rail-filter-wrap {
   min-width: 0;
+}
+
+.scan-rail-skipped-filter-grid {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  gap: 6px;
+}
+
+.scan-rail-skipped-filter-grid .scan-rail-filter-pill {
+  width: 100%;
+  min-width: 0;
+}
+
+.scan-rail-skipped-filter-grid .scan-rail-filter-pill > span:not(.scan-rail-filter-count) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .scan-rail-segment-grid {
@@ -617,6 +700,105 @@ function getScanResultIcon(status) {
   gap: 7px;
 }
 
+.scan-rail-inline-empty {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  border: 1px dashed #dbe3ee;
+  border-radius: 11px;
+  background: #f8fafc;
+  padding: 9px 10px;
+}
+
+.scan-rail-inline-empty-icon {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #dbeafe;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #64748b;
+}
+
+.scan-rail-inline-empty-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.scan-rail-inline-empty-copy strong {
+  overflow: hidden;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scan-rail-inline-empty-copy span {
+  color: #64748b;
+  font-size: 9.5px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.scan-rail-skipped-list {
+  align-content: start;
+  grid-auto-rows: max-content;
+}
+
+.scan-skipped-card-content {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.scan-skipped-card-head {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.scan-skipped-card-title-wrap {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 1px;
+}
+
+.scan-skipped-card-meta,
+.scan-skipped-card-actions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding-left: 26px;
+}
+
+.scan-skipped-card-meta .scan-rail-tag {
+  min-height: 18px;
+  gap: 3px;
+  padding: 0 6px;
+  font-size: 9px;
+}
+
+.scan-skipped-card-meta .scan-rail-tag svg {
+  width: 11px;
+  height: 11px;
+}
+
+.scan-skipped-card-message {
+  padding-left: 26px;
+  line-height: 1.35;
+}
+
 .scan-rail-card-title {
   min-width: 0;
   overflow: hidden;
@@ -627,6 +809,18 @@ function getScanResultIcon(status) {
   letter-spacing: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.scan-rail-card-title.scan-skipped-card-title {
+  display: -webkit-box;
+  max-height: 2.76em;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.38;
+  text-overflow: ellipsis;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .scan-rail-card-source {
@@ -1330,10 +1524,16 @@ function getScanResultIcon(status) {
 
 .scan-target-head {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
-  gap: 10px;
+  gap: 8px 10px;
   min-width: 0;
+}
+
+.scan-target-head .scan-rail-status-pill {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
 }
 
 .scan-target-icon {
@@ -1379,27 +1579,43 @@ function getScanResultIcon(status) {
 
 .scan-target-title-wrap {
   display: grid;
+  grid-column: 1 / -1;
+  grid-row: 2;
   gap: 3px;
   min-width: 0;
 }
 
 .scan-target-title {
+  display: -webkit-box;
   min-width: 0;
+  max-height: 2.76em;
+  overflow: hidden;
   color: #0f172a;
   font-size: 13px;
   font-weight: 700;
-  line-height: 1.35;
-  letter-spacing: -0.01em;
-  word-break: break-word;
+  line-height: 1.38;
+  letter-spacing: 0;
+  overflow-wrap: break-word;
+  text-overflow: ellipsis;
+  word-break: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .scan-target-path {
+  display: -webkit-box;
   min-width: 0;
-  padding-left: 40px;
+  max-height: 2.8em;
+  overflow: hidden;
+  padding-left: 0;
   color: #52657d;
   font-size: 11px;
-  line-height: 1.45;
-  word-break: break-word;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  word-break: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .scan-target-foot {
@@ -1430,15 +1646,6 @@ function getScanResultIcon(status) {
 }
 
 @media (max-width: 640px) {
-  .scan-target-head {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
-  .scan-target-head .scan-rail-status-pill {
-    grid-column: 2;
-    justify-self: start;
-  }
-
   .scan-target-path,
   .scan-target-foot {
     padding-left: 0;
@@ -1483,6 +1690,54 @@ function getScanResultIcon(status) {
 :global(html.kikoerumanager-dark) .subtitle-scan-rail-root,
 :global(html.dark) .subtitle-scan-rail-root {
   color: rgba(245, 245, 247, 0.9);
+  scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-inline-empty),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-inline-empty) {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: #1b1c20 !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-inline-empty-icon),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-inline-empty-icon) {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: #2b2c30 !important;
+  color: rgba(203, 213, 225, 0.74) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-inline-empty-copy strong),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-inline-empty-copy strong) {
+  color: rgba(248, 250, 252, 0.9) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-inline-empty-copy span),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-inline-empty-copy span) {
+  color: rgba(203, 213, 225, 0.62) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-session-summary),
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-session-summary-row),
+:global(html.dark .subtitle-scan-rail-root .scan-session-summary),
+:global(html.dark .subtitle-scan-rail-root .scan-session-summary-row) {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: #242529 !important;
+  background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-session-summary-row:hover),
+:global(html.dark .subtitle-scan-rail-root .scan-session-summary-row:hover) {
+  background: #2b2c30 !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root :is(.scan-session-summary-label, .scan-session-summary-value)),
+:global(html.dark .subtitle-scan-rail-root :is(.scan-session-summary-label, .scan-session-summary-value)) {
+  color: rgba(248, 250, 252, 0.94) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-session-summary-value.empty),
+:global(html.dark .subtitle-scan-rail-root .scan-session-summary-value.empty) {
+  color: rgba(203, 213, 225, 0.48) !important;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-scan-rail-root .scan-rail-card,
@@ -1642,6 +1897,44 @@ function getScanResultIcon(status) {
 :global(html.dark .subtitle-scan-rail-root .scan-rail-card-source),
 :global(html.dark .subtitle-scan-rail-root .scan-rail-card-message) {
   color: rgba(203, 213, 225, 0.68) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-target-card),
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-target-card:hover),
+:global(html.dark .subtitle-scan-rail-root .scan-target-card),
+:global(html.dark .subtitle-scan-rail-root .scan-target-card:hover) {
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  background: #242529 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-target-card-success),
+:global(html.dark .subtitle-scan-rail-root .scan-target-card-success) {
+  border-color: rgba(74, 222, 128, 0.3) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-target-title),
+:global(html.dark .subtitle-scan-rail-root .scan-target-title) {
+  color: rgba(248, 250, 252, 0.94) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-target-path),
+:global(html.dark .subtitle-scan-rail-root .scan-target-path) {
+  color: rgba(203, 213, 225, 0.68) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-target-icon),
+:global(html.dark .subtitle-scan-rail-root .scan-target-icon) {
+  border-color: rgba(251, 191, 36, 0.28) !important;
+  background: rgba(245, 158, 11, 0.1) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-status-pill.status-success),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-status-pill.status-success) {
+  border-color: rgba(74, 222, 128, 0.3) !important;
+  background: rgba(34, 197, 94, 0.14) !important;
+  color: #86efac !important;
 }
 
 :global(html.kikoerumanager-dark .subtitle-scan-rail-root :is(.scan-rail-tag, .scan-rail-tag-soft, .scan-rail-chip, .scan-rail-count-badge, .scan-rail-segment, .scan-rail-segment-count, .scan-rail-filter-pill, .scan-rail-filter-count, .scan-rail-toggle, .scan-rail-btn, .scan-rail-card-action)),

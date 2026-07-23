@@ -2820,6 +2820,30 @@ class RJSubtitleService:
         )
 
         try:
+            if initial_candidate_count and not subtitle_candidates_source:
+                if progress_callback:
+                    progress_callback(29, f"字幕过滤规则排除了全部 {initial_candidate_count} 个候选")
+                return {
+                    'success': False,
+                    'rjcode': rjcode,
+                    'actual_rjcode': source['rjcode'],
+                    'source_lang': source['lang'],
+                    'source_title': source['title'],
+                    'error': f'字幕过滤规则排除了全部 {initial_candidate_count} 个候选，请调整或关闭过滤规则',
+                    'search_attempts': attempts,
+                    'failed_files': [],
+                }
+            if subtitle_candidates_source and not subtitle_candidates:
+                return {
+                    'success': False,
+                    'rjcode': rjcode,
+                    'actual_rjcode': source['rjcode'],
+                    'source_lang': source['lang'],
+                    'source_title': source['title'],
+                    'error': '字幕候选去重后没有可下载文件',
+                    'search_attempts': attempts,
+                    'failed_files': [],
+                }
             total_files = len(subtitle_candidates)
             for index, subtitle in enumerate(subtitle_candidates, start=1):
                 if should_cancel and should_cancel():
@@ -2871,7 +2895,7 @@ class RJSubtitleService:
                     'actual_rjcode': source['rjcode'],
                     'source_lang': source['lang'],
                     'source_title': source['title'],
-                    'error': '字幕下载失败或已被过滤规则全部排除',
+                    'error': f'{len(failed_files)} 个字幕文件全部下载失败',
                     'search_attempts': attempts,
                     'failed_files': failed_files,
                 }
@@ -3043,21 +3067,25 @@ class RJSubtitleService:
         from ..config.settings import get_config
 
         if library_id:
-            return await self.process_remote_folder(
-                library_id=library_id,
-                folder_path=folder_path,
-                overwrite=overwrite,
-                enable_metadata_match=enable_metadata_match,
-                naming_strategy=naming_strategy,
-                use_filter_rules=use_filter_rules,
-                subtitle_filter_rules=subtitle_filter_rules,
-                ai_match_mode=ai_match_mode,
-                ai_confidence_threshold=ai_confidence_threshold,
-                task_id=task_id,
-                progress_callback=progress_callback,
-                file_progress_callback=file_progress_callback,
-                should_cancel=should_cancel,
-            )
+            from .library_manager import get_library_manager
+
+            library = get_library_manager().get_library_definition(library_id)
+            if library.type == 'synology_filestation':
+                return await self.process_remote_folder(
+                    library_id=library_id,
+                    folder_path=folder_path,
+                    overwrite=overwrite,
+                    enable_metadata_match=enable_metadata_match,
+                    naming_strategy=naming_strategy,
+                    use_filter_rules=use_filter_rules,
+                    subtitle_filter_rules=subtitle_filter_rules,
+                    ai_match_mode=ai_match_mode,
+                    ai_confidence_threshold=ai_confidence_threshold,
+                    task_id=task_id,
+                    progress_callback=progress_callback,
+                    file_progress_callback=file_progress_callback,
+                    should_cancel=should_cancel,
+                )
 
         config = get_config()
         folder = Path(folder_path)
@@ -3125,6 +3153,30 @@ class RJSubtitleService:
         )
 
         try:
+            if initial_candidate_count and not subtitle_candidates_source:
+                if progress_callback:
+                    progress_callback(29, f"字幕过滤规则排除了全部 {initial_candidate_count} 个候选")
+                return {
+                    'success': False,
+                    'rjcode': rjcode,
+                    'actual_rjcode': source['rjcode'],
+                    'source_lang': source['lang'],
+                    'source_title': source['title'],
+                    'error': f'字幕过滤规则排除了全部 {initial_candidate_count} 个候选，请调整或关闭过滤规则',
+                    'search_attempts': attempts,
+                    'failed_files': [],
+                }
+            if subtitle_candidates_source and not subtitle_candidates:
+                return {
+                    'success': False,
+                    'rjcode': rjcode,
+                    'actual_rjcode': source['rjcode'],
+                    'source_lang': source['lang'],
+                    'source_title': source['title'],
+                    'error': '字幕候选去重后没有可下载文件',
+                    'search_attempts': attempts,
+                    'failed_files': [],
+                }
             total_files = len(subtitle_candidates)
             for index, subtitle in enumerate(subtitle_candidates, start=1):
                 if should_cancel and should_cancel():
@@ -3176,7 +3228,7 @@ class RJSubtitleService:
                     'actual_rjcode': source['rjcode'],
                     'source_lang': source['lang'],
                     'source_title': source['title'],
-                    'error': '字幕下载失败或已被过滤规则全部排除',
+                    'error': f'{len(failed_files)} 个字幕文件全部下载失败',
                     'search_attempts': attempts,
                     'failed_files': failed_files,
                 }

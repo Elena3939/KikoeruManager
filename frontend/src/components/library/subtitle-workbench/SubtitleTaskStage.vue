@@ -1073,11 +1073,14 @@ function getTaskMetaItems(task) {
   --status-text: #ddd6fe;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-active-status-pill.is-danger,
-:global(html.dark) .subtitle-active-status-pill.is-danger {
-  --status-bg: rgba(244, 63, 94, 0.18);
-  --status-border: rgba(251, 113, 133, 0.46);
-  --status-text: #fecdd3;
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-stage-root .subtitle-active-status-pill.is-danger),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-stage-root .subtitle-active-status-pill.is-danger) {
+  --status-bg: rgba(127, 29, 29, 0.38);
+  --status-border: rgba(251, 113, 133, 0.42);
+  --status-text: #fda4af;
+  background: var(--status-bg) !important;
+  color: var(--status-text) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
 }
 
 .subtitle-task-stage-scroll.is-immersive-overview .subtitle-active-log-panel {
