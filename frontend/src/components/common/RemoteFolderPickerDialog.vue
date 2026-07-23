@@ -427,6 +427,10 @@ const indexSoftHint = ref('')
 let indexSearchTimer = null
 let indexSearchToken = 0
 let indexSearchAbort = null
+let folderLoadToken = 0
+let folderLoadAbort = null
+let navRootLoadToken = 0
+let navRootLoadAbort = null
 
 // 列头排序：sortBy ∈ { 'name', 'mtime' }，sortDir ∈ { 'asc', 'desc' }
 const sortBy = ref('name')
@@ -725,6 +729,7 @@ async function runIndexSearch(keyword) {
         // scope=current：让后端只搜当前库，不再跨所有远程库并发等最慢的那个，显著提速。
         // 顺带也避免了别库 path（如 /ANIME/...）混入结果导致点击越界。
         scope: 'current',
+        signal: controller ? controller.signal : undefined,
       })
       if (token !== indexSearchToken) return
       const files = Array.isArray(data?.files) ? data.files : []
@@ -803,9 +808,34 @@ async function initFromProps () {
     return
   }
   const initialAbsolute = resolveInitialAbsolutePath()
-  await loadFolders(initialAbsolute || '')
+  const loadedFromIndex = await loadNavigationSnapshot(initialAbsolute || '')
+  if (!loadedFromIndex) {
+    await loadFolders(initialAbsolute || '')
+  }
   navTreeState.rootExpanded = true
-  await loadNavRoot()
+  if (!loadedFromIndex) await loadNavRoot()
+}
+
+async function loadNavigationSnapshot (path) {
+  if (library.value?.type !== 'local' || !library.value?.id) return false
+  try {
+    const data = await libraryApi.browserNavigationSnapshot(library.value.id, path || '', {
+      includeFiles: true,
+      includeAncestors: true,
+    })
+    if (!data?.index_available || !data?.browse_via_index) return false
+    rootPath.value = data.browse_root_path || data.library_root_path || ''
+    currentPath.value = data.current_path || rootPath.value
+    folders.value = Array.isArray(data.folders) ? data.folders : []
+    syncNavTreeFromSnapshot(data)
+    loading.value = false
+    await nextTick()
+    listScrollRef.value?.scrollTo?.({ top: 0 })
+    return true
+  } catch (err) {
+    // 索引正在追赶或路径刚发生变化时，退回普通浏览接口；不把一次索引 miss 显示成目录错误。
+    return false
+  }
 }
 
 function resolveInitialAbsolutePath () {
@@ -855,6 +885,16 @@ function resetState () {
     try { indexSearchAbort.abort() } catch (_) { /* ignore */ }
     indexSearchAbort = null
   }
+  if (folderLoadAbort) {
+    try { folderLoadAbort.abort() } catch (_) { /* ignore */ }
+    folderLoadAbort = null
+  }
+  if (navRootLoadAbort) {
+    try { navRootLoadAbort.abort() } catch (_) { /* ignore */ }
+    navRootLoadAbort = null
+  }
+  folderLoadToken += 1
+  navRootLoadToken += 1
   sortBy.value = 'name'
   sortDir.value = 'asc'
   navTreeState.rootExpanded = false
@@ -868,6 +908,12 @@ function resetState () {
 
 async function loadFolders (path) {
   if (!library.value?.id) return
+  if (folderLoadAbort) {
+    try { folderLoadAbort.abort() } catch (_) { /* ignore */ }
+  }
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+  folderLoadAbort = controller
+  const token = ++folderLoadToken
   loading.value = true
   error.value = ''
   selectedFolderPath.value = ''
@@ -876,8 +922,9 @@ async function loadFolders (path) {
       library.value.id,
       path || '',
       // 远程库忽略 computeSize；这里同时取文件 + 目录方便用户在右侧看到完整内容
-      { includeFiles: true }
+      { includeFiles: true, signal: controller ? controller.signal : undefined }
     )
+    if (token !== folderLoadToken) return
     rootPath.value = data?.browse_root_path || data?.library_root_path || rootPath.value || ''
     currentPath.value = data?.current_path || rootPath.value
     folders.value = Array.isArray(data?.folders) ? data.folders : []
@@ -885,27 +932,36 @@ async function loadFolders (path) {
     await nextTick()
     listScrollRef.value?.scrollTo?.({ top: 0 })
   } catch (err) {
+    if (token !== folderLoadToken || err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED') return
     folders.value = []
     error.value = err?.response?.data?.detail || err?.message || '读取目录失败'
   } finally {
-    loading.value = false
+    if (token === folderLoadToken) loading.value = false
   }
 }
 
 async function loadNavRoot () {
   if (!library.value?.id) return
   if (navTreeState.rootChildren !== null && !navTreeState.rootError) return
+  if (navRootLoadAbort) {
+    try { navRootLoadAbort.abort() } catch (_) { /* ignore */ }
+  }
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+  navRootLoadAbort = controller
+  const token = ++navRootLoadToken
   navTreeState.rootLoading = true
   navTreeState.rootError = ''
   try {
-    const data = await libraryApi.browserListFolders(library.value.id, '', { includeFiles: false })
+    const data = await libraryApi.browserListFolders(library.value.id, '', { includeFiles: false, signal: controller ? controller.signal : undefined })
+    if (token !== navRootLoadToken) return
     if (data?.browse_root_path) rootPath.value = data.browse_root_path
     navTreeState.rootChildren = normalizeNavChildren(data?.folders || [])
   } catch (err) {
+    if (token !== navRootLoadToken || err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED') return
     navTreeState.rootError = err?.response?.data?.detail || err?.message || '读取目录失败'
     navTreeState.rootChildren = []
   } finally {
-    navTreeState.rootLoading = false
+    if (token === navRootLoadToken) navTreeState.rootLoading = false
   }
 }
 
@@ -1002,6 +1058,31 @@ function syncNavTreeFromLoad (path, root, list) {
     cursor = next
   }
   navTreeState.rootExpanded = true
+}
+
+function syncNavTreeFromSnapshot (data) {
+  const root = rootPath.value
+  const current = normalizePath(currentPath.value)
+  const treeChildren = Array.isArray(data?.tree_children) ? data.tree_children : []
+  for (const item of treeChildren) {
+    const itemPath = item?.path || ''
+    if (!itemPath) continue
+    const children = normalizeNavChildren(item?.folders || [])
+    if (normalizePath(itemPath) === normalizePath(root)) {
+      navTreeState.rootChildren = children
+      continue
+    }
+    const node = ensureNodeEntry(itemPath)
+    node.children = children
+    node.expanded = normalizePath(itemPath) === current || pathIsAncestor(itemPath, current)
+  }
+  navTreeState.rootExpanded = true
+}
+
+function pathIsAncestor (ancestor, target) {
+  const left = normalizePath(ancestor)
+  const right = normalizePath(target)
+  return Boolean(left && right && right.startsWith(`${left}/`))
 }
 
 // ---------------- 交互 ----------------

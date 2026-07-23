@@ -4131,3 +4131,248 @@
 - `docs/import-rename-retry.md`：记录重命名断点重试和关联预检行为。
 - `progress.md`：追加本轮实现、验证与回滚记录。
 - 回滚点：本轮开始前工作树；若本轮以独立提交落库，执行 `git revert <本轮提交哈希>`。手工回滚时仅反向移除上述重命名断点字段/分流、关联目标状态字段、对应测试和文档，不得整体回退这些共享文件中的既有未提交改动。
+
+## 2026-07-21 - Task: 修复 PikPak 加密分享链接的提取码配对
+### What was done
+- HTTP 下载输入会把 PikPak 完整分享文案、链接后提取码或下一行提取码归一化为同一个来源，预览不再把独立提取码误当成下载地址。
+- 后端读取加密分享时先提取密码，再移除分享 URL 的查询参数和 fragment，以纯分享路径调用 PikPak API，并通过 `pass_code` 单独传递密码，避免密码查询参数污染分享 ID。
+- 下载任务创建成功后按不含提取码的分享身份清理输入框，同时清除紧随链接的独立密码行。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_http_download_service.py tests\test_http_download_input.py --basetemp .pytest-tmp-codex-pikpak-full -q`：`120 passed`，覆盖 PikPak 密码提取、纯分享路径调用、跨行配对及 HTTP 下载既有行为。
+- `cd frontend; npm.cmd test`：`12` 个测试文件、`36 passed`，新增 PikPak 完整文案、跨行提取码和分享身份测试。
+- `cd frontend; npm.cmd run build`：通过，`4186 modules transformed`，预压缩完成。
+- 根目录执行 `start-all.bat`：整套服务重启成功；`http://localhost:5555/docs` 与 `http://localhost:5556` 均返回 HTTP `200`。
+- 重启后只读请求 `/api/http-download/pikpak/status?include_files=false&limit=1&force_refresh=false`：HTTP `200`，耗时 `2452ms`，确认清空后的状态读取不再触发 36 到 46 秒的强制全账号检测。
+- `git diff --check`：通过，仅有工作树既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/http_download_service.py`：PikPak API 调用前移除分享 URL 的查询参数和 fragment，密码继续单独传入。
+- `backend/tests/test_http_download_service.py`：覆盖加密分享的密码参数与纯分享 URL。
+- `backend/tests/test_http_download_input.py`：覆盖 HTTP 路由对 PikPak 下一行提取码的配对。
+- `frontend/src/components/asmr/HttpDownloadPanel.vue`：接入 PikPak 输入归一化、更新输入提示并清理已提交分享及密码行。
+- `frontend/src/components/asmr/httpDownloadInput.js`：新增 PikPak 分享文案、提取码和身份归一化逻辑。
+- `frontend/src/components/asmr/httpDownloadInput.test.js`：覆盖前端 PikPak 输入配对和身份判断。
+- `docs/INTRODUCTION.md`：记录 PikPak 加密分享支持格式与接口传参边界。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：反向移除 `_pikpak_share_url()` 的 URL 规范化、`HttpDownloadPanel.vue` 的 PikPak 输入接入、新增的 `httpDownloadInput.js` 及其前后端测试，并恢复 `docs/INTRODUCTION.md` 对应说明；不得回退这些共享文件中已有的 Transfer.it、失败重试或其他未提交改动。
+
+## 2026-07-21 - Task: 优化 PikPak 一键清空多账号耗时与超时反馈
+### What was done
+- 根据本地运行日志确认一键清空在 5 个账号下串行执行，实际请求耗时达到 88.6 秒；清空成功后又串行强制检测全部账号，状态请求耗时 36.3 到 46.0 秒并触发前端 45 秒超时，导致已成功清空被误报为失败并允许用户重复提交。
+- 后端把独立账号清理改为最多 3 个账号并行执行，保留单账号内部的根目录展开、批量永久删除、回收站清理和配额回写顺序；单账号失败仍单独汇总，不中断其他账号。
+- 前端清空成功后立即清理转存树并展示真实清空结果，只读取清理过程已经写入的状态缓存，不再额外强制联网检测全部账号；缓存刷新失败不再覆盖清空成功结果。
+- 增加单账号和全局清理耗时日志，后续可直接按账号定位慢点。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_http_download_service.py tests\test_http_download_input.py --basetemp .pytest-tmp-codex-pikpak-clear-full -q`：`121 passed`，覆盖最多 3 账号并发、部分账号失败汇总及 HTTP 下载既有行为。
+- `cd frontend; npm.cmd test`：`12` 个测试文件、`36 passed`。
+- `cd frontend; npm.cmd run build`：通过，`4186 modules transformed`，预压缩完成。
+- 根目录执行 `start-all.bat`：整套服务重启成功；`http://localhost:5555/docs` 与 `http://localhost:5556` 均返回 HTTP `200`。
+- `git diff --check`：通过，仅有工作树既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/http_download_service.py`：一键清空使用 3 账号有界并发，并记录单账号与整体耗时。
+- `backend/tests/test_http_download_service.py`：新增 5 账号并发上限、部分失败和汇总结果测试。
+- `frontend/src/components/settings/HttpDownloadSettingsPanel.vue`：移除清空后的强制全账号检测，改读缓存状态并隔离刷新失败。
+- `docs/INTRODUCTION.md`：记录 PikPak 一键清空的并发与状态刷新边界。
+- `progress.md`：追加本轮调查、实现、验证与回滚记录。
+- 回滚方式：把 `clear_all_pikpak_transfer_space()` 恢复为逐账号串行调用，恢复 `clearAllPikPakTransfers()` 清空后 `forceRefresh: true` 的状态检测和管理器刷新，删除本轮并发测试与文档说明；不得回退共享文件中的 PikPak 提取码、Transfer.it 重试或其他已有未提交改动。
+
+## 2026-07-21 - Task: 优化 PikPak 检测全部账号耗时
+### What was done
+- 根据本地运行日志确认“检测全部”逐账号串行执行，5 个账号实际耗时 36.3 到 46.0 秒。
+- 实时检测改为最多 5 个账号并行，保持响应顺序与配置顺序一致；单账号超时或失败仍独立返回，不阻断其他账号。
+- 状态读取直接使用容量请求校验 token，移除客户端创建后重复的 `user_info()` 校验；失效 token 仍会按原逻辑使用账号密码重登并重试容量请求。
+- 移除前后端均无消费者的转存额度和 VIP 实时请求，兼容响应字段继续保留为空对象；检测结果仍包含页面使用的账号可用性、总容量、已用、剩余和回收站容量。
+- 增加单账号与全账号检测耗时日志，便于区分平台慢账号和整体调度耗时。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_http_download_service.py tests\test_http_download_input.py --basetemp .pytest-tmp-codex-pikpak-status-complete -q`：`123 passed`，覆盖 5 账号并发、失败隔离、顺序稳定、跳过重复登录校验和失效 token 密码重登。
+- 重启后真实只读强制检测 5 个当前账号：`5/5` 可用，服务端耗时从历史 `36.3-46.0s` 降到 `9.41s`，客户端完整请求 `11.75s`。
+- `git diff --check`：通过，仅有工作树既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/http_download_service.py`：全账号状态改为 5 账号有界并发，容量请求承担 token 校验，并移除无消费者的附加状态请求。
+- `backend/tests/test_http_download_service.py`：新增检测并发上限、失败隔离、结果顺序和重复登录校验测试，调整失效 token 回退测试到容量请求链。
+- `docs/INTRODUCTION.md`：记录 PikPak 检测全部的并发与返回字段边界。
+- `progress.md`：追加本轮调查、实现、真实验证与回滚记录。
+- 回滚方式：把 `pikpak_status()` 恢复为逐账号串行状态读取，把 `_pikpak_account_status()` 恢复为再次调用 `_ensure_pikpak_logged_in()` 并读取转存额度与 VIP 信息，删除本轮状态并发与重复校验测试；不得回退共享文件中的 PikPak 清空、提取码或其他已有未提交改动。
+
+## 2026-07-23 - Task: 修复社团特典拥有态刷新卡在 93% 并优化刷新速度
+### What was done
+- 根据服务器日志和 PostgreSQL 运行态确认，111 个作品在 2026-07-23 00:28:48 已完成逐项刷新，但业务结果尚未落库就被同步封面下载阻塞，任务中心因此持续停在 93%，页面拥有态也一直不变。
+- `刷新特典拥有` 改为只从 ready 库存索引批量核对选中作品，一次查询并一次事务回写拥有、字幕和库存路径快照，不再请求 DLsite、asmr.one、特典接口或封面。
+- 通用批量状态刷新移除落库前的同步封面下载，封面继续走既有 `/cover` 按需缓存与前端远程回退；补充“写入刷新结果”和“更新特典状态”阶段，取消操作也可在后处理阶段生效。
+- 拥有态任务使用独立 `refresh_owned` 业务动作和 `owned_only` 元数据，任务中心、轮询结果和操作历史能区分本地拥有态刷新与完整状态刷新。
+
+### Testing
+- 项目虚拟环境执行 `py_compile` 覆盖 `circle_completion_service.py`、`task_engine.py`、`routes.py` 和新增测试：通过。
+- `cd backend; ..\.venv\Scripts\python.exe -m pytest --noconftest tests\test_circle_completion_owned_sync.py -q`：`7 passed`，覆盖单批库存索引、拥有/失去拥有回写、ready 索引保护和任务跳过完整远程刷新。
+- `cd backend; ..\.venv\Scripts\python.exe -m pytest --noconftest tests\test_circle_completion_bonus_grouping.py -q`：`7 passed` 的断言结果已输出；测试进程在报告后未自行退出，被 60 秒外层超时终止，未将其记录为正常退出。
+- `cd frontend; npm run test`：`12` 个测试文件、`36 passed`。
+- `cd frontend; npm run build`：通过，`4186 modules transformed`，预压缩完成。
+- 服务器只读核对：三个 `library_index_status` 均为 `ready`；卡住任务在 `task_center_items` 中仍为 `processing / 93% / 已刷新 111/111`，PostgreSQL 无活动长查询，且当前社团作品最后写入时间仍停在任务开始前。
+- 标准 PostgreSQL 测试入口尝试执行，但本机没有可连接的项目测试库，初始化阶段超时；未连接或改写服务器生产库代替测试库。
+- `git diff --check`：通过，仅有工作树既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/circle_completion_service.py`：新增纯本地批量拥有态刷新，移除通用状态刷新落库前的同步封面下载，并补后处理进度和取消检查。
+- `backend/app/core/task_engine.py`：按 `owned_only` 路由本地拥有态任务并写入对应完成语义。
+- `backend/app/api/routes.py`：刷新请求、任务创建和任务状态响应增加 `owned_only`，本地拥有态不参与远程强刷阈值。
+- `backend/tests/test_circle_completion_owned_sync.py`：新增批量拥有态回写和任务路由回归测试。
+- `frontend/src/views/CircleCompletion.vue`：`刷新特典拥有` 提交本地拥有态模式，普通批量状态刷新保持原语义。
+- `docs/circle-completion-performance-cache.md`：记录拥有态与封面缓存的新边界。
+- `progress.md`：追加本轮调查、实现、验证与回滚记录。
+- 回滚方式：反向移除 `refresh_circle_owned_state()`、请求中的 `owned_only`、任务路由分支和前端 `{ ownedOnly: true }`，恢复 `refresh_circle_works()` 中同步等待 `download_many()` 的封面块，并删除对应测试与文档说明；不得回退这些共享文件中的其他未提交改动。
+
+## 2026-07-23 - Task: 修复 RJ 字幕抓取暗色样式与本地库存误判远程库存
+### What was done
+- 修复字幕抓取任务只要携带 `library_id` 就无条件进入群晖处理的问题；现在先读取库存类型，本地库存继续按本地文件路径处理，只有 `synology_filestation` 进入远程 FileStation 分支，同时保留任务归属和库存索引所需的 `library_id`。
+- 补齐扫描会话摘要块的暗色背景、分隔线、悬停态和文字颜色，消除暗色工作台左栏白块及浅色文字不可读问题。
+- 增加本地库存与群晖库存两条分流回归测试，并同步记录字幕工作台的库存处理边界。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m pytest --noconftest tests\test_rj_subtitle_service.py --basetemp .pytest-tmp-codex-rj-subtitle-20260723 -q`：`2 passed`，覆盖本地库存携带 `library_id` 时保持本地处理，以及群晖库存继续进入远程处理。
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\rj_subtitle_service.py tests\test_rj_subtitle_service.py`：通过。
+- `cd frontend; npm.cmd test`：`12` 个测试文件、`36 passed`。
+- `cd frontend; npm.cmd run build`：通过，`4186 modules transformed`，预压缩完成。
+- 根目录执行 `start-all.bat`：整套服务启动成功；`http://127.0.0.1:5555/docs`、`http://127.0.0.1:5556` 和 `/api/rj-subtitle/status` 均返回 HTTP `200`。
+- Playwright 在 `2048x1032` 深色视口打开库存字幕工作台并注入只读会话摘要状态：摘要背景为 `rgb(36, 37, 41)`、文字为 `rgba(248, 250, 252, 0.94)`，工作台宽 `1480px`，无横向溢出；截图确认摘要文字完整可读且三栏未重叠。
+- `git diff --check`：通过，仅有工作树既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/rj_subtitle_service.py`：按库存类型选择本地或群晖字幕处理分支。
+- `backend/tests/test_rj_subtitle_service.py`：新增本地与群晖库存分流回归测试。
+- `frontend/src/components/library/subtitle-workbench/SubtitleScanRail.vue`：修复扫描会话摘要的暗色样式。
+- `docs/INTRODUCTION.md`：记录本地库存与群晖库存的字幕处理边界。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：反向移除 `process_folder()` 对库存类型的判断并恢复原有无条件远程分流，删除 `SubtitleScanRail.vue` 新增的暗色摘要规则和 `test_rj_subtitle_service.py`，恢复 `docs/INTRODUCTION.md` 对应一句说明；不得整体回退这些共享文件中的其他未提交改动。
+
+## 2026-07-23 - Task: 优化 RJ 字幕抓取工作台左侧排版
+### What was done
+- 左侧扫描栏改为栏内纵向滚动，跳过项目较多时可完整浏览，不再被工作台容器截断。
+- 将无可执行项目的大块空状态收紧为紧凑提示条，并缩短分组标题和折叠文案，让当前扫描摘要、可执行项和跳过项在首屏形成清晰层级。
+- 重排“被跳过”区域的标题、筛选器和项目卡片，作品名支持稳定显示两行，来源、任务状态、跳过原因和操作按钮按层级排列。
+
+### Testing
+- `cd frontend; npm.cmd test`：`12` 个测试文件、`36 passed`。
+- `cd frontend; npm.cmd run build`：通过，`4186 modules transformed`，预压缩完成。
+- Playwright 在 `2048x1032` 深色视口验证：紧凑空状态高度约 `49.6px`，跳过卡片高度约 `166.2px`，分组标题完整显示，页面无横向溢出。
+- Playwright 注入 `6` 条跳过记录验证：左栏 `clientHeight=604`、`scrollHeight=1205`，可滚动至底部且无横向溢出。
+- Playwright 在 `390x844` 移动视口验证：工作台无横向溢出。
+
+### Notes
+- `frontend/src/components/library/subtitle-workbench/SubtitleScanRail.vue`：优化扫描栏分组、空状态、跳过卡片和栏内滚动布局，并保留既有暗色摘要样式。
+- `frontend/src/components/library/subtitle-workbench/SubtitleWorkbenchStage.vue`：收紧左栏容器溢出边界，仅允许扫描栏自身纵向滚动。
+- `progress.md`：追加本轮排版优化、验证和回滚记录。
+- 回滚方式：仅反向恢复本轮 `SubtitleScanRail.vue` 的扫描栏结构和布局样式，以及 `SubtitleWorkbenchStage.vue` 的左栏 overflow 调整；保留同文件中上一轮暗色摘要样式修复。
+
+## 2026-07-23 - Task: 修复 ASMR 下载文件重命名不包含扩展名
+### What was done
+- ASMR / 百度网盘下载预览树的文件重命名弹窗改为使用完整文件名，`.part1.rar`、`.7z.001` 等扩展名和分卷后缀可直接参与编辑。
+- 重命名预览兼容用户输入完整扩展名，避免界面重复拼接后缀；连续分卷目录仍按基础名自动生成各卷后缀。
+- 在产品说明中补充百度网盘预览树完整文件名重命名规则。
+
+### Testing
+- `cd frontend; npm run build`：通过，`4186 modules transformed`，预压缩完成。
+- `cd backend; venv\Scripts\python.exe -m pytest tests\test_baidu_netdisk_service.py -q --basetemp .pytest-tmp-codex-baidu-rename`：`61 passed`。
+- `git diff --check -- frontend/src/components/asmr/HttpDownloadPanel.vue docs/INTRODUCTION.md progress.md`：通过，仅保留工作树既有换行格式提示。
+
+### Notes
+- `frontend/src/components/asmr/HttpDownloadPanel.vue`：文件重命名默认值、百度文件名默认值和重命名预览改为保留完整扩展名。
+- `docs/INTRODUCTION.md`：记录百度网盘预览树完整文件名重命名规则。
+- `progress.md`：追加本轮实现、验证与回滚记录。
+- 回滚方式：反向恢复 `HttpDownloadPanel.vue` 中 `defaultPreviewRowCustomName`、`defaultBaiduPreviewFileName` 和 `customPreviewForTreeRow` 的本轮改动，并删除 `docs/INTRODUCTION.md` 与本条进度记录；不回退同文件中的其他已有未提交改动。
+
+## 2026-07-23 - Task: 修复字幕下载被过滤规则全量排除与失败态暗色样式
+### What was done
+- 根据 `data/app.log` 定位 RJ01529215 的实际失败原因：字幕候选 `83` 个被字幕过滤规则全部排除，任务并未真正进入下载；收紧运行态字幕过滤正则，普通“音轨”字幕不再被“音”单字符误杀，只排除明确的无效果音、SEなし、CUT、反转和 MP3 变体。
+- 下载流程将“过滤规则排除全部候选”“候选去重后为空”和“实际下载失败”拆成独立错误，任务日志会给出准确原因与失败数量。
+- 修复扫描目标卡片的暗色背景、标题和路径布局：标题最多两行，路径只显示父目录并最多两行，避免窄栏逐字乱换行。
+- 修复任务详情失败状态徽标的暗色样式，避免红色失败按钮显示为亮白色。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m pytest --noconftest tests\test_rj_subtitle_service.py --basetemp .pytest-tmp-codex-rj-subtitle-filter -q`：`5 passed`，覆盖库存分流、过滤规则保留正常音轨、全量过滤不下载和实际下载失败数量。
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\rj_subtitle_service.py tests\test_rj_subtitle_service.py`：通过。
+- `cd frontend; npm.cmd test`：`12` 个测试文件、`36 passed`。
+- `cd frontend; npm.cmd run build`：通过，`4186 modules transformed`，预压缩完成。
+- 通过根目录 `start-all.bat` 重启后，`http://127.0.0.1:5555/docs`、`http://127.0.0.1:5556` 和 `/api/rj-subtitle/status` 均返回 HTTP `200`。
+- Playwright 深色工作台实测失败徽标计算样式为暗红半透明背景 `rgba(127, 29, 29, 0.38)`、浅红文字；截图保存为 `output/playwright/subtitle-workbench-dark-final.png`。
+- `git diff --check`：通过，仅有工作树既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/rj_subtitle_service.py`：收紧字幕过滤规则边界，拆分过滤失败、去重为空和实际下载失败结果。
+- `backend/tests/test_rj_subtitle_service.py`：新增字幕过滤和下载失败语义回归测试。
+- `data/config/config.yaml`：修正当前运行态 `rj_subtitle.subtitle_filter_rules` 正则。
+- `frontend/src/components/library/subtitle-workbench/SubtitleScanRail.vue`：修复扫描目标卡片暗色背景、长标题和路径换行。
+- `frontend/src/components/library/subtitle-workbench/SubtitleTaskStage.vue`：修复失败状态徽标的暗色选择器和颜色。
+- `docs/INTRODUCTION.md`：记录字幕过滤规则的明确排除边界和错误提示语义。
+- `progress.md`：追加本轮定位、实现、验证和回滚记录。
+- 回滚方式：恢复 `rj_subtitle_service.py` 原有下载失败文案和过滤前直接下载分支，恢复 `data/config/config.yaml` 原字幕过滤正则，撤销两个字幕工作台组件本轮样式改动及对应测试/说明；不得回退这些共享文件中的其他已有未提交改动。
+
+## 2026-07-23 - Task: 限定字幕爬取样式作用域并收紧跳过卡片
+### What was done
+- 确认“RJ 字幕抓取工作台”位于库存页 `.subtitle-workbench-dialog`，“字幕补配工作台”使用独立根容器；将本轮共享阶段组件的左栏滚动和失败徽标暗色样式限定到爬取工作台，避免影响字幕补配。
+- 收紧爬取扫描栏“被跳过”卡片：卡片上下内边距、标题/来源/标签/原因的间距统一缩小，状态和本地字幕标签收为 `18px` 高，减少纵向空白。
+
+### Testing
+- Playwright 从 `/library` 点击“当前页抓字幕”，确认实际打开标题为“RJ 字幕抓取工作台”，未进入“字幕补配”。
+- 深色实测扫描目标卡背景为 `rgb(36, 37, 41)`；跳过卡片 `108px` 高、内部间距 `4px`、标签高度 `18px`，左栏可滚动。
+- `cd frontend; npm.cmd run build`：通过，`4186 modules transformed`，预压缩完成。
+- `git diff --check`：通过，仅有工作树既有 LF/CRLF 提示。
+
+### Notes
+- `frontend/src/components/library/subtitle-workbench/SubtitleWorkbenchStage.vue`：将本轮左栏滚动规则限制在 `.subtitle-workbench-dialog`。
+- `frontend/src/components/library/subtitle-workbench/SubtitleTaskStage.vue`：将失败徽标暗色规则限制在 `.subtitle-workbench-dialog`。
+- `frontend/src/components/library/subtitle-workbench/SubtitleScanRail.vue`：收紧爬取扫描栏跳过卡片和标签布局。
+- `progress.md`：追加本轮业务边界修正、排版优化和验证记录。
+- 回滚方式：移除本轮三个组件中仅针对 `.subtitle-workbench-dialog` 的作用域和紧凑卡片样式，恢复跳过卡片原有 `py-2.5`、`7px` 内容间距和 `20px` 标签高度；不得回退字幕补配或其他共享组件既有改动。
+
+## 2026-07-23 - Task: 修复 ASMR 指定目录浏览与增强下载进度
+### What was done
+- 指定目录弹框对本地库存优先使用索引导航快照，一次返回当前目录和祖先树；索引不可用时自动回退普通目录接口。
+- 目录浏览和远程索引搜索增加请求取消、过期响应保护，避免重复打开或切换目录时出现左侧持续加载、右侧空数据被旧请求覆盖。
+- RJ 下载三个落地模式按钮增加蓝 / 紫 / 青绿语义选中态，窄窗口下按钮和库存选择区自动换列，减少文字挤压。
+- 增强下载工作台和后台浮窗改为按总字节计算整体进度；后端总速度改为任务级字节增量采样，避免累加所有文件平均速度造成速度虚高。
+
+### Testing
+- `cd frontend; npm run build`：通过，`4186 modules transformed`，预压缩完成。
+- `backend\venv\Scripts\python.exe -m py_compile backend\app\core\asmr_resource_service.py`：通过。
+- `cd backend; $env:PYTHONPATH=(Get-Location).Path; .\venv\Scripts\python.exe -m pytest tests\test_baidu_netdisk_service.py -q`：`61 passed`。
+- `git diff --check`：通过，仅保留工作树既有 LF/CRLF 换行提示。
+
+### Notes
+- `frontend/src/components/circle/CircleDownloadPreviewDialog.vue`：优化指定目录落地模式按钮的语义色和响应式布局。
+- `frontend/src/components/common/RemoteFolderPickerDialog.vue`：接入本地索引导航快照，增加目录 / 搜索请求的取消与过期保护。
+- `frontend/src/components/download/DownloadTaskWorkbenchDialog.vue`：整体下载进度改为字节加权。
+- `frontend/src/views/ASMRSync.vue`：后台增强下载卡片按总字节显示进度。
+- `backend/app/core/asmr_resource_service.py`：总速度改为任务级采样，并保留文件级速度用于明细诊断。
+- `docs/INTRODUCTION.md`：补充指定目录索引浏览和增强下载字节统计规则。
+- 回滚方式：分别反向恢复上述五个文件本轮新增的索引快照、按钮样式、字节进度和速度采样代码；保留这些文件中本轮之前已有的其他未提交改动。
+
+## 2026-07-24 - Task: 修复 ASMR 增强下载重试新建目录与半成品入库
+### What was done
+- 根据服务器日志和 PostgreSQL 会话记录确认：源站持续断流后，部分成功任务仍提前把含 `.downloading` 的工作目录搬入库存；后续重试因原缓存路径已被搬走而创建空目录，并被分类器追加为新的 RJ 子目录。
+- 部分失败时不再执行后处理和入库，统一保留原工作目录；整批与单文件重试必须复用存在的缓存目录，通过已有 `.downloading` 文件断点续传。
+- 单文件重试保留未选择的其他失败项，失败项全部清零后才执行一次最终入库；会话累计统计不再被最后一轮重试覆盖。
+- 增强下载后台卡片和通知正确识别部分失败，不再显示为已完成。
+
+### Testing
+- 只读检查 `\\Elena\docker\prekikoeru\data\app.log`：确认源站 `ContentLengthError` / 连接失败、重试任务使用相同缓存目录名，以及历史分类产生 `RJ01575350_5a30b79c` 与 `(1)` 目录。
+- 通过项目 `.venv` 只读查询服务器 PostgreSQL：确认会话 `b4686a1a-833b-45c5-9a8f-423e787d6376` 的 `download_root` 指向已搬走缓存路径，最终统计仅保留最后一轮重试结果。
+- `cd backend; ..\.venv\Scripts\python.exe -m pytest tests/test_asmr_download_service.py tests/test_asmr_resource_service.py tests/test_task_notification_service.py -q`：`19 passed`；覆盖断流后 `Range: bytes=3-` 续传、缓存目录复用、缺失缓存拒绝重试和部分失败通知。
+- `cd backend; ..\.venv\Scripts\python.exe -m py_compile app/core/asmr_resource_service.py app/core/asmr_download_service.py app/core/task_notification_service.py`：通过。
+- `cd frontend; npm run build`：通过，`4186 modules transformed`，预压缩完成。
+- `git diff --check`：通过，仅有工作树既有 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/asmr_resource_service.py`：固定重试工作目录、合并跨轮失败状态、延后最终入库并维护会话累计统计。
+- `backend/app/core/task_notification_service.py`：将 ASMR 增强下载部分失败纳入失败事件与警告通知。
+- `backend/tests/test_asmr_download_service.py`：新增源站断流后续传同一 `.downloading` 文件的回归测试。
+- `backend/tests/test_asmr_resource_service.py`：新增缓存目录复用、剩余失败项和缺失缓存保护测试。
+- `backend/tests/test_task_notification_service.py`：新增 ASMR 增强下载部分失败通知测试。
+- `frontend/src/views/ASMRSync.vue`：后台卡片按 `display_status=partial_failed` 统计失败任务。
+- `docs/asmr-enhanced-download-resume.md`：记录缓存、续传、部分失败、最终入库和旧数据边界。
+- `progress.md`：追加本轮调查、实现、验证和回滚记录。
+- 回滚方式：反向恢复上述代码与测试文件中本轮的增强下载续传改动，删除 `docs/asmr-enhanced-download-resume.md` 和本条进度记录；不得回退这些共享文件中的其他既有未提交改动。

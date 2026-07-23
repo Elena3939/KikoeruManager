@@ -95,6 +95,44 @@ def test_detect_local_pair_issues_uses_name_and_track_number():
     assert issues["orphan_subtitles_without_audio"][0]["subtitle_name"] == "02 Side Track.lrc"
 
 
+def test_retry_download_metadata_reuses_cache_and_keeps_other_failures(tmp_path):
+    service = create_service()
+    download_root = tmp_path / "RJ123456_original"
+    download_root.mkdir()
+    session = {
+        "local_download_root": str(download_root),
+        "statistics": {"download_root": str(tmp_path / "stale")},
+        "failure_summary": {
+            "failed_resources": [
+                {"relative_path": "audio/01.wav", "reason": "断流"},
+                {"relative_path": "audio/02.wav", "reason": "断流"},
+            ]
+        },
+    }
+
+    metadata = service._build_retry_download_metadata(session, {"audio/01.wav"})
+
+    assert metadata["download_root"] == str(download_root)
+    assert metadata["session_selected_resource_count"] == 0
+    assert metadata["remaining_failed_resources"] == [
+        {"relative_path": "audio/02.wav", "reason": "断流"}
+    ]
+
+
+def test_retry_download_metadata_rejects_missing_cache(tmp_path):
+    service = create_service()
+
+    with pytest.raises(ValueError, match="原下载缓存目录不存在"):
+        service._build_retry_download_metadata(
+            {
+                "local_download_root": str(tmp_path / "missing"),
+                "statistics": {},
+                "failure_summary": {},
+            },
+            {"audio/01.wav"},
+        )
+
+
 @pytest.mark.anyio
 async def test_build_download_plan_marks_existing_and_missing_resources(monkeypatch):
     service = create_service()

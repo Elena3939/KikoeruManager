@@ -1,6 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 
+import aiohttp
 import pytest
 
 from app.core.asmr_download_service import ASMR_DOWNLOAD_STREAM_CHUNK_BYTES, ASMRDownloadService
@@ -100,6 +101,73 @@ async def test_download_file_uses_network_download_budget(monkeypatch, tmp_path)
 
     assert ok is True
     assert calls == [("network_download", 1, "asmr.download_file")]
+
+
+@pytest.mark.asyncio
+async def test_download_file_resumes_same_partial_file_after_payload_disconnect(monkeypatch, tmp_path):
+    service = ASMRDownloadService()
+    target_path = tmp_path / "voice.wav"
+    request_headers = []
+
+    class Budget:
+        @asynccontextmanager
+        async def acquire(self, *_args, **_kwargs):
+            yield
+
+    class BrokenContent:
+        async def iter_chunked(self, _size):
+            yield b"abc"
+            raise aiohttp.ClientPayloadError("payload disconnected")
+
+    class ResumeContent:
+        async def iter_chunked(self, _size):
+            yield b"def"
+
+    class FakeResponse:
+        def __init__(self, status, headers, content):
+            self.status = status
+            self.headers = headers
+            self.content = content
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    responses = [
+        FakeResponse(200, {"content-length": "6"}, BrokenContent()),
+        FakeResponse(206, {"content-range": "bytes 3-5/6", "content-length": "3"}, ResumeContent()),
+    ]
+
+    class FakeSession:
+        closed = False
+
+        def get(self, *_args, **kwargs):
+            request_headers.append(dict(kwargs.get("headers") or {}))
+            return responses.pop(0)
+
+    service._session = FakeSession()
+    monkeypatch.setattr("app.core.asmr_download_service.get_resource_budget_service", lambda: Budget())
+    monkeypatch.setattr("app.core.asmr_download_service.asyncio.sleep", lambda *_args: _no_wait())
+
+    async def _run():
+        return await service.download_file(
+            "https://media.example.test/voice.wav",
+            str(target_path),
+            max_retries=2,
+        )
+
+    async def _no_wait():
+        return None
+
+    ok = await _run()
+
+    assert ok is True
+    assert target_path.read_bytes() == b"abcdef"
+    assert "Range" not in request_headers[0]
+    assert request_headers[1]["Range"] == "bytes=3-"
+    assert not os.path.exists(str(target_path) + ".downloading")
 
 
 @pytest.mark.asyncio

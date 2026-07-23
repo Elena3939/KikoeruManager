@@ -119,18 +119,21 @@ def _task_kind(task) -> str:
     return (task.type.value if hasattr(getattr(task, 'type', None), 'value') else str(getattr(task, 'type', '')))
 
 
-def _is_http_download_partial_success(task) -> bool:
+def _is_download_partial_success(task) -> bool:
     meta = dict(getattr(task, 'task_metadata', None) or {})
     task_kind = _task_kind(task)
     if task_kind == 'baidu_netdisk_upload' or str(meta.get('source_action') or '') == 'manual_baidu_netdisk_upload':
         return False
-    if task_kind not in {'http_download', 'baidu_netdisk_download'} and str(meta.get('task_domain') or '') not in {'http_download', 'baidu_netdisk'}:
+    if task_kind not in {'http_download', 'baidu_netdisk_download', 'asmr_sync_download'} and str(meta.get('task_domain') or '') not in {'http_download', 'baidu_netdisk', 'asmr_sync'}:
         return False
     failed = list(meta.get('failed_files') or [])
     metrics = meta.get('performance_metrics') if isinstance(meta.get('performance_metrics'), dict) else {}
     success_count = int(metrics.get('success_count') or 0)
     if not success_count:
-        success_count = sum(
+        success_count = len([
+            row for row in list(meta.get('downloaded_resources') or [])
+            if isinstance(row, dict)
+        ]) or sum(
             1 for row in list(meta.get('download_files') or [])
             if isinstance(row, dict) and str(row.get('status') or '').lower() == 'completed'
         )
@@ -209,7 +212,7 @@ def _final_event_type(group_key: str, group_type: str, current_task) -> str:
     """聚合组结束后综合判断最终事件类型"""
     if group_type == 'task':
         status = _task_status(current_task)
-        if _is_http_download_partial_success(current_task):
+        if _is_download_partial_success(current_task):
             return 'failed'
         if status == 'failed':
             return 'failed'
@@ -226,7 +229,7 @@ def _final_event_type(group_key: str, group_type: str, current_task) -> str:
             if t_group_key != group_key:
                 continue
             st = _task_status(t)
-            if _is_http_download_partial_success(t):
+            if _is_download_partial_success(t):
                 has_failed = True
             elif st == 'failed':
                 has_failed = True
@@ -264,10 +267,10 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
 
     route_hint = _normalize_route_hint(route_hint)
 
-    is_partial_http = _is_http_download_partial_success(context_task)
+    is_partial_download = _is_download_partial_success(context_task)
     severity_map = {'completed': 'success', 'failed': 'danger', 'waiting_manual': 'warning'}
     label_map = {'completed': '已完成', 'failed': '执行失败', 'waiting_manual': '等待处理'}
-    if is_partial_http:
+    if is_partial_download:
         severity_map['failed'] = 'warning'
         label_map['failed'] = '部分成功'
 
@@ -309,7 +312,7 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
         title = str(meta.get('batch_name') or meta.get('source_label') or title or '').strip() or domain_label
         if group_type == 'task':
             summary = f'{domain_label}{label_map.get(event_type, event_type)}'
-        if is_partial_http:
+        if is_partial_download:
             metrics = meta.get('performance_metrics') if isinstance(meta.get('performance_metrics'), dict) else {}
             success_count = int(metrics.get('success_count') or 0)
             failed_count = int(metrics.get('failed_count') or len(meta.get('failed_files') or []) or 0)
@@ -333,7 +336,7 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
         'summary': summary,
         'severity': severity_map.get(event_type, 'info'),
         'event_label': label_map.get(event_type, event_type),
-        'event_icon': '⚠️' if is_partial_http else '',
+        'event_icon': '⚠️' if is_partial_download else '',
         'domain': domain,
         'domain_label': domain_label,
         'rjcode': rjcode,

@@ -1132,12 +1132,27 @@ function getTaskOverallPercent(task) {
     const percent = Math.max(0, Math.min(100, Math.floor((downloadFraction + uploadFraction) / 2 * 100)))
     return Math.min(percent, 99)
   }
+  const downloadedBytes = Math.max(0, getTaskDownloadedBytes(task))
+  const downloadTotal = Math.max(0, getDownloadTotalBytes(task) || transferTotal)
+  if (downloadTotal > 0) {
+    const percent = Math.max(0, Math.min(100, Math.floor(downloadedBytes / downloadTotal * 100)))
+    return downloadedBytes < downloadTotal ? Math.min(percent, 99) : Math.min(percent, 99)
+  }
   const rows = getUnifiedFileRows(task)
   if (rows.length) {
-    const progress = rows.reduce((sum, item) => sum + Number(item.progress || 0), 0) / rows.length
-    return Math.max(0, Math.min(99, Math.floor(progress)))
+    const weighted = rows.reduce((summary, item) => {
+      const total = Math.max(0, Number(item.total || 0))
+      const downloaded = Math.max(0, Number(item.downloadedBytes || 0))
+      return {
+        total: summary.total + total,
+        downloaded: summary.downloaded + Math.min(downloaded, total),
+      }
+    }, { total: 0, downloaded: 0 })
+    if (weighted.total > 0) {
+      const percent = Math.floor(weighted.downloaded / weighted.total * 100)
+      return Math.max(0, Math.min(99, percent))
+    }
   }
-  const downloadedBytes = Math.max(0, getTaskDownloadedBytes(task))
   const percent = Math.max(0, Math.min(100, Math.floor((downloadedBytes / transferTotal) * 100)))
   return downloadedBytes < transferTotal ? Math.min(percent, 99) : Math.min(percent, 99)
 }
@@ -1215,7 +1230,7 @@ function canRetryDownloadTask(task) {
   if (isUploadMode.value) return false
   const domain = String(task?.task_domain || task?.task_metadata?.task_domain || task?.task_metadata?.download_mode || '').trim()
   if (domain === 'http_download' || domain === 'http' || domain === 'baidu_netdisk') {
-    return ['failed', 'partial_failed', 'completed'].includes(String(task?.display_status || task?.status || '')) && getFailureCount(task) > 0
+    return ['failed', 'partial_failed', 'completed'].includes(String(task?.display_status || task?.status || '')) && hasTaskFailures(task)
   }
   return Boolean(String(task?.task_metadata?.session_id || task?.session_id || '').trim() && getFailureCount(task) > 0)
 }

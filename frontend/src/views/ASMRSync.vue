@@ -909,12 +909,25 @@ const workspaceTabs = computed(() => [
 ])
 const enhancedProcessingTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => t.status === 'processing'))
 const enhancedPendingTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => ['pending', 'paused', 'waiting_retry'].includes(String(t.status || ''))))
-const enhancedCompletedTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => t.status === 'completed'))
-const enhancedFailedTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => t.status === 'failed'))
+const enhancedCompletedTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => t.status === 'completed' && String(t.display_status || '') !== 'partial_failed'))
+const enhancedFailedTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => ['failed', 'partial_failed'].includes(String(t.display_status || t.status || ''))))
 const showEnhancedDownloadBackgroundCard = computed(() => enhancedDownloadWorkbenchBackgroundActive.value && !enhancedDownloadWorkbenchVisible.value && enhancedDownloadWorkbenchTaskIds.value.length > 0)
 const enhancedActiveBackgroundTask = computed(() => enhancedProcessingTasks.value[0] || enhancedPendingTasks.value[0] || enhancedDownloadWorkbenchTasks.value[0] || null)
 const enhancedBackgroundPercent = computed(() => {
   if (!enhancedDownloadWorkbenchTasks.value.length) return 0
+  const stats = enhancedDownloadWorkbenchTasks.value.reduce((summary, task) => {
+    const runtime = getDownloadRuntime(task)
+    const files = Array.isArray(task?.download_files) ? task.download_files : []
+    const total = Number(runtime?.total_bytes || 0) || files.reduce((sum, file) => sum + Number(file?.total || file?.size_bytes || file?.size || 0), 0)
+    const transferred = Number(runtime?.transferred_bytes || 0) || files.reduce((sum, file) => sum + Number(file?.downloaded || 0), 0)
+    return {
+      total: summary.total + Math.max(0, total),
+      transferred: summary.transferred + Math.min(Math.max(0, transferred), Math.max(0, total)),
+    }
+  }, { total: 0, transferred: 0 })
+  if (stats.total > 0) {
+    return Math.max(0, Math.min(100, Math.round(stats.transferred / stats.total * 100)))
+  }
   const total = enhancedDownloadWorkbenchTasks.value.reduce((sum, t) => sum + Number(t.progress || 0), 0)
   return Math.max(0, Math.min(100, Math.round(total / enhancedDownloadWorkbenchTasks.value.length)))
 })

@@ -141,7 +141,7 @@
               <div class="action-buttons grid grid-cols-3 gap-3">
                 <button
                   type="button"
-                  class="soft-button interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
+                  class="soft-button mode-classify interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
                   :class="{ active: settings.classifyMode === 'circle', 'is-disabled': settings.flattenFiles }"
                   :disabled="settings.flattenFiles"
                   :title="settings.flattenFiles ? '直放指定目录模式下不再按社团归类' : ''"
@@ -151,7 +151,7 @@
                 </button>
                 <button
                   type="button"
-                  class="soft-button interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
+                  class="soft-button mode-api interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
                   :class="{ active: settings.namingMode === 'api', 'is-disabled': settings.flattenFiles }"
                   :disabled="settings.flattenFiles"
                   :title="settings.flattenFiles ? '直放指定目录模式下不创建作品目录' : ''"
@@ -161,7 +161,7 @@
                 </button>
                 <button
                   type="button"
-                  class="soft-button interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
+                  class="soft-button mode-direct interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
                   :class="{ active: settings.flattenFiles }"
                   title="开启后所有选中的文件直接落到「指定目录」下，不再创建社团目录 / 作品目录，也不保留作品内子目录"
                   @click="toggleFlattenFiles"
@@ -1406,7 +1406,9 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   border-radius: 8px;
   font-size: 11.5px;
   padding: 0 4px;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.15;
   font-weight: 500;
   cursor: pointer;
   transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
@@ -1807,6 +1809,24 @@ html.kikoerumanager-dark .circle-download-preview-overlay {
   -webkit-backdrop-filter: none !important;
 }
 
+.soft-button.mode-classify.active {
+  background: rgba(219, 234, 254, 0.82);
+  border-color: rgba(59, 130, 246, 0.42);
+  color: #1d4ed8;
+}
+
+.soft-button.mode-api.active {
+  background: rgba(237, 233, 254, 0.84);
+  border-color: rgba(139, 92, 246, 0.42);
+  color: #6d28d9;
+}
+
+.soft-button.mode-direct.active {
+  background: rgba(204, 251, 241, 0.84);
+  border-color: rgba(13, 148, 136, 0.42);
+  color: #0f766e;
+}
+
 html.kikoerumanager-dark .circle-download-preview-modal.el-dialog {
   background: transparent !important;
   box-shadow: none !important;
@@ -2000,6 +2020,24 @@ html.kikoerumanager-dark .circle-download-preview-modal .soft-button.active {
   color: #ffffff !important;
 }
 
+html.kikoerumanager-dark .circle-download-preview-modal .soft-button.mode-classify.active {
+  background: rgba(37, 99, 235, 0.28) !important;
+  border-color: rgba(96, 165, 250, 0.62) !important;
+  color: #bfdbfe !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .soft-button.mode-api.active {
+  background: rgba(124, 58, 237, 0.28) !important;
+  border-color: rgba(167, 139, 250, 0.62) !important;
+  color: #ddd6fe !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .soft-button.mode-direct.active {
+  background: rgba(13, 148, 136, 0.28) !important;
+  border-color: rgba(45, 212, 191, 0.62) !important;
+  color: #99f6e4 !important;
+}
+
 html.kikoerumanager-dark .circle-download-preview-modal .tree-row {
   color: rgba(244, 244, 245, 0.86) !important;
   box-shadow: none !important;
@@ -2092,6 +2130,19 @@ html.kikoerumanager-dark .circle-download-preview-window .app-loading-animation_
   .custom-preview-modal.el-dialog {
     width: min(calc(100vw - 24px), calc((100vh - 24px) * 16 / 9)) !important;
     max-width: min(calc(100vw - 24px), calc((100vh - 24px) * 16 / 9)) !important;
+  }
+}
+
+@media (max-width: 1120px) {
+  .action-buttons {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .action-buttons,
+  .select-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
