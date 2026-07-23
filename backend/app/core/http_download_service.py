@@ -47,6 +47,8 @@ _GOOGLE_DRIVE_HOST_HINTS = {"drive.google.com", "docs.google.com", "drive.userco
 _PIKPAK_MAX_SHARE_FILES = 100
 _PIKPAK_STATUS_CACHE_TTL_SECONDS = 6 * 60 * 60
 _PIKPAK_STATUS_LIVE_TIMEOUT_SECONDS = 15.0
+_PIKPAK_STATUS_ACCOUNT_CONCURRENCY = 5
+_PIKPAK_CLEAR_ACCOUNT_CONCURRENCY = 3
 _SHARE_PREVIEW_ONLY_SOURCES = {"pikpak", "transferit"}
 _FILE_LEVEL_SELECTION_SOURCES = _SHARE_PREVIEW_ONLY_SOURCES | {"gofile", "google_drive"}
 _GOFILE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -834,6 +836,12 @@ class HttpDownloadService:
             or str(item.get("download_file_id") or "").strip()
             or str(item.get("share_id") or "").strip()
         )
+        transferit_handle = str(item.get("transferit_node_handle") or "").strip()
+        if source == "transferit" and transferit_handle:
+            digest = hashlib.sha1(
+                f"{source}\n{transferit_handle}".encode("utf-8", errors="ignore")
+            ).hexdigest()[:16]
+            return f"{source}:{digest}"
         share_url = str(item.get("share_url") or "").strip()
         share_url_identity = share_url
         url_identity = ""
@@ -886,19 +894,59 @@ class HttpDownloadService:
             for item in (selected_items or [])
             if isinstance(item, dict) and self._preview_item_selection_key(item)
         }
+        selected_transferit_items = [
+            item for item in (selected_items or [])
+            if isinstance(item, dict) and str(item.get("source") or "").strip().lower() == "transferit"
+        ]
+
+        def transferit_selected_item(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            candidate_handle = str(candidate.get("transferit_node_handle") or "").strip()
+            candidate_share = str(candidate.get("share_id") or "").strip()
+            candidate_name = str(candidate.get("filename") or candidate.get("name") or "").strip().lower()
+            for selected in selected_transferit_items:
+                selected_share = str(selected.get("share_id") or "").strip()
+                if candidate_share and selected_share and candidate_share != selected_share:
+                    continue
+                selected_handle = str(selected.get("transferit_node_handle") or "").strip()
+                if candidate_handle and selected_handle and candidate_handle == selected_handle:
+                    return selected
+                selected_name = str(selected.get("filename") or selected.get("name") or "").strip().lower()
+                if candidate_name and selected_name and candidate_name == selected_name:
+                    return selected
+            return None
+
         out = dict(preview or {})
         items = []
         for item in list(out.get("items") or []):
             if not isinstance(item, dict):
                 continue
             key = self._preview_item_selection_key(item)
+            selected_transferit = None
             if key not in keys:
-                continue
+                if str(item.get("source") or "").strip().lower() != "transferit":
+                    continue
+                selected_transferit = transferit_selected_item(item)
+                if selected_transferit is None:
+                    continue
             merged = dict(item)
-            overrides = selected_overrides.get(key) or {}
+            overrides = selected_overrides.get(key) or self._http_selected_item_overrides(selected_transferit or {})
             if overrides:
                 merged.update(overrides)
             items.append(merged)
+        if not items and selected_transferit_items:
+            transferit_candidates = [
+                item for item in list(out.get("items") or [])
+                if isinstance(item, dict)
+                and item.get("ok")
+                and str(item.get("source") or "").strip().lower() == "transferit"
+            ]
+            if transferit_candidates:
+                items.append({
+                    "ok": False,
+                    "source": "transferit",
+                    "filename": "Transfer.it 已选文件",
+                    "reason": "Transfer.it 分享文件标识已变化，无法安全恢复原选择，请重试整个任务以重新解析",
+                })
         out["items"] = items
         ok_count = sum(1 for item in items if item.get("ok"))
         out["ok_count"] = ok_count
@@ -1002,6 +1050,9 @@ class HttpDownloadService:
         match = re.search(r"https?://[^\s<>'\"）)]+", text)
         if match:
             text = match.group(0).rstrip(".,，。;；")
+        parsed = urlparse(text)
+        if parsed.scheme and parsed.netloc:
+            return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, "", ""))
         return text
 
     async def _save_pikpak_token_callback(self, client, *, account: Optional[PikPakAccount] = None, **_kwargs) -> None:
@@ -1031,7 +1082,13 @@ class HttpDownloadService:
         except Exception as exc:
             logger.warning("[PikPak] 保存刷新后的 token 失败: %s", sanitize_http_download_error(exc))
 
-    async def _pikpak_client(self, account_id: str = "", *, account: Optional[PikPakAccount] = None):
+    async def _pikpak_client(
+        self,
+        account_id: str = "",
+        *,
+        account: Optional[PikPakAccount] = None,
+        verify_token: bool = True,
+    ):
         cfg = self._config()
         if not self._pikpak_enabled():
             raise HttpDownloadError("PikPak 下载未启用，请先在设置页启用并配置账号")
@@ -1065,14 +1122,18 @@ class HttpDownloadService:
         }
         client = PikPakApi(**kwargs)
         setattr(client, "_kikoeru_pikpak_account", account)
+        login_checked = False
         if not token:
             try:
                 await client.login()
                 await self._save_pikpak_token_callback(client, account=account)
+                login_checked = True
             except Exception as exc:
                 raise self._pikpak_error(exc, f"登录账号 {account.label}") from exc
-        else:
+        elif verify_token:
             await self._ensure_pikpak_logged_in(client, account)
+            login_checked = True
+        setattr(client, "_kikoeru_login_checked", login_checked)
         return client
 
     async def _ensure_pikpak_logged_in(self, client, account: PikPakAccount) -> None:
@@ -1171,12 +1232,9 @@ class HttpDownloadService:
         return str(path_rows[-1].get("id") or "").strip()
 
     async def _pikpak_account_status(self, account: PikPakAccount, *, include_files: bool = False, limit: int = 100) -> Dict[str, Any]:
-        client = await self._pikpak_client(account=account)
+        client = await self._pikpak_client(account=account, verify_token=False)
         try:
             quota = {}
-            transfer_quota = {}
-            vip = {}
-            await self._ensure_pikpak_logged_in(client, account)
             try:
                 quota = self._normalize_pikpak_quota(await client.get_quota_info())
             except Exception as exc:
@@ -1188,17 +1246,11 @@ class HttpDownloadService:
                         raise self._pikpak_error(retry_exc, f"读取账号 {account.label} 容量") from retry_exc
                 else:
                     raise self._pikpak_error(exc, f"读取账号 {account.label} 容量") from exc
-            with contextlib.suppress(Exception):
-                transfer_quota = await client.get_transfer_quota()
-            with contextlib.suppress(Exception):
-                vip = await client.vip_info()
             result = self._pikpak_public_status(
                 account,
                 success=True,
                 ready=True,
                 quota=quota,
-                transfer_quota=transfer_quota,
-                vip=vip,
                 source="live",
                 cached=False,
                 updated_at=datetime.now(),
@@ -1238,39 +1290,65 @@ class HttpDownloadService:
         if not enabled_accounts:
             raise HttpDownloadError("PikPak 未配置可用账号或 token")
         self._pikpak_status_cache_delete_missing({item.id for item in accounts})
-        statuses = []
-        for account in enabled_accounts:
+        semaphore = asyncio.Semaphore(min(_PIKPAK_STATUS_ACCOUNT_CONCURRENCY, len(enabled_accounts)))
+
+        async def load_status(account: PikPakAccount) -> Dict[str, Any]:
             if not force_refresh and not include_files:
                 cached = self._pikpak_status_cache_read(account)
                 if cached:
-                    statuses.append(cached)
-                    continue
+                    return cached
                 stale = self._pikpak_status_cache_read(account, require_fresh=False)
                 if stale:
                     self._start_pikpak_status_background_refresh(account)
-                    statuses.append(self._mark_pikpak_stale_refreshing(stale))
-                    continue
-            try:
-                statuses.append(await self._pikpak_account_status_with_timeout(account, include_files=include_files, limit=limit))
-            except Exception as exc:
-                if not force_refresh and not include_files:
-                    stale = self._pikpak_status_cache_read(account, require_fresh=False)
-                    if stale:
-                        statuses.append(self._mark_pikpak_stale_refreshing(stale, f"缓存已过期，刷新失败: {self._sanitize_error(exc)}", refreshing=False))
-                        continue
-                status = self._pikpak_public_status(
-                    account,
-                    success=False,
-                    ready=False,
-                    quota={},
-                    message=self._sanitize_error(exc),
-                    source="live",
-                    cached=False,
-                    updated_at=datetime.now(),
-                )
-                status["files"] = []
-                self._pikpak_status_cache_write(status, account, source="live")
-                statuses.append(status)
+                    return self._mark_pikpak_stale_refreshing(stale)
+            async with semaphore:
+                started_at = time.monotonic()
+                try:
+                    status = await self._pikpak_account_status_with_timeout(account, include_files=include_files, limit=limit)
+                    logger.info(
+                        "[PikPak] 检测账号完成 account=%s elapsed=%.2fs",
+                        account.id,
+                        time.monotonic() - started_at,
+                    )
+                    return status
+                except Exception as exc:
+                    if not force_refresh and not include_files:
+                        stale = self._pikpak_status_cache_read(account, require_fresh=False)
+                        if stale:
+                            return self._mark_pikpak_stale_refreshing(
+                                stale,
+                                f"缓存已过期，刷新失败: {self._sanitize_error(exc)}",
+                                refreshing=False,
+                            )
+                    status = self._pikpak_public_status(
+                        account,
+                        success=False,
+                        ready=False,
+                        quota={},
+                        message=self._sanitize_error(exc),
+                        source="live",
+                        cached=False,
+                        updated_at=datetime.now(),
+                    )
+                    status["files"] = []
+                    self._pikpak_status_cache_write(status, account, source="live")
+                    logger.info(
+                        "[PikPak] 检测账号失败 account=%s elapsed=%.2fs error=%s",
+                        account.id,
+                        time.monotonic() - started_at,
+                        status["message"],
+                    )
+                    return status
+
+        started_at = time.monotonic()
+        statuses = await asyncio.gather(*(load_status(account) for account in enabled_accounts))
+        if force_refresh or include_files:
+            logger.info(
+                "[PikPak] 检测全部账号完成 accounts=%s elapsed=%.2fs concurrency=%s",
+                len(enabled_accounts),
+                time.monotonic() - started_at,
+                min(_PIKPAK_STATUS_ACCOUNT_CONCURRENCY, len(enabled_accounts)),
+            )
         return self._pikpak_merge_statuses(statuses)
 
     async def test_pikpak_account(self, payload: Optional[Dict[str, Any]] = None, *, account_id: str = "") -> Dict[str, Any]:
@@ -1504,17 +1582,46 @@ class HttpDownloadService:
         if not accounts:
             raise HttpDownloadError("PikPak 未配置可用账号或 token")
 
-        results: List[Dict[str, Any]] = []
-        errors: List[Dict[str, Any]] = []
-        for account in accounts:
-            try:
-                results.append(await self.clear_pikpak_account_transfer_space(account_id=account.id))
-            except Exception as exc:
-                errors.append({
-                    "account": self._pikpak_account_public(account),
-                    "account_id": account.id,
-                    "message": self._sanitize_error(exc),
-                })
+        semaphore = asyncio.Semaphore(min(_PIKPAK_CLEAR_ACCOUNT_CONCURRENCY, len(accounts)))
+
+        async def clear_account(account: PikPakAccount) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+            async with semaphore:
+                started_at = time.monotonic()
+                try:
+                    result = await self.clear_pikpak_account_transfer_space(account_id=account.id)
+                    logger.info(
+                        "[PikPak] 清空账号完成 account=%s deleted=%s elapsed=%.2fs",
+                        account.id,
+                        result.get("deleted_count", 0),
+                        time.monotonic() - started_at,
+                    )
+                    return result, None
+                except Exception as exc:
+                    error = {
+                        "account": self._pikpak_account_public(account),
+                        "account_id": account.id,
+                        "message": self._sanitize_error(exc),
+                    }
+                    logger.warning(
+                        "[PikPak] 清空账号失败 account=%s elapsed=%.2fs error=%s",
+                        account.id,
+                        time.monotonic() - started_at,
+                        error["message"],
+                    )
+                    return None, error
+
+        started_at = time.monotonic()
+        outcomes = await asyncio.gather(*(clear_account(account) for account in accounts))
+        results = [result for result, _error in outcomes if result is not None]
+        errors = [error for _result, error in outcomes if error is not None]
+        logger.info(
+            "[PikPak] 清空全部账号完成 accounts=%s success=%s failed=%s elapsed=%.2fs concurrency=%s",
+            len(accounts),
+            len(results),
+            len(errors),
+            time.monotonic() - started_at,
+            min(_PIKPAK_CLEAR_ACCOUNT_CONCURRENCY, len(accounts)),
+        )
 
         total_deleted = sum(int(item.get("deleted_count") or 0) for item in results)
         total_root_deleted = sum(int(item.get("root_deleted_count") or 0) for item in results)
@@ -3733,6 +3840,10 @@ class HttpDownloadService:
             if status == "completed" or progress >= 100 or (total > 0 and downloaded >= total):
                 continue
             add_row(row)
+        if not rows and not metadata.get("download_files") and not metadata.get("failed_files"):
+            for row in list(metadata.get("selected_items") or []):
+                if isinstance(row, dict):
+                    add_row(row)
         return rows
 
     def build_retry_selection_for_file(self, task, file_row: Dict[str, Any]) -> tuple[List[Dict[str, Any]], List[str]]:
@@ -5435,7 +5546,24 @@ class HttpDownloadService:
                 if reason:
                     reasons.append(f"{target}: {reason}" if target else reason)
             detail = "；".join(reasons)
-            raise HttpDownloadError(f"没有通过校验的下载项: {detail}" if detail else "没有通过校验的下载项")
+            failure_reason = f"没有通过校验的下载项: {detail}" if detail else "没有通过校验的下载项"
+            task.task_metadata["download_files"] = []
+            task.task_metadata["failed_files"] = [
+                sanitize_http_download_item(item)
+                for item in failed_items
+                if isinstance(item, dict)
+            ]
+            task.task_metadata["failure_reason"] = failure_reason
+            task.task_metadata["download_runtime"] = {
+                "status": "failed",
+                "total_files": len(failed_items),
+                "failed_files": len(failed_items),
+                "completed_files": 0,
+                "active_file_count": 0,
+                "transferred_bytes": 0,
+                "speed_bytes_per_sec": 0,
+            }
+            raise HttpDownloadError(failure_reason)
         # 分享类(PikPak/Transfer.it)通常是同一作品的分卷，缺任一文件即无法解压；
         # 只要有分享文件解析失败就整体中止并报明细，避免下载残缺分卷后续解压必然失败。
         share_failed = [

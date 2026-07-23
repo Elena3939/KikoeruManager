@@ -375,6 +375,11 @@ import {
   getHttpDownloadPlatformMeta,
   httpDownloadPlatformsFromUrl,
 } from '../common/httpDownloadPlatformMeta.js'
+import {
+  isPikPakPassCodeLine,
+  normalizeHttpDownloadInputRows,
+  pikPakShareIdentity,
+} from './httpDownloadInput.js'
 
 const DOWNLOAD_PANEL_CONFLICT_POLICIES = ['resume', 'rename', 'skip']
 const DOWNLOAD_PREVIEW_CACHE_VERSION = 3
@@ -435,7 +440,7 @@ const panelTitle = computed(() => isBaidu.value ? '百度网盘下载' : 'HTTP �
 const panelSubtitle = computed(() => isBaidu.value ? '百度分享链接 / 提取码 / 官方登录态直下' : 'HTTP 直链 / Gofile / Transfer.it / OneDrive / Google Drive / PikPak')
 const inputPlaceholder = computed(() => isBaidu.value
   ? '粘贴百度网盘分享链接，一行一个。支持链接----提取码、提取码下一行，或带 ?pwd= 的分享链接。'
-  : '粘贴 HTTP/HTTPS 直链或分享链接，一行一个。支持 Gofile、Transfer.it、OneDrive、Google Drive、PikPak。'
+  : '粘贴 HTTP/HTTPS 直链或分享链接，一行一个。PikPak 提取码可跟在链接后或放在下一行。'
 )
 const healthActionLabel = computed(() => isBaidu.value ? '检测百度登录态' : '检测 aria2')
 const BAIDU_SHARE_CODE_SEPARATOR = '----'
@@ -598,7 +603,7 @@ const parsedUrls = computed(() => {
     .split(/[\r\n]+/)
     .map(item => item.trim())
     .filter(Boolean)
-  return isBaidu.value ? normalizeBaiduInputRows(rows) : [...new Set(rows)]
+  return isBaidu.value ? normalizeBaiduInputRows(rows) : normalizeHttpDownloadInputRows(rows)
 })
 
 function normalizeBaiduInputRows(rows) {
@@ -737,6 +742,12 @@ function inputLineMatchesStartedItem(line, item) {
     const itemIdentity = baiduShareIdentity(item.share_url || item.url || item.masked_url || '')
     return Boolean(lineIdentity && itemIdentity && lineIdentity === itemIdentity)
   }
+  const itemSource = sourceKey(item.source || item.download_mode || sourceFromUrl(item._input_url || item.url || item.masked_url || ''))
+  if (itemSource === 'pikpak') {
+    const lineIdentity = pikPakShareIdentity(trimmed)
+    const itemIdentity = pikPakShareIdentity(item._input_url || item.share_url || item.url || item.masked_url || '')
+    return Boolean(lineIdentity && itemIdentity && lineIdentity === itemIdentity)
+  }
   const inputUrl = normalizeComparableInputUrl(item._input_url)
   if (inputUrl) return normalizeComparableInputUrl(trimmed) === inputUrl
   const source = sourceKey(item.source || item.download_mode || sourceFromUrl(item.url || item.masked_url || ''))
@@ -763,14 +774,17 @@ function clearStartedInputUrls(startedItems) {
   let removedCount = 0
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
-    const shouldRemove = items.some(item => inputLineMatchesStartedItem(line, item))
-    if (!shouldRemove) {
+    const matchedItem = items.find(item => inputLineMatchesStartedItem(line, item))
+    if (!matchedItem) {
       nextLines.push(line)
       continue
     }
     removedCount += 1
     if (isBaidu.value && isBaiduPassCodeLine(lines[index + 1])) {
       index += 1
+    } else {
+      const source = sourceKey(matchedItem.source || matchedItem.download_mode || sourceFromUrl(matchedItem._input_url || ''))
+      if (source === 'pikpak' && isPikPakPassCodeLine(lines[index + 1])) index += 1
     }
   }
   if (!removedCount) return
@@ -1764,16 +1778,24 @@ function customPreviewForTreeRow(row) {
   const customName = String(file.custom_name || item.custom_name || '').trim()
   const customPassword = String(file.custom_extract_password || item.custom_extract_password || '').trim()
   if (!customName && !customPassword) return ''
-  const base = customName || defaultPreviewRowCustomName(row)
-  const ext = splitFilename(String(file.name || file.filename || item.filename || row.name || '')).ext
-  return `${base}${customPassword ? `(${customPassword})` : ''}${ext}`
+  const sourceName = String(file.name || file.filename || item.filename || row.name || '')
+  const ext = splitFilename(sourceName).ext
+  const displayName = customName || defaultPreviewRowCustomName(row)
+  const hasExtension = Boolean(ext && displayName.toLowerCase().endsWith(ext.toLowerCase()))
+  const displayStem = hasExtension ? displayName.slice(0, -ext.length) : displayName
+  const displayExt = hasExtension ? ext : ''
+  return `${displayStem}${customPassword ? `(${customPassword})` : ''}${displayExt || (customName ? ext : '')}`
 }
 
 function defaultPreviewRowCustomName(row) {
   if (!row) return '下载文件'
   if (row.isDir && row.volumeGroup?.base) return row.volumeGroup.base
   if (isBaidu.value && row.file) return defaultBaiduPreviewFileName(row.file)
-  return splitFilename(String(row.item?.filename || row.item?.name || row.name || '下载文件')).name || row.name || '下载文件'
+  const sourceName = String(row.item?.filename || row.item?.name || row.name || '下载文件')
+    .split(/[\\/]/)
+    .filter(Boolean)
+    .pop()
+  return sourceName || row.name || '下载文件'
 }
 
 function canRenamePreviewTreeRow(row) {
@@ -2187,7 +2209,7 @@ function baiduPreviewPathParts(file) {
 
 function defaultBaiduPreviewFileName(file) {
   const sourceName = String(file?.name || file?.relative_path || '').split(/[\\/]/).filter(Boolean).pop() || ''
-  return splitFilename(sourceName).name || sourceName || '百度网盘文件'
+  return sourceName || '百度网盘文件'
 }
 
 function previewItemFileCount(item) {

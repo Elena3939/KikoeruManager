@@ -530,6 +530,30 @@ def test_pikpak_pass_code_from_query_and_fragment(monkeypatch, tmp_path):
     assert service._parse_pikpak_pass_code("https://mypikpak.com/s/abc#提取码:abcd") == "abcd"
     assert service._parse_pikpak_pass_code("https://mypikpak.com/s/abc 提取码：A1b2") == "A1b2"
     assert service._pikpak_share_url("https://mypikpak.com/s/abc 提取码：A1b2") == "https://mypikpak.com/s/abc"
+    assert service._pikpak_share_url("https://mypikpak.com/s/abc?pwd=A1b2") == "https://mypikpak.com/s/abc"
+
+
+@pytest.mark.asyncio
+async def test_collect_pikpak_share_files_passes_password_and_clean_url(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    calls = []
+
+    class Client:
+        async def get_share_info(self, share_link, pass_code=None):
+            calls.append((share_link, pass_code))
+            return {
+                "share_id": "share-id",
+                "pass_code_token": "token",
+                "files": [{"id": "file-1", "name": "voice.zip", "kind": "drive#file"}],
+            }
+
+    await service._collect_pikpak_share_files(
+        Client(),
+        "https://mypikpak.com/s/share-id?pwd=A1b2",
+    )
+
+    assert calls == [("https://mypikpak.com/s/share-id", "A1b2")]
 
 
 def test_pikpak_accounts_include_legacy_and_extra_accounts(monkeypatch, tmp_path):
@@ -878,6 +902,49 @@ async def test_clear_pikpak_account_transfer_space_deletes_root_and_trash(monkey
     assert result["quota"]["remaining_bytes"] == 100
 
 
+@pytest.mark.asyncio
+async def test_clear_all_pikpak_transfer_space_uses_bounded_account_concurrency(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path, pikpak_enabled=True)
+    service = HttpDownloadService()
+    accounts = [
+        service._pikpak_account_from_payload({
+            "id": f"account-{index}",
+            "label": f"账号 {index}",
+            "enabled": True,
+            "username": f"user-{index}",
+            "password": "password",
+        })
+        for index in range(5)
+    ]
+    active_count = 0
+    max_active_count = 0
+
+    async def fake_clear(*, account_id=""):
+        nonlocal active_count, max_active_count
+        active_count += 1
+        max_active_count = max(max_active_count, active_count)
+        await asyncio.sleep(0.01)
+        active_count -= 1
+        if account_id == "account-4":
+            raise HttpDownloadError("清理失败")
+        return {
+            "account_id": account_id,
+            "deleted_count": 2,
+            "root_deleted_count": 1,
+            "trash_deleted_count": 1,
+        }
+
+    monkeypatch.setattr(service, "_pikpak_accounts", lambda: accounts)
+    monkeypatch.setattr(service, "clear_pikpak_account_transfer_space", fake_clear)
+
+    result = await service.clear_all_pikpak_transfer_space()
+
+    assert max_active_count == 3
+    assert result["cleared_account_count"] == 4
+    assert result["failed_account_count"] == 1
+    assert result["deleted_count"] == 8
+
+
 def test_pikpak_error_explains_quota(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
     service = HttpDownloadService()
@@ -1038,6 +1105,96 @@ def test_pikpak_status_force_refresh_bypasses_cache(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_pikpak_status_force_refresh_uses_bounded_account_concurrency(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path, pikpak_enabled=True)
+    service = HttpDownloadService()
+    accounts = [
+        service._pikpak_account_from_payload({
+            "id": f"account-{index}",
+            "label": f"账号 {index}",
+            "enabled": True,
+            "username": f"user-{index}",
+            "password": "password",
+        })
+        for index in range(5)
+    ]
+    active_count = 0
+    max_active_count = 0
+
+    async def live_status(account, *, include_files=False, limit=100):
+        nonlocal active_count, max_active_count
+        active_count += 1
+        max_active_count = max(max_active_count, active_count)
+        await asyncio.sleep(0.01)
+        active_count -= 1
+        if account.id == "account-4":
+            raise HttpDownloadError("检测失败")
+        return {
+            "success": True,
+            "enabled": True,
+            "ready": True,
+            "account": service._pikpak_account_public(account),
+            "account_id": account.id,
+            "account_label": account.label,
+            "quota": {"limit_bytes": 100, "usage_bytes": 10, "remaining_bytes": 90},
+            "source": "live",
+            "cached": False,
+        }
+
+    monkeypatch.setattr(service, "_pikpak_accounts", lambda include_disabled=True: accounts)
+    monkeypatch.setattr(service, "_pikpak_status_cache_delete_missing", lambda _ids: None)
+    monkeypatch.setattr(service, "_pikpak_status_cache_write", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_pikpak_account_status_with_timeout", live_status)
+
+    result = await service.pikpak_status(force_refresh=True, limit=1)
+
+    assert max_active_count == 5
+    assert [item["account_id"] for item in result["accounts"]] == [
+        "account-0",
+        "account-1",
+        "account-2",
+        "account-3",
+        "account-4",
+    ]
+    assert sum(1 for item in result["accounts"] if item["success"]) == 4
+    assert result["accounts"][-1]["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_pikpak_account_status_skips_duplicate_login_check(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path, pikpak_enabled=True)
+    service = HttpDownloadService()
+    account = service._pikpak_account_from_payload({
+        "id": "checked",
+        "label": "已校验账号",
+        "username": "checked@example.com",
+        "password": "password",
+    })
+
+    class Client:
+        async def user_info(self):
+            raise AssertionError("状态读取应直接用容量请求校验 token，不应请求 user_info")
+
+        async def get_quota_info(self):
+            return {"quota": {"limit": "100", "usage": "25", "usage_in_trash": "0"}}
+
+        async def get_transfer_quota(self):
+            return {}
+
+        async def vip_info(self):
+            return {}
+
+    monkeypatch.setattr(service, "_pikpak_client", lambda *, account=None, account_id="", verify_token=True: asyncio.sleep(0, result=Client()))
+    monkeypatch.setattr(service, "_close_pikpak_client", lambda _client: asyncio.sleep(0))
+    monkeypatch.setattr(service, "_pikpak_status_cache_write", lambda *_args, **_kwargs: None)
+
+    result = await service._pikpak_account_status(account)
+
+    assert result["success"] is True
+    assert result["quota"]["remaining_bytes"] == 75
+
+
+@pytest.mark.asyncio
 async def test_pikpak_account_status_falls_back_to_password_when_token_not_found(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path, pikpak_enabled=True)
     service = HttpDownloadService()
@@ -1054,10 +1211,7 @@ async def test_pikpak_account_status_falls_back_to_password_when_token_not_found
         encoded_token = "stale-token"
 
         async def user_info(self):
-            calls.append("user_info")
-            if len(calls) == 1:
-                raise RuntimeError("Not Found")
-            return {"email": "second@example.com"}
+            raise AssertionError("状态读取不应额外请求 user_info")
 
         async def login(self):
             calls.append("login")
@@ -1065,6 +1219,8 @@ async def test_pikpak_account_status_falls_back_to_password_when_token_not_found
 
         async def get_quota_info(self):
             calls.append("quota")
+            if calls.count("quota") == 1:
+                raise RuntimeError("Not Found")
             return {"quota": {"limit": "100", "usage": "25", "usage_in_trash": "0"}}
 
         async def get_transfer_quota(self):
@@ -1078,14 +1234,14 @@ async def test_pikpak_account_status_falls_back_to_password_when_token_not_found
             async def aclose():
                 return None
 
-    monkeypatch.setattr(service, "_pikpak_client", lambda *, account=None, account_id="": asyncio.sleep(0, result=Client()))
+    monkeypatch.setattr(service, "_pikpak_client", lambda *, account=None, account_id="", verify_token=True: asyncio.sleep(0, result=Client()))
     monkeypatch.setattr(service, "_save_pikpak_token_callback", lambda *_args, **_kwargs: asyncio.sleep(0))
 
     result = await service._pikpak_account_status(account)
 
     assert result["success"] is True
     assert result["quota"]["remaining_bytes"] == 75
-    assert calls == ["user_info", "login", "quota"]
+    assert calls == ["quota", "login", "quota"]
 
 
 @pytest.mark.asyncio
@@ -1931,6 +2087,78 @@ def test_filter_preview_selection_keeps_only_selected_items(tmp_path):
     assert filtered["failed_count"] == 0
     assert filtered["selected_count"] == 1
     assert filtered["items"][0]["filename"] == "b.zip"
+
+
+def test_transferit_selection_key_ignores_changed_relative_dir():
+    service = HttpDownloadService()
+    first = {
+        "ok": True,
+        "source": "transferit",
+        "share_id": "share-a",
+        "transferit_node_handle": "node-a",
+        "filename": "a.zip",
+        "relative_dir": "old-folder",
+    }
+    second = {**first, "relative_dir": "new-folder", "relative_path": "new-folder/a.zip"}
+
+    assert service._preview_item_selection_key(first) == service._preview_item_selection_key(second)
+
+
+def test_filter_preview_selection_recovers_legacy_transferit_key_by_handle():
+    service = HttpDownloadService()
+    selected = {
+        "ok": True,
+        "source": "transferit",
+        "share_id": "share-a",
+        "transferit_node_handle": "node-a",
+        "filename": "a.zip",
+        "relative_dir": "old-folder",
+        "selection_key": "transferit:legacy-key",
+    }
+    current = {
+        **selected,
+        "relative_dir": "new-folder",
+        "relative_path": "new-folder/a.zip",
+    }
+    current.pop("selection_key")
+
+    filtered = service.filter_preview_selection(
+        {"success": True, "items": [current], "ok_count": 1, "failed_count": 0},
+        selected_keys=[selected["selection_key"]],
+        selected_items=[selected],
+    )
+
+    assert filtered["ok_count"] == 1
+    assert filtered["items"][0]["transferit_node_handle"] == "node-a"
+
+
+def test_filter_preview_selection_reports_unrecoverable_transferit_selection():
+    service = HttpDownloadService()
+    selected = {
+        "ok": True,
+        "source": "transferit",
+        "share_id": "share-a",
+        "transferit_node_handle": "old-node",
+        "filename": "old.zip",
+        "selection_key": "transferit:legacy-key",
+    }
+    current = {
+        "ok": True,
+        "source": "transferit",
+        "share_id": "share-a",
+        "transferit_node_handle": "new-node",
+        "filename": "new.zip",
+    }
+
+    filtered = service.filter_preview_selection(
+        {"success": True, "items": [current], "ok_count": 1, "failed_count": 0},
+        selected_keys=[selected["selection_key"]],
+        selected_items=[selected],
+    )
+
+    assert filtered["ok_count"] == 0
+    assert filtered["failed_count"] == 1
+    assert "文件标识已变化" in filtered["items"][0]["reason"]
 
 
 def test_filter_preview_selection_merges_custom_name_overrides(tmp_path):
@@ -3201,6 +3429,32 @@ def test_build_retry_selection_for_task_keeps_only_failed_or_incomplete_rows(tmp
     assert [item["file_id"] for item in retry_items] == ["file-fail", "file-pending"]
     assert len(retry_keys) == 2
     assert all(key.startswith("pikpak:") for key in retry_keys)
+
+
+def test_build_retry_selection_for_task_falls_back_to_initial_selected_items():
+    service = HttpDownloadService()
+    task = Task(
+        task_type=TaskType.HTTP_DOWNLOAD,
+        source_path="transfer.it",
+        metadata={
+            "selected_items": [
+                {
+                    "source": "transferit",
+                    "share_id": "share-a",
+                    "transferit_node_handle": "node-a",
+                    "filename": "a.zip",
+                }
+            ],
+            "download_files": [],
+            "failed_files": [],
+        },
+    )
+
+    retry_items, retry_keys = service.build_retry_selection_for_task(task)
+
+    assert len(retry_items) == 1
+    assert retry_items[0]["transferit_node_handle"] == "node-a"
+    assert len(retry_keys) == 1
 
 
 def test_build_download_notification_extra_includes_failed_summary(tmp_path):
