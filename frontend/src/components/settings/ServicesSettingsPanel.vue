@@ -188,13 +188,13 @@
       <div class="settings-card">
         <div class="card-title">社团补全外部搜索</div>
         <div class="field-stack">
-          <SettingsToggleRow v-model="config.circle_external_search.anime_share_enabled" title="启用 AnimeShare 探测" subtitle="作品页异步探测精确 RJ 命中的帖子，仅命中时显示跳转标签。" />
-          <SettingsToggleRow v-model="config.circle_external_search.south_plus_enabled" title="启用南+探测" subtitle="使用下方登录态搜索精确 RJ；未配置登录态时不会把权限页当成命中。" />
+          <SettingsToggleRow v-model="circleExternalSearch.anime_share_enabled" title="启用 AnimeShare 探测" subtitle="作品页异步探测精确 RJ 命中的帖子，仅命中时显示跳转标签。" />
+          <SettingsToggleRow v-model="circleExternalSearch.south_plus_enabled" title="启用南+探测" subtitle="使用下方登录态搜索精确 RJ；未配置登录态时不会把权限页当成命中。" />
           <SettingsFieldCard label="南+ Cookie" hint="从已登录的南+浏览器复制完整 Cookie。保存后会脱敏，只有后端探测请求使用。">
-            <AnimatedPasswordInput v-model="config.circle_external_search.south_plus_cookie" placeholder="例如：bbs_lastvisit=...; ..." autocomplete="off" />
+            <AnimatedPasswordInput v-model="circleExternalSearch.south_plus_cookie" placeholder="例如：bbs_lastvisit=...; ..." autocomplete="off" />
           </SettingsFieldCard>
           <SettingsFieldCard label="南+ HTTP 代理" hint="只作用于南+搜索请求；留空则直连。支持 http://127.0.0.1:7890。">
-            <input v-model="config.circle_external_search.south_plus_proxy" class="field-input" type="text" placeholder="http://127.0.0.1:7890">
+            <input v-model="circleExternalSearch.south_plus_proxy" class="field-input" type="text" placeholder="http://127.0.0.1:7890">
           </SettingsFieldCard>
         </div>
       </div>
@@ -465,6 +465,23 @@ import { configApi, kikoeruApi, emailWatcherApi } from '../../api'
 
 const props = defineProps({
   config: { type: Object, required: true }
+})
+
+const defaultCircleExternalSearchConfig = {
+  anime_share_enabled: true,
+  south_plus_enabled: true,
+  south_plus_cookie: '',
+  south_plus_proxy: ''
+}
+
+const circleExternalSearch = computed(() => {
+  if (!props.config.circle_external_search || typeof props.config.circle_external_search !== 'object') {
+    props.config.circle_external_search = { ...defaultCircleExternalSearchConfig }
+  }
+  for (const [key, value] of Object.entries(defaultCircleExternalSearchConfig)) {
+    if (props.config.circle_external_search[key] == null) props.config.circle_external_search[key] = value
+  }
+  return props.config.circle_external_search
 })
 
 // ---- AppDropdown options ----
