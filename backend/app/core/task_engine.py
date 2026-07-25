@@ -6669,6 +6669,8 @@ class TaskEngine:
                 'date_count': int(result.get('date_count') or 0),
                 'probe_count': int(result.get('probe_count') or 0),
                 'checked_probe_count': int(result.get('probe_count') or 0),
+                'candidate_count': int(result.get('candidate_count') or result.get('raw_probe_count') or 0),
+                'cached_candidate_count': int(result.get('cached_candidate_count') or 0),
                 'hit_count': int(result.get('hit_count') or 0),
                 'inserted_count': int(result.get('inserted_count') or 0),
                 'request_count': int(result.get('request_count') or 0),

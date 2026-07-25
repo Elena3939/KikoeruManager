@@ -2139,6 +2139,8 @@ function bonusProbeModel(row) {
     .map((it) => ({
       releaseDate: formatReleaseDate(it?.release_date),
       probeCount: Number(it?.probe_count || 0),
+      candidateCount: Number(it?.candidate_count || 0),
+      cachedCandidateCount: Number(it?.cached_candidate_count || 0),
       requestCount: Number(it?.request_count || 0),
       hitCount: Number(it?.hit_count || 0),
       insertedCount: Number(it?.inserted_count || 0),
@@ -2150,6 +2152,9 @@ function bonusProbeModel(row) {
 
   const hitCount = Number(d.hit_count || items.length || 0)
   const insertedCount = Number(d.inserted_count || 0)
+  const candidateCount = Number(d.candidate_count || 0)
+  const cachedCandidateCount = Number(d.cached_candidate_count || 0)
+  const hasCandidateMetrics = Object.prototype.hasOwnProperty.call(d, 'candidate_count')
   const probeCount = Number(d.probe_count || 0)
   const requestCount = Number(d.request_count || 0)
   const releaseDateCount = Array.isArray(d.release_dates) ? d.release_dates.length : dateRows.length
@@ -2164,6 +2169,17 @@ function bonusProbeModel(row) {
   const statusLabel = status === 'hit'
     ? '已找到特典'
     : (status === 'incomplete' ? '未完成结论' : '未找到特典')
+  const metrics = [
+    { label: '命中', value: String(hitCount) },
+    { label: '写入', value: String(insertedCount) },
+    ...(hasCandidateMetrics ? [
+      { label: '候选筛选', value: String(candidateCount) },
+      { label: '缓存跳过', value: String(cachedCandidateCount) },
+    ] : []),
+    { label: '实际探测', value: String(probeCount) },
+    { label: '请求', value: String(requestCount) },
+    { label: '发售日', value: String(releaseDateCount) },
+  ]
   return {
     status,
     statusLabel,
@@ -2177,13 +2193,7 @@ function bonusProbeModel(row) {
       : '已完成本次特典筛选，但没有命中隐藏特典条件的 RJ。',
     items,
     dateRows,
-    metrics: [
-      { label: '命中', value: String(hitCount) },
-      { label: '写入', value: String(insertedCount) },
-      { label: '探测 RJ', value: String(probeCount) },
-      { label: '请求', value: String(requestCount) },
-      { label: '发售日', value: String(releaseDateCount) },
-    ],
+    metrics,
   }
 }
 

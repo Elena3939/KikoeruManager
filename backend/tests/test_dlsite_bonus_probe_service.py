@@ -1,4 +1,6 @@
 import asyncio
+import threading
+import time
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
@@ -73,6 +75,53 @@ def test_public_original_worknos_uses_canonical_only() -> None:
     ])
 
     assert worknos == ["RJ01569979"]
+
+
+def test_dedupe_keeps_order_for_large_candidate_set() -> None:
+    service = _service()
+    values = [f"RJ{index:08d}" for index in range(20_000)]
+
+    started_at = time.perf_counter()
+    result = service._dedupe([*values, *values])
+
+    assert result == values
+    assert time.perf_counter() - started_at < 1.0
+
+
+@pytest.mark.asyncio
+async def test_lease_candidate_shards_moves_cache_filter_to_worker_thread(monkeypatch) -> None:
+    service = _service()
+    main_thread_id = threading.get_ident()
+    worker_thread_ids: list[int] = []
+    started = threading.Event()
+
+    def fake_exclude(candidates, *, active_rjcodes, cached_features=None):
+        worker_thread_ids.append(threading.get_ident())
+        started.set()
+        time.sleep(0.05)
+        return list(candidates), {
+            "input": len(candidates),
+            "cached": 0,
+            "active": 0,
+            "cooldown": 0,
+            "selected": len(candidates),
+        }
+
+    monkeypatch.setattr(service, "_exclude_unprobeable_candidates", fake_exclude)
+    lease_task = asyncio.create_task(
+        service._lease_candidate_shards(["RJ00000001", "RJ00000002"], shard_size=100)
+    )
+    while not started.is_set():
+        await asyncio.sleep(0)
+
+    event_loop_tick = asyncio.Event()
+    asyncio.get_running_loop().call_soon(event_loop_tick.set)
+    await asyncio.wait_for(event_loop_tick.wait(), timeout=0.02)
+    shards, stats = await lease_task
+
+    assert worker_thread_ids and worker_thread_ids[0] != main_thread_id
+    assert stats["leased"] == 2
+    assert shards[0]["rjcodes"] == ["RJ00000001", "RJ00000002"]
 
 
 def test_build_gap_candidates_adds_edge_window_for_single_public_work() -> None:
@@ -1523,6 +1572,8 @@ async def test_probe_circle_dates_uses_configured_date_workers(monkeypatch) -> N
 
     assert max_active == 6
     assert result["date_count"] == 8
+    assert result["candidate_count"] == 0
+    assert result["cached_candidate_count"] == 0
     assert [item["release_date"] for item in result["dates"]] == [f"2025-06-{day:02d}" for day in range(1, 9)]
 
 
@@ -2678,7 +2729,7 @@ async def test_probe_date_emits_candidate_total_before_probe_requests(db_session
     async def fake_next_date_worknos(*_args, **_kwargs):
         return ["RJ01257004"], "ok"
 
-    async def fake_lease_candidate_shards(candidates, *, shard_size):
+    async def fake_lease_candidate_shards(candidates, *, shard_size, **_kwargs):
         assert candidates
         return [
             {
