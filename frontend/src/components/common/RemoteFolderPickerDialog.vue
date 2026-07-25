@@ -638,7 +638,7 @@ watch(searchKeyword, (keyword) => {
   }, 300)
 })
 
-// 流式索引搜索（本地库用）返回的统一形态 → picker 列表 row
+// 本地库存索引搜索返回的统一形态 → picker 列表 row
 function mapSearchEntry (entry) {
   return {
     name: entry?.name || '',
@@ -699,8 +699,8 @@ function mapBrowseEntry (entry) {
 // 搜索分支：
 //   - 远程库（synology_filestation）：直接调 browseFiles（后端会转 SYNO.Search），单次返回；
 //     不走索引兜底流，因为远程库通常没有索引，stream 协议徒增延迟。
-//   - 本地库：走索引流式搜索（initial+library+done），命中后立即可见，未命中静默兜底扫描。
-// 任何文案都不暴露「索引 / 兜底 / SYNO.Search / os.walk」等技术词。
+//   - 本地库：直接查询当前库存索引，不走跨库流式搜索或文件系统兜底。
+// 任何文案都不暴露「索引 / SYNO.Search / os.walk」等技术词。
 async function runIndexSearch(keyword) {
   if (!library.value?.id) return
   if (indexSearchAbort) {
@@ -750,42 +750,20 @@ async function runIndexSearch(keyword) {
     return
   }
 
-  // === 本地库分支：流式索引搜索（命中立显，未命中自动兜底） ===
-  let accumulated = []
-  let willRunFallback = false
-
+  // === 本地库分支：当前库存索引直查 ===
   try {
-    for await (const event of libraryApi.searchIndexGlobalStream({
-      keyword,
-      libraryIds: [library.value.id],
+    const exactRjcode = normalizeExactRjcode(keyword)
+    const data = await libraryApi.searchIndex({
+      libraryId: library.value.id,
+      rjcode: exactRjcode || null,
+      name: exactRjcode ? null : keyword,
       entryType: 'dir',
-      mode: 'full',
       limit: 200,
       signal: controller ? controller.signal : undefined,
-    })) {
-      if (token !== indexSearchToken) return
-
-      if (event?.type === 'initial') {
-        const items = Array.isArray(event.items) ? event.items : []
-        accumulated = items.map(mapSearchEntry).filter(item => item.path)
-        indexResults.value = accumulated
-        willRunFallback = Boolean(event.will_run_fallback)
-        if (!willRunFallback) {
-          indexLoading.value = false
-        }
-      } else if (event?.type === 'library') {
-        const items = Array.isArray(event.items) ? event.items : []
-        const newItems = items.map(mapSearchEntry).filter(item => item.path)
-        accumulated = [...accumulated, ...newItems]
-        indexResults.value = accumulated
-      } else if (event?.type === 'done') {
-        indexLoading.value = false
-        const failed = Array.isArray(event.fallback_failed) ? event.fallback_failed : []
-        if (failed.length && !accumulated.length) {
-          indexSoftHint.value = '搜索失败，请稍后重试'
-        }
-      }
-    }
+    })
+    if (token !== indexSearchToken) return
+    const items = Array.isArray(data?.items) ? data.items : []
+    indexResults.value = items.map(mapSearchEntry).filter(item => item.path)
   } catch (err) {
     if (err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED') return
     if (token !== indexSearchToken) return
@@ -836,6 +814,12 @@ async function loadNavigationSnapshot (path) {
     // 索引正在追赶或路径刚发生变化时，退回普通浏览接口；不把一次索引 miss 显示成目录错误。
     return false
   }
+}
+
+function normalizeExactRjcode (keyword) {
+  const compact = String(keyword || '').trim().toUpperCase().replace(/\s+/g, '')
+  const match = compact.match(/^(?:RJ)?(\d{4,12})$/)
+  return match ? `RJ${match[1]}` : ''
 }
 
 function resolveInitialAbsolutePath () {

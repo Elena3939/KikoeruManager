@@ -413,6 +413,25 @@ def test_baidu_custom_name_uses_filename_password_template(monkeypatch):
     assert rows[0]["custom_rename_applied"] is True
 
 
+def test_baidu_custom_name_with_full_filename_does_not_append_original_extension():
+    service = BaiduNetdiskService()
+
+    rows = service._apply_custom_download_name_to_rows(
+        {
+            "custom_name": "シラユリお嬢様に忠誠を.part1.rar",
+        },
+        [{
+            "name": "シラユリお嬢様に忠誠を.part1.rあr",
+            "relative_path": "シラユリお嬢様に忠誠を.part1.rあr",
+            "original_name": "シラユリお嬢様に忠誠を.part1.rあr",
+            "original_relative_path": "シラユリお嬢様に忠誠を.part1.rあr",
+        }],
+    )
+
+    assert rows[0]["name"] == "シラユリお嬢様に忠誠を.part1.rar"
+    assert rows[0]["relative_path"] == "シラユリお嬢様に忠誠を.part1.rar"
+
+
 def test_baidu_custom_name_skips_multi_file_share():
     service = BaiduNetdiskService()
 

@@ -1779,12 +1779,30 @@ function customPreviewForTreeRow(row) {
   const customPassword = String(file.custom_extract_password || item.custom_extract_password || '').trim()
   if (!customName && !customPassword) return ''
   const sourceName = String(file.name || file.filename || item.filename || row.name || '')
-  const ext = splitFilename(sourceName).ext
+  const sourceParts = splitFilename(sourceName)
+  const ext = sourceParts.ext
   const displayName = customName || defaultPreviewRowCustomName(row)
-  const hasExtension = Boolean(ext && displayName.toLowerCase().endsWith(ext.toLowerCase()))
-  const displayStem = hasExtension ? displayName.slice(0, -ext.length) : displayName
-  const displayExt = hasExtension ? ext : ''
-  return `${displayStem}${customPassword ? `(${customPassword})` : ''}${displayExt || (customName ? ext : '')}`
+  const displayParts = splitFilename(displayName)
+  const originalVolume = ext.match(/^\.(7z|zip)\.\d{3}$/i)
+  const customVolume = displayName.match(/^(.*)\.(7z|zip)\.\d{3}$/i)
+  const volumeBaseAlias = Boolean(
+    customName
+    && originalVolume
+    && (
+      displayName.toLowerCase().endsWith(`.${originalVolume[1].toLowerCase()}`)
+      || (customVolume && customVolume[2].toLowerCase() === originalVolume[1].toLowerCase())
+    )
+  )
+  if (customName && displayParts.ext && !volumeBaseAlias) {
+    return `${displayParts.name}${customPassword ? `(${customPassword})` : ''}${displayParts.ext}`
+  }
+  const displayStem = volumeBaseAlias && customVolume
+    ? `${customVolume[1]}.${customVolume[2]}`
+    : (customName ? displayName : sourceParts.name)
+  const displayExt = volumeBaseAlias
+    ? ext.slice(`.${originalVolume[1]}`.length)
+    : ext
+  return `${displayStem}${customPassword ? `(${customPassword})` : ''}${displayExt}`
 }
 
 function defaultPreviewRowCustomName(row) {
