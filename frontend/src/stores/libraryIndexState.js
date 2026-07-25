@@ -177,6 +177,8 @@ export const useLibraryIndexStateStore = defineStore('library-index-state', {
           ...this.viewByLibrary,
           [libraryId]: { ...view, library_id: libraryId },
         }
+        // 目录浏览响应也带有 materialized_seq，不能只依赖 SSE / 状态徽章释放 mutation tombstone。
+        this.releaseMaterializedTombstones(libraryId, view)
       }
       if (payload?.view_token) this.crossLibraryViewToken = String(payload.view_token)
       return views

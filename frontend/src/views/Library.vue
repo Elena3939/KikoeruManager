@@ -1990,6 +1990,7 @@ import { normalizeTaskCenterRealtimePayloads } from '../composables/taskCenterEv
 import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 import { libraryIndexPathMatches, useLibraryIndexStateStore } from '../stores/libraryIndexState'
 import { createLatestRequestGate, normalizeSuccessfulDeletePaths } from '../utils/libraryRequestGuard'
+import { buildLibraryPathKey } from '../utils/libraryOperationKey'
 
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 
@@ -2895,7 +2896,7 @@ const suppressSortChange = ref(false)
 
 const suppressSelectionChange = ref(false)
 
-const apiRenamingId = ref(null)
+const apiRenamingTargetKey = ref('')
 
 const batchApiRenameRunningIds = ref(new Set())
 
@@ -4982,7 +4983,7 @@ const libraryRowContextMenuProps = computed(() => {
     showOpenDirect: Boolean(hasRow && localLibrary && circleRealRow),
     disableRename: apiRenameBusy.value || (!rowWritable && !hasCircleVirtualTargets) || (!circleRealRow && !hasCircleVirtualTargets),
     disableApiRename: batchMode ? (!selectedApiRenameRows.value.length || apiRenameBusy.value) : (apiRenameBusy.value || (!canApiRenameRow(row) && !hasCircleVirtualTargets)),
-    apiRenameRunning: batchMode ? apiRenameBusy.value : Boolean(hasRow && (apiRenamingId.value === row?.id || isBatchApiRenameRunning(row))),
+    apiRenameRunning: batchMode ? apiRenameBusy.value : Boolean(hasRow && (isSingleApiRenameRunning(row) || isBatchApiRenameRunning(row))),
     apiBatchTarget: batchMode || Boolean(hasRow && isBatchApiRenameTarget(row)),
     disableSubtitle: batchMode ? (!selectedSubtitleCandidates.value.length || subtitleSubmitting.value) : (subtitleSubmitting.value || (!canFetchRJSubtitle(row) && !hasCircleVirtualTargets)),
     disableManage: (!actionRow?.is_directory || !circleRealRow) && !hasCircleVirtualTargets,
@@ -7444,13 +7445,13 @@ const selectedAutoCircleGroupRows = computed(() => selectedRows.value.filter(row
 
 const selectedFolderCompletionRows = computed(() => selectedRows.value.filter(row => canCompleteFolderRow(row)))
 
-const apiRenameBusy = computed(() => Boolean(apiRenamingId.value) || batchRenaming.value || batchAutoCircleGrouping.value)
+const apiRenameBusy = computed(() => Boolean(apiRenamingTargetKey.value) || batchRenaming.value || batchAutoCircleGrouping.value)
 
 
 
 function isBatchApiRenameTarget (row) {
 
-  return batchRenaming.value && batchApiRenameTargetIds.value.has(row?.id)
+  return batchRenaming.value && batchApiRenameTargetIds.value.has(getLibraryRowOperationKey(row))
 
 }
 
@@ -7458,7 +7459,7 @@ function isBatchApiRenameTarget (row) {
 
 function isBatchApiRenameRunning (row) {
 
-  return batchApiRenameRunningIds.value.has(row?.id)
+  return batchApiRenameRunningIds.value.has(getLibraryRowOperationKey(row))
 
 }
 
@@ -19751,9 +19752,11 @@ function normalizeLibraryActionRows (rows) {
 
 }
 
-function buildLibraryPathKey (libraryId, path) {
+function getLibraryRowOperationKey (row) {
 
-  return `${String(libraryId || '')}::${String(path || '').replace(/\\/g, '/').replace(/\/+$/, '')}`
+  const target = normalizeLibraryActionRow(row) || row
+
+  return buildLibraryPathKey(target?.library_id || selectedLibraryId.value, target?.path)
 
 }
 
@@ -23189,7 +23192,14 @@ async function apiRenameItem (row) {
     return
   }
 
-  apiRenamingId.value = row.id
+  const targetKey = getLibraryRowOperationKey(target)
+
+  if (!targetKey) {
+    ElMessage.warning('缺少库存路径，无法执行 API 重命名')
+    return
+  }
+
+  apiRenamingTargetKey.value = targetKey
 
   try {
 
@@ -23217,7 +23227,7 @@ async function apiRenameItem (row) {
 
   } finally {
 
-    apiRenamingId.value = null
+    if (apiRenamingTargetKey.value === targetKey) apiRenamingTargetKey.value = ''
 
   }
 
@@ -23755,9 +23765,9 @@ async function handleBatchApiRename () {
 
   batchRenaming.value = true
 
-  batchApiRenameTargetIds.value = new Set(targetRows.map(row => row.id))
+  batchApiRenameTargetIds.value = new Set(targetRows.map(getLibraryRowOperationKey).filter(Boolean))
 
-  batchApiRenameRunningIds.value = new Set(targetRows.map(row => row.id))
+  batchApiRenameRunningIds.value = new Set(targetRows.map(getLibraryRowOperationKey).filter(Boolean))
 
   try {
 
@@ -23795,7 +23805,7 @@ async function handleBatchApiRename () {
 
     batchApiRenameRunningIds.value = new Set()
 
-    apiRenamingId.value = null
+    apiRenamingTargetKey.value = ''
 
     batchRenaming.value = false
 
@@ -23806,8 +23816,6 @@ async function handleBatchApiRename () {
 
 
 function isLibraryRowSelectable (row) {
-
-  if (apiRenameBusy.value) return false
 
   if (libraryViewMode.value === 'circle') return isCircleRealActionRow(row)
 
@@ -24765,7 +24773,7 @@ async function runBatchApiRenameRows (targetGroups, batchId) {
     } finally {
 
       const nextRunning = new Set(batchApiRenameRunningIds.value)
-      runnableRows.forEach(row => nextRunning.delete(row.id))
+      runnableRows.forEach(row => nextRunning.delete(getLibraryRowOperationKey(row)))
       batchApiRenameRunningIds.value = nextRunning
 
     }
@@ -24780,7 +24788,7 @@ function isLibraryRowOperating (row) {
 
   if (!row) return false
 
-  return apiRenamingId.value === row.id ||
+  return isSingleApiRenameRunning(row) ||
     computingSizeId.value === row.id ||
     autoCircleGroupRunningId.value === row.id ||
     batchAutoCircleRunningIds.value.has(row.id) ||
@@ -24792,7 +24800,13 @@ function isLibraryRowApiRenaming (row) {
 
   if (!row) return false
 
-  return apiRenamingId.value === row.id || isBatchApiRenameRunning(row)
+  return isSingleApiRenameRunning(row) || isBatchApiRenameRunning(row)
+
+}
+
+function isSingleApiRenameRunning (row) {
+
+  return Boolean(apiRenamingTargetKey.value) && apiRenamingTargetKey.value === getLibraryRowOperationKey(row)
 
 }
 

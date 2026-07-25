@@ -71,4 +71,37 @@ describe('useLibraryIndexStateStore', () => {
     store.applyStatusSnapshot({ library_id: 'A', state_revision: 4, materialized_seq: 5 }, 'sse')
     expect(store.isPathTombstoned('A', 'old/child.txt')).toBe(false)
   })
+
+  it('普通目录响应达到 materialized_seq 时也释放重命名路径遮罩', () => {
+    const store = useLibraryIndexStateStore()
+    store.registerMutationResponse({
+      operation_id: 'op-rename',
+      operation_state: 'committed',
+      index_fences: [{
+        library_id: 'A',
+        accepted_seq: 9,
+        view_revision: 2,
+        active_generation: 1,
+        effects: [
+          { seq: 9, kind: 'move', relative_path: 'old', scope: 'subtree' },
+          { seq: 9, kind: 'reconcile', relative_path: 'new', scope: 'subtree' },
+        ],
+      }],
+    })
+
+    expect(store.isPathTombstoned('A', 'old/item.wav')).toBe(true)
+    expect(store.isPathTombstoned('A', 'new/item.wav')).toBe(true)
+
+    store.recordIndexViews({
+      index_view: {
+        library_id: 'A',
+        view_revision: 3,
+        active_generation: 1,
+        materialized_seq: 9,
+      },
+    })
+
+    expect(store.isPathTombstoned('A', 'old/item.wav')).toBe(false)
+    expect(store.isPathTombstoned('A', 'new/item.wav')).toBe(false)
+  })
 })
