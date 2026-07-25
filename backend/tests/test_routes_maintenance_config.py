@@ -831,6 +831,41 @@ def test_circle_cover_miss_schedules_background_download(client, monkeypatch, tm
     assert scheduled == ["RJ01012345.jpg"]
 
 
+def test_asmr_status_returns_requested_tasks_beyond_default_window(client, monkeypatch):
+    from app.core.task_engine import TaskType
+
+    tasks = [
+        SimpleNamespace(
+            id=f"asmr-task-{index}",
+            type=TaskType.ASMR_SYNC_DOWNLOAD,
+            status=SimpleNamespace(value="completed"),
+            task_metadata={},
+        )
+        for index in range(25)
+    ]
+
+    class Engine:
+        def get_all_tasks(self):
+            return tasks
+
+    monkeypatch.setattr("app.core.task_engine.get_task_engine", lambda: Engine())
+    monkeypatch.setattr(
+        routes,
+        "_serialize_asmr_sync_task_status",
+        lambda task, session_map: {"id": task.id},
+    )
+
+    response = client.get(
+        "/api/asmr-sync/status",
+        params={"task_ids": "asmr-task-24,asmr-task-0"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_tasks"] == 2
+    assert [item["id"] for item in payload["tasks"]] == ["asmr-task-24", "asmr-task-0"]
+
+
 def test_remote_fs_health_snapshot_endpoint(client, monkeypatch):
     class Manager:
         def remote_health_snapshot(self):

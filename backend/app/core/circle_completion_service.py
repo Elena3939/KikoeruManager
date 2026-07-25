@@ -36,7 +36,12 @@ from ..models.database import (
     get_local_now,
 )
 from .activity_log_service import log_circle_completion_event
-from .asmr_download_service import get_asmr_download_service
+from .asmr_download_service import (
+    ASMR_PROBE_STATUS_AVAILABLE,
+    ASMR_PROBE_STATUS_MISSING,
+    ASMR_PROBE_STATUS_UNAVAILABLE,
+    get_asmr_download_service,
+)
 from .asmr_resource_service import get_asmr_resource_service
 from .circle_image_cache_service import get_circle_image_cache_service
 from .dlsite_service import DLsiteWorkSummary, get_dlsite_service
@@ -1079,14 +1084,57 @@ class CircleCompletionService:
                 append_candidate(normalized)
         return candidates
 
-    async def _find_public_downloadable_work(
+    async def _fetch_asmr_work_info_with_status(
+        self,
+        rjcode: str,
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        probe = getattr(self.asmr_service, "fetch_work_info_with_status", None)
+        if callable(probe):
+            try:
+                return await probe(rjcode)
+            except Exception:
+                logger.debug("[社团补全·ASMR] 作品信息探测失败 rj=%s", rjcode, exc_info=True)
+                return None, ASMR_PROBE_STATUS_UNAVAILABLE
+        try:
+            work_info = await self.asmr_service.fetch_work_info(rjcode)
+        except Exception:
+            return None, ASMR_PROBE_STATUS_UNAVAILABLE
+        # 兼容旧的 ASMR stub / 外部实现：无法区分 None 是 404 还是网络失败时，
+        # 宁可按临时不可用处理，避免把已有可下载状态误清掉。
+        return (
+            work_info,
+            ASMR_PROBE_STATUS_AVAILABLE if work_info else ASMR_PROBE_STATUS_UNAVAILABLE,
+        )
+
+    async def _fetch_asmr_track_list_with_status(
+        self,
+        rjcode: str,
+    ) -> Tuple[Optional[List[Any]], str]:
+        probe = getattr(self.asmr_service, "fetch_track_list_with_status", None)
+        if callable(probe):
+            try:
+                return await probe(rjcode)
+            except Exception:
+                logger.debug("[社团补全·ASMR] 文件列表探测失败 rj=%s", rjcode, exc_info=True)
+                return None, ASMR_PROBE_STATUS_UNAVAILABLE
+        try:
+            tracks = await self.asmr_service.fetch_track_list(rjcode)
+        except Exception:
+            return None, ASMR_PROBE_STATUS_UNAVAILABLE
+        return (
+            tracks,
+            ASMR_PROBE_STATUS_AVAILABLE if tracks else ASMR_PROBE_STATUS_UNAVAILABLE,
+        )
+
+    async def _find_public_downloadable_work_with_status(
         self,
         canonical_info: Dict[str, Any],
         fallback_rjcode: str,
         metadata_map: Optional[Dict[str, Dict[str, Any]]] = None,
         extra_candidates: Optional[List[Any]] = None,
         snapshot: Optional[CircleCompletionSnapshot] = None,
-    ) -> tuple[str, Optional[Dict[str, Any]]]:
+        bypass_cache: bool = False,
+    ) -> tuple[str, Optional[Dict[str, Any]], str]:
         probe_candidates = await self._build_public_download_probe_candidates(
             canonical_info,
             fallback_rjcode,
@@ -1094,38 +1142,66 @@ class CircleCompletionService:
             extra_candidates=extra_candidates,
         )
         cache_key = "|".join(probe_candidates)
-        if cache_key:
+        if cache_key and bypass_cache:
+            self._asmr_probe_cache.pop(cache_key, None)
+        elif cache_key:
             cached = self._asmr_probe_cache.get(cache_key)
             if cached is not None:
-                return cached
+                if len(cached) == 3:
+                    return cached
+                # 兼容服务热更新前遗留的二元缓存值。
+                cached_rjcode, cached_info = cached
+                cached_status = ASMR_PROBE_STATUS_AVAILABLE if cached_rjcode else ASMR_PROBE_STATUS_MISSING
+                return cached_rjcode, cached_info, cached_status
+        unavailable_seen = False
         for probe_rjcode in probe_candidates:
             # ★ Phase 2 路径：snapshot 已包含全 RJ 的 work_info/tracks，直接查不打 HTTP。
             #   未传 snapshot（如老调用点 / 单 RJ 视图重建）时退回原 HTTP 行为。
             if snapshot is not None:
                 work_info = snapshot.get_asmr_work_info(probe_rjcode)
                 tracks = snapshot.get_asmr_tracks(probe_rjcode)
+                work_status = ASMR_PROBE_STATUS_MISSING if not work_info else ASMR_PROBE_STATUS_AVAILABLE
+                tracks_status = ASMR_PROBE_STATUS_MISSING if not tracks else ASMR_PROBE_STATUS_AVAILABLE
             else:
-                try:
-                    work_info = await self.asmr_service.fetch_work_info(probe_rjcode)
-                except Exception:
-                    work_info = None
+                work_info, work_status = await self._fetch_asmr_work_info_with_status(probe_rjcode)
                 tracks = None
                 if work_info:
-                    try:
-                        tracks = await self.asmr_service.fetch_track_list(probe_rjcode)
-                    except Exception:
-                        tracks = None
+                    tracks, tracks_status = await self._fetch_asmr_track_list_with_status(probe_rjcode)
+                else:
+                    tracks_status = ASMR_PROBE_STATUS_MISSING
+            if work_status == ASMR_PROBE_STATUS_UNAVAILABLE or tracks_status == ASMR_PROBE_STATUS_UNAVAILABLE:
+                unavailable_seen = True
             if not work_info:
                 continue
             if tracks:
                 result = (probe_rjcode, work_info)
                 if cache_key:
-                    self._asmr_probe_cache[cache_key] = result
-                return result
-        result = ("", None)
-        if cache_key:
+                    self._asmr_probe_cache[cache_key] = (*result, ASMR_PROBE_STATUS_AVAILABLE)
+                return (*result, ASMR_PROBE_STATUS_AVAILABLE)
+        status = ASMR_PROBE_STATUS_UNAVAILABLE if unavailable_seen else ASMR_PROBE_STATUS_MISSING
+        result = ("", None, status)
+        if cache_key and status == ASMR_PROBE_STATUS_MISSING:
             self._asmr_probe_cache[cache_key] = result
         return result
+
+    async def _find_public_downloadable_work(
+        self,
+        canonical_info: Dict[str, Any],
+        fallback_rjcode: str,
+        metadata_map: Optional[Dict[str, Dict[str, Any]]] = None,
+        extra_candidates: Optional[List[Any]] = None,
+        snapshot: Optional[CircleCompletionSnapshot] = None,
+        bypass_cache: bool = False,
+    ) -> tuple[str, Optional[Dict[str, Any]]]:
+        actual_rjcode, work_info, _status = await self._find_public_downloadable_work_with_status(
+            canonical_info,
+            fallback_rjcode,
+            metadata_map=metadata_map,
+            extra_candidates=extra_candidates,
+            snapshot=snapshot,
+            bypass_cache=bypass_cache,
+        )
+        return actual_rjcode, work_info
 
     def _variant_label(self, link_type: Any, lang: Any) -> str:
         normalized_type = str(link_type or "").strip().lower()
@@ -8641,17 +8717,24 @@ class CircleCompletionService:
                     metadata_map=metadata_map,
                     extra_candidates=[preferred_variant.get("rjcode"), canonical, row.asmr_available_rjcode, *linked_rjcodes],
                 )
-                actual_rjcode, _ = await self._find_public_downloadable_work(
+                actual_rjcode, _, asmr_probe_status = await self._find_public_downloadable_work_with_status(
                     canonical_info,
                     canonical or preferred_seed,
                     metadata_map=metadata_map,
                     extra_candidates=probe_candidates,
+                    bypass_cache=True,
                 )
                 actual_norm = self.normalize_rjcode(actual_rjcode)
+                preserved_asmr_norm = self.normalize_rjcode(row.asmr_available_rjcode)
+                resolved_asmr_norm = (
+                    preserved_asmr_norm
+                    if asmr_probe_status == ASMR_PROBE_STATUS_UNAVAILABLE
+                    else actual_norm
+                )
 
                 local_state_item = {
                     "display_rjcode": self.normalize_rjcode(preferred_variant.get("rjcode")) or canonical or row.display_rjcode,
-                    "asmr_available_rjcode": actual_norm or row.asmr_available_rjcode,
+                    "asmr_available_rjcode": resolved_asmr_norm,
                     "linked_rjcodes": linked_rjcodes or [row.display_rjcode or canonical],
                     "kikoeru_found_rjcodes": [],
                     "source_flags": set(),
@@ -8666,7 +8749,7 @@ class CircleCompletionService:
                 source_flags = {flag for flag in str(row.source_mask or "").split(",") if flag}
                 if row.has_dlsite:
                     source_flags.add("dlsite")
-                if actual_norm:
+                if resolved_asmr_norm:
                     source_flags.add("asmr_one")
                 else:
                     source_flags.discard("asmr_one")
@@ -8719,11 +8802,12 @@ class CircleCompletionService:
                 row.has_kikoeru = bool(found_rjcodes)
                 row.kikoeru_found_rjcodes = found_rjcodes
                 row.kikoeru_subtitle_rjcodes = subtitle_rjcodes
-                row.has_asmr_one = bool(actual_norm)
-                row.asmr_available_rjcode = actual_norm or None
+                row.has_asmr_one = bool(resolved_asmr_norm)
+                row.asmr_available_rjcode = resolved_asmr_norm or None
                 row.source_mask = ",".join(sorted(source_flags))
                 row.updated_at = datetime.now()
-                row.asmr_one_cached_at = datetime.now() if actual_norm else None
+                if actual_norm:
+                    row.asmr_one_cached_at = datetime.now()
 
                 refreshed_count += 1
                 if row.has_asmr_one:

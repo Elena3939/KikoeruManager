@@ -542,11 +542,15 @@
                 :selected-codes="selectedCanonicals"
                 :flashed-codes="flashedWorkCodes"
                 :located-codes="locatedWorkCodes"
+                :cover-overrides="coverOverrides"
                 image-field="thumb_image_url"
                 pager-label="缺失作品"
                 @select="toggleSelection"
                 @preview="openBatchPreview"
                 @reimport="openReimportDialogForWork"
+                @contextmenu="openWorkContextMenu"
+                @ensure-cover="ensureWorkCover"
+                @cover-failed="markWorkCoverFailed"
               />
             </el-tab-pane>
 
@@ -710,12 +714,16 @@
                   :selected-codes="selectedCanonicals"
                   :flashed-codes="flashedWorkCodes"
                   :located-codes="locatedWorkCodes"
+                  :cover-overrides="coverOverrides"
                   image-field="thumb_image_url"
                   corner-label="已收录"
                   pager-label="已满足作品"
                   @select="toggleSelection"
                   @preview="openBatchPreview"
                   @reimport="openReimportDialogForWork"
+                  @contextmenu="openWorkContextMenu"
+                  @ensure-cover="ensureWorkCover"
+                  @cover-failed="markWorkCoverFailed"
                 />
               </template>
             </el-tab-pane>
@@ -1027,6 +1035,34 @@
       />
     </Transition>
 
+    <Teleport to="body">
+      <div
+        v-if="workContextMenu.visible && workContextMenu.item"
+        class="circle-work-context-menu"
+        :style="{ left: `${workContextMenu.x}px`, top: `${workContextMenu.y}px` }"
+        @pointerdown.stop
+      >
+        <div class="circle-work-context-heading">
+          <span>{{ workContextMenu.item.title || workContextMenu.item.canonical_rjcode || '作品操作' }}</span>
+          <small>{{ workContextMenu.item.canonical_rjcode || '' }}</small>
+        </div>
+        <button type="button" class="circle-work-context-item" @click.stop="handleWorkContextAction('refresh')">
+          <RefreshCw :size="14" />
+          <span>刷新状态</span>
+        </button>
+        <button
+          v-if="workContextNeedsCover"
+          type="button"
+          class="circle-work-context-item"
+          :disabled="isCoverFetchBusy(workContextMenu.item)"
+          @click.stop="handleWorkContextAction('cover')"
+        >
+          <ImageDown :size="14" :class="{ 'spin-icon': isCoverFetchBusy(workContextMenu.item) }" />
+          <span>{{ isCoverFetchBusy(workContextMenu.item) ? '获取中...' : '获取封面' }}</span>
+        </button>
+      </div>
+    </Teleport>
+
   </div>
 </template>
 
@@ -1036,7 +1072,7 @@ import { useRoute } from 'vue-router'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import celebrateImg from '../assets/celebrate.png'
 import confettiAnimation from '../assets/anime/Confetti.lottie'
-import { Check, CheckCircle2, ChevronDown, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown, Mail, Calendar, Gift, RefreshCw, BarChart3, Timer, Upload } from 'lucide-vue-next'
+import { Check, CheckCircle2, ChevronDown, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown, Mail, Calendar, Gift, RefreshCw, ImageDown, BarChart3, Timer, Upload } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import api, { asmrSyncApi, circleCompletionApi, emailWatcherApi, libraryApi, localUploadApi, taskApi } from '../api'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
@@ -1293,6 +1329,9 @@ function resetCircleDetail() {
   selectedCanonicals.value = new Set()
   selectedDownloadableCanonicals.value = new Set()
   selectedRequestedRjcodes.value = {}
+  selectionAnchorCanonical.value = ''
+  coverOverrides.value = {}
+  coverFailures.value = new Set()
   locatedWorkCodes.value = new Set()
   Object.assign(circleWorksPage, { tab: 'missing', total: 0, page: 1, page_size: 10, page_count: 1, loading: false })
 }
@@ -1518,6 +1557,17 @@ const activeTab = ref('missing')
 const selectedCanonicals = ref(new Set())
 const selectedDownloadableCanonicals = ref(new Set())
 const selectedRequestedRjcodes = ref({})
+const selectionAnchorCanonical = ref('')
+const coverOverrides = ref({})
+const coverFailures = ref(new Set())
+const coverFetchInFlight = ref(new Set())
+const coverFetchTasks = new Map()
+const workContextMenu = reactive({
+  visible: false,
+  x: 0,
+  y: 0,
+  item: null,
+})
 const flashedWorkCodes = ref(new Set())
 const locatedWorkCodes = ref(new Set())
 const circleWorksPage = reactive({
@@ -2437,10 +2487,33 @@ const activeSelectableWorksTotal = computed(() => (
     : activeSelectableWorks.value.length
 ))
 const selectedActiveCanonicalRJCodes = computed(() => selectedCanonicalRJCodes.value)
+function selectionCode(item) {
+  return normalizeRjcode(item?.canonical_rjcode || item?.display_rjcode || item?.rjcode || '')
+}
+
+function orderedSelectableWorks(items = []) {
+  const result = []
+  const seen = new Set()
+  const append = item => {
+    const code = selectionCode(item)
+    if (!code || seen.has(code)) return
+    seen.add(code)
+    result.push(item)
+  }
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!isBonusDisplayWork(item)) append(item)
+    for (const bonus of Array.isArray(item?.bonus_works) ? item.bonus_works : []) append(bonus)
+  }
+  for (const item of Array.isArray(items) ? items : []) {
+    if (isBonusDisplayWork(item)) append(item)
+  }
+  return result
+}
+
 const activeSelectableWorksByCanonical = computed(() => {
   const map = new Map()
-  for (const item of activeSelectableWorks.value) {
-    const code = String(item?.canonical_rjcode || '').trim()
+  for (const item of orderedSelectableWorks(activeSelectableWorks.value)) {
+    const code = selectionCode(item)
     if (code) map.set(code, item)
   }
   return map
@@ -2630,6 +2703,8 @@ const isBonusProbeJobActive = computed(() =>
 const canCancelBonusProbeJob = computed(() => isBonusProbeJobActive.value)
 
 onMounted(async () => {
+  window.addEventListener('pointerdown', closeWorkContextMenu)
+  window.addEventListener('keydown', handleCircleCompletionKeydown)
   window.addEventListener('kikoerumanager:notification:new', handleNewReleaseNotification)
   window.addEventListener('kikoerumanager:circle:owned-synced', handleCircleOwnedSynced)
   window.addEventListener('kikoerumanager:circle:subtitle-synced', handleCircleOwnedSynced)
@@ -2692,6 +2767,8 @@ onActivated(() => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('pointerdown', closeWorkContextMenu)
+  window.removeEventListener('keydown', handleCircleCompletionKeydown)
   window.removeEventListener('kikoerumanager:notification:new', handleNewReleaseNotification)
   window.removeEventListener('kikoerumanager:circle:owned-synced', handleCircleOwnedSynced)
   window.removeEventListener('kikoerumanager:circle:subtitle-synced', handleCircleOwnedSynced)
@@ -3522,10 +3599,10 @@ async function refreshDownloadWorkbench(options = {}) {
   }
   if (!silent) downloadWorkbenchRefreshing.value = true
   try {
-    const result = await asmrSyncApi.status()
+    const result = await asmrSyncApi.status(trackedDownloadTaskIds.value)
     const allTasks = Array.isArray(result.tasks) ? result.tasks : []
     trackedDownloadTasks.value = trackedDownloadTaskIds.value
-      .map(id => allTasks.find(task => task.id === id))
+      .map(id => allTasks.find(task => String(task?.id || '') === String(id || '')))
       .filter(Boolean)
     trackedDownloadTaskIds.value = trackedDownloadTasks.value.map(task => task.id)
     const stillActive = trackedDownloadTasks.value.some(task => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(task.status || '')))
@@ -5094,6 +5171,9 @@ async function selectCircle(circleId, options = {}) {
   selectedCanonicals.value = new Set()
   selectedDownloadableCanonicals.value = new Set()
   selectedRequestedRjcodes.value = {}
+  selectionAnchorCanonical.value = ''
+  coverOverrides.value = {}
+  coverFailures.value = new Set()
   flashedWorkCodes.value = new Set()
   locatedWorkCodes.value = new Set()
   missingPage.value = 1
@@ -5250,34 +5330,177 @@ async function refreshActiveCircleWorks(options = {}) {
   }
 }
 
-function toggleSelection(item) {
-  if (!item?.canonical_rjcode) return
-  const code = String(item.canonical_rjcode || '').trim()
-  const next = new Set(selectedCanonicals.value)
-  const nextDownloadable = new Set(selectedDownloadableCanonicals.value)
-  const nextRequested = { ...selectedRequestedRjcodes.value }
-  if (next.has(code)) {
-    next.delete(code)
-    nextDownloadable.delete(code)
-    delete nextRequested[code]
-  } else {
-    next.add(code)
-    if (item?.has_asmr_one) nextDownloadable.add(code)
-    const candidates = [
-      item.download_plan?.rjcode,
-      item.asmr_available_rjcode,
-      item.display_rjcode,
-      item.canonical_rjcode,
-      ...(Array.isArray(item.linked_rjcodes) ? item.linked_rjcodes : [])
-    ]
-      .map(value => String(value || '').trim().toUpperCase())
-      .filter(Boolean)
-      .filter((value, index, array) => array.indexOf(value) === index)
+function requestedRjcodesForItem(item) {
+  return [
+    item?.download_plan?.rjcode,
+    item?.asmr_available_rjcode,
+    item?.display_rjcode,
+    item?.canonical_rjcode,
+    ...(Array.isArray(item?.linked_rjcodes) ? item.linked_rjcodes : [])
+  ]
+    .map(value => String(value || '').trim().toUpperCase())
+    .filter(Boolean)
+    .filter((value, index, array) => array.indexOf(value) === index)
+}
+
+function applySelectedCodes(codes) {
+  const next = new Set([...new Set(codes)].map(value => normalizeRjcode(value)).filter(Boolean))
+  const nextDownloadable = new Set()
+  const nextRequested = {}
+  for (const code of next) {
+    const item = activeSelectableWorksByCanonical.value.get(code) || detailWorksByCanonical.value.get(code)
+    if (selectedDownloadableCanonicals.value.has(code) || item?.has_asmr_one) nextDownloadable.add(code)
+    const existing = selectedRequestedRjcodes.value?.[code]
+    const candidates = Array.isArray(existing) && existing.length ? existing : requestedRjcodesForItem(item)
     if (candidates.length) nextRequested[code] = candidates
   }
   selectedCanonicals.value = next
   selectedDownloadableCanonicals.value = nextDownloadable
   selectedRequestedRjcodes.value = nextRequested
+}
+
+function toggleSelection(item, event = null) {
+  const code = selectionCode(item)
+  if (!code) return
+  const ordered = orderedSelectableWorks(activeSelectableWorks.value)
+  const index = ordered.findIndex(candidate => selectionCode(candidate) === code)
+  const anchorIndex = ordered.findIndex(candidate => selectionCode(candidate) === selectionAnchorCanonical.value)
+  const additive = Boolean(event?.ctrlKey || event?.metaKey)
+
+  if (event?.shiftKey && index >= 0 && anchorIndex >= 0) {
+    const rangeStart = Math.min(index, anchorIndex)
+    const rangeEnd = Math.max(index, anchorIndex)
+    const rangeCodes = ordered.slice(rangeStart, rangeEnd + 1).map(selectionCode)
+    applySelectedCodes(additive ? [...selectedCanonicals.value, ...rangeCodes] : rangeCodes)
+    return
+  }
+
+  if (additive) {
+    const next = new Set(selectedCanonicals.value)
+    if (next.has(code)) next.delete(code)
+    else next.add(code)
+    applySelectedCodes([...next])
+    selectionAnchorCanonical.value = code
+    return
+  }
+
+  applySelectedCodes([code])
+  selectionAnchorCanonical.value = code
+}
+
+function coverCode(item) {
+  const source = [item?.remote_image_url, item?.image_url, item?.thumb_image_url]
+    .map(value => String(value || '').trim())
+    .find(value => /[RVB]J\d{6,8}/i.test(value))
+  const matches = source?.match(/[RVB]J\d{6,8}/gi) || []
+  return normalizeRjcode(matches[matches.length - 1] || item?.display_rjcode || item?.rjcode || item?.canonical_rjcode)
+}
+
+function markWorkCoverFailed(item) {
+  const code = coverCode(item)
+  if (!code) return
+  const next = new Set(coverFailures.value)
+  next.add(code)
+  coverFailures.value = next
+}
+
+function isCoverFetchBusy(item) {
+  const code = coverCode(item)
+  return Boolean(code && coverFetchInFlight.value.has(code))
+}
+
+const workContextNeedsCover = computed(() => {
+  const item = workContextMenu.item
+  if (!item) return false
+  const code = coverCode(item)
+  if (!code) return false
+  if (coverFailures.value.has(code)) return true
+  return !String(coverOverrides.value[code] || '').trim()
+    && !String(item?.image_url || item?.thumb_image_url || item?.remote_image_url || '').trim()
+})
+
+async function ensureWorkCover(item, options = {}) {
+  const code = coverCode(item)
+  if (!code) return false
+  const force = Boolean(options?.force)
+  if (!force && coverOverrides.value[code] && !coverFailures.value.has(code)) return true
+  const existing = coverFetchTasks.get(code)
+  if (existing) return existing
+
+  const nextInFlight = new Set(coverFetchInFlight.value)
+  nextInFlight.add(code)
+  coverFetchInFlight.value = nextInFlight
+  const task = (async () => {
+    try {
+      const result = await circleCompletionApi.fetchCover({
+        rjcode: code,
+        variant: 'card',
+        force,
+      })
+      const resolvedCode = normalizeRjcode(result?.rjcode || code)
+      if (!result?.success || !result?.cover_url) {
+        markWorkCoverFailed(item)
+        if (!options?.silent) ElMessage.warning(result?.detail || '封面暂时无法下载')
+        return false
+      }
+      coverOverrides.value = {
+        ...coverOverrides.value,
+        [resolvedCode]: `${result.cover_url}?v=${Date.now()}`,
+      }
+      const nextFailures = new Set(coverFailures.value)
+      nextFailures.delete(code)
+      nextFailures.delete(resolvedCode)
+      coverFailures.value = nextFailures
+      if (!options?.silent) ElMessage.success('封面已获取')
+      return true
+    } catch (error) {
+      markWorkCoverFailed(item)
+      if (!options?.silent) ElMessage.error(error.response?.data?.detail || '获取封面失败')
+      return false
+    } finally {
+      const next = new Set(coverFetchInFlight.value)
+      next.delete(code)
+      coverFetchInFlight.value = next
+      coverFetchTasks.delete(code)
+    }
+  })()
+  coverFetchTasks.set(code, task)
+  return task
+}
+
+function closeWorkContextMenu() {
+  workContextMenu.visible = false
+  workContextMenu.item = null
+}
+
+function handleCircleCompletionKeydown(event) {
+  if (event.key === 'Escape') closeWorkContextMenu()
+}
+
+function openWorkContextMenu(item, event) {
+  if (!item) return
+  const code = selectionCode(item)
+  if (!selectedCanonicals.value.has(code)) toggleSelection(item, event)
+  workContextMenu.item = item
+  const menuWidth = 212
+  const menuHeight = workContextNeedsCover.value ? 112 : 76
+  workContextMenu.x = Math.max(8, Math.min(Number(event?.clientX || 0), window.innerWidth - menuWidth - 8))
+  workContextMenu.y = Math.max(8, Math.min(Number(event?.clientY || 0), window.innerHeight - menuHeight - 8))
+  workContextMenu.visible = true
+}
+
+async function handleWorkContextAction(action) {
+  const item = workContextMenu.item
+  closeWorkContextMenu()
+  if (!item) return
+  if (action === 'cover') {
+    await ensureWorkCover(item, { force: true, silent: false })
+    return
+  }
+  if (action === 'refresh') {
+    const code = selectionCode(item)
+    if (code) await refreshSelectedCircleIndex([code])
+  }
 }
 
 async function selectAllVisibleWorks() {
@@ -5287,6 +5510,7 @@ async function selectAllVisibleWorks() {
     selectedCanonicals.value = new Set((result.canonical_rjcodes || []).filter(Boolean))
     selectedDownloadableCanonicals.value = new Set((result.downloadable_rjcodes || []).filter(Boolean))
     selectedRequestedRjcodes.value = result.requested_rjcodes || {}
+    selectionAnchorCanonical.value = ''
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '全选当前筛选结果失败')
   }
@@ -5296,6 +5520,7 @@ function clearSelection() {
   selectedCanonicals.value = new Set()
   selectedDownloadableCanonicals.value = new Set()
   selectedRequestedRjcodes.value = {}
+  selectionAnchorCanonical.value = ''
 }
 
 function openReimportDialogForWork(item) {
@@ -5389,7 +5614,13 @@ async function startBatchDownload(payload = {}) {
       items
     })
     rememberTargetSubdir(downloadSettings.targetSubdir || '')
-    trackedDownloadTaskIds.value = (result.tasks || []).map(item => item.task_id).filter(Boolean)
+    const newTaskIds = (result.tasks || [])
+      .map(item => String(item?.task_id || '').trim())
+      .filter(Boolean)
+    trackedDownloadTaskIds.value = [...new Set([
+      ...newTaskIds,
+      ...trackedDownloadTaskIds.value.map(id => String(id || '').trim())
+    ].filter(Boolean))]
     downloadWorkbenchVisible.value = trackedDownloadTaskIds.value.length > 0
     downloadWorkbenchBackgroundActive.value = false
     persistDownloadWorkbenchState()
@@ -8717,5 +8948,107 @@ function getUploadBackgroundTargetLabel(task) {
   .hero-search-wrap {
     width: 100%;
   }
+}
+.circle-work-context-menu {
+  position: fixed;
+  z-index: 3000;
+  width: 212px;
+  padding: 7px;
+  border: 1px solid color-mix(in srgb, var(--circle-border-soft, #dbe4ef) 86%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--circle-surface-elevated, #ffffff) 98%, transparent);
+  color: var(--circle-text, #334155);
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.18), 0 3px 9px rgba(15, 23, 42, 0.08);
+  animation: circleContextMenuIn .16s cubic-bezier(.34, 1.56, .64, 1) both;
+}
+
+.circle-work-context-heading {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 9px 7px;
+  border-bottom: 1px solid color-mix(in srgb, var(--circle-border-soft, #dbe4ef) 72%, transparent);
+}
+
+.circle-work-context-heading span,
+.circle-work-context-heading small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.circle-work-context-heading span {
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.circle-work-context-heading small {
+  color: var(--circle-text-subtle, #94a3b8);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.circle-work-context-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  margin-top: 3px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: left;
+  transition: all .3s cubic-bezier(.34, 1.56, .64, 1);
+}
+
+.circle-work-context-item:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+  background: color-mix(in srgb, var(--circle-primary, #2563eb) 9%, transparent);
+  color: var(--circle-primary, #2563eb);
+}
+
+.circle-work-context-item:active:not(:disabled) {
+  transform: scale(.96);
+}
+
+.circle-work-context-item:disabled {
+  cursor: wait;
+  opacity: .65;
+}
+
+.circle-work-context-item:focus,
+.circle-work-context-item:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+@keyframes circleContextMenuIn {
+  from { opacity: 0; transform: translateY(-4px) scale(.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+:global(html.kikoerumanager-dark .circle-work-context-menu),
+:global(body.kikoerumanager-dark .circle-work-context-menu) {
+  border-color: rgba(148, 163, 184, .24);
+  background: rgba(24, 25, 29, .98);
+  color: rgba(248, 250, 252, .92);
+  box-shadow: 0 22px 50px rgba(0, 0, 0, .42), 0 4px 14px rgba(0, 0, 0, .24);
+}
+
+:global(html.kikoerumanager-dark .circle-work-context-heading),
+:global(body.kikoerumanager-dark .circle-work-context-heading) {
+  border-color: rgba(148, 163, 184, .18);
+}
+
+:global(html.kikoerumanager-dark .circle-work-context-item:hover:not(:disabled)),
+:global(body.kikoerumanager-dark .circle-work-context-item:hover:not(:disabled)) {
+  background: rgba(59, 130, 246, .18);
+  color: #93c5fd;
 }
 </style>

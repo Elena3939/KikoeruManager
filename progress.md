@@ -4351,6 +4351,26 @@
 - `docs/INTRODUCTION.md`：补充指定目录索引浏览和增强下载字节统计规则。
 - 回滚方式：分别反向恢复上述五个文件本轮新增的索引快照、按钮样式、字节进度和速度采样代码；保留这些文件中本轮之前已有的其他未提交改动。
 
+## 2026-07-24 - Task: 修复百度网盘完整文件名重命名重复后缀
+### What was done
+- 修复百度网盘重命名把用户输入的完整 `.part1.rar` 再拼接原始乱码 `.rあr` 的问题。
+- 前端预览和后端实际落盘统一按完整文件名优先；继续兼容“`foo.7z` 作为 `foo.7z.001 / .002` 公共基名”的分卷写法。
+- 增加乱码分卷后缀重命名回归用例，覆盖截图中的日文文件名场景。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m pytest --noconftest tests\test_baidu_netdisk_service.py -q -k "full_filename or dedupe_split_volume_suffix or custom_name_uses_filename_password_template"`：`3 passed`。
+- 直接调用百度网盘重命名函数验证：`シラユリお嬢様に忠誠を.part1.rあr` 输入 `シラユリお嬢様に忠誠を.part1.rar` 后输出精确为 `.part1.rar`。
+- `cd frontend; npm run build`：通过，`4186 modules transformed`，预压缩完成。
+- 后端 `py_compile` 和目标文件 `git diff --check`：通过。
+- 完整百度网盘测试在当前服务进程占用测试夹具时超时，已终止本轮测试进程；相关纯逻辑回归已单独通过。
+
+### Notes
+- `backend/app/core/baidu_netdisk_service.py`：完整文件名不再追加原始扩展，保留 7z / zip 分卷公共基名兼容。
+- `backend/tests/test_baidu_netdisk_service.py`：新增乱码 `.part1.rあr` 重命名回归测试。
+- `frontend/src/components/asmr/HttpDownloadPanel.vue`：预览名称按完整自定义文件名渲染，避免界面继续显示重复后缀。
+- `docs/INTRODUCTION.md`：补充完整文件名不会追加原始后缀的使用规则。
+- 回滚方式：恢复上述三个代码文件本轮新增的完整文件名判断和测试，并恢复说明文档对应句子；保留同文件其他已有未提交改动。
+
 ## 2026-07-24 - Task: 修复 ASMR 增强下载重试新建目录与半成品入库
 ### What was done
 - 根据服务器日志和 PostgreSQL 会话记录确认：源站持续断流后，部分成功任务仍提前把含 `.downloading` 的工作目录搬入库存；后续重试因原缓存路径已被搬走而创建空目录，并被分类器追加为新的 RJ 子目录。
@@ -4376,3 +4396,349 @@
 - `docs/asmr-enhanced-download-resume.md`：记录缓存、续传、部分失败、最终入库和旧数据边界。
 - `progress.md`：追加本轮调查、实现、验证和回滚记录。
 - 回滚方式：反向恢复上述代码与测试文件中本轮的增强下载续传改动，删除 `docs/asmr-enhanced-download-resume.md` 和本条进度记录；不得回退这些共享文件中的其他既有未提交改动。
+## 2026-07-24 - Task: 修复社团补全下载预览控件样式
+
+### What was done
+
+为社团补全下载预览弹窗的库存、直放路径、子目录下拉项补充明确的选中态；调整模式操作按钮为内容自适应高度，避免长文案换行后超出按钮范围。
+
+### Testing
+
+- `frontend`: `npm run build` 通过（Vite 生产构建与资源预压缩完成）。
+
+### Notes
+
+- `frontend/src/components/circle/CircleDownloadPreviewDialog.vue`：增加下拉选中态样式及暗色适配，修复模式按钮文字溢出。
+- 回滚方式：还原上述文件本轮 diff，并删除本段进度记录。
+
+## 2026-07-24 - Task: 调整社团补全下载预览下拉选中态
+
+### What was done
+
+将暗色主题下拉菜单的未选中项保持透明，选中项改为深灰底，避免所有选项视觉上都像已选中。
+
+### Testing
+
+- `frontend`: `npm run build` 通过（Vite 生产构建与资源预压缩完成）。
+
+### Notes
+
+- `frontend/src/components/circle/CircleDownloadPreviewDialog.vue`：暗色下拉选中项使用深灰背景，未选中项无额外背景。
+- 回滚方式：还原上述文件本轮暗色下拉选中态 CSS diff，并删除本段进度记录。
+
+## 2026-07-25 - Task: 修复社团补全下载预览下拉背景覆盖
+
+### What was done
+
+移除下拉项中触发全局暗色背景覆盖的 Tailwind 背景 class，未选中项恢复透明，仅选中项显示深灰背景。
+
+### Testing
+
+- 浏览器实测 `http://localhost:5556/circle-completion` 下载预览：选中“默认库存”为 `rgb(58, 59, 64)`，其余库存项计算背景为透明。
+- `frontend`: `npm run build` 通过（Vite 生产构建与资源预压缩完成）。
+
+### Notes
+
+- `frontend/src/components/circle/CircleDownloadPreviewDialog.vue`：移除会被暗色全局规则误匹配的 `hover:bg-slate-100/80` class。
+- 回滚方式：还原上述文件本轮下拉项 class 改动，并删除本段进度记录。
+
+## 2026-07-25 - Task: 优化社团补全下载预览交互文案
+
+### What was done
+
+为暗色下拉菜单未选中项增加轻量悬浮背景；缩小落地方式按钮字号并保持单行展示，避免“API 命名作品目录”换行。
+
+### Testing
+
+- `frontend`: `npm run build` 通过（Vite 生产构建与资源预压缩完成）。
+
+### Notes
+
+- `frontend/src/components/circle/CircleDownloadPreviewDialog.vue`：补充未选中下拉项 hover 背景，调整落地方式按钮文字布局。
+- 回滚方式：还原上述文件本轮 hover 规则和 `.soft-button` 字号、换行规则，并删除本段进度记录。
+
+## 2026-07-25 - Task: 缩小社团补全下载预览落地方式文字
+
+### What was done
+
+移除落地方式按钮的 `text-sm` 工具类，按钮文字强制为 9px 单行，避免长文案左右溢出。
+
+### Testing
+
+- `frontend`: `npm run build` 通过（Vite 生产构建与资源预压缩完成）。
+
+### Notes
+
+- `frontend/src/components/circle/CircleDownloadPreviewDialog.vue`：缩小落地方式按钮文字并清除会覆盖字号的工具类。
+- 回滚方式：还原上述文件本轮三个按钮 class 和 `.soft-button` 字号改动，并删除本段进度记录。
+
+## 2026-07-25 - Task: 调整社团补全下载预览落地方式字号
+
+### What was done
+
+将落地方式按钮文字由 9px 调整为 11px，在单行容纳前提下恢复可读性。
+
+### Testing
+
+- `frontend`: `npm run build` 通过（Vite 生产构建与资源预压缩完成）。
+
+### Notes
+
+- `frontend/src/components/circle/CircleDownloadPreviewDialog.vue`：调整落地方式按钮强制字号。
+- 回滚方式：将 `.soft-button` 的字号恢复为 9px，并删除本段进度记录。
+
+## 2026-07-25 - Task: 修复指定入库目录索引搜索跳转
+
+### What was done
+
+索引搜索模式下，单击目录结果会直接进入该目录并退出搜索；普通目录浏览继续保持单击选中、双击进入的交互。
+
+### Testing
+
+- `frontend`: `npm run build` 通过（Vite 生产构建与资源预压缩完成）。
+- 本地页面验证已进入指定入库目录搜索流程；默认库存现有索引未返回 `RaRo` 测试目录，无法对真实索引命中目录完成跳转回归。
+
+### Notes
+
+- `frontend/src/components/common/RemoteFolderPickerDialog.vue`：搜索结果行点击改为索引模式直接跳转。
+- 回滚方式：将结果行点击恢复为 `selectFolder(folder)`，并删除 `handleFolderRowClick`，同时删除本段进度记录。
+
+## 2026-07-25 - Task: 修复指定入库目录本地索引搜索
+
+### What was done
+
+撤回搜索结果单击跳转改动。本地库存目录搜索改为直查当前库存索引，仅返回目录记录，不再经过跨库流式搜索、关联扩展或文件系统兜底。
+
+### Testing
+
+- `GET /api/library/index/status?library_id=local`：默认库存索引状态为 `ready`。
+- `GET /api/library/index/search?library_id=local&name=RaRo&entry_type=dir&limit=200`：约 10ms 返回 `RaRo` 及其子目录共 5 条索引记录。
+- `frontend`: `npm run build` 通过（Vite 生产构建与资源预压缩完成）。
+
+### Notes
+
+- `frontend/src/components/common/RemoteFolderPickerDialog.vue`：本地目录搜索改用当前库存索引直查，且恢复普通结果行点击交互。
+- 回滚方式：还原 `runIndexSearch` 的本地分支为 `searchIndexGlobalStream`，并删除本段进度记录。
+
+## 2026-07-25 - Task: 支持指定入库目录 RJ 精确定位
+
+### What was done
+
+本地库存目录搜索识别 `RJ` 前缀或纯数字 RJ 号，规范化后按当前库存、目录类型进行 RJ 精确索引查询；普通文字仍按目录名称搜索。
+
+### Testing
+
+- `GET /api/library/index/search?library_id=local&rjcode=RJ01609989&entry_type=dir&limit=200`：返回作品目录及其 2 个子目录共 3 条索引记录，首条为作品目录。
+- `frontend`: `npm run build` 通过（Vite 生产构建与资源预压缩完成）。
+
+### Notes
+
+- `frontend/src/components/common/RemoteFolderPickerDialog.vue`：新增 RJ 号规范化，并将精确 RJ 搜索传给库存索引 `rjcode` 字段。
+- 回滚方式：删除 `normalizeExactRjcode`，并将本地查询固定恢复为 `name: keyword`，同时删除本段进度记录。
+
+## 2026-07-25 - Task: 修正社团补全下载预览选中态样式作用域
+
+### What was done
+
+确认下载预览弹窗样式未启用 scoped，移除无效的 `:global(...)` 选择器；暗色下拉菜单改为普通全局选择器，未选中项透明，选中项使用深灰背景。
+
+### Testing
+
+- `frontend`: `npm run build` 通过（Vite 生产构建与资源预压缩完成）。
+- 检查构建产物：选中态已输出为 `html.kikoerumanager-dark .circle-download-preview-modal .dropdown-item.is-selected`，未残留无效 `:global` 选择器。
+
+### Notes
+
+- `frontend/src/components/circle/CircleDownloadPreviewDialog.vue`：修正暗色下拉选中态 CSS 选择器，使其命中 Element Plus 弹窗实际 DOM。
+- 回滚方式：还原上述文件本轮暗色下拉选中态 CSS diff，并删除本段进度记录。
+
+## 2026-07-24 - Task: 修复特典探测大候选集事件循环阻塞与日志口径
+
+### What was done
+
+- 将特典探测候选去重、分片合并从列表成员查找改为保序集合，避免大候选集 O(n²) CPU 阻塞。
+- 将租约筛选及同步缓存读取移到线程池，并复用 `probe_date` 已完成的缓存读取结果，避免重复查询和阻塞事件循环；保留 active lease 的并发互斥语义。
+- 特典探测结果、任务中心和操作历史补充候选筛选数、缓存跳过数和实际探测数，明确区分缓存筛选与 DLsite 新请求；旧活动记录保持兼容，不伪造候选数。
+- 同步更新特典探测说明和操作历史轻量摘要字段。
+
+### Testing
+
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_dlsite_bonus_probe_service.py -q --basetemp .pytest-tmp-codex-bonus-full-normal`：`71 passed`。
+- `cd backend; .\venv\Scripts\python.exe -m pytest --noconftest tests\test_activity_log_service.py -q --basetemp .pytest-tmp-codex-bonus-activity-final2`：`4 passed`。
+- `cd backend; .\venv\Scripts\python.exe -m pytest --noconftest tests\test_task_center_service.py -q -k "bonus_probe_task_center" --basetemp .pytest-tmp-codex-center-final`：`1 passed`。
+- `cd backend; .\venv\Scripts\python.exe -m pytest --noconftest tests\test_task_engine.py -q -k "bonus_probe_current_count_progress" --basetemp .pytest-tmp-codex-engine-final`：`1 passed`。
+- 后端相关文件 `py_compile`：通过；`frontend; npm.cmd run build`：通过，`4187 modules transformed`，预压缩完成。
+- 关键性能回归覆盖 20,000 个候选的保序去重耗时和租约筛选不阻塞事件循环；`git diff --check`：通过，仅有既有 LF/CRLF 提示。
+
+### Notes
+
+- `backend/app/core/dlsite_bonus_probe_service.py`：修复 O(n²) 去重、线程池化租约缓存筛选、复用缓存结果并输出候选 / 缓存 / 实际探测统计。
+- `backend/app/core/task_engine.py`：保存特典任务候选筛选和缓存跳过汇总字段。
+- `backend/app/core/activity_log_service.py`：操作历史摘要和明细写入新统计口径，并兼容旧任务元数据。
+- `backend/app/core/activity_log_lite.py`：轻量操作历史补充候选和实际探测标签。
+- `backend/app/core/task_center_service.py`：任务中心指标拆分候选筛选、缓存跳过和实际探测。
+- `frontend/src/composables/useActivityDetailModels.js`：特典操作详情展示新统计，旧记录不显示虚假的候选 0。
+- `backend/tests/test_dlsite_bonus_probe_service.py`、`backend/tests/test_activity_log_service.py`、`backend/tests/test_task_engine.py`、`backend/tests/test_task_center_service.py`：新增性能、线程池、日志和任务展示回归。
+- `docs/dlsite-bonus-probe.md`：记录候选 / 缓存 / 实际探测字段和性能约束。
+- 回滚方式：反向恢复上述特典探测、任务汇总、操作历史、任务中心和前端详情改动，删除本条测试 / 文档说明；不回退这些共享文件中的其他既有未提交改动。
+
+## 2026-07-24 - Task: 修复库存 API 重命名状态随目录切换漂移
+
+### What was done
+
+- API 重命名进行态由易复用的行 id 改为库存 ID 与真实路径组成的稳定标识；进入同级目录后，进行态只会留在原始重命名目标，不会套到新列表同位置的行。
+- 解除 API 重命名期间对普通行选择的全局禁止，目录导航可以继续使用；仍保持 API 重命名入口互斥，避免重复提交。
+- 批量 API 重命名同步改为路径标识，避免跨库存或刷新列表时进行态误映射。
+
+### Testing
+
+- `cd frontend; npm.cmd run test -- src/utils/libraryOperationKey.test.js`：通过，2 个路径标识回归用例通过。
+- `cd frontend; npm.cmd run build`：通过，Vite 生产构建与资源预压缩完成，`4187 modules transformed`。
+- `git diff --check`：通过；仅输出工作区既有文件的 LF/CRLF 提示。
+
+### Notes
+
+- `frontend/src/views/Library.vue`：API 重命名状态、批量进行态与行选择逻辑改为按真实库存路径处理。
+- `frontend/src/utils/libraryOperationKey.js`：提供库存 ID 与规范化路径的稳定操作标识。
+- `frontend/src/utils/libraryOperationKey.test.js`：覆盖同位置不同目录不会共用状态，以及 Windows 路径规范化。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：还原 `Library.vue` 中 `apiRenamingTargetKey`、路径标识判断及行选择限制的本轮改动，删除 `libraryOperationKey.js`、`libraryOperationKey.test.js` 和本条进度记录；不得回退其他已有未提交改动。
+
+## 2026-07-24 - Task: 优化 API 重命名后的库存索引可见性
+
+### What was done
+
+- 保持 API 重命名接口、元数据获取和文件系统执行流程不变。
+- 目录浏览响应收到已物化的 `materialized_seq` 后，立即释放对应的 source/target tombstone，不再依赖 SSE 或额外状态徽章请求。
+- 增加重命名 move/reconcile fence 经普通目录响应释放的回归测试，避免新路径被连续刷新持续过滤。
+
+### Testing
+
+- `cd frontend; npm.cmd run test -- src/stores/libraryIndexState.test.js`：通过，4 个索引状态测试通过。
+- `cd frontend; npm.cmd run build`：通过，前端生产构建与资源预压缩完成。
+- 服务器 PostgreSQL 只读核对：最近 API 重命名索引物化约 `861ms`，当前本地库 `accepted_seq = materialized_seq`，无 pending ledger。
+
+### Notes
+
+- `frontend/src/stores/libraryIndexState.js`：目录视图版本更新时同步释放已完成 mutation tombstone。
+- `frontend/src/stores/libraryIndexState.test.js`：新增普通目录响应释放重命名路径遮罩的测试。
+- `progress.md`：追加本轮调查、优化、验证和回滚记录。
+- 回滚方式：移除 `recordIndexViews()` 中的 tombstone 释放调用及新增测试和本条进度记录；不回退 API 重命名及其他既有未提交改动。
+
+## 2026-07-25 - Task: 阻止 ASMR 增强下载缺少目标库存时提交
+
+### What was done
+
+- 入库归类模式在下载预览弹窗中将目标库存设为必选，未选择或仅输入空格时禁用提交。
+- 提交函数增加二次校验，避免通过非按钮调用绕过界面校验向后端发送空目标库存；直放已有路径模式保持原有路径校验。
+- 补充 ASMR 增强下载文档，明确目标库存选择要求。
+
+### Testing
+
+- `cd frontend; npm run test`：通过，13 个测试文件、39 个测试全部通过。
+- `cd frontend; npm run build`：通过，Vite 生产构建与资源预压缩完成，4187 个模块转换成功。
+- `git diff --check`：通过；仅输出工作区既有文件的换行符提示。
+
+### Notes
+
+- `frontend/src/components/circle/CircleDownloadPreviewDialog.vue`：入库归类提交增加目标库存必选校验，保留直放已有路径分支。
+- `docs/asmr-enhanced-download-resume.md`：补充目标库存提交约束。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：移除弹窗中的目标库存禁用 / 二次校验、删除文档新增条目和本条进度记录；不回退同文件中的其他既有未提交改动。
+
+## 2026-07-25 - Task: 修复社团作品刷新误清 ASMR.one 可下载状态
+
+### What was done
+
+- ASMR.one 作品信息和文件列表探测改为区分“可用”“明确不存在”“临时不可用”，同时保留原有 `fetch_work_info` / `fetch_track_list` 返回契约。
+- 选中作品手动刷新改为绕过旧 ASMR 探测缓存；网络故障或熔断时保留已确认的可下载 RJ、来源标记和最后成功时间，不再写成“暂无来源”。
+- 临时不可用结果不再写入 ASMR 负缓存；只有明确不存在才缓存，恢复网络后可由后续刷新重新探测。
+- 增加连接失败、404、空文件列表、绕过负缓存和保留 `RJ01506870` 既有状态的回归覆盖。
+
+### Testing
+
+- `$env:PYTHONPATH='backend'; backend\venv\Scripts\python.exe -m py_compile backend\app\core\asmr_download_service.py backend\app\core\circle_completion_service.py backend\tests\test_asmr_download_service.py backend\tests\test_circle_completion_snapshot.py`：通过。
+- `$env:PYTHONPATH='backend'; backend\venv\Scripts\python.exe -m pytest backend\tests\test_asmr_download_service.py backend\tests\test_circle_completion_snapshot.py::test_find_public_downloadable_work_does_not_cache_temporary_unavailable_result backend\tests\test_circle_completion_snapshot.py::test_find_public_downloadable_work_bypass_cache_for_manual_refresh backend\tests\test_circle_completion_snapshot.py::test_refresh_circle_works_preserves_existing_asmr_state_when_probe_unavailable -q`：通过，`10 passed`。
+- `$env:PYTHONPATH='backend'; backend\venv\Scripts\python.exe -m pytest backend\tests\test_circle_completion_bonus_refresh_helper.py -q`：通过，`5 passed`。
+- `backend\tests\test_circle_completion_snapshot.py -q` 全量执行存在 5 个既有失败：测试仍访问当前实现未定义的 `_kikoeru_state_cache`，与本轮 ASMR 改动无关；本轮新增和受影响路径已单独通过。
+- `git diff --check -- backend/app/core/asmr_download_service.py backend/app/core/circle_completion_service.py backend/tests/test_asmr_download_service.py backend/tests/test_circle_completion_snapshot.py`：通过，仅有工作区换行符提示。
+
+### Notes
+
+- `backend/app/core/asmr_download_service.py`：增加 ASMR.one 探测三态返回和旧接口兼容包装。
+- `backend/app/core/circle_completion_service.py`：手动刷新强制重新探测 ASMR.one，临时失败不再覆盖已有成功状态或缓存成缺失。
+- `backend/tests/test_asmr_download_service.py`：覆盖临时连接失败、明确 404 与空文件列表的状态判定。
+- `backend/tests/test_circle_completion_snapshot.py`：覆盖临时失败不缓存、手动刷新绕过负缓存及已有可下载状态保留。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：还原上述四个后端代码/测试文件和本条进度记录；不回退工作区其他既有改动。
+
+## 2026-07-25 - Task: 修复社团补全新下载覆盖旧任务状态
+
+### What was done
+
+- 社团补全创建新下载批次时改为合并追踪任务 ID，新任务置顶，旧任务继续保留在工作台中。
+- 下载工作台轮询改为按当前追踪的任务 ID 查询，避免通用 ASMR 状态接口只返回最新 20 条导致旧任务被截断。
+- `/api/asmr-sync/status` 增加 `task_ids` 精确查询参数，并保留无参数调用的原有最新 20 条行为；请求 ID 做保序去重。
+- 补充接口回归测试和社团补全性能缓存文档说明。
+
+### Testing
+
+- `backend\\venv\\Scripts\\python.exe -m pytest backend\\tests\\test_routes_maintenance_config.py::test_asmr_status_returns_requested_tasks_beyond_default_window backend\\tests\\test_circle_completion_paged_view.py -q`：通过，17 个用例通过。
+- `frontend\\npm.cmd run test`：通过，13 个测试文件、39 个测试通过。
+- `frontend\\npm.cmd run build`：通过，Vite 生产构建与资源预压缩完成，4187 个模块转换成功。
+- `git diff --check`：通过；仅有工作区既有的 LF/CRLF 提示。
+- 重启后健康检查：后端 `http://localhost:5555/health` 返回 200，前端 `http://localhost:5556/circle-completion` 返回 200，带 `task_ids` 的状态接口请求成功。
+
+### Notes
+
+- `frontend/src/views/CircleCompletion.vue`：新批次任务 ID 合并，轮询按追踪任务查询。
+- `frontend/src/api/index.js`：ASMR 状态 API 支持可选任务 ID 列表。
+- `backend/app/api/routes.py`：ASMR 状态接口支持按任务 ID 精确返回。
+- `backend/tests/test_routes_maintenance_config.py`：新增超过默认 20 条窗口的任务 ID 查询回归测试。
+- `docs/circle-completion-performance-cache.md`：补充下载工作台任务追踪与状态查询规则。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：撤销上述前端状态合并、状态 API 参数、后端精确查询及对应测试/文档/本条进度记录；不要回退同文件中的其他已有未提交改动。
+
+## 2026-07-25 - Task: 收紧 ASMR 下载无 SE 过滤规则
+
+### What was done
+
+- 修正无 SE / 无音效规则中“无 SE 后缀可选”的错误，避免裸 `SE` 误命中 `SEあり` 路径。
+- 同步更新运行配置与仓库模板；明确规则只过滤 `SEなし`、无 SE、CUT、反转等明确排除语义。
+- 保留原有 MP3 过滤开关，未改变其当前启用状态。
+- 新增回归覆盖，确保 `SEあり`、普通 `SE.wav`、`soundtrack.wav` 不被误过滤。
+
+### Testing
+
+- `backend\\venv\\Scripts\\python.exe -m pytest backend\\tests\\test_filter_rule_regex.py -q`：通过，1 个规则回归用例通过。
+- 使用项目 Python 环境拉取 ASMR.one `RJ01571688` 实际文件树后调用运行规则：`39` 个源文件保留 `14` 个（`13` 个 WAV、`1` 个 PNG），排除 `25` 个；不再出现 `39 -> 1`。
+- `backend/config/config.yaml` 与 `data/config/config.yaml` 均完成 YAML 解析和 `SEあり / SEなし / SE CUT` 正反例验证。
+
+### Notes
+
+- `data/config/config.yaml`：运行态过滤规则收紧，服务重启后生效。
+- `backend/config/config.yaml`：同步默认模板，避免新部署复现裸 `SE` 误匹配。
+- `backend/tests/test_filter_rule_regex.py`：覆盖无 SE 规则的正反例。
+- `docs/filter-file-recovery.md`：说明无 SE 规则的明确匹配边界。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：还原两份 `config.yaml` 的无 SE 规则、删除新增测试与文档说明及本条进度记录；不要回退同文件中的其他已有未提交改动。
+
+## 2026-07-25 - Task: 修正百度网盘分卷完整文件名重命名
+
+### What was done
+
+- 将 `.7z.001` / `.zip.001` 这类完整首卷名识别为分卷公共基名；批量套用时保留每个原文件的分卷序号，避免第二卷被错误改成 `.001`。
+- 同步修正下载预览中的名称推导，使前端展示与后端实际落盘名称一致。
+
+### Testing
+
+- `cd backend; .\venv\Scripts\python.exe -m pytest --noconftest tests\test_baidu_netdisk_service.py -q --basetemp .pytest-tmp-release-baidu-fix`：`62 passed`。
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\baidu_netdisk_service.py`：通过。
+- `cd frontend; npm.cmd run build`：通过，`4187 modules transformed`，预压缩完成。
+
+### Notes
+
+- `backend/app/core/baidu_netdisk_service.py`：完整分卷名按公共基名处理并保留原始分卷号。
+- `frontend/src/components/asmr/HttpDownloadPanel.vue`：预览名称按相同规则保留分卷号。
+- `progress.md`：追加本轮修复、验证和回滚记录。
+- 回滚方式：反向移除分卷完整文件名的公共基名识别，恢复将完整名称直接作为目标名的逻辑，并删除本段进度记录。

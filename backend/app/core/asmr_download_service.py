@@ -22,6 +22,9 @@ from .ttl_cache import TTLCache
 logger = logging.getLogger(__name__)
 
 ASMR_DOWNLOAD_STREAM_CHUNK_BYTES = 256 * 1024
+ASMR_PROBE_STATUS_AVAILABLE = "available"
+ASMR_PROBE_STATUS_MISSING = "missing"
+ASMR_PROBE_STATUS_UNAVAILABLE = "unavailable"
 
 # 语言优先级定义（数字越小优先级越高）
 LANGUAGE_PRIORITY = {
@@ -400,7 +403,7 @@ class ASMRDownloadService:
         logger.info(f"[DLsite] 找到 {len(works)} 个关联版本: {[(w.workno, w.lang) for w in works]}")
         return works
 
-    async def fetch_work_info(self, rjcode: str) -> Optional[Dict]:
+    async def fetch_work_info_with_status(self, rjcode: str) -> Tuple[Optional[Dict], str]:
         """
         从 asmr.one API 获取作品信息
 
@@ -411,7 +414,7 @@ class ASMRDownloadService:
             作品信息字典，包含标题、文件列表等
         """
         if self._skip_asmr_api_when_circuit_open("作品信息请求", rjcode):
-            return None
+            return None, ASMR_PROBE_STATUS_UNAVAILABLE
         # 标准化 RJ 号
         if rjcode.upper().startswith('RJ'):
             rjcode_num = rjcode[2:]
@@ -433,26 +436,31 @@ class ASMRDownloadService:
                         data = await response.json()
                         self._record_asmr_api_success()
                         logger.info(f"[ASMR] 成功获取作品信息: {data.get('title', '未知标题')}")
-                        return data
+                        return data, ASMR_PROBE_STATUS_AVAILABLE if data else ASMR_PROBE_STATUS_MISSING
                     elif response.status == 404:
                         self._record_asmr_api_success()
                         logger.warning(f"[ASMR] 作品不存在: {rjcode}")
-                        return None
+                        return None, ASMR_PROBE_STATUS_MISSING
                     else:
                         self._record_asmr_api_failure(f"workInfo HTTP {response.status}")
                         logger.warning(f"[ASMR] 获取作品信息失败: HTTP {response.status}")
                         if self._asmr_api_circuit_open():
-                            return None
+                            return None, ASMR_PROBE_STATUS_UNAVAILABLE
                         await self._switch_api()
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 self._record_asmr_api_failure(e.__class__.__name__)
                 logger.error(f"[ASMR] 请求作品信息失败: {e}")
                 if self._asmr_api_circuit_open():
-                    return None
+                    return None, ASMR_PROBE_STATUS_UNAVAILABLE
                 await self._switch_api()
 
         logger.error(f"[ASMR] 所有 API 服务器都无法访问: {rjcode}")
-        return None
+        return None, ASMR_PROBE_STATUS_UNAVAILABLE
+
+    async def fetch_work_info(self, rjcode: str) -> Optional[Dict]:
+        """兼容旧调用方，只返回作品信息本身。"""
+        data, _status = await self.fetch_work_info_with_status(rjcode)
+        return data
 
     async def find_best_available_work(self, rjcode: str) -> Tuple[Optional[str], Optional[Dict]]:
         """
@@ -488,7 +496,7 @@ class ASMRDownloadService:
         logger.warning(f"[搜索] 未找到任何可用版本: {rjcode}")
         return None, None
 
-    async def fetch_track_list(self, rjcode: str) -> Optional[List[Dict]]:
+    async def fetch_track_list_with_status(self, rjcode: str) -> Tuple[Optional[List[Dict]], str]:
         """
         获取作品的音轨/文件列表
 
@@ -499,7 +507,7 @@ class ASMRDownloadService:
             文件列表
         """
         if self._skip_asmr_api_when_circuit_open("文件列表请求", rjcode):
-            return None
+            return None, ASMR_PROBE_STATUS_UNAVAILABLE
         # 标准化 RJ 号
         if rjcode.upper().startswith('RJ'):
             rjcode_num = rjcode[2:]
@@ -545,26 +553,31 @@ class ASMRDownloadService:
                                     bool(first_item.get("mediaDownloadUrl") or first_item.get("media_download_url")),
                                 )
 
-                        return data
+                        return data, ASMR_PROBE_STATUS_AVAILABLE if data else ASMR_PROBE_STATUS_MISSING
                     elif response.status == 404:
                         self._record_asmr_api_success()
                         logger.warning(f"[ASMR] 文件列表不存在: {rjcode}")
-                        return []
+                        return [], ASMR_PROBE_STATUS_MISSING
                     else:
                         self._record_asmr_api_failure(f"tracks HTTP {response.status}")
                         logger.warning(f"[ASMR] 获取文件列表失败: HTTP {response.status}")
                         if self._asmr_api_circuit_open():
-                            return None
+                            return None, ASMR_PROBE_STATUS_UNAVAILABLE
                         await self._switch_api()
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 self._record_asmr_api_failure(e.__class__.__name__)
                 logger.error(f"[ASMR] 请求文件列表失败: {e}")
                 if self._asmr_api_circuit_open():
-                    return None
+                    return None, ASMR_PROBE_STATUS_UNAVAILABLE
                 await self._switch_api()
 
         logger.error(f"[ASMR] 所有 API 服务器都无法获取文件列表: {rjcode}")
-        return None
+        return None, ASMR_PROBE_STATUS_UNAVAILABLE
+
+    async def fetch_track_list(self, rjcode: str) -> Optional[List[Dict]]:
+        """兼容旧调用方，只返回文件列表本身。"""
+        data, _status = await self.fetch_track_list_with_status(rjcode)
+        return data
 
     def _resolve_track_display_title(self, track: Dict) -> str:
         """优先读取 asmr.one 可能返回的本地化标题，避免只拿原始日文 title。"""

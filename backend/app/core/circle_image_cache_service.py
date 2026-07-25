@@ -51,6 +51,7 @@ class CircleImageCacheService:
 
     def __init__(self) -> None:
         self._client: Optional[httpx.AsyncClient] = None
+        self._client_proxy_url: str = ""
         self._client_lock: Optional[asyncio.Lock] = None
         self._cache_dir: Optional[Path] = None
         self._download_locks: Dict[str, asyncio.Lock] = {}
@@ -330,7 +331,12 @@ class CircleImageCacheService:
             f"{ana_base}_ana_img_main.jpg",
         ]
 
-    async def ensure_local_for_filename(self, filename: str) -> Optional[Path]:
+    async def ensure_local_for_filename(
+        self,
+        filename: str,
+        *,
+        force: bool = False,
+    ) -> Optional[Path]:
         """按需下载并返回本地缓存路径。
 
         用于前端首屏直接请求 ``/api/circle-completion/cover/RJxxxx_sam.jpg`` 的场景：
@@ -345,7 +351,7 @@ class CircleImageCacheService:
             return None
         if self.has_local(rjcode, variant):
             return target
-        if self._is_in_failure_cooldown(rjcode, variant):
+        if not force and self._is_in_failure_cooldown(rjcode, variant):
             logger.debug(
                 "[社团补全/封面缓存] 命中失败冷却 rjcode=%s variant=%s",
                 rjcode,
@@ -359,7 +365,7 @@ class CircleImageCacheService:
         async with lock:
             if self.has_local(rjcode, variant):
                 return target
-            if self._is_in_failure_cooldown(rjcode, variant):
+            if not force and self._is_in_failure_cooldown(rjcode, variant):
                 return None
             failures: List[str] = []
             try:
@@ -394,6 +400,25 @@ class CircleImageCacheService:
             )
             return None
 
+    async def fetch_local_for_rjcode(
+        self,
+        rjcode: str,
+        *,
+        variant: str = "card",
+        force: bool = False,
+    ) -> Optional[Path]:
+        """立即补齐指定 RJ 的本地封面缓存。
+
+        只根据 RJ 推导 DLsite CDN 候选地址，不接收外部 URL，避免把这个交互入口
+        变成服务端请求任意地址的通道。手动补图可跳过短失败冷却。
+        """
+
+        normalized = self.normalize_rjcode(rjcode)
+        filename = self._filename_for(normalized, variant)
+        if not filename:
+            return None
+        return await self.ensure_local_for_filename(filename, force=force)
+
     # ------------------------------------------------------------------
     # 下载
     # ------------------------------------------------------------------
@@ -405,19 +430,33 @@ class CircleImageCacheService:
 
     async def _get_client(self) -> httpx.AsyncClient:
         async with self._ensure_lock():
-            if self._client is None or self._client.is_closed:
-                from ..config.settings import get_config
+            from ..config.settings import get_config
 
-                config = get_config()
+            config = get_config()
+            proxy_url = ""
+            try:
+                raw_proxy = getattr(config.metadata, "http_proxy", "") or ""
+                if raw_proxy:
+                    from .dlsite_service import get_dlsite_service
+
+                    proxy_url = get_dlsite_service()._normalize_proxy_url(raw_proxy) or ""
+            except Exception:
                 proxy_url = ""
-                try:
-                    raw_proxy = getattr(config.metadata, "http_proxy", "") or ""
-                    if raw_proxy:
-                        from .dlsite_service import get_dlsite_service
 
-                        proxy_url = get_dlsite_service()._normalize_proxy_url(raw_proxy) or ""
-                except Exception:
-                    proxy_url = ""
+            if (
+                self._client is not None
+                and not self._client.is_closed
+                and self._client_proxy_url != proxy_url
+            ):
+                logger.info(
+                    "[社团补全/封面缓存] 元数据代理已变更，重建 HTTP 客户端: %s",
+                    proxy_url or "直连",
+                )
+                await self._client.aclose()
+                self._client = None
+                self._client_proxy_url = ""
+
+            if self._client is None or self._client.is_closed:
 
                 client_kwargs: Dict[str, Any] = {
                     "headers": {
@@ -457,6 +496,7 @@ class CircleImageCacheService:
                         }
 
                 self._client = httpx.AsyncClient(**client_kwargs)
+                self._client_proxy_url = proxy_url
             return self._client
 
     async def close(self) -> None:
@@ -466,6 +506,7 @@ class CircleImageCacheService:
         self._background_download_tasks.clear()
         client = self._client
         self._client = None
+        self._client_proxy_url = ""
         if client and not client.is_closed:
             try:
                 await client.aclose()

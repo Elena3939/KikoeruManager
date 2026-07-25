@@ -24,9 +24,11 @@ const props = defineProps({
   cornerLabel: { type: String, default: '' },
   /** 是否允许挂载真实图片 src，由外层虚拟视口调度 */
   imageActive: { type: Boolean, default: true },
+  /** 由社团补全封面缓存返回的本地地址，优先于作品字段 */
+  coverUrlOverride: { type: String, default: '' },
 })
 
-const emit = defineEmits(['select', 'preview', 'reimport', 'image-settled'])
+const emit = defineEmits(['select', 'preview', 'reimport', 'image-settled', 'image-failed', 'contextmenu'])
 
 const { isMobile } = useViewport()
 const remoteCoverUrl = computed(() => String(props.item?.remote_image_url || '').trim())
@@ -178,7 +180,7 @@ function toMainUrl(value) {
 }
 
 const coverUrl = computed(() => {
-  const stored = String(props.item[props.imageField] || '').trim()
+  const stored = String(props.coverUrlOverride || props.item[props.imageField] || '').trim()
   if (stored && (stored.startsWith('/api/') || stored.includes('/api/circle-completion/cover/'))) return stored
   if (stored && stored.includes('img.dlsite.jp')) return toThumbnailUrl(stored)
   if (remoteCoverUrl.value) return toThumbnailUrl(remoteCoverUrl.value)
@@ -215,6 +217,7 @@ function onImgError(e) {
     return
   }
   imageFailed.value = true
+  emit('image-failed', props.item)
   emit('image-settled', displayCode.value)
 }
 
@@ -239,7 +242,8 @@ function onImgLoad(event) {
       'is-mobile': isMobile,
     }"
     :style="{ '--row-index': rowIndex }"
-    @click="emit('select', item)"
+    @click="emit('select', item, $event)"
+    @contextmenu.prevent="emit('contextmenu', item, $event)"
   >
     <!-- 左侧缩略图 -->
     <div class="wlr-thumb">

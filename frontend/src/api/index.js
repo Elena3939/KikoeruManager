@@ -1765,8 +1765,13 @@ export const asmrSyncApi = {
     return response.data
   },
 
-  status: async () => {
-    const response = await apiClient.get('/asmr-sync/status')
+  status: async (taskIds = []) => {
+    const normalizedTaskIds = (Array.isArray(taskIds) ? taskIds : [taskIds])
+      .map(item => String(item || '').trim())
+      .filter(Boolean)
+    const response = await apiClient.get('/asmr-sync/status', {
+      params: normalizedTaskIds.length ? { task_ids: normalizedTaskIds.join(',') } : undefined
+    })
     return response.data
   },
 
@@ -2541,6 +2546,11 @@ export const circleCompletionApi = {
 
   getRefreshSelectedJobStatus: async (jobId) => {
     const response = await apiClient.get(`/circle-completion/refresh-selected/jobs/${jobId}`)
+    return response.data
+  },
+
+  fetchCover: async (payload) => {
+    const response = await apiClient.post('/circle-completion/cover/fetch', payload)
     return response.data
   },
 

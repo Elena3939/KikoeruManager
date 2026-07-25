@@ -18,6 +18,8 @@ ASMR.one / Kikoeru）导致测试需要 mock 一大片网络调用。
 """
 from __future__ import annotations
 
+from datetime import datetime
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -26,6 +28,8 @@ from app.core.circle_completion_service import (
     CircleCompletionService,
     CircleCompletionSnapshot,
 )
+from app.core import activity_log_service as activity_log_module
+from app.core import circle_completion_service as circle_module
 
 
 # ============ CircleCompletionSnapshot 查询接口 ============
@@ -195,6 +199,214 @@ async def test_find_public_downloadable_work_without_snapshot_falls_back_to_http
     assert work_info is None
     # ★ 不传 snapshot 时必须真的调 HTTP（这里是 stub）
     assert recording.fetch_work_info_calls == ["RJ222"]
+
+
+@pytest.mark.asyncio
+async def test_find_public_downloadable_work_does_not_cache_temporary_unavailable_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = CircleCompletionService()
+
+    class _FlakyASMRService:
+        def __init__(self) -> None:
+            self.work_info_calls = 0
+
+        async def fetch_work_info(self, _rj: str) -> Optional[Dict[str, Any]]:
+            self.work_info_calls += 1
+            return {"id": 222} if self.work_info_calls > 1 else None
+
+        async def fetch_track_list(self, _rj: str) -> Optional[List[Any]]:
+            return [{"file": "track.mp3"}]
+
+    asmr_service = _FlakyASMRService()
+    service.asmr_service = asmr_service  # type: ignore[assignment]
+
+    async def _stub_build_probe(*_args: Any, **_kwargs: Any) -> List[str]:
+        return ["RJ222"]
+
+    monkeypatch.setattr(service, "_build_public_download_probe_candidates", _stub_build_probe)
+    canonical_info = {"canonical_rjcode": "RJ222", "linked_rjcodes": ["RJ222"]}
+
+    first = await service._find_public_downloadable_work_with_status(canonical_info, "RJ222")
+    assert first == ("", None, "unavailable")
+    assert len(service._asmr_probe_cache) == 0  # type: ignore[attr-defined]
+
+    second = await service._find_public_downloadable_work_with_status(canonical_info, "RJ222")
+    assert second[0] == "RJ222"
+    assert second[2] == "available"
+    assert asmr_service.work_info_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_find_public_downloadable_work_bypass_cache_for_manual_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = CircleCompletionService()
+
+    class _AvailableASMRService:
+        async def fetch_work_info_with_status(self, _rj: str):
+            return {"id": 333}, "available"
+
+        async def fetch_track_list_with_status(self, _rj: str):
+            return [{"file": "track.mp3"}], "available"
+
+    service.asmr_service = _AvailableASMRService()  # type: ignore[assignment]
+
+    async def _stub_build_probe(*_args: Any, **_kwargs: Any) -> List[str]:
+        return ["RJ333"]
+
+    monkeypatch.setattr(service, "_build_public_download_probe_candidates", _stub_build_probe)
+    service._asmr_probe_cache["RJ333"] = ("", None, "missing")  # type: ignore[attr-defined]
+    canonical_info = {"canonical_rjcode": "RJ333", "linked_rjcodes": ["RJ333"]}
+
+    cached = await service._find_public_downloadable_work_with_status(canonical_info, "RJ333")
+    refreshed = await service._find_public_downloadable_work_with_status(
+        canonical_info,
+        "RJ333",
+        bypass_cache=True,
+    )
+
+    assert cached == ("", None, "missing")
+    assert refreshed == ("RJ333", {"id": 333}, "available")
+
+
+@pytest.mark.asyncio
+async def test_refresh_circle_works_preserves_existing_asmr_state_when_probe_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = CircleCompletionService()
+    circle_id = "RG64225"
+    previous_checked_at = datetime(2026, 7, 24, 23, 40)
+    catalog = SimpleNamespace(
+        circle_id=circle_id,
+        circle_name="测试社团",
+        last_indexed_at=None,
+        updated_at=None,
+    )
+    row = SimpleNamespace(
+        circle_id=circle_id,
+        canonical_rjcode="RJ01413891",
+        display_rjcode="RJ01506869",
+        title="原作",
+        maker_id="RG64225",
+        maker_name="测试社团",
+        source_mask="asmr_one,dlsite",
+        linked_rjcodes=["RJ01506869", "RJ01506870", "RJ01413891"],
+        has_dlsite=True,
+        has_kikoeru=False,
+        kikoeru_found_rjcodes=[],
+        kikoeru_subtitle_rjcodes=[],
+        has_asmr_one=True,
+        asmr_available_rjcode="RJ01506870",
+        asmr_one_cached_at=previous_checked_at,
+        is_bonus_work=False,
+        has_bonus=True,
+        image_url="",
+        price_text="",
+        updated_at=None,
+    )
+
+    class _Query:
+        def __init__(self, *, first_value=None, all_values=None) -> None:
+            self.first_value = first_value
+            self.all_values = list(all_values or [])
+
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def first(self):
+            return self.first_value
+
+        def all(self):
+            return list(self.all_values)
+
+    class _ReadSession:
+        def query(self, entity):
+            if entity is circle_module.CircleCatalog:
+                return _Query(first_value=catalog)
+            return _Query(all_values=[row])
+
+        def expunge_all(self):
+            pass
+
+        def close(self):
+            pass
+
+    class _WriteSession:
+        def __init__(self) -> None:
+            self.merged = []
+            self.committed = False
+
+        def merge(self, value):
+            self.merged.append(value)
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            raise AssertionError("本用例不应回滚")
+
+        def close(self):
+            pass
+
+    write_session = _WriteSession()
+    sessions = iter([_ReadSession(), write_session])
+    monkeypatch.setattr(circle_module, "SessionLocal", lambda: next(sessions))
+    monkeypatch.setattr(activity_log_module, "log_circle_completion_event", lambda *_args, **_kwargs: None)
+
+    async def fake_resolve(*_args, **_kwargs):
+        return {
+            "canonical_rjcode": "RJ01413891",
+            "linked_rjcodes": ["RJ01506869", "RJ01506870", "RJ01413891"],
+            "link_map": {},
+        }
+
+    async def fake_metadata(rjcode, **_kwargs):
+        return {
+            "rjcode": rjcode,
+            "work_name": "原作",
+            "maker_id": "RG64225",
+            "maker_name": "测试社团",
+            "release_date": "2025-07-26",
+            "is_bonus_work": False,
+            "has_bonus": True,
+        }
+
+    async def fake_pick(*_args, **_kwargs):
+        variant = {"rjcode": "RJ01506869", "link_type": "translation", "lang": "CHI_HANS"}
+        return variant, "原作", [variant, {"rjcode": "RJ01413891", "link_type": "original", "lang": "JPN"}]
+
+    async def fake_candidates(*_args, **_kwargs):
+        return ["RJ01506869", "RJ01506870", "RJ01413891"]
+
+    async def fake_find(*_args, **_kwargs):
+        return "", None, "unavailable"
+
+    async def fake_bonus_refresh(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(service, "resolve_canonical_rj", fake_resolve)
+    monkeypatch.setattr(service, "_fetch_metadata_dict", fake_metadata)
+    monkeypatch.setattr(service, "_pick_public_display_variant_and_title", fake_pick)
+    monkeypatch.setattr(service, "_build_public_download_probe_candidates", fake_candidates)
+    monkeypatch.setattr(service, "_find_public_downloadable_work_with_status", fake_find)
+    monkeypatch.setattr(service, "_refresh_circle_bonus_fields", fake_bonus_refresh)
+    monkeypatch.setattr(
+        service,
+        "_apply_library_index_owned_state_to_items",
+        lambda _items: {"ready_index_available": False, "owned_count": 0, "subtitle_count": 0, "hit_count": 0},
+    )
+    monkeypatch.setattr(service, "_upsert_library_owned_rows_from_items", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(service, "_build_source_compare", lambda *_args, **_kwargs: {})
+
+    result = await service.refresh_circle_works(circle_id, ["RJ01413891"])
+
+    assert result["asmr_available_count"] == 1
+    assert row.has_asmr_one is True
+    assert row.asmr_available_rjcode == "RJ01506870"
+    assert row.asmr_one_cached_at == previous_checked_at
+    assert "asmr_one" in row.source_mask.split(",")
+    assert write_session.committed is True
 
 
 @pytest.mark.asyncio

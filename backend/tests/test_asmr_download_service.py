@@ -4,7 +4,12 @@ from contextlib import asynccontextmanager
 import aiohttp
 import pytest
 
-from app.core.asmr_download_service import ASMR_DOWNLOAD_STREAM_CHUNK_BYTES, ASMRDownloadService
+from app.core.asmr_download_service import (
+    ASMR_DOWNLOAD_STREAM_CHUNK_BYTES,
+    ASMR_PROBE_STATUS_MISSING,
+    ASMR_PROBE_STATUS_UNAVAILABLE,
+    ASMRDownloadService,
+)
 
 
 @pytest.mark.asyncio
@@ -201,3 +206,93 @@ async def test_fetch_work_info_short_circuits_after_api_failures():
 
     assert await service.fetch_work_info("RJ01000002") is None
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_work_info_with_status_distinguishes_transport_failure():
+    service = ASMRDownloadService()
+    calls = []
+
+    class FakeResponse:
+        status = 522
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeSession:
+        closed = False
+
+        def get(self, url, **_kwargs):
+            calls.append(str(url))
+            return FakeResponse()
+
+    service._session = FakeSession()
+
+    data, status = await service.fetch_work_info_with_status("RJ01000001")
+
+    assert data is None
+    assert status == ASMR_PROBE_STATUS_UNAVAILABLE
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_work_info_with_status_marks_404_as_missing():
+    service = ASMRDownloadService()
+    calls = []
+
+    class FakeResponse:
+        status = 404
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeSession:
+        closed = False
+
+        def get(self, url, **_kwargs):
+            calls.append(str(url))
+            return FakeResponse()
+
+    service._session = FakeSession()
+
+    data, status = await service.fetch_work_info_with_status("RJ01000001")
+
+    assert data is None
+    assert status == ASMR_PROBE_STATUS_MISSING
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_track_list_with_status_marks_empty_success_as_missing():
+    service = ASMRDownloadService()
+
+    class FakeResponse:
+        status = 200
+
+        async def json(self):
+            return []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeSession:
+        closed = False
+
+        def get(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    service._session = FakeSession()
+
+    data, status = await service.fetch_track_list_with_status("RJ01000001")
+
+    assert data == []
+    assert status == ASMR_PROBE_STATUS_MISSING
