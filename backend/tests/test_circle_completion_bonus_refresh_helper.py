@@ -40,6 +40,7 @@ def _seed_circle(
     *,
     circle_id: str,
     canonical_rjcode: str,
+    linked_rjcodes: List[str] | None = None,
     is_bonus_work_in_circle_work: bool = False,
     bonus_info_checked_at: datetime | None = None,
     is_bonus_work_in_metadata: bool = False,
@@ -63,7 +64,7 @@ def _seed_circle(
             maker_id="RG_X",
             maker_name="生ハメ堕ち部★LACK",
             source_mask="dlsite",
-            linked_rjcodes=[canonical_rjcode],
+            linked_rjcodes=linked_rjcodes or [canonical_rjcode],
             has_kikoeru=False,
             kikoeru_found_rjcodes=[],
             kikoeru_subtitle_rjcodes=[],
@@ -224,6 +225,66 @@ async def test_refresh_circle_bonus_fields_syncs_updates_to_circle_works(
         .one()
     )
     assert bool(row.is_bonus_work) is True
+
+
+@pytest.mark.asyncio
+async def test_refresh_circle_bonus_fields_does_not_mark_parent_from_linked_bonus(
+    service: CircleCompletionService,
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """关联链里的特典 RJ 只能让父作品保留特典信息，不能把父行标成特典。"""
+    parent_code = "RJ01392203"
+    bonus_code = "RJ01392204"
+    _seed_circle(
+        db_session,
+        circle_id="circle_parent_bonus_link",
+        canonical_rjcode=parent_code,
+        linked_rjcodes=[parent_code, bonus_code],
+        is_bonus_work_in_circle_work=False,
+    )
+
+    async def _fake_lazy_refresh(rjcodes: List[str], **kwargs: Any) -> Dict[str, Dict[str, Any]]:
+        return {
+            parent_code: {"is_bonus_work": False, "has_bonus": False},
+            bonus_code: {"is_bonus_work": True, "has_bonus": False},
+        }
+
+    monkeypatch.setattr(
+        service.metadata_service,
+        "lazy_refresh_bonus_for_cached_rjcodes",
+        _fake_lazy_refresh,
+    )
+
+    await service._refresh_circle_bonus_fields(
+        "circle_parent_bonus_link",
+        [parent_code, bonus_code],
+    )
+
+    row = (
+        db_session.query(CircleWork)
+        .filter(CircleWork.canonical_rjcode == parent_code)
+        .one()
+    )
+    assert bool(row.is_bonus_work) is False
+    assert bool(row.has_bonus) is False
+
+    parent_item = {
+        "canonical_rjcode": parent_code,
+        "display_rjcode": parent_code,
+        "linked_rjcodes": [parent_code, bonus_code],
+        "is_bonus_work": bool(row.is_bonus_work),
+    }
+    bonus_item = {
+        "canonical_rjcode": bonus_code,
+        "display_rjcode": bonus_code,
+        "linked_rjcodes": [bonus_code],
+        "is_bonus_work": True,
+        "bonus_parent_rjcode": parent_code,
+    }
+    grouped = service._completion_group_bonus_items([parent_item, bonus_item])
+    assert len(grouped) == 1
+    assert grouped[0]["bonus_works"][0]["canonical_rjcode"] == bonus_code
 
 
 @pytest.mark.asyncio

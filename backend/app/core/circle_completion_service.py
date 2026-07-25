@@ -1998,6 +1998,20 @@ class CircleCompletionService:
             if normalized
         }
 
+    def _completion_bonus_display_rjcode(
+        self,
+        canonical_rjcode: Any,
+        display_rjcode: Any,
+        metadata_map: Dict[str, Dict[str, Any]],
+    ) -> str:
+        """特典行必须按自身 RJ 展示，不能沿用原作的翻译版。"""
+        canonical = self.normalize_rjcode(canonical_rjcode)
+        display = self.normalize_rjcode(display_rjcode)
+        for candidate in [canonical, display]:
+            if candidate and bool((metadata_map.get(candidate) or {}).get("is_bonus_work")):
+                return candidate
+        return canonical or display
+
     def _completion_bonus_parent_code(self, item: Dict[str, Any], available_codes: Set[str]) -> str:
         if not bool(item.get("is_bonus_work")):
             return ""
@@ -2237,9 +2251,22 @@ class CircleCompletionService:
         }
         metadata_map = {
             code: metadata_map_all[code]
-            for code in canonical_info["linked_rjcodes"]
+            for code in [
+                *canonical_info["linked_rjcodes"],
+                row.canonical_rjcode,
+                stored_display_rjcode,
+            ]
             if code in metadata_map_all
         }
+        is_bonus_work = bool(getattr(row, "is_bonus_work", False))
+        if is_bonus_work:
+            stored_display_rjcode = self._completion_bonus_display_rjcode(
+                row.canonical_rjcode,
+                stored_display_rjcode,
+                metadata_map,
+            )
+            if stored_display_rjcode and stored_display_rjcode not in linked_rjcodes:
+                linked_rjcodes.append(stored_display_rjcode)
         title = str(row.title or "").strip()
         if not title:
             title = str((metadata_map.get(stored_display_rjcode) or {}).get("work_name") or "").strip()
@@ -2329,9 +2356,14 @@ class CircleCompletionService:
             age = now_local.timestamp() - row_anchor.timestamp()
             is_new = 0 <= age <= 48 * 60 * 60
         local_download = (local_download_session_map or {}).get(self.normalize_rjcode(row.canonical_rjcode)) or {}
+        cover_source_url = row.image_url
+        if is_bonus_work:
+            # 历史索引会把原作封面残留在特典行；没有特典 cover_url 时由自身 RJ
+            # 推导 CDN 地址，不能继续沿用原作图。
+            cover_source_url = str((metadata_map.get(stored_display_rjcode) or {}).get("cover_url") or "")
         normalized_remote_cover = self._normalize_dlsite_cover_url(
-            row.image_url,
-            row.display_rjcode or row.canonical_rjcode,
+            cover_source_url,
+            stored_display_rjcode or row.canonical_rjcode,
             is_unreleased=is_unreleased,
         )
         local_cover_url = ""
@@ -2353,10 +2385,16 @@ class CircleCompletionService:
                     [stored_display_rjcode],
                     variant="list",
                 )
-            local_cover_url = image_cache_service.get_local_url(
-                cover_cache_rjcode,
-                allow_missing=True,
-            )
+            if is_bonus_work:
+                local_cover_url = image_cache_service.get_local_url(
+                    cover_cache_rjcode,
+                    variant="list",
+                )
+            if not local_cover_url:
+                local_cover_url = image_cache_service.get_local_url(
+                    cover_cache_rjcode,
+                    allow_missing=True,
+                )
             local_thumb_url = image_cache_service.get_local_url(
                 cover_cache_rjcode,
                 variant="list",
@@ -2368,7 +2406,6 @@ class CircleCompletionService:
                 cvs = list((metadata or {}).get("cvs") or [])
                 if cvs:
                     break
-        is_bonus_work = bool(getattr(row, "is_bonus_work", False))
         if is_bonus_work:
             cvs = []
         item = {
@@ -2885,6 +2922,7 @@ class CircleCompletionService:
         compare_filter: str = "all",
         search: str = "",
         sort: str = "updated_desc",
+        selection_only: bool = False,
     ) -> Dict[str, Any]:
         normalized_filters = self._completion_status_filters(status_filters)
         tab_key = str(tab or "missing").strip().lower()
@@ -2899,6 +2937,7 @@ class CircleCompletionService:
                 "compare_filter": str(compare_filter or "all").strip().lower(),
                 "search": str(search or "").strip(),
                 "sort": str(sort or "updated_desc").strip().lower(),
+                "selection_only": bool(selection_only),
             },
         )
         cache_enabled = not self._completion_state_builder_overridden()
@@ -2935,6 +2974,24 @@ class CircleCompletionService:
             for item in filtered
             if str(item.get("canonical_rjcode") or "").strip() and item.get("has_asmr_one")
         ]
+        if selection_only:
+            result = {
+                "circle_id": catalog.get("circle_id") if isinstance(catalog, dict) else catalog.circle_id,
+                "circle_name": catalog.get("circle_name") if isinstance(catalog, dict) else catalog.circle_name,
+                "canonical_rjcodes": canonical_rjcodes,
+                "downloadable_rjcodes": downloadable_rjcodes,
+                "total": len(canonical_rjcodes),
+                "downloadable_count": len(downloadable_rjcodes),
+            }
+            if cache_enabled:
+                self._completion_l1_l2_set(
+                    self._completion_codes_cache,
+                    "work-codes",
+                    query_cache_key,
+                    result,
+                    ttl_seconds=self._COMPLETION_CODES_REDIS_TTL_SECONDS,
+                )
+            return deepcopy(result)
         bonus_rjcodes = [
             str(item.get("canonical_rjcode") or "").strip()
             for item in filtered
@@ -3472,6 +3529,90 @@ class CircleCompletionService:
                 "status": "available" if asmr_available_rjcode else "missing",
             },
         }
+
+    def get_external_search_variants(
+        self,
+        circle_id: str,
+        canonical_rjcodes: List[str],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """读取当前页作品的关联 RJ 及语言分组，供外部搜索接口使用。"""
+        normalized_codes = []
+        for value in canonical_rjcodes or []:
+            normalized = self.normalize_rjcode(value)
+            if normalized and normalized not in normalized_codes:
+                normalized_codes.append(normalized)
+        if not normalized_codes:
+            return {}
+
+        db = SessionLocal()
+        try:
+            rows = db.query(CircleWork).filter(
+                CircleWork.circle_id == str(circle_id or "").strip(),
+                CircleWork.canonical_rjcode.in_(normalized_codes),
+            ).all()
+            if not rows:
+                return {}
+            links = db.query(WorkCanonicalLink).filter(
+                WorkCanonicalLink.canonical_rjcode.in_([row.canonical_rjcode for row in rows]),
+            ).all()
+            link_map_by_canonical: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
+            lookup_codes = set()
+            for link in links:
+                canonical = self.normalize_rjcode(link.canonical_rjcode)
+                linked = self.normalize_rjcode(link.linked_rjcode)
+                if not canonical or not linked:
+                    continue
+                link_map_by_canonical[canonical][linked] = {
+                    "link_type": str(link.link_type or ""),
+                    "lang": str(link.lang or ""),
+                }
+                lookup_codes.add(linked)
+            for row in rows:
+                lookup_codes.add(self.normalize_rjcode(row.canonical_rjcode))
+                lookup_codes.add(self.normalize_rjcode(row.display_rjcode))
+                lookup_codes.update(self.normalize_rjcode(code) for code in (row.linked_rjcodes or []))
+            metadata_rows = db.query(WorkMetadata).filter(WorkMetadata.rjcode.in_(list(lookup_codes))).all()
+            metadata_map = {self.normalize_rjcode(row.rjcode): row for row in metadata_rows}
+            output: Dict[str, List[Dict[str, Any]]] = {}
+            for row in rows:
+                canonical = self.normalize_rjcode(row.canonical_rjcode)
+                linked_codes = [self.normalize_rjcode(code) for code in (row.linked_rjcodes or []) if self.normalize_rjcode(code)]
+                linked_codes.extend(link_map_by_canonical.get(canonical, {}).keys())
+                if canonical not in linked_codes:
+                    linked_codes.append(canonical)
+                info = {
+                    "canonical_rjcode": canonical,
+                    "linked_rjcodes": list(dict.fromkeys(linked_codes)),
+                    "link_map": link_map_by_canonical.get(canonical) or {},
+                }
+                variants = []
+                seen_language_groups = set()
+                for variant in self._sort_linked_variants(info, canonical):
+                    rjcode = self.normalize_rjcode(variant.get("rjcode"))
+                    if not rjcode:
+                        continue
+                    group = self._variant_group(variant.get("link_type"), variant.get("lang"))
+                    group_key = str(group.get("key") or "other")
+                    if group_key not in {"original", "simplified", "traditional"}:
+                        continue
+                    lang = self._normalize_lang_code(variant.get("lang"))
+                    language_key = group_key
+                    if language_key in seen_language_groups:
+                        continue
+                    seen_language_groups.add(language_key)
+                    metadata = metadata_map.get(rjcode)
+                    variants.append({
+                        "rjcode": rjcode,
+                        "title": str(getattr(metadata, "work_name", "") or row.title or "").strip(),
+                        "lang": lang,
+                        "group_key": group_key,
+                        "group_label": str(group.get("label") or "其他语言"),
+                        "group_short_label": str(group.get("short_label") or "其他"),
+                    })
+                output[canonical] = variants
+            return output
+        finally:
+            db.close()
 
     def _build_variant_payload_for_rjcode(
         self,
@@ -6516,8 +6657,8 @@ class CircleCompletionService:
         - 先走 ``metadata_service.lazy_refresh_bonus_for_cached_rjcodes`` 把
           ``work_metadata.bonus_info_checked_at IS NULL`` 的存量条目补刷一遍；
         - 再把补到的 ``is_bonus_work`` / ``has_bonus`` 同步到当前社团的
-          ``circle_works`` 行（按关联 RJ 做"任何一个命中即聚合"，和老 bonus
-          回写规则保持一致）；
+          ``circle_works`` 行；``is_bonus_work`` 只看当前行自己的 canonical /
+          display RJ，``has_bonus`` 才按关联 RJ 做聚合，避免父作品被关联特典误标；
         - 浏览路径已经退化成纯 DB 读，所以这条同步必须发生在写路径里，
           不然用户在选中刷新后浏览社团页时仍看不到特典 chip。
 
@@ -6567,27 +6708,37 @@ class CircleCompletionService:
                 query = query.filter(CircleWork.canonical_rjcode.in_(normalized_filter))
             rows = query.all()
             for row in rows:
-                related: List[str] = []
+                own_codes: List[str] = []
                 for code in [
                     row.canonical_rjcode,
                     row.display_rjcode,
-                    *(row.linked_rjcodes or []),
                 ]:
+                    normalized = self.normalize_rjcode(code)
+                    if normalized and normalized not in own_codes:
+                        own_codes.append(normalized)
+                related: List[str] = list(own_codes)
+                for code in row.linked_rjcodes or []:
                     normalized = self.normalize_rjcode(code)
                     if normalized and normalized not in related:
                         related.append(normalized)
                 new_is_bonus = bool(row.is_bonus_work)
                 new_has_bonus = bool(row.has_bonus)
                 hit = False
+                own_bonus_seen = False
+                own_is_bonus = False
                 for rj in related:
                     payload = bonus_updates.get(rj)
                     if not payload:
                         continue
                     hit = True
-                    # 多语言版本共享同一行，"或"语义最稳：任何关联 RJ 命中
-                    # 'is_bonus / has_bonus' 都同步到 row。
-                    new_is_bonus = new_is_bonus or bool(payload.get("is_bonus_work"))
+                    # linked RJ 可能是挂在父作品上的特典，只能影响 has_bonus，
+                    # 不能把父行自身误标成 is_bonus_work。
+                    if rj in own_codes:
+                        own_bonus_seen = True
+                        own_is_bonus = own_is_bonus or bool(payload.get("is_bonus_work"))
                     new_has_bonus = new_has_bonus or bool(payload.get("has_bonus"))
+                if own_bonus_seen:
+                    new_is_bonus = own_is_bonus
                 if hit and (new_is_bonus != bool(row.is_bonus_work) or new_has_bonus != bool(row.has_bonus)):
                     row.is_bonus_work = new_is_bonus
                     row.has_bonus = new_has_bonus
@@ -7860,12 +8011,25 @@ class CircleCompletionService:
                 }
                 metadata_map = {
                     code: metadata_map_all[code]
-                    for code in canonical_info["linked_rjcodes"]
+                    for code in [
+                        *canonical_info["linked_rjcodes"],
+                        row.canonical_rjcode,
+                        row.display_rjcode,
+                    ]
                     if code in metadata_map_all
                 }
                 stored_display_rjcode = self.normalize_rjcode(row.display_rjcode) or self.normalize_rjcode(row.canonical_rjcode)
+                item["is_bonus_work"] = bool(getattr(row, "is_bonus_work", False))
+                if item["is_bonus_work"]:
+                    stored_display_rjcode = self._completion_bonus_display_rjcode(
+                        row.canonical_rjcode,
+                        stored_display_rjcode,
+                        metadata_map,
+                    )
                 item["display_rjcode"] = stored_display_rjcode
                 item["linked_rjcodes"] = list(row.linked_rjcodes or [stored_display_rjcode or row.canonical_rjcode])
+                if item["is_bonus_work"] and stored_display_rjcode not in item["linked_rjcodes"]:
+                    item["linked_rjcodes"].append(stored_display_rjcode)
                 if not str(item.get("title") or "").strip():
                     item["title"] = str((metadata_map.get(stored_display_rjcode) or {}).get("work_name") or row.title or "").strip()
                 release_date = str((metadata_map.get(stored_display_rjcode) or {}).get("release_date") or "").strip()
@@ -7878,9 +8042,12 @@ class CircleCompletionService:
                 item["release_date"] = release_date
                 item["is_unreleased"] = self._is_future_release_date(release_date)
                 item["price_text"] = str(getattr(row, "price_text", "") or "").strip()
+                cover_source_url = item.get("image_url")
+                if item["is_bonus_work"]:
+                    cover_source_url = str((metadata_map.get(stored_display_rjcode) or {}).get("cover_url") or "")
                 normalized_remote_cover = self._normalize_dlsite_cover_url(
-                    item.get("image_url"),
-                    row.display_rjcode or row.canonical_rjcode,
+                    cover_source_url,
+                    stored_display_rjcode or row.canonical_rjcode,
                     is_unreleased=item["is_unreleased"],
                 )
                 # 优先返回本地缓存的 API path（/api/circle-completion/cover/RJxxxxxx.jpg），
@@ -7897,10 +8064,18 @@ class CircleCompletionService:
                         cover_cache_rjcode,
                         stored_display_rjcode,
                     )
-                local_cover_url = image_cache_service.get_local_url(
-                    cover_cache_rjcode,
-                    allow_missing=True,
-                )
+                if item["is_bonus_work"]:
+                    local_cover_url = image_cache_service.get_local_url(
+                        cover_cache_rjcode,
+                        variant="list",
+                    )
+                else:
+                    local_cover_url = ""
+                if not local_cover_url:
+                    local_cover_url = image_cache_service.get_local_url(
+                        cover_cache_rjcode,
+                        allow_missing=True,
+                    )
                 local_thumb_url = image_cache_service.get_local_url(
                     cover_cache_rjcode,
                     variant="list",
@@ -7925,7 +8100,6 @@ class CircleCompletionService:
                             if cvs:
                                 break
                     item["cvs"] = cvs
-                item["is_bonus_work"] = bool(getattr(row, "is_bonus_work", False))
                 item["has_bonus"] = bool(getattr(row, "has_bonus", False))
                 if item["is_bonus_work"]:
                     item["cvs"] = []
@@ -8793,12 +8967,28 @@ class CircleCompletionService:
                     or bool(display_metadata.get("has_bonus"))
                     or bool(metadata.get("has_bonus"))
                 )
+                if row.is_bonus_work:
+                    # 特典不能继承原作的简中 / 繁中展示 RJ；否则后续浏览会按原作
+                    # 元数据取发售日，再被同日分组规则错误挂到另一部作品下。
+                    row.display_rjcode = self._completion_bonus_display_rjcode(
+                        canonical,
+                        row.display_rjcode,
+                        metadata_map,
+                    )
+                    display_metadata = metadata_map.get(row.display_rjcode) or canonical_metadata_for_row
+                    release_date = str(display_metadata.get("release_date") or "").strip()
+                    row.price_text = str(display_metadata.get("price_text") or row.price_text or "").strip() or None
+                    cover_source_url = str(display_metadata.get("cover_url") or "")
+                else:
+                    cover_source_url = display_metadata.get("cover_url") or metadata.get("cover_url") or row.image_url
                 row.image_url = self._normalize_dlsite_cover_url(
-                    display_metadata.get("cover_url") or metadata.get("cover_url") or row.image_url,
+                    cover_source_url,
                     row.display_rjcode or canonical,
                     is_unreleased=self._is_future_release_date(release_date),
                 )
                 row.linked_rjcodes = linked_rjcodes or [row.display_rjcode or canonical]
+                if row.is_bonus_work and row.display_rjcode not in row.linked_rjcodes:
+                    row.linked_rjcodes.append(row.display_rjcode)
                 row.has_kikoeru = bool(found_rjcodes)
                 row.kikoeru_found_rjcodes = found_rjcodes
                 row.kikoeru_subtitle_rjcodes = subtitle_rjcodes

@@ -234,13 +234,39 @@ async def test_circle_image_cache_bounds_on_demand_failure_wait(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_circle_image_cache_queue_wait_does_not_consume_download_timeout(tmp_path) -> None:
+    image_cache = CircleImageCacheService()
+    image_cache._cache_dir = tmp_path
+    image_cache.DEFAULT_CONCURRENCY = 1
+    image_cache.ON_DEMAND_TOTAL_TIMEOUT_SECONDS = 0.01
+    image_cache._candidate_source_urls = lambda *_args: ["https://img.dlsite.jp/example.jpg"]
+
+    async def write_cover(rjcode, _url, *, variant):
+        path = image_cache.get_local_path(rjcode, variant)
+        path.write_bytes(b"cover")
+        return True, "", False
+
+    image_cache._download_with_outcome = write_cover
+    gate = image_cache._get_download_semaphore()
+    await gate.acquire()
+
+    task = asyncio.create_task(image_cache.ensure_local_for_filename("RJ01012345.jpg"))
+    await asyncio.sleep(0.03)
+    assert not task.done(), "等待下载名额时不能提前耗尽单张网络超时"
+
+    gate.release()
+    result = await asyncio.wait_for(task, timeout=0.1)
+    assert result == tmp_path / "RJ01012345.jpg"
+
+
+@pytest.mark.asyncio
 async def test_circle_image_cache_background_ensure_is_deduplicated(tmp_path) -> None:
     image_cache = CircleImageCacheService()
     image_cache._cache_dir = tmp_path
     release = asyncio.Event()
     calls = 0
 
-    async def slow_ensure(_filename):
+    async def slow_ensure(_filename, **_kwargs):
         nonlocal calls
         calls += 1
         await release.wait()
@@ -327,6 +353,17 @@ async def test_paged_missing_works_and_work_codes(service: CircleCompletionServi
     assert codes["canonical_rjcodes"] == ["RJ01000002", "RJ01000003"]
     assert codes["downloadable_rjcodes"] == ["RJ01000002"]
     assert codes["requested_rjcodes"]["RJ01000002"][0] == "RJ01000002"
+
+    selection_codes = await service.list_circle_completion_work_codes(
+        circle_id,
+        tab="missing",
+        sort="release_asc",
+        selection_only=True,
+    )
+    assert selection_codes["canonical_rjcodes"] == ["RJ01000002", "RJ01000003"]
+    assert selection_codes["downloadable_rjcodes"] == ["RJ01000002"]
+    assert "requested_rjcodes" not in selection_codes
+    assert "release_dates_by_rjcode" not in selection_codes
 
     db_session.query(WorkMetadata).filter(WorkMetadata.rjcode == "RJ01000003").update({"release_date": "2025年03月下旬"})
     db_session.commit()
@@ -473,6 +510,33 @@ async def test_paged_missing_works_and_work_codes(service: CircleCompletionServi
     assert owned_location["matched"] is True
     assert owned_location["page"] == 1
     assert owned_location["canonical_rjcode"] == "RJ01000001"
+
+
+@pytest.mark.asyncio
+async def test_preview_batch_download_falls_back_to_asmr_code_without_requested_mapping(
+    service: CircleCompletionService,
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    circle_id = _seed_circle(db_session)
+    requested_codes = []
+
+    async def fake_build_download_plan(*, rjcode: str, **_kwargs):
+        requested_codes.append(rjcode)
+        return {"selectable_resources": [], "summary": {}}
+
+    class FakeLibraryManager:
+        def list_libraries(self):
+            return []
+
+    monkeypatch.setattr(service.asmr_resource_service, "build_download_plan", fake_build_download_plan)
+    monkeypatch.setattr("app.core.library_manager.get_library_manager", lambda: FakeLibraryManager())
+
+    result = await service.preview_batch_download(circle_id, ["RJ01000002"], requested_rjcodes={})
+
+    assert requested_codes == ["RJ01000002"]
+    assert result["planned_count"] == 1
+    assert result["plans"][0]["resolved_rjcode"] == "RJ01000002"
 
 
 @pytest.mark.asyncio

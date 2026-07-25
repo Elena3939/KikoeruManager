@@ -9,7 +9,8 @@
 - 单例：通过 ``get_circle_image_cache_service()`` 获取。
 - 文件命名：卡片图 ``{RJxxxxxx}.jpg``，列表小图 ``{RJxxxxxx}_sam.jpg``。
 - 写入用 ``.tmp`` 中间文件 + ``replace`` 原子化，避免半成品文件被前端读到。
-- 并发：``download_many`` 用 ``Semaphore(8)``，对 dlsite CDN 友好且足够快。
+- 并发：批量预热与按需下载共享受控的 ``Semaphore(6)``，避免一批缺图同时占满
+  连接池导致排队请求把总超时预算耗尽。
 - 空文件保护：``has_local`` 必须 size > 0 才算命中，否则会被当作丢失重新下载。
 - 复用 dlsite 代理配置：从 ``config.metadata.http_proxy`` 拿，与 DLsite 服务一致。
 - 失败不抛异常：所有错误只 log warning / debug，由调用方决定是否 fallback 到远程 URL。
@@ -38,7 +39,7 @@ _RJCODE_PATTERN = re.compile(r"[RVB]J\d{6,8}")
 class CircleImageCacheService:
     """封面缓存服务（单例）。"""
 
-    DEFAULT_CONCURRENCY = 8
+    DEFAULT_CONCURRENCY = 6
     CONNECT_TIMEOUT = 10.0
     READ_TIMEOUT = 15.0
     MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB，DLsite 240x240 缩略图通常 < 50KB
@@ -57,6 +58,7 @@ class CircleImageCacheService:
         self._download_locks: Dict[str, asyncio.Lock] = {}
         self._background_download_tasks: Dict[str, asyncio.Task] = {}
         self._failed_until: Dict[str, float] = {}
+        self._download_semaphore: Optional[asyncio.Semaphore] = None
 
     # ------------------------------------------------------------------
     # 路径 / 命名
@@ -123,6 +125,12 @@ class CircleImageCacheService:
         if self._normalize_variant(variant) == "list":
             return f"{normalized}_sam.jpg"
         return f"{normalized}.jpg"
+
+    def _get_download_semaphore(self) -> asyncio.Semaphore:
+        """限制真实 CDN 传输并发；队列等待不计入单张下载超时。"""
+        if self._download_semaphore is None:
+            self._download_semaphore = asyncio.Semaphore(self.DEFAULT_CONCURRENCY)
+        return self._download_semaphore
 
     def get_local_path(self, rjcode: str, variant: str = "card") -> Optional[Path]:
         filename = self._filename_for(rjcode, variant)
@@ -336,6 +344,7 @@ class CircleImageCacheService:
         filename: str,
         *,
         force: bool = False,
+        log_failure: bool = True,
     ) -> Optional[Path]:
         """按需下载并返回本地缓存路径。
 
@@ -369,28 +378,30 @@ class CircleImageCacheService:
                 return None
             failures: List[str] = []
             try:
-                # 首屏直接请求封面时，不能让多个候选地址和网络重试叠加成半分钟等待。
-                # 批量预热走 download_many，不受这个交互请求预算限制。
-                async with asyncio.timeout(self.ON_DEMAND_TOTAL_TIMEOUT_SECONDS):
-                    for source_url in self._candidate_source_urls(rjcode, variant):
-                        ok, outcome, retryable = await self._download_with_outcome(
-                            rjcode,
-                            source_url,
-                            variant=variant,
-                        )
-                        if ok:
-                            self._clear_failure(rjcode, variant)
-                            return target if self.has_local(rjcode, variant) else None
-                        if outcome:
-                            failures.append(outcome)
-                        # 同一 CDN 的传输异常通常意味着网络或代理暂时不可用；继续穷举
-                        # 同域候选只会把首屏卡成几十秒，直接进入短冷却即可。
-                        if retryable:
-                            break
+                # 先进入全局下载闸门，再开始计算单张网络超时；连接池排队不能算作
+                # 当前 RJ 的下载失败。批量预热与按需下载共用该预算，避免互相打满。
+                async with self._get_download_semaphore():
+                    async with asyncio.timeout(self.ON_DEMAND_TOTAL_TIMEOUT_SECONDS):
+                        for source_url in self._candidate_source_urls(rjcode, variant):
+                            ok, outcome, retryable = await self._download_with_outcome(
+                                rjcode,
+                                source_url,
+                                variant=variant,
+                            )
+                            if ok:
+                                self._clear_failure(rjcode, variant)
+                                return target if self.has_local(rjcode, variant) else None
+                            if outcome:
+                                failures.append(outcome)
+                            # 同一 CDN 的传输异常通常意味着网络或代理暂时不可用；继续穷举
+                            # 同域候选只会把首屏卡成几十秒，直接进入短冷却即可。
+                            if retryable:
+                                break
             except TimeoutError:
                 failures.append("total-timeout")
             self._remember_failure(rjcode, variant)
-            logger.warning(
+            log = logger.warning if log_failure else logger.debug
+            log(
                 "[社团补全/封面缓存] 按需下载失败 rjcode=%s variant=%s outcomes=%s deadline_seconds=%s cooldown_seconds=%s",
                 rjcode,
                 variant,
@@ -512,6 +523,7 @@ class CircleImageCacheService:
                 await client.aclose()
             except Exception:
                 logger.debug("[社团补全/封面缓存] 关闭 HTTP 客户端失败", exc_info=True)
+        self._download_semaphore = None
 
     def schedule_download(
         self,
@@ -574,7 +586,9 @@ class CircleImageCacheService:
 
         async def _runner() -> None:
             try:
-                await self.ensure_local_for_filename(filename)
+                # 页面首次加载的缺图属于后台预热，失败后仍可由用户主动重试；
+                # 不应让短暂 CDN 抖动把日志面板刷成一屏 WARN。
+                await self.ensure_local_for_filename(filename, log_failure=False)
             except Exception:
                 logger.warning(
                     "[社团补全/封面缓存] 后台按需下载异常 filename=%s",
@@ -718,11 +732,12 @@ class CircleImageCacheService:
                 self._clear_failure(normalized, variant)
                 return True
 
-            ok, outcome, _ = await self._download_with_outcome(
-                normalized,
-                url,
-                variant=variant,
-            )
+            async with self._get_download_semaphore():
+                ok, outcome, _ = await self._download_with_outcome(
+                    normalized,
+                    url,
+                    variant=variant,
+                )
             if ok:
                 self._clear_failure(normalized, variant)
                 return True
