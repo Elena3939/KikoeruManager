@@ -3290,9 +3290,27 @@ class BaiduNetdiskService:
         stem, ext = self._split_archive_filename(current_base)
         if not custom_name:
             custom_name = self._sanitize_path_part(stem or current_base or "百度网盘文件", "百度网盘文件")
-        custom_name = self._dedupe_custom_archive_volume_name(custom_name, ext)
-        ext = self._normalize_custom_archive_volume_ext(custom_name, ext)
-        target_name = self._filename_with_extract_password(custom_name, custom_password, ext)
+        custom_stem, custom_ext = self._split_archive_filename(custom_name)
+        original_volume = re.match(r"^\.(?P<kind>7z|zip)\.(?P<index>\d{3})$", ext, re.IGNORECASE)
+        custom_volume = re.match(r"^\.(?P<kind>7z|zip)\.(?P<index>\d{3})$", custom_ext, re.IGNORECASE)
+        volume_base_alias = bool(
+            original_volume
+            and (
+                custom_name.lower().endswith(f".{original_volume.group('kind').lower()}")
+                or (
+                    custom_volume
+                    and custom_volume.group("kind").lower() == original_volume.group("kind").lower()
+                )
+            )
+        )
+        if custom_ext and not volume_base_alias:
+            # 输入框填写的是完整文件名时，以用户输入为准，不能再把原始（可能乱码的）扩展名追加一次。
+            target_name = self._filename_with_extract_password(custom_stem, custom_password, custom_ext)
+        else:
+            # 兼容“foo.7z”作为“foo.7z.001 / foo.7z.002”的公共基名写法。
+            custom_name = self._dedupe_custom_archive_volume_name(custom_name, ext)
+            ext = self._normalize_custom_archive_volume_ext(custom_name, ext)
+            target_name = self._filename_with_extract_password(custom_name, custom_password, ext)
         if folder:
             return self._safe_relative_path(os.path.join(folder, target_name), target_name)
         return self._safe_relative_path(target_name, target_name)

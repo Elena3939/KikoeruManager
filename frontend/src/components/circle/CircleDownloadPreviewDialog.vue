@@ -94,7 +94,8 @@
                           v-for="option in targetLibraries"
                           :key="option.id"
                           type="button"
-                          class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-1.5 text-sm transition-colors hover:bg-slate-100/80"
+                          class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-1.5 text-sm transition-colors"
+                          :class="{ 'is-selected': settings.targetLibraryId === option.id }"
                           @click.stop="chooseOption('inventory', option.id)"
                         >
                           <span class="truncate">{{ option.name }}</span>
@@ -141,7 +142,7 @@
               <div class="action-buttons grid grid-cols-3 gap-3">
                 <button
                   type="button"
-                  class="soft-button mode-classify interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
+                  class="soft-button mode-classify interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 font-medium text-slate-700"
                   :class="{ active: settings.classifyMode === 'circle', 'is-disabled': settings.flattenFiles }"
                   :disabled="settings.flattenFiles"
                   :title="settings.flattenFiles ? '直放指定目录模式下不再按社团归类' : ''"
@@ -151,7 +152,7 @@
                 </button>
                 <button
                   type="button"
-                  class="soft-button mode-api interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
+                  class="soft-button mode-api interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 font-medium text-slate-700"
                   :class="{ active: settings.namingMode === 'api', 'is-disabled': settings.flattenFiles }"
                   :disabled="settings.flattenFiles"
                   :title="settings.flattenFiles ? '直放指定目录模式下不创建作品目录' : ''"
@@ -161,7 +162,7 @@
                 </button>
                 <button
                   type="button"
-                  class="soft-button mode-direct interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 text-sm font-medium text-slate-700"
+                  class="soft-button mode-direct interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 font-medium text-slate-700"
                   :class="{ active: settings.flattenFiles }"
                   title="开启后所有选中的文件直接落到「指定目录」下，不再创建社团目录 / 作品目录，也不保留作品内子目录"
                   @click="toggleFlattenFiles"
@@ -204,7 +205,8 @@
                         <template v-for="option in directRJOptions" :key="option.key">
                           <button
                             type="button"
-                            class="dropdown-item flex w-full items-center rounded-md py-1.5 pr-8 pl-2 text-sm transition-colors hover:bg-slate-100/80 relative"
+                            class="dropdown-item flex w-full items-center rounded-md py-1.5 pr-8 pl-2 text-sm transition-colors relative"
+                            :class="{ 'is-selected': isDirectPathSelected(option) }"
                             @click.stop="chooseDirectPath(option)"
                           >
                             <div class="flex flex-col items-start min-w-0 w-full text-left">
@@ -231,7 +233,8 @@
                       <div v-if="openSelect === 'directSub'" class="dropdown-panel dropdown-menu absolute z-50 mt-1 w-full origin-top rounded-lg bg-white/88 border border-white/80 text-slate-800 shadow-lg ring-1 ring-slate-200/80 p-1 max-h-64 overflow-y-auto">
                         <button
                           type="button"
-                          class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-2 text-sm transition-colors hover:bg-slate-100/80"
+                          class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-2 text-sm transition-colors"
+                          :class="{ 'is-selected': !settings.directSubPath }"
                           @click.stop="chooseDirectSubdir('')"
                         >
                           <span class="truncate">放在 RJ 根目录</span>
@@ -243,7 +246,8 @@
                           v-for="sub in directSubdirOptions"
                           :key="sub.path || sub.name"
                           type="button"
-                          class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-2 text-sm transition-colors hover:bg-slate-100/80"
+                          class="dropdown-item relative flex w-full items-center rounded-md py-1 pr-8 pl-2 text-sm transition-colors"
+                          :class="{ 'is-selected': settings.directSubPath === sub.name }"
                           @click.stop="chooseDirectSubdir(sub.name)"
                         >
                           <span class="truncate">{{ sub.name }}</span>
@@ -532,17 +536,18 @@ function toggleNamingMode() {
 function toggleFlattenFiles() {
   props.settings.flattenFiles = !props.settings.flattenFiles
 }
-const requiresTargetLibrary = computed(() => props.actionMode === 'reimport')
+const isDirectMode = computed(() => props.enableDirectMode && props.settings?.mode === 'direct')
+const requiresTargetLibrary = computed(() => !isDirectMode.value)
 const primaryActionLabel = computed(() => {
   if (props.actionMode === 'reimport') return '跳过下载直接入库'
-  if (props.enableDirectMode && props.settings?.mode === 'direct') return '直接下载到选中的库存路径'
+  if (isDirectMode.value) return '直接下载到选中的库存路径'
   return '下载'
 })
 const primaryActionDisabled = computed(() => {
   if (props.starting) return true
   if (selectedFileCount.value === 0) return true
-  if (requiresTargetLibrary.value && !props.settings?.targetLibraryId) return true
-  if (props.enableDirectMode && props.settings?.mode === 'direct') {
+  if (requiresTargetLibrary.value && !String(props.settings?.targetLibraryId || '').trim()) return true
+  if (isDirectMode.value) {
     return !props.settings?.directLibraryId || !props.settings?.directBasePath
   }
   return false
@@ -780,21 +785,24 @@ watch(() => props.plans, (plans) => {
 }, { deep: true, immediate: true })
 
 function emitSubmit() {
+  if (!isDirectMode.value && !String(props.settings?.targetLibraryId || '').trim()) {
+    ElMessage.warning('请先选择目标库存')
+    return
+  }
   const action = props.actionMode === 'reimport' ? 'reimport' : 'download'
-  const isDirectMode = props.enableDirectMode && props.settings.mode === 'direct'
   const subdir = String(props.settings.targetSubdir || '').trim().replace(/^[\\/]+|[\\/]+$/g, '')
-  const flattenFiles = !isDirectMode && Boolean(props.settings.flattenFiles)
+  const flattenFiles = !isDirectMode.value && Boolean(props.settings.flattenFiles)
   // flatten 直放模式下：强制 preserve / none，避免后端再创建作品目录 / 社团目录层。
   const namingMode = flattenFiles ? 'preserve' : (props.settings.namingMode === 'api' ? 'api' : 'preserve')
   const classifyMode = flattenFiles ? 'none' : (props.settings.classifyMode === 'circle' ? 'circle' : 'none')
 
   const items = planStates.value
-    .map(plan => buildSubmitItem(plan, isDirectMode))
+    .map(plan => buildSubmitItem(plan, isDirectMode.value))
     .filter(item => item && item.selected_resources.length > 0)
 
   emit('submit', {
     action,
-    mode: isDirectMode ? 'direct' : 'classify',
+    mode: isDirectMode.value ? 'direct' : 'classify',
     items,
     batchOptions: {
       download_base_path: props.settings.downloadBasePath || '',
@@ -803,7 +811,7 @@ function emitSubmit() {
       naming_mode: namingMode,
       classify_mode: classifyMode,
       flatten_files: flattenFiles,
-      mode: isDirectMode ? 'direct' : 'classify'
+      mode: isDirectMode.value ? 'direct' : 'classify'
     }
   })
 }
@@ -1386,6 +1394,16 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   background: rgba(241, 245, 249, 0.8);
 }
 
+.dropdown-item.is-selected {
+  background: rgba(226, 232, 240, 0.86);
+  color: rgb(15, 23, 42);
+  font-weight: 600;
+}
+
+.dropdown-item.is-selected:hover {
+  background: rgba(203, 213, 225, 0.9);
+}
+
 .action-buttons {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1402,12 +1420,17 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
 }
 
 .soft-button {
-  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 40px;
+  height: auto;
   border-radius: 8px;
-  font-size: 11.5px;
-  padding: 0 4px;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  font-size: 11px !important;
+  padding: 6px 4px;
+  box-sizing: border-box;
+  white-space: nowrap;
   line-height: 1.15;
   font-weight: 500;
   cursor: pointer;
@@ -1995,6 +2018,26 @@ html.kikoerumanager-dark .circle-download-preview-modal .dropdown-item {
 html.kikoerumanager-dark .circle-download-preview-modal .dropdown-item:hover {
   background: rgba(255, 255, 255, 0.07) !important;
   color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .dropdown-item:not(.is-selected) {
+  background: transparent !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .dropdown-item:not(.is-selected):hover {
+  background: rgba(255, 255, 255, 0.07) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .dropdown-item.is-selected {
+  background: #3a3b40 !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: #ffffff !important;
+  font-weight: 650;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .dropdown-item.is-selected:hover {
+  background: #45474d !important;
 }
 
 html.kikoerumanager-dark .circle-download-preview-modal .soft-button,
