@@ -137,7 +137,9 @@ def test_circle_completion_bonus_probe_lifecycle_records_miss(monkeypatch):
             "release_dates": ["2026-01-02"],
             "bonus_probe_summary": {
                 "date_count": 1,
-                "probe_count": 3200,
+                "candidate_count": 34872,
+                "cached_candidate_count": 34872,
+                "probe_count": 0,
                 "hit_count": 0,
                 "inserted_count": 0,
                 "request_count": 8,
@@ -146,8 +148,10 @@ def test_circle_completion_bonus_probe_lifecycle_records_miss(monkeypatch):
                 "dates": [
                     {
                         "release_date": "2026-01-02",
-                        "probe_count": 3200,
-                        "request_count": 8,
+                        "candidate_count": 34872,
+                        "cached_candidate_count": 34872,
+                        "probe_count": 0,
+                        "request_count": 0,
                         "hit_count": 0,
                         "inserted_count": 0,
                         "hit_rjcodes": [],
@@ -167,8 +171,13 @@ def test_circle_completion_bonus_probe_lifecycle_records_miss(monkeypatch):
     assert len(captured) == 1
     detail = captured[0]["detail"]
     assert "未找到特典" in captured[0]["summary"]
+    assert "候选筛选 34872 个 RJ（缓存跳过 34872 个）" in captured[0]["summary"]
+    assert "实际探测 0 个 RJ" in captured[0]["summary"]
+    assert detail["candidate_count"] == 34872
+    assert detail["cached_candidate_count"] == 34872
     assert detail["bonus_probe_status"] == "miss"
     assert detail["bonus_hit_rjcodes"] == []
+    assert detail["bonus_date_results"][0]["candidate_count"] == 34872
     assert detail["bonus_date_results"][0]["hit_count"] == 0
 
 

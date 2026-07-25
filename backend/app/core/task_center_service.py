@@ -1348,7 +1348,9 @@ class TaskCenterService:
                 else:
                     subtitle = f"写入 {int(bonus_summary.get('inserted_count') or 0)} 个隐藏特典"
                 self._append_metric(metrics, "发售日", len(release_dates) if release_dates else None)
-                self._append_metric(metrics, "探测", bonus_summary.get("probe_count"))
+                self._append_metric(metrics, "候选筛选", bonus_summary.get("candidate_count"))
+                self._append_metric(metrics, "缓存跳过", bonus_summary.get("cached_candidate_count"))
+                self._append_metric(metrics, "实际探测", bonus_summary.get("probe_count"))
                 self._append_metric(metrics, "命中", bonus_summary.get("hit_count"))
                 self._append_metric(metrics, "写入", bonus_summary.get("inserted_count"))
                 self._append_metric(metrics, "请求", bonus_summary.get("request_count"))

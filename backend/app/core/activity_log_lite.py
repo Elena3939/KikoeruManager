@@ -233,6 +233,8 @@ def _chips_for_circle_completion(detail: Dict[str, Any]) -> List[Dict[str, str]]
     if source_action in {"bonus_probe", "new_release_bonus_probe"}:
         hit_count = _int(detail.get("hit_count"))
         inserted_count = _int(detail.get("inserted_count"))
+        candidate_count = detail.get("candidate_count")
+        cached_candidate_count = detail.get("cached_candidate_count")
         probe_count = _int(detail.get("probe_count"))
         request_count = _int(detail.get("request_count"))
         if circle:
@@ -240,8 +242,12 @@ def _chips_for_circle_completion(detail: Dict[str, Any]) -> List[Dict[str, str]]
         chips.append(_chip("命中", str(hit_count), "success" if hit_count else "neutral"))
         if inserted_count:
             chips.append(_chip("写入", str(inserted_count), "info"))
-        if probe_count:
-            chips.append(_chip("探测", str(probe_count), "neutral"))
+        if candidate_count is not None:
+            chips.append(_chip("候选", str(_int(candidate_count)), "neutral"))
+            chips.append(_chip("缓存跳过", str(_int(cached_candidate_count)), "neutral"))
+            chips.append(_chip("实际探测", str(probe_count), "neutral"))
+        elif probe_count:
+            chips.append(_chip("实际探测", str(probe_count), "neutral"))
         elif request_count:
             chips.append(_chip("请求", str(request_count), "neutral"))
         return chips
@@ -477,6 +483,8 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
                 "bonus_probe_status",
                 "hit_count",
                 "inserted_count",
+                "candidate_count",
+                "cached_candidate_count",
                 "probe_count",
                 "request_count",
                 "maker_id",

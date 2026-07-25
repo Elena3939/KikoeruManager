@@ -34,6 +34,7 @@
 - `dlsite_bonus_probe_cache` 写入先进入 Redis dirty buffer，再低批次回写 PostgreSQL。`price` / `wishlist_count` 数据库列必须是 `BIGINT`，启动兼容迁移会强制校验 `udt_name=int8`；回写失败会 ACK 当前批次，避免毒数据反复重放打爆 DB / 日志，后续任务仍可重新从 DLsite 或 Redis overlay 补缓存。
 - PostgreSQL / Redis 历史缓存中的 `is_hidden_bonus_audio` 不能作为永久真值；读取时必须按当前 `exists / probe_status / maker_id / price / is_sale / is_free / is_oly / wishlist_count` 结构规则重算，避免旧版错误标记让已缓存候选永久跳过真实特典。
 - 缓存批量读取不能把几万 / 几十万 RJ 一次性塞进 `IN (...)`。小批量按 `bonus_probe.cache_lookup_batch_size` 分批（默认 1000，上限 3000），PostgreSQL 且数量达到 3000 时使用临时表 `JOIN` 回查，失败再回退分批 `IN`。
+- 候选 RJ 的保序去重和分片合并必须使用集合记录已见项，不能用列表成员查找形成 O(n^2)；同步缓存读取必须在 worker thread 中执行，不能阻塞事件循环。
 
 ## 异常规则
 
@@ -44,8 +45,8 @@
 
 ## 进度字段
 
-- `checked_probe_count` 表示已经确认过的 RJ 数。
-- `probe_count` 表示本轮候选 RJ 总数。
+- `candidate_count` 表示本轮生成并完成缓存筛选的候选 RJ 总数；`cached_candidate_count` 表示其中因已有稳定缓存而不需再次请求的数量。
+- `checked_probe_count` 和 `probe_count` 表示已经确认过、以及实际需要向 DLsite 发起探测的 RJ 数。
 - 日期内 `current_probe_checked_count` / `current_probe_total_count` 是高频运行态字段，候选 lease 完成后必须先上报 `0/总数`；TaskEngine 只通过 Redis runtime/SSE 推送，不把每个 RJ 进度写进 PostgreSQL `progress_log`。
 - `request_count` 表示 DLsite 批量请求次数，最多 500 个 RJ 合并为 1 次请求。
 - `original_count`、`original_concluded_count`、`original_pending_count` 表示作品级结论进度。

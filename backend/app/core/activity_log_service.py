@@ -562,6 +562,8 @@ def _bonus_probe_date_results(meta: Dict[str, Any]) -> list[dict[str, Any]]:
         rows.append({
             "release_date": release_date,
             "probe_count": int(item.get("probe_count") or 0),
+            "candidate_count": int(item.get("candidate_count") or item.get("raw_probe_count") or 0),
+            "cached_candidate_count": int(item.get("cached_candidate_count") or 0),
             "request_count": int(item.get("request_count") or 0),
             "hit_count": int(item.get("hit_count") or 0),
             "inserted_count": int(item.get("inserted_count") or 0),
@@ -1216,12 +1218,20 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
         }
         if tt == TaskType.CIRCLE_COMPLETION_BONUS_PROBE:
             summary_payload = meta.get("bonus_probe_summary") if isinstance(meta.get("bonus_probe_summary"), dict) else {}
+            result_payload = meta.get("bonus_probe_result") if isinstance(meta.get("bonus_probe_result"), dict) else {}
             hit_rjcodes = _bonus_probe_hit_rjcodes(meta)
             hit_items = _resolve_bonus_probe_hit_items(hit_rjcodes)
             date_results = _bonus_probe_date_results(meta)
             hit_count = int(summary_payload.get("hit_count") or len(hit_rjcodes) or 0)
             inserted_count = int(summary_payload.get("inserted_count") or 0)
             probe_count = int(summary_payload.get("probe_count") or 0)
+            candidate_count_value = (
+                summary_payload.get("candidate_count")
+                if "candidate_count" in summary_payload
+                else result_payload.get("candidate_count", result_payload.get("raw_probe_count"))
+            )
+            candidate_count = int(candidate_count_value or 0)
+            cached_candidate_count = int(summary_payload.get("cached_candidate_count") or result_payload.get("cached_candidate_count") or 0)
             request_count = int(summary_payload.get("request_count") or 0)
             date_count = int(summary_payload.get("date_count") or len(meta.get("release_dates") or []) or len(date_results) or 0)
             if st == TaskStatus.COMPLETED:
@@ -1230,15 +1240,22 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
                     suffix = f"：{preview}" if preview else ""
                     summary = f"特典补全完成，发售日 {date_count} 个，命中 {hit_count} 个，写入 {inserted_count} 个{suffix}"[:4000]
                 else:
-                    summary = f"特典补全完成，发售日 {date_count} 个，未找到特典，探测 {probe_count} 个 RJ"[:4000]
+                    candidate_summary = ""
+                    if candidate_count_value is not None:
+                        candidate_summary = f"，候选筛选 {candidate_count} 个 RJ"
+                        if cached_candidate_count:
+                            candidate_summary += f"（缓存跳过 {cached_candidate_count} 个）"
+                    summary = f"特典补全完成，发售日 {date_count} 个，未找到特典{candidate_summary}，实际探测 {probe_count} 个 RJ"[:4000]
             detail.update({
                 "maker_id": str(meta.get("maker_id") or "").strip() or None,
                 "mode": str(meta.get("mode") or "").strip() or None,
                 "release_dates": list(meta.get("release_dates") or [])[:100],
-                "probe_count": probe_count or None,
-                "hit_count": hit_count or None,
-                "inserted_count": inserted_count or None,
-                "request_count": request_count or None,
+                "candidate_count": candidate_count,
+                "cached_candidate_count": cached_candidate_count,
+                "probe_count": probe_count,
+                "hit_count": hit_count,
+                "inserted_count": inserted_count,
+                "request_count": request_count,
                 "bonus_probe_status": "hit" if hit_rjcodes else "miss",
                 "bonus_hit_rjcodes": hit_rjcodes,
                 "bonus_hit_items": hit_items,

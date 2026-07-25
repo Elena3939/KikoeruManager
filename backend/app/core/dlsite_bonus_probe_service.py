@@ -225,9 +225,11 @@ class DLsiteBonusProbeService:
 
     def _dedupe(self, values: Iterable[Any]) -> List[str]:
         result: List[str] = []
+        seen: set[str] = set()
         for value in values or []:
             normalized = self.normalize_rjcode(value)
-            if normalized and normalized not in result:
+            if normalized and normalized not in seen:
+                seen.add(normalized)
                 result.append(normalized)
         return result
 
@@ -673,6 +675,7 @@ class DLsiteBonusProbeService:
         candidates: Sequence[str],
         *,
         active_rjcodes: Optional[Iterable[str]] = None,
+        cached_features: Optional[Dict[str, DLsiteProductProbeFeature]] = None,
     ) -> Tuple[List[str], Dict[str, int]]:
         normalized = self._dedupe(candidates)
         stats = {"input": len(normalized), "cached": 0, "active": 0, "cooldown": 0, "selected": 0}
@@ -680,7 +683,7 @@ class DLsiteBonusProbeService:
             return [], stats
 
         active_set = {self.normalize_rjcode(value) for value in (active_rjcodes or []) if self.normalize_rjcode(value)}
-        cached = self._load_cached_features_sync(normalized)
+        cached = cached_features if cached_features is not None else self._load_cached_features_sync(normalized)
         selected: List[str] = []
         for rjcode in normalized:
             feature = cached.get(rjcode)
@@ -699,10 +702,12 @@ class DLsiteBonusProbeService:
 
     def _merge_candidate_shards(self, shards: Sequence[Dict[str, Any]]) -> List[str]:
         merged: List[str] = []
+        seen: set[str] = set()
         for shard in shards or []:
             for rjcode in list((shard or {}).get("rjcodes") or []):
                 normalized = self.normalize_rjcode(rjcode)
-                if normalized and normalized not in merged:
+                if normalized and normalized not in seen:
+                    seen.add(normalized)
                     merged.append(normalized)
         return merged
 
@@ -717,12 +722,15 @@ class DLsiteBonusProbeService:
         candidates: Sequence[str],
         *,
         shard_size: int,
+        cached_features: Optional[Dict[str, DLsiteProductProbeFeature]] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
         self._ensure_active_probe_state()
         async with self._active_probe_lock:
-            selected, stats = self._exclude_unprobeable_candidates(
+            selected, stats = await asyncio.to_thread(
+                self._exclude_unprobeable_candidates,
                 candidates,
-                active_rjcodes=self._active_probe_rjcodes,
+                active_rjcodes=set(self._active_probe_rjcodes),
+                cached_features=cached_features,
             )
             shards = self._split_candidate_shards(selected, shard_size)
             leased = self._merge_candidate_shards(shards)
@@ -2465,6 +2473,7 @@ class DLsiteBonusProbeService:
                 candidate_shards, candidate_filter_stats = await self._lease_candidate_shards(
                     raw_probe_candidates,
                     shard_size=batch_size,
+                    cached_features=cached_candidate_features,
                 )
                 leased_probe_candidates = self._merge_candidate_shards(candidate_shards)
                 emit_probe_progress(0, len(leased_probe_candidates))
@@ -2526,7 +2535,9 @@ class DLsiteBonusProbeService:
                 "selected_scope": selected_scope,
                 "target_rjcodes": normalized_target_rjcodes,
                 "probe_count": len(leased_probe_candidates),
+                "candidate_count": len(raw_probe_candidates),
                 "raw_probe_count": len(raw_probe_candidates),
+                "cached_candidate_count": int(candidate_filter_stats.get("cached") or 0),
                 "candidate_filter_stats": candidate_filter_stats,
                 "candidate_shard_count": len(candidate_shards),
                 "selected_cache_covered": bool(selected_cache_covered),
@@ -2823,6 +2834,9 @@ class DLsiteBonusProbeService:
             "circle_gap_count": sum(int(item.get("circle_gap_count") or 0) for item in results),
             "date_page_range_count": sum(int(item.get("date_page_range_count") or 0) for item in results),
             "probe_count": sum(int(item.get("probe_count") or 0) for item in results),
+            "candidate_count": sum(int(item.get("candidate_count") or item.get("raw_probe_count") or 0) for item in results),
+            "raw_probe_count": sum(int(item.get("raw_probe_count") or item.get("candidate_count") or 0) for item in results),
+            "cached_candidate_count": sum(int(item.get("cached_candidate_count") or 0) for item in results),
             "cached_hit_count": sum(int(item.get("cached_hit_count") or 0) for item in results),
             "request_count": sum(int(item.get("request_count") or 0) for item in results),
             "hit_count": sum(int(item.get("hit_count") or 0) for item in results),
