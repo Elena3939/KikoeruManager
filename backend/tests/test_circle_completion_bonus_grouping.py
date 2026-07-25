@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
+from types import SimpleNamespace
+
 import pytest
 
 from app.core.circle_completion_service import CircleCompletionService
@@ -42,6 +45,113 @@ def test_completion_attach_bonus_parent_codes_uses_same_release_parent():
     assert result[0]["canonical_rjcode"] == "RJ01538146"
     assert result[0]["bonus_works"][0]["display_rjcode"] == "RJ01569983"
     assert result[0]["bonus_works"][0]["bonus_parent_rjcode"] == "RJ01538146"
+
+
+def test_completion_bonus_uses_own_rj_before_same_day_grouping():
+    """特典不能继承原作翻译版的展示 RJ，否则会按错误发售日错挂。"""
+    service = CircleCompletionService()
+    own_bonus = "RJ01576811"
+    parent = _work("RJ01576789")
+    parent["maker_id"] = "RG49556"
+    parent["release_date"] = "2026-03-22"
+
+    unrelated = _work("RJ01632796")
+    unrelated["maker_id"] = "RG49556"
+    unrelated["release_date"] = "2026-05-26"
+
+    bonus = _work(own_bonus, display="RJ01592088", bonus=True)
+    bonus["maker_id"] = "RG49556"
+    bonus["release_date"] = "2026-03-22"
+    bonus["linked_rjcodes"] = ["RJ01576789", own_bonus]
+
+    display = service._completion_bonus_display_rjcode(
+        own_bonus,
+        "RJ01592088",
+        {
+            own_bonus: {"is_bonus_work": True},
+            "RJ01592088": {"is_bonus_work": False},
+        },
+    )
+    assert display == own_bonus
+
+    bonus["display_rjcode"] = display
+    grouped = service._completion_group_bonus_items(
+        service._completion_attach_bonus_parent_codes([bonus, unrelated, parent])
+    )
+
+    parent_item = next(item for item in grouped if item["canonical_rjcode"] == "RJ01576789")
+    unrelated_item = next(item for item in grouped if item["canonical_rjcode"] == "RJ01632796")
+    assert parent_item["bonus_works"][0]["canonical_rjcode"] == own_bonus
+    assert "bonus_works" not in unrelated_item
+
+
+def test_completion_bonus_item_uses_own_date_and_cached_cover():
+    """历史特典行残留原作封面时，读取路径也必须立即纠正。"""
+    service = CircleCompletionService()
+
+    class _ImageCache:
+        def cache_rjcode_for_url(self, url, _fallback):
+            assert "RJ01576811" in url
+            return "RJ01576811"
+
+        def restore_from_legacy_alias(self, *_args, **_kwargs):
+            return None
+
+        def get_local_url(self, rjcode, variant="card", **_kwargs):
+            assert rjcode == "RJ01576811"
+            return "/api/circle-completion/cover/RJ01576811_sam.jpg" if variant == "list" else ""
+
+    row = SimpleNamespace(
+        id="bonus",
+        circle_id="RG49556",
+        canonical_rjcode="RJ01576811",
+        display_rjcode="RJ01592088",
+        linked_rjcodes=["RJ01592088", "RJ01576789"],
+        title="28日間限定早期特典",
+        maker_id="RG49556",
+        maker_name="RaRo",
+        source_mask="dlsite",
+        has_asmr_one=True,
+        asmr_available_rjcode="RJ01576811",
+        image_url="https://img.dlsite.jp/resize/images2/work/doujin/RJ01577000/RJ01576789_img_main_240x240.jpg",
+        price_text="",
+        is_bonus_work=True,
+        has_bonus=False,
+        source_tags=[],
+        email_watcher_first_seen_at=None,
+        created_at=datetime(2026, 7, 1),
+    )
+    metadata = {
+        "RJ01576811": {
+            "work_name": "28日間限定早期特典",
+            "release_date": "2026-03-22",
+            "is_bonus_work": True,
+            "cover_url": "",
+        },
+        "RJ01592088": {
+            "work_name": "错误翻译版",
+            "release_date": "2026-05-26",
+            "is_bonus_work": False,
+        },
+        "RJ01576789": {
+            "work_name": "原作",
+            "release_date": "2026-03-22",
+            "is_bonus_work": False,
+        },
+    }
+
+    item = service._build_completion_item(
+        catalog=SimpleNamespace(circle_name="RaRo"),
+        row=row,
+        owned_row=None,
+        link_map_by_canonical={},
+        metadata_map_all=metadata,
+        image_cache_service=_ImageCache(),
+    )
+
+    assert item["display_rjcode"] == "RJ01576811"
+    assert item["release_date"] == "2026-03-22"
+    assert item["image_url"].endswith("RJ01576811_sam.jpg")
 
 
 @pytest.mark.asyncio
