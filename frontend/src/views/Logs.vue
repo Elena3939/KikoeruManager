@@ -1048,14 +1048,19 @@ function parseLogLine(line) {
   return buildParsed('', 'INFO', line)
 }
 
-function parseLogLines(lines, keyPrefix = '') {
+function parseLogLines(lines, keyPrefix = '', fullLines = []) {
   // 改用"键前缀 + 单调自增 id"作为 Vue :key，干掉原先 FNV 哈希的逐字符计算。
   // 同时避免长消息生成几百字节的 key，让 virtual-list diff 更轻。
-  const parsedLines = lines.map((line) => {
+  const parsedLines = lines.map((line, index) => {
     const parsed = parseLogLine(line)
+    const fullLine = Array.isArray(fullLines) ? fullLines[index] : ''
+    const fullParsed = fullLine && fullLine !== line ? parseLogLine(fullLine) : parsed
     const id = ++logIdCounter
     return {
       ...parsed,
+      rawLine: fullParsed.rawLine || parsed.rawLine,
+      fullMessage: fullParsed.fullMessage || fullParsed.message || parsed.fullMessage,
+      isTruncated: Boolean(parsed.isTruncated || (fullLine && fullLine !== line)),
       id,
       key: `${keyPrefix}${id}`,
       hasOwnTime: Boolean(parsed.time),
@@ -1373,6 +1378,10 @@ function onLimitChange() {
   }
 }
 
+function getLogCopyMessage(log) {
+  return String(log?.fullMessage || log?.rawLine || log?.message || '')
+}
+
 function exportFilteredLogs() {
   if (!filteredLogs.value.length) {
     ElMessage.warning('没有可导出的日志')
@@ -1380,7 +1389,7 @@ function exportFilteredLogs() {
   }
 
   const lines = filteredLogs.value.map((log) =>
-    [log.time || '--', log.level, log.module || '-', log.message].join(' | ')
+    [log.time || '--', log.level, log.module || '-', getLogCopyMessage(log)].join(' | ')
   )
   const content = lines.join('\n')
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
@@ -1400,7 +1409,7 @@ async function copyVisibleLogs() {
     return
   }
   const lines = filteredLogs.value.map((log) =>
-    [log.time || '--', log.level, log.module || '-', log.message].join(' | ')
+    [log.time || '--', log.level, log.module || '-', getLogCopyMessage(log)].join(' | ')
   )
   try {
     await navigator.clipboard.writeText(lines.join('\n'))
@@ -1472,6 +1481,7 @@ async function gotoFullSearchPage(cursor = '', { resetHistory = false } = {}) {
     if (requestSeq !== fullSearchRequestSeq) return
     if (data?.cancelled) return false
     const lines = Array.isArray(data.logs) ? data.logs : []
+    const fullLines = Array.isArray(data.full_logs) ? data.full_logs : []
     fullSearchTotal.value = data.total_matched ?? lines.length
     fullSearchCursor.value = String(data.next_cursor || '')
     fullSearchHasMore.value = !!data.has_more
@@ -1483,7 +1493,7 @@ async function gotoFullSearchPage(cursor = '', { resetHistory = false } = {}) {
     lastSearchScanMb.value = scanBytes > 0 ? Number((scanBytes / 1024 / 1024).toFixed(1)) : 0
     lastSearchStoppedEarly.value = !!data?.stopped_early
     logIdCounter = 0
-    logs.value = parseLogLines(lines, `search-${cursor}-`)
+    logs.value = parseLogLines(lines, `search-${cursor}-`, fullLines)
     lastFetchMs.value = Math.round(performance.now() - t0)
     return true
   } catch (err) {

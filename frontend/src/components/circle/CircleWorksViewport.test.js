@@ -131,4 +131,35 @@ describe('CircleWorksViewport', () => {
 
     wrapper.unmount()
   })
+
+  it('选中光环按作品顺序错峰，避免全选时同帧脉冲', async () => {
+    mockClientWidth = 600
+    mockClientHeight = 600
+    const wrapper = mount(CircleWorksViewport, {
+      props: {
+        items: [
+          { canonical_rjcode: 'RJ01000001', display_rjcode: 'RJ01000001', title: '作品 1' },
+          { canonical_rjcode: 'RJ01000002', display_rjcode: 'RJ01000002', title: '作品 2' },
+        ],
+        totalItems: 2,
+        selectedCodes: new Set(['RJ01000001', 'RJ01000002']),
+      },
+      global: {
+        stubs: {
+          WorkCard: {
+            props: ['selectionPulseIndex'],
+            template: '<div class="work-card-stub" :data-pulse-index="selectionPulseIndex" />',
+          },
+          WorkListRow: { template: '<div />' },
+          ElPagination: { template: '<div />' },
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.findAll('.work-card-stub').map(card => card.attributes('data-pulse-index'))).toEqual(['0', '1'])
+
+    wrapper.unmount()
+  })
 })

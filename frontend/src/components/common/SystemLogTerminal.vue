@@ -242,8 +242,29 @@ async function copyLogs() {
   }
 }
 
+async function copyLine(line) {
+  const text = lineText(line, true)
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('已复制完整日志')
+  } catch {
+    ElMessage.error('复制失败，浏览器未授权剪贴板')
+  }
+}
+
+function handleLineCopy(event, line) {
+  if (!isLineTruncated(line) && !hasHiddenOriginalDetail(line)) return
+  event.clipboardData?.setData('text/plain', lineText(line, true))
+  event.preventDefault()
+}
+
 function toggleLineDetail(line, index, event) {
   if (!line) return
+  if (isLineTruncated(line)) {
+    void copyLine(line)
+    return
+  }
   const key = lineKey(line, index)
   if (expandedLineKey.value === key) {
     expandedLineKey.value = null
@@ -502,7 +523,8 @@ onBeforeUnmount(() => {
             <span
               v-else
               class="terminal-message"
-              :title="isLineExpanded(safeLines[virtualRow.index], virtualRow.index) ? '点击收起原始日志' : '点击查看原始日志'"
+              :title="isLineTruncated(safeLines[virtualRow.index]) ? '点击复制完整日志' : isLineExpanded(safeLines[virtualRow.index], virtualRow.index) ? '点击收起原始日志' : '点击查看原始日志'"
+              @copy="handleLineCopy($event, safeLines[virtualRow.index])"
             >
               <span class="terminal-message-text">
                 <template v-if="isLineExpanded(safeLines[virtualRow.index], virtualRow.index)">

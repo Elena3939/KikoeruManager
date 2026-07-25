@@ -4742,3 +4742,281 @@
 - `frontend/src/components/asmr/HttpDownloadPanel.vue`：预览名称按相同规则保留分卷号。
 - `progress.md`：追加本轮修复、验证和回滚记录。
 - 回滚方式：反向移除分卷完整文件名的公共基名识别，恢复将完整名称直接作为目标名的逻辑，并删除本段进度记录。
+
+## 2026-07-25 - Task: 修正社团补全刷新后特典脱离父作品
+
+### What was done
+
+- 修正选中作品刷新后的特典字段回写：父作品的 `is_bonus_work` 只根据自身 canonical / display RJ 判定，关联 RJ 只参与 `has_bonus` 聚合。
+- 增加回归用例，覆盖父作品关联特典 RJ 时刷新后仍保持普通作品，并验证特典可继续挂载在父作品下。
+- 同步记录批量刷新状态的特典字段语义，避免后续修改重新把父作品误判为特典。
+
+### Testing
+
+- `backend\\venv\\Scripts\\python.exe -m py_compile backend\\app\\core\\circle_completion_service.py`：通过。
+- `git diff --check`：通过。
+- `backend\\venv\\Scripts\\python.exe -m pytest tests\\test_circle_completion_bonus_refresh_helper.py tests\\test_circle_completion_bonus_grouping.py -q --basetemp .pytest-tmp-bonus-parent-fix`：本机 PostgreSQL fixture 连接等待至 124 秒超时，未产生断言结果；已停止残留测试进程。
+- `backend\\venv\\Scripts\\python.exe -m pytest --noconftest tests\\test_circle_completion_bonus_grouping.py -q`：模块初始化仍等待本地服务，21 秒后主动停止，未产生断言结果。
+
+### Notes
+
+- `backend/app/core/circle_completion_service.py`：拆分特典自身判定与关联特典聚合，避免刷新状态后破坏父子展示关系。
+- `backend/tests/test_circle_completion_bonus_refresh_helper.py`：覆盖关联特典刷新与父子分组回归场景。
+- `docs/circle-completion-performance-cache.md`：补充批量刷新状态的特典字段约束。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：还原特典补刷中 `own_codes` 的独立判定，删除新增回归用例、文档说明和本段进度记录；不要回退同文件中的其他已有改动。
+
+## 2026-07-25 - Task: 修正社团特典跨作品错挂与封面回退
+
+### What was done
+
+- 根据服务器 `RG49556` 的现场数据修正特典展示：特典始终使用自身 RJ 读取标题、发售日和封面，不再继承原作简中 / 繁中版本。
+- 社团读取路径会立即纠正历史脏行；刷新选中作品时同步将正确的展示 RJ、发售日对应封面和关联链写回。
+- 特典优先复用自身已缓存的 `_sam.jpg`，没有卡片大图时不再回退到原作封面。
+- 覆盖 `RJ01576811 -> RJ01576789` 的现场回归，确保不会因错误日期挂到 `RJ01632796`。
+
+### Testing
+
+- `backend\\venv\\Scripts\\python.exe -m py_compile backend\\app\\core\\circle_completion_service.py`：通过。
+- `cd backend; .\\venv\\Scripts\\python.exe -m pytest --noconftest tests\\test_circle_completion_bonus_grouping.py::test_completion_bonus_uses_own_rj_before_same_day_grouping -q`：通过，`1 passed`。
+- `git diff --check`：通过。
+
+### Notes
+
+- `backend/app/core/circle_completion_service.py`：按特典自身 RJ 构建展示、日期、封面缓存键，并在刷新流程回写纠正后的字段。
+- `backend/tests/test_circle_completion_bonus_grouping.py`：覆盖服务器现场的跨作品错挂回归。
+- `docs/circle-completion-performance-cache.md`：记录历史特典行的读取修正与刷新回写语义。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：移除特典自身展示 RJ / 封面分支和对应测试，恢复原有 display RJ 的统一读取；不要回退同文件中的其他已有改动。
+
+## 2026-07-25 - Task: 补充特典封面读取回归验证
+
+### What was done
+
+- 增加历史特典行残留原作封面时的读取回归，验证展示 RJ、发售日和本地封面路径都回到特典自身。
+
+### Testing
+
+- `cd backend; .\\venv\\Scripts\\python.exe -m pytest --noconftest tests\\test_circle_completion_bonus_grouping.py::test_completion_bonus_uses_own_rj_before_same_day_grouping tests\\test_circle_completion_bonus_grouping.py::test_completion_bonus_item_uses_own_date_and_cached_cover -q`：通过，`2 passed`。
+- `backend\\venv\\Scripts\\python.exe -m py_compile backend\\app\\core\\circle_completion_service.py backend\\tests\\test_circle_completion_bonus_grouping.py`：通过。
+- `git diff --check`：通过。
+
+### Notes
+
+- `backend/tests/test_circle_completion_bonus_grouping.py`：补充特典自身封面、日期与展示 RJ 的回归覆盖。
+- `progress.md`：追加补充验证记录。
+- 回滚方式：删除新增封面读取测试及本段记录；不要回退同文件中的其他已有改动。
+
+## 2026-07-25 - Task: 增加社团补全封面缓存重试并降低图片请求卡顿
+
+### What was done
+
+- 封面加载失败时改为无破图占位，并提供可点击的齿轮重试按钮；点击后调用现有封面缓存接口，下载成功立即替换图片。
+- 卡片和列表行共用页面级 RJ 下载状态，重复点击不会重复发起下载，下载中齿轮旋转反馈；保留现有虚拟滚动、懒加载和卡片交互。
+- 失败后停止组件内部多级公网图片回退，减少滚动期间的无效网络请求和错误事件。
+
+### Testing
+
+- `cd frontend; npm.cmd run build`：通过，`4187 modules transformed`，预压缩资源完成。
+- `git diff --check`：通过。
+
+### Notes
+
+- `frontend/src/components/circle/WorkCard.vue`：增加失败封面重试按钮、旋转态和本地缓存重试事件。
+- `frontend/src/components/circle/WorkListRow.vue`：列表缩略图同步增加失败封面重试按钮并移除多级公网回退。
+- `frontend/src/components/circle/CircleWorksViewport.vue`：传递按 RJ 去重的下载中状态并转发重试事件。
+- `frontend/src/views/CircleCompletion.vue`：向两个作品视口提供页面级封面下载状态。
+- `docs/circle-completion-performance-cache.md`：记录失败封面的性能策略。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：移除两个封面组件的重试控件和 `cover-fetching` 绑定，恢复原有图片错误回退函数；不要回退同文件中的其他已有改动。
+
+## 2026-07-25 - Task: 保留公网封面有限回退并复核构建
+
+### What was done
+
+- 调整失败分支：本地缓存接口失败直接进入手动重试，公网直链仍保留有限备用地址，避免影响已有可用封面回退。
+
+### Testing
+
+- `cd frontend; npm.cmd run build`：通过，`4187 modules transformed`，预压缩资源完成。
+- `git diff --check`：通过。
+
+### Notes
+
+- `frontend/src/components/circle/WorkCard.vue`：本地缓存失败与公网直链失败分流处理。
+- `frontend/src/components/circle/WorkListRow.vue`：列表缩略图同步分流处理。
+- `docs/circle-completion-performance-cache.md`：修正失败封面回退策略说明。
+- `progress.md`：追加复核记录。
+- 回滚方式：移除本地缓存失败分流判断，恢复统一公网回退；不要回退同文件中的其他已有改动。
+
+## 2026-07-25 - Task: 优化封面重试按钮图标与加载动画
+
+### What was done
+
+- 将封面重试按钮从滑杆图标改为明确的刷新图标。
+- 点击下载缓存时切换为旋转加载图标，完成或失败后恢复刷新图标。
+
+### Testing
+
+- `cd frontend; npm.cmd run build`：通过，`4187 modules transformed`，预压缩资源完成。
+- `git diff --check`：通过。
+
+### Notes
+
+- `frontend/src/components/circle/WorkCard.vue`：使用 `RefreshCw` / `LoaderCircle` 表达重试和加载状态。
+- `frontend/src/components/circle/WorkListRow.vue`：列表缩略图同步使用刷新与加载图标。
+- `progress.md`：追加本轮验证记录。
+- 回滚方式：恢复原重试图标及其加载态模板；不要回退同文件中的其他已有改动。
+
+## 2026-07-25 - Task: 优化社团封面并发下载与超时日志
+
+### What was done
+
+- 将批量预热和按需补图统一限制为最多 6 个真实 CDN 传输，避免图片批量出现时连接池排队耗尽单张下载超时。
+- 调整超时起点为获取到下载名额之后，排队等待不会被误记为 `total-timeout`。
+- 页面自然触发的后台预热失败降为 DEBUG；用户点击封面重试的失败仍保留 WARN，保证可诊断性。
+
+### Testing
+
+- `cd backend; .\\venv\\Scripts\\python.exe -m pytest --noconftest tests\\test_circle_completion_paged_view.py::test_circle_image_cache_bounds_on_demand_failure_wait tests\\test_circle_completion_paged_view.py::test_circle_image_cache_queue_wait_does_not_consume_download_timeout tests\\test_circle_completion_paged_view.py::test_circle_image_cache_background_ensure_is_deduplicated -q --basetemp .pytest-tmp-cover-download-gate-20260725-b`：通过，`3 passed`。
+- `backend\\venv\\Scripts\\python.exe -m py_compile backend\\app\\core\\circle_image_cache_service.py`：通过。
+- `git diff --check`：通过。
+
+### Notes
+
+- `backend/app/core/circle_image_cache_service.py`：增加共享下载闸门，修正超时计时范围，并区分后台预热与人工重试日志等级。
+- `backend/tests/test_circle_completion_paged_view.py`：覆盖队列等待不耗尽网络超时预算的回归。
+- `docs/circle-completion-performance-cache.md`：记录封面下载并发和日志策略。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：移除共享下载闸门和 `log_failure` 参数，恢复每个按需下载独立计时与 WARN 记录；不要回退同文件中的其他已有改动。
+
+## 2026-07-25 - Task: 修复省略日志复制完整内容
+
+### What was done
+
+- 全历史日志检索在保留 16KB 展示截断的同时，同序返回完整原文，避免省略行复制后丢失尾部内容。
+- 日志页对带完整原文的省略行保持原有视觉展示；点击行直接复制完整日志，手动选择后复制也会写入完整内容。
+- 顶部“复制可见窗口”和“导出筛选结果”统一优先使用完整日志字段。
+
+### Testing
+
+- `cd backend; $env:PYTHONPATH=(Get-Location).Path; ..\\.venv\\Scripts\\python.exe -m pytest tests/test_log_search.py -q`：通过，`4 passed`。
+- `cd frontend; npm run build`：通过，`4187 modules transformed`，预压缩资源完成。
+- `git diff --check`：通过。
+
+### Notes
+
+- `backend/app/api/routes.py`：日志搜索结果新增同序完整原文数组 `full_logs`。
+- `backend/tests/test_log_search.py`：覆盖超长搜索命中保留完整原文的回归。
+- `frontend/src/views/Logs.vue`：关联展示行与完整原文，并让页面复制/导出使用完整内容。
+- `frontend/src/components/common/SystemLogTerminal.vue`：省略行点击或手动复制时写入完整日志，展示不展开。
+- `docs/runtime-buffer-control-plane.md`：补充 `logs` 与 `full_logs` 的响应语义。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：移除 `/api/logs/search` 的 `full_logs` 返回及日志页完整原文绑定，恢复省略行和顶部操作直接使用 `message`；不要回退同文件中的其他已有改动。
+
+## 2026-07-25 - Task: 更新项目接手规则
+
+### What was done
+- 根据当前依赖清单、近期功能提交和实际关键模块，补充前端框架与测试基座、运行态缓冲、系统日志、延后归档、过滤恢复、重命名断点重试、ASMR 断点下载、HTTP 半成品隔离及库存索引可见性规则。
+- 扩展关键入口、业务红线、最低验证和常用排查路径，使后续改动能定位到当前实际服务、组件、迁移和测试入口。
+
+### Testing
+- 已核对 `frontend/package.json`、`frontend/vite.config.js`、`frontend/vitest.config.js`、`backend/requirements.txt`、近期 Git 提交变更、对应实现模块与现有测试文件；未执行构建或测试，因为本轮仅更新接手文档且未变更运行代码。
+
+### Notes
+- `AGENTS.md`：补充当前架构、功能链路、依赖框架、验证与排查规则。
+- `progress.md`：追加本轮文档更新记录。
+- 回滚方式：执行 `git diff -- AGENTS.md progress.md` 核对后，使用 `git restore --source=HEAD -- AGENTS.md progress.md` 回退本轮文档改动；该命令会同时丢弃这两个文件中尚未提交的其他改动，执行前必须确认工作区状态。
+## 2026-07-25 - Task: 社团补全增加 AnimeShare 与南+外部搜索跳转
+### What was done
+- 新增独立外部搜索批量接口，社团作品分页完成后异步探测 AnimeShare / 南+，不改变现有来源、缺失统计和下载任务语义。
+- 按 canonical 关联链聚合原作、简中、繁中 RJ，每个现有展示语言组只查询一个代表 RJ，并按每 6 件作品渐进加载；外站 RJ 按同前缀、同位数、数字差 `<=1` 匹配，避免标题模糊匹配错挂和同语言重复请求。
+- 卡片和列表增加命中小标签；单结果直接打开，多结果使用统一风格选择弹窗。
+- 增加设置页南+ Cookie 与代理配置，Cookie 脱敏并保留遮罩保存回填；南+权限拦截页不再产生假命中。
+- 加入 AnimeShare / 南+解析、聚合和权限页回归测试，并完成前端构建验证。
+
+### Testing
+- `backend\\venv\\Scripts\\python.exe -m py_compile app/core/circle_external_search_service.py app/core/circle_completion_service.py app/config/settings.py app/api/routes.py`
+- `backend\\venv\\Scripts\\python.exe -m pytest tests/test_circle_completion_paged_view.py tests/test_circle_completion_bonus_grouping.py tests/test_circle_completion_bonus_refresh_helper.py tests/test_circle_external_search_service.py -q`（35 passed）
+- `frontend\\npm run build`（通过；仅保留既有 chunk size / 依赖注释警告）
+- 真实 AnimeShare 查询 `RJ01576821` 返回 `hit`，得到 7 个帖子；本地真实社团接口 `RJ01603646` 冷查约 2.1 秒并返回 6 个帖子，南+未配置 Cookie 时按设计短路为 `unavailable`。
+
+### Notes
+- 改动文件：`backend/app/core/circle_external_search_service.py`（外部站点解析、近邻 RJ 匹配、缓存与并发）；`backend/app/core/circle_completion_service.py`（读取关联语言变体）；`backend/app/api/routes.py`（批量接口与南+配置脱敏保存）；`backend/app/config/settings.py`、`backend/config/config.yaml`（南+ Cookie / 代理配置）；`frontend/src/api/index.js`、`frontend/src/views/CircleCompletion.vue`、`frontend/src/components/circle/CircleWorksViewport.vue`、`frontend/src/components/circle/WorkCard.vue`、`frontend/src/components/circle/WorkListRow.vue`（异步标签、跳转与选择弹窗）；`frontend/src/components/settings/ServicesSettingsPanel.vue`、`frontend/src/views/Settings.vue`、`frontend/src/composables/useSettingsDraft.js`（设置页）；`backend/tests/test_circle_external_search_service.py`、`docs/circle-completion-external-search.md`。
+- 回滚方式：删除上述本轮新增外部搜索接口 / 服务 / 测试 / 文档，并恢复配置、社团卡片、列表、虚拟视口、设置页及 API 文件到本轮变更前版本；不影响既有社团补全索引和封面缓存改动。
+
+## 2026-07-25 - Task: 优化社团补全全选响应与卡片选中性能
+
+### What was done
+
+- 全选请求新增轻量选择模式，只返回筛选结果的 canonical RJ 与可下载 RJ，跳过特典状态、发售日和下载候选构造，保持“全筛选结果全选”语义不变。
+- 全选按钮点击后先显示处理中状态，再发起请求；下载预览继续由后端使用已记录的 ASMR 可用 RJ 作为候选回退，不依赖全选时的重数据预取。
+- 保留卡片选中光环和脉冲效果，将可见卡片的脉冲按作品顺序错峰，避免批量全选时同一帧触发大量绘制。
+
+### Testing
+
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_circle_completion_paged_view.py::test_paged_missing_works_and_work_codes tests\test_circle_completion_paged_view.py::test_preview_batch_download_falls_back_to_asmr_code_without_requested_mapping -q --basetemp .pytest-tmp-circle-selection-performance`：通过，`2 passed`。
+- `cd frontend; npm run test -- CircleWorksViewport.test.js`：通过，`3 passed`。
+- `cd frontend; npm run build`：通过，`4187 modules transformed`，预压缩资源完成；仅保留既有依赖的 Rollup 体积提示。
+- `git diff --check`：通过。
+
+### Notes
+
+- `backend/app/core/circle_completion_service.py`：增加 `selection_only` 轻量结果分支，并与普通作品编号查询分离缓存。
+- `backend/app/api/routes.py`、`frontend/src/api/index.js`：透传全选轻量查询参数。
+- `frontend/src/views/CircleCompletion.vue`：全选增加即时处理中状态，改用轻量查询且不再预取下载候选。
+- `frontend/src/components/circle/CircleWorksViewport.vue`、`frontend/src/components/circle/WorkCard.vue`：保留选中脉冲，按卡片序号错峰播放。
+- `backend/tests/test_circle_completion_paged_view.py`、`frontend/src/components/circle/CircleWorksViewport.test.js`：覆盖轻量选择结果、下载候选回退和脉冲顺序。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：在上述文件中反向移除 `selection_only`、`selectionOnly`、`selectingAllWorks` 与 `selectionPulseIndex` 相关 hunk；这些文件含既有未提交改动，禁止使用 `git restore` 整文件回退。
+
+## 2026-07-25 - Task: 修复社团补全 Shift 范围选择误触浏览器选字
+
+### What was done
+
+- 卡片和列表行在捕获阶段拦截 `Shift + 鼠标按下` 的浏览器默认文本选择，后续 `click` 仍进入现有范围选择逻辑。
+- 卡片和列表行补充不可选中文本样式，避免 Shift 拖动或连续操作残留浏览器选区。
+
+### Testing
+
+- `cd frontend; npm run test -- WorkSelectionInteraction.test.js CircleWorksViewport.test.js`：通过，`5 passed`。
+- `cd frontend; npm run build`：通过，`4187 modules transformed`，预压缩资源完成；仅保留既有依赖的 Rollup 体积提示。
+- `git diff --check`：通过。
+
+### Notes
+
+- `frontend/src/components/circle/WorkCard.vue`：捕获 Shift 鼠标按下并禁止卡片文本选择。
+- `frontend/src/components/circle/WorkListRow.vue`：同步修复列表视图的范围选择原生选字。
+- `frontend/src/components/circle/WorkSelectionInteraction.test.js`：覆盖卡片、列表视图拦截 Shift 且不影响普通鼠标按下。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：反向移除两个作品组件的 `preventNativeShiftSelection`、`@mousedown.capture` 和 `user-select` 规则，并删除对应测试；这些组件含既有未提交改动，禁止使用 `git restore` 整文件回退。
+
+## 2026-07-25 - Task: 优化社团补全外部搜索图标与非命中状态
+
+### What was done
+
+- AnimeShare 与南+入口改为站点真实 favicon，卡片和列表共用紧凑图标组件，并用状态徽标区分查询中、命中、未命中、不可用和失败。
+- 后端为未命中、权限不可用和请求失败补齐按原作、简中、繁中聚合的搜索跳转；南+没有命中时不再消失，仍可点击进入对应 RJ 搜索页。
+- 前端为旧缓存、旧后端响应和整批请求失败增加 RJ 搜索地址兜底，避免按钮被禁用或永久停留在查询中。
+- 为状态徽标预留边界空间，卡片与列表均保持无横向溢出，并同步更新外部搜索说明。
+
+### Testing
+
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_circle_completion_paged_view.py tests\test_circle_completion_bonus_grouping.py tests\test_circle_completion_bonus_refresh_helper.py tests\test_circle_external_search_service.py -q --basetemp .pytest-tmp-external-search-icons`：通过，`38 passed`。
+- `cd frontend; npm test -- --run src/components/circle/ExternalSearchSourceChips.test.js src/components/circle/CircleWorksViewport.test.js src/components/circle/WorkSelectionInteraction.test.js`：通过，`6 passed`。
+- `cd frontend; npm run build`：通过，`4191 modules transformed`，AnimeShare PNG 与南+ ICO 均进入构建产物；仅保留既有依赖和 chunk size 警告。
+- 浏览器实测卡片 / 列表暗色视图：图标按钮 `24×22px`、图标 `16×16px`；南+不可用状态可见且可点击；列表状态区 `clientWidth=174`、`scrollWidth=174`，控制台无错误。
+- 使用根目录 `start-all.bat` 重载后，前后端健康检查均返回 `200`；真实接口查询 `RG68316 / RJ01647392` 返回 AnimeShare `hit`、南+ `unavailable`，两个来源均携带 3 个按关联语言聚合的 `search_results`。
+- `git diff --check -- backend/app/core/circle_external_search_service.py backend/tests/test_circle_external_search_service.py frontend/src/components/circle/ExternalSearchSourceChips.vue frontend/src/components/circle/ExternalSearchSourceChips.test.js frontend/src/components/circle/WorkCard.vue frontend/src/components/circle/WorkListRow.vue frontend/src/views/CircleCompletion.vue docs/circle-completion-external-search.md`：通过，仅有工作区换行符提示。
+
+### Notes
+
+- `frontend/src/assets/platforms/anime-sharing.png`、`frontend/src/assets/platforms/south-plus.ico`：保存两个站点的真实 favicon。
+- `frontend/src/components/circle/ExternalSearchSourceChips.vue`：统一图标、状态徽标、点击动作和旧响应兜底。
+- `frontend/src/components/circle/WorkCard.vue`、`frontend/src/components/circle/WorkListRow.vue`：接入共用图标组件并移除旧文字入口。
+- `frontend/src/views/CircleCompletion.vue`：批次失败时回填可点击的失败状态。
+- `backend/app/core/circle_external_search_service.py`：聚合结果增加分语言 `search_results`，不可用短路也保留搜索地址。
+- `backend/tests/test_circle_external_search_service.py`、`frontend/src/components/circle/ExternalSearchSourceChips.test.js`：覆盖未命中、未配置和旧响应兜底。
+- `docs/circle-completion-external-search.md`：记录 favicon、状态及失败兜底语义。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：反向移除上述文件中 `search_results`、`ExternalSearchSourceChips` 和外部搜索失败兜底相关 hunk，并删除两枚 favicon 与组件测试；这些文件含同一外部搜索功能的既有未提交改动，禁止使用 `git restore` 整文件回退。

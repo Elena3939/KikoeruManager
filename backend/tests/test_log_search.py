@@ -68,6 +68,10 @@ def test_log_search_matches_keyword_across_large_fragment_boundary(tmp_path):
     assert len(result["logs"]) == 1
     assert "needle" in result["logs"][0]
     assert len(result["logs"][0]) <= routes._LOG_LINE_LENGTH_CAP + 1
+    assert result["full_logs"] == [
+        (prefix + padding + b"nee" + b"dle-tail").decode("utf-8")
+    ]
+    assert len(result["full_logs"][0]) > routes._LOG_LINE_LENGTH_CAP
 
 
 def test_log_search_stops_when_cancelled(tmp_path):
