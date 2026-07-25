@@ -5020,3 +5020,28 @@
 - `docs/circle-completion-external-search.md`：记录 favicon、状态及失败兜底语义。
 - `progress.md`：追加本轮实现、验证和回滚记录。
 - 回滚方式：反向移除上述文件中 `search_results`、`ExternalSearchSourceChips` 和外部搜索失败兜底相关 hunk，并删除两枚 favicon 与组件测试；这些文件含同一外部搜索功能的既有未提交改动，禁止使用 `git restore` 整文件回退。
+
+## 2026-07-25 - Task: 修复外部服务设置空白并移除站点图标外框
+
+### What was done
+
+- 修复设置草稿归一化遗漏 `circle_external_search` 的问题，旧运行配置没有该节点时会自动补齐默认值，不再中断整个外部服务面板渲染。
+- 补齐设置保存序列化字段，AnimeShare、南+开关、Cookie 和代理现在会实际进入配置保存请求。
+- 外部服务面板增加自身旧配置兜底，避免未经过设置草稿归一化的复用场景再次出现空白。
+- AnimeShare 与南+图标移除外围灰色边框、背景色和命中阴影，只保留真实 favicon、状态徽标及点击动效。
+
+### Testing
+
+- `cd frontend; npm test -- --run src/components/circle/ExternalSearchSourceChips.test.js src/components/circle/CircleWorksViewport.test.js src/components/circle/WorkSelectionInteraction.test.js`：通过，`6 passed`。
+- `cd frontend; npm run build`：通过，`4191 modules transformed`，预压缩资源完成；仅保留既有依赖和 chunk size 警告。
+- 浏览器实测旧运行配置：外部服务页恢复 Kikoeru、社团补全外部搜索和南+ Cookie 等内容，控制台无错误。
+- 浏览器计算样式验证：两枚站点图标按钮均为 `border-style: none`、`border-width: 0px`、透明背景且无阴影。
+- `git diff --check -- frontend/src/composables/useSettingsDraft.js frontend/src/components/settings/ServicesSettingsPanel.vue frontend/src/components/circle/ExternalSearchSourceChips.vue`：通过，仅有工作区换行符提示。
+
+### Notes
+
+- `frontend/src/composables/useSettingsDraft.js`：补齐外部搜索配置的读取归一化和保存序列化。
+- `frontend/src/components/settings/ServicesSettingsPanel.vue`：使用带默认值的外部搜索配置引用，兼容旧配置。
+- `frontend/src/components/circle/ExternalSearchSourceChips.vue`：移除站点图标外围灰框和背景。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：反向移除上述三个前端文件本轮新增的配置归一化、序列化、面板兜底和无框样式 hunk；禁止使用 `git restore` 回退包含其他改动的整文件。

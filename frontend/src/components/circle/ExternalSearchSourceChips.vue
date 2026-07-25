@@ -127,9 +127,9 @@ function handleOpen(entry) {
   height: 22px;
   flex: 0 0 24px;
   padding: 2px 3px;
-  border: 1px solid rgba(148, 163, 184, .34);
-  border-radius: 5px;
-  background: rgba(248, 250, 252, .78);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   cursor: pointer;
   transition: all .2s cubic-bezier(.34,1.56,.64,1);
 }
@@ -148,15 +148,8 @@ function handleOpen(entry) {
 .external-source-chip:active:not(:disabled) { transform: scale(.94); }
 
 .external-source-chip.is-hit {
-  border-color: rgba(34, 197, 94, .5);
-  background: rgba(240, 253, 244, .92);
-  box-shadow: 0 0 0 1px rgba(34, 197, 94, .08);
-}
-
-.external-source-chip.is-miss,
-.external-source-chip.is-unavailable,
-.external-source-chip.is-error {
-  background: rgba(241, 245, 249, .78);
+  background: transparent;
+  box-shadow: none;
 }
 
 .external-source-chip.is-miss img { filter: grayscale(1); opacity: .58; }
@@ -194,16 +187,9 @@ function handleOpen(entry) {
   50% { opacity: 1; transform: scale(1); }
 }
 
-:global(html.kikoerumanager-dark .external-source-chip),
-:global(body.kikoerumanager-dark .external-source-chip) {
-  border-color: rgba(148, 163, 184, .28);
-  background: rgba(39, 40, 45, .92);
-}
-
 :global(html.kikoerumanager-dark .external-source-chip.is-hit),
 :global(body.kikoerumanager-dark .external-source-chip.is-hit) {
-  border-color: rgba(74, 222, 128, .52);
-  background: rgba(22, 101, 52, .26);
+  background: transparent;
 }
 
 :global(html.kikoerumanager-dark .external-source-status),
