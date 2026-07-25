@@ -17,6 +17,7 @@ const props = defineProps({
   flashedCodes: { type: Object, default: () => new Set() },
   locatedCodes: { type: Object, default: () => new Set() },
   coverOverrides: { type: Object, default: () => ({}) },
+  coverFetchingCodes: { type: Object, default: () => new Set() },
   imageField: { type: String, default: 'image_url' },
   cornerLabel: { type: String, default: '' },
   pagerLabel: { type: String, default: '作品' },
@@ -32,6 +33,7 @@ const emit = defineEmits([
   'contextmenu',
   'ensure-cover',
   'cover-failed',
+  'external-search',
 ])
 
 const scrollRef = ref(null)
@@ -231,6 +233,10 @@ function forwardRowReimport(item) {
   emit('reimport', bonusActionItem(item, 'import'))
 }
 
+function forwardRowExternalSearch(payload) {
+  emit('external-search', payload)
+}
+
 function normalizeBonusGroupTitle(value) {
   return String(value || '')
     .trim()
@@ -276,6 +282,10 @@ function coverOverrideFor(item) {
     if (override) return override
   }
   return ''
+}
+
+function isCoverFetching(item) {
+  return workStateCodeList(item).some(code => props.coverFetchingCodes?.has?.(code))
 }
 
 function hasLocalDownloadReadyBonus(item) {
@@ -863,17 +873,21 @@ onBeforeUnmount(() => {
               :item="viewModel.item"
               :card-index="0"
               :selected="viewModel.selected"
+              :selection-pulse-index="viewModel.index"
               :status-flash="viewModel.flashed"
               :locate-flash="viewModel.located"
               :completion-dimmed="shouldDimWorkCard(viewModel)"
               :corner-label="cornerLabel"
               :image-active="isImageActive(viewModel.key)"
               :cover-url-override="coverOverrideFor(viewModel.item)"
+              :cover-fetching="isCoverFetching(viewModel.item)"
               @select="(item, event) => emit('select', item, event)"
               @preview="emit('preview', $event)"
               @reimport="emit('reimport', $event)"
               @contextmenu="(item, event) => emit('contextmenu', item, event)"
+              @external-search="emit('external-search', $event)"
               @image-failed="emit('cover-failed', $event)"
+              @retry-cover="emit('ensure-cover', $event, { force: true })"
               @image-settled="markImageSettled(viewModel.key)"
             />
             <div v-if="viewModel.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
@@ -972,11 +986,14 @@ onBeforeUnmount(() => {
                 :corner-label="cornerLabel"
                 :image-active="isImageActive(viewModel.key)"
                 :cover-url-override="coverOverrideFor(viewModel.item)"
+                :cover-fetching="isCoverFetching(viewModel.item)"
                 @select="forwardRowSelect"
                 @preview="forwardRowPreview($event, viewModel.item)"
                 @reimport="forwardRowReimport($event)"
                 @contextmenu="forwardRowContextMenu"
+                @external-search="forwardRowExternalSearch"
                 @image-failed="emit('cover-failed', $event)"
+                @retry-cover="emit('ensure-cover', $event, { force: true })"
                 @image-settled="markImageSettled(viewModel.key)"
               />
               <div v-if="viewModel.bonuses.length" class="circle-bonus-shelf is-list">
@@ -1137,17 +1154,21 @@ onBeforeUnmount(() => {
                   :item="cell.item"
                   :card-index="0"
                   :selected="cell.selected"
+                  :selection-pulse-index="cell.index"
                   :status-flash="cell.flashed"
                   :locate-flash="cell.located"
                   :completion-dimmed="shouldDimWorkCard(cell)"
                   :corner-label="cornerLabel"
                   :image-active="isImageActive(cell.key)"
                   :cover-url-override="coverOverrideFor(cell.item)"
+                  :cover-fetching="isCoverFetching(cell.item)"
                   @select="(item, event) => emit('select', item, event)"
                   @preview="emit('preview', $event)"
                   @reimport="emit('reimport', $event)"
                   @contextmenu="(item, event) => emit('contextmenu', item, event)"
+                  @external-search="emit('external-search', $event)"
                   @image-failed="emit('cover-failed', $event)"
+                  @retry-cover="emit('ensure-cover', $event, { force: true })"
                   @image-settled="markImageSettled(cell.key)"
                 />
                 <div v-if="cell.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
@@ -1246,11 +1267,14 @@ onBeforeUnmount(() => {
                     :corner-label="cornerLabel"
                     :image-active="isImageActive(cell.key)"
                     :cover-url-override="coverOverrideFor(cell.item)"
+                    :cover-fetching="isCoverFetching(cell.item)"
                     @select="forwardRowSelect"
                     @preview="forwardRowPreview($event, cell.item)"
                     @reimport="forwardRowReimport($event)"
                     @contextmenu="forwardRowContextMenu"
+                    @external-search="forwardRowExternalSearch"
                     @image-failed="emit('cover-failed', $event)"
+                    @retry-cover="emit('ensure-cover', $event, { force: true })"
                     @image-settled="markImageSettled(cell.key)"
                   />
                   <div v-if="cell.bonuses.length" class="circle-bonus-shelf is-list">

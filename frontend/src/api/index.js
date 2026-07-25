@@ -2487,7 +2487,8 @@ export const circleCompletionApi = {
         owned_filter: query.ownedFilter || query.owned_filter || 'all',
         compare_filter: query.compareFilter || query.compare_filter || 'all',
         search: query.search || '',
-        sort: query.sort || 'updated_desc'
+        sort: query.sort || 'updated_desc',
+        selection_only: query.selectionOnly ?? query.selection_only ?? false,
       },
       signal: options.signal
     })
@@ -2546,6 +2547,14 @@ export const circleCompletionApi = {
 
   getRefreshSelectedJobStatus: async (jobId) => {
     const response = await apiClient.get(`/circle-completion/refresh-selected/jobs/${jobId}`)
+    return response.data
+  },
+
+  searchExternalSources: async (payload, options = {}) => {
+    const response = await apiClient.post('/circle-completion/external-search', payload, {
+      signal: options.signal,
+      timeout: options.timeout || 90000
+    })
     return response.data
   },
 

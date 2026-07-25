@@ -185,6 +185,36 @@
     </div>
 
     <div class="settings-grid two">
+      <div class="settings-card">
+        <div class="card-title">社团补全外部搜索</div>
+        <div class="field-stack">
+          <SettingsToggleRow v-model="config.circle_external_search.anime_share_enabled" title="启用 AnimeShare 探测" subtitle="作品页异步探测精确 RJ 命中的帖子，仅命中时显示跳转标签。" />
+          <SettingsToggleRow v-model="config.circle_external_search.south_plus_enabled" title="启用南+探测" subtitle="使用下方登录态搜索精确 RJ；未配置登录态时不会把权限页当成命中。" />
+          <SettingsFieldCard label="南+ Cookie" hint="从已登录的南+浏览器复制完整 Cookie。保存后会脱敏，只有后端探测请求使用。">
+            <AnimatedPasswordInput v-model="config.circle_external_search.south_plus_cookie" placeholder="例如：bbs_lastvisit=...; ..." autocomplete="off" />
+          </SettingsFieldCard>
+          <SettingsFieldCard label="南+ HTTP 代理" hint="只作用于南+搜索请求；留空则直连。支持 http://127.0.0.1:7890。">
+            <input v-model="config.circle_external_search.south_plus_proxy" class="field-input" type="text" placeholder="http://127.0.0.1:7890">
+          </SettingsFieldCard>
+        </div>
+      </div>
+
+      <div class="settings-card">
+        <div class="card-title">搜索标签规则</div>
+        <div class="field-stack">
+          <div class="email-watcher-guide-item">
+            <div class="email-watcher-guide-label"><SearchCheck :size="13" :stroke-width="2.5" /> 不干扰补全统计</div>
+            <p>AnimeShare 与南+只提供外部搜索跳转，不会进入缺失数量、下载来源、库存收录或任务中心统计。</p>
+          </div>
+          <div class="email-watcher-guide-item">
+            <div class="email-watcher-guide-label"><Languages :size="13" :stroke-width="2.5" /> 关联语言聚合</div>
+            <p>同一作品的原作、简中、繁中会按现有关联链汇总。单个结果直接打开，多个帖子或语言版本会在社团页内选择。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-grid two">
       <!-- ASMR 字幕处理 -->
       <div class="settings-card">
         <div class="card-title">ASMR 字幕处理</div>
@@ -423,7 +453,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { AlertCircle, BookOpen, CheckCircle2, FolderOpen, Loader2, Mail, Plus, RefreshCw, SearchCheck, Trash2, Wifi, Zap } from 'lucide-vue-next'
+import { AlertCircle, BookOpen, CheckCircle2, FolderOpen, Languages, Loader2, Mail, Plus, RefreshCw, SearchCheck, Trash2, Wifi, Zap } from 'lucide-vue-next'
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsNumberStepper from './SettingsNumberStepper.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'

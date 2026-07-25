@@ -466,7 +466,10 @@
               <div v-if="missingWorks.length > 0 && selectedActiveCanonicalRJCodes.length > 0" class="selection-bar">
                 <span class="selection-count">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorksTotal }}</span>
                 <div class="flex items-center gap-2">
-                  <button type="button" class="batch-action-button" @click="selectAllVisibleWorks">全选</button>
+                  <button type="button" class="batch-action-button" :class="{ 'is-busy': selectingAllWorks }" :disabled="selectingAllWorks" @click="selectAllVisibleWorks">
+                    <RefreshCw v-if="selectingAllWorks" :size="13" class="batch-action-spinner" />
+                    {{ selectingAllWorks ? '正在全选' : '全选' }}
+                  </button>
                   <button type="button" class="batch-action-button ghost" @click="clearSelection">清空</button>
                   <button
                     type="button"
@@ -543,6 +546,7 @@
                 :flashed-codes="flashedWorkCodes"
                 :located-codes="locatedWorkCodes"
                 :cover-overrides="coverOverrides"
+                :cover-fetching-codes="coverFetchInFlight"
                 image-field="thumb_image_url"
                 pager-label="缺失作品"
                 @select="toggleSelection"
@@ -551,6 +555,7 @@
                 @contextmenu="openWorkContextMenu"
                 @ensure-cover="ensureWorkCover"
                 @cover-failed="markWorkCoverFailed"
+                @external-search="openExternalSearch"
               />
             </el-tab-pane>
 
@@ -689,7 +694,10 @@
                 <div v-if="ownedWorks.length > 0 && selectedActiveCanonicalRJCodes.length > 0" class="selection-bar">
                   <span class="selection-count">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorksTotal }}</span>
                   <div class="flex items-center gap-2">
-                    <button type="button" class="batch-action-button" @click="selectAllVisibleWorks">全选</button>
+                    <button type="button" class="batch-action-button" :class="{ 'is-busy': selectingAllWorks }" :disabled="selectingAllWorks" @click="selectAllVisibleWorks">
+                      <RefreshCw v-if="selectingAllWorks" :size="13" class="batch-action-spinner" />
+                      {{ selectingAllWorks ? '正在全选' : '全选' }}
+                    </button>
                     <button type="button" class="batch-action-button ghost" @click="clearSelection">清空</button>
                     <button
                       type="button"
@@ -715,6 +723,7 @@
                   :flashed-codes="flashedWorkCodes"
                   :located-codes="locatedWorkCodes"
                   :cover-overrides="coverOverrides"
+                  :cover-fetching-codes="coverFetchInFlight"
                   image-field="thumb_image_url"
                   corner-label="已收录"
                   pager-label="已满足作品"
@@ -724,6 +733,7 @@
                   @contextmenu="openWorkContextMenu"
                   @ensure-cover="ensureWorkCover"
                   @cover-failed="markWorkCoverFailed"
+                  @external-search="openExternalSearch"
                 />
               </template>
             </el-tab-pane>
@@ -1018,6 +1028,33 @@
       @close="closeUploadWorkbench"
     />
 
+    <el-dialog
+      v-model="externalSearchDialogVisible"
+      title="选择外部搜索结果"
+      width="min(520px, calc(100vw - 32px))"
+      custom-class="mobile-full-dialog circle-external-search-dialog"
+      append-to-body
+    >
+      <div class="circle-external-search-dialog-subtitle">
+        {{ externalSearchDialogItem?.title || externalSearchDialogItem?.canonical_rjcode || '作品' }}
+      </div>
+      <div class="circle-external-search-options">
+        <button
+          v-for="entry in externalSearchDialogEntries"
+          :key="`${entry.source}-${entry.url}`"
+          type="button"
+          class="circle-external-search-option"
+          @click="openExternalSearchEntry(entry)"
+        >
+          <span class="circle-external-search-option-main">
+            <strong>{{ entry.variant_label || '原作' }} · {{ entry.rjcode }}</strong>
+            <small>{{ entry.title || '打开搜索结果' }}</small>
+          </span>
+          <ExternalLink :size="15" />
+        </button>
+      </div>
+    </el-dialog>
+
     <Transition name="floating-card">
       <BackgroundFloatingCard
         v-if="showDownloadBackgroundCard"
@@ -1072,7 +1109,7 @@ import { useRoute } from 'vue-router'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import celebrateImg from '../assets/celebrate.png'
 import confettiAnimation from '../assets/anime/Confetti.lottie'
-import { Check, CheckCircle2, ChevronDown, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown, Mail, Calendar, Gift, RefreshCw, ImageDown, BarChart3, Timer, Upload } from 'lucide-vue-next'
+import { Check, CheckCircle2, ChevronDown, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown, Mail, Calendar, Gift, RefreshCw, ImageDown, BarChart3, Timer, Upload, ExternalLink } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import api, { asmrSyncApi, circleCompletionApi, emailWatcherApi, libraryApi, localUploadApi, taskApi } from '../api'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
@@ -1216,10 +1253,14 @@ const detail = reactive({
 const CIRCLE_DETAIL_CACHE_TTL = 5 * 60 * 1000
 const CIRCLE_DETAIL_PREFETCH_LIMIT = 1
 const DOWNLOAD_PREVIEW_JOB_THRESHOLD = 8
+const EXTERNAL_SEARCH_BATCH_SIZE = 6
 const circleDetailCache = new Map()
 const circleWorksPageCache = new Map()
+const externalSearchPageCache = new Map()
 let circleDetailRequestSeq = 0
 let circleDetailAbortController = null
+let externalSearchRequestSeq = 0
+let externalSearchAbortController = null
 let circleDetailPrefetchTimer = null
 let circleDetailPrefetchIdleId = null
 let circleDetailPrefetchIdleIsTimeout = false
@@ -1304,6 +1345,10 @@ function resetCircleDetail() {
   if (circleDetailAbortController) {
     circleDetailAbortController.abort()
     circleDetailAbortController = null
+  }
+  if (externalSearchAbortController) {
+    externalSearchAbortController.abort()
+    externalSearchAbortController = null
   }
   Object.assign(detail, {
     circle_id: '',
@@ -1554,9 +1599,13 @@ async function syncActiveCircleWithList(options = {}) {
   await selectCircle(nextCircleId)
 }
 const activeTab = ref('missing')
+const externalSearchDialogVisible = ref(false)
+const externalSearchDialogItem = ref(null)
+const externalSearchDialogEntries = ref([])
 const selectedCanonicals = ref(new Set())
 const selectedDownloadableCanonicals = ref(new Set())
 const selectedRequestedRjcodes = ref({})
+const selectingAllWorks = ref(false)
 const selectionAnchorCanonical = ref('')
 const coverOverrides = ref({})
 const coverFailures = ref(new Set())
@@ -1735,6 +1784,132 @@ function applyCircleWorksPayload(payload = {}) {
       owned: { ...(payload.status_filter_counts.owned || {}) },
     }
   }
+  void refreshExternalSearchForPage()
+}
+
+function externalSearchPageKey() {
+  const codes = (Array.isArray(detail.works) ? detail.works : [])
+    .filter(item => !isBonusDisplayWork(item))
+    .map(item => normalizeRjcode(item?.canonical_rjcode))
+    .filter(Boolean)
+  return `${activeCircleId.value}|${activeTab.value}|${circleWorksPage.page}|${codes.join(',')}`
+}
+
+function mergeExternalSearchResults(items = {}) {
+  const resultMap = items && typeof items === 'object' ? items : {}
+  detail.works = (Array.isArray(detail.works) ? detail.works : []).map(item => {
+    const canonical = normalizeRjcode(item?.canonical_rjcode)
+    if (!canonical || isBonusDisplayWork(item)) return item
+    return { ...item, external_search: resultMap[canonical] || {} }
+  })
+}
+
+function buildExternalSearchEntry(source, canonical) {
+  const rjcode = normalizeRjcode(canonical)
+  if (!rjcode) return null
+  let url = ''
+  if (source === 'anime_share') {
+    url = `https://www.anime-sharing.com/search/3528560/?q=${encodeURIComponent(rjcode)}&o=relevance`
+  } else {
+    const params = new URLSearchParams({
+      step: '2',
+      keyword: rjcode,
+      method: 'OR',
+      pwuser: '',
+      sch_area: '0',
+      f_fid: 'all',
+      sch_time: 'all',
+      orderway: 'postdate',
+      asc: 'DESC',
+    })
+    url = `https://bbs.white-plus.net/search.php?${params.toString()}`
+  }
+  return {
+    source,
+    rjcode,
+    variant_key: 'original',
+    variant_label: '原作',
+    title: `搜索 ${rjcode}`,
+    url,
+  }
+}
+
+function buildExternalSearchFailure(canonical) {
+  return Object.fromEntries(['anime_share', 'south_plus'].map(source => {
+    const entry = buildExternalSearchEntry(source, canonical)
+    return [source, { status: 'error', results: [], search_results: entry ? [entry] : [] }]
+  }))
+}
+
+async function refreshExternalSearchForPage() {
+  const circleId = String(activeCircleId.value || '').trim()
+  const items = Array.isArray(detail.works) ? detail.works : []
+  const codes = [...new Set(items
+    .filter(item => !isBonusDisplayWork(item))
+    .map(item => normalizeRjcode(item?.canonical_rjcode))
+    .filter(Boolean))]
+  if (!circleId || !codes.length) return
+
+  const pageKey = externalSearchPageKey()
+  const cached = externalSearchPageCache.get(pageKey)
+  if (cached) {
+    mergeExternalSearchResults(cached)
+    return
+  }
+
+  const requestSeq = ++externalSearchRequestSeq
+  if (externalSearchAbortController) externalSearchAbortController.abort()
+  externalSearchAbortController = new AbortController()
+  const resultMap = {}
+  try {
+    for (let offset = 0; offset < codes.length; offset += EXTERNAL_SEARCH_BATCH_SIZE) {
+      const response = await circleCompletionApi.searchExternalSources(
+        { circle_id: circleId, canonical_rjcodes: codes.slice(offset, offset + EXTERNAL_SEARCH_BATCH_SIZE) },
+        { signal: externalSearchAbortController.signal },
+      )
+      if (requestSeq !== externalSearchRequestSeq || activeCircleId.value !== circleId) return
+      Object.assign(resultMap, response?.items && typeof response.items === 'object' ? response.items : {})
+      mergeExternalSearchResults(resultMap)
+    }
+    for (const canonical of codes) {
+      if (!resultMap[canonical]) resultMap[canonical] = buildExternalSearchFailure(canonical)
+    }
+    mergeExternalSearchResults(resultMap)
+    externalSearchPageCache.set(pageKey, resultMap)
+    while (externalSearchPageCache.size > 24) {
+      const oldestKey = externalSearchPageCache.keys().next().value
+      if (!oldestKey) break
+      externalSearchPageCache.delete(oldestKey)
+    }
+  } catch (error) {
+    if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return
+    const failedItems = Object.fromEntries(codes
+      .filter(canonical => !resultMap[canonical])
+      .map(canonical => [canonical, buildExternalSearchFailure(canonical)]))
+    Object.assign(resultMap, failedItems)
+    mergeExternalSearchResults(resultMap)
+    console.debug('[CircleCompletion] 外部搜索探测失败', error)
+  } finally {
+    if (requestSeq === externalSearchRequestSeq) externalSearchAbortController = null
+  }
+}
+
+function openExternalSearch(payload = {}) {
+  const entries = Array.isArray(payload?.results) ? payload.results.filter(entry => entry?.url) : []
+  if (!entries.length) return
+  if (entries.length === 1) {
+    window.open(entries[0].url, '_blank', 'noopener,noreferrer')
+    return
+  }
+  externalSearchDialogItem.value = payload.item || null
+  externalSearchDialogEntries.value = entries
+  externalSearchDialogVisible.value = true
+}
+
+function openExternalSearchEntry(entry) {
+  if (!entry?.url) return
+  externalSearchDialogVisible.value = false
+  window.open(entry.url, '_blank', 'noopener,noreferrer')
 }
 
 const refreshForceRefreshHint = computed(() => {
@@ -5504,15 +5679,22 @@ async function handleWorkContextAction(action) {
 }
 
 async function selectAllVisibleWorks() {
-  if (!activeCircleId.value) return
+  if (!activeCircleId.value || selectingAllWorks.value) return
+  selectingAllWorks.value = true
   try {
-    const result = await circleCompletionApi.getCircleWorkCodes(activeCircleId.value, buildCircleWorksQuery({ includePage: false }))
+    await new Promise(resolve => window.requestAnimationFrame(resolve))
+    const result = await circleCompletionApi.getCircleWorkCodes(activeCircleId.value, {
+      ...buildCircleWorksQuery({ includePage: false }),
+      selectionOnly: true,
+    })
     selectedCanonicals.value = new Set((result.canonical_rjcodes || []).filter(Boolean))
     selectedDownloadableCanonicals.value = new Set((result.downloadable_rjcodes || []).filter(Boolean))
-    selectedRequestedRjcodes.value = result.requested_rjcodes || {}
+    selectedRequestedRjcodes.value = {}
     selectionAnchorCanonical.value = ''
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '全选当前筛选结果失败')
+  } finally {
+    selectingAllWorks.value = false
   }
 }
 
@@ -9050,5 +9232,75 @@ function getUploadBackgroundTargetLabel(task) {
 :global(body.kikoerumanager-dark .circle-work-context-item:hover:not(:disabled)) {
   background: rgba(59, 130, 246, .18);
   color: #93c5fd;
+}
+
+.circle-external-search-dialog-subtitle {
+  margin: -4px 0 12px;
+  color: var(--circle-text-muted, #64748b);
+  font-size: 12px;
+}
+.circle-external-search-options {
+  display: grid;
+  gap: 8px;
+}
+.circle-external-search-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 54px;
+  padding: 10px 12px;
+  border: 1px solid var(--circle-border-soft, rgba(148, 163, 184, .22));
+  border-radius: 9px;
+  background: var(--circle-surface-soft, rgba(248, 250, 252, .8));
+  color: var(--circle-text, #334155);
+  text-align: left;
+  cursor: pointer;
+  transition: all .2s cubic-bezier(.34,1.56,.64,1);
+}
+.circle-external-search-option:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--circle-primary, #2563eb) 36%, transparent);
+  background: color-mix(in srgb, var(--circle-primary, #2563eb) 7%, var(--circle-surface-soft, #f8fafc));
+}
+.circle-external-search-option:active { transform: scale(.98); }
+.circle-external-search-option-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.circle-external-search-option-main strong {
+  overflow: hidden;
+  color: var(--circle-text-strong, #1f2937);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.circle-external-search-option-main small {
+  overflow: hidden;
+  color: var(--circle-text-muted, #64748b);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+:global(html.kikoerumanager-dark .circle-external-search-option),
+:global(body.kikoerumanager-dark .circle-external-search-option) {
+  border-color: rgba(148, 163, 184, .22);
+  background: rgba(39, 40, 45, .86);
+  color: #e5e7eb;
+}
+:global(html.kikoerumanager-dark .circle-external-search-option:hover),
+:global(body.kikoerumanager-dark .circle-external-search-option:hover) {
+  border-color: rgba(96, 165, 250, .48);
+  background: rgba(37, 99, 235, .18);
+}
+:global(html.kikoerumanager-dark .circle-external-search-option-main strong),
+:global(body.kikoerumanager-dark .circle-external-search-option-main strong) {
+  color: #f3f4f6;
+}
+:global(html.kikoerumanager-dark .circle-external-search-option-main small),
+:global(body.kikoerumanager-dark .circle-external-search-option-main small) {
+  color: #a1a1aa;
 }
 </style>

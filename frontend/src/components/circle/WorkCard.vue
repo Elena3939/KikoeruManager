@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { LibraryBig, Calendar, Gift } from 'lucide-vue-next'
+import { LibraryBig, Calendar, Gift, LoaderCircle, RefreshCw } from 'lucide-vue-next'
+import ExternalSearchSourceChips from './ExternalSearchSourceChips.vue'
 
 const props = defineProps({
   /** 作品数据对象 */
@@ -9,6 +10,8 @@ const props = defineProps({
   cardIndex: { type: Number, default: 0 },
   /** 是否选中 */
   selected: { type: Boolean, default: false },
+  /** 选中光环的错峰序号，避免批量选择时同帧触发大量脉冲 */
+  selectionPulseIndex: { type: Number, default: 0 },
   /** 是否处于状态闪烁中 */
   statusFlash: { type: Boolean, default: false },
   /** 是否处于搜索定位高亮中 */
@@ -27,15 +30,18 @@ const props = defineProps({
   imageActive: { type: Boolean, default: true },
   /** 由社团补全封面缓存返回的本地地址，优先于作品字段 */
   coverUrlOverride: { type: String, default: '' },
+  /** 当前封面是否正在下载到本地缓存 */
+  coverFetching: { type: Boolean, default: false },
   /** 尺寸变体 */
   size: { type: String, default: 'default', validator: v => ['default', 'lg'].includes(v) },
   showReleaseBadge: { type: Boolean, default: true },
 })
 
-const emit = defineEmits(['select', 'preview', 'reimport', 'image-settled', 'image-failed', 'contextmenu'])
+const emit = defineEmits(['select', 'preview', 'reimport', 'image-settled', 'image-failed', 'retry-cover', 'contextmenu', 'external-search'])
 
 const rawCoverUrl = computed(() => String(props.coverUrlOverride || props.item[props.imageField] || '').trim())
 const remoteCoverUrl = computed(() => String(props.item?.remote_image_url || '').trim())
+const selectionPulseDelay = computed(() => `${Math.min(Math.max(Number(props.selectionPulseIndex || 0), 0), 12) * 40}ms`)
 const imageFailed = ref(false)
 const displayCode = computed(() => {
   if (props.codeField) return props.item[props.codeField]
@@ -151,6 +157,7 @@ const coverUrl = computed(() => {
   }
   return value || remoteCoverUrl.value || buildDlsiteCoverUrl(rjcode, isUnreleased.value, 'sam')
 })
+const showCoverRetry = computed(() => props.imageActive && (imageFailed.value || !coverUrl.value))
 
 watch(coverUrl, () => {
   imageFailed.value = false
@@ -204,32 +211,23 @@ function buildDlsiteCoverUrl(rjcode, unreleased = false, variant = 'sam') {
 }
 
 function onCoverError(event) {
-  const rjcode = imageRjcode(remoteCoverUrl.value) || props.item.display_rjcode || displayCode.value || props.item.canonical_rjcode || props.item.rjcode
-  const fallbacks = uniqueImageUrls([
-    remoteCoverUrl.value,
-    ...(isUnreleased.value
-      ? [
-        buildDlsiteCoverUrl(rjcode, true, 'sam'),
-        buildDlsiteCoverUrl(rjcode, true, 'resized'),
-        buildDlsiteCoverUrl(rjcode, true, 'main'),
-        buildDlsiteCoverUrl(rjcode, false, 'sam'),
-        buildDlsiteCoverUrl(rjcode, false, 'resized'),
-        buildDlsiteCoverUrl(rjcode, false, 'main'),
-      ]
-      : [
-        buildDlsiteCoverUrl(rjcode, false, 'resized'),
-        buildDlsiteCoverUrl(rjcode, false, 'main'),
-      ]),
-  ])
-  const current = comparableUrl(event.currentTarget.currentSrc || event.currentTarget.src)
-  let index = Number(event.currentTarget.dataset.fallbackIndex || 0)
-  while (index < fallbacks.length) {
-    const fallback = fallbacks[index]
-    index += 1
-    if (comparableUrl(fallback) === current) continue
-    event.currentTarget.dataset.fallbackIndex = String(index)
-    event.currentTarget.src = fallback
-    return
+  const current = String(event?.currentTarget?.currentSrc || event?.currentTarget?.src || '')
+  if (!current.includes('/api/circle-completion/cover/')) {
+    const rjcode = imageRjcode(remoteCoverUrl.value) || props.item.display_rjcode || displayCode.value || props.item.canonical_rjcode || props.item.rjcode
+    const fallbacks = uniqueImageUrls([
+      remoteCoverUrl.value,
+      buildDlsiteCoverUrl(rjcode, false, 'resized'),
+      buildDlsiteCoverUrl(rjcode, false, 'main'),
+    ])
+    let index = Number(event.currentTarget.dataset.fallbackIndex || 0)
+    while (index < fallbacks.length) {
+      const fallback = fallbacks[index]
+      index += 1
+      if (comparableUrl(fallback) === comparableUrl(current)) continue
+      event.currentTarget.dataset.fallbackIndex = String(index)
+      event.currentTarget.src = fallback
+      return
+    }
   }
   imageFailed.value = true
   emit('image-failed', props.item)
@@ -240,6 +238,10 @@ function onCoverLoad(event) {
   imageFailed.value = false
   delete event.currentTarget.dataset.fallbackIndex
   emit('image-settled', displayCode.value)
+}
+
+function preventNativeShiftSelection(event) {
+  if (event.shiftKey) event.preventDefault()
 }
 
 </script>
@@ -258,7 +260,8 @@ function onCoverLoad(event) {
       disabled: props.disabled,
       'work-card--lg': props.size === 'lg',
     }"
-    :style="{ '--card-index': props.cardIndex }"
+    :style="{ '--card-index': props.cardIndex, '--selection-pulse-delay': selectionPulseDelay }"
+    @mousedown.capture="preventNativeShiftSelection"
     @click="emit('select', item, $event)"
     @contextmenu.prevent="emit('contextmenu', item, $event)"
   >
@@ -281,6 +284,19 @@ function onCoverLoad(event) {
         <slot name="cover-placeholder">
           <LibraryBig :size="props.size === 'lg' ? 28 : 22" class="opacity-40" />
         </slot>
+        <button
+          v-if="showCoverRetry"
+          type="button"
+          class="work-cover-retry"
+          :class="{ 'is-loading': coverFetching }"
+          :disabled="coverFetching"
+          title="重新下载封面到本地缓存"
+          aria-label="重新下载封面到本地缓存"
+          @click.stop="emit('retry-cover', item)"
+        >
+          <LoaderCircle v-if="coverFetching" :size="props.size === 'lg' ? 21 : 18" class="cover-retry-spin" />
+          <RefreshCw v-else :size="props.size === 'lg' ? 21 : 18" />
+        </button>
       </div>
       <div v-if="showCorner" class="work-corner-flag">{{ cornerText }}</div>
       <div v-if="isUnreleased" class="work-unreleased-flag">
@@ -321,6 +337,7 @@ function onCoverLoad(event) {
             <span class="tag-chip" :class="item.server_owned ? 'is-primary' : 'is-danger'">{{ item.server_owned ? '已收录' : '未收录' }}</span>
             <span v-if="showOriginalSubtitleState" class="tag-chip" :class="canRepairSubtitle ? 'is-repair' : (item.subtitle_present ? 'is-subtitle' : 'is-subtitle-none')">{{ originalSubtitleLabel }}</span>
             <span class="tag-chip" :class="item.has_asmr_one ? 'is-success' : 'is-disabled'">{{ item.has_asmr_one ? '可下载' : '无源' }}</span>
+            <ExternalSearchSourceChips :item="item" @open="emit('external-search', $event)" />
           </template>
         </div>
       </slot>
@@ -348,6 +365,8 @@ function onCoverLoad(event) {
   display: flex;
   flex-direction: column;
   cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
   transition:
     border-color .2s cubic-bezier(.4,0,.2,1),
     box-shadow .28s cubic-bezier(.4,0,.2,1),
@@ -378,6 +397,7 @@ function onCoverLoad(event) {
     inset 0 0 0 1px color-mix(in srgb, var(--circle-surface, #ffffff) 92%, transparent),
     0 0 0 3px color-mix(in srgb, var(--circle-primary, #2563eb) 20%, transparent);
   animation: selectRingPulse .5s cubic-bezier(.4,0,.2,1);
+  animation-delay: var(--selection-pulse-delay, 0ms);
 }
 
 /* ── 封面闪光 ── */
@@ -444,6 +464,30 @@ function onCoverLoad(event) {
   color: var(--circle-text-subtle, #c1c8d1);
   background: var(--circle-surface-muted, #f5f6f8);
 }
+.work-cover-retry {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid color-mix(in srgb, var(--circle-primary, #2563eb) 34%, transparent);
+  border-radius: 50%;
+  color: var(--circle-primary, #2563eb);
+  background: color-mix(in srgb, var(--circle-surface, #fff) 88%, transparent);
+  box-shadow: 0 3px 10px rgba(37, 99, 235, 0.12);
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.work-cover-retry:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.08);
+  border-color: var(--circle-primary, #2563eb);
+  background: var(--circle-surface, #fff);
+}
+.work-cover-retry:active:not(:disabled) { transform: scale(.96); }
+.work-cover-retry.is-loading svg { animation: workCoverRetrySpin .85s linear infinite; }
+.work-cover-retry:disabled { cursor: wait; opacity: .72; }
+@keyframes workCoverRetrySpin { to { transform: rotate(360deg); } }
 
 /* ── 已下载态 ── */
 .work-card.is-downloaded {
