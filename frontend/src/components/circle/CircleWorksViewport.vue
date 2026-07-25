@@ -16,6 +16,7 @@ const props = defineProps({
   selectedCodes: { type: Object, default: () => new Set() },
   flashedCodes: { type: Object, default: () => new Set() },
   locatedCodes: { type: Object, default: () => new Set() },
+  coverOverrides: { type: Object, default: () => ({}) },
   imageField: { type: String, default: 'image_url' },
   cornerLabel: { type: String, default: '' },
   pagerLabel: { type: String, default: '作品' },
@@ -28,6 +29,9 @@ const emit = defineEmits([
   'select',
   'preview',
   'reimport',
+  'contextmenu',
+  'ensure-cover',
+  'cover-failed',
 ])
 
 const scrollRef = ref(null)
@@ -183,17 +187,15 @@ function shouldDimBonusCard(bonusViewModel) {
   return Boolean(bonusViewModel?.dimmed)
 }
 
-function openBonusDetail(bonus) {
+function openBonusDetail(bonus, event = null) {
   activeBonusDetail.value = bonus
   const target = bonusActionItem(bonus, 'select')
-  if (!isItemSelected(target)) emit('select', target)
+  emit('select', target, event)
+  emit('ensure-cover', target)
 }
 
 function closeBonusDetail() {
-  const bonus = activeBonusDetail.value
   activeBonusDetail.value = null
-  const target = bonusActionItem(bonus, 'deselect')
-  if (isItemSelected(target)) emit('select', target)
 }
 
 function handleBonusAction(bonus) {
@@ -205,8 +207,12 @@ function previewBonus(bonus) {
   emit('preview', target?.canonical_rjcode || bonusCode(target))
 }
 
-function forwardRowSelect(item) {
-  emit('select', bonusActionItem(item, 'select'))
+function forwardRowSelect(item, event) {
+  emit('select', bonusActionItem(item, 'select'), event)
+}
+
+function forwardRowContextMenu(item, event) {
+  emit('contextmenu', bonusActionItem(item, 'select'), event)
 }
 
 function forwardRowPreview(payload, fallbackItem = null) {
@@ -262,6 +268,14 @@ function workStateCodeList(item) {
 
 function matchesWorkCodeSet(item, codeSet) {
   return workStateCodeList(item).some(code => codeSet?.has?.(code))
+}
+
+function coverOverrideFor(item) {
+  for (const code of workStateCodeList(item)) {
+    const override = String(props.coverOverrides?.[code] || '').trim()
+    if (override) return override
+  }
+  return ''
 }
 
 function hasLocalDownloadReadyBonus(item) {
@@ -599,7 +613,7 @@ function bonusReleaseLabel(item) {
 }
 
 function bonusCoverUrl(item) {
-  return String(item?.[props.imageField] || item?.image_url || item?.thumb_image_url || '').trim()
+  return coverOverrideFor(item) || String(item?.[props.imageField] || item?.image_url || item?.thumb_image_url || '').trim()
 }
 
 function hasBonusImageFailed(key) {
@@ -626,6 +640,7 @@ function onBonusCoverError(event, item, key) {
     failed.add(normalizedKey)
     failedBonusImageKeys.value = failed
   }
+  emit('cover-failed', bonusActionItem(item, 'select'))
   markImageSettled(key)
 }
 
@@ -657,11 +672,17 @@ function normalizeDlsiteMainImageUrl(value) {
 }
 
 function bonusMainCoverUrl(item) {
+  const override = coverOverrideFor(item)
+  if (override) return override
   const storedMain = normalizeDlsiteMainImageUrl(item?.image_url)
   if (storedMain) return storedMain
   const storedThumb = normalizeDlsiteMainImageUrl(item?.thumb_image_url || item?.[props.imageField])
   if (storedThumb) return storedThumb
   return buildDlsiteImageUrl(bonusCode(item), 'main')
+}
+
+function handleActiveBonusDetailCoverError() {
+  if (activeBonusDetail.value) emit('cover-failed', bonusActionItem(activeBonusDetail.value, 'select'))
 }
 
 function getRowItems(rowIndex) {
@@ -847,9 +868,12 @@ onBeforeUnmount(() => {
               :completion-dimmed="shouldDimWorkCard(viewModel)"
               :corner-label="cornerLabel"
               :image-active="isImageActive(viewModel.key)"
-              @select="emit('select', $event)"
+              :cover-url-override="coverOverrideFor(viewModel.item)"
+              @select="(item, event) => emit('select', item, event)"
               @preview="emit('preview', $event)"
               @reimport="emit('reimport', $event)"
+              @contextmenu="(item, event) => emit('contextmenu', item, event)"
+              @image-failed="emit('cover-failed', $event)"
               @image-settled="markImageSettled(viewModel.key)"
             />
             <div v-if="viewModel.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
@@ -865,7 +889,8 @@ onBeforeUnmount(() => {
                   'is-dimmed': shouldDimBonusCard(bonusViewModel),
                 }"
                 :title="bonusTitle(bonusViewModel.item)"
-                @click.stop="openBonusDetail(bonusViewModel.item)"
+                @click.stop="openBonusDetail(bonusViewModel.item, $event)"
+                @contextmenu.prevent.stop="emit('contextmenu', bonusActionItem(bonusViewModel.item, 'select'), $event)"
               >
                 <span class="circle-bonus-gift-cover">
                   <img
@@ -897,6 +922,7 @@ onBeforeUnmount(() => {
                     loading="eager"
                     decoding="async"
                     referrerpolicy="no-referrer"
+                    @error="handleActiveBonusDetailCoverError"
                   />
                   <Gift v-else :size="38" />
                   <span class="circle-bonus-detail-badge">特典</span>
@@ -945,9 +971,12 @@ onBeforeUnmount(() => {
                 :image-field="imageField"
                 :corner-label="cornerLabel"
                 :image-active="isImageActive(viewModel.key)"
-                @select="forwardRowSelect($event)"
+                :cover-url-override="coverOverrideFor(viewModel.item)"
+                @select="forwardRowSelect"
                 @preview="forwardRowPreview($event, viewModel.item)"
                 @reimport="forwardRowReimport($event)"
+                @contextmenu="forwardRowContextMenu"
+                @image-failed="emit('cover-failed', $event)"
                 @image-settled="markImageSettled(viewModel.key)"
               />
               <div v-if="viewModel.bonuses.length" class="circle-bonus-shelf is-list">
@@ -962,9 +991,10 @@ onBeforeUnmount(() => {
                     'status-flash': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).flashed,
                     'locate-flash': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).located,
                   }"
-                  @click.stop="openBonusDetail(bonus)"
-                  @keydown.enter.stop.prevent="openBonusDetail(bonus)"
-                  @keydown.space.stop.prevent="openBonusDetail(bonus)"
+                  @click.stop="openBonusDetail(bonus, $event)"
+                  @contextmenu.prevent.stop="emit('contextmenu', bonusActionItem(bonus, 'select'), $event)"
+                  @keydown.enter.stop.prevent="openBonusDetail(bonus, $event)"
+                  @keydown.space.stop.prevent="openBonusDetail(bonus, $event)"
                 >
                   <span class="circle-bonus-gift-cover">
                     <img
@@ -1017,9 +1047,10 @@ onBeforeUnmount(() => {
                     <img
                       v-if="activeBonusDetailCover"
                       :src="activeBonusDetailCover"
-                      loading="eager"
-                      decoding="async"
-                      referrerpolicy="no-referrer"
+                    loading="eager"
+                    decoding="async"
+                    referrerpolicy="no-referrer"
+                    @error="handleActiveBonusDetailCoverError"
                     />
                     <Gift v-else :size="38" />
                     <span class="circle-bonus-detail-badge">特典</span>
@@ -1111,9 +1142,12 @@ onBeforeUnmount(() => {
                   :completion-dimmed="shouldDimWorkCard(cell)"
                   :corner-label="cornerLabel"
                   :image-active="isImageActive(cell.key)"
-                  @select="emit('select', $event)"
+                  :cover-url-override="coverOverrideFor(cell.item)"
+                  @select="(item, event) => emit('select', item, event)"
                   @preview="emit('preview', $event)"
                   @reimport="emit('reimport', $event)"
+                  @contextmenu="(item, event) => emit('contextmenu', item, event)"
+                  @image-failed="emit('cover-failed', $event)"
                   @image-settled="markImageSettled(cell.key)"
                 />
                 <div v-if="cell.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
@@ -1129,7 +1163,8 @@ onBeforeUnmount(() => {
                       'is-dimmed': shouldDimBonusCard(bonusViewModel),
                     }"
                     :title="bonusTitle(bonusViewModel.item)"
-                    @click.stop="openBonusDetail(bonusViewModel.item)"
+                    @click.stop="openBonusDetail(bonusViewModel.item, $event)"
+                    @contextmenu.prevent.stop="emit('contextmenu', bonusActionItem(bonusViewModel.item, 'select'), $event)"
                   >
                     <span class="circle-bonus-gift-cover">
                       <img
@@ -1161,6 +1196,7 @@ onBeforeUnmount(() => {
                         loading="eager"
                         decoding="async"
                         referrerpolicy="no-referrer"
+                        @error="handleActiveBonusDetailCoverError"
                       />
                       <Gift v-else :size="38" />
                       <span class="circle-bonus-detail-badge">特典</span>
@@ -1209,9 +1245,12 @@ onBeforeUnmount(() => {
                     :image-field="imageField"
                     :corner-label="cornerLabel"
                     :image-active="isImageActive(cell.key)"
-                    @select="forwardRowSelect($event)"
+                    :cover-url-override="coverOverrideFor(cell.item)"
+                    @select="forwardRowSelect"
                     @preview="forwardRowPreview($event, cell.item)"
                     @reimport="forwardRowReimport($event)"
+                    @contextmenu="forwardRowContextMenu"
+                    @image-failed="emit('cover-failed', $event)"
                     @image-settled="markImageSettled(cell.key)"
                   />
                   <div v-if="cell.bonuses.length" class="circle-bonus-shelf is-list">
@@ -1226,9 +1265,10 @@ onBeforeUnmount(() => {
                         'status-flash': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).flashed,
                         'locate-flash': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).located,
                       }"
-                      @click.stop="openBonusDetail(bonus)"
-                      @keydown.enter.stop.prevent="openBonusDetail(bonus)"
-                      @keydown.space.stop.prevent="openBonusDetail(bonus)"
+                      @click.stop="openBonusDetail(bonus, $event)"
+                      @contextmenu.prevent.stop="emit('contextmenu', bonusActionItem(bonus, 'select'), $event)"
+                      @keydown.enter.stop.prevent="openBonusDetail(bonus, $event)"
+                      @keydown.space.stop.prevent="openBonusDetail(bonus, $event)"
                     >
                       <span class="circle-bonus-gift-cover">
                         <img
@@ -1281,9 +1321,10 @@ onBeforeUnmount(() => {
                         <img
                           v-if="activeBonusDetailCover"
                           :src="activeBonusDetailCover"
-                          loading="eager"
-                          decoding="async"
-                          referrerpolicy="no-referrer"
+                        loading="eager"
+                        decoding="async"
+                        referrerpolicy="no-referrer"
+                        @error="handleActiveBonusDetailCoverError"
                         />
                         <Gift v-else :size="38" />
                         <span class="circle-bonus-detail-badge">特典</span>

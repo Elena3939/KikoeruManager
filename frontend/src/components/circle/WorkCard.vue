@@ -25,14 +25,16 @@ const props = defineProps({
   cornerLabel: { type: String, default: '' },
   /** 是否允许挂载真实图片 src，由外层虚拟视口调度 */
   imageActive: { type: Boolean, default: true },
+  /** 由社团补全封面缓存返回的本地地址，优先于作品字段 */
+  coverUrlOverride: { type: String, default: '' },
   /** 尺寸变体 */
   size: { type: String, default: 'default', validator: v => ['default', 'lg'].includes(v) },
   showReleaseBadge: { type: Boolean, default: true },
 })
 
-const emit = defineEmits(['select', 'preview', 'reimport', 'image-settled'])
+const emit = defineEmits(['select', 'preview', 'reimport', 'image-settled', 'image-failed', 'contextmenu'])
 
-const rawCoverUrl = computed(() => String(props.item[props.imageField] || '').trim())
+const rawCoverUrl = computed(() => String(props.coverUrlOverride || props.item[props.imageField] || '').trim())
 const remoteCoverUrl = computed(() => String(props.item?.remote_image_url || '').trim())
 const imageFailed = ref(false)
 const displayCode = computed(() => {
@@ -230,6 +232,7 @@ function onCoverError(event) {
     return
   }
   imageFailed.value = true
+  emit('image-failed', props.item)
   emit('image-settled', displayCode.value)
 }
 
@@ -256,7 +259,8 @@ function onCoverLoad(event) {
       'work-card--lg': props.size === 'lg',
     }"
     :style="{ '--card-index': props.cardIndex }"
-    @click="emit('select', item)"
+    @click="emit('select', item, $event)"
+    @contextmenu.prevent="emit('contextmenu', item, $event)"
   >
     <!-- 选中指示器光环 -->
     <div class="work-card-select-ring" />

@@ -86,8 +86,8 @@ filter:
   enabled: true
   filter_dir: true
   rules:
-  - name: 过滤无 SE 的文件
-    pattern: (?i)(?:^|[^A-Za-z0-9])(?:(?:se|sound|sfx|音|音效|効果音|音楽)(?:\s*[&＆]\s*(?:music|音楽))?(?:[\s._-]*(?:なし|無し|无|無|CUT|切除|削减|カット版))?|(?:无|無|なし|無し|without)\s*[\s._-]?(?:se|sound|sfx|音|音效|効果音)|(?:音声のみ|se\s*cut)\s*wav|効果音カット版|SEなし|カウントダウンなし|BGMなし|反転|左右逆|不含音效|无射精音|SEOFF)(?:[^A-Za-z0-9]|$)
+  - name: 过滤明确无 SE / CUT 的文件
+    pattern: (?i)(?:(?:^|[^A-Za-z0-9])(?:se|sound|sfx|音|音效|音楽|効果音)(?:\s*[&＆]\s*(?:music|音楽))?[\s._-]*(?:なし|無し|无|無|cut|切除|削减|カット版)(?:$|[^A-Za-z0-9])|(?:^|[^A-Za-z0-9])(?:无|無|なし|無し|without|不含)[\s._-]*(?:se|sound|sfx|音|音效|効果音)(?:$|[^A-Za-z0-9])|(?:^|[^A-Za-z0-9])(?:音声のみ|se\s*cut|effects?\s*wav|効果音カット版|カウントダウンなし|bgmなし|seoff|nose|無射精音|反転|左右逆)(?:$|[^A-Za-z0-9]))
     target: all
     action: exclude
     enabled: true

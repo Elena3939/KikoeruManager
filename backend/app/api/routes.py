@@ -16685,6 +16685,12 @@ class CircleCompletionRefreshSelectedJobRequest(BaseModel):
     owned_only: bool = False
 
 
+class CircleCompletionCoverFetchRequest(BaseModel):
+    rjcode: str
+    variant: str = "card"
+    force: bool = False
+
+
 class CircleCompletionDownloadStartRequest(BaseModel):
     circle_id: str
     circle_name: str = ""
@@ -19702,6 +19708,39 @@ async def circle_completion_cover(filename: str):
     )
 
 
+@app.post("/api/circle-completion/cover/fetch")
+async def circle_completion_fetch_cover(payload: CircleCompletionCoverFetchRequest):
+    """按 RJ 立即补齐社团补全封面缓存。"""
+
+    from ..core.circle_image_cache_service import get_circle_image_cache_service
+
+    service = get_circle_image_cache_service()
+    rjcode = service.normalize_rjcode(payload.rjcode)
+    variant = service._normalize_variant(payload.variant)
+    if not rjcode:
+        raise HTTPException(status_code=400, detail="RJ 编号无效")
+
+    path = await service.fetch_local_for_rjcode(
+        rjcode,
+        variant=variant,
+        force=bool(payload.force),
+    )
+    if path is None or not path.is_file():
+        return {
+            "success": False,
+            "rjcode": rjcode,
+            "variant": variant,
+            "detail": "封面暂时无法下载",
+        }
+    return {
+        "success": True,
+        "rjcode": rjcode,
+        "variant": variant,
+        "filename": path.name,
+        "cover_url": service.get_local_url(rjcode, variant),
+    }
+
+
 @app.post("/api/circle-completion/download/preview")
 async def circle_completion_download_preview(
     payload: CircleCompletionDownloadPreviewRequest,
@@ -20245,16 +20284,24 @@ async def local_upload_status(task_ids: str = "", include_hidden: bool = True):
 
 
 @app.get("/api/asmr-sync/status")
-async def asmr_sync_status():
+async def asmr_sync_status(task_ids: str = ""):
     """获取当前同步任务状态"""
     from ..core.task_engine import TaskType, get_task_engine
 
     try:
         engine = get_task_engine()
         all_tasks = engine.get_all_tasks()
+        requested_ids = list(dict.fromkeys(
+            str(item or "").strip()
+            for item in str(task_ids or "").split(",")
+            if str(item or "").strip()
+        ))
 
         # 过滤出 ASMR 同步任务
         asmr_tasks = [t for t in all_tasks if t.type == TaskType.ASMR_SYNC_DOWNLOAD]
+        if requested_ids:
+            task_map = {str(task.id): task for task in asmr_tasks}
+            asmr_tasks = [task_map[task_id] for task_id in requested_ids if task_id in task_map]
         session_ids = {
             str(t.task_metadata.get("session_id") or "").strip()
             for t in asmr_tasks
@@ -20311,7 +20358,7 @@ async def asmr_sync_status():
             "completed": len([t for t in asmr_tasks if t.status.value == "completed"]),
             "failed": len([t for t in asmr_tasks if t.status.value == "failed"]),
             "waiting_retry": len([t for t in asmr_tasks if t.status.value == "waiting_retry"]),
-            "tasks": [_serialize_asmr_sync_task_status(t, session_map) for t in asmr_tasks[:20]]
+            "tasks": [_serialize_asmr_sync_task_status(t, session_map) for t in (asmr_tasks if requested_ids else asmr_tasks[:20])]
         }
 
     except Exception as e:
