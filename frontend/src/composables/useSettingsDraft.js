@@ -287,6 +287,12 @@ export const defaultConfig = {
     used_bytes: 0,
     account_cached_at: 0
   },
+  circle_external_search: {
+    anime_share_enabled: true,
+    south_plus_enabled: true,
+    south_plus_cookie: '',
+    south_plus_proxy: ''
+  },
   auto_process: {
     check_duplicate: true,
     import_linked_translation_subtitles: true,
@@ -867,6 +873,9 @@ export function useSettingsDraft(options = {}) {
       }
       if (payload.baidu_netdisk?.cookie === MASKED_PASSWORD) {
         delete payload.baidu_netdisk.cookie
+      }
+      if (payload.circle_external_search?.south_plus_cookie === MASKED_PASSWORD) {
+        delete payload.circle_external_search.south_plus_cookie
       }
       stripMaskedPikPakAccountSecrets(payload, snapshot.value)
       await configStore.saveConfig(payload)

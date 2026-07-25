@@ -233,6 +233,11 @@ baidu_netdisk:
   low_speed_threshold_mbps: 3
   low_speed_duration_seconds: 180
   low_speed_refresh_limit: 2
+circle_external_search:
+  anime_share_enabled: true
+  south_plus_enabled: true
+  south_plus_cookie: ''
+  south_plus_proxy: ''
 existing_process_sync_subtitle: true
 existing_process_rename: true
 existing_process_classify: true

@@ -506,6 +506,15 @@ def _mask_baidu_netdisk_config_for_log(value: dict) -> dict:
     return data
 
 
+def _mask_circle_external_search_config_for_log(value: dict) -> dict:
+    data = dict(sanitize_for_log(value or {}))
+    if data.get("south_plus_cookie"):
+        data["south_plus_cookie"] = "********"
+    if data.get("south_plus_proxy"):
+        data["south_plus_proxy"] = _mask_url_credentials(data.get("south_plus_proxy") or "")
+    return data
+
+
 def _has_baidu_login_cookie(value: str) -> bool:
     return bool(re.search(r"(?:^|;\s*)BDUSS(?:_BFESS)?=", str(value or ""), re.I))
 
@@ -2744,6 +2753,7 @@ class ConfigResponse(BaseModel):
     asmr_sync: Optional[dict] = None
     http_downloader: Optional[dict] = None
     baidu_netdisk: Optional[dict] = None
+    circle_external_search: Optional[dict] = None
     auto_process: Optional[dict] = None
     process_existing: Optional[dict] = None
     asmr_sync_step: Optional[dict] = None
@@ -3394,6 +3404,14 @@ def _mask_baidu_netdisk_config(config) -> Optional[dict]:
     return data
 
 
+def _mask_circle_external_search_config(config) -> Optional[dict]:
+    if not hasattr(config, "circle_external_search"):
+        return None
+    data = config.circle_external_search.model_dump()
+    data["south_plus_cookie"] = "********" if data.get("south_plus_cookie") else ""
+    return data
+
+
 def _runtime_config_path_from_settings() -> str:
     from ..config.settings import get_config_file_path, get_config_runtime_state
 
@@ -3517,6 +3535,21 @@ def _read_baidu_netdisk_secret_from_disk(key: str) -> str:
         return ""
 
 
+def _read_circle_external_search_secret_from_disk(key: str) -> str:
+    """读取外部搜索原始 Cookie，避免保存设置时覆盖成脱敏占位符。"""
+    try:
+        config_path = _runtime_config_path_from_settings()
+        if not os.path.exists(config_path):
+            return ""
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        value = data.get("circle_external_search", {}).get(key, "")
+        return value if value != "********" else ""
+    except Exception:
+        logger.warning("[社团补全·外部搜索] 读取敏感配置失败: %s", key, exc_info=True)
+        return ""
+
+
 def _read_http_downloader_accounts_from_disk() -> list[dict]:
     """读取磁盘原始 PikPak 多账号，保存脱敏表单时保留真实 token/password。"""
     try:
@@ -3612,6 +3645,7 @@ def get_configuration():
         asmr_sync=config.asmr_sync.model_dump() if hasattr(config, 'asmr_sync') else None,
         http_downloader=_mask_http_downloader_config(config),
         baidu_netdisk=_mask_baidu_netdisk_config(config),
+        circle_external_search=_mask_circle_external_search_config(config),
         auto_process=config.auto_process.model_dump() if hasattr(config, 'auto_process') else None,
         process_existing=config.process_existing.model_dump() if hasattr(config, 'process_existing') else None,
         asmr_sync_step=config.asmr_sync_step.model_dump() if hasattr(config, 'asmr_sync_step') else None,
@@ -4202,6 +4236,29 @@ async def update_configuration(request: Request):
             except Exception as e:
                 logger.error("[百度网盘] 配置验证失败: %s", e)
                 raise HTTPException(status_code=400, detail=f"百度网盘配置无效: {e}")
+
+        if 'circle_external_search' in config_data:
+            logger.info(
+                "[社团补全·外部搜索] 接收到配置: %s",
+                _mask_circle_external_search_config_for_log(config_data['circle_external_search']),
+            )
+            try:
+                from ..config.settings import CircleExternalSearchConfig
+
+                external_search_data = dict(config_data['circle_external_search'])
+                current_cfg = get_config()
+                incoming_cookie = str(external_search_data.get('south_plus_cookie') or '').strip()
+                if incoming_cookie == '********' or 'south_plus_cookie' not in external_search_data:
+                    current_cookie = str(getattr(current_cfg.circle_external_search, 'south_plus_cookie', '') or '')
+                    external_search_data['south_plus_cookie'] = (
+                        _read_circle_external_search_secret_from_disk('south_plus_cookie')
+                        or (current_cookie if current_cookie != '********' else '')
+                    )
+                external_config = CircleExternalSearchConfig(**external_search_data)
+                config_data['circle_external_search'] = external_config.model_dump()
+            except Exception as e:
+                logger.error("[社团补全·外部搜索] 配置验证失败: %s", e)
+                raise HTTPException(status_code=400, detail=f"社团外部搜索配置无效: {e}")
 
         if 'backup_zip' in config_data:
             try:
@@ -5559,6 +5616,7 @@ def _search_log_snapshots(
     cursor_reset: bool,
 ) -> Dict[str, Any]:
     results: List[str] = []
+    full_results: List[str] = []
     total_scan_bytes = 0
     scanned_files: List[Dict[str, Any]] = []
     next_file_index = start_file_index
@@ -5612,6 +5670,7 @@ def _search_log_snapshots(
                 logical_level = "INFO"
                 logical_match = False
                 logical_display = ""
+                logical_fragments: List[str] = []
                 overlap = ""
                 first_fragment = True
 
@@ -5643,6 +5702,7 @@ def _search_log_snapshots(
                     total_scan_bytes += consumed
                     line_complete = raw_bytes.endswith((b"\n", b"\r")) or handle.tell() >= file_end
                     text = raw_bytes.decode("utf-8", errors="ignore").rstrip("\r\n")
+                    logical_fragments.append(text)
 
                     if first_fragment:
                         match = _LOG_LINE_LEVEL_RE.match(text)
@@ -5665,8 +5725,14 @@ def _search_log_snapshots(
                         continue
 
                     if logical_match:
+                        full_line = "".join(logical_fragments).strip()
+                        if not logical_display:
+                            logical_display = full_line[:_LOG_LINE_LENGTH_CAP]
+                            if len(full_line) > _LOG_LINE_LENGTH_CAP:
+                                logical_display += "…"
                         if len(results) < limit:
                             results.append(logical_display)
+                            full_results.append(full_line)
                         else:
                             extra_match_offset = logical_start
                             has_more = True
@@ -5676,6 +5742,7 @@ def _search_log_snapshots(
                     logical_level = "INFO"
                     logical_match = False
                     logical_display = ""
+                    logical_fragments = []
                     overlap = ""
                     first_fragment = True
 
@@ -5719,6 +5786,7 @@ def _search_log_snapshots(
         )
     return {
         "logs": results,
+        "full_logs": full_results,
         "total_matched": matched_after + (1 if has_more else 0),
         "matched_before": matched_before,
         "matched_after": matched_after,
@@ -16691,6 +16759,11 @@ class CircleCompletionCoverFetchRequest(BaseModel):
     force: bool = False
 
 
+class CircleCompletionExternalSearchRequest(BaseModel):
+    circle_id: str
+    canonical_rjcodes: List[str]
+
+
 class CircleCompletionDownloadStartRequest(BaseModel):
     circle_id: str
     circle_name: str = ""
@@ -19535,6 +19608,37 @@ async def circle_completion_works(
         raise HTTPException(status_code=500, detail=f"查询社团补全作品分页失败: {str(exc)}")
 
 
+@app.post("/api/circle-completion/external-search")
+async def circle_completion_external_search(payload: CircleCompletionExternalSearchRequest):
+    """异步探测 AnimeShare / 南+，仅返回外部跳转标签。"""
+    circle_id = str(payload.circle_id or "").strip()
+    canonical_codes = list(dict.fromkeys(
+        str(code or "").strip().upper()
+        for code in payload.canonical_rjcodes or []
+        if str(code or "").strip()
+    ))
+    if not circle_id:
+        raise HTTPException(status_code=400, detail="缺少社团标识")
+    if not canonical_codes:
+        return {"success": True, "items": {}}
+    if len(canonical_codes) > 100:
+        raise HTTPException(status_code=400, detail="单次外部搜索最多 100 个作品")
+    try:
+        from ..core.circle_completion_service import get_circle_completion_service
+        from ..core.circle_external_search_service import get_circle_external_search_service
+
+        variants = await asyncio.to_thread(
+            get_circle_completion_service().get_external_search_variants,
+            circle_id,
+            canonical_codes,
+        )
+        result = await get_circle_external_search_service().search_variants(variants)
+        return {"success": True, **result}
+    except Exception as exc:
+        logger.warning("[社团补全·外部搜索] 批量查询失败 circle=%s: %s", circle_id, sanitize_text_for_log(exc))
+        raise HTTPException(status_code=502, detail="外部搜索暂时不可用")
+
+
 @app.get("/api/circle-completion/circles/{circle_id}/work-codes")
 async def circle_completion_work_codes(
     http_request: Request,
@@ -19546,6 +19650,7 @@ async def circle_completion_work_codes(
     compare_filter: str = "all",
     search: str = "",
     sort: str = "updated_desc",
+    selection_only: bool = False,
 ):
     from ..core.circle_completion_service import get_circle_completion_service
 
@@ -19559,6 +19664,7 @@ async def circle_completion_work_codes(
             "compare_filter": compare_filter,
             "search": bool(str(search or "").strip()),
             "sort": sort,
+            "selection_only": bool(selection_only),
             "view": "work_codes",
         }
         result = await get_circle_completion_service().list_circle_completion_work_codes(
@@ -19570,6 +19676,7 @@ async def circle_completion_work_codes(
             compare_filter=compare_filter,
             search=search,
             sort=sort,
+            selection_only=bool(selection_only),
         )
         return {"success": True, **result}
     except ValueError as exc:

@@ -1,7 +1,8 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { FileText, LibraryBig, Server, X, PackageCheck, Layers, ExternalLink, Calendar, Gift } from 'lucide-vue-next'
+import { FileText, LibraryBig, Server, X, PackageCheck, Layers, ExternalLink, Calendar, Gift, LoaderCircle, RefreshCw } from 'lucide-vue-next'
 import { useViewport } from '../../composables/useViewport'
+import ExternalSearchSourceChips from './ExternalSearchSourceChips.vue'
 
 const props = defineProps({
   /** 作品数据对象 */
@@ -26,13 +27,19 @@ const props = defineProps({
   imageActive: { type: Boolean, default: true },
   /** 由社团补全封面缓存返回的本地地址，优先于作品字段 */
   coverUrlOverride: { type: String, default: '' },
+  /** 当前封面是否正在下载到本地缓存 */
+  coverFetching: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['select', 'preview', 'reimport', 'image-settled', 'image-failed', 'contextmenu'])
+const emit = defineEmits(['select', 'preview', 'reimport', 'image-settled', 'image-failed', 'retry-cover', 'contextmenu', 'external-search'])
 
 const { isMobile } = useViewport()
 const remoteCoverUrl = computed(() => String(props.item?.remote_image_url || '').trim())
 const imageFailed = ref(false)
+
+function preventNativeShiftSelection(event) {
+  if (event.shiftKey) event.preventDefault()
+}
 
 const displayCode = computed(() => {
   if (props.codeField) return props.item[props.codeField]
@@ -106,7 +113,6 @@ const cvLabel = computed(() => {
   if (!Array.isArray(cvs) || cvs.length === 0) return ''
   return cvs.join(' / ')
 })
-
 /**
  * DLsite 列表小图：优先用 _img_sam.jpg（同目录小方块缩略图）
  * 来源：把已存储的 _img_main.jpg URL 替换后缀；若无存储则由 RJ 号推算
@@ -160,25 +166,6 @@ function toThumbnailUrl(value) {
     .replace('_img_main.jpg', '_img_sam.jpg')
 }
 
-function toResizedUrl(value) {
-  const url = String(value || '').trim()
-  if (!url.includes('img.dlsite.jp')) return ''
-  if (url.includes('_img_main_240x240.jpg')) return url
-  return url
-    .replace('img.dlsite.jp/modpub/images2/', 'img.dlsite.jp/resize/images2/')
-    .replace('_img_sam.jpg', '_img_main_240x240.jpg')
-    .replace('_img_main.jpg', '_img_main_240x240.jpg')
-}
-
-function toMainUrl(value) {
-  const url = String(value || '').trim()
-  if (!url.includes('img.dlsite.jp')) return ''
-  return url
-    .replace('img.dlsite.jp/resize/images2/', 'img.dlsite.jp/modpub/images2/')
-    .replace('_img_main_240x240.jpg', '_img_main.jpg')
-    .replace('_img_sam.jpg', '_img_main.jpg')
-}
-
 const coverUrl = computed(() => {
   const stored = String(props.coverUrlOverride || props.item[props.imageField] || '').trim()
   if (stored && (stored.startsWith('/api/') || stored.includes('/api/circle-completion/cover/'))) return stored
@@ -188,33 +175,31 @@ const coverUrl = computed(() => {
   const code = imageRjcode(remoteCoverUrl.value) || props.item.display_rjcode || props.item.canonical_rjcode || props.item.rjcode || ''
   return dlsiteUrl(code, '_img_sam.jpg') || null
 })
+const showCoverRetry = computed(() => props.imageActive && (imageFailed.value || !coverUrl.value))
 
 watch(coverUrl, () => {
   imageFailed.value = false
 })
 
-function onImgError(e) {
-  const stored = String(props.item[props.imageField] || '').trim()
-  const rjcode = imageRjcode(remoteCoverUrl.value) || imageRjcode(stored) || props.item.display_rjcode || props.item.canonical_rjcode || props.item.rjcode || ''
-  const fallbacks = uniqueImageUrls([
-    toThumbnailUrl(remoteCoverUrl.value),
-    toResizedUrl(remoteCoverUrl.value),
-    toMainUrl(remoteCoverUrl.value),
-    toResizedUrl(stored),
-    toMainUrl(stored),
-    dlsiteUrl(rjcode, '_img_sam.jpg'),
-    dlsiteUrl(rjcode, '_img_main_240x240.jpg')?.replace('modpub/images2/', 'resize/images2/'),
-    dlsiteUrl(rjcode, '_img_main.jpg'),
-  ])
-  const current = comparableUrl(e.target.currentSrc || e.target.src)
-  let index = Number(e.target.dataset.fallbackIndex || 0)
-  while (index < fallbacks.length) {
-    const fallback = fallbacks[index]
-    index += 1
-    if (comparableUrl(fallback) === current) continue
-    e.target.dataset.fallbackIndex = String(index)
-    e.target.src = fallback
-    return
+function onImgError(event) {
+  const current = String(event?.currentTarget?.currentSrc || event?.currentTarget?.src || '')
+  if (!current.includes('/api/circle-completion/cover/')) {
+    const stored = String(props.item[props.imageField] || '').trim()
+    const rjcode = imageRjcode(remoteCoverUrl.value) || imageRjcode(stored) || props.item.display_rjcode || props.item.canonical_rjcode || props.item.rjcode || ''
+    const fallbacks = uniqueImageUrls([
+      toThumbnailUrl(remoteCoverUrl.value),
+      toThumbnailUrl(stored),
+      dlsiteUrl(rjcode, '_img_sam.jpg'),
+    ])
+    let index = Number(event.currentTarget.dataset.fallbackIndex || 0)
+    while (index < fallbacks.length) {
+      const fallback = fallbacks[index]
+      index += 1
+      if (comparableUrl(fallback) === comparableUrl(current)) continue
+      event.currentTarget.dataset.fallbackIndex = String(index)
+      event.currentTarget.src = fallback
+      return
+    }
   }
   imageFailed.value = true
   emit('image-failed', props.item)
@@ -242,6 +227,7 @@ function onImgLoad(event) {
       'is-mobile': isMobile,
     }"
     :style="{ '--row-index': rowIndex }"
+    @mousedown.capture="preventNativeShiftSelection"
     @click="emit('select', item, $event)"
     @contextmenu.prevent="emit('contextmenu', item, $event)"
   >
@@ -260,6 +246,19 @@ function onImgLoad(event) {
       />
       <div v-else class="wlr-thumb-placeholder">
         <LibraryBig :size="16" class="opacity-30" />
+        <button
+          v-if="showCoverRetry"
+          type="button"
+          class="wlr-thumb-retry"
+          :class="{ 'is-loading': coverFetching }"
+          :disabled="coverFetching"
+          title="重新下载封面到本地缓存"
+          aria-label="重新下载封面到本地缓存"
+          @click.stop="emit('retry-cover', item)"
+        >
+          <LoaderCircle v-if="coverFetching" :size="15" class="cover-retry-spin" />
+          <RefreshCw v-else :size="15" />
+        </button>
       </div>
     </div>
 
@@ -302,6 +301,7 @@ function onImgLoad(event) {
         <span class="wlr-pill" :class="item.has_asmr_one ? 'pill-ok' : 'pill-none'">
           <LibraryBig :size="10" />{{ item.has_asmr_one ? '可下载' : '无源' }}
         </span>
+        <ExternalSearchSourceChips :item="item" @open="emit('external-search', $event)" />
       </slot>
     </div>
 
@@ -340,6 +340,8 @@ function onImgLoad(event) {
   background: transparent;
   color: var(--circle-text, #334155);
   cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
   transition:
     background .15s ease,
     border-color .15s ease,
@@ -462,6 +464,26 @@ function onImgLoad(event) {
   justify-content: center;
   color: var(--circle-text-subtle, #9ca3af);
 }
+.wlr-thumb-retry {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--circle-primary, #2563eb) 36%, transparent);
+  border-radius: 50%;
+  color: var(--circle-primary, #2563eb);
+  background: color-mix(in srgb, var(--circle-surface, #fff) 92%, transparent);
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.wlr-thumb-retry:hover:not(:disabled) { transform: translateY(-2px) scale(1.08); }
+.wlr-thumb-retry:active:not(:disabled) { transform: scale(.96); }
+.wlr-thumb-retry.is-loading svg { animation: wlrCoverRetrySpin .85s linear infinite; }
+.wlr-thumb-retry:disabled { cursor: wait; opacity: .72; }
+@keyframes wlrCoverRetrySpin { to { transform: rotate(360deg); } }
 
 
 /* ── 主信息 ── */

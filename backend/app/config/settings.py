@@ -378,6 +378,14 @@ class BaiduNetdiskConfig(BaseModel):
     used_bytes: int = 0
     account_cached_at: int = 0
 
+
+class CircleExternalSearchConfig(BaseModel):
+    """社团补全外部搜索跳转源配置。"""
+    anime_share_enabled: bool = True
+    south_plus_enabled: bool = True
+    south_plus_cookie: str = ""
+    south_plus_proxy: str = ""
+
 class AutoProcessConfig(BaseModel):
     """正常解压缩流程步骤配置"""
     check_duplicate: bool = True  # 预检重复
@@ -736,6 +744,7 @@ class AppConfig(BaseModel):
     asmr_sync: ASMRSyncConfig = ASMRSyncConfig()
     http_downloader: HttpDownloaderConfig = HttpDownloaderConfig()
     baidu_netdisk: BaiduNetdiskConfig = BaiduNetdiskConfig()
+    circle_external_search: CircleExternalSearchConfig = CircleExternalSearchConfig()
     auto_process: AutoProcessConfig = AutoProcessConfig()
     process_existing: ProcessExistingFolderConfig = ProcessExistingFolderConfig()
     asmr_sync_step: ASMRSyncStepConfig = ASMRSyncStepConfig()
