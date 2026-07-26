@@ -372,6 +372,8 @@ class HttpDownloadService:
         self._google_drive_access_token_cache: tuple[str, float] = ("", 0.0)
         self._google_drive_access_token_lock = asyncio.Lock()
         self._pikpak_status_refresh_tasks: Dict[str, asyncio.Task] = {}
+        self._transferit_target_lock = asyncio.Lock()
+        self._active_transferit_targets: set[str] = set()
 
     def _config(self):
         return get_config().http_downloader
@@ -4078,12 +4080,12 @@ class HttpDownloadService:
                     failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": "Transfer.it 分享中没有可下载文件", "source": "transferit"})
                     continue
                 if selection_filter:
-                    files = [
+                    selected_files = [
                         item for item in files
                         if self._share_item_matches_selection("transferit", item, selection_filter)
                     ]
-                    if not files:
-                        continue
+                    if selected_files:
+                        files = selected_files
                 source_items.extend(files)
             except Exception as exc:
                 failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": self._sanitize_error(exc), "source": "transferit"})
@@ -4863,8 +4865,14 @@ class HttpDownloadService:
             options["user-agent"] = _GOFILE_USER_AGENT
         elif source == "gofile":
             gofile_split = self._gofile_split_limit()
+            retry_attempt = max(0, int(item.get("gofile_retry_attempt") or 0))
+            if retry_attempt > 0:
+                gofile_split = max(1, gofile_split // (2 ** retry_attempt))
+                options["connect-timeout"] = str(max(int(options["connect-timeout"]), 15 * (retry_attempt + 1)))
+                options["timeout"] = str(max(int(options["timeout"]), 120))
             options["split"] = str(gofile_split)
             options["max-connection-per-server"] = str(gofile_split)
+            options["user-agent"] = _GOFILE_USER_AGENT
         proxy = self._proxy_url(source or "http")
         if proxy:
             options["all-proxy"] = proxy
@@ -5154,6 +5162,26 @@ class HttpDownloadService:
             return await self._download_transferit_item_inner(item, task=task, progress_callback=progress_callback)
 
     async def _download_transferit_item_inner(self, item: Dict[str, Any], task=None, progress_callback=None) -> Dict[str, Any]:
+        target_dir = str(item.get("target_dir") or self._download_root())
+        final_path = str(item.get("final_path") or os.path.join(target_dir, item.get("filename") or "transferit-download"))
+        target_key = os.path.normcase(os.path.realpath(os.path.abspath(final_path)))
+        async with self._transferit_target_lock:
+            if target_key in self._active_transferit_targets:
+                raise HttpDownloadError(
+                    f"Transfer.it 目标文件已有下载任务正在写入，请等待现有任务完成: {os.path.basename(final_path)}"
+                )
+            self._active_transferit_targets.add(target_key)
+        try:
+            return await self._download_transferit_item_unlocked(
+                item,
+                task=task,
+                progress_callback=progress_callback,
+            )
+        finally:
+            async with self._transferit_target_lock:
+                self._active_transferit_targets.discard(target_key)
+
+    async def _download_transferit_item_unlocked(self, item: Dict[str, Any], task=None, progress_callback=None) -> Dict[str, Any]:
         raw_url = str(item.get("original_url") or item.get("url") or "").strip()
         if not raw_url:
             raise HttpDownloadError("Transfer.it 下载缺少分享链接")
@@ -5594,6 +5622,10 @@ class HttpDownloadService:
             if str(item.get("source") or "") not in {"google_drive", "transferit"}
             and self._is_direct_download_item(item)
         ]
+        gofile_retry_attempt = max(0, int(metadata.get("auto_retry_attempts") or 0))
+        for item in aria2_items:
+            if str(item.get("source") or "").strip().lower() == "gofile":
+                item["gofile_retry_attempt"] = gofile_retry_attempt
 
         os.makedirs(self._download_root(), exist_ok=True)
         gids: List[str] = []
@@ -6208,7 +6240,23 @@ class HttpDownloadService:
                     completed += 1
             elif aria_status in {"error", "removed"}:
                 row["status"] = "failed"
-                row["failure_reason"] = status.get("errorMessage") or aria_status
+                failure_reason = str(status.get("errorMessage") or aria_status)
+                if (
+                    str(row.get("source") or "").strip().lower() == "gofile"
+                    and any(marker in failure_reason.lower() for marker in ("timeout", "timed out"))
+                ):
+                    host = urlparse(str(row.get("original_url") or row.get("url") or "")).hostname or "gofile.io"
+                    if done > 0:
+                        failure_reason = (
+                            f"Gofile CDN {host} 传输 {done} bytes 后超时，断点已保留；"
+                            "自动重试将降低分片并延长等待时间"
+                        )
+                    else:
+                        failure_reason = (
+                            f"Gofile CDN {host} 连接超时且未收到数据；"
+                            "自动重试将降低分片并延长等待时间"
+                        )
+                row["failure_reason"] = failure_reason
                 failed_count += 1
             elif aria_status == "paused":
                 row["status"] = "paused"
