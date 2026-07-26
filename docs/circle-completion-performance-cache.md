@@ -35,6 +35,7 @@ Redis 不可用时会自动降级为 L1 + 数据库，不影响功能。
 ## 封面缓存
 
 - `/works` 返回的 `image_url` / `thumb_image_url` 使用 `/api/circle-completion/cover/{RJ}.jpg` 和 `/api/circle-completion/cover/{RJ}_sam.jpg`。
+- `image_url` 固定是卡片/弹层主图 `{RJ}.jpg`，`thumb_image_url` 固定是列表/特典小图 `{RJ}_sam.jpg`；点击特典小图直接切换到已提供的本地主图，不再调用补图接口或弹出“封面已获取”。只有加载失败后的手动重试才调用强制补图。
 - cover API 本地命中时直接返回 `data/img/` 文件；文件缺失时由服务端按 RJ 从 DLsite 下载一次、原子落盘，再向当前请求返回本地文件。浏览器不再为同一张图直接回退公网 CDN；文件存在后所有请求只读本地缓存，除非缓存文件被删除或用户显式强制重取。
 - Docker 环境优先使用 `DATA_PATH/img` 作为封面缓存目录；默认镜像里 `DATA_PATH=/app/data`，因此缓存会落到持久化卷 `/app/data/img`。
 - DLsite 图片路径里同时有目录 bucket RJ 和真实文件 RJ 时，缓存文件名取真实文件 RJ，避免翻译版 / 关联版显示 RJ 与封面 RJ 不一致导致 404。

@@ -5300,3 +5300,31 @@
 - `docs/circle-completion-performance-cache.md`、`docs/circle-completion-paged-loading.md`：记录封面首次服务端下载、后续本地复用的行为。
 - `progress.md`：追加本轮实现、测试、生产数据修复与回滚记录。
 - 生产库回滚点为修复事务前输出的 5 组记录：重复卡 `85e22043-ec04-4f6b-a270-9087fbdd72e5`、错误 bonus 关系 `d82e9cb9-d725-4094-b03c-08f6f6cb7e3b`、错误探测状态 `2459`、`RJ01673617.has_bonus=true`、`RJ01678200.linked_rjcodes=[RJ01673617,RJ01678200]`；如需回滚，必须在单事务中按这些原值定点恢复。代码回滚使用反向补丁移除本轮逻辑和测试，不使用整文件 `git restore`，避免覆盖其它未提交改动。
+
+## 2026-07-26 - Task: 修复特典读模型错挂与弹层重复获取封面
+
+### What was done
+
+- 确认生产库关系已正确为 `RJ01673453 -> RJ01678200`，剩余错挂来自社团补全读模型忽略显式 bonus 关系、再次按 RJ 距离选择 `RJ01673480`。
+- 社团补全状态构建改为先把 `work_canonical_links.link_type=bonus` 显式关系写入 `bonus_parent_rjcode`，仅在没有显式关系时才按同 maker、同发售日、RJ 距离推断。
+- 社团补全缓存 schema 从 `8` 提升到 `9`，部署后 Redis 中旧分组快照自动失效。
+- 特典 `image_url` 固定返回本地主图，`thumb_image_url` 固定返回本地小图；点击小图打开弹层不再调用补图接口，也不再弹“封面已获取”，只有加载失败后的手动重试才强制补图。
+
+### Testing
+
+- 生产库只读核验：`RJ01673480.has_bonus=false`，`RJ01673453 -> RJ01678200` 是唯一显式 bonus 关系，错误重复卡和错误探测状态均不存在。
+- `cd backend; ..\.venv\Scripts\python.exe -m py_compile app/core/circle_completion_service.py`：通过。
+- `cd backend; ..\.venv\Scripts\python.exe -m pytest tests/test_circle_completion_bonus_grouping.py tests/test_circle_completion_paged_view.py -q`：通过，`30 passed`。
+- `cd frontend; npm test -- --run src/components/circle/CircleWorksViewport.test.js`：通过，`4 passed`。
+- `cd frontend; npm run build`：通过，`4191 modules transformed`；仅有项目既有 Rollup 注释、`eval` 和 chunk size 提示。
+
+### Notes
+
+- `backend/app/core/circle_completion_service.py`：读模型应用显式特典父级、提升缓存 schema，并拆分特典主图/小图本地地址。
+- `backend/tests/test_circle_completion_bonus_grouping.py`：覆盖 `RJ01678200` 显式归属优先于更近的 `RJ01673480`，并验证主图/小图字段。
+- `frontend/src/components/circle/CircleWorksViewport.vue`：正常打开特典弹层不再触发封面获取事件。
+- `frontend/src/components/circle/CircleWorksViewport.test.js`：覆盖小图点击后直接使用本地主图且不触发 `ensure-cover`。
+- `docs/dlsite-bonus-probe.md`：补充读模型必须尊重显式关系及缓存 schema 失效规则。
+- `docs/circle-completion-performance-cache.md`：补充主图/小图和手动重试行为。
+- `progress.md`：追加本轮实现、生产核验、测试与回滚记录。
+- 回滚方式：反向移除 `_completion_apply_explicit_bonus_parent_codes()` 及调用、将缓存 schema 恢复为 `8`、恢复特典优先使用 list 图和 `openBonusDetail()` 的 `ensure-cover` 事件，并移除对应测试和文档；不要使用整文件回退，相关文件含其它未提交改动。

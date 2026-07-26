@@ -47,6 +47,40 @@ def test_completion_attach_bonus_parent_codes_uses_same_release_parent():
     assert result[0]["bonus_works"][0]["bonus_parent_rjcode"] == "RJ01538146"
 
 
+def test_completion_explicit_bonus_link_beats_nearest_same_day_parent():
+    service = CircleCompletionService()
+    correct_parent = _work("RJ01673453")
+    nearer_unrelated = _work("RJ01673480")
+    bonus = _work("RJ01678200", bonus=True)
+    for item in [correct_parent, nearer_unrelated, bonus]:
+        item["maker_id"] = "RG51931"
+        item["release_date"] = "2026-07-25"
+        item["original_release_date"] = "2026-07-25"
+    bonus["linked_rjcodes"] = ["RJ01673453", "RJ01678200"]
+    link_rows = [
+        SimpleNamespace(
+            canonical_rjcode="RJ01673453",
+            linked_rjcode="RJ01678200",
+            link_type="bonus",
+            created_at=datetime(2026, 7, 26, 3, 34, 52),
+        )
+    ]
+
+    items = service._completion_apply_explicit_bonus_parent_codes(
+        [bonus, nearer_unrelated, correct_parent],
+        link_rows,
+    )
+    grouped = service._completion_group_bonus_items(
+        service._completion_attach_bonus_parent_codes(items)
+    )
+
+    correct_item = next(item for item in grouped if item["canonical_rjcode"] == "RJ01673453")
+    unrelated_item = next(item for item in grouped if item["canonical_rjcode"] == "RJ01673480")
+    assert correct_item["bonus_works"][0]["canonical_rjcode"] == "RJ01678200"
+    assert correct_item["bonus_works"][0]["bonus_parent_rjcode"] == "RJ01673453"
+    assert "bonus_works" not in unrelated_item
+
+
 def test_completion_bonus_uses_own_rj_before_same_day_grouping():
     """特典不能继承原作翻译版的展示 RJ，否则会按错误发售日错挂。"""
     service = CircleCompletionService()
@@ -99,7 +133,11 @@ def test_completion_bonus_item_uses_own_date_and_cached_cover():
 
         def get_local_url(self, rjcode, variant="card", **_kwargs):
             assert rjcode == "RJ01576811"
-            return "/api/circle-completion/cover/RJ01576811_sam.jpg" if variant == "list" else ""
+            return (
+                "/api/circle-completion/cover/RJ01576811_sam.jpg"
+                if variant == "list"
+                else "/api/circle-completion/cover/RJ01576811.jpg"
+            )
 
     row = SimpleNamespace(
         id="bonus",
@@ -151,7 +189,8 @@ def test_completion_bonus_item_uses_own_date_and_cached_cover():
 
     assert item["display_rjcode"] == "RJ01576811"
     assert item["release_date"] == "2026-03-22"
-    assert item["image_url"].endswith("RJ01576811_sam.jpg")
+    assert item["image_url"].endswith("RJ01576811.jpg")
+    assert item["thumb_image_url"].endswith("RJ01576811_sam.jpg")
 
 
 @pytest.mark.asyncio
