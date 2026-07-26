@@ -200,6 +200,42 @@ def test_circle_image_cache_uses_real_image_rjcode_for_local_urls(tmp_path) -> N
     assert image_cache.cache_rjcode_for_url(remote_url, "RJ01999999") == "RJ01201316"
 
 
+@pytest.mark.asyncio
+async def test_resolve_canonical_rj_expands_cached_translation_chain(
+    service: CircleCompletionService,
+    db_session,
+) -> None:
+    db_session.add_all([
+        WorkCanonicalLink(
+            id="cached-original",
+            canonical_rjcode="RJ01673480",
+            linked_rjcode="RJ01673480",
+            link_type="translation",
+            lang="JPN",
+        ),
+        WorkCanonicalLink(
+            id="cached-english",
+            canonical_rjcode="RJ01673480",
+            linked_rjcode="RJ01673617",
+            link_type="translation",
+            lang="ENG",
+        ),
+        WorkCanonicalLink(
+            id="cached-dirty-bonus",
+            canonical_rjcode="RJ01673617",
+            linked_rjcode="RJ01678200",
+            link_type="bonus",
+            lang="",
+        ),
+    ])
+    db_session.commit()
+
+    payload = await service.resolve_canonical_rj("RJ01673617")
+
+    assert payload["canonical_rjcode"] == "RJ01673480"
+    assert payload["linked_rjcodes"] == ["RJ01673480", "RJ01673617", "RJ01678200"]
+
+
 def test_circle_image_cache_restores_historical_display_alias(tmp_path) -> None:
     image_cache = CircleImageCacheService()
     image_cache._cache_dir = tmp_path
@@ -285,6 +321,26 @@ async def test_circle_image_cache_background_ensure_is_deduplicated(tmp_path) ->
     release.set()
     await first
     assert image_cache._background_download_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_circle_image_cache_does_not_redownload_existing_file(tmp_path) -> None:
+    image_cache = CircleImageCacheService()
+    image_cache._cache_dir = tmp_path
+    download_count = 0
+
+    async def write_cover(rjcode, _url, *, variant):
+        nonlocal download_count
+        download_count += 1
+        image_cache.get_local_path(rjcode, variant).write_bytes(b"cover")
+        return True, "", False
+
+    image_cache._download_with_outcome = write_cover
+    source_url = "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01013000/RJ01012345_img_main.jpg"
+
+    assert await image_cache.download_one("RJ01012345", source_url)
+    assert await image_cache.download_one("RJ01012345", source_url)
+    assert download_count == 1
 
 
 @pytest.mark.asyncio

@@ -141,7 +141,7 @@
 - 只有虚拟可见行和 overscan 内作品进入图片加载队列。
 - 同屏图片加载并发限制为 `6`。
 - 图片仍使用 `loading="lazy"`、`decoding="async"`、`fetchpriority="low"`。
-- 本地 `/api/circle-completion/cover/*` 仍优先，DLsite 远程 URL 只作为 fallback。
+- 页面只请求本地 `/api/circle-completion/cover/*`；缺失文件由该接口首次请求时从 DLsite 下载并持久化，后续请求只读本地缓存。
 
 ## 大页滚动
 

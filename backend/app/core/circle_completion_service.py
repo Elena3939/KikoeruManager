@@ -4344,6 +4344,24 @@ class CircleCompletionService:
                     .all()
                 )
                 if cached_rows and not refresh:
+                    # 从翻译版 RJ 反查时，上面的条件通常只命中
+                    # ``canonical=原作, linked=当前翻译版`` 这一行。若直接用这
+                    # 一行构造 payload，会因为看不到原作自身的 JPN 行而把翻译版
+                    # 自己误判成 canonical。先按已命中的 canonical 扩回完整关联链。
+                    cached_canonicals = {
+                        self.normalize_rjcode(row.canonical_rjcode)
+                        for row in cached_rows
+                        if self.normalize_rjcode(row.canonical_rjcode)
+                    }
+                    if cached_canonicals and any(
+                        self.normalize_rjcode(row.canonical_rjcode) != normalized_rj
+                        for row in cached_rows
+                    ):
+                        cached_rows = (
+                            db.query(WorkCanonicalLink)
+                            .filter(WorkCanonicalLink.canonical_rjcode.in_(cached_canonicals))
+                            .all()
+                        )
                     payload = build_canonical_payload(cached_rows, normalized_rj)
                     for linked_rjcode in payload.get("linked_rjcodes") or [normalized_rj]:
                         normalized_linked = self.normalize_rjcode(linked_rjcode)
@@ -8050,9 +8068,8 @@ class CircleCompletionService:
                     stored_display_rjcode or row.canonical_rjcode,
                     is_unreleased=item["is_unreleased"],
                 )
-                # 优先返回本地缓存的 API path（/api/circle-completion/cover/RJxxxxxx.jpg），
-                # 没缓存就退回到 dlsite 公开 URL；前端 WorkCard.onCoverError 还有第二层
-                # fallback（按 RJ 推算多个 dlsite 地址），所以单点失败不会让整页白板。
+                # 始终返回本地缓存 API path。文件缺失时 cover API 会从 DLsite
+                # 下载一次并落盘，浏览器不直接请求公网封面。
                 cover_cache_rjcode = image_cache_service.cache_rjcode_for_url(
                     normalized_remote_cover,
                     stored_display_rjcode or row.canonical_rjcode,

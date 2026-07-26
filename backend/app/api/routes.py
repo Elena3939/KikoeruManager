@@ -19849,18 +19849,19 @@ async def circle_completion_cover(filename: str):
 
     - 文件名通过 ``CircleImageCacheService.resolve_filename`` 做严格白名单
       校验（只允许 ``RJ\\d{6,8}.jpg``），杜绝 ``../`` 路径穿越。
-    - 文件不存在直接 404，前端 ``WorkCard.onCoverError`` 会自动 fallback
-      到 dlsite 公网 URL，所以这里不做服务端 redirect，让快路径只做"读本地"。
+    - 文件不存在时由服务端按 RJ 下载一次并原子落盘；成功后当前请求直接返回
+      本地文件，浏览器不再额外直连 DLsite CDN。
     - 30 天 ``public`` 缓存：索引刷新会原子重写同名文件，浏览器拿旧缓存的
       代价仅是封面没及时换，可接受。
     """
     from ..core.circle_image_cache_service import get_circle_image_cache_service
 
     image_cache_service = get_circle_image_cache_service()
+    rjcode, variant = image_cache_service._parse_filename(filename)
     cache_path = image_cache_service.resolve_filename(filename)
-    if cache_path is not None and not cache_path.is_file():
-        image_cache_service.schedule_ensure_for_filename(filename)
-    if cache_path is None or not cache_path.is_file():
+    if cache_path is not None and not image_cache_service.has_local(rjcode, variant):
+        cache_path = await image_cache_service.ensure_local_for_filename(filename)
+    if cache_path is None or not image_cache_service.has_local(rjcode, variant):
         raise HTTPException(status_code=404, detail="封面未缓存")
     return FileResponse(
         str(cache_path),

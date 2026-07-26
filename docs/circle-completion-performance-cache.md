@@ -34,8 +34,8 @@ Redis 不可用时会自动降级为 L1 + 数据库，不影响功能。
 
 ## 封面缓存
 
-- `/works` 返回的 `image_url` / `thumb_image_url` 优先使用 `/api/circle-completion/cover/{RJ}.jpg` 和 `/api/circle-completion/cover/{RJ}_sam.jpg`。
-- cover API 本地命中时直接返回 `data/img/` 文件；文件缺失时立即返回 `404`，由前端回退到 DLsite 远程封面，同时后端按文件名去重创建补图任务。补图任务完成后，后续请求自然命中本地缓存，首屏图片请求不再等待 CDN。
+- `/works` 返回的 `image_url` / `thumb_image_url` 使用 `/api/circle-completion/cover/{RJ}.jpg` 和 `/api/circle-completion/cover/{RJ}_sam.jpg`。
+- cover API 本地命中时直接返回 `data/img/` 文件；文件缺失时由服务端按 RJ 从 DLsite 下载一次、原子落盘，再向当前请求返回本地文件。浏览器不再为同一张图直接回退公网 CDN；文件存在后所有请求只读本地缓存，除非缓存文件被删除或用户显式强制重取。
 - Docker 环境优先使用 `DATA_PATH/img` 作为封面缓存目录；默认镜像里 `DATA_PATH=/app/data`，因此缓存会落到持久化卷 `/app/data/img`。
 - DLsite 图片路径里同时有目录 bucket RJ 和真实文件 RJ 时，缓存文件名取真实文件 RJ，避免翻译版 / 关联版显示 RJ 与封面 RJ 不一致导致 404。
 - 按需下载失败时仍返回 404，前端 `WorkCard` 保留原有 DLsite fallback；附属特典卡的小图失败时改用主图地址，主图也失败才显示礼物占位，不能保留浏览器破图图标。
