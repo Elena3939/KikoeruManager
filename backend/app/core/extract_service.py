@@ -3157,7 +3157,10 @@ class ExtractService:
                             self.__class__._archive_encoding_cache[file_path] = sniffed
                 nested_encoding = self.__class__._archive_encoding_cache.get(file_path) or parent_encoding
                 success, nested_success_password = await self._try_extract_nested_direct(
-                    file_path, nested_output_dir, parent_password
+                    file_path,
+                    nested_output_dir,
+                    parent_password,
+                    task=task,
                 )
 
                 if not success:
@@ -3390,11 +3393,97 @@ class ExtractService:
         logger.error(f"嵌套压缩包解压失败，已尝试所有 {len(password_list)} 个密码")
         return False, None
 
+    async def _try_extract_nested_zstd_backend(
+        self,
+        archive_path: str,
+        output_path: str,
+        password: str,
+        task: Optional[Task] = None,
+    ) -> str:
+        """用 7-Zip ZS 重试嵌套包，返回可供密码循环处理的结果。"""
+        backend = self.seven_zip_zstd
+        if not backend or not await self._ensure_7z_zstd_available():
+            if task is not None:
+                self._set_extract_meta(
+                    task,
+                    extract_failure_reason="unsupported_method",
+                    extract_zstd_backend_missing=True,
+                )
+            logger.error(
+                "嵌套压缩包需要 7-Zip ZS，但未找到兼容后端: archive=%s",
+                archive_path,
+            )
+            return "unsupported_method"
+
+        password_args = [f"-p{password}"] if password else ["-p"]
+        cmd = [
+            backend,
+            "x",
+            "-y",
+            f"-o{output_path}",
+            *self._get_seven_zip_mmt_args(),
+            *self._get_mcp_args(archive_path),
+            *password_args,
+            archive_path,
+        ]
+        if task is not None:
+            self._set_extract_meta(
+                task,
+                extract_zstd_backend=os.path.basename(backend),
+                extract_zstd_backend_path=backend,
+            )
+        logger.info(
+            "嵌套压缩包遇到 Unsupported Method，改用 7-Zip ZS: archive=%s backend=%s",
+            archive_path,
+            backend,
+        )
+        result = await self._run_7z_command(
+            cmd,
+            capture_stdout=False,
+            task=task,
+        )
+        if result.returncode == 0:
+            if await self._reject_if_garbled_after_extract(
+                archive_path,
+                output_path,
+                cleanup=lambda: asyncio.to_thread(shutil.rmtree, output_path, True),
+                context="嵌套压缩包 7z-zstd",
+                task=task,
+            ):
+                return "garbled_filename"
+            if task is not None:
+                self._set_extract_meta(
+                    task,
+                    extract_zstd_backend_success=True,
+                )
+            logger.info(
+                "嵌套压缩包使用 7-Zip ZS 解压成功: archive=%s",
+                archive_path,
+            )
+            return "ok"
+
+        stderr_text = (result.stderr or b"").decode("utf-8", errors="ignore")
+        if self._looks_like_disk_full_error(stderr_text):
+            return "disk_full"
+        if self._looks_like_unsupported_method_error(stderr_text):
+            return "unsupported_method"
+        if self._looks_like_wrong_password_error(stderr_text):
+            return "wrong_password"
+        if self._looks_like_incomplete_volume_error(stderr_text):
+            return "archive_corrupt"
+        logger.warning(
+            "嵌套压缩包 7-Zip ZS 解压失败: archive=%s stderr=%s",
+            archive_path,
+            stderr_text[:500] if stderr_text else "(无错误文本)",
+        )
+        return "failed"
+
     async def _try_extract_nested_direct(
         self,
         archive_path: str,
         output_path: str,
         parent_password: Optional[str] = None,
+        task: Optional[Task] = None,
     ) -> tuple[bool, Optional[str]]:
         """直接尝试解压嵌套压缩包，一次性收集所有密码候选，跳过多余的 list 步骤。
 
@@ -3518,6 +3607,23 @@ class ExtractService:
                         return False, None
                     logger.info("嵌套压缩包解压成功，密码: %s", password or "无密码")
                     return True, password or None
+                stderr_text = (result.stderr or b"").decode("utf-8", errors="ignore")
+                if self._looks_like_unsupported_method_error(stderr_text):
+                    zstd_result = await self._try_extract_nested_zstd_backend(
+                        archive_path,
+                        output_path,
+                        password,
+                        task=task,
+                    )
+                    if zstd_result == "ok":
+                        return True, password or None
+                    if zstd_result in {
+                        "unsupported_method",
+                        "disk_full",
+                        "garbled_filename",
+                        "archive_corrupt",
+                    }:
+                        return False, None
                 logger.debug("嵌套解压失败 (密码=%s, rc=%d)", password or "无密码", result.returncode)
             except Exception as e:
                 logger.warning("嵌套压缩包解压尝试异常: %s", e)

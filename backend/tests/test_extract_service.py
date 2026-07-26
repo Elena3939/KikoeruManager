@@ -2231,6 +2231,42 @@ class TestExtractService:
             extract_service.config.extract.filename_password_sniff_enabled = old_enabled
             extract_service.config.extract.password_list = old_password_list
 
+    @pytest.mark.asyncio
+    async def test_nested_extract_retries_unsupported_method_with_zstd_backend(
+        self, extract_service, temp_dir,
+    ):
+        """嵌套包遇到官方 7zz 不支持的 codec 时应切到 7-Zip ZS。"""
+        archive_path = os.path.join(temp_dir, "nested.7z")
+        output_path = os.path.join(temp_dir, "out")
+        os.makedirs(output_path, exist_ok=True)
+
+        old_password_list = extract_service.config.extract.password_list
+        try:
+            extract_service.config.extract.password_list = []
+            extract_service._get_password_candidates_for_archive = AsyncMock(return_value=[])
+            extract_service._is_rar_archive = Mock(return_value=False)
+            extract_service._ensure_7z_zstd_available = AsyncMock(return_value=True)
+            extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+
+            async def run_command(cmd, **_kwargs):
+                if cmd[0] == "7zzs":
+                    return subprocess.CompletedProcess(cmd, 0, b"", b"")
+                return subprocess.CompletedProcess(cmd, 2, b"", b"ERROR: Unsupported Method")
+
+            extract_service._run_7z_command = AsyncMock(side_effect=run_command)
+            with patch.object(extract_service, "_find_7z_zstd_executable", return_value="7zzs"):
+                success, password = await extract_service._try_extract_nested_direct(
+                    archive_path,
+                    output_path,
+                )
+
+            assert success is True
+            assert password is None
+            commands = [call.args[0] for call in extract_service._run_7z_command.await_args_list]
+            assert [command[0] for command in commands] == [extract_service.seven_zip, "7zzs"]
+        finally:
+            extract_service.config.extract.password_list = old_password_list
+
     # ------------------------------------------------------------------
     # _try_extract：清单密码优先；没有清单密码时先无密码轻量探测
     # ------------------------------------------------------------------

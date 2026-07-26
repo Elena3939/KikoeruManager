@@ -15,7 +15,7 @@
         type="button"
         class="subtitle-refresh-btn"
         :disabled="pendingLoading"
-        @click="loadPendingImports"
+        @click="loadPendingImports({ forceCandidateRefresh: true })"
       >
         <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': pendingLoading }" />
         刷新
@@ -233,7 +233,7 @@
                     class="w-3.5 h-3.5"
                     :class="{ 'animate-spin': retryingPendingId === activePendingItem.id }"
                   />
-                  重试搜索
+                  刷新候选
                 </button>
                 <button
                   v-if="isImportedPendingItem(activePendingItem) && getPendingItemWorkbenchTaskId(activePendingItem)"

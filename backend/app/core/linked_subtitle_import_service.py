@@ -363,6 +363,23 @@ class LinkedSubtitleImportService:
 
             extracted_subtitles = await asyncio.to_thread(self._scan_source_subtitles, extracted_dir, extracted_dir)
             if not extracted_subtitles:
+                raw_nested_failures = (probe_task.task_metadata or {}).get("nested_archive_failures") or []
+                nested_failures = (
+                    list(raw_nested_failures)
+                    if isinstance(raw_nested_failures, list)
+                    else [str(raw_nested_failures)]
+                )
+                if nested_failures:
+                    reason = "；".join(str(item) for item in nested_failures[:3])
+                    logger.warning(
+                        "[字幕补配预检] 嵌套压缩包解压失败，无法扫描其中字幕: source=%s failures=%s",
+                        archive_path,
+                        nested_failures[:3],
+                    )
+                    return "", [], {
+                        "status": "nested_extract_failed",
+                        "reason": f"嵌套压缩包未能解开，无法扫描其中字幕：{reason}",
+                    }
                 logger.info(
                     "[字幕补配预检] 临时解包完成，但未扫描到字幕文件: source=%s extracted_dir=%s",
                     archive_path,
@@ -1239,7 +1256,11 @@ class LinkedSubtitleImportService:
         execute_reason = ""
         if stage_reason:
             execute_reason = stage_reason
-        elif can_probe_later and source_subtitle_probe_status in {"missing_password", "extract_failed"}:
+        elif can_probe_later and source_subtitle_probe_status in {
+            "missing_password",
+            "extract_failed",
+            "nested_extract_failed",
+        }:
             execute_reason = source_subtitle_probe_reason or "执行时将重新走解压入库链路扫描字幕"
         elif candidate_search_status == "pending_remote":
             execute_reason = candidate_search_reason or self.REMOTE_PENDING_REASON
@@ -1283,6 +1304,7 @@ class LinkedSubtitleImportService:
                 "timeout",
                 "missing_password",
                 "extract_failed",
+                "nested_extract_failed",
             }
         )
 
@@ -1408,51 +1430,128 @@ class LinkedSubtitleImportService:
         if not normalized_target or len(candidates) < 2:
             return candidates
 
-        enriched: List[Tuple[int, Dict[str, Any], List[str]]] = []
+        groups: List[Dict[str, Any]] = []
         for index, candidate in enumerate(candidates):
             folder_path = str(candidate.get("folder_path") or "").strip()
             if not folder_path:
-                enriched.append((index, candidate, []))
+                groups.append({
+                    "index": index,
+                    "candidate": candidate,
+                    "segments": [],
+                    "anchor_segments": [],
+                    "library_id": f"__missing_path_{index}",
+                    "case_sensitive": False,
+                    "is_exact_anchor": False,
+                })
                 continue
-            enriched.append((index, candidate, self._split_candidate_path_segments(folder_path)))
+            segments = self._split_candidate_path_segments(folder_path)
+            library_id = str(candidate.get("library_id") or "").strip()
+            if not library_id or not segments:
+                groups.append({
+                    "index": index,
+                    "candidate": candidate,
+                    "segments": segments,
+                    "anchor_segments": [],
+                    "library_id": f"__invalid_candidate_{index}",
+                    "case_sensitive": False,
+                    "is_exact_anchor": False,
+                })
+                continue
+            library_type = str(candidate.get("library_type") or "").strip()
+            case_sensitive = library_type == "synology_filestation"
+            anchor_index = next(
+                (
+                    position
+                    for position in range(len(segments) - 1, -1, -1)
+                    if self._segment_has_target_rjcode(segments[position], normalized_target)
+                ),
+                -1,
+            )
+            if anchor_index < 0:
+                groups.append({
+                    "index": index,
+                    "candidate": candidate,
+                    "segments": segments,
+                    "anchor_segments": [],
+                    "library_id": f"__unanchored_candidate_{index}",
+                    "case_sensitive": case_sensitive,
+                    "is_exact_anchor": False,
+                })
+                continue
+
+            anchor_segments = segments[:anchor_index + 1]
+            is_exact_anchor = len(segments) == len(anchor_segments)
+            matching_group = next(
+                (
+                    group
+                    for group in groups
+                    if group["library_id"] == library_id
+                    and len(group["anchor_segments"]) == len(anchor_segments)
+                    and all(
+                        self._candidate_path_segments_equal(left, right, case_sensitive=case_sensitive)
+                        for left, right in zip(group["anchor_segments"], anchor_segments)
+                    )
+                ),
+                None,
+            )
+            if matching_group is None:
+                groups.append({
+                    "index": index,
+                    "candidate": candidate,
+                    "segments": segments,
+                    "anchor_segments": anchor_segments,
+                    "library_id": library_id,
+                    "case_sensitive": case_sensitive,
+                    "is_exact_anchor": is_exact_anchor,
+                })
+                continue
+
+            # 旧索引数据可能给同一 RJ 根目录下的每层子目录都填入 RJ；
+            # 优先保留 RJ 根目录自身，根目录缺失时只留最浅的一层。
+            should_replace = (
+                (is_exact_anchor and not matching_group["is_exact_anchor"])
+                or (
+                    is_exact_anchor == matching_group["is_exact_anchor"]
+                    and len(segments) < len(matching_group["segments"])
+                )
+            )
+            if should_replace:
+                matching_group.update({
+                    "index": index,
+                    "candidate": candidate,
+                    "segments": segments,
+                    "is_exact_anchor": is_exact_anchor,
+                })
 
         drop_indexes: set[int] = set()
-        for parent_index, parent, parent_segments in enriched:
-            library_id = str(parent.get("library_id") or "").strip()
-            if not library_id or not parent_segments:
+        for parent in groups:
+            parent_anchor = list(parent["anchor_segments"])
+            if not parent_anchor:
                 continue
-            library_type = str(parent.get("library_type") or "").strip()
-            case_sensitive = library_type == "synology_filestation"
-            for child_index, child, child_segments in enriched:
-                if parent_index == child_index:
+            for child in groups:
+                if child is parent:
                     continue
-                if str(child.get("library_id") or "").strip() != library_id:
+                if child["library_id"] != parent["library_id"]:
                     continue
                 if not self._is_candidate_ancestor_path(
-                    parent_segments,
-                    child_segments,
-                    case_sensitive=case_sensitive,
+                    parent_anchor,
+                    list(child["anchor_segments"]),
+                    case_sensitive=bool(parent["case_sensitive"]),
                 ):
                     continue
-                if any(
-                    self._segment_has_target_rjcode(segment, normalized_target)
-                    for segment in child_segments[len(parent_segments):]
-                ):
-                    drop_indexes.add(parent_index)
-                    logger.debug(
-                        "[字幕补配] 目标目录候选收敛到最里层 RJ 目录: rj=%s parent=%s child=%s",
-                        normalized_target,
-                        parent.get("folder_path") or "",
-                        child.get("folder_path") or "",
-                    )
-                    break
+                drop_indexes.add(int(parent["index"]))
+                logger.debug(
+                    "[字幕补配] 目标目录候选收敛到最里层 RJ 目录: rj=%s parent=%s child=%s",
+                    normalized_target,
+                    parent["candidate"].get("folder_path") or "",
+                    child["candidate"].get("folder_path") or "",
+                )
+                break
 
-        if not drop_indexes:
-            return candidates
         return [
-            candidate
-            for index, candidate, _segments in enriched
-            if index not in drop_indexes
+            group["candidate"]
+            for group in sorted(groups, key=lambda item: int(item["index"]))
+            if int(group["index"]) not in drop_indexes
         ]
 
     async def _locate_direct_rj_candidate(
@@ -3174,8 +3273,9 @@ class LinkedSubtitleImportService:
         preview: Dict[str, Any],
         *,
         preferred_library_id: Optional[str] = None,
+        force: bool = False,
     ) -> Dict[str, Any]:
-        if not self._should_retry_pending_candidate_search(preview):
+        if not force and not self._should_retry_pending_candidate_search(preview):
             return self._refresh_preview_execution_state(dict(preview or {}))
 
         next_preview = dict(preview or {})
@@ -3369,10 +3469,17 @@ class LinkedSubtitleImportService:
         preview: Dict[str, Any],
         *,
         refresh_candidates: bool,
+        force_refresh_candidates: bool,
         refresh_min_interval_seconds: int,
     ) -> bool:
         if not refresh_candidates:
             return False
+        if force_refresh_candidates:
+            return bool(
+                str(preview.get("target_rjcode") or "").strip()
+                and bool(preview.get("is_linked_subtitle_source") or preview.get("is_translation_work"))
+                and not str(preview.get("stage_reason") or "").strip()
+            )
         if not self._should_retry_pending_candidate_search(preview):
             return False
 
@@ -3544,6 +3651,7 @@ class LinkedSubtitleImportService:
         self,
         *,
         refresh_candidates: bool = True,
+        force_refresh_candidates: bool = False,
         refresh_min_interval_seconds: int = PENDING_REFRESH_MIN_INTERVAL_SECONDS,
     ) -> List[Dict[str, Any]]:
         # ★ 性能重构：原来一个 db session 跨整个循环 + 多次 await（_repair_cached_preview_rj_fields
@@ -3586,9 +3694,13 @@ class LinkedSubtitleImportService:
                     row,
                     preview,
                     refresh_candidates=refresh_candidates,
+                    force_refresh_candidates=force_refresh_candidates,
                     refresh_min_interval_seconds=refresh_min_interval_seconds,
                 ):
-                    refreshed_preview = await self._refresh_pending_preview_candidates(preview)
+                    refreshed_preview = await self._refresh_pending_preview_candidates(
+                        preview,
+                        force=force_refresh_candidates,
+                    )
                 else:
                     refreshed_preview = self._refresh_preview_execution_state(dict(preview or {}))
 

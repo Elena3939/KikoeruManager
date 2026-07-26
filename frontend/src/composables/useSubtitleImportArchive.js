@@ -76,8 +76,7 @@ export function useSubtitleImportArchive({
   const canRetryActivePendingPreview = computed(() => {
     const item = activePendingItem.value
     if (!item || retryingPendingId.value) return false
-    if (isProcessingPendingItem(item)) return false
-    return !item.can_execute || Number(item.preview?.candidate_count || 0) <= 0
+    return String(item?.status || '').trim().toUpperCase() === 'PENDING' && !item.preview?.is_executing
   })
 
   watch(activePendingItem, (item) => {
@@ -143,12 +142,12 @@ export function useSubtitleImportArchive({
   })
 
   async function loadPendingImports(options = {}) {
-    const { silent = false } = options
+    const { silent = false, forceCandidateRefresh = false } = options
     if (pendingLoading.value || pendingRefreshing.value) return
     if (silent) pendingRefreshing.value = true
     else pendingLoading.value = true
     try {
-      const data = await subtitleImportApi.listPending()
+      const data = await subtitleImportApi.listPending({ forceCandidateRefresh })
       pendingItems.value = data.items || []
       pendingLoadedOnce.value = true
       if (!pendingItems.value.some(item => item.id === activePendingId.value)) {
@@ -383,7 +382,7 @@ export function useSubtitleImportArchive({
 
     retryingPendingId.value = item.id
     try {
-      await loadPendingImports()
+      await loadPendingImports({ forceCandidateRefresh: true })
       ElMessage.success('已重新检查当前预检单的目标目录候选')
     } catch (error) {
       ElMessage.error('重试候选检查失败: ' + (error.response?.data?.detail || error.message))
