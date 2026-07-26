@@ -95,6 +95,49 @@ describe('CircleWorksViewport', () => {
     wrapper.unmount()
   })
 
+  it('点击特典小图直接展示本地主图且不重复请求封面', async () => {
+    mockClientWidth = 600
+    mockClientHeight = 600
+    const wrapper = mount(CircleWorksViewport, {
+      props: {
+        imageField: 'thumb_image_url',
+        items: [
+          {
+            canonical_rjcode: 'RJ01673453',
+            display_rjcode: 'RJ01673453',
+            title: '原作',
+          },
+          {
+            canonical_rjcode: 'RJ01678200',
+            display_rjcode: 'RJ01678200',
+            linked_rjcodes: ['RJ01673453', 'RJ01678200'],
+            bonus_parent_rjcode: 'RJ01673453',
+            title: '特典',
+            is_bonus_work: true,
+            thumb_image_url: '/api/circle-completion/cover/RJ01678200_sam.jpg',
+            image_url: '/api/circle-completion/cover/RJ01678200.jpg',
+          },
+        ],
+      },
+      global: {
+        stubs: {
+          WorkCard: { template: '<div />' },
+          WorkListRow: { template: '<div />' },
+          ElPagination: { template: '<div />' },
+        },
+      },
+    })
+
+    await flushPromises()
+    await wrapper.get('.circle-bonus-gift').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.circle-bonus-detail-cover img').attributes('src')).toBe('/api/circle-completion/cover/RJ01678200.jpg')
+    expect(wrapper.emitted('ensure-cover')).toBeUndefined()
+
+    wrapper.unmount()
+  })
+
   it('宽屏大页只挂载可见行和一行预渲染卡片', async () => {
     mockClientWidth = 1600
     mockClientHeight = 600

@@ -20,6 +20,7 @@
 
 - 查询前先查 `dlsite_bonus_probe_hit_index` 和 `dlsite_bonus_probe_cache`，有本地命中线索时优先确认并写入社团作品。
 - 隐藏特典已经存在显式 `work_canonical_links.link_type=bonus` 关系时，后续缓存复用和重复探测必须沿用该父作品；只有完全不存在显式关系时，才允许在同社团、同 maker、同发售日原作中按 RJ 距离推断归属。
+- 社团补全读模型组装 `bonus_works` 时同样先读取显式 bonus 关系；不能在数据库关系正确时又按 RJ 距离覆盖 `bonus_parent_rjcode`。调整该归属规则时必须提升社团补全缓存 schema，使 Redis 中旧分组结果自动失效。
 - 本地线索命中后仍要继续补完同发售日未结论原作，不能直接把整个发售日跳过。
 - 日期调度最多使用 6 个并发 worker；每个日期内的 `product/info/ajax` 请求从 `bonus_probe.product_info_total_concurrency` 总预算中均摊，默认总并发 6，避免日期并发和 HTTP 并发相乘打满服务器连接。
 - 待处理发售日按该发售日下最小原作 RJ 升序排序；worker 取到一个发售日后，必须完整完成该发售日的特典搜索，再领取下一个发售日。

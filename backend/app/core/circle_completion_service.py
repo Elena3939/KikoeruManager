@@ -217,7 +217,7 @@ class CircleCompletionService:
     _COMPLETION_ALIAS_REDIS_TTL_SECONDS = 86400
     # 封面缓存键从展示 RJ 统一为图片 URL 中的真实 RJ；升级版本让 Redis / L1
     # 中仍指向旧文件名的社团视图立即失效并按新键重建。
-    _COMPLETION_CACHE_SCHEMA_VERSION = 8
+    _COMPLETION_CACHE_SCHEMA_VERSION = 9
 
     def __init__(self):
         self.metadata_service = MetadataService()
@@ -2198,6 +2198,47 @@ class CircleCompletionService:
                 item["bonus_parent_rjcode"] = candidates[0][1]
         return items
 
+    def _completion_apply_explicit_bonus_parent_codes(
+        self,
+        items: List[Dict[str, Any]],
+        link_rows: Iterable[WorkCanonicalLink],
+    ) -> List[Dict[str, Any]]:
+        explicit_candidates: Dict[str, List[Tuple[datetime, str]]] = defaultdict(list)
+        fallback_time = datetime.max
+        for row in link_rows or []:
+            if str(getattr(row, "link_type", "") or "").strip().lower() != "bonus":
+                continue
+            parent = self.normalize_rjcode(getattr(row, "canonical_rjcode", ""))
+            bonus = self.normalize_rjcode(getattr(row, "linked_rjcode", ""))
+            if not parent or not bonus or parent == bonus:
+                continue
+            created_at = getattr(row, "created_at", None)
+            explicit_candidates[bonus].append((created_at if isinstance(created_at, datetime) else fallback_time, parent))
+
+        explicit_parents: Dict[str, str] = {}
+        for bonus, candidates in explicit_candidates.items():
+            candidates.sort(key=lambda value: (value[0], value[1]))
+            explicit_parents[bonus] = candidates[0][1]
+            distinct_parents = {parent for _, parent in candidates}
+            if len(distinct_parents) > 1:
+                logger.warning(
+                    "[社团补全] 特典存在多个显式父作品，按最早关系展示 bonus=%s parents=%s selected=%s",
+                    bonus,
+                    sorted(distinct_parents),
+                    explicit_parents[bonus],
+                )
+
+        for item in items:
+            if not bool(item.get("is_bonus_work")):
+                continue
+            for candidate in [item.get("display_rjcode"), item.get("canonical_rjcode"), item.get("rjcode")]:
+                bonus = self.normalize_rjcode(candidate)
+                parent = explicit_parents.get(bonus)
+                if parent:
+                    item["bonus_parent_rjcode"] = parent
+                    break
+        return items
+
     def _completion_apply_early_bonus_status(
         self,
         items: List[Dict[str, Any]],
@@ -2385,16 +2426,10 @@ class CircleCompletionService:
                     [stored_display_rjcode],
                     variant="list",
                 )
-            if is_bonus_work:
-                local_cover_url = image_cache_service.get_local_url(
-                    cover_cache_rjcode,
-                    variant="list",
-                )
-            if not local_cover_url:
-                local_cover_url = image_cache_service.get_local_url(
-                    cover_cache_rjcode,
-                    allow_missing=True,
-                )
+            local_cover_url = image_cache_service.get_local_url(
+                cover_cache_rjcode,
+                allow_missing=True,
+            )
             local_thumb_url = image_cache_service.get_local_url(
                 cover_cache_rjcode,
                 variant="list",
@@ -2624,6 +2659,7 @@ class CircleCompletionService:
             )
             for row in works
         ]
+        items = self._completion_apply_explicit_bonus_parent_codes(items, link_rows)
         items = self._completion_attach_bonus_parent_codes(items)
         self._completion_apply_early_bonus_status(items, early_bonus_state_map)
         catalog_payload = {
@@ -8081,18 +8117,10 @@ class CircleCompletionService:
                         cover_cache_rjcode,
                         stored_display_rjcode,
                     )
-                if item["is_bonus_work"]:
-                    local_cover_url = image_cache_service.get_local_url(
-                        cover_cache_rjcode,
-                        variant="list",
-                    )
-                else:
-                    local_cover_url = ""
-                if not local_cover_url:
-                    local_cover_url = image_cache_service.get_local_url(
-                        cover_cache_rjcode,
-                        allow_missing=True,
-                    )
+                local_cover_url = image_cache_service.get_local_url(
+                    cover_cache_rjcode,
+                    allow_missing=True,
+                )
                 local_thumb_url = image_cache_service.get_local_url(
                     cover_cache_rjcode,
                     variant="list",

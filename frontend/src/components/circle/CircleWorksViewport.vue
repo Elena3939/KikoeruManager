@@ -193,7 +193,6 @@ function openBonusDetail(bonus, event = null) {
   activeBonusDetail.value = bonus
   const target = bonusActionItem(bonus, 'select')
   emit('select', target, event)
-  emit('ensure-cover', target)
 }
 
 function closeBonusDetail() {
