@@ -5328,3 +5328,32 @@
 - `docs/circle-completion-performance-cache.md`：补充主图/小图和手动重试行为。
 - `progress.md`：追加本轮实现、生产核验、测试与回滚记录。
 - 回滚方式：反向移除 `_completion_apply_explicit_bonus_parent_codes()` 及调用、将缓存 schema 恢复为 `8`、恢复特典优先使用 list 图和 `openBonusDetail()` 的 `ensure-cover` 事件，并移除对应测试和文档；不要使用整文件回退，相关文件含其它未提交改动。
+
+## 2026-07-27 - Task: 修复百度网盘追加下载任务不显示并统一下载工作台跟踪
+
+### What was done
+
+- 修正 HTTP 与百度网盘状态缓存的版本失效条件；任务提交或状态版本变化后立即丢弃旧快照，不再因 1 秒 TTL 返回创建前任务列表。
+- 百度网盘和 HTTP 下载工作台改为保留创建接口确认过的任务 ID，状态快照暂时缺项时只跳过当次展示，不再永久删除跟踪状态。
+- 两个下载工作台增加最新请求守卫，丢弃自动轮询、手动刷新交错产生的晚到旧响应；关闭工作台时同步使在途请求失效。
+- 任务匹配改为按 ID 建立 `Map` 后映射到工作台顺序，新任务置顶并去重，避免任务增长后的重复线性查找。
+
+### Testing
+
+- 项目虚拟环境 `py_compile` 覆盖 `backend/app/api/routes.py` 和新增缓存测试：通过。
+- `cd backend; ..\.venv\Scripts\python.exe -m pytest tests\test_download_status_cache.py -q`：通过，`3 passed`。
+- `cd backend; ..\.venv\Scripts\python.exe -m pytest tests\test_http_download_service.py tests\test_baidu_netdisk_account_api.py tests\test_baidu_netdisk_service.py tests\test_task_notification_service.py tests\test_download_status_cache.py -q`：通过，`195 passed`；仅有项目既有弃用警告和 `.pytest_cache` 权限警告。
+- `cd frontend; npm test -- --run`：通过，`16` 个测试文件、`49 passed`。
+- `cd frontend; npm run build`：通过，`4192 modules transformed`；仅有项目既有 Rollup 注释、`eval` 和 chunk size 提示。
+- `git diff --check` 覆盖本轮代码、测试与文档：通过，仅有工作区既有换行符提示。
+
+### Notes
+
+- `backend/app/api/routes.py`：状态缓存改为版本和 TTL 同时满足才复用。
+- `backend/tests/test_download_status_cache.py`：覆盖同版本缓存复用、版本变化立即失效和 TTL 到期失效。
+- `frontend/src/views/ASMRSync.vue`：HTTP 与百度工作台接入非破坏性任务跟踪和最新请求守卫。
+- `frontend/src/views/_downloadWorkbenchTracking.js`：提供任务 ID 合并、线性时间状态映射和请求时序守卫。
+- `frontend/src/views/_downloadWorkbenchTracking.test.js`：覆盖追加任务、旧快照缺项、展示顺序、晚到响应和关闭失效。
+- `docs/download-workbench-task-tracking.md`：记录来源工作台任务跟踪、状态缓存和并发刷新合同。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：反向恢复 `_download_status_cache_get()` 的旧缓存条件，移除两个工作台的请求守卫与跟踪辅助模块，并恢复状态快照覆盖任务 ID 的旧逻辑；同时删除新增测试和文档。不要使用整文件回退，`AGENTS.md` 和其它现有改动不属于本任务。

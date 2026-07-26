@@ -16977,7 +16977,7 @@ def _download_status_cache_get(cache_key: str, version: int) -> Optional[Dict[st
     cached_at = float(cached.get("cached_at") or 0.0)
     cached_version = int(cached.get("version") or -1)
     # 进度 tick 高频变化时允许 1 秒内复用，避免状态轮询重复清洗大 metadata。
-    if cached_version == version or time.monotonic() - cached_at <= _DOWNLOAD_STATUS_CACHE_TTL_SECONDS:
+    if cached_version == version and time.monotonic() - cached_at <= _DOWNLOAD_STATUS_CACHE_TTL_SECONDS:
         payload = cached.get("payload")
         if isinstance(payload, dict):
             return copy.deepcopy(payload)

@@ -636,6 +636,11 @@ import AsmrEnhancedDownloadPanel from '../components/asmr/AsmrEnhancedDownloadPa
 import BaiduNetdiskPanel from '../components/asmr/BaiduNetdiskPanel.vue'
 import HttpDownloadPanel from '../components/asmr/HttpDownloadPanel.vue'
 import AsmrSubtitleScanPanel from '../components/asmr/AsmrSubtitleScanPanel.vue'
+import {
+  createLatestRequestGuard,
+  mergeTrackedDownloadTaskIds,
+  selectTrackedDownloadTasks,
+} from './_downloadWorkbenchTracking.js'
 
 const { isMobile: isMobileViewport } = useViewport()
 const route = useRoute()
@@ -766,6 +771,7 @@ const httpDownloadWorkbenchRefreshing = ref(false)
 const httpDownloadRetryingTaskIds = ref(new Set())
 const httpDownloadDraft = ref(readDownloadDraft(ASMR_SYNC_HTTP_DOWNLOAD_DRAFT_KEY))
 let httpDownloadWorkbenchTimer = null
+const httpDownloadWorkbenchRequestGuard = createLatestRequestGuard()
 const baiduNetdiskWorkbenchTaskIds = ref([])
 const baiduNetdiskWorkbenchTasks = ref([])
 const baiduNetdiskWorkbenchVisible = ref(false)
@@ -774,6 +780,7 @@ const baiduNetdiskWorkbenchRefreshing = ref(false)
 const baiduNetdiskRetryingTaskIds = ref(new Set())
 const baiduNetdiskDraft = ref(readDownloadDraft(ASMR_SYNC_BAIDU_NETDISK_DRAFT_KEY))
 let baiduNetdiskWorkbenchTimer = null
+const baiduNetdiskWorkbenchRequestGuard = createLatestRequestGuard()
 
 // Enhanced preview dialog state
 const enhancedPreviewVisible = ref(false)
@@ -1505,6 +1512,7 @@ function hydrateHttpDownloadWorkbenchState() {
 }
 
 function clearHttpDownloadWorkbenchState() {
+  httpDownloadWorkbenchRequestGuard.invalidate()
   httpDownloadWorkbenchTaskIds.value = []
   httpDownloadWorkbenchTasks.value = []
   httpDownloadWorkbenchVisible.value = false
@@ -1530,6 +1538,7 @@ function startHttpDownloadWorkbenchPolling() {
 
 async function refreshHttpDownloadWorkbench(options = {}) {
   const silent = Boolean(options?.silent)
+  const requestSeq = httpDownloadWorkbenchRequestGuard.begin()
   if (!httpDownloadWorkbenchTaskIds.value.length) {
     httpDownloadWorkbenchTasks.value = []
     stopHttpDownloadWorkbenchPolling()
@@ -1538,29 +1547,31 @@ async function refreshHttpDownloadWorkbench(options = {}) {
   if (!silent) httpDownloadWorkbenchRefreshing.value = true
   try {
     const result = await httpDownloadApi.status()
+    if (!httpDownloadWorkbenchRequestGuard.isLatest(requestSeq)) return
     const allTasks = Array.isArray(result.tasks) ? result.tasks : []
-    httpDownloadWorkbenchTasks.value = httpDownloadWorkbenchTaskIds.value
-      .map(id => allTasks.find(t => t.id === id))
-      .filter(Boolean)
-    httpDownloadWorkbenchTaskIds.value = httpDownloadWorkbenchTasks.value.map(t => t.id)
+    httpDownloadWorkbenchTasks.value = selectTrackedDownloadTasks(
+      httpDownloadWorkbenchTaskIds.value,
+      allTasks,
+    )
     const stillActive = httpDownloadWorkbenchTasks.value.some(t => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(t.status || '')))
     if (stillActive || httpDownloadWorkbenchVisible.value || httpDownloadWorkbenchBackgroundActive.value) startHttpDownloadWorkbenchPolling()
     else stopHttpDownloadWorkbenchPolling()
   } catch (error) {
+    if (!httpDownloadWorkbenchRequestGuard.isLatest(requestSeq)) return
     console.error('刷新 HTTP 下载工作台失败:', error)
     startHttpDownloadWorkbenchPolling()
   } finally {
-    if (!silent) httpDownloadWorkbenchRefreshing.value = false
+    if (httpDownloadWorkbenchRequestGuard.isLatest(requestSeq)) httpDownloadWorkbenchRefreshing.value = false
   }
 }
 
 async function handleHttpDownloadStarted(taskIds = []) {
   const newTaskIds = Array.isArray(taskIds) ? taskIds.filter(Boolean) : []
   if (!newTaskIds.length) return
-  httpDownloadWorkbenchTaskIds.value = [
-    ...newTaskIds,
-    ...httpDownloadWorkbenchTaskIds.value.filter(id => !newTaskIds.includes(id))
-  ]
+  httpDownloadWorkbenchTaskIds.value = mergeTrackedDownloadTaskIds(
+    httpDownloadWorkbenchTaskIds.value,
+    newTaskIds,
+  )
   httpDownloadWorkbenchVisible.value = true
   httpDownloadWorkbenchBackgroundActive.value = false
   persistHttpDownloadWorkbenchState()
@@ -1711,6 +1722,7 @@ function hydrateBaiduNetdiskWorkbenchState() {
 }
 
 function clearBaiduNetdiskWorkbenchState() {
+  baiduNetdiskWorkbenchRequestGuard.invalidate()
   baiduNetdiskWorkbenchTaskIds.value = []
   baiduNetdiskWorkbenchTasks.value = []
   baiduNetdiskWorkbenchVisible.value = false
@@ -1736,6 +1748,7 @@ function startBaiduNetdiskWorkbenchPolling() {
 
 async function refreshBaiduNetdiskWorkbench(options = {}) {
   const silent = Boolean(options?.silent)
+  const requestSeq = baiduNetdiskWorkbenchRequestGuard.begin()
   if (!baiduNetdiskWorkbenchTaskIds.value.length) {
     baiduNetdiskWorkbenchTasks.value = []
     stopBaiduNetdiskWorkbenchPolling()
@@ -1744,29 +1757,31 @@ async function refreshBaiduNetdiskWorkbench(options = {}) {
   if (!silent) baiduNetdiskWorkbenchRefreshing.value = true
   try {
     const result = await baiduNetdiskApi.status()
+    if (!baiduNetdiskWorkbenchRequestGuard.isLatest(requestSeq)) return
     const allTasks = Array.isArray(result.tasks) ? result.tasks : []
-    baiduNetdiskWorkbenchTasks.value = baiduNetdiskWorkbenchTaskIds.value
-      .map(id => allTasks.find(t => t.id === id))
-      .filter(Boolean)
-    baiduNetdiskWorkbenchTaskIds.value = baiduNetdiskWorkbenchTasks.value.map(t => t.id)
+    baiduNetdiskWorkbenchTasks.value = selectTrackedDownloadTasks(
+      baiduNetdiskWorkbenchTaskIds.value,
+      allTasks,
+    )
     const stillActive = baiduNetdiskWorkbenchTasks.value.some(t => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(t.status || '')))
     if (stillActive || baiduNetdiskWorkbenchVisible.value || baiduNetdiskWorkbenchBackgroundActive.value) startBaiduNetdiskWorkbenchPolling()
     else stopBaiduNetdiskWorkbenchPolling()
   } catch (error) {
+    if (!baiduNetdiskWorkbenchRequestGuard.isLatest(requestSeq)) return
     console.error('刷新百度网盘下载工作台失败:', error)
     startBaiduNetdiskWorkbenchPolling()
   } finally {
-    if (!silent) baiduNetdiskWorkbenchRefreshing.value = false
+    if (baiduNetdiskWorkbenchRequestGuard.isLatest(requestSeq)) baiduNetdiskWorkbenchRefreshing.value = false
   }
 }
 
 async function handleBaiduNetdiskStarted(taskIds = []) {
   const newTaskIds = Array.isArray(taskIds) ? taskIds.filter(Boolean) : []
   if (!newTaskIds.length) return
-  baiduNetdiskWorkbenchTaskIds.value = [
-    ...newTaskIds,
-    ...baiduNetdiskWorkbenchTaskIds.value.filter(id => !newTaskIds.includes(id))
-  ]
+  baiduNetdiskWorkbenchTaskIds.value = mergeTrackedDownloadTaskIds(
+    baiduNetdiskWorkbenchTaskIds.value,
+    newTaskIds,
+  )
   baiduNetdiskWorkbenchVisible.value = true
   baiduNetdiskWorkbenchBackgroundActive.value = false
   persistBaiduNetdiskWorkbenchState()
