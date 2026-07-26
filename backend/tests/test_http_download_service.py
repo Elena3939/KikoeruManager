@@ -1922,6 +1922,37 @@ async def test_poll_task_marks_small_gofile_completion_failed(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+async def test_poll_task_reports_actionable_gofile_timeout(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    row = {
+        "gid": "gid-1",
+        "source": "gofile",
+        "original_url": "https://store-na-phx-5.gofile.io/download/file.zip",
+        "status": "pending",
+    }
+
+    async def fake_tell_status(gid):
+        return {
+            "gid": gid,
+            "status": "error",
+            "totalLength": "0",
+            "completedLength": "0",
+            "downloadSpeed": "0",
+            "errorMessage": "timed out",
+        }
+
+    monkeypatch.setattr(service, "_tell_status", fake_tell_status)
+
+    rows, _runtime, done, failed_count = await service._poll_task(["gid-1"], [row])
+
+    assert done is True
+    assert failed_count == 1
+    assert "store-na-phx-5.gofile.io" in rows[0]["failure_reason"]
+    assert "未收到数据" in rows[0]["failure_reason"]
+
+
+@pytest.mark.asyncio
 async def test_preview_urls_shows_transferit_as_materialized_item(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
     service = HttpDownloadService()
@@ -2152,6 +2183,51 @@ def test_filter_preview_selection_reports_unrecoverable_transferit_selection():
 
     filtered = service.filter_preview_selection(
         {"success": True, "items": [current], "ok_count": 1, "failed_count": 0},
+        selected_keys=[selected["selection_key"]],
+        selected_items=[selected],
+    )
+
+    assert filtered["ok_count"] == 0
+    assert filtered["failed_count"] == 1
+    assert "文件标识已变化" in filtered["items"][0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_transferit_reparse_keeps_candidates_for_unrecoverable_selection(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    selected = {
+        "ok": True,
+        "source": "transferit",
+        "share_id": "share-a",
+        "transferit_node_handle": "old-node",
+        "filename": "old.zip",
+        "selection_key": "transferit:legacy-key",
+    }
+
+    async def fake_collect(_raw_url):
+        return {
+            "files": [{
+                "source": "transferit",
+                "share_url": "https://transfer.it/t/share-a",
+                "share_id": "share-a",
+                "transferit_node_handle": "new-node",
+                "filename": "new.zip",
+                "name": "new.zip",
+                "size_bytes": 12,
+                "preview_only": True,
+            }]
+        }
+
+    monkeypatch.setattr(service, "_collect_transferit_files", fake_collect)
+
+    preview = await service.preview_urls(
+        ["https://transfer.it/t/share-a"],
+        materialize_sources=True,
+        selected_items=[selected],
+    )
+    filtered = service.filter_preview_selection(
+        preview,
         selected_keys=[selected["selection_key"]],
         selected_items=[selected],
     )
@@ -3526,6 +3602,35 @@ def test_gofile_aria2_options_use_configured_splits(monkeypatch, tmp_path):
     assert options["max-connection-per-server"] == "4"
 
 
+def test_gofile_aria2_options_reduce_connections_and_extend_timeout_on_retry(monkeypatch, tmp_path):
+    bind_config(
+        monkeypatch,
+        tmp_path,
+        connect_timeout_seconds=15,
+        timeout_seconds=60,
+        gofile_split=5,
+    )
+    service = HttpDownloadService()
+
+    first_retry = service._aria2_options({
+        "source": "gofile",
+        "filename": "voice.zip",
+        "gofile_retry_attempt": 1,
+    }, str(tmp_path))
+    final_retry = service._aria2_options({
+        "source": "gofile",
+        "filename": "voice.zip",
+        "gofile_retry_attempt": 2,
+    }, str(tmp_path))
+
+    assert first_retry["split"] == "2"
+    assert first_retry["connect-timeout"] == "30"
+    assert first_retry["timeout"] == "120"
+    assert first_retry["user-agent"]
+    assert final_retry["split"] == "1"
+    assert final_retry["connect-timeout"] == "45"
+
+
 @pytest.mark.asyncio
 async def test_download_transferit_item_uses_library_download(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
@@ -3560,6 +3665,38 @@ async def test_download_transferit_item_uses_library_download(monkeypatch, tmp_p
     assert row["size"] == 2
     assert (target_dir / "pack.zip").read_bytes() == b"ok"
     assert not (target_dir / "pack.zip.part").exists()
+
+
+@pytest.mark.asyncio
+async def test_download_transferit_rejects_concurrent_writes_to_same_target(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = {"count": 0}
+    item = {
+        "filename": "pack.zip",
+        "target_dir": str(tmp_path),
+        "final_path": str(tmp_path / "pack.zip"),
+    }
+
+    async def fake_unlocked(_item, task=None, progress_callback=None):
+        calls["count"] += 1
+        started.set()
+        await release.wait()
+        return {"status": "completed"}
+
+    monkeypatch.setattr(service, "_download_transferit_item_unlocked", fake_unlocked)
+    first = asyncio.create_task(service._download_transferit_item_inner(item))
+    await started.wait()
+
+    with pytest.raises(HttpDownloadError, match="已有下载任务正在写入"):
+        await service._download_transferit_item_inner(item)
+
+    release.set()
+    assert await first == {"status": "completed"}
+    assert await service._download_transferit_item_inner(item) == {"status": "completed"}
+    assert calls["count"] == 2
 
 
 @pytest.mark.asyncio

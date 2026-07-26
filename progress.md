@@ -5357,3 +5357,27 @@
 - `docs/download-workbench-task-tracking.md`：记录来源工作台任务跟踪、状态缓存和并发刷新合同。
 - `progress.md`：追加本轮实现、验证和回滚记录。
 - 回滚方式：反向恢复 `_download_status_cache_get()` 的旧缓存条件，移除两个工作台的请求守卫与跟踪辅助模块，并恢复状态快照覆盖任务 ID 的旧逻辑；同时删除新增测试和文档。不要使用整文件回退，`AGENTS.md` 和其它现有改动不属于本任务。
+
+## 2026-07-27 - Task: 修复 Gofile 超时重试与 Transfer.it 选择恢复和并发写入
+
+### What was done
+
+- Transfer.it 开始任务重新解析分享后，选择标识失配时保留当前候选交给统一选择恢复逻辑；可按节点标识或文件名恢复时继续下载，无法恢复时明确返回“文件标识已变化”，不再退化为空列表。
+- Transfer.it 下载按规范化最终路径增加进程内写入互斥；重复任务在触碰同一个 `.part` 前失败，互斥在成功、异常和取消后统一释放。
+- Gofile 自动重试改为逐轮降低 aria2 单文件分片数并延长连接、无数据等待时间，同时补齐浏览器 User-Agent；首次下载仍遵循用户配置，不影响正常节点吞吐。
+- Gofile aria2 超时终态补充具体 CDN 主机、已传输字节和断点语义，避免任务中心只显示无法定位节点的 `timed out`。
+
+### Testing
+
+- 先补 4 个失败复现：Transfer.it 重新解析选择失配、同目标并发写入、Gofile CDN 零字节超时、Gofile 重试参数退避；修复前分别稳定失败，修复后全部通过。
+- `cd backend; ..\.venv\Scripts\python.exe -m pytest tests\test_http_download_service.py tests\test_baidu_netdisk_service.py tests\test_baidu_netdisk_account_api.py tests\test_task_notification_service.py -q`：通过，`196 passed`；仅有项目既有弃用警告和 pytest cache 权限警告。
+- 项目虚拟环境 `py_compile` 覆盖 `http_download_service.py` 和 `test_http_download_service.py`：通过。
+- `git diff --check` 覆盖本轮后端、测试和文档：通过，仅有工作区换行符提示。
+
+### Notes
+
+- `backend/app/core/http_download_service.py`：修正 Transfer.it 选择恢复链路，增加同目标写入互斥，并为 Gofile 超时重试增加自适应参数和明确失败语义。
+- `backend/tests/test_http_download_service.py`：新增 Transfer.it 选择失配、并发写入以及 Gofile 超时和退避参数回归测试。
+- `docs/http-download-completion.md`：记录 Transfer.it 单目标写入边界、选择恢复失败语义和 Gofile 自适应重试规则。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：反向移除 `_transferit_target_lock` / `_active_transferit_targets` 及下载包装层，恢复 Transfer.it 解析阶段直接丢弃未匹配候选的旧逻辑，移除 Gofile `gofile_retry_attempt` 自适应参数和超时文案，并删除对应 4 个测试与文档条目；不要使用整文件回退，`AGENTS.md` 的现有改动不属于本任务。
