@@ -5268,3 +5268,35 @@
 - `frontend/src/components/circle/WorkCard.vue`：标签行改为允许内部状态点在上沿可见。
 - `progress.md`：追加本轮实现、验证和回滚记录。
 - 回滚方式：将 `.work-tags` 的 `overflow: visible` 反向改回 `hidden`；不要使用整文件回退，文件可能含其它并行改动。
+
+## 2026-07-26 - Task: 修复翻译版重复卡、特典错挂与封面重复联网
+
+### What was done
+
+- 修复关联链缓存从翻译版 RJ 反查时只读取单行、把翻译版误判为独立 canonical 的问题；现在会按已命中的 canonical 扩回完整语言关联链后再归一。
+- 特典探测和缓存复用改为优先沿用已有显式 bonus 父子关系；只有完全没有显式关系时才按同社团、同 maker、同发售日和 RJ 距离推断。
+- 社团封面 cover API 在本地缺图时改为由服务端下载一次、原子写入 `data/img` 后直接返回；文件存在后只读本地缓存，不再让浏览器首次请求额外直连 DLsite。
+- 生产库定点清理 `RG51931` 的错误翻译重复卡、错误特典关系、错误作品级探测状态和错误 `has_bonus`，并恢复 `RJ01678200` 的正确父作品 `RJ01673453`。
+
+### Testing
+
+- 项目虚拟环境 `py_compile` 覆盖 `circle_completion_service.py`、`dlsite_bonus_probe_service.py`、`circle_image_cache_service.py`、`routes.py`：通过。
+- 新增 4 个定向回归用例：翻译链 canonical 反查、显式特典父级优先、已有封面不重复下载、首次缺图下载并返回本地文件；`4 passed`。
+- `cd backend; ..\.venv\Scripts\python.exe -m pytest tests/test_dlsite_bonus_probe_service.py tests/test_circle_completion_paged_view.py tests/test_circle_completion_bonus_grouping.py tests/test_routes_maintenance_config.py -q`：通过，`141 passed`；仅有项目既有弃用警告和 `.pytest_cache` 权限警告。
+- canonical 脏关系兼容断言加强后，再跑特典探测、社团分页和特典聚合三组完整测试：`101 passed`。
+- 生产库修复后只读复核：翻译版独立重复卡数量 `0`、同一特典多父级数量 `0`；`RJ01673453=has_bonus`、`RJ01673480=no_bonus`，`RJ01673617` 只保留为 `RJ01673480` 的 `ENG translation`，`RJ01678200` 只保留 `RJ01673453 -> RJ01678200` 的 bonus 关系。
+- 服务器 `data/img` 实查确认目标 RJ 主图均已持久化；`download_one` 回归验证同名非空文件存在时不会再次发起下载。
+
+### Notes
+
+- `backend/app/core/circle_completion_service.py`：翻译 RJ 的数据库缓存命中扩回完整 canonical 关联链，并同步更新封面本地化说明。
+- `backend/app/core/dlsite_bonus_probe_service.py`：父作品选择增加显式 bonus 关系优先级，两条写入路径统一传入已有关联。
+- `backend/app/core/circle_image_cache_service.py`：明确封面失败由本地占位或重试承接，不再以浏览器公网回退为正常链路。
+- `backend/app/api/routes.py`：cover API 首次缺图时等待服务端下载落盘后返回本地文件。
+- `backend/tests/test_circle_completion_paged_view.py`：覆盖翻译链缓存归一和封面只下载一次。
+- `backend/tests/test_dlsite_bonus_probe_service.py`：覆盖显式特典父级不被更近 RJ 抢占。
+- `backend/tests/test_routes_maintenance_config.py`：覆盖 cover API 缺图时下载并直接返回文件。
+- `docs/dlsite-bonus-probe.md`：记录显式特典关系优先规则。
+- `docs/circle-completion-performance-cache.md`、`docs/circle-completion-paged-loading.md`：记录封面首次服务端下载、后续本地复用的行为。
+- `progress.md`：追加本轮实现、测试、生产数据修复与回滚记录。
+- 生产库回滚点为修复事务前输出的 5 组记录：重复卡 `85e22043-ec04-4f6b-a270-9087fbdd72e5`、错误 bonus 关系 `d82e9cb9-d725-4094-b03c-08f6f6cb7e3b`、错误探测状态 `2459`、`RJ01673617.has_bonus=true`、`RJ01678200.linked_rjcodes=[RJ01673617,RJ01678200]`；如需回滚，必须在单事务中按这些原值定点恢复。代码回滚使用反向补丁移除本轮逻辑和测试，不使用整文件 `git restore`，避免覆盖其它未提交改动。

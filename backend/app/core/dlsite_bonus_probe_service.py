@@ -1619,10 +1619,12 @@ class DLsiteBonusProbeService:
         maker_id: str,
         release_date: str,
         trust_request_release_date: bool = False,
+        explicit_original_rjcodes: Optional[Iterable[str]] = None,
     ) -> Optional[CircleWork]:
         normalized_bonus = self.normalize_rjcode(bonus_rjcode)
         normalized_maker = str(maker_id or "").strip().upper()
         normalized_date = self.normalize_date(release_date)
+        explicit_originals = set(self._dedupe(explicit_original_rjcodes or []))
         bonus_number = self._rj_number(normalized_bonus)
         candidates: List[Tuple[int, str, CircleWork]] = []
         for row in rows or []:
@@ -1635,6 +1637,8 @@ class DLsiteBonusProbeService:
             if metadata is None or bool(getattr(metadata, "is_bonus_work", False)):
                 continue
             if normalized_maker and str(getattr(metadata, "maker_id", "") or "").strip().upper() != normalized_maker:
+                continue
+            if explicit_originals and canonical not in explicit_originals:
                 continue
             if (
                 not trust_request_release_date
@@ -1921,6 +1925,11 @@ class DLsiteBonusProbeService:
                     maker_id=normalized_maker,
                     release_date=feature.release_date or normalized_date,
                     trust_request_release_date=bool(target_set),
+                    explicit_original_rjcodes=self._explicit_bonus_original_rjcodes_sync(
+                        db,
+                        circle_id=circle_id,
+                        bonus_rjcode=feature.workno,
+                    ),
                 )
                 if original_row is not None:
                     has_bonus_rjcodes.add(self.normalize_rjcode(original_row.canonical_rjcode))
@@ -2033,6 +2042,11 @@ class DLsiteBonusProbeService:
                     maker_id=maker_id,
                     release_date=effective_release_date,
                     trust_request_release_date=bool(target_set),
+                    explicit_original_rjcodes=self._explicit_bonus_original_rjcodes_sync(
+                        db,
+                        circle_id=circle_id,
+                        bonus_rjcode=rjcode,
+                    ),
                 )
                 original_rjcode = self.normalize_rjcode(original_row.canonical_rjcode) if original_row else ""
                 metadata = db.query(WorkMetadata).filter(WorkMetadata.rjcode == rjcode).first()

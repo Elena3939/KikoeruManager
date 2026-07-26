@@ -1478,6 +1478,27 @@ def test_select_original_work_for_bonus_uses_same_date_and_nearest_rj() -> None:
     assert selected is near_original
 
 
+def test_select_original_work_for_bonus_prefers_explicit_existing_link() -> None:
+    service = _service()
+    correct_original = _Row("RJ01673453")
+    nearer_but_unrelated = _Row("RJ01673617")
+    metadata_by_rj = {
+        "RJ01673453": _Meta("RJ01673453", maker_id="RG51931", release_date="2026-07-25"),
+        "RJ01673617": _Meta("RJ01673617", maker_id="RG51931", release_date="2026-07-25"),
+    }
+
+    selected = service._select_original_work_for_bonus(
+        [correct_original, nearer_but_unrelated],
+        metadata_by_rj,
+        bonus_rjcode="RJ01678200",
+        maker_id="RG51931",
+        release_date="2026-07-25",
+        explicit_original_rjcodes=["RJ01673453"],
+    )
+
+    assert selected is correct_original
+
+
 def test_select_original_work_for_bonus_ignores_other_maker_and_bonus_rows() -> None:
     service = _service()
     other_maker = _Row("RJ01416537")

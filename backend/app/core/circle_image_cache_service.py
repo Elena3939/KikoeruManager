@@ -13,7 +13,7 @@
   连接池导致排队请求把总超时预算耗尽。
 - 空文件保护：``has_local`` 必须 size > 0 才算命中，否则会被当作丢失重新下载。
 - 复用 dlsite 代理配置：从 ``config.metadata.http_proxy`` 拿，与 DLsite 服务一致。
-- 失败不抛异常：所有错误只 log warning / debug，由调用方决定是否 fallback 到远程 URL。
+- 失败不抛异常：所有错误只 log warning / debug，由调用方展示占位图或提供重试。
 """
 
 from __future__ import annotations
