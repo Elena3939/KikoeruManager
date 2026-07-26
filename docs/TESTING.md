@@ -330,6 +330,10 @@ npm run build
 - Kikoeru 查询不稳定时，预检必须保持待重试，不能自动降级为普通解压。
 - Kikoeru 已确认原作有字幕时，翻译作应按重复作品处理。
 - Kikoeru tracks 查询返回 `total_track_count=0` 时，应识别为空壳作品并阻止字幕补配入队。
+- 来源字幕位于嵌套压缩包且官方 `7zz` 报 `Unsupported Method` 时，必须改用镜像内的 `7zzs` 兼容后端继续解压；成功后应能扫描到 `.vtt` / `.lrc` / `.srt` / `.ass` / `.ssa`。
+- 嵌套压缩包仍无法解开且外层没有已解出的字幕时，预检状态必须为 `nested_extract_failed` 并带失败包名，不能误报“压缩包内没有字幕”；来源包仍在时应保留重试入口。
+- 同一 RJ 根目录下被旧索引重复标记的音轨、特典等子目录必须收敛为一个目标候选；仅当更深层目录本身再次包含同一 RJ 时，才选择该内层 RJ 目录。
+- 待处理预检单已有候选后，用户主动点击“刷新”或“刷新候选”必须重新查 ready 库存索引；旧路径未命中时要丢弃选择并允许改选移动或改名后的目录。
 
 推荐命令：
 
@@ -353,6 +357,20 @@ cd backend
 .\.venv\Scripts\python.exe -m py_compile backend\app\core\ai_subtitle_match_service.py
 cd frontend
 npm run build
+```
+
+### 11.2 社团外部搜索持久化
+
+- 首次读取某个 `source + RJ` 没有持久记录时，接口应返回 `pending` 并只向 PostgreSQL 入队，不得在页面请求内访问 AnimeShare 或南+。
+- worker 写入 `hit`、`miss`、`unavailable` 或 `error` 后，后续页面请求必须直接返回持久结果；命中 30 天、未命中 7 天、不可用 10 分钟、错误 5 分钟才允许重新探测。
+- 南+仍只能由单 worker 按至少 10 秒间隔请求；worker 成功写入后应广播 `circle.external_search.changed`，当前社团页收到事件后重新读取快照。
+- 部署前执行 Alembic，确认 PostgreSQL 的 `circle_external_search_records` 存在唯一索引、ready 索引和 lease 索引。
+
+推荐命令：
+
+```powershell
+cd backend
+.\venv\Scripts\python.exe -m pytest --noconftest tests\test_circle_external_search_service.py -q
 ```
 
 ## 12. 持续集成测试

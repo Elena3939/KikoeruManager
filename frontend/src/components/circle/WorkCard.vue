@@ -918,7 +918,7 @@ function preventNativeShiftSelection(event) {
   align-items: center;
   flex-wrap: nowrap;
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
   height: 24px;
   padding-top: 3px;
 }

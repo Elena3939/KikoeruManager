@@ -189,13 +189,40 @@
         <div class="card-title">社团补全外部搜索</div>
         <div class="field-stack">
           <SettingsToggleRow v-model="circleExternalSearch.anime_share_enabled" title="启用 AnimeShare 探测" subtitle="作品页异步探测精确 RJ 命中的帖子，仅命中时显示跳转标签。" />
-          <SettingsToggleRow v-model="circleExternalSearch.south_plus_enabled" title="启用南+探测" subtitle="使用下方登录态搜索精确 RJ；未配置登录态时不会把权限页当成命中。" />
+          <SettingsToggleRow v-model="circleExternalSearch.south_plus_enabled" title="启用南+探测" subtitle="使用登录态精确搜索 RJ；请求严格串行且至少间隔 10 秒。" />
           <SettingsFieldCard label="南+ Cookie" hint="从已登录的南+浏览器复制完整 Cookie。保存后会脱敏，只有后端探测请求使用。">
-            <AnimatedPasswordInput v-model="circleExternalSearch.south_plus_cookie" placeholder="例如：bbs_lastvisit=...; ..." autocomplete="off" />
+            <AnimatedPasswordInput
+              v-model="circleExternalSearch.south_plus_cookie"
+              :reveal-value="southPlusRevealedCookie"
+              placeholder="例如：bbs_lastvisit=...; ..."
+              autocomplete="off"
+              @visibility-change="handleSouthPlusCookieVisibility"
+            />
           </SettingsFieldCard>
           <SettingsFieldCard label="南+ HTTP 代理" hint="只作用于南+搜索请求；留空则直连。支持 http://127.0.0.1:7890。">
             <input v-model="circleExternalSearch.south_plus_proxy" class="field-input" type="text" placeholder="http://127.0.0.1:7890">
           </SettingsFieldCard>
+          <div class="service-action-row">
+            <StatefulButton
+              type="button"
+              class="ghost-inline-btn"
+              unstyled
+              :show-default-icons="false"
+              :disabled="southPlusTestBusy"
+              @click="testSouthPlusConnection"
+            >
+              <template #prefix="{ state }">
+                <Loader2 v-if="state === 'loading' || southPlusTestBusy" :size="14" :stroke-width="2.4" class="animate-spin" />
+                <CheckCircle2 v-else-if="state === 'success'" :size="14" :stroke-width="2.4" />
+                <AlertCircle v-else-if="state === 'error'" :size="14" :stroke-width="2.4" />
+                <Wifi v-else :size="14" :stroke-width="2.4" />
+              </template>
+              {{ southPlusTestBusy ? '测试中' : '测试南+连接' }}
+            </StatefulButton>
+          </div>
+          <div v-if="southPlusTestMessage" class="service-result-card">
+            <div class="service-result-line">{{ southPlusTestMessage }}</div>
+          </div>
         </div>
       </div>
 
@@ -461,7 +488,7 @@ import SettingsToggleChip from './SettingsToggleChip.vue'
 import AppDropdown from '../common/AppDropdown.vue'
 import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
 import StatefulButton from '../ui/stateful-button.vue'
-import { configApi, kikoeruApi, emailWatcherApi } from '../../api'
+import { circleCompletionApi, configApi, kikoeruApi, emailWatcherApi } from '../../api'
 
 const props = defineProps({
   config: { type: Object, required: true }
@@ -483,6 +510,11 @@ const circleExternalSearch = computed(() => {
   }
   return props.config.circle_external_search
 })
+
+const southPlusTestBusy = ref(false)
+const southPlusTestMessage = ref('')
+const southPlusRevealedCookie = ref('')
+const southPlusCookieRevealLoading = ref(false)
 
 // ---- AppDropdown options ----
 const uploadModeOptions = [
@@ -858,6 +890,53 @@ async function runDlsiteConnectionTest() {
     throw e
   } finally {
     dlsiteBusy.value = false
+  }
+}
+
+async function testSouthPlusConnection() {
+  if (southPlusTestBusy.value) return false
+  southPlusTestBusy.value = true
+  southPlusTestMessage.value = '正在测试南+搜索连接...'
+  try {
+    const result = await circleCompletionApi.testSouthPlusConnection({
+      south_plus_cookie: circleExternalSearch.value.south_plus_cookie,
+      south_plus_proxy: circleExternalSearch.value.south_plus_proxy,
+    })
+    const message = String(result?.message || '南+ 连接测试完成')
+    southPlusTestMessage.value = result?.success ? `✓ ${message}` : `✗ ${message}`
+    if (!result?.success) {
+      ElMessage.error(message)
+      throw new Error(message)
+    }
+    ElMessage.success(message)
+    return true
+  } catch (error) {
+    if (!southPlusTestMessage.value.startsWith('✗')) {
+      const message = error.response?.data?.detail || error.message || '南+ 连接失败'
+      southPlusTestMessage.value = `✗ ${message}`
+      ElMessage.error(message)
+    }
+    throw error
+  } finally {
+    southPlusTestBusy.value = false
+  }
+}
+
+async function handleSouthPlusCookieVisibility(visible) {
+  if (!visible || southPlusCookieRevealLoading.value) return
+  if (circleExternalSearch.value.south_plus_cookie !== '********') return
+
+  southPlusCookieRevealLoading.value = true
+  try {
+    const result = await configApi.revealCircleExternalSearchSecret({ key: 'south_plus_cookie' })
+    southPlusRevealedCookie.value = String(result?.value || '')
+    if (!southPlusRevealedCookie.value) {
+      ElMessage.warning('配置文件里没有可显示的原始南+ Cookie')
+    }
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '读取已保存的南+ Cookie 失败')
+  } finally {
+    southPlusCookieRevealLoading.value = false
   }
 }
 

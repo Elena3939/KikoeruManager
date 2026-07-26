@@ -410,6 +410,33 @@ class CircleWork(Base):
         }
 
 
+class CircleExternalSearchRecord(Base):
+    """社团外部搜索的持久化结果与低频探测队列。"""
+    __tablename__ = 'circle_external_search_records'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source = Column(String(40), nullable=False)
+    rjcode = Column(String(20), nullable=False)
+    probe_schema_version = Column(String(40), nullable=False, default='v1')
+    status = Column(String(24), nullable=False, default='pending')
+    results_json = Column(JSON, nullable=False, default=list)
+    search_url = Column(Text, nullable=False, default='')
+    checked_at = Column(DateTime)
+    next_probe_at = Column(DateTime, nullable=False, default=get_local_now, index=True)
+    lease_until = Column(DateTime, index=True)
+    priority = Column(Integer, nullable=False, default=0)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    last_error_code = Column(String(80), nullable=False, default='')
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_circle_external_search_record_unique', 'source', 'rjcode', 'probe_schema_version', unique=True),
+        Index('idx_circle_external_search_record_ready', 'next_probe_at', 'priority', 'id'),
+        Index('idx_circle_external_search_record_lease', 'lease_until', 'id'),
+    )
+
+
 class DLsiteBonusProbeCache(Base):
     """DLsite 隐藏特典 RJ 探测缓存。"""
     __tablename__ = 'dlsite_bonus_probe_cache'

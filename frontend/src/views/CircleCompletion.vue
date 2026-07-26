@@ -1254,13 +1254,21 @@ const CIRCLE_DETAIL_CACHE_TTL = 5 * 60 * 1000
 const CIRCLE_DETAIL_PREFETCH_LIMIT = 1
 const DOWNLOAD_PREVIEW_JOB_THRESHOLD = 8
 const EXTERNAL_SEARCH_BATCH_SIZE = 6
+const EXTERNAL_SEARCH_RESULT_CACHE_MAX = 1024
+const EXTERNAL_SEARCH_HIT_CACHE_TTL = 30 * 24 * 60 * 60 * 1000
+const EXTERNAL_SEARCH_RESULT_CACHE_TTL = 6 * 60 * 60 * 1000
+const EXTERNAL_SEARCH_UNAVAILABLE_CACHE_TTL = 10 * 60 * 1000
+const EXTERNAL_SEARCH_ERROR_CACHE_TTL = 5 * 60 * 1000
+const EXTERNAL_SEARCH_PENDING_CACHE_TTL = 15 * 1000
+const EXTERNAL_SEARCH_CACHE_VERSION = 'south-plus-browser-headers-v1'
 const circleDetailCache = new Map()
 const circleWorksPageCache = new Map()
-const externalSearchPageCache = new Map()
+const externalSearchWorkCache = new Map()
 let circleDetailRequestSeq = 0
 let circleDetailAbortController = null
 let externalSearchRequestSeq = 0
 let externalSearchAbortController = null
+let externalSearchRealtimeRefreshTimer = null
 let circleDetailPrefetchTimer = null
 let circleDetailPrefetchIdleId = null
 let circleDetailPrefetchIdleIsTimeout = false
@@ -1787,14 +1795,6 @@ function applyCircleWorksPayload(payload = {}) {
   void refreshExternalSearchForPage()
 }
 
-function externalSearchPageKey() {
-  const codes = (Array.isArray(detail.works) ? detail.works : [])
-    .filter(item => !isBonusDisplayWork(item))
-    .map(item => normalizeRjcode(item?.canonical_rjcode))
-    .filter(Boolean)
-  return `${activeCircleId.value}|${activeTab.value}|${circleWorksPage.page}|${codes.join(',')}`
-}
-
 function mergeExternalSearchResults(items = {}) {
   const resultMap = items && typeof items === 'object' ? items : {}
   detail.works = (Array.isArray(detail.works) ? detail.works : []).map(item => {
@@ -1802,6 +1802,43 @@ function mergeExternalSearchResults(items = {}) {
     if (!canonical || isBonusDisplayWork(item)) return item
     return { ...item, external_search: resultMap[canonical] || {} }
   })
+}
+
+function externalSearchWorkKey(circleId, canonical) {
+  return `${EXTERNAL_SEARCH_CACHE_VERSION}|${circleId}|${normalizeRjcode(canonical)}`
+}
+
+function externalSearchResultTtl(payload = {}) {
+  const statuses = Object.values(payload || {}).map(source => String(source?.status || ''))
+  if (statuses.includes('pending')) return EXTERNAL_SEARCH_PENDING_CACHE_TTL
+  if (statuses.includes('error')) return EXTERNAL_SEARCH_ERROR_CACHE_TTL
+  if (statuses.includes('unavailable')) return EXTERNAL_SEARCH_UNAVAILABLE_CACHE_TTL
+  if (statuses.length && statuses.every(status => status === 'hit')) return EXTERNAL_SEARCH_HIT_CACHE_TTL
+  return EXTERNAL_SEARCH_RESULT_CACHE_TTL
+}
+
+function getExternalSearchWorkCache(circleId, canonical) {
+  const key = externalSearchWorkKey(circleId, canonical)
+  const entry = externalSearchWorkCache.get(key)
+  if (!entry || entry.expiresAt <= Date.now()) {
+    externalSearchWorkCache.delete(key)
+    return null
+  }
+  externalSearchWorkCache.delete(key)
+  externalSearchWorkCache.set(key, entry)
+  return entry.payload
+}
+
+function setExternalSearchWorkCache(circleId, canonical, payload) {
+  const key = externalSearchWorkKey(circleId, canonical)
+  externalSearchWorkCache.delete(key)
+  externalSearchWorkCache.set(key, {
+    payload,
+    expiresAt: Date.now() + externalSearchResultTtl(payload),
+  })
+  while (externalSearchWorkCache.size > EXTERNAL_SEARCH_RESULT_CACHE_MAX) {
+    externalSearchWorkCache.delete(externalSearchWorkCache.keys().next().value)
+  }
 }
 
 function buildExternalSearchEntry(source, canonical) {
@@ -1850,40 +1887,40 @@ async function refreshExternalSearchForPage() {
     .filter(Boolean))]
   if (!circleId || !codes.length) return
 
-  const pageKey = externalSearchPageKey()
-  const cached = externalSearchPageCache.get(pageKey)
-  if (cached) {
-    mergeExternalSearchResults(cached)
-    return
+  const resultMap = {}
+  const pendingCodes = []
+  for (const canonical of codes) {
+    const cached = getExternalSearchWorkCache(circleId, canonical)
+    if (cached) resultMap[canonical] = cached
+    else pendingCodes.push(canonical)
   }
+  mergeExternalSearchResults(resultMap)
+  if (!pendingCodes.length) return
 
   const requestSeq = ++externalSearchRequestSeq
   if (externalSearchAbortController) externalSearchAbortController.abort()
   externalSearchAbortController = new AbortController()
-  const resultMap = {}
   try {
-    for (let offset = 0; offset < codes.length; offset += EXTERNAL_SEARCH_BATCH_SIZE) {
+    for (let offset = 0; offset < pendingCodes.length; offset += EXTERNAL_SEARCH_BATCH_SIZE) {
       const response = await circleCompletionApi.searchExternalSources(
-        { circle_id: circleId, canonical_rjcodes: codes.slice(offset, offset + EXTERNAL_SEARCH_BATCH_SIZE) },
+        { circle_id: circleId, canonical_rjcodes: pendingCodes.slice(offset, offset + EXTERNAL_SEARCH_BATCH_SIZE) },
         { signal: externalSearchAbortController.signal },
       )
       if (requestSeq !== externalSearchRequestSeq || activeCircleId.value !== circleId) return
-      Object.assign(resultMap, response?.items && typeof response.items === 'object' ? response.items : {})
+      const responseItems = response?.items && typeof response.items === 'object' ? response.items : {}
+      for (const canonical of Object.keys(responseItems)) {
+        resultMap[canonical] = responseItems[canonical]
+        setExternalSearchWorkCache(circleId, canonical, responseItems[canonical])
+      }
       mergeExternalSearchResults(resultMap)
     }
-    for (const canonical of codes) {
+    for (const canonical of pendingCodes) {
       if (!resultMap[canonical]) resultMap[canonical] = buildExternalSearchFailure(canonical)
     }
     mergeExternalSearchResults(resultMap)
-    externalSearchPageCache.set(pageKey, resultMap)
-    while (externalSearchPageCache.size > 24) {
-      const oldestKey = externalSearchPageCache.keys().next().value
-      if (!oldestKey) break
-      externalSearchPageCache.delete(oldestKey)
-    }
   } catch (error) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return
-    const failedItems = Object.fromEntries(codes
+    const failedItems = Object.fromEntries(pendingCodes
       .filter(canonical => !resultMap[canonical])
       .map(canonical => [canonical, buildExternalSearchFailure(canonical)]))
     Object.assign(resultMap, failedItems)
@@ -2942,6 +2979,10 @@ onActivated(() => {
 })
 
 onBeforeUnmount(() => {
+  if (externalSearchRealtimeRefreshTimer) {
+    clearTimeout(externalSearchRealtimeRefreshTimer)
+    externalSearchRealtimeRefreshTimer = null
+  }
   window.removeEventListener('pointerdown', closeWorkContextMenu)
   window.removeEventListener('keydown', handleCircleCompletionKeydown)
   window.removeEventListener('kikoerumanager:notification:new', handleNewReleaseNotification)
@@ -4244,6 +4285,10 @@ function isTerminalTaskStatus(status) {
 }
 
 function handleCircleTaskRealtimeEvent(event) {
+  const detail = event?.detail || {}
+  if (detail?.type === 'circle.external_search.changed') {
+    scheduleExternalSearchRealtimeRefresh()
+  }
   const payloads = normalizeTaskCenterRealtimePayloads(event?.detail || {})
     .filter(payload => payload?.type === 'task_center_changed')
   for (const payload of payloads) {
@@ -5516,6 +5561,14 @@ function requestedRjcodesForItem(item) {
     .map(value => String(value || '').trim().toUpperCase())
     .filter(Boolean)
     .filter((value, index, array) => array.indexOf(value) === index)
+}
+
+function scheduleExternalSearchRealtimeRefresh() {
+  if (externalSearchRealtimeRefreshTimer) return
+  externalSearchRealtimeRefreshTimer = window.setTimeout(() => {
+    externalSearchRealtimeRefreshTimer = null
+    void refreshExternalSearchForPage()
+  }, 200)
 }
 
 function applySelectedCodes(codes) {

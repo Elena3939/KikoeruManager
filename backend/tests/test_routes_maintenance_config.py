@@ -119,6 +119,30 @@ def test_get_config_includes_resource_budget(client, monkeypatch):
     assert response.json()["database"]["statement_timeout_ms"] == 120000
 
 
+def test_reveal_circle_external_search_secret_only_returns_south_plus_cookie(client, monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "_read_circle_external_search_secret_from_disk",
+        lambda key: "bbs_lastvisit=actual-cookie" if key == "south_plus_cookie" else "",
+    )
+
+    response = client.post(
+        "/api/config/circle-external-search/reveal-secret",
+        json={"key": "south_plus_cookie"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"value": "bbs_lastvisit=actual-cookie"}
+
+    rejected = client.post(
+        "/api/config/circle-external-search/reveal-secret",
+        json={"key": "south_plus_proxy"},
+    )
+
+    assert rejected.status_code == 400
+    assert rejected.json()["detail"] == "不支持读取该敏感字段"
+
+
 def test_update_config_validates_resource_budget(client, monkeypatch):
     captured = {}
 

@@ -2408,6 +2408,9 @@ async def startup_event():
         from ..core.dlsite_bonus_probe_service import get_dlsite_bonus_probe_service
         get_dlsite_bonus_probe_service().start_cache_flush_worker()
 
+    from ..core.circle_external_search_service import get_circle_external_search_service
+    await get_circle_external_search_service().start()
+
     # 只纠正上次进程中断遗留的 syncing 状态；不自动重建库存索引。
     try:
         get_library_index_service().normalize_all_interrupted_syncing_statuses()
@@ -2536,6 +2539,13 @@ async def shutdown_event():
         await get_dlsite_bonus_probe_service().stop_cache_flush_worker()
     except Exception:
         logger.warning("关闭 DLsite 特典缓存回写 worker 失败", exc_info=True)
+
+    try:
+        from ..core.circle_external_search_service import get_circle_external_search_service
+
+        await get_circle_external_search_service().stop()
+    except Exception:
+        logger.warning("关闭社团外部搜索 worker 失败", exc_info=True)
 
     # Flush 操作记录后台写入器，确保任务 finally 刚入队的审计不丢
     try:
@@ -2789,6 +2799,10 @@ class NotificationEmailSecretRevealRequest(BaseModel):
 
 
 class AISubtitleSecretRevealRequest(BaseModel):
+    key: str
+
+
+class CircleExternalSearchSecretRevealRequest(BaseModel):
     key: str
 
 
@@ -3714,6 +3728,15 @@ def reveal_ai_subtitle_match_secret(payload: AISubtitleSecretRevealRequest):
     return {"value": _read_ai_subtitle_api_key_from_disk()}
 
 
+@app.post("/api/config/circle-external-search/reveal-secret")
+def reveal_circle_external_search_secret(payload: CircleExternalSearchSecretRevealRequest):
+    """从本地配置文件读取南+ Cookie，只供设置页显隐使用。"""
+    key = str(payload.key or "").strip()
+    if key != "south_plus_cookie":
+        raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
+    return {"value": _read_circle_external_search_secret_from_disk(key)}
+
+
 @app.post("/api/config/database/reveal-secret")
 def reveal_database_secret(payload: DatabaseSecretRevealRequest):
     """从本地配置文件读取 PostgreSQL 密码，只供设置页显隐使用。"""
@@ -4417,6 +4440,19 @@ async def update_configuration(request: Request):
         current_config = get_config()
         get_task_engine()
         logger.debug(f"当前配置中的分类规则: {[r.dict() for r in current_config.classification]}")
+
+        if 'circle_external_search' in config_data:
+            try:
+                from ..core.circle_external_search_service import get_circle_external_search_service
+
+                requeued = await asyncio.to_thread(
+                    get_circle_external_search_service().requeue_unavailable_source,
+                    'south_plus',
+                )
+                if requeued:
+                    logger.info("[社团补全·外部搜索] 南+配置变更，重新入队 %s 条不可用记录", requeued)
+            except Exception:
+                logger.warning("[社团补全·外部搜索] 南+配置变更后重新入队失败", exc_info=True)
 
         # 如果密码清理配置变更，重启清理服务
         if 'password_cleanup' in config_data:
@@ -16420,12 +16456,14 @@ async def rj_subtitle_status():
 
 
 @app.get("/api/subtitle-import/pending")
-async def list_pending_linked_subtitle_imports():
+async def list_pending_linked_subtitle_imports(force_refresh_candidates: bool = False):
     from ..core.linked_subtitle_import_service import get_linked_subtitle_import_service
 
     try:
         service = get_linked_subtitle_import_service()
-        items = await service.list_pending_imports()
+        items = await service.list_pending_imports(
+            force_refresh_candidates=force_refresh_candidates,
+        )
         return {
             "success": True,
             "items": items,
@@ -16762,6 +16800,11 @@ class CircleCompletionCoverFetchRequest(BaseModel):
 class CircleCompletionExternalSearchRequest(BaseModel):
     circle_id: str
     canonical_rjcodes: List[str]
+
+
+class CircleCompletionExternalSearchTestRequest(BaseModel):
+    south_plus_cookie: Optional[str] = None
+    south_plus_proxy: Optional[str] = None
 
 
 class CircleCompletionDownloadStartRequest(BaseModel):
@@ -19637,6 +19680,19 @@ async def circle_completion_external_search(payload: CircleCompletionExternalSea
     except Exception as exc:
         logger.warning("[社团补全·外部搜索] 批量查询失败 circle=%s: %s", circle_id, sanitize_text_for_log(exc))
         raise HTTPException(status_code=502, detail="外部搜索暂时不可用")
+
+
+@app.post("/api/circle-completion/external-search/test")
+async def circle_completion_external_search_test(payload: CircleCompletionExternalSearchTestRequest):
+    """测试南+搜索连接，不触发作品扫描或缓存写入。"""
+    from ..core.circle_external_search_service import get_circle_external_search_service
+
+    config = get_config().circle_external_search
+    cookie = str(payload.south_plus_cookie or "").strip()
+    if not cookie or cookie == "********":
+        cookie = str(getattr(config, "south_plus_cookie", "") or "").strip()
+    proxy = str(payload.south_plus_proxy if payload.south_plus_proxy is not None else getattr(config, "south_plus_proxy", "") or "").strip()
+    return await get_circle_external_search_service().test_south_plus_connection(cookie, proxy)
 
 
 @app.get("/api/circle-completion/circles/{circle_id}/work-codes")

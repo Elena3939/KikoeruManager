@@ -249,6 +249,11 @@ export const configApi = {
   revealAISubtitleSecret: async (payload) => {
     const response = await apiClient.post('/config/ai-subtitle-match/reveal-secret', payload)
     return response.data
+  },
+
+  revealCircleExternalSearchSecret: async (payload) => {
+    const response = await apiClient.post('/config/circle-external-search/reveal-secret', payload)
+    return response.data
   }
 }
 
@@ -2318,8 +2323,12 @@ export const aiSubtitleMatchApi = {
 }
 
 export const subtitleImportApi = {
-  listPending: async () => {
-    const response = await apiClient.get('/subtitle-import/pending')
+  listPending: async (options = {}) => {
+    const response = await apiClient.get('/subtitle-import/pending', {
+      params: {
+        force_refresh_candidates: options.forceCandidateRefresh ? true : undefined
+      }
+    })
     return response.data
   },
 
@@ -2555,6 +2564,10 @@ export const circleCompletionApi = {
       signal: options.signal,
       timeout: options.timeout || 90000
     })
+    return response.data
+  },
+  testSouthPlusConnection: async (payload = {}) => {
+    const response = await apiClient.post('/circle-completion/external-search/test', payload, { timeout: 30000 })
     return response.data
   },
 

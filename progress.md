@@ -5045,3 +5045,226 @@
 - `frontend/src/components/circle/ExternalSearchSourceChips.vue`：移除站点图标外围灰框和背景。
 - `progress.md`：追加本轮实现、验证和回滚记录。
 - 回滚方式：反向移除上述三个前端文件本轮新增的配置归一化、序列化、面板兜底和无框样式 hunk；禁止使用 `git restore` 回退包含其他改动的整文件。
+
+## 2026-07-26 - Task: 修复嵌套压缩包字幕补配误报无字幕
+
+### What was done
+
+- 嵌套压缩包遇到官方 `7zz` 的 `Unsupported Method` 时，改用已有的 `7zzs` 兼容后端解压，不再对同一 codec 问题徒劳轮询全部密码。
+- 字幕补配预检在没有已解出字幕且嵌套包失败时，返回 `nested_extract_failed` 和失败包名；前端重试链路保留该状态，不再展示为来源压缩包没有字幕。
+- 新增嵌套 codec 兜底与字幕预检错误口径的回归测试，并补充字幕补配验证要求。
+
+### Testing
+
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\extract_service.py app\core\linked_subtitle_import_service.py tests\test_extract_service.py tests\test_linked_subtitle_import_service.py`：通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_extract_service.py tests\test_linked_subtitle_import_service.py -q`：通过，`192 passed`；仅有项目既有的 FastAPI、SQLAlchemy、pytest-asyncio 弃用警告和 `.pytest_cache` 权限警告。
+
+### Notes
+
+- `backend/app/core/extract_service.py`：嵌套解压接入 `7zzs` codec 兜底，并把任务上下文传入该路径。
+- `backend/app/core/linked_subtitle_import_service.py`：识别嵌套解压软失败，保留准确预检状态与重试资格。
+- `backend/tests/test_extract_service.py`：覆盖官方 `7zz` 不支持时切换 `7zzs` 的行为。
+- `backend/tests/test_linked_subtitle_import_service.py`：覆盖嵌套失败不降级为“没有字幕”。
+- `docs/TESTING.md`：补充嵌套字幕压缩包的验证口径。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：反向移除上述两处服务逻辑、两条测试和文档条目；不要使用 `git restore`，相关文件含用户已有未提交改动。
+
+## 2026-07-26 - Task: 优化字幕补配目标目录候选与重新定位
+
+### What was done
+
+- 按路径中最深的 RJ 段归并字幕补配目标候选，旧库存索引将 RJ 根目录后代重复标记时只保留正确的 RJ 根目录；嵌套的同 RJ 目录仍优先选最内层。
+- 预检单列表增加候选强制刷新语义：用户主动刷新或点击“刷新候选”时，无论当前是否已有候选都会重新查 ready 库存索引，目录改名或移动后可重新选择新路径。
+- 普通四秒轮询继续使用既有节流，不触发候选全量重查。
+
+### Testing
+
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\linked_subtitle_import_service.py app\api\routes.py tests\test_linked_subtitle_import_service.py`：通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_linked_subtitle_import_service.py -q`：通过，`32 passed`；仅有项目既有的 FastAPI、SQLAlchemy、pytest-asyncio 弃用警告和 `.pytest_cache` 权限警告。
+- `cd frontend; npm run build`：通过，`4191 modules transformed`；仅有既有依赖的 Rollup 注释、`eval` 与 chunk size 提示。
+- `git diff --check -- backend/app/core/linked_subtitle_import_service.py backend/app/api/routes.py backend/tests/test_linked_subtitle_import_service.py frontend/src/api/index.js frontend/src/composables/useSubtitleImportArchive.js frontend/src/views/SubtitleImport.vue`：通过。
+
+### Notes
+
+- `backend/app/core/linked_subtitle_import_service.py`：归并同 RJ 根目录后代候选，并支持强制重查已有候选。
+- `backend/app/api/routes.py`：预检列表接口新增 `force_refresh_candidates` 查询参数。
+- `backend/tests/test_linked_subtitle_import_service.py`：覆盖子目录收敛和已有候选的强制重查。
+- `frontend/src/api/index.js`、`frontend/src/composables/useSubtitleImportArchive.js`、`frontend/src/views/SubtitleImport.vue`：接入强制刷新并提供始终可用的“刷新候选”入口。
+- `docs/TESTING.md`：补充候选收敛和目录变更后的重新定位验证要求。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：反向移除候选 anchor 归并、`force_refresh_candidates` 参数、前端刷新参数及对应测试和文档；不要使用 `git restore`，相关文件含用户已有未提交改动。
+
+## 2026-07-26 - Task: 优化社团外部搜索缓存并限制南+请求频率
+
+### What was done
+
+- 外部搜索前端缓存由分页级调整为“社团 + RJ”作品级 LRU/TTL 缓存，翻页、切 tab 和重复刷新时直接复用已有结果，只提交未缓存或已过期的缺口。
+- 命中结果缓存延长为 30 天，未命中保持 6 小时；不可用与错误继续使用短缓存，已找到的来源不会重复访问外站。
+- 南+搜索增加独立串行锁，相邻请求至少间隔 10 秒；AnimeShare 保持原有并行能力，南+测试连接也复用同一限流链路。
+- 设置页新增“测试南+连接”，支持当前未保存的 Cookie 与代理；测试只验证搜索权限和连通性，不写作品搜索缓存。
+
+### Testing
+
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\circle_external_search_service.py app\api\routes.py`：通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest --noconftest tests\test_circle_external_search_service.py -q --basetemp .pytest-tmp-external-scan-final-b`：通过，`9 passed`；覆盖南+权限页、连接测试不写缓存、请求严格串行和命中 30 天 TTL。
+- 常规 pytest 首次受项目全局数据库 fixture 等待影响，在 124 秒超时；专项用例不依赖数据库，改用 `--noconftest` 后全部通过。
+- `cd frontend; npm test -- --run src/components/circle/ExternalSearchSourceChips.test.js src/components/circle/CircleWorksViewport.test.js src/components/circle/WorkSelectionInteraction.test.js`：通过，`6 passed`。
+- `cd frontend; npm run build`：通过，`4191 modules transformed`，预压缩资源完成；仅保留既有依赖和 chunk size 警告。
+- 使用根目录 `start-all.bat` 重载后，`/health` 返回 `ok`；南+测试接口在未配置 Cookie 时返回 `missing_cookie / 请先填写南+ Cookie`。
+- 浏览器实测外部服务页：测试按钮可见且可点击，无 Cookie 时显示明确失败状态，新页面控制台无错误。
+- `git diff --check`：通过，仅有工作区换行符提示。
+
+### Notes
+
+- `backend/app/core/circle_external_search_service.py`：增加南+10秒串行闸门、连接测试和命中长缓存。
+- `backend/app/api/routes.py`：增加南+连接测试接口，并安全回填已保存的脱敏 Cookie。
+- `backend/tests/test_circle_external_search_service.py`：覆盖连接测试、串行请求和命中缓存时长。
+- `frontend/src/api/index.js`：增加南+连接测试 API 封装。
+- `frontend/src/components/settings/ServicesSettingsPanel.vue`：增加南+测试按钮、状态反馈和10秒串行说明。
+- `frontend/src/views/CircleCompletion.vue`：使用作品级缓存，仅批量请求缓存缺口。
+- `docs/circle-completion-external-search.md`：记录缓存期限、缺口扫描和南+限流规则。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：反向移除上述文件中南+测试接口、串行锁、命中 TTL 与 `externalSearchWorkCache` 相关 hunk；不要使用 `git restore`，这些文件含其他并行未提交改动。
+
+## 2026-07-26 - Task: 外部搜索优化收尾核验
+
+### What was done
+
+- 清理外部搜索服务中的重复标准库导入，保持本轮改动边界不变。
+- 复核工作区状态，确认南+连接测试、10 秒串行限制、作品级缓存和前端入口均仍在当前代码中。
+
+### Testing
+
+- `cd backend; .\\venv\\Scripts\\python.exe -m pytest --noconftest tests\\test_circle_external_search_service.py -q --basetemp .pytest-tmp-external-scan-final-c`：通过，`9 passed`。
+- `cd frontend; npm test -- --run src/components/circle/ExternalSearchSourceChips.test.js src/components/circle/CircleWorksViewport.test.js src/components/circle/WorkSelectionInteraction.test.js`：通过，`6 passed`。
+- `git diff --check`：通过，仅有工作区既有换行符提示。
+
+### Notes
+
+- `backend/app/core/circle_external_search_service.py`：移除重复的 `hashlib` 导入。
+- `progress.md`：追加本次收尾核验记录。
+- 回滚方式：恢复该文件被移除的重复导入即可；不得使用整文件回退，以免覆盖并行改动。
+
+## 2026-07-26 - Task: 修复南+ Cookie 脱敏值无法显示
+
+### What was done
+
+- 为南+ Cookie 增加设置页专用的原值读取接口，接口白名单仅允许 `south_plus_cookie`，其余外部搜索字段不能读取。
+- 设置页点击 Cookie 输入框右侧眼睛时按需读取原值，仅保存在当前页面内存中显示；配置对象继续保留 `********`，保存其它设置时不会覆盖磁盘中的真实 Cookie。
+- 补充接口白名单回归测试，并更新外部搜索配置的显隐行为说明。
+
+### Testing
+
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\api\routes.py tests\test_routes_maintenance_config.py`：通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_routes_maintenance_config.py -q --basetemp .pytest-tmp-south-plus-reveal`：通过，`40 passed`；仅有项目既有的 FastAPI、SQLAlchemy、Pydantic、pytest-asyncio 弃用警告和 `.pytest_cache` 权限警告。
+- `cd frontend; npm run build`：通过，`4191 modules transformed`；仅有既有的 Rollup 注释、`eval` 与 chunk size 提示。
+- `git diff --check -- backend/app/api/routes.py backend/tests/test_routes_maintenance_config.py frontend/src/api/index.js frontend/src/components/settings/ServicesSettingsPanel.vue docs/circle-completion-external-search.md`：通过，仅有工作区换行符提示。
+
+### Notes
+
+- `backend/app/api/routes.py`：增加南+ Cookie 原值读取请求模型和白名单路由。
+- `backend/tests/test_routes_maintenance_config.py`：覆盖合法 Cookie 字段读取和非白名单字段拒绝。
+- `frontend/src/api/index.js`：增加南+ Cookie 原值读取 API 封装。
+- `frontend/src/components/settings/ServicesSettingsPanel.vue`：接入眼睛显隐时的按需读取和错误提示。
+- `docs/circle-completion-external-search.md`：说明 Cookie 原值仅在点击眼睛后于当前页面显示。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：反向移除南+ Cookie reveal 路由、前端 `revealCircleExternalSearchSecret` 调用、设置页的 `reveal-value` 和可见性处理，以及对应测试和文档条目；不要使用 `git restore`，相关文件含用户已有未提交改动。
+
+## 2026-07-26 - Task: 修复南+ Cookie 被误判为没有搜索权限
+
+### What was done
+
+- 复现确认：同一 Cookie 使用原服务端自定义 User-Agent 时命中 Cloudflare/用户组权限页，改为 Edge 请求头后返回正常南+搜索页，账号权限有效。
+- 南+请求改为使用与 Edge 登录会话兼容的 User-Agent、Client Hints、Referer 和导航请求头；保留原 Cookie、代理、10 秒串行限制和权限页判断。
+- 补充浏览器兼容请求头回归测试，避免后续改动退回自定义程序 User-Agent。
+
+### Testing
+
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\circle_external_search_service.py tests\test_circle_external_search_service.py`：通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest --noconftest tests\test_circle_external_search_service.py -q --basetemp .pytest-tmp-south-plus-browser-headers`：通过，`10 passed`；仅有项目既有 pytest-asyncio 弃用警告和 `.pytest_cache` 权限警告。
+- 使用用户提供的 Cookie 实测 `CircleExternalSearchService().test_south_plus_connection()`：返回 `success=true`、`status=ok`，未输出或写入 Cookie。
+- 使用根目录 `start-all.bat` 重载后，`/health` 返回 `ok`；运行中 `/api/circle-completion/external-search/test` 再次返回 `success=true`、`status=ok`。
+
+### Notes
+
+- `backend/app/core/circle_external_search_service.py`：南+请求改用浏览器兼容请求头，避免 Cloudflare 将浏览器会话 Cookie 绑定到自定义程序 User-Agent 后误判权限。
+- `backend/tests/test_circle_external_search_service.py`：覆盖 Cookie、Edge User-Agent、Referer 和同源导航头。
+- `docs/circle-completion-external-search.md`：说明南+浏览器会话兼容请求头的用途。
+- `progress.md`：追加本轮实现、实测与回滚记录。
+- 回滚方式：反向移除 `_SOUTH_PLUS_BROWSER_HEADERS`、`_south_plus_headers()` 及对应测试和文档说明；不要使用 `git restore`，相关文件含用户已有未提交改动。
+
+## 2026-07-26 - Task: 修复南+搜索命中被旧未命中缓存覆盖
+
+### What was done
+
+- 用用户截图中的 `RJ01647392` 复现并确认：修复后的南+直连解析命中 1 条真实帖子，页面仍显示未收录是旧请求指纹阶段写入的未命中缓存被复用。
+- 南+ Redis 缓存 key 增加浏览器请求协议版本；前端社团作品级内存缓存同步增加版本，避免页面继续复用旧的组合结果。
+- 增加缓存协议版本变更回归测试，并补充缓存自动失效说明。
+
+### Testing
+
+- 使用用户提供的 Cookie 直连 `_search_south_plus('RJ01647392')`：返回 `status=hit`、`result_count=1`，链接为 `/read.php?tid-2901261-keyword-RJ01647392.html`；未输出或写入 Cookie。
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\circle_external_search_service.py tests\test_circle_external_search_service.py`：通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest --noconftest tests\test_circle_external_search_service.py -q --basetemp .pytest-tmp-south-plus-cache-version`：通过，`11 passed`；仅有项目既有 pytest-asyncio 弃用警告和 `.pytest_cache` 权限警告。
+- `cd frontend; npm run build`：通过，`4191 modules transformed`；仅有既有的 Rollup 注释、`eval` 与 chunk size 提示。
+- 使用根目录 `start-all.bat` 重载后，`/health` 返回 `ok`。
+
+### Notes
+
+- `backend/app/core/circle_external_search_service.py`：南+缓存 key 纳入浏览器请求协议版本，使旧未命中 Redis 缓存自动失效。
+- `backend/tests/test_circle_external_search_service.py`：覆盖缓存协议版本改变会生成新 key。
+- `frontend/src/views/CircleCompletion.vue`：社团作品外部搜索内存缓存纳入同一协议版本，刷新页后重新请求。
+- `docs/circle-completion-external-search.md`：说明南+协议变更导致缓存自动失效的规则。
+- `progress.md`：追加本轮实现、实测与回滚记录。
+- 回滚方式：反向移除南+ `_SOUTH_PLUS_CACHE_VERSION`、前端 `EXTERNAL_SEARCH_CACHE_VERSION` 和对应测试、文档说明；不要使用 `git restore`，相关文件含用户已有未提交改动。
+
+## 2026-07-26 - Task: 持久化社团外部搜索结果并降低南+请求压力
+
+### What was done
+
+- 新增 PostgreSQL `circle_external_search_records`，按来源、RJ 和探测协议版本全局去重，持久化 `pending`、命中、未命中、不可用和错误结果及下一次探测时间、lease、优先级。
+- 页面外部搜索接口改为只批量读取持久快照：缺失或到期记录仅入队，不在页面请求内访问 AnimeShare 或南+；后台单 worker 领取到期记录，南+继续严格按至少 10 秒间隔请求。
+- worker 写库后广播统一实时事件，社团页仅在事件到达时重新读取快照；前端对 `pending` 使用短缓存并展示“已入队，后台探测中”。
+- 南+ Cookie 或代理保存后，立即唤醒此前 `unavailable` 的持久记录；命中 30 天、未命中 7 天、不可用 10 分钟、错误 5 分钟后才允许后台重查。
+- 新增 Alembic 迁移，并已实际迁移服务器 PostgreSQL，避免后续部署出现模型与表结构不一致。
+
+### Testing
+
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\models\database.py app\core\circle_external_search_service.py app\api\routes.py`：通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest --noconftest tests\test_circle_external_search_service.py -q --basetemp .pytest-tmp-persistent-external-search-final`：通过，`11 passed`。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_routes_maintenance_config.py -q --basetemp .pytest-tmp-persistent-routes-final`：通过，`40 passed`。
+- 本机数据库闭环：首次读取返回 `pending`，写入命中后再次读取返回 `hit` 且保留 1 条结果；验证过程未访问外站。
+- `cd frontend; npm run build`：通过，`4191 modules transformed`；仅有既有的 Rollup 注释、`eval` 与 chunk size 提示。
+- 本机和服务器均执行 Alembic 至 `20260726_0001_circle_external_search_records`；服务器确认目标表 15 个字段、主键和 3 条业务索引存在。
+- 使用根目录 `start-all.bat` 重载后，`/health` 返回 `ok`。
+
+### Notes
+
+- `backend/app/models/database.py`：增加外部搜索持久记录模型。
+- `backend/alembic/versions/20260726_0001_circle_external_search_records.py`：创建持久化表、唯一索引、ready 索引与 lease 索引。
+- `backend/app/core/circle_external_search_service.py`：页面读取改为 PostgreSQL 快照，增加到期 worker、lease、持久写回和配置变更唤醒。
+- `backend/app/api/routes.py`：应用启停管理外部搜索 worker，保存南+配置后重新入队不可用记录。
+- `backend/tests/test_circle_external_search_service.py`：调整为持久化快照协议和刷新间隔断言。
+- `frontend/src/views/CircleCompletion.vue`：识别 `pending`、接收外部搜索 SSE 并刷新快照、缩短 pending 内存缓存。
+- `frontend/src/components/circle/ExternalSearchSourceChips.vue`：展示后台探测中的状态。
+- `docs/circle-completion-external-search.md`、`docs/TESTING.md`：记录持久化存储、刷新周期、worker 与迁移验证要求。
+- `progress.md`：追加本轮实现、服务器迁移与验证记录。
+- 回滚方式：先在应用停机窗口执行 `alembic downgrade 20260712_0001_deferred_archive_queue` 删除持久表，再反向移除本轮模型、worker、前端 pending/SSE 逻辑、迁移和文档；禁止使用整文件回退，以免覆盖并行改动。
+
+## 2026-07-26 - Task: 修复社团作品卡南+状态点顶部裁切
+
+### What was done
+
+- 移除作品卡标签行自身的溢出裁切，使南+图标右上角的命中勾选点完整显示。
+- 保持图标 16px、按钮 24×22px、状态点 11px 与原有负偏移定位不变，卡片布局和标签高度不调整。
+
+### Testing
+
+- `cd frontend; npm run build`：通过，`4191 modules transformed`；仅有既有的 Rollup 注释、`eval` 与 chunk size 提示。
+- `git diff --check -- frontend/src/components/circle/WorkCard.vue`：通过，仅有工作区换行符提示。
+
+### Notes
+
+- `frontend/src/components/circle/WorkCard.vue`：标签行改为允许内部状态点在上沿可见。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：将 `.work-tags` 的 `overflow: visible` 反向改回 `hidden`；不要使用整文件回退，文件可能含其它并行改动。
