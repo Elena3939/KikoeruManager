@@ -133,6 +133,73 @@ def test_prefer_deepest_target_rj_candidate_keeps_separate_libraries():
     assert result == candidates
 
 
+def test_prefer_deepest_target_rj_candidate_collapses_rj_root_descendants():
+    service = object.__new__(LinkedSubtitleImportService)
+    root = {
+        "library_id": "asmr",
+        "library_type": "local",
+        "folder_path": "D:/library/[RJ01582352] title",
+        "ready_for_import": True,
+    }
+    candidates = [
+        root,
+        {
+            "library_id": "asmr",
+            "library_type": "local",
+            "folder_path": "D:/library/[RJ01582352] title/01 wav",
+            "ready_for_import": True,
+        },
+        {
+            "library_id": "asmr",
+            "library_type": "local",
+            "folder_path": "D:/library/[RJ01582352] title/02 bonus/images",
+            "ready_for_import": True,
+        },
+    ]
+
+    result = service._prefer_deepest_target_rj_candidates(candidates, "RJ01582352")
+
+    assert result == [root]
+
+
+@pytest.mark.asyncio
+async def test_refresh_pending_preview_candidates_force_requeries_existing_candidates():
+    service = object.__new__(LinkedSubtitleImportService)
+    service._should_retry_pending_candidate_search = lambda _preview: False
+    service._refresh_preview_execution_state = lambda preview: preview
+    service.search_target_candidates = AsyncMock(return_value={
+        "candidates": [{
+            "library_id": "asmr",
+            "folder_path": "D:/library/renamed/RJ01582352",
+            "ready_for_import": True,
+        }],
+        "search_status": "matched",
+        "search_reason": "",
+    })
+    preview = {
+        "source_rjcode": "RJ01592352",
+        "target_rjcode": "RJ01582352",
+        "selected_candidate": {
+            "library_id": "asmr",
+            "folder_path": "D:/library/old/RJ01582352",
+        },
+        "candidates": [{
+            "library_id": "asmr",
+            "folder_path": "D:/library/old/RJ01582352",
+            "ready_for_import": True,
+        }],
+    }
+
+    refreshed = await service._refresh_pending_preview_candidates(preview, force=True)
+
+    service.search_target_candidates.assert_awaited_once_with(
+        "RJ01582352",
+        preferred_library_id="asmr",
+    )
+    assert refreshed["candidates"][0]["folder_path"] == "D:/library/renamed/RJ01582352"
+    assert refreshed["selected_candidate"]["folder_path"] == "D:/library/renamed/RJ01582352"
+
+
 @pytest.mark.asyncio
 async def test_finalize_manual_match_task_blocks_empty_workbench_publish():
     service = object.__new__(LinkedSubtitleImportService)
@@ -808,6 +875,37 @@ def test_refresh_preview_execution_state_keeps_extract_failure_archive_executabl
     assert preview["can_stage_pending"] is True
     assert preview["can_execute"] is True
     assert "执行时" in preview["execute_reason"]
+
+
+@pytest.mark.asyncio
+async def test_archive_subtitle_probe_reports_nested_extract_failure(tmp_path):
+    """嵌套包未解开时，不得误报来源压缩包没有字幕。"""
+    extracted_dir = tmp_path / "probe-output"
+    extracted_dir.mkdir()
+
+    service = object.__new__(LinkedSubtitleImportService)
+    service.subtitle_service = SimpleNamespace(SUBTITLE_EXTENSIONS={".vtt", ".lrc", ".srt", ".ass", ".ssa"})
+
+    async def fake_extract(probe_task):
+        probe_task.task_metadata["nested_archive_failures"] = [
+            "嵌套压缩包解压失败: RJ01613854.7z",
+        ]
+        return str(extracted_dir)
+
+    service.extract_service = SimpleNamespace(
+        config=SimpleNamespace(storage=SimpleNamespace(temp_path=str(tmp_path))),
+        extract=AsyncMock(side_effect=fake_extract),
+    )
+
+    stage_dir, subtitles, probe_result = await service._collect_archive_subtitles_to_stage(
+        "D:/input/RJ01613853.rar",
+    )
+
+    assert stage_dir == ""
+    assert subtitles == []
+    assert probe_result["status"] == "nested_extract_failed"
+    assert "RJ01613854.7z" in probe_result["reason"]
+    assert not extracted_dir.exists()
 
 
 @pytest.mark.asyncio
