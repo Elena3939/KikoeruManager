@@ -36,6 +36,89 @@ def test_south_plus_permission_page_has_no_results():
     assert parser.results == []
 
 
+def test_south_plus_connection_test_does_not_enqueue_persistent_record():
+    service = CircleExternalSearchService()
+
+    async def fake_fetch(*args, **kwargs):
+        return '<html><title>South Plus search</title><body>没有匹配结果</body></html>'
+
+    service._fetch_text = fake_fetch
+    result = asyncio.run(service.test_south_plus_connection("bbs_session=test", ""))
+
+    assert result["success"] is True
+    assert result["status"] == "ok"
+
+
+def test_south_plus_connection_test_uses_browser_compatible_headers():
+    service = CircleExternalSearchService()
+    captured = {}
+
+    async def fake_fetch(_url, **kwargs):
+        captured.update(kwargs)
+        return '<html><title>South Plus search</title><body>没有匹配结果</body></html>'
+
+    service._fetch_text = fake_fetch
+    result = asyncio.run(service.test_south_plus_connection("bbs_session=test", ""))
+
+    assert result["success"] is True
+    assert captured["headers"]["Cookie"] == "bbs_session=test"
+    assert "Edg/150" in captured["headers"]["User-Agent"]
+    assert captured["headers"]["Referer"] == "https://bbs.white-plus.net/search.php"
+    assert captured["headers"]["Sec-Fetch-Site"] == "same-origin"
+
+
+def test_south_plus_probe_schema_version_is_explicit():
+    assert CircleExternalSearchService._PROBE_SCHEMA_VERSION == "browser-headers-v1"
+
+
+def test_south_plus_connection_test_reports_permission_page():
+    service = CircleExternalSearchService()
+
+    async def fake_fetch(*args, **kwargs):
+        return '<title>用户组权限：你所属的用户组不能使用搜索功能</title>'
+
+    service._fetch_text = fake_fetch
+    result = asyncio.run(service.test_south_plus_connection("bbs_session=test", ""))
+
+    assert result["success"] is False
+    assert result["status"] == "permission_denied"
+
+
+def test_south_plus_requests_are_serialized(monkeypatch):
+    service = CircleExternalSearchService()
+    service._SOUTH_PLUS_REQUEST_INTERVAL_SECONDS = 0
+    active = 0
+    max_active = 0
+
+    async def fake_fetch(*args, **kwargs):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return "ok"
+
+    monkeypatch.setattr(service, "_fetch_text", fake_fetch)
+    async def run_requests():
+        await asyncio.gather(
+            service._fetch_south_plus_text("https://bbs.white-plus.net/search.php?keyword=RJ00000000"),
+            service._fetch_south_plus_text("https://bbs.white-plus.net/search.php?keyword=RJ00000001"),
+        )
+
+    asyncio.run(run_requests())
+
+    assert max_active == 1
+
+
+def test_hit_result_uses_long_persistent_refresh_interval():
+    service = CircleExternalSearchService()
+    from datetime import timedelta
+    from app.models.database import get_local_now
+
+    now = get_local_now()
+    assert service._next_probe_at("hit", now) == now + timedelta(days=30)
+
+
 def test_disabled_or_unconfigured_source_keeps_search_url(monkeypatch):
     service = CircleExternalSearchService()
     monkeypatch.setattr(external_search_module, "get_config", lambda: SimpleNamespace(
@@ -46,8 +129,8 @@ def test_disabled_or_unconfigured_source_keeps_search_url(monkeypatch):
         ),
     ))
 
-    anime_share = asyncio.run(service._lookup_source("anime_share", "RJ01576821"))
-    south_plus = asyncio.run(service._lookup_source("south_plus", "RJ01576821"))
+    anime_share = asyncio.run(service._fetch_source("anime_share", "RJ01576821"))
+    south_plus = asyncio.run(service._fetch_source("south_plus", "RJ01576821"))
 
     assert anime_share["status"] == "unavailable"
     assert anime_share["search_url"].startswith("https://www.anime-sharing.com/search/")
@@ -55,19 +138,23 @@ def test_disabled_or_unconfigured_source_keeps_search_url(monkeypatch):
     assert south_plus["search_url"].startswith("https://bbs.white-plus.net/search.php?")
 
 
-def test_external_search_aggregates_variants(monkeypatch):
+def test_external_search_aggregates_persistent_variants(monkeypatch):
     service = CircleExternalSearchService()
 
-    async def fake_lookup(source, rjcode):
-        if source == "anime_share" and rjcode in {"RJ01576821", "RJ01596605"}:
-            return {
-                "status": "hit",
-                "results": [{"url": f"https://www.anime-sharing.com/threads/{rjcode.lower()}/", "title": rjcode}],
-                "search_url": f"https://www.anime-sharing.com/search/?q={rjcode}",
-            }
-        return {"status": "miss", "results": [], "search_url": f"https://example.test/search?q={rjcode}"}
+    def fake_load(lookup_keys):
+        payloads = {}
+        for source, rjcode in lookup_keys:
+            if source == "anime_share":
+                payloads[(source, rjcode)] = {
+                    "status": "hit",
+                    "results": [{"url": f"https://www.anime-sharing.com/threads/{rjcode.lower()}/", "title": rjcode}],
+                    "search_url": f"https://www.anime-sharing.com/search/?q={rjcode}",
+                }
+            else:
+                payloads[(source, rjcode)] = {"status": "miss", "results": [], "search_url": f"https://example.test/search?q={rjcode}"}
+        return payloads
 
-    monkeypatch.setattr(service, "_lookup_source", fake_lookup)
+    monkeypatch.setattr(service, "_load_or_enqueue_records", fake_load)
     result = asyncio.run(service.search_variants({
         "RJ01576821": [
             {"rjcode": "RJ01576821", "title": "原作", "group_key": "original", "group_label": "原作"},
@@ -82,15 +169,17 @@ def test_external_search_aggregates_variants(monkeypatch):
 def test_external_search_keeps_miss_and_unavailable_search_actions(monkeypatch):
     service = CircleExternalSearchService()
 
-    async def fake_lookup(source, rjcode):
-        status = "miss" if source == "anime_share" else "unavailable"
+    def fake_load(lookup_keys):
         return {
-            "status": status,
-            "results": [],
-            "search_url": service._source_search_url(source, rjcode),
+            (source, rjcode): {
+                "status": "miss" if source == "anime_share" else "unavailable",
+                "results": [],
+                "search_url": service._source_search_url(source, rjcode),
+            }
+            for source, rjcode in lookup_keys
         }
 
-    monkeypatch.setattr(service, "_lookup_source", fake_lookup)
+    monkeypatch.setattr(service, "_load_or_enqueue_records", fake_load)
     result = asyncio.run(service.search_variants({
         "RJ01576821": [
             {"rjcode": "RJ01576821", "title": "原作", "group_key": "original", "group_label": "原作"},

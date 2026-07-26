@@ -72,6 +72,7 @@ function statusIcon(status) {
 function statusTitle(entry) {
   if (entry.status === 'hit') return `${entry.label} · 命中 ${entry.results.length} 个结果`
   if (entry.status === 'miss') return `${entry.label} · 未找到，点击打开搜索页`
+  if (entry.status === 'pending') return `${entry.label} · 已入队，后台探测中`
   if (entry.status === 'unavailable') return `${entry.label} · 当前无法探测，点击打开搜索页`
   if (entry.status === 'error') return `${entry.label} · 查询失败，点击打开搜索页`
   return `${entry.label} · 查询中`
@@ -180,6 +181,7 @@ function handleOpen(entry) {
 .is-miss .external-source-status { background: #94a3b8; }
 .is-unavailable .external-source-status { background: #f59e0b; }
 .is-error .external-source-status { background: #ef4444; }
+.is-pending .external-source-status { animation: externalSourcePulse 1s ease-in-out infinite; }
 .is-loading .external-source-status { animation: externalSourcePulse 1s ease-in-out infinite; }
 
 @keyframes externalSourcePulse {
