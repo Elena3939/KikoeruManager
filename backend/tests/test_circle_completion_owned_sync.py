@@ -107,13 +107,25 @@ async def test_sync_local_owned_index_writes_related_circle_work_canonical(monke
             canonical_rjcode="RJ99999999",
             display_rjcode="RJ99999999",
             linked_rjcodes=["RJ11111111"],
-        )
+            is_bonus_work=False,
+        ),
+        SimpleNamespace(
+            canonical_rjcode="RJ33333333",
+            display_rjcode="RJ33333333",
+            linked_rjcodes=["RJ11111111", "RJ33333333"],
+            is_bonus_work=True,
+        ),
     ])
     write_session = _FakeSession()
     sessions = iter([read_session, write_session])
 
     monkeypatch.setattr(circle_module, "SessionLocal", lambda: next(sessions))
     monkeypatch.setattr(library_manager_module, "get_library_manager", lambda: _FakeLibraryManager())
+    monkeypatch.setattr(
+        service,
+        "_load_bonus_rjcodes_for_owned_state",
+        lambda _rjcodes: {"RJ33333333"},
+    )
 
     async def fake_resolve_canonical(rjcode):
         assert rjcode == "RJ11111111"
@@ -129,6 +141,7 @@ async def test_sync_local_owned_index_writes_related_circle_work_canonical(monke
     added_by_canonical = {row.canonical_rjcode: row for row in write_session.added}
     assert result["owned_count"] == 2
     assert set(added_by_canonical) == {"RJ22222222", "RJ99999999"}
+    assert "RJ33333333" not in added_by_canonical
     assert added_by_canonical["RJ99999999"].owned_rjcodes == ["RJ11111111"]
     assert added_by_canonical["RJ99999999"].owned_paths == ["/library/RaRo/[RaRo][RJ11111111]"]
     assert write_session.deleted is True
@@ -242,6 +255,104 @@ def test_apply_library_index_owned_state_skips_when_ready_index_unavailable(monk
         "ready_index_available": False,
     }
     assert "local_owned" not in item
+
+
+def test_apply_library_index_owned_state_does_not_inherit_bonus_from_translation(monkeypatch):
+    service = CircleCompletionService()
+    parent_code = "RJ01569979"
+    bonus_code = "RJ01589264"
+    translated_code = "RJ01591904"
+    linked_codes = [parent_code, bonus_code, translated_code]
+    parent_item = {
+        "display_rjcode": parent_code,
+        "linked_rjcodes": linked_codes,
+        "kikoeru_found_rjcodes": [],
+        "source_flags": set(),
+        "is_bonus_work": False,
+    }
+    bonus_item = {
+        "display_rjcode": bonus_code,
+        "asmr_available_rjcode": translated_code,
+        "linked_rjcodes": linked_codes,
+        "kikoeru_found_rjcodes": [],
+        "source_flags": set(),
+        "is_bonus_work": True,
+    }
+
+    class LibraryManager:
+        def has_ready_index(self):
+            return True
+
+        def find_rj_in_ready_index(self, rjcodes):
+            return {
+                translated_code: [{
+                    "matched_rjcode": translated_code,
+                    "rjcode": translated_code,
+                    "path": f"/library/RG62878/[RG62878][{translated_code}]",
+                    "library_id": "local-main",
+                    "size": 1024,
+                    "file_count": 8,
+                }]
+            } if translated_code in set(rjcodes) else {}
+
+    monkeypatch.setattr(library_manager_module, "get_library_manager", lambda: LibraryManager())
+    monkeypatch.setattr(
+        service,
+        "_load_bonus_rjcodes_for_owned_state",
+        lambda _rjcodes: {bonus_code},
+        raising=False,
+    )
+
+    result = service._apply_library_index_owned_state_to_items({
+        parent_code: parent_item,
+        bonus_code: bonus_item,
+    })
+
+    assert result["owned_count"] == 1
+    assert parent_item["local_owned"] is True
+    assert parent_item["kikoeru_found_rjcodes"] == [translated_code]
+    assert bonus_item["local_owned"] is False
+    assert bonus_item["kikoeru_found_rjcodes"] == []
+
+
+def test_incremental_owned_sync_keeps_bonus_and_parent_targets_separate():
+    service = CircleCompletionService()
+    parent = SimpleNamespace(
+        canonical_rjcode="RJ01569979",
+        display_rjcode="RJ01591904",
+        is_bonus_work=False,
+    )
+    bonus = SimpleNamespace(
+        canonical_rjcode="RJ01589264",
+        display_rjcode="RJ01589264",
+        is_bonus_work=True,
+    )
+    bonus_codes = {"RJ01589264"}
+
+    assert service._owned_sync_row_target_canonical(
+        parent,
+        "RJ01591904",
+        False,
+        bonus_codes,
+    ) == "RJ01569979"
+    assert service._owned_sync_row_target_canonical(
+        bonus,
+        "RJ01591904",
+        False,
+        bonus_codes,
+    ) == ""
+    assert service._owned_sync_row_target_canonical(
+        parent,
+        "RJ01589264",
+        True,
+        bonus_codes,
+    ) == ""
+    assert service._owned_sync_row_target_canonical(
+        bonus,
+        "RJ01589264",
+        True,
+        bonus_codes,
+    ) == "RJ01589264"
 
 
 @pytest.mark.asyncio
