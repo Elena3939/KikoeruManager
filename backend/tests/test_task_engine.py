@@ -84,6 +84,46 @@ class TestTaskEngine:
         extract_service.collect_top_level_rjcodes.assert_not_awaited()
         assert "aggregate_archive" not in task.task_metadata
 
+    @pytest.mark.asyncio
+    async def test_uncertain_dlsite_retry_exhaustion_moves_to_waiting_manual(
+        self,
+        engine,
+        tmp_path,
+        monkeypatch,
+    ):
+        source = tmp_path / "RJ01606254.7z"
+        source.write_bytes(b"archive")
+        task = Task(
+            task_type=TaskType.AUTO_PROCESS,
+            source_path=str(source),
+            auto_classify=True,
+            rjcode="RJ01606254",
+            status=TaskStatus.WAITING_RETRY,
+            metadata={
+                "retry_kind": "dlsite_linkage_uncertain",
+                "retry_count": 3,
+                "retry_reason": "DLsite 关联链结果不完整",
+            },
+        )
+        engine.tasks[task.id] = task
+        record_problem = Mock()
+        remove_waiting = Mock()
+        monkeypatch.setattr(
+            settings_module,
+            "get_config",
+            lambda: SimpleNamespace(asmr_sync=SimpleNamespace(max_retry_count=3)),
+        )
+        monkeypatch.setattr(engine, "_record_problem_work_for_task_failure", record_problem)
+        monkeypatch.setattr(engine, "_remove_waiting_retry_task", remove_waiting)
+
+        await engine._check_retry_tasks()
+
+        assert task.status == TaskStatus.WAITING_MANUAL
+        assert task.task_metadata["retry_exhausted"] is True
+        assert task.task_metadata["available_actions"] == ["RETRY", "SKIP"]
+        assert task.current_step == "等待人工: DLsite 关联链仍不完整，已停止自动重试"
+        record_problem.assert_called_once_with(task, "RJ01606254", "DLsite 关联链结果不完整")
+        remove_waiting.assert_called_once_with("RJ01606254")
     
     @pytest.mark.asyncio
     async def test_submit_task(self, engine, sample_task):
