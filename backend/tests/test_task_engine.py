@@ -6,7 +6,7 @@ import asyncio
 import os
 import shutil
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from datetime import datetime, timedelta
 
 from app.config import settings as settings_module
@@ -30,6 +30,60 @@ class TestTaskEngine:
             source_path="/test/file.zip",
             auto_classify=True
         )
+
+    @pytest.mark.asyncio
+    async def test_multi_rj_archive_precheck_marks_aggregate_before_business_prechecks(
+        self,
+        engine,
+        tmp_path,
+    ):
+        source = tmp_path / "222(700241795).rar"
+        source.write_bytes(b"rar")
+        task = Task(
+            task_type=TaskType.AUTO_PROCESS,
+            source_path=str(source),
+            auto_classify=True,
+            metadata={"rjcode": "RJ01606254"},
+        )
+        extract_service = SimpleNamespace(
+            collect_top_level_rjcodes=AsyncMock(
+                return_value=["RJ01583281", "RJ01606253", "RJ01606254"]
+            )
+        )
+
+        result = await engine._collect_multi_rj_archive_precheck(task, extract_service)
+
+        assert result == ["RJ01583281", "RJ01606253", "RJ01606254"]
+        assert task.task_metadata["aggregate_archive"] is True
+        assert task.task_metadata["aggregate_rj_count"] == 3
+        assert task.task_metadata["aggregate_rjcodes"] == result
+        extract_service.collect_top_level_rjcodes.assert_awaited_once_with(
+            str(source),
+            task=task,
+        )
+
+    @pytest.mark.asyncio
+    async def test_multi_rj_archive_precheck_respects_authoritative_rj_lock(
+        self,
+        engine,
+        tmp_path,
+    ):
+        source = tmp_path / "bound.rar"
+        source.write_bytes(b"rar")
+        task = Task(
+            task_type=TaskType.AUTO_PROCESS,
+            source_path=str(source),
+            auto_classify=True,
+            metadata={"rjcode_lock": True},
+        )
+        extract_service = SimpleNamespace(collect_top_level_rjcodes=AsyncMock())
+
+        result = await engine._collect_multi_rj_archive_precheck(task, extract_service)
+
+        assert result == []
+        extract_service.collect_top_level_rjcodes.assert_not_awaited()
+        assert "aggregate_archive" not in task.task_metadata
+
     
     @pytest.mark.asyncio
     async def test_submit_task(self, engine, sample_task):
