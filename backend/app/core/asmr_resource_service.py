@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..config.settings import get_config
 from ..models.database import ASMRDownloadSession, ASMRResourceRecord, ASMRWork, SessionLocal
+from .fs_utils import move_path_efficient
 from .resource_budget_service import get_resource_budget_service
 from .ttl_cache import TTLCache
 
@@ -2132,24 +2133,36 @@ class ASMRResourceService:
             # 直放模式：把 renamed_root 内的文件直接搬到 target_dir 根，跳过作品目录层；
             # 同名文件用 (1)/(2) 后缀避免覆盖。
             os.makedirs(target_dir, exist_ok=True)
-            for entry in os.listdir(renamed_root):
-                src = os.path.join(renamed_root, entry)
-                if not os.path.isfile(src):
-                    continue
-                stem, ext = os.path.splitext(entry)
-                dst = os.path.join(target_dir, entry)
-                counter = 1
-                while os.path.exists(dst):
-                    dst = os.path.join(target_dir, f"{stem}({counter}){ext}")
-                    counter += 1
-                shutil.move(src, dst)
+            async with get_resource_budget_service().acquire(
+                "disk_io_local",
+                reason="asmr.finalize_flatten",
+            ):
+                for entry in os.listdir(renamed_root):
+                    src = os.path.join(renamed_root, entry)
+                    if not os.path.isfile(src):
+                        continue
+                    stem, ext = os.path.splitext(entry)
+                    dst = os.path.join(target_dir, entry)
+                    counter = 1
+                    while os.path.exists(dst):
+                        dst = os.path.join(target_dir, f"{stem}({counter}){ext}")
+                        counter += 1
+                    await move_path_efficient(src, dst)
             try:
-                shutil.rmtree(renamed_root, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, renamed_root, True)
             except Exception:
                 logger.debug("[直放] 清理临时下载目录失败 path=%s", renamed_root, exc_info=True)
             final_path = target_dir
         else:
-            final_path = classifier._move_with_rename(renamed_root, target_dir)
+            async with get_resource_budget_service().acquire(
+                "disk_io_local",
+                reason="asmr.finalize_classified",
+            ):
+                final_path = await asyncio.to_thread(
+                    classifier._move_with_rename,
+                    renamed_root,
+                    target_dir,
+                )
         # 索引同步：本地落地后按路径反查 library 通知（target_library 可能是 None）
         try:
             if target_library is not None:

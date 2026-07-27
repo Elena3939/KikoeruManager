@@ -1231,6 +1231,7 @@ async def test_baidu_download_uses_web_transfer_before_pcsgo_download(monkeypatc
     assert not any(command and command[0] == "transfer" for command in pcsgo_commands)
     assert any(command and command[0] == "download" for command in pcsgo_commands)
     assert (tmp_path / "staging" / "RJ01534331.rar").read_bytes() == b"rar"
+    assert list((tmp_path / "staging").glob("*.kikoerumanager-moving-*")) == []
 
 
 @pytest.mark.asyncio
@@ -1288,7 +1289,8 @@ async def test_baidu_low_speed_refresh_reuses_existing_pcsgo_checkpoint(monkeypa
 
         assert checkpoint.read_bytes() == b"existing-checkpoint"
         completed = Path(savedir) / "RJ01648657.7z"
-        completed.write_bytes(b"completed")
+        with completed.open("wb") as handle:
+            handle.truncate(1024 * 1024 * 1024)
 
     monkeypatch.setattr(service, "_transfer_share_item_by_web", fake_transfer)
     monkeypatch.setattr(service, "_run_baidu_pcs_go_command", fake_run_pcsgo)
@@ -1333,7 +1335,8 @@ async def test_baidu_low_speed_refresh_reuses_existing_pcsgo_checkpoint(monkeypa
     assert download_abort_checks[0] is not None
     assert download_abort_checks[1] is not None
     assert download_abort_checks[2] is None
-    assert target_path.read_bytes() == b"completed"
+    assert target_path.stat().st_size == 1024 * 1024 * 1024
+    assert list((tmp_path / "staging").glob("*.kikoerumanager-moving-*")) == []
     assert row["link_refresh_attempt"] == 2
     assert row["checkpoint_bytes"] == 650 * 1024 * 1024
     assert row["link_refresh_status"] == "completed"

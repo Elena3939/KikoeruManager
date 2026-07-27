@@ -39,6 +39,12 @@ DEFAULT_PROGRESS_THROTTLE = 4 * 1024 * 1024
 
 
 ProgressCallback = Callable[[int, int], None]
+CancellationCheck = Callable[[], bool]
+
+
+def _raise_if_cancelled(cancel_check: Optional[CancellationCheck]) -> None:
+    if cancel_check and cancel_check():
+        raise asyncio.CancelledError()
 
 
 async def move_path_efficient(
@@ -46,6 +52,7 @@ async def move_path_efficient(
     dst: str,
     *,
     progress_cb: Optional[ProgressCallback] = None,
+    cancel_check: Optional[CancellationCheck] = None,
     buffer_size: int = LARGE_BUFFER,
     progress_throttle_bytes: int = DEFAULT_PROGRESS_THROTTLE,
 ) -> None:
@@ -58,6 +65,7 @@ async def move_path_efficient(
     """
     src = str(src)
     dst = str(dst)
+    _raise_if_cancelled(cancel_check)
 
     # 同卷 fast path：直接 rename，不会产生任何 IO。
     try:
@@ -78,8 +86,10 @@ async def move_path_efficient(
             dst,
             buffer_size=buffer_size,
             progress_cb=progress_cb,
+            cancel_check=cancel_check,
             progress_throttle_bytes=progress_throttle_bytes,
         )
+        _raise_if_cancelled(cancel_check)
         await asyncio.to_thread(shutil.rmtree, src, ignore_errors=False)
     else:
         await _copy_file_buffered(
@@ -87,8 +97,10 @@ async def move_path_efficient(
             dst,
             buffer_size=buffer_size,
             progress_cb=progress_cb,
+            cancel_check=cancel_check,
             progress_throttle_bytes=progress_throttle_bytes,
         )
+        _raise_if_cancelled(cancel_check)
         await asyncio.to_thread(os.remove, src)
 
 
@@ -98,6 +110,7 @@ async def _copy_file_buffered(
     *,
     buffer_size: int,
     progress_cb: Optional[ProgressCallback],
+    cancel_check: Optional[CancellationCheck],
     progress_throttle_bytes: int,
 ) -> None:
     total = await asyncio.to_thread(_safe_size, src)
@@ -117,6 +130,7 @@ async def _copy_file_buffered(
     def _do_copy() -> None:
         with open(src, "rb", buffering=0) as fsrc, open(dst, "wb", buffering=0) as fdst:
             while True:
+                _raise_if_cancelled(cancel_check)
                 chunk = fsrc.read(buffer_size)
                 if not chunk:
                     break
@@ -139,6 +153,7 @@ async def _copy_tree_buffered(
     *,
     buffer_size: int,
     progress_cb: Optional[ProgressCallback],
+    cancel_check: Optional[CancellationCheck],
     progress_throttle_bytes: int,
 ) -> None:
     total = await asyncio.to_thread(_calc_dir_size, src)
@@ -157,6 +172,7 @@ async def _copy_tree_buffered(
 
     def _do_copy_tree() -> None:
         for root, _, files in os.walk(src):
+            _raise_if_cancelled(cancel_check)
             rel = os.path.relpath(root, src)
             target_dir = dst if rel == "." else os.path.join(dst, rel)
             os.makedirs(target_dir, exist_ok=True)
@@ -166,6 +182,7 @@ async def _copy_tree_buffered(
                 try:
                     with open(s_file, "rb", buffering=0) as fsrc, open(d_file, "wb", buffering=0) as fdst:
                         while True:
+                            _raise_if_cancelled(cancel_check)
                             chunk = fsrc.read(buffer_size)
                             if not chunk:
                                 break
