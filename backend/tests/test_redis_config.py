@@ -1,3 +1,4 @@
+import errno
 from types import SimpleNamespace
 
 from app.api import routes
@@ -688,6 +689,74 @@ def test_library_index_watcher_keeps_memory_dirty_when_redis_or_ledger_fails(mon
         driver._requeue("library-a", due)
 
     assert driver.diagnostics()["dirty_paths"] == {"library-a": 1}
+
+
+def test_library_index_watcher_degrades_cleanly_when_inotify_limit_is_reached(monkeypatch, tmp_path):
+    first_root = tmp_path / "library-a"
+    second_root = tmp_path / "library-b"
+    first_root.mkdir()
+    second_root.mkdir()
+    observers = []
+
+    class FakeManager:
+        def list_libraries(self):
+            return [
+                {"id": "library-a", "type": "local", "root_path": str(first_root)},
+                {"id": "library-b", "type": "local", "root_path": str(second_root)},
+            ]
+
+    class FakeRedis:
+        def read_library_index_dirty_paths_sync(self, _library_id):
+            return []
+
+    class CapacityLimitedObserver:
+        def __init__(self):
+            self.stopped = False
+            self.joined = False
+            observers.append(self)
+
+        def schedule(self, *_args, **_kwargs):
+            return None
+
+        def start(self):
+            if len(observers) == 2:
+                raise OSError(errno.ENOSPC, "inotify watch limit reached")
+
+        def stop(self):
+            self.stopped = True
+
+        def join(self, **_kwargs):
+            self.joined = True
+
+    monkeypatch.setattr("app.core.library_manager.get_library_manager", lambda: FakeManager())
+    monkeypatch.setattr(watcher_module, "get_redis_service", lambda: FakeRedis())
+    monkeypatch.setattr(watcher_module, "Observer", CapacityLimitedObserver)
+    monkeypatch.setattr(
+        watcher_module,
+        "_read_inotify_limits",
+        lambda: {"max_user_watches": 8192, "max_user_instances": 128},
+    )
+
+    driver = LibraryIndexWatcherDriver()
+    try:
+        driver.start()
+        diagnostics = driver.diagnostics()
+
+        assert diagnostics["running"] is True
+        assert diagnostics["watcher_mode"] == "inotify_limit"
+        assert diagnostics["live_events_available"] is False
+        assert diagnostics["scrub_fallback_running"] is True
+        assert diagnostics["start_errno"] == errno.ENOSPC
+        assert diagnostics["inotify_limits"] == {
+            "max_user_watches": 8192,
+            "max_user_instances": 128,
+        }
+        assert diagnostics["observed_libraries"] == ["library-a", "library-b"]
+        assert len(observers) == 2
+        assert all(observer.stopped for observer in observers)
+        assert all(observer.joined for observer in observers)
+    finally:
+        driver.stop(timeout=0.5)
 
 
 def test_library_index_dirty_zset_and_channel_diagnostics(monkeypatch):

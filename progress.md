@@ -5381,3 +5381,101 @@
 - `docs/http-download-completion.md`：记录 Transfer.it 单目标写入边界、选择恢复失败语义和 Gofile 自适应重试规则。
 - `progress.md`：追加本轮实现、验证和回滚记录。
 - 回滚方式：反向移除 `_transferit_target_lock` / `_active_transferit_targets` 及下载包装层，恢复 Transfer.it 解析阶段直接丢弃未匹配候选的旧逻辑，移除 Gofile `gofile_retry_attempt` 自适应参数和超时文案，并删除对应 4 个测试与文档条目；不要使用整文件回退，`AGENTS.md` 的现有改动不属于本任务。
+
+## 2026-07-28 - Task: 修复大文件最终搬运阻塞服务主循环
+
+### What was done
+
+- 百度网盘临时转存下载完成后改为线程池流式跨卷搬运，并通过目标卷临时文件、大小校验和原子替换发布正式文件；搬运期间继续响应取消和任务运行态刷新。
+- ASMR 直放、分类入库以及解压冲突目录搬运退出 asyncio 主线程，并纳入本地磁盘 IO 资源预算，避免多个大文件同时发布拖死控制面。
+- 公共高效移动工具增加协作取消检查，取消时不删除源文件；发布进度按 64MB 与 0.75 秒双重节流，避免大文件复制产生高频运行态写入。
+
+### Testing
+
+- 项目虚拟环境 `py_compile` 覆盖 `fs_utils.py`、`baidu_netdisk_service.py`、`asmr_resource_service.py`、`task_engine.py`：通过。
+- `pytest --noconftest tests/test_fs_utils.py -q`：通过，`2 passed`；覆盖跨设备复制期间事件循环继续调度、取消后保留源文件。
+- `pytest --noconftest tests/test_baidu_netdisk_service.py -q -k 'download_uses_web_transfer_before_pcsgo_download or low_speed_refresh_reuses_existing_pcsgo_checkpoint'`：通过，`2 passed`；覆盖目标卷临时发布、完整性校验和无临时残留。
+- `pytest --noconftest tests/test_asmr_resource_service.py -q`：`8 passed, 1 failed`；唯一失败为既有下载计划用例连接本机 PostgreSQL `127.0.0.1:5432` 超时，失败发生在数据库提交，未进入本轮文件搬运代码。
+- 百度全文件回归先通过 `46` 项，另 `16` 项因 Windows pytest 临时根目录拒绝访问在 setup 阶段失败；直接相关用例已使用唯一临时根复跑通过。
+
+### Notes
+
+- `backend/app/core/fs_utils.py`：为同卷 rename / 跨卷流式复制补充协作取消检查。
+- `backend/app/core/baidu_netdisk_service.py`：百度下载最终文件改为受资源预算约束的异步临时发布和原子替换。
+- `backend/app/core/asmr_resource_service.py`：ASMR 本地直放和分类入库搬运退出事件循环。
+- `backend/app/core/task_engine.py`：解压重复作品移动到冲突目录时改在线程池执行。
+- `backend/tests/test_fs_utils.py`：新增事件循环持续响应与取消保源回归测试。
+- `backend/tests/test_baidu_netdisk_service.py`：补充发布临时文件清理断言并让低速续传夹具生成等大小稀疏文件。
+- `docs/file-finalization-io.md`：记录跨卷发布、取消、完整性和事件循环响应合同。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：反向移除百度目标卷 `.kikoerumanager-moving-*` 发布流程和 `move_path_efficient(cancel_check=...)` 参数，恢复 ASMR / 冲突目录原调用点，同时删除 `test_fs_utils.py` 与本轮文档；不要使用整文件回退，保留工作区原有社团补全改动。
+
+## 2026-07-28 - Task: 修复多 RJ 合集被首个翻译作品预检截断
+
+### What was done
+
+- 自动导入预检调整为先读取压缩包清单识别多 RJ 合集，再执行字幕关联和普通查重；合集命中后跳过整包字幕判定与基于首个 RJ 的整体查重。
+- 合集任务记录 `aggregate_archive`、`aggregate_rjcodes` 和数量，正常解压后继续复用既有多作品拆分流程，让每个 RJ 独立查重、补字幕和入库。
+- 压缩包清单只读取一次并复用已有缓存；密码库 `filename + rjcode` 权威绑定、单 RJ 和清单不可读路径保持原行为。
+
+### Testing
+
+- 项目虚拟环境 `py_compile` 覆盖 `task_engine.py` 和 `test_task_engine.py`：通过。
+- `pytest --noconftest tests/test_task_engine.py -q -k 'multi_rj_archive_precheck'`：通过，`2 passed`；覆盖 `222(700241795).rar` 风格合集和密码库权威绑定例外。
+- `pytest --noconftest tests/test_extract_service.py -q -k 'scan_top_level_rjcodes or collect_top_level_rjcodes'`：通过，`12 passed`；覆盖目录、内层压缩包、去重、缺失文件与读取失败。
+
+### Notes
+
+- `backend/app/core/task_engine.py`：新增合集前置判定并调整字幕预检、整体查重执行顺序。
+- `backend/tests/test_task_engine.py`：新增合集任务元数据和权威 RJ 锁回归测试。
+- `docs/multi-rj-import-routing.md`：记录合集识别、跳过整包判定和解压后拆分合同。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：移除 `_collect_multi_rj_archive_precheck()` 和步骤 0 中的 `is_multi_rj_archive` 分支，恢复普通查重阶段现场读取合集清单的旧顺序，并删除对应测试与文档；不要回退本轮之前的大文件搬运修复或工作区原有社团补全改动。
+
+## 2026-07-28 - Task: 完善 DLsite 翻译父子关系回退与重试终止
+
+### What was done
+
+- DLsite 批量接口没有明确关联链时，允许使用作品页解析出的可信 `parent_workno` 回填翻译父作品；API 明确关系始终优先，标题只用于补充语言。
+- 翻译标题缺少父 RJ 时保持未确认且不写缓存，不根据标题猜原作；普通日文产品没有关联链时继续保留原结果，避免扩大成未知作品。
+- `dlsite_linkage_uncertain` 达到自动重试上限后转入等待人工、写入问题作品并移出重试队列，不再无限重试或直接标成普通失败。
+
+### Testing
+
+- 项目虚拟环境 `py_compile` 覆盖 `dlsite_service.py` 和 `task_engine.py`：通过。
+- `pytest --noconftest tests/test_dlsite_translation_fallback.py tests/test_dlsite_linkage_child_parent.py tests/test_dlsite_linkage_no_public_filter.py -q`：通过，`10 passed`；覆盖两个真实父子关系、无父不猜、普通原作不误判及 API 明确信息优先。
+- `pytest --noconftest tests/test_task_engine.py -q -k 'uncertain_dlsite_retry_exhaustion'`：通过，`1 passed`；后台物化尝试连接未启动的本机 PostgreSQL 产生超时日志，但被测状态机断言通过。
+- `pytest --noconftest tests/test_linked_subtitle_import_service.py -q -k 'uncertain_dlsite'`：通过，`2 passed`。
+
+### Notes
+
+- `backend/app/core/dlsite_service.py`：增加可信页面父作品回退、翻译标题语言识别与无父保守判定。
+- `backend/app/core/task_engine.py`：关联链不确定重试耗尽后转等待人工并终止自动重试。
+- `backend/tests/test_dlsite_translation_fallback.py`：新增页面父作品、无父不猜、普通产品和 API 优先级回归测试。
+- `backend/tests/test_task_engine.py`：新增关联链重试耗尽状态回归测试。
+- `docs/dlsite-translation-linkage.md`：记录父子关系来源优先级与重试终止合同。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：反向移除 `get_translation_info()` 的页面 `parent_workno` 回退和 `retry_kind=dlsite_linkage_uncertain` 的人工终态分支，并删除对应测试与文档；不要回退多 RJ 合集和大文件搬运修复。
+
+## 2026-07-28 - Task: 修复 inotify 容量耗尽后的库存监控半启动
+
+### What was done
+
+- 库存 watcher 启动改为原子化；任一库存触发 inotify 容量错误时，停止并回收本轮所有已启动 observer，避免残留 observer 占用容量却没有调度线程消费。
+- `ENOSPC`、`EMFILE`、`ENFILE` 等 inotify 容量错误不再中断服务启动，改为保留现有有界轻量巡检线程，不触发自动全库重建。
+- 库存索引系统诊断增加 `watcher_mode=inotify_limit`、实时事件可用性、降级巡检状态、errno、错误信息以及宿主机两个 inotify 上限值。
+- 补充 Linux 与群晖宿主机的 inotify 查看、临时调整、持久化和恢复验收说明。
+
+### Testing
+
+- 项目虚拟环境 `py_compile` 覆盖 `library_index/watcher_driver.py`：通过。
+- `pytest --noconftest tests/test_redis_config.py -q -k 'library_index_watcher'`：通过，`3 passed`；覆盖 dirty 入账、失败保留和第二个库存触发 `ENOSPC` 后清理全部 observer、服务降级存活及诊断字段。
+- `git diff --check`：通过，仅有工作区既有换行符转换提示。
+
+### Notes
+
+- `backend/app/core/library_index/watcher_driver.py`：增加 inotify 容量识别、observer 原子清理、轻量巡检降级和运行态诊断。
+- `backend/tests/test_redis_config.py`：新增多库存半启动容量耗尽回归测试。
+- `docs/library-index-watcher.md`：记录诊断字段与宿主机容量调整方式。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：反向移除 `_is_inotify_capacity_error()`、`_read_inotify_limits()`、observer 批量清理和诊断字段，并删除对应测试与文档；不要回退库存索引现有 dirty set、ledger 或轻量巡检逻辑。
