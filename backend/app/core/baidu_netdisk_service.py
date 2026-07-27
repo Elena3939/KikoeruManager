@@ -27,6 +27,7 @@ import aiohttp
 import requests
 
 from ..config.settings import get_config, save_config
+from .fs_utils import move_path_efficient
 from .http_download_service import sanitize_http_download_item
 from .resource_budget_service import get_resource_budget_service
 
@@ -4589,6 +4590,7 @@ class BaiduNetdiskService:
         cookie = self._share_download_cookie(row)
         expected_name = str(row.get("relative_path") or row.get("name") or "").strip()
         expected_size = _safe_int(row.get("total") or row.get("size"))
+        moving_path = f"{target_path}.kikoerumanager-moving-{task.id}"
         pcsgo_path = self._resolve_baidu_pcs_go_path()
         work_root = os.path.join(get_config().storage.temp_path, "baidu_netdisk_pcsgo")
         os.makedirs(work_root, exist_ok=True)
@@ -4767,14 +4769,58 @@ class BaiduNetdiskService:
                     f"BaiduPCS-Go 下载完成但未找到文件: {expected_name or 'download.bin'}"
                     + (f"；日志: {tail}" if tail else "")
                 )
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
-            if os.path.exists(target_path):
-                if os.path.isdir(target_path):
-                    shutil.rmtree(target_path)
+            await self._check_task_active(task, cancel_event)
+            source_size = await asyncio.to_thread(os.path.getsize, downloaded_path)
+            if expected_size > 0 and source_size != expected_size:
+                raise BaiduNetdiskError(
+                    f"BaiduPCS-Go 下载文件大小不一致: expected={expected_size} actual={source_size}"
+                )
+
+            await asyncio.to_thread(os.makedirs, os.path.dirname(target_path), exist_ok=True)
+            if await asyncio.to_thread(os.path.isdir, target_path):
+                await asyncio.to_thread(shutil.rmtree, target_path)
+            if await asyncio.to_thread(os.path.exists, moving_path):
+                if await asyncio.to_thread(os.path.isdir, moving_path):
+                    await asyncio.to_thread(shutil.rmtree, moving_path)
                 else:
-                    os.remove(target_path)
-            shutil.move(downloaded_path, target_path)
-            final_size = os.path.getsize(target_path)
+                    await asyncio.to_thread(os.remove, moving_path)
+
+            loop = asyncio.get_running_loop()
+            publish_progress = {"last_at": 0.0}
+
+            def apply_publish_progress(copied: int, total: int) -> None:
+                now = time.monotonic()
+                if copied < total and now - publish_progress["last_at"] < 0.75:
+                    return
+                publish_progress["last_at"] = now
+                row["finalize_copied_bytes"] = max(0, int(copied or 0))
+                row["finalize_total_bytes"] = max(0, int(total or 0))
+                task.current_step = "百度网盘下载完成，正在发布文件"
+                task.mark_changed("progress")
+                self._refresh_runtime(task, download_files, started=started, current=row)
+
+            def schedule_publish_progress(copied: int, total: int) -> None:
+                loop.call_soon_threadsafe(apply_publish_progress, copied, total)
+
+            async with get_resource_budget_service().acquire(
+                "disk_io_local",
+                reason="baidu.finalize_download",
+            ):
+                await move_path_efficient(
+                    downloaded_path,
+                    moving_path,
+                    progress_cb=schedule_publish_progress,
+                    cancel_check=lambda: task.is_cancelled() or cancel_event.is_set(),
+                    progress_throttle_bytes=64 * 1024 * 1024,
+                )
+                final_size = await asyncio.to_thread(os.path.getsize, moving_path)
+                if final_size != source_size:
+                    raise BaiduNetdiskError(
+                        f"百度网盘文件发布大小不一致: source={source_size} target={final_size}"
+                    )
+                await self._check_task_active(task, cancel_event)
+                await asyncio.to_thread(os.replace, moving_path, target_path)
+
             row.update({
                 "status": "completed",
                 "progress": 100,
@@ -4783,9 +4829,16 @@ class BaiduNetdiskService:
                 "size": max(int(row.get("size") or 0), final_size),
                 "local_path": target_path,
                 "speed_bytes_per_sec": 0,
+                "finalize_copied_bytes": final_size,
+                "finalize_total_bytes": final_size,
             })
             self._refresh_runtime(task, download_files, started=started, current=row)
         finally:
+            if await asyncio.to_thread(os.path.exists, moving_path):
+                if await asyncio.to_thread(os.path.isdir, moving_path):
+                    await asyncio.to_thread(shutil.rmtree, moving_path, True)
+                else:
+                    await asyncio.to_thread(os.remove, moving_path)
             if remote_tmp_created:
                 await self._cleanup_remote_temporary_transfer_dir(
                     pcsgo_path,

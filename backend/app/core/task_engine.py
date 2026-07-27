@@ -3108,7 +3108,11 @@ class TaskEngine:
                             # 移动到冲突目录
                             conflict_base_path = os.path.join(config.storage.library_path, '_conflicts')
                             os.makedirs(conflict_base_path, exist_ok=True)
-                            final_path = classifier._move_with_rename(extracted_path, conflict_base_path)
+                            final_path = await asyncio.to_thread(
+                                classifier._move_with_rename,
+                                extracted_path,
+                                conflict_base_path,
+                            )
                             task.output_path = final_path
                             task.status = TaskStatus.WAITING_MANUAL
                             task.update_progress(100, "重复作品，请在问题作品页面处理")
