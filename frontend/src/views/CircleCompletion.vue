@@ -1127,6 +1127,11 @@ import { normalizeTaskCenterRealtimePayloads } from '../composables/taskCenterEv
 import { showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 import { reconcileCircleCompletionOwnedState } from '../utils/circleCompletionOwnedState'
+import {
+  createLatestRequestGuard,
+  mergeTrackedDownloadTaskIds,
+  selectTrackedDownloadTasks,
+} from './_downloadWorkbenchTracking.js'
 
 const route = useRoute()
 const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'kikoerumanager.circleCompletion.targetSubdirs'
@@ -3512,6 +3517,7 @@ function rememberTargetSubdir(value = '') {
 }
 
 let downloadWorkbenchTimer = null
+const downloadWorkbenchRequestGuard = createLatestRequestGuard()
 
 function persistDownloadWorkbenchState() {
   try {
@@ -3605,6 +3611,7 @@ function hydrateDownloadWorkbenchState() {
 }
 
 function clearDownloadWorkbenchState() {
+  downloadWorkbenchRequestGuard.invalidate()
   trackedDownloadTaskIds.value = []
   trackedDownloadTasks.value = []
   downloadWorkbenchVisible.value = false
@@ -3808,6 +3815,7 @@ function startDownloadWorkbenchPolling() {
 
 async function refreshDownloadWorkbench(options = {}) {
   const silent = Boolean(options?.silent)
+  const requestSequence = downloadWorkbenchRequestGuard.begin()
   if (!trackedDownloadTaskIds.value.length) {
     trackedDownloadTasks.value = []
     stopDownloadWorkbenchPolling()
@@ -3816,19 +3824,21 @@ async function refreshDownloadWorkbench(options = {}) {
   if (!silent) downloadWorkbenchRefreshing.value = true
   try {
     const result = await asmrSyncApi.status(trackedDownloadTaskIds.value)
+    if (!downloadWorkbenchRequestGuard.isLatest(requestSequence)) return
     const allTasks = Array.isArray(result.tasks) ? result.tasks : []
-    trackedDownloadTasks.value = trackedDownloadTaskIds.value
-      .map(id => allTasks.find(task => String(task?.id || '') === String(id || '')))
-      .filter(Boolean)
-    trackedDownloadTaskIds.value = trackedDownloadTasks.value.map(task => task.id)
+    trackedDownloadTasks.value = selectTrackedDownloadTasks(
+      trackedDownloadTaskIds.value,
+      allTasks,
+    )
     const stillActive = trackedDownloadTasks.value.some(task => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(task.status || '')))
     if (stillActive || downloadWorkbenchVisible.value || downloadWorkbenchBackgroundActive.value) startDownloadWorkbenchPolling()
     else stopDownloadWorkbenchPolling()
   } catch (error) {
+    if (!downloadWorkbenchRequestGuard.isLatest(requestSequence)) return
     console.error('刷新社团补全下载工作台失败:', error)
     startDownloadWorkbenchPolling()
   } finally {
-    if (!silent) downloadWorkbenchRefreshing.value = false
+    if (downloadWorkbenchRequestGuard.isLatest(requestSequence)) downloadWorkbenchRefreshing.value = false
   }
 }
 
@@ -3851,8 +3861,10 @@ function replaceTrackedDownloadTaskForSession(sessionId, nextTaskId) {
 function appendTrackedDownloadTask(nextTaskId) {
   const normalizedTaskId = String(nextTaskId || '').trim()
   if (!normalizedTaskId) return
-  if (trackedDownloadTaskIds.value.includes(normalizedTaskId)) return
-  trackedDownloadTaskIds.value = [normalizedTaskId, ...trackedDownloadTaskIds.value]
+  trackedDownloadTaskIds.value = mergeTrackedDownloadTaskIds(
+    trackedDownloadTaskIds.value,
+    [normalizedTaskId],
+  )
 }
 
 function canRetryDownloadTask(task) {
@@ -5852,10 +5864,10 @@ async function startBatchDownload(payload = {}) {
     const newTaskIds = (result.tasks || [])
       .map(item => String(item?.task_id || '').trim())
       .filter(Boolean)
-    trackedDownloadTaskIds.value = [...new Set([
-      ...newTaskIds,
-      ...trackedDownloadTaskIds.value.map(id => String(id || '').trim())
-    ].filter(Boolean))]
+    trackedDownloadTaskIds.value = mergeTrackedDownloadTaskIds(
+      trackedDownloadTaskIds.value,
+      newTaskIds,
+    )
     downloadWorkbenchVisible.value = trackedDownloadTaskIds.value.length > 0
     downloadWorkbenchBackgroundActive.value = false
     persistDownloadWorkbenchState()

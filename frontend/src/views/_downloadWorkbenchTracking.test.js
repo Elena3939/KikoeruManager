@@ -48,4 +48,18 @@ describe('下载工作台任务跟踪', () => {
 
     expect(guard.isLatest(pendingRequest)).toBe(false)
   })
+
+  it('社团补全追加批次后拒绝旧批次状态覆盖', () => {
+    const guard = createLatestRequestGuard()
+    const oldBatchRequest = guard.begin()
+    const trackedIds = mergeTrackedDownloadTaskIds(['old-task'], ['new-task'])
+    const newBatchRequest = guard.begin()
+
+    expect(guard.isLatest(oldBatchRequest)).toBe(false)
+    expect(guard.isLatest(newBatchRequest)).toBe(true)
+    expect(trackedIds).toEqual(['new-task', 'old-task'])
+    expect(selectTrackedDownloadTasks(trackedIds, [{ id: 'old-task' }]))
+      .toEqual([{ id: 'old-task' }])
+    expect(trackedIds).toEqual(['new-task', 'old-task'])
+  })
 })
