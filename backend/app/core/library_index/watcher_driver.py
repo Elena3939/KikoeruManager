@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import threading
@@ -24,6 +25,10 @@ MAX_DIRTY_PATHS = 20000
 SCRUB_INTERVAL_SECONDS = 300.0
 SCRUB_MAX_DIRECTORIES = 200
 SCRUB_MAX_SECONDS = 2.0
+_INOTIFY_LIMIT_PATHS = {
+    "max_user_watches": "/proc/sys/fs/inotify/max_user_watches",
+    "max_user_instances": "/proc/sys/fs/inotify/max_user_instances",
+}
 
 
 @dataclass(slots=True)
@@ -44,6 +49,35 @@ def _compress_paths(paths: list[str]) -> list[str]:
             continue
         result.append(normalized)
     return result
+
+
+def _is_inotify_capacity_error(exc: BaseException) -> bool:
+    current: Optional[BaseException] = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        if isinstance(current, OSError) and current.errno in {
+            errno.ENOSPC,
+            errno.EMFILE,
+            errno.ENFILE,
+        }:
+            return True
+        message = str(current).lower()
+        if "inotify" in message and ("limit" in message or "too many open files" in message):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _read_inotify_limits() -> dict[str, Optional[int]]:
+    limits: dict[str, Optional[int]] = {}
+    for name, path in _INOTIFY_LIMIT_PATHS.items():
+        try:
+            with open(path, "r", encoding="ascii") as file:
+                limits[name] = int(file.read().strip())
+        except (OSError, TypeError, ValueError):
+            limits[name] = None
+    return limits
 
 
 class _InventoryEventHandler(FileSystemEventHandler):
@@ -80,6 +114,10 @@ class LibraryIndexWatcherDriver:
         self._scrub_elapsed_ms = 0
         self._scrub_cursor: dict[str, int] = {}
         self._scrub_signatures: dict[tuple[str, str], tuple] = {}
+        self._watcher_mode = "stopped"
+        self._last_start_error: Optional[str] = None
+        self._last_start_errno: Optional[int] = None
+        self._inotify_limits = _read_inotify_limits()
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -87,48 +125,84 @@ class LibraryIndexWatcherDriver:
         from ..library_manager import get_library_manager
 
         self._stop_event.clear()
+        self._watcher_mode = "watchdog"
+        self._last_start_error = None
+        self._last_start_errno = None
+        self._inotify_limits = _read_inotify_limits()
+        self._roots.clear()
         manager = get_library_manager()
-        for item in manager.list_libraries():
-            if str(item.get("type") or "") != "local":
-                continue
-            library_id = str(item.get("id") or "")
-            root_path = os.path.abspath(str(item.get("root_path") or item.get("path") or ""))
-            if not library_id or not os.path.isdir(root_path):
-                continue
-            self._restore_redis_dirty(library_id, root_path)
-            observer = Observer()
-            observer.schedule(
-                _InventoryEventHandler(self, library_id, root_path),
-                root_path,
-                recursive=True,
+        observers: list[Observer] = []
+        try:
+            for item in manager.list_libraries():
+                if str(item.get("type") or "") != "local":
+                    continue
+                library_id = str(item.get("id") or "")
+                root_path = os.path.abspath(str(item.get("root_path") or item.get("path") or ""))
+                if not library_id or not os.path.isdir(root_path):
+                    continue
+                self._roots[library_id] = root_path
+                self._restore_redis_dirty(library_id, root_path)
+                observer = Observer()
+                observer.schedule(
+                    _InventoryEventHandler(self, library_id, root_path),
+                    root_path,
+                    recursive=True,
+                )
+                observers.append(observer)
+                observer.start()
+        except Exception as exc:
+            self._stop_observers(observers)
+            if not _is_inotify_capacity_error(exc):
+                self._watcher_mode = "start_failed"
+                self._last_start_error = str(exc)
+                self._last_start_errno = getattr(exc, "errno", None)
+                raise
+            self._watcher_mode = "inotify_limit"
+            self._last_start_error = str(exc)
+            self._last_start_errno = getattr(exc, "errno", None)
+            logger.error(
+                "[索引 watcher] inotify 容量不足，已关闭实时 observer 并降级为轻量巡检: "
+                "errno=%s limits=%s error=%s",
+                self._last_start_errno,
+                self._inotify_limits,
+                self._last_start_error,
             )
-            observer.start()
-            self._observers.append(observer)
-            self._roots[library_id] = root_path
+            observers = []
+        self._observers = observers
         self._thread = threading.Thread(
             target=self._run,
             name="library-index-watcher-dispatch",
             daemon=True,
         )
         self._thread.start()
-        logger.info("[索引 watcher] 已启动 local_libraries=%s", len(self._observers))
+        logger.info(
+            "[索引 watcher] 已启动 mode=%s local_libraries=%s observed_libraries=%s",
+            self._watcher_mode,
+            len(self._observers),
+            len(self._roots),
+        )
 
-    def stop(self, timeout: float = 5.0) -> None:
-        self._stop_event.set()
-        self._wake_event.set()
-        for observer in self._observers:
+    @staticmethod
+    def _stop_observers(observers: list[Observer], timeout: float = 5.0) -> None:
+        for observer in observers:
             try:
                 observer.stop()
             except Exception:
                 logger.debug("[索引 watcher] observer.stop 失败", exc_info=True)
-        for observer in self._observers:
+        for observer in observers:
             try:
                 observer.join(timeout=max(0.1, timeout))
             except Exception:
                 logger.debug("[索引 watcher] observer.join 失败", exc_info=True)
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self._stop_event.set()
+        self._wake_event.set()
+        self._stop_observers(self._observers, timeout=timeout)
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=max(0.1, timeout))
         self._observers.clear()
+        self._watcher_mode = "stopped"
 
     def _restore_redis_dirty(self, library_id: str, root_path: str) -> None:
         try:
@@ -391,6 +465,16 @@ class LibraryIndexWatcherDriver:
             dirty = {library_id: len(paths) for library_id, paths in self._dirty.items()}
         return {
             "running": bool(self._thread and self._thread.is_alive()),
+            "watcher_mode": self._watcher_mode,
+            "live_events_available": bool(self._observers),
+            "scrub_fallback_running": bool(
+                self._watcher_mode == "inotify_limit"
+                and self._thread
+                and self._thread.is_alive()
+            ),
+            "start_error": self._last_start_error,
+            "start_errno": self._last_start_errno,
+            "inotify_limits": dict(self._inotify_limits),
             "observed_libraries": sorted(self._roots),
             "dirty_paths": dirty,
             "overflow_count": self._overflow_count,
