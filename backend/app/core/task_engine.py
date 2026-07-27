@@ -2479,6 +2479,40 @@ class TaskEngine:
                 return message
         return "远程库存暂时退化，等待恢复后重试字幕回写"
 
+    async def _collect_multi_rj_archive_precheck(self, task: Task, extract_service) -> List[str]:
+        metadata = dict(task.task_metadata or {})
+        if metadata.get("rjcode_lock") or not os.path.isfile(task.source_path):
+            return []
+        try:
+            rjcodes = await extract_service.collect_top_level_rjcodes(
+                task.source_path,
+                task=task,
+            )
+        except Exception:
+            logger.warning(
+                "[%s] 解压前多 RJ 合集预检异常，回退到单作品流程",
+                task.rjcode or "未知",
+                exc_info=True,
+            )
+            return []
+        if len(rjcodes) < 2:
+            return rjcodes
+
+        task.task_metadata = {
+            **metadata,
+            "aggregate_archive": True,
+            "aggregate_rjcodes": list(rjcodes),
+            "aggregate_rj_count": len(rjcodes),
+        }
+        logger.info(
+            "[%s] 清单检测到 %s 个独立 RJ（合集包），跳过整包字幕关联预检和整体查重: %s%s",
+            task.rjcode or rjcodes[0],
+            len(rjcodes),
+            rjcodes[:8],
+            f"... +{len(rjcodes) - 8}" if len(rjcodes) > 8 else "",
+        )
+        return rjcodes
+
     async def _process_task(self, task: Task):
         """处理单个任务"""
         from .extract_service import ExtractService
@@ -2519,7 +2553,7 @@ class TaskEngine:
                 # 预检只占清单/探测槽，不能阻塞正式解压槽。
                 precheck_task: Optional[asyncio.Task] = None
 
-                # 步骤0: 预检（先字幕补配，再普通查重）
+                # 步骤0: 预检（先识别合集，再做字幕补配和普通查重）
                 if skip_retry_precheck:
                     logger.info(f"[{rjcode}] 问题作品处理任务，跳过已完成的解压前预检")
                     task.update_progress(8, "准备处理")
@@ -2578,6 +2612,18 @@ class TaskEngine:
                                 )
                         logger.info(f"[{rjcode}] 提取到的RJ号: {rjcode}")
 
+                        archive_top_rjs = await self._collect_multi_rj_archive_precheck(
+                            task,
+                            extract_service,
+                        )
+                        is_multi_rj_archive = len(archive_top_rjs) >= 2
+                        if is_multi_rj_archive and not rjcode:
+                            rjcode = self._sync_task_rjcode(
+                                task,
+                                archive_top_rjs[0],
+                                source="aggregate_archive_precheck",
+                            )
+
                         precheck_task = None
                         linked_result = {"handled": False, "reason": "not_run", "preview": {}}
                         if not rjcode:
@@ -2605,7 +2651,12 @@ class TaskEngine:
                         elif not task.auto_classify:
                             logger.info(f"[{rjcode}] auto_classify=False，跳过字幕补配预检和预检查重")
                         else:
-                            if getattr(config.auto_process, 'import_linked_translation_subtitles', False):
+                            if is_multi_rj_archive:
+                                logger.info(
+                                    f"[{rjcode}] 多 RJ 合集跳过整包字幕补配预检，"
+                                    "解压后按独立作品分别处理"
+                                )
+                            elif getattr(config.auto_process, 'import_linked_translation_subtitles', False):
                                 from .linked_subtitle_import_service import get_linked_subtitle_import_service
 
                                 linked_import_service = get_linked_subtitle_import_service()
@@ -2820,46 +2871,7 @@ class TaskEngine:
                                             f"subtitle_count={_preview_subtitle_count}"
                                         )
                                 else:
-                                    # 解压前多 RJ 合集预检：合集包（一个大压缩包内有多个独立 RJ 顶层目录）
-                                    # 的 inferred_rjcode 只是清单里第一个 RJ，不代表整包语义。若这个 RJ 已
-                                    # 在库存命中，原流程会把整个大包都判成"完全重复"跳过解压，剩下几十个
-                                    # 不重复的 RJ 永远没机会处理。这里先扫一遍清单：若顶层 >=2 个独立 RJ，
-                                    # 跳过基于第一个 RJ 的整体查重，让解压完成后的步骤 1.4
-                                    # （_detect_multi_rj_subfolders + _dispatch_multi_rj_subtasks）拆分子任务，
-                                    # 每个 RJ 各自查重。失败回退到原行为。
-                                    skip_aggregate_dedup = False
-                                    rjcode_locked_for_dedup = bool(
-                                        (task.task_metadata or {}).get('rjcode_lock')
-                                    )
-                                    if (
-                                        not rjcode_locked_for_dedup
-                                        and os.path.isfile(task.source_path)
-                                    ):
-                                        try:
-                                            archive_top_rjs = await extract_service.collect_top_level_rjcodes(
-                                                task.source_path,
-                                                task=task,
-                                            )
-                                        except Exception:
-                                            archive_top_rjs = []
-                                            logger.warning(
-                                                f"[{rjcode}] 解压前多 RJ 合集预检异常，回退到单作品查重",
-                                                exc_info=True,
-                                            )
-                                        if len(archive_top_rjs) >= 2:
-                                            _preview = archive_top_rjs[:8]
-                                            _more = (
-                                                f"... +{len(archive_top_rjs) - 8}"
-                                                if len(archive_top_rjs) > 8
-                                                else ""
-                                            )
-                                            logger.info(
-                                                f"[{rjcode}] 清单检测到 {len(archive_top_rjs)} 个独立 RJ"
-                                                f"（合集包），跳过整体查重，"
-                                                f"交给解压后多作品拆分: {_preview}{_more}"
-                                            )
-                                            skip_aggregate_dedup = True
-                                    if skip_aggregate_dedup:
+                                    if is_multi_rj_archive:
                                         logger.info(
                                             f"[{rjcode}] 合集包跳过解压前整体查重，"
                                             "每个子 RJ 将在拆分后各自查重"
