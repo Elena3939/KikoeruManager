@@ -5382,6 +5382,32 @@
 - `progress.md`：追加本轮实现、验证和回滚记录。
 - 回滚方式：反向移除 `_transferit_target_lock` / `_active_transferit_targets` 及下载包装层，恢复 Transfer.it 解析阶段直接丢弃未匹配候选的旧逻辑，移除 Gofile `gofile_retry_attempt` 自适应参数和超时文案，并删除对应 4 个测试与文档条目；不要使用整文件回退，`AGENTS.md` 的现有改动不属于本任务。
 
+## 2026-07-27 - Task: 修复社团补全追加 RJ 下载任务从工作台消失
+
+### What was done
+
+- 社团补全 RJ 下载工作台接入统一任务跟踪：新批次任务 ID 置顶并去重，状态快照暂时缺少新任务时不再删除已确认创建的 ID。
+- 状态轮询接入最新请求守卫；追加批次、手动刷新和自动轮询交错时丢弃晚到旧响应，关闭工作台后在途响应也不能重新填充任务。
+- 状态任务复用按 ID 建立的 `Map` 投影，保持工作台顺序并避免逐任务重复线性查找。
+
+### Testing
+
+- `cd frontend; npm test -- --run src/views/_downloadWorkbenchTracking.test.js`：通过，`6 passed`，新增覆盖社团补全追加批次后拒绝旧批次状态覆盖。
+- `cd frontend; npm test -- --run`：通过，`16` 个测试文件、`50 passed`。
+- `cd frontend; npm run build`：通过，`4192 modules transformed`；仅有项目既有 Rollup 注释、`eval` 和 chunk size 提示。
+- `cd backend; ..\.venv\Scripts\python.exe -m pytest tests\test_asmr_download_service.py tests\test_asmr_resource_service.py tests\test_circle_completion_paged_view.py -q`：通过，`36 passed`；仅有项目既有弃用警告和 `.pytest_cache` 权限警告。
+- 包含 `tests/test_circle_completion_snapshot.py` 的扩展验证结果为 `47 passed, 5 failed`；5 个失败均为既有测试访问当前服务已不存在的 `_kikoeru_state_cache`，本轮未修改后端代码，未跨任务修复该测试债。
+- `git diff --check` 覆盖本轮前端、测试和文档：通过，仅有工作区既有换行符提示。
+
+### Notes
+
+- `frontend/src/views/CircleCompletion.vue`：社团下载工作台接入非破坏性任务跟踪、请求时序守卫和统一 ID 合并。
+- `frontend/src/views/_downloadWorkbenchTracking.test.js`：增加社团补全追加批次与旧状态响应交错的回归用例。
+- `docs/download-workbench-task-tracking.md`：把社团补全 RJ 下载工作台和 `/api/asmr-sync/status?task_ids=...` 纳入跟踪合同。
+- `progress.md`：追加本轮实现、验证、既有测试缺口和回滚记录。
+- 回滚方式：反向移除 `CircleCompletion.vue` 对 `_downloadWorkbenchTracking.js` 的接入，恢复状态快照覆盖 `trackedDownloadTaskIds` 和批次内联 `Set` 合并逻辑，同时删除新增回归用例并恢复文档适用范围。不要使用整文件回退；`AGENTS.md` 和 `backend/tests/test_circle_completion_owned_sync.py` 的现有改动不属于本任务。
+- 本轮结束核验时另有并行改动出现在 `backend/app/core/circle_completion_service.py`；该文件同样未由本任务修改，提交或回滚时必须保留。
+
 ## 2026-07-28 - Task: 修复大文件最终搬运阻塞服务主循环
 
 ### What was done
@@ -5479,3 +5505,22 @@
 - `docs/library-index-watcher.md`：记录诊断字段与宿主机容量调整方式。
 - `progress.md`：追加本轮实现、验证和回滚记录。
 - 回滚方式：反向移除 `_is_inotify_capacity_error()`、`_read_inotify_limits()`、observer 批量清理和诊断字段，并删除对应测试与文档；不要回退库存索引现有 dirty set、ledger 或轻量巡检逻辑。
+
+## 2026-07-28 - Task: 隔离社团补全特典与翻译版的本地拥有态
+
+### What was done
+
+- 社团补全本地库存命中改为先识别特典 RJ；原作可继承翻译版库存命中，特典只匹配自身 RJ，避免特典因为共享关联链误显示为已拥有。
+- 全量拥有态刷新与索引事件增量同步使用同一特典隔离规则，保证库存变更后不会把原作、翻译版和特典写进错误的作品记录。
+
+### Testing
+
+- `cd backend; .\\venv\\Scripts\\python.exe -m py_compile app\\core\\circle_completion_service.py`：通过。
+- `cd backend; .\\venv\\Scripts\\python.exe -m pytest tests\\test_circle_completion_owned_sync.py -q`：当前环境执行 124 秒后超时，没有产生测试结果；`--collect-only` 在 30 秒内同样未返回，未将其记为通过。
+
+### Notes
+
+- `backend/app/core/circle_completion_service.py`：为拥有态候选、全量刷新和增量同步加入特典隔离。
+- `backend/tests/test_circle_completion_owned_sync.py`：增加特典不继承翻译版库存命中及同步目标隔离回归用例。
+- `progress.md`：追加本轮实现、验证缺口和回滚记录。
+- 回滚方式：反向移除 `_load_bonus_rjcodes_for_owned_state()`、`_owned_state_candidate_codes()`、`_owned_sync_row_target_canonical()` 的调用并恢复原有关联 RJ 全量命中逻辑，同时删除本轮回归用例；不要使用整文件回退，保留已有下载工作台跟踪改动和 `AGENTS.md` 本地改动。

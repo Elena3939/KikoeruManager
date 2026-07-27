@@ -6044,26 +6044,39 @@ class CircleCompletionService:
 
         db = SessionLocal()
         try:
-            candidate_rjcodes: set[str] = set()
-            related_canonicals_by_rj: Dict[str, Set[str]] = defaultdict(set)
-            for row in db.query(
+            circle_rows = db.query(
                 CircleWork.canonical_rjcode,
                 CircleWork.display_rjcode,
                 CircleWork.linked_rjcodes,
-            ).all():
-                row_canonical = self.normalize_rjcode(row.canonical_rjcode)
-                row_codes = {
-                    row_canonical,
-                    self.normalize_rjcode(row.display_rjcode),
-                    *[self.normalize_rjcode(code) for code in list(row.linked_rjcodes or [])],
-                }
-                row_codes.discard("")
-                candidate_rjcodes.update(row_codes)
-                if row_canonical:
-                    for code in row_codes:
-                        related_canonicals_by_rj[code].add(row_canonical)
+                CircleWork.is_bonus_work,
+            ).all()
         finally:
             db.close()
+
+        raw_candidate_rjcodes: set[str] = set()
+        for row in circle_rows:
+            raw_candidate_rjcodes.update({
+                self.normalize_rjcode(row.canonical_rjcode),
+                self.normalize_rjcode(row.display_rjcode),
+                *[self.normalize_rjcode(code) for code in list(row.linked_rjcodes or [])],
+            })
+        raw_candidate_rjcodes.discard("")
+        bonus_rjcodes = self._load_bonus_rjcodes_for_owned_state(raw_candidate_rjcodes)
+
+        candidate_rjcodes: set[str] = set()
+        related_canonicals_by_rj: Dict[str, Set[str]] = defaultdict(set)
+        for row in circle_rows:
+            row_canonical = self.normalize_rjcode(row.canonical_rjcode)
+            row_codes = self._owned_state_candidate_codes(row_canonical, {
+                "canonical_rjcode": row_canonical,
+                "display_rjcode": row.display_rjcode,
+                "linked_rjcodes": list(row.linked_rjcodes or []),
+                "is_bonus_work": bool(getattr(row, "is_bonus_work", False)),
+            }, bonus_rjcodes)
+            candidate_rjcodes.update(row_codes)
+            if row_canonical:
+                for code in row_codes:
+                    related_canonicals_by_rj[code].add(row_canonical)
 
         index_hits = get_library_manager().find_rj_in_ready_index(candidate_rjcodes)
         merged: Dict[str, Dict[str, Any]] = {}
@@ -6077,13 +6090,14 @@ class CircleCompletionService:
             async with sem:
                 canonical_info = await self.resolve_canonical_rj(normalized_rj)
             canonical = self.normalize_rjcode(canonical_info.get("canonical_rjcode") or normalized_rj) or normalized_rj
-            target_canonicals = {canonical}
-            target_canonicals.update(related_canonicals_by_rj.get(normalized_rj, set()))
-            target_canonicals.update(related_canonicals_by_rj.get(canonical, set()))
-            for linked_rjcode in list(canonical_info.get("linked_rjcodes") or []):
-                linked = self.normalize_rjcode(linked_rjcode)
-                if linked:
-                    target_canonicals.update(related_canonicals_by_rj.get(linked, set()))
+            if normalized_rj in bonus_rjcodes:
+                target_canonicals = set(related_canonicals_by_rj.get(normalized_rj, set()))
+            else:
+                target_canonicals = {canonical}
+                target_canonicals.update(related_canonicals_by_rj.get(normalized_rj, set()))
+                target_canonicals.update(related_canonicals_by_rj.get(canonical, set()))
+            if not target_canonicals:
+                target_canonicals.add(normalized_rj)
             async with lock:
                 for target_canonical in sorted(code for code in target_canonicals if code):
                     bucket = merged.setdefault(target_canonical, {
@@ -6192,7 +6206,7 @@ class CircleCompletionService:
         from sqlalchemy import Text as sa_Text, cast as sa_cast, or_ as sa_or
 
         affected_circle_ids: set[str] = set()
-        target_canonicals: set[str] = {canonical}
+        target_canonicals: set[str] = set()
         reverse_match_count = 0
         from .library_manager import get_library_manager
 
@@ -6220,6 +6234,8 @@ class CircleCompletionService:
             related_rows = (
                 db.query(
                     CircleWork.canonical_rjcode.label("canonical_rjcode"),
+                    CircleWork.display_rjcode.label("display_rjcode"),
+                    CircleWork.is_bonus_work.label("is_bonus_work"),
                     CircleWork.circle_id.label("circle_id"),
                 )
                 .filter(
@@ -6233,10 +6249,25 @@ class CircleCompletionService:
                 .all()
             )
             reverse_match_count = len(related_rows)
+            related_codes = {normalized_rj, canonical}
             for related in related_rows:
-                related_canonical = self.normalize_rjcode(related.canonical_rjcode)
-                if related_canonical:
-                    target_canonicals.add(related_canonical)
+                related_codes.add(self.normalize_rjcode(related.canonical_rjcode))
+                related_codes.add(self.normalize_rjcode(related.display_rjcode))
+            related_codes.discard("")
+            bonus_rjcodes = self._load_bonus_rjcodes_for_owned_state(related_codes)
+            incoming_is_bonus = normalized_rj in bonus_rjcodes
+            if not incoming_is_bonus:
+                target_canonicals.add(canonical)
+            for related in related_rows:
+                related_canonical = self._owned_sync_row_target_canonical(
+                    related,
+                    normalized_rj,
+                    incoming_is_bonus,
+                    bonus_rjcodes,
+                )
+                if not related_canonical:
+                    continue
+                target_canonicals.add(related_canonical)
                 related_circle_id = str(related.circle_id or "").strip()
                 if related_circle_id:
                     affected_circle_ids.add(related_circle_id)
@@ -6326,13 +6357,15 @@ class CircleCompletionService:
         from sqlalchemy import Text as sa_Text, cast as sa_cast, or_ as sa_or
 
         affected_circle_ids: set[str] = set()
-        target_canonicals: set[str] = {canonical}
+        target_canonicals: set[str] = set()
         db = SessionLocal()
         try:
             json_pattern = f'%"{normalized_rj}"%'
             related_rows = (
                 db.query(
                     CircleWork.canonical_rjcode.label("canonical_rjcode"),
+                    CircleWork.display_rjcode.label("display_rjcode"),
+                    CircleWork.is_bonus_work.label("is_bonus_work"),
                     CircleWork.circle_id.label("circle_id"),
                 )
                 .filter(
@@ -6345,10 +6378,25 @@ class CircleCompletionService:
                 )
                 .all()
             )
+            related_codes = {normalized_rj, canonical}
             for related in related_rows:
-                related_canonical = self.normalize_rjcode(related.canonical_rjcode)
-                if related_canonical:
-                    target_canonicals.add(related_canonical)
+                related_codes.add(self.normalize_rjcode(related.canonical_rjcode))
+                related_codes.add(self.normalize_rjcode(related.display_rjcode))
+            related_codes.discard("")
+            bonus_rjcodes = self._load_bonus_rjcodes_for_owned_state(related_codes)
+            incoming_is_bonus = normalized_rj in bonus_rjcodes
+            if not incoming_is_bonus:
+                target_canonicals.add(canonical)
+            for related in related_rows:
+                related_canonical = self._owned_sync_row_target_canonical(
+                    related,
+                    normalized_rj,
+                    incoming_is_bonus,
+                    bonus_rjcodes,
+                )
+                if not related_canonical:
+                    continue
+                target_canonicals.add(related_canonical)
                 related_circle_id = str(related.circle_id or "").strip()
                 if related_circle_id:
                     affected_circle_ids.add(related_circle_id)
@@ -6402,6 +6450,75 @@ class CircleCompletionService:
         except Exception:
             logger.debug("[社团补全] 字幕 SSE 广播失败 rj=%s", normalized_rj, exc_info=True)
 
+    def _load_bonus_rjcodes_for_owned_state(self, rjcodes: Set[str]) -> Set[str]:
+        normalized_codes = {
+            normalized
+            for normalized in (self.normalize_rjcode(code) for code in rjcodes)
+            if normalized
+        }
+        if not normalized_codes:
+            return set()
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(WorkCanonicalLink.linked_rjcode)
+                .filter(
+                    WorkCanonicalLink.linked_rjcode.in_(normalized_codes),
+                    WorkCanonicalLink.link_type == "bonus",
+                )
+                .all()
+            )
+            return {
+                normalized
+                for normalized in (self.normalize_rjcode(row[0]) for row in rows)
+                if normalized
+            }
+        finally:
+            db.close()
+
+    def _owned_state_candidate_codes(
+        self,
+        canonical: str,
+        item: Dict[str, Any],
+        bonus_rjcodes: Set[str],
+    ) -> Set[str]:
+        own_codes = {
+            self.normalize_rjcode(canonical),
+            self.normalize_rjcode(item.get("canonical_rjcode")),
+            self.normalize_rjcode(item.get("display_rjcode")),
+            self.normalize_rjcode(item.get("rjcode")),
+        }
+        own_codes.discard("")
+        if bool(item.get("is_bonus_work")) or bool(own_codes & bonus_rjcodes):
+            return own_codes
+
+        candidates = {
+            *own_codes,
+            self.normalize_rjcode(item.get("asmr_available_rjcode")),
+            *[self.normalize_rjcode(code) for code in list(item.get("linked_rjcodes") or [])],
+            *[self.normalize_rjcode(code) for code in list(item.get("kikoeru_found_rjcodes") or [])],
+        }
+        candidates.discard("")
+        return candidates - bonus_rjcodes
+
+    def _owned_sync_row_target_canonical(
+        self,
+        related: Any,
+        normalized_rj: str,
+        incoming_is_bonus: bool,
+        bonus_rjcodes: Set[str],
+    ) -> str:
+        related_canonical = self.normalize_rjcode(related.canonical_rjcode)
+        related_display = self.normalize_rjcode(related.display_rjcode)
+        related_is_bonus = (
+            bool(related.is_bonus_work)
+            or related_canonical in bonus_rjcodes
+            or related_display in bonus_rjcodes
+        )
+        if incoming_is_bonus:
+            return related_canonical if normalized_rj in {related_canonical, related_display} else ""
+        return "" if related_is_bonus else related_canonical
+
     def _apply_library_index_owned_state_to_items(self, items_by_canonical: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         if not items_by_canonical:
             return {"owned_count": 0, "subtitle_count": 0, "hit_count": 0, "ready_index_available": False}
@@ -6416,17 +6533,24 @@ class CircleCompletionService:
         if not ready_index_available:
             return {"owned_count": 0, "subtitle_count": 0, "hit_count": 0, "ready_index_available": False}
 
-        lookup_codes: set[str] = set()
-        canonical_members: Dict[str, set[str]] = {}
+        raw_lookup_codes: set[str] = set()
         for canonical, item in items_by_canonical.items():
-            members = {
+            raw_lookup_codes.update({
                 self.normalize_rjcode(canonical),
+                self.normalize_rjcode(item.get("canonical_rjcode")),
                 self.normalize_rjcode(item.get("display_rjcode")),
+                self.normalize_rjcode(item.get("rjcode")),
                 self.normalize_rjcode(item.get("asmr_available_rjcode")),
                 *[self.normalize_rjcode(code) for code in list(item.get("linked_rjcodes") or [])],
                 *[self.normalize_rjcode(code) for code in list(item.get("kikoeru_found_rjcodes") or [])],
-            }
-            members.discard("")
+            })
+        raw_lookup_codes.discard("")
+        bonus_rjcodes = self._load_bonus_rjcodes_for_owned_state(raw_lookup_codes)
+
+        lookup_codes: set[str] = set()
+        canonical_members: Dict[str, set[str]] = {}
+        for canonical, item in items_by_canonical.items():
+            members = self._owned_state_candidate_codes(canonical, item, bonus_rjcodes)
             canonical_members[canonical] = members
             lookup_codes.update(members)
         index_hits = library_manager.find_rj_in_ready_index(lookup_codes)
@@ -8561,11 +8685,13 @@ class CircleCompletionService:
                 continue
             source_flags = {flag for flag in str(row.source_mask or "").split(",") if flag}
             items_by_canonical[canonical] = {
+                "canonical_rjcode": canonical,
                 "display_rjcode": self.normalize_rjcode(row.display_rjcode) or canonical,
                 "asmr_available_rjcode": self.normalize_rjcode(row.asmr_available_rjcode),
                 "linked_rjcodes": list(row.linked_rjcodes or []),
                 "kikoeru_found_rjcodes": list(row.kikoeru_found_rjcodes or []),
                 "source_flags": source_flags,
+                "is_bonus_work": bool(getattr(row, "is_bonus_work", False)),
             }
             before_by_canonical[canonical] = {
                 "has_kikoeru": bool(row.has_kikoeru),
@@ -8952,11 +9078,17 @@ class CircleCompletionService:
                 )
 
                 local_state_item = {
+                    "canonical_rjcode": canonical,
                     "display_rjcode": self.normalize_rjcode(preferred_variant.get("rjcode")) or canonical or row.display_rjcode,
                     "asmr_available_rjcode": resolved_asmr_norm,
                     "linked_rjcodes": linked_rjcodes or [row.display_rjcode or canonical],
                     "kikoeru_found_rjcodes": [],
                     "source_flags": set(),
+                    "is_bonus_work": (
+                        bool(row.is_bonus_work)
+                        or bool((metadata_map.get(canonical) or {}).get("is_bonus_work"))
+                        or bool((metadata_map.get(self.normalize_rjcode(preferred_variant.get("rjcode"))) or {}).get("is_bonus_work"))
+                    ),
                 }
                 local_owned_stats = self._apply_library_index_owned_state_to_items({canonical: local_state_item})
                 if local_owned_stats.get("ready_index_available"):
