@@ -1802,7 +1802,8 @@ class DLsiteApiService:
 
         product_info = await self.get_product_info(workno)
         if product_info and product_info.get('product'):
-            translation_info = dict((product_info.get('product') or {}).get('translation_info', {}) or {})
+            product = dict(product_info.get('product') or {})
+            translation_info = dict(product.get('translation_info', {}) or {})
             result = TranslationInfo(
                 is_original=translation_info.get('is_original', False),
                 is_parent=translation_info.get('is_parent', False),
@@ -1816,6 +1817,58 @@ class DLsiteApiService:
                 ],
                 lang=translation_info.get('lang', 'JPN')
             )
+            has_explicit_linkage = any([
+                result.is_original,
+                result.is_parent,
+                result.is_child,
+                self._normalize_workno(result.parent_workno),
+                self._normalize_workno(result.original_workno),
+                result.child_worknos,
+            ])
+            fallback_parent = self._normalize_workno(product_info.get('parent_workno'))
+            fallback_source = str(product_info.get('fallback_source') or '').strip()
+            title = str(product.get('work_name') or product.get('title') or '')
+            title_folded = title.casefold()
+            if any(marker in title_folded for marker in ('简体', '簡体', '簡體', '简中', '簡中')):
+                fallback_lang = 'CHI_HANS'
+            elif any(marker in title_folded for marker in ('繁体', '繁體', '繁中')):
+                fallback_lang = 'CHI_HANT'
+            elif any(marker in title_folded for marker in ('english', '英文', '英語', '英语')):
+                fallback_lang = 'ENG'
+            else:
+                fallback_lang = ''
+            looks_like_translation_title = bool(fallback_lang) or any(
+                marker in title_folded
+                for marker in ('みんなで翻訳', 'みんなで翻译', 'everyone translation')
+            )
+            if (
+                not has_explicit_linkage
+                and fallback_parent
+                and fallback_parent != workno
+                and fallback_source in {'translation_page', 'page_metadata'}
+            ):
+                result = TranslationInfo(
+                    is_child=True,
+                    parent_workno=fallback_parent,
+                    original_workno=fallback_parent,
+                    lang=fallback_lang,
+                )
+                logger.info(
+                    '[DLsite] 使用页面 fallback 补全翻译父作品: requested=%s parent=%s lang=%s source=%s',
+                    workno,
+                    fallback_parent,
+                    fallback_lang or 'UNKNOWN',
+                    fallback_source,
+                )
+            if not any([
+                result.is_original,
+                result.is_parent,
+                result.is_child,
+                self._normalize_workno(result.parent_workno),
+                self._normalize_workno(result.original_workno),
+                result.child_worknos,
+            ]) and looks_like_translation_title:
+                return TranslationInfo(lang="")
             # 只缓存"成功拿到 product 的"明确结果。
             self._translation_info_cache[workno] = (result, datetime.now())
             return result

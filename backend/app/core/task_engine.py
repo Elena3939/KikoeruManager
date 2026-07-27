@@ -3858,8 +3858,39 @@ class TaskEngine:
             if task.status == TaskStatus.WAITING_RETRY:
                 # 检查重试次数
                 if task.task_metadata.get('retry_count', 0) >= max_retry:
-                    logger.warning(f"任务 {task_id} 已达到最大重试次数 {max_retry}，标记为失败")
-                    task.fail("已达到最大重试次数")
+                    if str(task.task_metadata.get("retry_kind") or "") == "dlsite_linkage_uncertain":
+                        reason = str(
+                            task.task_metadata.get("retry_reason")
+                            or "DLsite 关联链仍不完整，已停止自动重试"
+                        ).strip()
+                        task.task_metadata = {
+                            **(task.task_metadata or {}),
+                            "retry_exhausted": True,
+                            "retry_exhausted_at": datetime.now().isoformat(),
+                            "available_actions": ["RETRY", "SKIP"],
+                        }
+                        try:
+                            self._record_problem_work_for_task_failure(task, task.rjcode, reason)
+                        except Exception:
+                            logger.warning(
+                                "[%s] DLsite 关联链重试耗尽后写入问题作品失败",
+                                task.rjcode or "未知",
+                                exc_info=True,
+                            )
+                        with task._set_state_silent():
+                            task.status = TaskStatus.WAITING_MANUAL
+                            task.current_step = "等待人工: DLsite 关联链仍不完整，已停止自动重试"
+                            task.completed_at = datetime.now()
+                        task.mark_changed("status")
+                        self._remove_waiting_retry_task(task.rjcode)
+                        logger.warning(
+                            "[%s] DLsite 关联链达到最大重试次数 %s，已转等待人工",
+                            task.rjcode or "未知",
+                            max_retry,
+                        )
+                    else:
+                        logger.warning(f"任务 {task_id} 已达到最大重试次数 {max_retry}，标记为失败")
+                        task.fail("已达到最大重试次数")
                     continue
 
                 # cron调度器触发，直接重试所有等待中的任务
