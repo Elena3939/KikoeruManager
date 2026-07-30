@@ -1,6 +1,6 @@
 # KikoeruManager
 
-一个面向 DLsite 同人音声库的本地 / 远程一体化工作台。它不是单纯的“解压重命名脚本”，而是把压缩包识别、自动解压、元数据抓取、库存入库、字幕配对、ASMR 补全、HTTP 外链下载、百度网盘转存、重复冲突处理、任务中心、操作审计和通知模板串成完整业务链路，适合长期维护本地多盘与群晖远程库存。
+一个面向 DLsite 同人音声库的本地 / 远程一体化工作台。它不是单纯的“解压重命名脚本”，而是把压缩包识别、自动解压、元数据抓取、库存入库、字幕配对、ASMR 补全、DLsite 特典探测、HTTP 外链下载、百度网盘转存、重复冲突处理、任务中心、操作审计和通知模板串成完整业务链路，适合长期维护本地多盘与群晖远程库存。
 
 [![GHCR](https://img.shields.io/badge/ghcr.io-kikoerumanager-2496ED?logo=docker)](https://github.com/Elena3939/KikoeruManager/pkgs/container/kikoerumanager)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -13,7 +13,8 @@
 
 - **智能识别压缩包**：支持 ZIP / RAR / 7z / tar / gz、分卷压缩包、错误后缀修复、非压缩后缀伪装包识别，以及“MP4 / 垃圾前缀 + ZIP payload”这类带前缀伪装 ZIP。
 - **自动解压链路**：支持密码字典自动尝试、嵌套压缩包递归处理、单层包装目录折叠、Linux 超长顶层目录重映射解压、解压失败问题作品落库、临时文件清理和任务取消回收。
-- **DLsite 元数据抓取**：自动补齐 RJ 标题、社团、CV、标签、封面、系列、关联作品和多语言版本关系。
+- **过滤文件可恢复**：命中过滤规则的文件和目录进入任务恢复区，可从任务中心按文件或目录还原；跨盘恢复使用流式复制，不覆盖库存中的同名内容。
+- **DLsite 元数据抓取**：自动补齐 RJ 标题、社团、CV、标签、封面、系列、关联作品，以及原版、翻译版、多语言版本关系。
 - **自动分类入库**：按社团、系列、RJ 段等规则整理目录，支持本地多库存和群晖远程库存并存。
 - **重复与冲突处理**：重复作品、关联版本、处理失败、需要人工判断的作品统一进入问题作品工作台，可选择保留新版、跳过或合并。
 
@@ -27,8 +28,8 @@
 
 #### 下载、上传与外链资源
 
-- **ASMR 同步下载**：扫描字幕目录识别缺失 RJ，搜索可用资源，批量下载、重命名、分类并入库。
-- **HTTP 外链下载**：底层基于 aria2 RPC，支持普通 HTTP、PikPak、Google Drive、Gofile、OneDrive、Transfer.it 等平台解析；预览树可按平台、目录和单文件勾选，私网地址默认拦截，敏感 token 配置脱敏。
+- **ASMR 同步下载**：扫描字幕目录识别缺失 RJ，搜索可用资源，批量下载、重命名、分类并入库；支持断点续传、分段下载和失败文件单独重试。
+- **HTTP 外链下载**：底层基于 aria2 RPC，支持普通 HTTP、PikPak、Google Drive、Gofile、OneDrive、Transfer.it 等平台解析；预览树可按平台、目录和单文件勾选，支持失败项重试与断流续传，私网地址默认拦截，敏感 token 配置脱敏。
 - **百度网盘工作台**：支持百度网盘资源解析、预览树单文件选择、任务化下载 / 转存链路和状态展示。
 - **上传工作台**：本地文件、目录和服务端预览上传都走任务中心，复制 / 上传为流式分块，进度速度带采样和平滑。
 - **下载 / 上传任务面板**：提供文件明细、失败原因、重试、取消、批量处理、最终输出路径和历史诊断字段。
@@ -37,6 +38,7 @@
 
 - **RJ 字幕工作台**：从库存入口发起，按“扫描 RJ 目录 → 检查已有字幕 → 搜来源 → 下载原始字幕 → 清洗 → 自动匹配 → 人工筛选 → 写入 subtitles/”分阶段执行。
 - **自动与人工配对**：支持顺序配对、内容指纹去重、等待人工匹配、手动配对落盘和已有字幕目录保留。
+- **AI 字幕预配对**：支持通过兼容 OpenAI API 的模型分析音轨与字幕候选，生成可人工复核的配对草稿。
 - **字幕导入工作台**：支持压缩包导入、文件夹导入、预检与真正执行分离，导入结果接入操作历史。
 - **字幕清洗**：支持 LRC 广告清理、繁简转换和字幕文件结构整理。
 
@@ -44,11 +46,13 @@
 
 - **社团补全工作台**：按社团关键词检索服务器持有作品，虚拟滚动展示缺失项，支持卡片 / 列表视图、封面降级、CV 和关联链展示。
 - **批量补全下载**：优先使用可下载 RJ，批量加入下载任务，和 ASMR 下载链路共用任务、进度与历史。
+- **DLsite 特典探测**：仅使用 DLsite 官方数据源，按社团与发售日探测早期、限时和隐藏特典；结果、缓存、未完成原因和原作关联进入任务中心与操作历史。
 - **邮件监听新发售**：支持 IMAP 邮件监听，配合通知模板和下载链路处理新作品线索。
 
 #### 任务中心、历史与通知
 
-- **统一任务中心**：解压、下载、上传、字幕、重命名、备份、同步等耗时操作全部任务化，支持暂停、取消、重试、等待人工、等待自动重试和批量处理。
+- **统一任务中心**：解压、下载、上传、字幕、重命名、备份、同步、特典探测等耗时操作全部任务化，支持暂停、取消、重试、等待人工、等待自动重试和批量处理。
+- **Redis 运行态与实时事件**：活跃任务快照、高频进度、SSE 事件流和短期缓存由 Redis 承载，PostgreSQL 保持最终事实源，降低高频后台任务的数据库写入压力。
 - **树形操作历史**：历史不是流水账，会按业务键聚合父子任务，保留人工干预、失败原因、等待处理和最终结果。
 - **通知中心**：内建 SSE 通知铃铛、SMTP 邮件发送、IMAP 邮件监听和任务通知模板。
 - **邮件 Block Editor**：提供积木式邮件模板编辑器，支持变量 pill、文件树、RJ 卡片、统计、日志、diff 等业务块，后端统一渲染和 HTML 清洗。
@@ -153,8 +157,10 @@ services:
 
 - `FastAPI`（Web 框架）
 - `SQLAlchemy` + `PostgreSQL 18`（JSONB、连接池、`pg_trgm`、复合索引）
+- `Redis`（任务运行态、SSE 事件流、高频缓存和后台 dirty buffer）
 - `Pydantic`（配置 / Schema 校验）
-- `httpx` + `cheerio`-like 解析（DLsite 爬虫）
+- `httpx` + 标准库 HTML 解析 / 结构化接口解析（DLsite 与外链资源）
+- `LiteLLM`（兼容 OpenAI API 的 AI 字幕预配对）
 - `Synology DSM REST API`（远程群晖通信）
 - `pystray` + `Pillow`（桌面托盘）
 - `PyInstaller`（Windows 打包）
@@ -187,12 +193,18 @@ services:
 │   │   │   ├── library_manager.py   # 本地 + 群晖库存统一管理
 │   │   │   ├── task_engine.py       # 任务调度引擎
 │   │   │   ├── task_center_service.py
+│   │   │   ├── redis_service.py     # 任务运行态、事件流和短期缓存
 │   │   │   ├── conflict_resolution_service.py
 │   │   │   ├── rj_subtitle_service.py
+│   │   │   ├── ai_subtitle_match_service.py
 │   │   │   ├── linked_subtitle_import_service.py
 │   │   │   ├── circle_completion_service.py
+│   │   │   ├── dlsite_bonus_probe_service.py
 │   │   │   ├── kikoeru_duplicate_service.py
 │   │   │   ├── asmr_resource_service.py
+│   │   │   ├── http_download_service.py
+│   │   │   ├── baidu_netdisk_service.py
+│   │   │   ├── filter_recovery_service.py
 │   │   │   ├── notification_template_service.py
 │   │   │   ├── notification_helper.py
 │   │   │   ├── variable_registry.py
@@ -244,7 +256,12 @@ services:
 - [x] 问题作品 GUI 拍板（保留新版 / 跳过 / 合并）
 - [x] RJ 字幕工作台（扫描 / 抓取 / 配对 / 落盘 全流程）
 - [x] ASMR 同步下载
+- [x] HTTP / PikPak / Google Drive / Gofile / OneDrive / Transfer.it 外链下载
+- [x] 百度网盘下载与转存工作台
 - [x] 社团补全工作台 + IMAP 邮件监听新发售
+- [x] DLsite 早期 / 限时 / 隐藏特典探测
+- [x] AI 字幕预配对与人工复核
+- [x] 解压过滤文件任务级恢复
 - [x] 任务中心（暂停 / 取消 / 重试 / 批量）
 - [x] 操作历史树形聚合
 - [x] 邮件 Block Editor + 拖拽变量 pill + 业务数据块
