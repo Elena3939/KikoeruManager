@@ -210,6 +210,7 @@ import {
   AlertCircle,
   Archive,
   Activity,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   MinusCircle,
