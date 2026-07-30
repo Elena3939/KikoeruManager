@@ -189,9 +189,10 @@ export const taskCenterApi = {
     return response.data
   },
 
-  restoreFilteredItem: async (itemId, recoveryId) => {
+  restoreFilteredItem: async (itemId, recoveryId, relativePath = '') => {
     const response = await apiClient.post(
-      `/task-center/${encodeURIComponent(itemId)}/filtered-items/${encodeURIComponent(recoveryId)}/restore`
+      `/task-center/${encodeURIComponent(itemId)}/filtered-items/${encodeURIComponent(recoveryId)}/restore`,
+      relativePath ? { relative_path: relativePath } : {}
     )
     return response.data
   }

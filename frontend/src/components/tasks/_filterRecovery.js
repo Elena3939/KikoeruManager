@@ -14,7 +14,7 @@ export function getFilterRestoreAvailability(entry, task) {
   if (isRestoredFilterEntry(entry)) {
     return { enabled: false, reason: '该项已经还原' }
   }
-  if (entry.removedByDirectory) {
+  if (entry.removedByDirectory && !(entry.type === 'file' && entry.recoveryRelativePath)) {
     return { enabled: false, reason: '请还原对应的上级目录' }
   }
   const recoveryId = String(entry.recoveryId || entry.recovery_id || '').trim()
@@ -28,7 +28,12 @@ export function getFilterRestoreAvailability(entry, task) {
   if (!['completed', 'waiting_manual'].includes(String(task?.status || '').trim())) {
     return { enabled: false, reason: '任务尚未完成' }
   }
-  return { enabled: true, reason: '', recoveryId }
+  return {
+    enabled: true,
+    reason: '',
+    recoveryId,
+    recoveryRelativePath: String(entry.recoveryRelativePath || ''),
+  }
 }
 
 export function countRemovedFilterEntries(entries) {

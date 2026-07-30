@@ -182,19 +182,40 @@ class FilterRecoveryService:
                 current = f"{parent}/{suffix}" if parent else suffix
         return FilterRecoveryService._normalize_relative_path(current)
 
-    async def restore_item(self, item_id: str, recovery_id: str) -> Dict[str, Any]:
+    async def restore_item(
+        self,
+        item_id: str,
+        recovery_id: str,
+        *,
+        relative_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
         task_id = self._task_id_from_item_id(item_id)
         normalized_recovery_id = self._validate_token(recovery_id, "恢复 ID")
+        normalized_relative_path = (
+            self._normalize_relative_path(relative_path)
+            if str(relative_path or "").strip()
+            else ""
+        )
         lock = self._task_lock(task_id)
         acquired = await asyncio.to_thread(lock.acquire, False)
         if not acquired:
             raise FilterRecoveryConflictError("该任务已有文件正在还原")
         try:
-            return await self._restore_item_locked(task_id, normalized_recovery_id)
+            return await self._restore_item_locked(
+                task_id,
+                normalized_recovery_id,
+                relative_path=normalized_relative_path,
+            )
         finally:
             lock.release()
 
-    async def _restore_item_locked(self, task_id: str, recovery_id: str) -> Dict[str, Any]:
+    async def _restore_item_locked(
+        self,
+        task_id: str,
+        recovery_id: str,
+        *,
+        relative_path: str = "",
+    ) -> Dict[str, Any]:
         from ..models.database import SessionLocal, Task as TaskRecord
         from .library_manager import get_library_manager
         from .task_engine import TaskStatus, get_task_engine
@@ -226,16 +247,41 @@ class FilterRecoveryService:
             if item.get("recovery_status") == "restored":
                 raise FilterRecoveryConflictError("该文件已经还原")
 
+            restore_item = item
+            if relative_path:
+                if item.get("type") != "dir":
+                    raise FilterRecoveryError("只有过滤目录支持按目录内文件还原")
+                restored_files = list(item.get("restored_files") or [])
+                if any(entry.get("relative_path") == relative_path for entry in restored_files):
+                    raise FilterRecoveryConflictError("该文件已经还原")
+                restore_item = {
+                    **item,
+                    "name": PurePosixPath(relative_path).name,
+                    "type": "file",
+                    "restore_relative_path": str(PurePosixPath(
+                        str(item.get("restore_relative_path") or ""),
+                        relative_path,
+                    )),
+                }
+                activity_item = restore_item
+
             target = dict(manifest.get("target") or {})
             if not target.get("ready") or not str(target.get("root") or "").strip():
                 raise FilterRecoveryError("任务尚未确定最终入库位置")
 
-            payload = self._payload_path(task_id, item)
+            payload_root = self._payload_path(task_id, item)
+            payload = payload_root
+            if relative_path:
+                payload = (payload_root / Path(relative_path)).resolve()
+                self._assert_inside(payload_root.resolve(), payload)
             if not payload.exists():
-                item["recovery_status"] = "missing"
-                self._write_manifest(task_id, manifest)
-                self._sync_task_metadata(engine, live_task, record, db, manifest)
+                if not relative_path:
+                    item["recovery_status"] = "missing"
+                    self._write_manifest(task_id, manifest)
+                    self._sync_task_metadata(engine, live_task, record, db, manifest)
                 raise FilterRecoveryError("恢复内容已经丢失")
+            if relative_path and not payload.is_file():
+                raise FilterRecoveryError("当前只支持按单个文件还原")
 
             manager = get_library_manager()
             library_id = str(target.get("library_id") or "").strip()
@@ -243,14 +289,21 @@ class FilterRecoveryService:
             target_root_text = str(target.get("root") or "").strip()
             target_is_local_staging = bool(target_root_text and os.path.exists(target_root_text))
             if library is not None and library.type != "local" and not target_is_local_staging:
-                restored_path = await self._restore_remote(manager, library, payload, target, item)
+                restored_path = await self._restore_remote(manager, library, payload, target, restore_item)
             else:
-                restored_path = await asyncio.to_thread(self._restore_local, payload, target, item)
+                restored_path = await asyncio.to_thread(self._restore_local, payload, target, restore_item)
 
             restored_at = datetime.now().isoformat()
-            item["recovery_status"] = "restored"
-            item["restored_at"] = restored_at
-            item["restored_path"] = restored_path
+            if relative_path:
+                item.setdefault("restored_files", []).append({
+                    "relative_path": relative_path,
+                    "restored_at": restored_at,
+                    "restored_path": restored_path,
+                })
+            else:
+                item["recovery_status"] = "restored"
+                item["restored_at"] = restored_at
+                item["restored_path"] = restored_path
             try:
                 self._write_manifest(task_id, manifest)
                 self._sync_task_metadata(engine, live_task, record, db, manifest)
@@ -267,16 +320,25 @@ class FilterRecoveryService:
                             recovery_id,
                             exc_info=True,
                         )
-                item["recovery_status"] = "available"
-                item["restored_at"] = ""
-                item["restored_path"] = ""
+                if relative_path:
+                    item["restored_files"] = [
+                        entry for entry in item.get("restored_files") or []
+                        if entry.get("relative_path") != relative_path
+                    ]
+                else:
+                    item["recovery_status"] = "available"
+                    item["restored_at"] = ""
+                    item["restored_path"] = ""
                 try:
                     self._write_manifest(task_id, manifest)
                 except Exception:
                     logger.error("回滚过滤恢复清单失败: task_id=%s", task_id, exc_info=True)
                 raise
             try:
-                self._remove_path(payload.parent, missing_ok=True)
+                if relative_path:
+                    self._remove_path(payload, missing_ok=True)
+                else:
+                    self._remove_path(payload.parent, missing_ok=True)
             except Exception:
                 logger.warning(
                     "还原成功后清理恢复 payload 失败: task_id=%s recovery_id=%s",
@@ -285,11 +347,12 @@ class FilterRecoveryService:
                     exc_info=True,
                 )
             self._notify_library_index(manager, library, restored_path)
-            self._write_activity(task_id, item, restored_path, status="success")
+            self._write_activity(task_id, restore_item, restored_path, status="success")
             return {
                 "success": True,
-                "message": f"已还原 {item.get('name') or '过滤项'}",
+                "message": f"已还原 {restore_item.get('name') or '过滤项'}",
                 "recovery_id": recovery_id,
+                "relative_path": relative_path,
                 "recovery_status": "restored",
                 "restored_path": restored_path,
                 "restored_at": restored_at,

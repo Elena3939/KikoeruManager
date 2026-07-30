@@ -102,6 +102,43 @@ def test_parent_directory_match_collapses_child_file_match(monkeypatch, tmp_path
     assert (payload / "keep.wav").read_bytes() == b"two"
 
 
+def test_directory_recovery_can_restore_only_one_nested_file(tmp_path):
+    source = tmp_path / "delete-me"
+    nested = source / "nested"
+    nested.mkdir(parents=True)
+    (nested / "restore.txt").write_bytes(b"restore-only-this")
+    (nested / "keep-filtered.txt").write_bytes(b"keep-filtered")
+
+    recovery = FilterRecoveryService(str(tmp_path / "recovery"))
+    recovery.capture_item(
+        "task-1",
+        str(source),
+        relative_path="delete-me",
+        entry_type="dir",
+        size=len(b"restore-only-thiskeep-filtered"),
+    )
+    recovery.finalize_task("task-1", final_root=str(tmp_path / "target"))
+
+    manifest = recovery._read_manifest("task-1")
+    item = manifest["items"][0]
+    payload_root = recovery._payload_path("task-1", item)
+    relative_path = recovery._normalize_relative_path("nested/restore.txt")
+    payload = (payload_root / Path(relative_path)).resolve()
+    recovery._assert_inside(payload_root.resolve(), payload)
+    restore_item = {
+        **item,
+        "name": "restore.txt",
+        "type": "file",
+        "restore_relative_path": "delete-me/nested/restore.txt",
+    }
+
+    restored_path = recovery._restore_local(payload, manifest["target"], restore_item)
+
+    assert Path(restored_path).read_bytes() == b"restore-only-this"
+    assert not payload.exists()
+    assert (payload_root / "nested" / "keep-filtered.txt").read_bytes() == b"keep-filtered"
+
+
 def test_path_transforms_follow_flatten_operations():
     transformed = FilterRecoveryService.apply_path_transforms(
         "wrapper/inner/remove.wav",
