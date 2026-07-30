@@ -729,10 +729,25 @@ class ASMRDownloadService:
                     ) as head_response:
                         if head_response.status == 200:
                             remote_size = int(head_response.headers.get('content-length', 0))
-                            if remote_size > 0 and existing_size >= remote_size:
+                            if remote_size > 0 and existing_size == remote_size:
                                 logger.debug(f"[下载] 文件已存在且完整，跳过: {os.path.basename(dest_path)}")
                                 push_log(f"{os.path.basename(dest_path)} 已存在且完整，跳过下载", "success")
                                 return True
+                            elif remote_size > 0 and existing_size > remote_size:
+                                logger.warning(
+                                    "[下载] 已存在文件大小异常，清理后重下: file=%s, local=%s, remote=%s",
+                                    os.path.basename(dest_path),
+                                    existing_size,
+                                    remote_size,
+                                )
+                                push_log(
+                                    f"{os.path.basename(dest_path)} 已存在文件大小异常"
+                                    f"({existing_size}/{remote_size})，清理后从头重下",
+                                    "warning",
+                                )
+                                await asyncio.to_thread(os.remove, dest_path)
+                                if progress_callback:
+                                    progress_callback(0, remote_size)
                             elif existing_size > 0:
                                 # 文件存在但不完整，重命名并续传
                                 await asyncio.to_thread(os.rename, dest_path, temp_path)
@@ -815,6 +830,37 @@ class ASMRDownloadService:
                             await asyncio.to_thread(os.remove, temp_path)
                         logger.debug("[下载] 服务器不支持断点续传，重新下载")
                         push_log(f"{os.path.basename(dest_path)} 源站已响应，但不支持断点续传，准备重新下载")
+                    elif resume_offset > 0 and response.status == 416:
+                        content_range = str(response.headers.get('content-range') or '').strip()
+                        total_match = re.match(r'^bytes\s+\*/(\d+)$', content_range, re.IGNORECASE)
+                        remote_total = int(total_match.group(1)) if total_match else 0
+                        if remote_total > 0 and resume_offset == remote_total and os.path.exists(temp_path):
+                            if os.path.exists(dest_path):
+                                await asyncio.to_thread(os.remove, dest_path)
+                            await asyncio.to_thread(os.rename, temp_path, dest_path)
+                            if progress_callback:
+                                progress_callback(remote_total, remote_total)
+                            push_log(f"{os.path.basename(dest_path)} 断点片段已完整，直接完成下载", "success")
+                            return True
+
+                        logger.warning(
+                            "[下载] 续传范围失效，清理异常片段后重下: file=%s, local=%s, remote=%s",
+                            os.path.basename(dest_path),
+                            resume_offset,
+                            remote_total or "unknown",
+                        )
+                        remote_label = str(remote_total) if remote_total > 0 else "未知"
+                        push_log(
+                            f"{os.path.basename(dest_path)} 本地断点已超出源站范围"
+                            f"(local={resume_offset}, remote={remote_label})，清理异常片段并从头重下",
+                            "warning",
+                        )
+                        if os.path.exists(temp_path):
+                            await asyncio.to_thread(os.remove, temp_path)
+                        if progress_callback and remote_total > 0:
+                            progress_callback(0, remote_total)
+                        await asyncio.sleep(1)
+                        continue
                     elif response.status != 200:
                         logger.error(
                             "[下载] 下载失败: HTTP %s, URL: %s, dest=%s, attempt=%s/%s",
@@ -885,6 +931,14 @@ class ASMRDownloadService:
                                 f"{os.path.basename(dest_path)} 下载大小校验失败({actual_size}/{total_size})，准备重试",
                                 "warning",
                             )
+                            if actual_size > total_size:
+                                push_log(
+                                    f"{os.path.basename(dest_path)} 本地片段超过源站文件大小，清理后从头重下",
+                                    "warning",
+                                )
+                                await asyncio.to_thread(os.remove, temp_path)
+                                if progress_callback:
+                                    progress_callback(0, total_size)
                             await asyncio.sleep(1)
                             continue
 
