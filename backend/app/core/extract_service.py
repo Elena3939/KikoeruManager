@@ -2212,14 +2212,12 @@ class ExtractService:
         # 2. 修复后缀名
         self._set_extract_meta(task, extract_stage="detect_type")
         task.update_progress(10, "检测文件类型")
-        # 视频壳 / 媒体壳里嵌 ZIP 时，7zz 直接读原文件会把每个密码都试一遍后
-        # 报 Cannot open the file as archive。大包字幕补配预检会因此耗完整个超时。
-        # subtitle_probe_mode 专门用于临时解包探字幕，命中 embedded ZIP 时直接剥离。
-        force_embedded_materialize = bool((task.task_metadata or {}).get("subtitle_probe_mode"))
+        # 视频壳 / 媒体壳里嵌 ZIP 时，Linux 下的 7zz 不能稳定识别前缀。
+        # 一旦命中就直接生成纯 ZIP 临时视图，避免清单阶段把结构错误误判为密码错误。
         embedded_zip_direct_path = await self._prepare_embedded_zip_archive(
             archive_path,
             task,
-            materialize=force_embedded_materialize,
+            materialize=True,
         )
         if embedded_zip_direct_path:
             archive_path = embedded_zip_direct_path
@@ -2365,7 +2363,11 @@ class ExtractService:
             task.update_progress(24, "压缩包预读失败，尝试直接解压")
 
         # 5. 确定输出路径
-        output_name = str(hinted_rjcode or Path(archive_path).stem).strip()  # 去除首尾空格，避免Windows路径错误
+        output_name_path = (
+            str((task.task_metadata or {}).get("embedded_zip_source_path") or "").strip()
+            or archive_path
+        )
+        output_name = str(hinted_rjcode or Path(output_name_path).stem).strip()  # 去除首尾空格，避免Windows路径错误
         # 移除其他Windows不允许的字符
         output_name = re.sub(r'[<>:"|?*]', '', output_name)
         output_path = tempfile.mkdtemp(
@@ -6172,6 +6174,28 @@ class ExtractService:
         """
         target_path = str(archive_path or "")
         if not target_path or not os.path.isfile(target_path):
+            return []
+
+        # 这里只是用于识别合集的可选清单预检。伪装 ZIP 若直接把媒体壳交给
+        # 7zz，会把 Cannot open the file as archive 当成密码失败并遍历整个密码库。
+        # 正式解压会生成纯 ZIP 临时视图；此处记录 offset 后回退单作品流程，避免
+        # 为预检额外复制一次可能达到数 GB 的 payload。
+        embedded_zip_offset = self._get_cached_embedded_zip_offset(target_path, task)
+        if embedded_zip_offset is None:
+            embedded_zip_offset = await asyncio.to_thread(detect_embedded_zip_offset, target_path)
+        if embedded_zip_offset is not None:
+            if task is not None:
+                self._set_extract_meta(
+                    task,
+                    embedded_zip_source_path=target_path,
+                    embedded_zip_offset=embedded_zip_offset,
+                )
+            logger.info(
+                "[多 RJ 预检] 检测到带前缀伪装 ZIP，跳过原文件清单预读: "
+                "archive=%s offset=%s",
+                target_path,
+                embedded_zip_offset,
+            )
             return []
         try:
             info = await self._get_archive_info(target_path, task=task)

@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..config.settings import get_config
-from ..models.database import ConflictWork, get_db
+from ..models.database import ConflictWork, SessionLocal, WorkCanonicalLink, get_db
 from .dlsite_service import get_dlsite_service
 from .extract_service import ExtractService
 from .kikoeru_duplicate_service import get_kikoeru_service
@@ -2050,12 +2050,55 @@ class LinkedSubtitleImportService:
             "search_reason": search_reason,
         }
 
+    def _load_local_translation_target_rjcode(self, source_rjcode: str) -> str:
+        """从 PostgreSQL 已物化的 canonical 关联链恢复翻译作原作。"""
+        normalized_source = self._extract_rjcode(source_rjcode)
+        if not normalized_source:
+            return ""
+
+        db = SessionLocal()
+        try:
+            row = (
+                db.query(WorkCanonicalLink)
+                .filter(
+                    WorkCanonicalLink.linked_rjcode == normalized_source,
+                    WorkCanonicalLink.link_type.in_(("translation", "child_translation")),
+                    WorkCanonicalLink.canonical_rjcode != normalized_source,
+                )
+                .order_by(WorkCanonicalLink.cached_at.desc())
+                .first()
+            )
+        except Exception:
+            logger.warning(
+                "[字幕补配] 读取本地 canonical 关联失败: source_rj=%s",
+                normalized_source,
+                exc_info=True,
+            )
+            return ""
+        finally:
+            db.close()
+
+        return self._extract_rjcode(getattr(row, "canonical_rjcode", "") or "") if row else ""
+
     async def _resolve_translation_target_rjcode(self, source_rjcode: str, translation_info: Any) -> str:
         target_rjcode = ""
         if translation_info and not getattr(translation_info, "is_original", False):
             target_rjcode = str(getattr(translation_info, "original_workno", "") or "").strip().upper()
         if target_rjcode or not source_rjcode:
             return target_rjcode
+
+        local_target_rjcode = await asyncio.to_thread(
+            self._load_local_translation_target_rjcode,
+            source_rjcode,
+        )
+        if local_target_rjcode:
+            logger.info(
+                "[字幕补配] 实时 DLsite 关联不完整，使用本地 canonical 关联: "
+                "source_rj=%s target_rj=%s",
+                source_rjcode,
+                local_target_rjcode,
+            )
+            return local_target_rjcode
 
         try:
             product_info = await self.dlsite_service.get_product_info(source_rjcode)

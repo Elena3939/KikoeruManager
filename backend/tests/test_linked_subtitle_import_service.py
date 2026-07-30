@@ -2,7 +2,7 @@ import asyncio
 from copy import deepcopy
 import pytest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from datetime import datetime, timedelta
 
 from app.core.classifier import SmartClassifier
@@ -390,6 +390,58 @@ def test_uncertain_dlsite_linkage_sets_waiting_retry_state():
     assert task.task_metadata["retry_reason"] == reason
     assert task.task_metadata["retry_after"]
     assert task.current_step == f"等待重试: {reason}"
+
+
+def test_load_local_translation_target_uses_persisted_canonical_link(monkeypatch):
+    service = object.__new__(LinkedSubtitleImportService)
+    service.subtitle_service = SimpleNamespace(
+        extract_rjcode=lambda value: str(value or "").strip().upper()
+    )
+    db = Mock()
+    db.query.return_value.filter.return_value.order_by.return_value.first.return_value = SimpleNamespace(
+        canonical_rjcode="RJ01291089",
+    )
+    monkeypatch.setattr(linked_subtitle_module, "SessionLocal", Mock(return_value=db))
+
+    result = service._load_local_translation_target_rjcode("RJ01303631")
+
+    assert result == "RJ01291089"
+    db.close.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_resolve_translation_target_prefers_local_canonical_before_page_fallback():
+    service = object.__new__(LinkedSubtitleImportService)
+    service._load_local_translation_target_rjcode = Mock(return_value="RJ01291089")
+    service.dlsite_service = SimpleNamespace(
+        get_product_info=AsyncMock(side_effect=AssertionError("本地命中后不应再抓页面")),
+        get_linked_works=AsyncMock(side_effect=AssertionError("本地命中后不应再查实时关联链")),
+    )
+    unverified = SimpleNamespace(is_original=False, original_workno="")
+
+    result = await service._resolve_translation_target_rjcode("RJ01303631", unverified)
+
+    assert result == "RJ01291089"
+    service._load_local_translation_target_rjcode.assert_called_once_with("RJ01303631")
+    service.dlsite_service.get_product_info.assert_not_awaited()
+    service.dlsite_service.get_linked_works.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_translation_target_keeps_remote_fallback_when_local_link_is_missing():
+    service = object.__new__(LinkedSubtitleImportService)
+    service._load_local_translation_target_rjcode = Mock(return_value="")
+    service.dlsite_service = SimpleNamespace(
+        get_product_info=AsyncMock(return_value={"product": {"language_editions": []}}),
+        get_linked_works=AsyncMock(return_value={}),
+    )
+    unverified = SimpleNamespace(is_original=False, original_workno="")
+
+    result = await service._resolve_translation_target_rjcode("RJ01670873", unverified)
+
+    assert result == ""
+    service.dlsite_service.get_product_info.assert_awaited_once_with("RJ01670873")
+    service.dlsite_service.get_linked_works.assert_awaited_once_with("RJ01670873")
 
 
 @pytest.mark.asyncio
