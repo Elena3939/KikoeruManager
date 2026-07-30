@@ -116,11 +116,11 @@
                         <button
                           type="button"
                           class="v1-inline-action danger retry"
-                          :disabled="retryingSet.has(task.id)"
+                          :disabled="isTaskRetrying(task)"
                           @click.stop="emit('retry-task', task)"
                         >
-                          <RefreshCw :size="13" :class="{ spinning: retryingSet.has(task.id) }" />
-                          {{ retryingSet.has(task.id) ? '重试中' : '重试失败项' }}
+                          <RefreshCw :size="13" :class="{ spinning: isTaskRetrying(task) }" />
+                          {{ isTaskRetrying(task) ? '重试中' : '重试失败项' }}
                         </button>
                       </template>
                     </div>
@@ -224,11 +224,11 @@
                                   v-if="file.retryable"
                                   type="button"
                                   class="v1-file-retry"
-                                  :disabled="retryingSet.has(getFileRetryKey(task, file))"
+                                  :disabled="isFileRetrying(task, file)"
                                   @click.stop="emit('retry-file', { task, file })"
                                 >
-                                  <RefreshCw :size="11" :class="{ spinning: retryingSet.has(getFileRetryKey(task, file)) }" />
-                                  {{ retryingSet.has(getFileRetryKey(task, file)) ? '重试中' : '重试' }}
+                                  <RefreshCw :size="11" :class="{ spinning: isFileRetrying(task, file) }" />
+                                  {{ isFileRetrying(task, file) ? '重试中' : '重试' }}
                                 </button>
                               </div>
                             </div>
@@ -317,6 +317,7 @@ const props = defineProps({
   tasks: { type: Array, default: () => [] },
   refreshing: { type: Boolean, default: false },
   retryingKeys: { type: Array, default: () => [] },
+  retryingSessionIds: { type: Array, default: () => [] },
   title: { type: String, default: 'Download Manager' },
   subtitle: { type: String, default: '社团补全下载任务' },
   emptyTitle: { type: String, default: '暂无符合筛选的下载任务' },
@@ -357,6 +358,7 @@ function handleRefresh() {
 }
 
 const retryingSet = computed(() => new Set((props.retryingKeys || []).map(item => String(item || ''))))
+const retryingSessionSet = computed(() => new Set((props.retryingSessionIds || []).map(item => String(item || ''))))
 const mergedTasks = computed(() => props.mergeTasks === false ? (props.tasks || []) : buildMergedTasks(props.tasks || []))
 const titleText = computed(() => String(props.title || 'Download Manager'))
 const subtitleText = computed(() => String(props.subtitle || '社团补全下载任务'))
@@ -395,6 +397,18 @@ function getFileRetryKey(task, file) {
   const taskId = String(task?.id || task?.active_task_id || '').trim()
   const fileKey = String(file?.relative_path || file?.name || file?.selection_key || 'file').trim()
   return `${taskId}:${fileKey || 'file'}`
+}
+
+function isTaskRetrying(task) {
+  const taskId = String(task?.id || task?.active_task_id || '').trim()
+  return retryingSet.value.has(taskId)
+    || retryingSessionSet.value.has(getTaskSessionId(task))
+    || [...retryingSet.value].some(key => key.startsWith(`${taskId}:`))
+}
+
+function isFileRetrying(task, file) {
+  return retryingSessionSet.value.has(getTaskSessionId(task))
+    || retryingSet.value.has(getFileRetryKey(task, file))
 }
 
 const pausedTasks = computed(() => mergedTasks.value.filter(task => isTaskPaused(task)))
@@ -1010,7 +1024,7 @@ function getTaskTransferBytes(task) {
   const rowTotal = getUnifiedFileRows(task).reduce((sum, row) => sum + Number(row.total || 0), 0)
   if (rowTotal > 0) return rowTotal
   const selectedResources = Array.isArray(task?.task_metadata?.selected_resources) ? task.task_metadata.selected_resources : []
-  const selectedBytes = selectedResources.reduce((sum, item) => sum + Number(item?.size_bytes || 0), 0)
+  const selectedBytes = selectedResources.reduce((sum, item) => sum + Number(item?.size_bytes || item?.size || 0), 0)
   if (selectedBytes > 0) return selectedBytes
   return Number(getDownloadRuntime(task)?.total_bytes || 0)
 }
@@ -1254,7 +1268,7 @@ function getUnifiedFileRows(task) {
       key: rowKey,
       name: payload.name || payload.file_name || payload.relative_path || '未知文件',
       relative_path: payload.relative_path || '',
-      total: Number(payload.size_bytes || 0),
+      total: Number(payload.size_bytes || payload.size || 0),
       downloadedBytes: 0,
       uploadedBytes: 0,
       sourceTaskStatus: '',
@@ -1264,8 +1278,8 @@ function getUnifiedFileRows(task) {
       retryable: false,
       statusText: '等待中',
       stageLabel: '等待中',
-      sizeText: payload.size_bytes
-        ? `${isUploadMode.value ? '上传大小' : '下载大小'} ${formatSize(payload.size_bytes)}`
+      sizeText: (payload.size_bytes || payload.size)
+        ? `${isUploadMode.value ? '上传大小' : '下载大小'} ${formatSize(payload.size_bytes || payload.size)}`
         : `${isUploadMode.value ? '上传大小' : '下载大小'} 0 B`,
       downloadSpeed: 0,
       uploadSpeed: 0,
@@ -1278,7 +1292,7 @@ function getUnifiedFileRows(task) {
       ...existing,
       name: payload.name || payload.file_name || existing.name,
       relative_path: payload.relative_path || existing.relative_path,
-      total: Math.max(Number(payload.total || payload.size_bytes || 0), Number(existing.total || 0)),
+      total: Math.max(Number(payload.total || payload.size_bytes || payload.size || 0), Number(existing.total || 0)),
       index: Number(payload.index || existing.index || 0),
       rawFile: { ...(existing.rawFile || {}), ...(payload.rawFile || payload || {}) },
     }

@@ -121,7 +121,7 @@ onBeforeUnmount(() => {
   flex: 1;
   height: 8px;
   border-radius: 4px;
-  background: #fffc00;
+  background: rgba(148, 163, 184, 0.34);
   overflow: visible;
 }
 

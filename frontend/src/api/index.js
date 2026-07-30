@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { ref } from 'vue'
+import { createRequestSingleFlight } from '../utils/requestSingleFlight.js'
 
 const DEFAULT_DEV_BACKEND_PORT = '5555'
 
@@ -78,6 +79,7 @@ const FILTER_DELETE_PREVIEW_TIMEOUT = 30 * 60 * 1000
 const CONFLICT_MERGE_TIMEOUT = 30 * 60 * 1000
 const RJ_SUBTITLE_SCAN_TIMEOUT = 0
 const HTTP_DOWNLOAD_START_TIMEOUT = 10 * 60 * 1000
+const asmrRetryRequestGuard = createRequestSingleFlight({ cooldownMs: 2000 })
 
 /** 群晖 OTP 二步验证过期标志。任意库存接口返回含 OTP 的错误时置 true，提示用户刷新 Device Token。 */
 export const synologyOtpRequired = ref(false)
@@ -1727,15 +1729,22 @@ export const asmrSyncApi = {
   },
 
   retryFailedSession: async (sessionId) => {
-    const response = await apiClient.post(`/asmr-sync/enhanced/sessions/${sessionId}/retry-failed`)
-    return response.data
+    return asmrRetryRequestGuard.run(`asmr-retry-session:${sessionId}`, async () => {
+      const response = await apiClient.post(`/asmr-sync/enhanced/sessions/${sessionId}/retry-failed`)
+      return response.data
+    })
   },
 
   retrySessionFiles: async (sessionId, relativePaths = []) => {
-    const response = await apiClient.post(`/asmr-sync/enhanced/sessions/${sessionId}/retry-files`, {
-      relative_paths: relativePaths
+    const retryScope = [...new Set(relativePaths.map(path => String(path || '').trim()).filter(Boolean))]
+      .sort()
+      .join('|')
+    return asmrRetryRequestGuard.run(`asmr-retry-files:${sessionId}:${retryScope}`, async () => {
+      const response = await apiClient.post(`/asmr-sync/enhanced/sessions/${sessionId}/retry-files`, {
+        relative_paths: relativePaths
+      })
+      return response.data
     })
-    return response.data
   },
 
   reimportDownloadedSession: async (sessionId, payload = {}) => {

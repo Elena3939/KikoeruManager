@@ -220,6 +220,7 @@
       :tasks="enhancedDownloadWorkbenchTasks"
       :refreshing="enhancedDownloadWorkbenchRefreshing"
       :retrying-keys="[...enhancedRetryingTaskIds]"
+      :retrying-session-ids="[...enhancedRetryingSessionIds]"
       title="ASMR 增强下载"
       subtitle="增强下载任务进度"
       :enable-file-retry="true"
@@ -385,8 +386,14 @@
               <button v-if="task.status === 'processing'" class="asmr-mini-btn xs" type="button" @click="pauseTask(task.id)">暂停</button>
               <button v-if="task.status === 'paused'" class="asmr-mini-btn xs is-primary" type="button" @click="resumeTask(task.id)">继续</button>
               <button v-if="task.status === 'waiting_retry'" class="asmr-mini-btn xs is-primary" type="button" @click="retryWaitingTask(task.id)">立即重试</button>
-              <button v-if="task.failed_files && task.failed_files.length > 0" class="asmr-mini-btn xs is-warning" type="button" @click="retryFailed(task.id)">
-                重试失败 ({{ task.failed_files.length }})
+              <button
+                v-if="task.failed_files && task.failed_files.length > 0"
+                class="asmr-mini-btn xs is-warning"
+                type="button"
+                :disabled="isEnhancedRetryTaskBlocked(task)"
+                @click="retryFailed(task.id)"
+              >
+                {{ isEnhancedRetryTaskBlocked(task) ? '重试提交中' : `重试失败 (${task.failed_files.length})` }}
               </button>
             </div>
           </div>
@@ -762,6 +769,9 @@ const enhancedDownloadWorkbenchVisible = ref(false)
 const enhancedDownloadWorkbenchBackgroundActive = ref(false)
 const enhancedDownloadWorkbenchRefreshing = ref(false)
 const enhancedRetryingTaskIds = ref(new Set())
+const enhancedRetryingSessionIds = ref(new Set())
+const enhancedActiveRetryScopes = new Map()
+const enhancedRetryReleaseTimers = new Set()
 let enhancedDownloadWorkbenchTimer = null
 const httpDownloadWorkbenchTaskIds = ref([])
 const httpDownloadWorkbenchTasks = ref([])
@@ -1907,27 +1917,110 @@ async function retryBaiduNetdiskFile(payload) {
   }
 }
 
-async function retryEnhancedDownloadTask(task) {
-  const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
+function getEnhancedRetrySessionId(task) {
+  return String(task?.task_metadata?.session_id || task?.session_id || '').trim()
+}
+
+function isEnhancedRetryTaskBlocked(task) {
   const taskId = String(task?.id || '').trim()
-  const next = new Set(enhancedRetryingTaskIds.value)
-  next.add(taskId)
-  enhancedRetryingTaskIds.value = next
+  const sessionId = getEnhancedRetrySessionId(task)
+  return Boolean(
+    (sessionId && enhancedRetryingSessionIds.value.has(sessionId))
+    || enhancedRetryingTaskIds.value.has(taskId)
+    || [...enhancedRetryingTaskIds.value].some(key => key.startsWith(`${taskId}:`))
+  )
+}
+
+function acquireEnhancedRetryScope({
+  sessionId = '',
+  scopeKey,
+  visibleKey,
+  wholeSession = false,
+}) {
+  const normalizedSessionId = String(sessionId || '').trim()
+  const normalizedScopeKey = String(scopeKey || '').trim()
+  const normalizedVisibleKey = String(visibleKey || '').trim()
+  if (!normalizedScopeKey || enhancedActiveRetryScopes.has(normalizedScopeKey)) return ''
+
+  const sameSessionScopes = [...enhancedActiveRetryScopes.values()]
+    .filter(item => normalizedSessionId && item.sessionId === normalizedSessionId)
+  if (wholeSession && sameSessionScopes.length > 0) return ''
+  if (!wholeSession && sameSessionScopes.some(item => item.wholeSession)) return ''
+
+  enhancedActiveRetryScopes.set(normalizedScopeKey, {
+    sessionId: normalizedSessionId,
+    visibleKey: normalizedVisibleKey,
+    wholeSession,
+  })
+  if (normalizedVisibleKey) {
+    const nextKeys = new Set(enhancedRetryingTaskIds.value)
+    nextKeys.add(normalizedVisibleKey)
+    enhancedRetryingTaskIds.value = nextKeys
+  }
+  if (wholeSession && normalizedSessionId) {
+    const nextSessions = new Set(enhancedRetryingSessionIds.value)
+    nextSessions.add(normalizedSessionId)
+    enhancedRetryingSessionIds.value = nextSessions
+  }
+  return normalizedScopeKey
+}
+
+function releaseEnhancedRetryScope(scopeKey) {
+  const normalizedScopeKey = String(scopeKey || '').trim()
+  if (!normalizedScopeKey) return
+  const timer = setTimeout(() => {
+    enhancedRetryReleaseTimers.delete(timer)
+    const scope = enhancedActiveRetryScopes.get(normalizedScopeKey)
+    enhancedActiveRetryScopes.delete(normalizedScopeKey)
+    if (!scope) return
+
+    if (scope.visibleKey) {
+      const nextKeys = new Set(enhancedRetryingTaskIds.value)
+      nextKeys.delete(scope.visibleKey)
+      enhancedRetryingTaskIds.value = nextKeys
+    }
+    if (scope.wholeSession && scope.sessionId) {
+      const stillLocked = [...enhancedActiveRetryScopes.values()]
+        .some(item => item.wholeSession && item.sessionId === scope.sessionId)
+      if (!stillLocked) {
+        const nextSessions = new Set(enhancedRetryingSessionIds.value)
+        nextSessions.delete(scope.sessionId)
+        enhancedRetryingSessionIds.value = nextSessions
+      }
+    }
+  }, 2000)
+  enhancedRetryReleaseTimers.add(timer)
+}
+
+async function retryEnhancedDownloadTask(task) {
+  const sessionId = getEnhancedRetrySessionId(task)
+  const taskId = String(task?.id || '').trim()
+  if (!taskId) return
+  const scopeKey = acquireEnhancedRetryScope({
+    sessionId,
+    scopeKey: sessionId ? `session:${sessionId}:*` : `task:${taskId}`,
+    visibleKey: taskId,
+    wholeSession: Boolean(sessionId),
+  })
+  if (!scopeKey) return
   try {
     if (sessionId) {
       const response = await asmrSyncApi.retryFailedSession(sessionId)
       focusEnhancedRetryWorkbench(response?.session?.task_id, taskId)
+      if (response?.session?.retry_reused_active_task) {
+        ElMessage.info('已有相同重试任务正在执行，已定位到该任务')
+      } else {
+        ElMessage.success('已提交重试')
+      }
     } else if (taskId) {
       await asmrSyncApi.retry(taskId)
+      ElMessage.success('已提交重试')
     }
-    ElMessage.success('已提交重试')
     await refreshEnhancedDownloadWorkbench({ silent: true })
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || error.message || '提交重试失败')
   } finally {
-    const done = new Set(enhancedRetryingTaskIds.value)
-    done.delete(taskId)
-    enhancedRetryingTaskIds.value = done
+    releaseEnhancedRetryScope(scopeKey)
   }
 }
 
@@ -1940,20 +2033,23 @@ async function retryEnhancedDownloadFile(payload) {
   if (!sessionId || !relativePath) return ElMessage.warning('没有找到可重试的失败文件')
 
   const retryKey = `${taskId}:${relativePath}`
-  const next = new Set(enhancedRetryingTaskIds.value)
-  next.add(retryKey)
-  enhancedRetryingTaskIds.value = next
+  const scopeKey = acquireEnhancedRetryScope({
+    sessionId,
+    scopeKey: `session:${sessionId}:file:${relativePath}`,
+    visibleKey: retryKey,
+  })
+  if (!scopeKey) return
   try {
     const response = await asmrSyncApi.retrySessionFiles(sessionId, [relativePath])
     focusEnhancedRetryWorkbench(response?.session?.task_id, taskId)
-    ElMessage.success('已提交单文件重试')
+    ElMessage[response?.session?.retry_reused_active_task ? 'info' : 'success'](
+      response?.session?.retry_reused_active_task ? '已有相同重试任务正在执行，已定位到该任务' : '已提交单文件重试',
+    )
     await refreshEnhancedDownloadWorkbench({ silent: true })
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || error.message || '提交单文件重试失败')
   } finally {
-    const done = new Set(enhancedRetryingTaskIds.value)
-    done.delete(retryKey)
-    enhancedRetryingTaskIds.value = done
+    releaseEnhancedRetryScope(scopeKey)
   }
 }
 
@@ -2085,12 +2181,27 @@ const resumeEnhancedSession = async (session) => {
 }
 
 const retryEnhancedSession = async (session) => {
+  const sessionId = String(session?.id || '').trim()
+  if (!sessionId) return
+  const retryKey = `session:${sessionId}`
+  const scopeKey = acquireEnhancedRetryScope({
+    sessionId,
+    scopeKey: `session:${sessionId}:*`,
+    visibleKey: retryKey,
+    wholeSession: true,
+  })
+  if (!scopeKey) return
   try {
-    await asmrSyncApi.retryFailedSession(session.id)
+    const response = await asmrSyncApi.retryFailedSession(sessionId)
+    ElMessage[response?.session?.retry_reused_active_task ? 'info' : 'success'](
+      response?.session?.retry_reused_active_task ? '已有相同重试任务正在执行' : '已提交重试',
+    )
     await loadEnhancedSessions()
     await refreshStatus()
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '重试失败资源失败')
+  } finally {
+    releaseEnhancedRetryScope(scopeKey)
   }
 }
 
@@ -2115,13 +2226,24 @@ const resumeTask = async (taskId) => {
 }
 
 const retryFailed = async (taskId) => {
+  const normalizedTaskId = String(taskId || '').trim()
+  if (!normalizedTaskId) return
+  const task = tasks.value.find(item => String(item.id || '') === normalizedTaskId)
+  const sessionId = getEnhancedRetrySessionId(task)
+  const scopeKey = acquireEnhancedRetryScope({
+    sessionId,
+    scopeKey: sessionId ? `session:${sessionId}:*` : `task:${normalizedTaskId}`,
+    visibleKey: normalizedTaskId,
+    wholeSession: Boolean(sessionId),
+  })
+  if (!scopeKey) return
   try {
-    const task = tasks.value.find(item => String(item.id || '') === String(taskId || ''))
-    const sessionId = String(task?.session_id || task?.task_metadata?.session_id || '').trim()
     if (sessionId) {
       const response = await asmrSyncApi.retryFailedSession(sessionId)
       focusEnhancedRetryWorkbench(response?.session?.task_id, taskId)
-      ElMessage.success('已重新提交失败文件')
+      ElMessage[response?.session?.retry_reused_active_task ? 'info' : 'success'](
+        response?.session?.retry_reused_active_task ? '已有相同重试任务正在执行，已定位到该任务' : '已重新提交失败文件',
+      )
       await refreshEnhancedDownloadWorkbench({ silent: true })
     } else {
       const result = await asmrSyncApi.retry(taskId)
@@ -2130,6 +2252,8 @@ const retryFailed = async (taskId) => {
     await refreshStatus()
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '重试失败')
+  } finally {
+    releaseEnhancedRetryScope(scopeKey)
   }
 }
 
@@ -2423,6 +2547,9 @@ onBeforeUnmount(() => {
   stopEnhancedDownloadWorkbenchPolling()
   stopHttpDownloadWorkbenchPolling()
   stopBaiduNetdiskWorkbenchPolling()
+  for (const timer of enhancedRetryReleaseTimers) clearTimeout(timer)
+  enhancedRetryReleaseTimers.clear()
+  enhancedActiveRetryScopes.clear()
 })
 
 onUnmounted(() => {
