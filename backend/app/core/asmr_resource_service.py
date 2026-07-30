@@ -27,6 +27,7 @@ class ASMRResourceService:
     SUBTITLE_EXTENSIONS = {".lrc", ".vtt", ".srt", ".ass", ".ssa"}
     COVER_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
     TEXT_EXTENSIONS = {".txt", ".md", ".json", ".cue"}
+    RETRY_ACTIVE_SESSION_STATUSES = {"queued", "downloading", "verifying", "uploading"}
     AUDIO_TYPE = "audio"
     SUBTITLE_TYPE = "subtitle"
     COVER_TYPE = "cover"
@@ -45,9 +46,70 @@ class ASMRResourceService:
             asmr_service = get_asmr_download_service()
         self.asmr_service = asmr_service
         self._global_upload_lock = asyncio.Lock()
+        self._retry_locks: Dict[str, asyncio.Lock] = {}
         self._synology_clients: Dict[str, Any] = {}
         self._remote_source_cache: TTLCache = TTLCache(max_size=512, ttl_seconds=1800, name="asmr.remote_source")
         self._remote_source_inflight: Dict[str, asyncio.Future] = {}
+
+    def _get_retry_lock(
+        self,
+        session_id: str,
+        relative_paths: Optional[List[str]] = None,
+    ) -> asyncio.Lock:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("会话 ID 不能为空")
+        normalized_paths = sorted({
+            str(path or "").strip()
+            for path in (relative_paths or [])
+            if str(path or "").strip()
+        })
+        scope = "|".join(normalized_paths) if normalized_paths else "*"
+        lock_key = f"{normalized_session_id}:{scope}"
+        lock = self._retry_locks.get(lock_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._retry_locks[lock_key] = lock
+        return lock
+
+    @staticmethod
+    def _find_active_session_download_task(
+        engine,
+        session_id: str,
+        retry_paths: Optional[set[str]] = None,
+    ):
+        active_statuses = {"pending", "processing", "paused", "waiting_retry", "waiting_manual"}
+        normalized_retry_paths = {
+            str(path or "").strip()
+            for path in (retry_paths or set())
+            if str(path or "").strip()
+        }
+        matching = []
+        for task in engine.get_tasks_by_session(session_id):
+            task_type = str(getattr(getattr(task, "type", ""), "value", getattr(task, "type", ""))).strip()
+            task_status = str(getattr(getattr(task, "status", ""), "value", getattr(task, "status", ""))).strip().lower()
+            if task_type != "asmr_sync_download" or task_status not in active_statuses:
+                continue
+            if normalized_retry_paths:
+                task_paths = {
+                    str(item.get("relative_path") or item.get("file_name") or "").strip()
+                    for item in ((getattr(task, "task_metadata", None) or {}).get("selected_resources") or [])
+                    if str(item.get("relative_path") or item.get("file_name") or "").strip()
+                }
+                if not task_paths.intersection(normalized_retry_paths):
+                    continue
+            matching.append(task)
+        if not matching:
+            return None
+        return max(matching, key=lambda item: getattr(item, "created_at", datetime.min))
+
+    @staticmethod
+    def _build_active_retry_session(session: Dict[str, Any], task) -> Dict[str, Any]:
+        active_session = dict(session)
+        active_session["task_id"] = task.id
+        active_session["status"] = str(getattr(getattr(task, "status", ""), "value", getattr(task, "status", "")))
+        active_session["retry_reused_active_task"] = True
+        return active_session
 
     def _build_synology_config_signature(self, synology_config: Any) -> str:
         if synology_config is None:
@@ -142,6 +204,11 @@ class ASMRResourceService:
         runtime = dict(task.task_metadata.get("download_runtime") or {})
         started_at = str(runtime.get("started_at") or "").strip() or now.isoformat()
         previous = dict(download_progress_state.get(file_key) or {})
+        normalized_total = max(0, int(total_bytes or previous.get("total") or 0))
+        normalized_downloaded = max(0, int(downloaded_bytes or 0))
+        if normalized_total > 0:
+            normalized_downloaded = min(normalized_downloaded, normalized_total)
+        failed_stage = str(stage or "").endswith("_failed")
         file_started_at = str(previous.get("started_at") or "").strip() or now.isoformat()
         previous_updated_at = str(previous.get("updated_at") or "").strip()
         previous_downloaded = int(previous.get("downloaded") or 0)
@@ -158,29 +225,32 @@ class ASMRResourceService:
 
         if previous_updated is not None:
             speed_window = max(0.001, (now - previous_updated).total_seconds())
-            speed_delta = max(0, int(downloaded_bytes or 0) - previous_downloaded)
+            speed_delta = max(0, normalized_downloaded - previous_downloaded)
             if speed_delta > 0 and speed_window >= 0.35:
                 instant_speed = int(speed_delta / speed_window)
             else:
                 instant_speed = 0
         else:
             instant_speed = 0
-        average_speed = int(downloaded_bytes / file_elapsed) if downloaded_bytes > 0 else 0
+        average_speed = int(normalized_downloaded / file_elapsed) if normalized_downloaded > 0 else 0
         if instant_speed > 0 and average_speed > 0:
             file_speed = int((instant_speed * 0.75) + (average_speed * 0.25))
         else:
             file_speed = instant_speed or average_speed or previous_speed
         if previous_speed > 0 and file_speed > 0:
             file_speed = int((previous_speed * 0.45) + (file_speed * 0.55))
-        file_remaining = max(0, int(total_bytes or 0) - int(downloaded_bytes or 0))
+        file_remaining = max(0, normalized_total - normalized_downloaded)
         file_eta = int(file_remaining / file_speed) if file_speed > 0 and file_remaining > 0 else 0
+        file_progress = int(normalized_downloaded / normalized_total * 100) if normalized_total else 0
+        if failed_stage:
+            file_progress = min(file_progress, 99)
 
         download_progress_state[file_key] = {
             **previous,
             "name": file_name,
-            "downloaded": int(downloaded_bytes or 0),
-            "total": int(total_bytes or 0),
-            "progress": int(downloaded_bytes / total_bytes * 100) if total_bytes else 0,
+            "downloaded": normalized_downloaded,
+            "total": normalized_total,
+            "progress": file_progress,
             "index": index,
             "relative_path": relative_path,
             "stage": stage,
@@ -192,9 +262,26 @@ class ASMRResourceService:
         ordered_files = sorted(download_progress_state.values(), key=lambda item: item.get("index") or 0)
         task.task_metadata["download_files"] = ordered_files
 
-        transferred_bytes = sum(max(0, int(item.get("downloaded") or 0)) for item in ordered_files)
-        aggregate_total = sum(max(0, int(item.get("total") or 0)) for item in ordered_files)
-        completed_files = sum(1 for item in ordered_files if int(item.get("progress") or 0) >= 100)
+        transferred_bytes = sum(
+            min(
+                max(0, int(item.get("downloaded") or 0)),
+                max(0, int(item.get("total") or 0)),
+            )
+            for item in ordered_files
+        )
+        known_total_bytes = max(0, int(runtime.get("expected_total_bytes") or runtime.get("total_bytes") or 0))
+        aggregate_total = max(
+            known_total_bytes,
+            sum(max(0, int(item.get("total") or 0)) for item in ordered_files),
+        )
+        completed_stages = {"downloaded", "download_reused", "ready_for_upload"}
+        completed_files = sum(
+            1
+            for item in ordered_files
+            if str(item.get("stage") or "") in completed_stages
+            and int(item.get("progress") or 0) >= 100
+        )
+        has_failed_file = any(str(item.get("stage") or "").endswith("_failed") for item in ordered_files)
         active_items = [
             item for item in ordered_files
             if 0 < int(item.get("downloaded") or 0) < max(1, int(item.get("total") or 0))
@@ -233,6 +320,9 @@ class ASMRResourceService:
                 aggregate_speed = int(runtime.get("speed_bytes_per_sec") or 0)
         aggregate_eta = int(remaining_bytes / aggregate_speed) if aggregate_speed > 0 and remaining_bytes > 0 else 0
 
+        aggregate_progress = int(transferred_bytes / aggregate_total * 100) if aggregate_total else 0
+        if has_failed_file:
+            aggregate_progress = min(aggregate_progress, 99)
         task.task_metadata["download_runtime"] = {
             **runtime,
             "started_at": started_at,
@@ -246,7 +336,8 @@ class ASMRResourceService:
             "active_file_count": len(active_items),
             "transferred_bytes": transferred_bytes,
             "total_bytes": aggregate_total,
-            "progress": int(transferred_bytes / aggregate_total * 100) if aggregate_total else 0,
+            "expected_total_bytes": known_total_bytes,
+            "progress": aggregate_progress,
             "speed_bytes_per_sec": aggregate_speed,
             "eta_seconds": aggregate_eta,
             "speed_sample_at": now.isoformat(),
@@ -1000,6 +1091,8 @@ class ASMRResourceService:
                 record.task_id = task_id
             if status:
                 record.status = status
+                if status in self.RETRY_ACTIVE_SESSION_STATUSES:
+                    record.completed_at = None
                 if status in {"downloading", "verifying", "uploading"} and not record.started_at:
                     record.started_at = datetime.now()
                 if status in {"completed", "partial_failed", "failed"}:
@@ -1027,6 +1120,80 @@ class ASMRResourceService:
             record.updated_at = datetime.now()
             db.commit()
             return record.to_dict()
+        finally:
+            db.close()
+
+    def _claim_session_retry(
+        self,
+        session_id: str,
+        task_id: str,
+    ) -> Tuple[bool, Dict[str, Any], Dict[str, Any]]:
+        db = SessionLocal()
+        try:
+            record = (
+                db.query(ASMRDownloadSession)
+                .filter(ASMRDownloadSession.id == session_id)
+                .with_for_update()
+                .first()
+            )
+            if record is None:
+                raise ValueError("会话不存在")
+
+            current_status = str(record.status or "").strip().lower()
+            current_task_id = str(record.task_id or "").strip()
+            if current_task_id and current_status in self.RETRY_ACTIVE_SESSION_STATUSES:
+                active_session = record.to_dict()
+                active_session["retry_reused_active_task"] = True
+                db.commit()
+                return False, active_session, {}
+
+            previous = {
+                "task_id": record.task_id,
+                "status": record.status,
+                "completed_at": record.completed_at,
+            }
+            record.task_id = task_id
+            record.status = "queued"
+            record.completed_at = None
+            record.updated_at = datetime.now()
+            db.commit()
+            return True, record.to_dict(), previous
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def _rollback_session_retry_claim(
+        self,
+        session_id: str,
+        task_id: str,
+        previous: Dict[str, Any],
+    ) -> None:
+        db = SessionLocal()
+        try:
+            record = (
+                db.query(ASMRDownloadSession)
+                .filter(ASMRDownloadSession.id == session_id)
+                .with_for_update()
+                .first()
+            )
+            if record is None or str(record.task_id or "") != str(task_id or ""):
+                db.rollback()
+                return
+            record.task_id = previous.get("task_id")
+            record.status = str(previous.get("status") or "partial_failed")
+            record.completed_at = previous.get("completed_at")
+            record.updated_at = datetime.now()
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.warning(
+                "[ASMR增强] 回滚重试任务认领失败 session=%s task=%s",
+                session_id,
+                task_id,
+                exc_info=True,
+            )
         finally:
             db.close()
 
@@ -1360,10 +1527,18 @@ class ASMRResourceService:
         }
 
     async def retry_failed_session(self, session_id: str) -> Dict[str, Any]:
+        async with self._get_retry_lock(session_id):
+            return await self._retry_failed_session_unlocked(session_id)
+
+    async def _retry_failed_session_unlocked(self, session_id: str) -> Dict[str, Any]:
         from .activity_log_service import log_asmr_sync_event
         from .task_engine import Task, TaskType, get_task_engine
 
         session = self._get_session(session_id)
+        engine = get_task_engine()
+        active_task = self._find_active_session_download_task(engine, session_id)
+        if active_task is not None:
+            return self._build_active_retry_session(session, active_task)
         selected_resources = list(session.get("selected_resources") or [])
         failure_summary = dict(session.get("failure_summary") or {})
         failed_paths = {str(item.get("relative_path") or "") for item in failure_summary.get("failed_resources") or []}
@@ -1381,7 +1556,6 @@ class ASMRResourceService:
             },
         )
         latest_task_metadata = dict(retry_options.get("latest_task_metadata") or {})
-        engine = get_task_engine()
         task = Task(
             task_type=TaskType.ASMR_SYNC_DOWNLOAD,
             source_path=str(session.get("folder_path") or session.get("rjcode") or ""),
@@ -1412,8 +1586,14 @@ class ASMRResourceService:
             },
             rjcode=session.get("rjcode"),
         )
-        await engine.submit(task)
-        updated = self._update_session(session_id, task_id=task.id, status="queued")
+        claimed, updated, previous = self._claim_session_retry(session_id, task.id)
+        if not claimed:
+            return updated
+        try:
+            await engine.submit(task)
+        except Exception:
+            self._rollback_session_retry_claim(session_id, task.id, previous)
+            raise
         log_asmr_sync_event(
             "task_retried",
             summary=f"{updated.get('rjcode') or session_id} 已重新提交失败资源",
@@ -1425,6 +1605,10 @@ class ASMRResourceService:
         return updated
 
     async def retry_failed_session_resources(self, session_id: str, relative_paths: List[str]) -> Dict[str, Any]:
+        async with self._get_retry_lock(session_id, relative_paths):
+            return await self._retry_failed_session_resources_unlocked(session_id, relative_paths)
+
+    async def _retry_failed_session_resources_unlocked(self, session_id: str, relative_paths: List[str]) -> Dict[str, Any]:
         normalized_paths = [str(path or "").strip() for path in (relative_paths or []) if str(path or "").strip()]
         if not normalized_paths:
             raise ValueError("没有可重试的失败文件")
@@ -1455,10 +1639,13 @@ class ASMRResourceService:
         from .activity_log_service import log_asmr_sync_event
         from .task_engine import Task, TaskType, get_task_engine
 
+        engine = get_task_engine()
+        active_task = self._find_active_session_download_task(engine, session_id, target_paths)
+        if active_task is not None:
+            return self._build_active_retry_session(session, active_task)
         retry_options = self._build_retry_task_options(session)
         retry_metadata = self._build_retry_download_metadata(session, target_paths)
         latest_task_metadata = dict(retry_options.get("latest_task_metadata") or {})
-        engine = get_task_engine()
         task = Task(
             task_type=TaskType.ASMR_SYNC_DOWNLOAD,
             source_path=str(session.get("folder_path") or session.get("rjcode") or ""),
@@ -2298,6 +2485,43 @@ class ASMRResourceService:
         state_lock = asyncio.Lock()
         completed_count = 0
         total_files = max(len(selected_resources), 1)
+        expected_download_total_bytes = sum(
+            max(0, int(resource.get("size_bytes") or resource.get("size") or 0))
+            for resource in selected_resources
+        )
+        for resource_index, resource in enumerate(selected_resources, start=1):
+            resource_path = str(
+                resource.get("relative_path")
+                or resource.get("file_name")
+                or f"file_{resource_index:03d}.bin"
+            )
+            resource_name = str(resource.get("file_name") or os.path.basename(resource_path))
+            resource_total = max(0, int(resource.get("size_bytes") or resource.get("size") or 0))
+            progress_state[resource_path or resource_name] = {
+                "name": resource_name,
+                "downloaded": 0,
+                "total": resource_total,
+                "progress": 0,
+                "index": resource_index,
+                "relative_path": resource_path,
+                "stage": "pending",
+                "speed_bytes_per_sec": 0,
+                "eta_seconds": 0,
+            }
+        task.task_metadata["download_files"] = sorted(
+            progress_state.values(),
+            key=lambda item: item.get("index") or 0,
+        )
+        if expected_download_total_bytes > 0:
+            task.task_metadata["download_runtime"] = {
+                "total_files": total_files,
+                "total_bytes": expected_download_total_bytes,
+                "expected_total_bytes": expected_download_total_bytes,
+                "transferred_bytes": 0,
+                "progress": 0,
+                "speed_bytes_per_sec": 0,
+                "eta_seconds": 0,
+            }
         reimport_only = source_action in {"reimport_local_download_root", "reimport_downloaded_session"}
         if reimport_only:
             verify_md5 = bool(metadata.get("verify_md5_after_download", False))
@@ -2337,6 +2561,8 @@ class ASMRResourceService:
             display_name = str(resource.get("file_name") or os.path.basename(relative_path))
             destination = os.path.join(download_root, self._sanitize_relative_path(relative_path))
             remote_url = str(resource.get("remote_url") or "")
+            expected_size = max(0, int(resource.get("size_bytes") or resource.get("size") or 0))
+            last_download_error = ""
 
             async with semaphore:
                 try:
@@ -2351,7 +2577,7 @@ class ASMRResourceService:
                             file_name=name,
                             relative_path=relative_path,
                             downloaded_bytes=downloaded_bytes,
-                            total_bytes=total_bytes,
+                            total_bytes=max(expected_size, int(total_bytes or 0)),
                             index=file_index,
                             total_files=total_files,
                             stage="download",
@@ -2361,8 +2587,16 @@ class ASMRResourceService:
                         task.current_step = f"{'资源检查中' if reimport_only else '下载中'} {completed_files}/{total_files}: {name}"
 
                     file_exists = os.path.exists(destination) and os.path.getsize(destination) > 0
-                    if file_exists:
-                        existing_size = os.path.getsize(destination)
+                    existing_size = os.path.getsize(destination) if file_exists else 0
+                    reuse_existing = bool(
+                        file_exists
+                        and (
+                            reimport_only
+                            or expected_size <= 0
+                            or existing_size == expected_size
+                        )
+                    )
+                    if reuse_existing:
                         self._update_download_runtime(
                             task,
                             progress_state,
@@ -2370,7 +2604,7 @@ class ASMRResourceService:
                             file_name=display_name,
                             relative_path=relative_path,
                             downloaded_bytes=existing_size,
-                            total_bytes=existing_size,
+                            total_bytes=max(expected_size, existing_size),
                             index=index,
                             total_files=total_files,
                             stage="download_reused" if not reimport_only else "ready_for_upload",
@@ -2378,14 +2612,34 @@ class ASMRResourceService:
                         task.current_step = f"{'准备入库' if reimport_only else '复用已下载文件'} {index}/{total_files}: {display_name}"
                         self._append_task_log(task, f"{display_name} {'准备直接入库' if reimport_only else '复用已下载文件'}")
                     else:
+                        if file_exists and expected_size > 0 and existing_size != expected_size:
+                            self._append_task_log(
+                                task,
+                                f"{display_name} 已存在文件大小异常"
+                                f"({existing_size}/{expected_size})，重新校验下载",
+                                "warning",
+                            )
                         if not remote_url:
                             return {"name": display_name, "relative_path": relative_path, "reason": "缺少下载地址", "resource": resource, "stage": "download"}
                         self._append_task_log(task, f"{display_name} 开始请求资源 {index}/{total_files}")
+
+                        def download_log_callback(message: str, level: str = "info", current_task=task):
+                            nonlocal last_download_error
+                            text = str(message or "").strip()
+                            normalized_level = str(level or "info").lower()
+                            self._append_task_log(current_task, text, normalized_level)
+                            if (
+                                normalized_level == "error"
+                                and text
+                                and "下载失败，已尝试" not in text
+                            ):
+                                last_download_error = text
+
                         ok = await self.asmr_service.download_file(
                             remote_url,
                             destination,
                             progress_callback=file_progress_callback,
-                            log_callback=lambda message, level="info", current_task=task: self._append_task_log(current_task, message, level),
+                            log_callback=download_log_callback,
                             max_retries=max_retries,
                             timeout=timeout,
                             cancel_check=task.is_cancelled,
@@ -2394,7 +2648,44 @@ class ASMRResourceService:
                         if not ok:
                             if task.is_cancelled():
                                 raise RuntimeError("用户取消")
-                            return {"name": display_name, "relative_path": relative_path, "reason": "下载失败", "resource": resource, "stage": "download", "local_path": destination if os.path.exists(destination) else ""}
+                            partial_path = destination + ".downloading"
+                            partial_size = 0
+                            for candidate_path in (partial_path, destination):
+                                if os.path.exists(candidate_path):
+                                    partial_size = max(partial_size, os.path.getsize(candidate_path))
+                            self._update_download_runtime(
+                                task,
+                                progress_state,
+                                file_key=relative_path or display_name,
+                                file_name=display_name,
+                                relative_path=relative_path,
+                                downloaded_bytes=partial_size,
+                                total_bytes=expected_size or partial_size,
+                                index=index,
+                                total_files=total_files,
+                                stage="download_failed",
+                            )
+                            return {
+                                "name": display_name,
+                                "relative_path": relative_path,
+                                "reason": last_download_error or "下载失败",
+                                "resource": resource,
+                                "stage": "download",
+                                "local_path": destination if os.path.exists(destination) else "",
+                            }
+                        completed_size = os.path.getsize(destination) if os.path.exists(destination) else expected_size
+                        self._update_download_runtime(
+                            task,
+                            progress_state,
+                            file_key=relative_path or display_name,
+                            file_name=display_name,
+                            relative_path=relative_path,
+                            downloaded_bytes=completed_size,
+                            total_bytes=max(expected_size, completed_size),
+                            index=index,
+                            total_files=total_files,
+                            stage="downloaded",
+                        )
                         self._append_task_log(task, f"{display_name} 下载完成")
 
                     checksum_md5 = ""

@@ -1,9 +1,11 @@
 import os
+import asyncio
 from contextlib import asynccontextmanager
 
 import pytest
 
 from app.core.asmr_resource_service import ASMRResourceService
+from app.core.task_engine import Task, TaskStatus, TaskType
 
 
 class FakeASMRService:
@@ -131,6 +133,186 @@ def test_retry_download_metadata_rejects_missing_cache(tmp_path):
             },
             {"audio/01.wav"},
         )
+
+
+@pytest.mark.anyio
+async def test_retry_failed_session_serializes_same_session(monkeypatch):
+    service = create_service()
+    entered = 0
+    max_entered = 0
+
+    async def fake_retry(session_id):
+        nonlocal entered, max_entered
+        assert session_id == "session-1"
+        entered += 1
+        max_entered = max(max_entered, entered)
+        await asyncio.sleep(0)
+        entered -= 1
+        return {"id": session_id}
+
+    monkeypatch.setattr(service, "_retry_failed_session_unlocked", fake_retry)
+
+    first, second = await asyncio.gather(
+        service.retry_failed_session("session-1"),
+        service.retry_failed_session("session-1"),
+    )
+
+    assert first == {"id": "session-1"}
+    assert second == {"id": "session-1"}
+    assert max_entered == 1
+
+
+def test_active_session_download_task_is_reused():
+    service = create_service()
+    task = Task(
+        task_type=TaskType.ASMR_SYNC_DOWNLOAD,
+        source_path="RJ123456",
+        metadata={"session_id": "session-1"},
+        rjcode="RJ123456",
+    )
+    task.status = TaskStatus.PENDING
+
+    class Engine:
+        @staticmethod
+        def get_tasks_by_session(session_id):
+            assert session_id == "session-1"
+            return [task]
+
+    active = service._find_active_session_download_task(Engine(), "session-1")
+
+    assert active is task
+    assert service._build_active_retry_session({"id": "session-1"}, task) == {
+        "id": "session-1",
+        "task_id": task.id,
+        "status": "pending",
+        "retry_reused_active_task": True,
+    }
+
+
+def test_active_session_download_task_only_reuses_overlapping_file():
+    service = create_service()
+    task = Task(
+        task_type=TaskType.ASMR_SYNC_DOWNLOAD,
+        source_path="RJ123456",
+        metadata={
+            "session_id": "session-1",
+            "selected_resources": [{"relative_path": "audio/01.wav"}],
+        },
+        rjcode="RJ123456",
+    )
+    task.status = TaskStatus.PROCESSING
+
+    class Engine:
+        @staticmethod
+        def get_tasks_by_session(_session_id):
+            return [task]
+
+    assert service._find_active_session_download_task(
+        Engine(),
+        "session-1",
+        {"audio/01.wav"},
+    ) is task
+    assert service._find_active_session_download_task(
+        Engine(),
+        "session-1",
+        {"audio/02.wav"},
+    ) is None
+
+
+@pytest.mark.anyio
+async def test_single_file_retry_serializes_same_file_but_allows_other_files(monkeypatch):
+    service = create_service()
+    entered = 0
+    max_entered = 0
+
+    async def fake_retry(_session_id, _relative_paths):
+        nonlocal entered, max_entered
+        entered += 1
+        max_entered = max(max_entered, entered)
+        await asyncio.sleep(0.01)
+        entered -= 1
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "_retry_failed_session_resources_unlocked", fake_retry)
+
+    await asyncio.gather(
+        service.retry_failed_session_resources("session-1", ["audio/01.wav"]),
+        service.retry_failed_session_resources("session-1", ["audio/01.wav"]),
+    )
+    assert max_entered == 1
+
+    max_entered = 0
+    await asyncio.gather(
+        service.retry_failed_session_resources("session-1", ["audio/01.wav"]),
+        service.retry_failed_session_resources("session-1", ["audio/02.wav"]),
+    )
+    assert max_entered == 2
+
+
+def test_download_runtime_keeps_full_selected_resource_total():
+    service = create_service()
+
+    class RuntimeTask:
+        task_metadata = {
+            "download_runtime": {
+                "expected_total_bytes": 1000,
+                "total_bytes": 1000,
+            }
+        }
+
+    task = RuntimeTask()
+    progress_state = {}
+    service._update_download_runtime(
+        task,
+        progress_state,
+        file_key="audio/01.wav",
+        file_name="01.wav",
+        relative_path="audio/01.wav",
+        downloaded_bytes=100,
+        total_bytes=100,
+        index=1,
+        total_files=2,
+        stage="download",
+    )
+
+    runtime = task.task_metadata["download_runtime"]
+    assert runtime["total_bytes"] == 1000
+    assert runtime["transferred_bytes"] == 100
+    assert runtime["progress"] == 10
+
+
+def test_download_runtime_clamps_oversized_failed_file():
+    service = create_service()
+
+    class RuntimeTask:
+        task_metadata = {
+            "download_runtime": {
+                "expected_total_bytes": 1000,
+                "total_bytes": 1000,
+            }
+        }
+
+    task = RuntimeTask()
+    progress_state = {}
+    service._update_download_runtime(
+        task,
+        progress_state,
+        file_key="audio/01.wav",
+        file_name="01.wav",
+        relative_path="audio/01.wav",
+        downloaded_bytes=1500,
+        total_bytes=1000,
+        index=1,
+        total_files=1,
+        stage="download_failed",
+    )
+
+    runtime = task.task_metadata["download_runtime"]
+    assert task.task_metadata["download_files"][0]["downloaded"] == 1000
+    assert task.task_metadata["download_files"][0]["progress"] == 99
+    assert runtime["transferred_bytes"] == 1000
+    assert runtime["completed_files"] == 0
+    assert runtime["progress"] == 99
 
 
 @pytest.mark.anyio

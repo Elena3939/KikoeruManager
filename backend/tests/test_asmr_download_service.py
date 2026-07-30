@@ -176,6 +176,75 @@ async def test_download_file_resumes_same_partial_file_after_payload_disconnect(
 
 
 @pytest.mark.asyncio
+async def test_download_file_restarts_oversized_partial_after_http_416(monkeypatch, tmp_path):
+    service = ASMRDownloadService()
+    target_path = tmp_path / "voice.wav"
+    partial_path = tmp_path / "voice.wav.downloading"
+    partial_path.write_bytes(b"oversized")
+    request_headers = []
+    progress_rows = []
+
+    class Budget:
+        @asynccontextmanager
+        async def acquire(self, *_args, **_kwargs):
+            yield
+
+    class EmptyContent:
+        async def iter_chunked(self, _size):
+            if False:
+                yield b""
+
+    class FullContent:
+        async def iter_chunked(self, _size):
+            yield b"abcdef"
+
+    class FakeResponse:
+        def __init__(self, status, headers, content):
+            self.status = status
+            self.headers = headers
+            self.content = content
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    responses = [
+        FakeResponse(416, {"content-range": "bytes */6"}, EmptyContent()),
+        FakeResponse(200, {"content-length": "6"}, FullContent()),
+    ]
+
+    class FakeSession:
+        closed = False
+
+        def get(self, *_args, **kwargs):
+            request_headers.append(dict(kwargs.get("headers") or {}))
+            return responses.pop(0)
+
+    async def _no_wait():
+        return None
+
+    service._session = FakeSession()
+    monkeypatch.setattr("app.core.asmr_download_service.get_resource_budget_service", lambda: Budget())
+    monkeypatch.setattr("app.core.asmr_download_service.asyncio.sleep", lambda *_args: _no_wait())
+
+    ok = await service.download_file(
+        "https://media.example.test/voice.wav",
+        str(target_path),
+        progress_callback=lambda downloaded, total: progress_rows.append((downloaded, total)),
+        max_retries=2,
+    )
+
+    assert ok is True
+    assert target_path.read_bytes() == b"abcdef"
+    assert request_headers[0]["Range"] == "bytes=9-"
+    assert "Range" not in request_headers[1]
+    assert (0, 6) in progress_rows
+    assert not partial_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_fetch_work_info_short_circuits_after_api_failures():
     service = ASMRDownloadService()
     service.CIRCUIT_FAILURE_THRESHOLD = 2
