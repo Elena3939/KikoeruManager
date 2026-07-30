@@ -773,6 +773,7 @@ const enhancedRetryingSessionIds = ref(new Set())
 const enhancedActiveRetryScopes = new Map()
 const enhancedRetryReleaseTimers = new Set()
 let enhancedDownloadWorkbenchTimer = null
+const enhancedDownloadWorkbenchRequestGuard = createLatestRequestGuard()
 const httpDownloadWorkbenchTaskIds = ref([])
 const httpDownloadWorkbenchTasks = ref([])
 const httpDownloadWorkbenchVisible = ref(false)
@@ -1423,6 +1424,7 @@ function hydrateEnhancedDownloadWorkbenchState() {
 }
 
 function clearEnhancedDownloadWorkbenchState() {
+  enhancedDownloadWorkbenchRequestGuard.invalidate()
   enhancedDownloadWorkbenchTaskIds.value = []
   enhancedDownloadWorkbenchTasks.value = []
   enhancedDownloadWorkbenchVisible.value = false
@@ -1448,6 +1450,7 @@ function startEnhancedDownloadWorkbenchPolling() {
 
 async function refreshEnhancedDownloadWorkbench(options = {}) {
   const silent = Boolean(options?.silent)
+  const requestSeq = enhancedDownloadWorkbenchRequestGuard.begin()
   if (!enhancedDownloadWorkbenchTaskIds.value.length) {
     enhancedDownloadWorkbenchTasks.value = []
     stopEnhancedDownloadWorkbenchPolling()
@@ -1456,19 +1459,21 @@ async function refreshEnhancedDownloadWorkbench(options = {}) {
   if (!silent) enhancedDownloadWorkbenchRefreshing.value = true
   try {
     const result = await asmrSyncApi.status()
+    if (!enhancedDownloadWorkbenchRequestGuard.isLatest(requestSeq)) return
     const allTasks = Array.isArray(result.tasks) ? result.tasks : []
-    enhancedDownloadWorkbenchTasks.value = enhancedDownloadWorkbenchTaskIds.value
-      .map(id => allTasks.find(t => t.id === id))
-      .filter(Boolean)
-    enhancedDownloadWorkbenchTaskIds.value = enhancedDownloadWorkbenchTasks.value.map(t => t.id)
+    enhancedDownloadWorkbenchTasks.value = selectTrackedDownloadTasks(
+      enhancedDownloadWorkbenchTaskIds.value,
+      allTasks,
+    )
     const stillActive = enhancedDownloadWorkbenchTasks.value.some(t => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(t.status || '')))
     if (stillActive || enhancedDownloadWorkbenchVisible.value || enhancedDownloadWorkbenchBackgroundActive.value) startEnhancedDownloadWorkbenchPolling()
     else stopEnhancedDownloadWorkbenchPolling()
   } catch (error) {
+    if (!enhancedDownloadWorkbenchRequestGuard.isLatest(requestSeq)) return
     console.error('刷新增强下载工作台失败:', error)
     startEnhancedDownloadWorkbenchPolling()
   } finally {
-    if (!silent) enhancedDownloadWorkbenchRefreshing.value = false
+    if (!silent && enhancedDownloadWorkbenchRequestGuard.isLatest(requestSeq)) enhancedDownloadWorkbenchRefreshing.value = false
   }
 }
 
@@ -2053,17 +2058,16 @@ async function retryEnhancedDownloadFile(payload) {
   }
 }
 
-function focusEnhancedRetryWorkbench(nextTaskId, previousTaskId = '') {
+function focusEnhancedRetryWorkbench(nextTaskId) {
   const normalizedTaskId = String(nextTaskId || '').trim()
   if (!normalizedTaskId) return
-  enhancedDownloadWorkbenchTaskIds.value = [normalizedTaskId]
+  enhancedDownloadWorkbenchTaskIds.value = mergeTrackedDownloadTaskIds(
+    enhancedDownloadWorkbenchTaskIds.value,
+    [normalizedTaskId],
+  )
   enhancedDownloadWorkbenchVisible.value = true
   enhancedDownloadWorkbenchBackgroundActive.value = false
   persistEnhancedDownloadWorkbenchState()
-  const previous = String(previousTaskId || '').trim()
-  if (previous && previous !== normalizedTaskId) {
-    enhancedDownloadWorkbenchTasks.value = enhancedDownloadWorkbenchTasks.value.filter(task => String(task?.id || '') !== previous)
-  }
 }
 
 async function handlePauseEnhancedDownloadTask(task) {
