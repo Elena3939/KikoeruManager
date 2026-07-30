@@ -7,6 +7,16 @@
 
 > **重要提示**：使用本软件即表示已阅读并同意 [免责声明与使用条款](DISCLAIMER.md)。本软件仅限 18 周岁及以上成年人使用。
 
+### 界面与工作流
+
+KikoeruManager 以多工作台方式组织功能。概览页集中展示导入、RJ 字幕、字幕补配、ASMR 下载、HTTP 外链、库存备份和问题作品入口，并把活跃任务、等待人工、失败重试与最近归档放在同一视图中。
+
+![KikoeruManager 概览与任务流](docs/images/dashboard-overview.png)
+
+ASMR 同步工作台把 RJ 增强下载、HTTP 外链下载、百度网盘下载和字幕目录扫描放在同一页面；资源发现、文件选择、下载进度、失败重试和最终入库共用统一任务语义。
+
+![KikoeruManager ASMR 同步下载工作台](docs/images/asmr-sync-workbench.png)
+
 ### 已实现业务能力
 
 #### 压缩包处理与入库
