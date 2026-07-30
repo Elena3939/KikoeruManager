@@ -2747,6 +2747,11 @@ class TaskCenterItemResponse(BaseModel):
 class TaskCenterActionRequest(BaseModel):
     action: str
 
+
+class FilteredItemRestoreRequest(BaseModel):
+    relative_path: Optional[str] = None
+
+
 class ConfigResponse(BaseModel):
     storage: dict
     processing: dict
@@ -3238,7 +3243,11 @@ async def execute_task_center_action(item_id: str, payload: TaskCenterActionRequ
 
 
 @app.post("/api/task-center/{item_id}/filtered-items/{recovery_id}/restore")
-async def restore_task_center_filtered_item(item_id: str, recovery_id: str):
+async def restore_task_center_filtered_item(
+    item_id: str,
+    recovery_id: str,
+    payload: Optional[FilteredItemRestoreRequest] = None,
+):
     """把解压入库任务中进入恢复区的过滤项写回最终库存。"""
     from ..core.filter_recovery_service import (
         FilterRecoveryConflictError,
@@ -3247,7 +3256,11 @@ async def restore_task_center_filtered_item(item_id: str, recovery_id: str):
     )
 
     try:
-        return await get_filter_recovery_service().restore_item(item_id, recovery_id)
+        return await get_filter_recovery_service().restore_item(
+            item_id,
+            recovery_id,
+            relative_path=payload.relative_path if payload else None,
+        )
     except FilterRecoveryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except FilterRecoveryError as exc:

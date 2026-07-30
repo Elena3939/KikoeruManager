@@ -23,7 +23,12 @@ describe('任务过滤项恢复状态', () => {
       status: 'removed',
       recoveryId: 'recovery-1',
     }, completedTask)
-    expect(result).toEqual({ enabled: true, reason: '', recoveryId: 'recovery-1' })
+    expect(result).toEqual({
+      enabled: true,
+      reason: '',
+      recoveryId: 'recovery-1',
+      recoveryRelativePath: '',
+    })
   })
 
   it('阻止单独还原随目录删除的子项', () => {
@@ -34,6 +39,22 @@ describe('任务过滤项恢复状态', () => {
     }, completedTask)
     expect(result.enabled).toBe(false)
     expect(result.reason).toContain('上级目录')
+  })
+
+  it('允许按目录恢复数据还原其中一个文件', () => {
+    const result = getFilterRestoreAvailability({
+      type: 'file',
+      status: 'removed',
+      recoveryId: 'directory-recovery-1',
+      recoveryRelativePath: 'nested/remove.txt',
+      removedByDirectory: 'folder',
+    }, completedTask)
+    expect(result).toEqual({
+      enabled: true,
+      reason: '',
+      recoveryId: 'directory-recovery-1',
+      recoveryRelativePath: 'nested/remove.txt',
+    })
   })
 
   it('旧任务没有恢复数据时保持不可用', () => {

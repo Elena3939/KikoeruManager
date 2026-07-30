@@ -732,6 +732,8 @@ function buildTreeRows(treeItems = []) {
       removedByDirectory: '',
       sizeText: '',
       recoveryId: '',
+      recoveryRelativePath: '',
+      recoveryKey: '',
       recoveryStatus: '',
       restoredAt: '',
       restoredPath: '',
@@ -758,6 +760,8 @@ function buildTreeRows(treeItems = []) {
         node.removedByDirectory = item?.removedByDirectory || node.removedByDirectory || ''
         node.sizeText = item?.sizeText || formatBytes(item?.size)
         node.recoveryId = item?.recoveryId || node.recoveryId || ''
+        node.recoveryRelativePath = item?.recoveryRelativePath || node.recoveryRelativePath || ''
+        node.recoveryKey = item?.recoveryKey || node.recoveryKey || ''
         node.recoveryStatus = item?.recoveryStatus || node.recoveryStatus || ''
         node.restoredAt = item?.restoredAt || node.restoredAt || ''
         node.restoredPath = item?.restoredPath || node.restoredPath || ''
@@ -810,6 +814,8 @@ function buildTreeRows(treeItems = []) {
         removedByDirectory: node.removedByDirectory,
         sizeText: node.sizeText,
         recoveryId: node.recoveryId,
+        recoveryRelativePath: node.recoveryRelativePath,
+        recoveryKey: node.recoveryKey || node.recoveryId,
         recoveryStatus: node.recoveryStatus,
         restoredAt: node.restoredAt,
         restoredPath: node.restoredPath,
@@ -1087,6 +1093,7 @@ function mapFilteredItems(item) {
       recoveryStatus: String(asObject.recovery_status || ''),
       restoredAt: String(asObject.restored_at || ''),
       restoredPath: String(asObject.restored_path || ''),
+      restoredFiles: Array.isArray(asObject.restored_files) ? asObject.restored_files : [],
       sizeText: asObject.size !== undefined && asObject.size !== null
         ? formatBytes(asObject.size)
         : formatBytes(asObject.size_bytes),
@@ -1168,6 +1175,7 @@ function buildFileTreeArraySignature(rows) {
       row.recovery_id,
       row.recovery_status,
       row.restored_at,
+      JSON.stringify(row.restored_files || []),
     ].join('|')
     for (let i = 0; i < text.length; i += 1) {
       checksum = ((checksum * 31) + text.charCodeAt(i)) >>> 0
@@ -1261,12 +1269,31 @@ function buildTaskFileTreeSections(item) {
     if (removed?.type === 'dir' && !restored) removedDirectoryPaths.push(path)
   }
   for (const removedDirPath of removedDirectoryPaths) {
+    const removedDirectory = mergedMap.get(removedDirPath)
+    const restoredFiles = new Map(
+      (removedDirectory?.restoredFiles || []).map((entry) => [
+        normalizeTaskFileTreePath(entry?.relative_path || ''),
+        entry,
+      ])
+    )
     for (const [path, entry] of mergedMap.entries()) {
       if (!isSameOrInsideTaskTreePath(path, removedDirPath)) continue
+      const recoveryRelativePath = path === removedDirPath
+        ? ''
+        : normalizeTaskFileTreePath(path.slice(removedDirPath.length + 1))
+      const restoredFile = entry.type === 'file' ? restoredFiles.get(recoveryRelativePath) : null
       mergedMap.set(path, {
         ...entry,
-        status: 'removed',
+        status: restoredFile ? 'restored' : 'removed',
         removedByDirectory: path === removedDirPath ? '' : removedDirPath,
+        recoveryId: removedDirectory?.recoveryId || '',
+        recoveryRelativePath: entry.type === 'file' ? recoveryRelativePath : '',
+        recoveryKey: entry.type === 'file' && recoveryRelativePath
+          ? `${removedDirectory?.recoveryId || ''}:${recoveryRelativePath}`
+          : (removedDirectory?.recoveryId || ''),
+        recoveryStatus: restoredFile ? 'restored' : (removedDirectory?.recoveryStatus || 'available'),
+        restoredAt: restoredFile?.restored_at || '',
+        restoredPath: restoredFile?.restored_path || '',
       })
     }
   }
@@ -1415,6 +1442,8 @@ async function handleTaskAction(item, action) {
 async function handleRestoreFilteredItem({ entry }) {
   const item = selectedItem.value
   const recoveryId = String(entry?.recoveryId || '').trim()
+  const recoveryRelativePath = String(entry?.recoveryRelativePath || '').trim()
+  const recoveryKey = String(entry?.recoveryKey || recoveryId).trim()
   if (!item || !recoveryId) return
   const isDirectory = entry?.type === 'dir'
   try {
@@ -1428,8 +1457,8 @@ async function handleRestoreFilteredItem({ entry }) {
     return
   }
   try {
-    restoringRecoveryId.value = recoveryId
-    const result = await taskCenterApi.restoreFilteredItem(item.id, recoveryId)
+    restoringRecoveryId.value = recoveryKey
+    const result = await taskCenterApi.restoreFilteredItem(item.id, recoveryId, recoveryRelativePath)
     ElMessage.success(result?.message || '过滤项已还原')
     await fetchSelectedItemDetail(item.id, { force: true })
     await refreshTaskCenter(false, { silent: true })

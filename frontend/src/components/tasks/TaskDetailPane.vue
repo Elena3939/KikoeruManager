@@ -369,11 +369,11 @@
       <button
         type="button"
         class="task-filter-restore-menu__action"
-        :disabled="!restoreMenu.availability.enabled || restoringRecoveryId === restoreMenu.entry.recoveryId"
+        :disabled="!restoreMenu.availability.enabled || restoringRecoveryId === restoreEntryKey(restoreMenu.entry)"
         @click="restoreSelectedEntry"
       >
         <RefreshCw
-          v-if="restoringRecoveryId === restoreMenu.entry.recoveryId"
+          v-if="restoringRecoveryId === restoreEntryKey(restoreMenu.entry)"
           :size="15"
           class="animate-spin"
         />
@@ -460,9 +460,13 @@ function closeRestoreMenu() {
 
 function restoreSelectedEntry() {
   const current = restoreMenu.value
-  if (!current?.availability?.enabled || props.restoringRecoveryId === current.entry.recoveryId) return
+  if (!current?.availability?.enabled || props.restoringRecoveryId === restoreEntryKey(current.entry)) return
   emit('restore-filtered', { entry: current.entry })
   closeRestoreMenu()
+}
+
+function restoreEntryKey(entry) {
+  return entry?.recoveryKey || entry?.recoveryId || ''
 }
 
 onMounted(() => {
