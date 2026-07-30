@@ -75,7 +75,7 @@ Windows 本地首次使用建议直接运行：
 .\start-all.bat                  # 启动 PostgreSQL 检查、后端和前端
 ```
 
-`setup.bat` 会把本机 PostgreSQL 连接信息写入 `data/config/config.yaml`；也可以通过 `DATABASE_URL=postgresql+psycopg://...` 指向外部 PostgreSQL。
+`setup.bat` 会安装依赖并检查 / 初始化本机 PostgreSQL；`start-all.bat` 会同时检查 PostgreSQL 和 Redis，再启动前后端。PostgreSQL 连接信息写入 `data/config/config.yaml`；也可以通过 `DATABASE_URL=postgresql+psycopg://...` 指向外部 PostgreSQL。Redis 默认使用配置中的本机地址，也可通过 `KIKOERUMANAGER_REDIS_URL=redis://...` 指向外部 Redis。
 
 ```bash
 # 1. 克隆仓库
@@ -138,6 +138,7 @@ services:
     volumes:
       - ./config:/app/config              # 配置目录（config.yaml）
       - ./data:/app/data                  # 日志 / 缓存 / 运行数据
+                                             # 内置 Redis AOF / 日志位于 /app/data/redis
       - ./postgres:/app/postgres          # 内置 PostgreSQL 数据目录，必须持久化
       - /your/path/input:/input           # 待处理压缩包
       - /your/path/library:/library       # 音声库存
@@ -146,6 +147,8 @@ services:
       - /your/path/subtitles:/Subtitles   # ASMR 同步字幕目录
     restart: unless-stopped
 ```
+
+镜像未设置 `DATABASE_URL` 时，会初始化并启动内置 PostgreSQL 18；未设置 `KIKOERUMANAGER_REDIS_URL` 时，会启动内置 Redis。两项环境变量一旦显式设置，容器会改用外部服务。无论哪种模式，启动时都会执行 `alembic upgrade head`。`/app/postgres` 与 `/app/data` 必须持久化，`/temp` 需要预留足够空间给解压和伪装 ZIP 的临时视图。
 
 正式 tag 构建会把版本号写入前端静态文件名，避免反向代理缓存旧 chunk 后继续命中同一个 `/assets/*.js` URL。
 
@@ -161,6 +164,9 @@ services:
 - `Pydantic`（配置 / Schema 校验）
 - `httpx` + 标准库 HTML 解析 / 结构化接口解析（DLsite 与外链资源）
 - `LiteLLM`（兼容 OpenAI API 的 AI 字幕预配对）
+- `aria2` RPC + `transferit-py` + PikPak API（HTTP 外链、多平台下载与续传）
+- 官方 `7zz 24.08`、7-Zip ZS、`unar` / `lsar`（压缩包识别与解压）
+- `BaiduPCS-Go`（百度网盘下载 / 转存）
 - `Synology DSM REST API`（远程群晖通信）
 - `pystray` + `Pillow`（桌面托盘）
 - `PyInstaller`（Windows 打包）
@@ -171,13 +177,14 @@ services:
 前端：
 
 - `Vue 3` + `Vite` + `Pinia`
-- `Element Plus` + `Tailwind CSS`
+- `Element Plus` + `Tailwind CSS` + `Reka UI` + VueUse
 - `lucide-vue-next`（图标，全站统一）
 - `@tanstack/vue-table`（库存页轻量表格模型）
 - `@tanstack/vue-virtual`（社团作品虚拟滚动）
 - 原生 Pointer Events + RAF（库存页 Windows 式框选 / 拖动选择）
 - `@lottiefiles/dotlottie-vue`（动效）
 - `Tiptap`（富文本 / 邮件 Block Editor）
+- `AG Grid`（保留的高密度表格基础设施）+ Lottie（状态与交互动效）
 
 ### 项目目录结构
 

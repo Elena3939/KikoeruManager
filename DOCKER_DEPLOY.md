@@ -57,7 +57,7 @@ cd /mnt/user/appdata/kikoerumanager
 ```yaml
 services:
   kikoerumanager:
-    image: ghcr.io/elena3939/kikoerumanager:1.6.73
+    image: ghcr.io/elena3939/kikoerumanager:1.6.95
     container_name: kikoerumanager
     ports:
       - "5555:5555"
@@ -81,6 +81,10 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - POSTGRES_PASSWORD=请改成强密码
+      # 默认启动内置 PostgreSQL 18 和 Redis。
+      # 如已有托管服务，取消注释并填写真实连接串：
+      # - DATABASE_URL=postgresql+psycopg://user:password@db-host:5432/kikoerumanager
+      # - KIKOERUMANAGER_REDIS_URL=redis://:password@redis-host:6379/0
     privileged: true
     ulimits:
       nofile:
@@ -92,13 +96,13 @@ services:
 ### 3. 启动服务
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 ### 4. 查看日志
 
 ```bash
-docker-compose logs -f
+docker compose logs -f
 ```
 
 ---
@@ -122,7 +126,7 @@ docker run -d \
   -e POSTGRES_PASSWORD=请改成强密码 \
   --ulimit nofile=65536:65536 \
   --restart unless-stopped \
-  ghcr.io/elena3939/kikoerumanager:1.6.73
+  ghcr.io/elena3939/kikoerumanager:1.6.95
 ```
 
 ---
@@ -171,6 +175,8 @@ services:
 | `/library` | 整理好的作品库 | 媒体库目录 |
 | `/existing` | 已有作品文件夹 | 可选，已有作品目录 |
 | `/processed` | 已处理压缩包 | 可选，备份目录 |
+
+`/app/data/redis` 存放内置 Redis 的 AOF 和日志，因此 `/app/data` 与 `/app/postgres` 一样必须持久化。镜像启动时会执行 `alembic upgrade head`；未设置 `DATABASE_URL` 时初始化内置 PostgreSQL，未设置 `KIKOERUMANAGER_REDIS_URL` 时启动内置 Redis。显式配置这两个变量后，分别接入外部服务。
 
 ### 数据流
 
@@ -258,8 +264,8 @@ chmod -R 777 /mnt/user/media/dlsite
 **Docker Compose：**
 ```bash
 cd /mnt/user/appdata/kikoerumanager
-docker-compose pull
-docker-compose up -d
+docker compose pull
+docker compose up -d
 ```
 
 **Unraid CA：**

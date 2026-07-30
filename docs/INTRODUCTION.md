@@ -80,7 +80,7 @@ KikoeruManager 是一个面向 DLsite 同人音声库存的桌面化管理工作
 - 解压时自动尝试历史密码，密码库候选会作为兜底完整轮查，减少重复手动输入。
 - 安全网关提供访问闸页、阻断页和相关配置。
 - Windows 桌面版支持托盘后台运行、开机自启、一键打开 Web 和 `KikoeruManager.exe` 打包。
-- Docker 镜像支持前后端一体部署，单镜像内置 PostgreSQL 18，适合 NAS 或服务器长期运行。
+- Docker 镜像支持前后端一体部署，单镜像内置 PostgreSQL 18 和 Redis；也能通过环境变量改接外部 PostgreSQL / Redis，适合 NAS 或服务器长期运行。
 
 ## 界面模块
 
@@ -99,29 +99,31 @@ KikoeruManager 是一个面向 DLsite 同人音声库存的桌面化管理工作
 
 ### 后端
 
-- `FastAPI` + `SQLAlchemy` + `PostgreSQL 18`
+- `FastAPI` + `SQLAlchemy` + `PostgreSQL 18` + `psycopg`
 - `JSONB`、连接池、`pg_trgm` 和库存目录复合索引
-- 任务调度和状态持久化
+- Redis：任务运行态、SSE 事件流、高频缓存和特典探测 dirty buffer；PostgreSQL 保持最终事实源
+- 任务调度、任务中心物化快照和状态持久化
 - Synology DSM / FileStation REST API
-- aria2 RPC 下载
+- aria2 RPC、PikPak API、Google Drive / Gofile / OneDrive / Transfer.it 解析下载
 - DLsite / ASMR 资源解析
 - 邮件发送、监听、模板渲染和 HTML 清洗
-- 7-Zip / unar / lsar 解压链路
+- 官方 7zz 24.08、7-Zip ZS、unar / lsar 与 BaiduPCS-Go 工具链
 
 ### 前端
 
-- `Vue 3` + `Vite`
-- `Tailwind CSS` + `Element Plus`
+- `Vue 3` + `Vite` + `Pinia`
+- `Tailwind CSS` + `Element Plus` + `Reka UI` + VueUse
 - `lucide-vue-next` 全站图标
 - `@tanstack/vue-table` 库存表格模型
 - `@tanstack/vue-virtual` 社团作品虚拟滚动
 - `Tiptap` 邮件 Block Editor
+- `AG Grid` 与 Lottie 动效基础设施
 - 统一系统弹窗、通知中心、暗黑模式和移动端适配
 
 ## 部署方式
 
 - Windows 桌面版：下载 Release 后运行 `KikoeruManager.exe`。
 - 源码开发：后端 FastAPI，前端 Vite。
-- Docker：使用 `ghcr.io/elena3939/kikoerumanager:<版本号>` 或 `elena39/kikoerumanager:<版本号>`，并持久化挂载 `/app/postgres`；正式 tag 构建会把版本号写入前端静态文件名，避免反向代理缓存旧 chunk 后继续命中同一个 `/assets/*.js` URL。
+- Docker：使用 `ghcr.io/elena3939/kikoerumanager:<版本号>` 或 `elena39/kikoerumanager:<版本号>`，持久化挂载 `/app/postgres` 和 `/app/data`。默认内置 PostgreSQL 18 与 Redis；设置 `DATABASE_URL` 或 `KIKOERUMANAGER_REDIS_URL` 后分别改用外部实例。镜像启动会执行 Alembic 迁移；正式 tag 构建会把版本号写入前端静态文件名，避免反向代理缓存旧 chunk 后继续命中同一个 `/assets/*.js` URL。
 
 详细部署命令见项目根目录的 `README.md`、`START_GUIDE.md` 和 `DOCKER_DEPLOY.md`。

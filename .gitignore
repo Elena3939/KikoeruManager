@@ -77,6 +77,8 @@ scripts/install_design_skills_to_agents.ps1
 .env
 backend/data/
 data/
+# 本机 Redis 下载包与运行配置；Docker 镜像自行安装 Redis。
+tools/redis/
 update_dialog.py
 backend/app/version.txt
 

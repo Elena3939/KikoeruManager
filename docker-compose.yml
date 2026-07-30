@@ -1,6 +1,6 @@
 services:
   kikoerumanager:
-    image: ghcr.io/elena3939/kikoerumanager:1.6.73
+    image: ghcr.io/elena3939/kikoerumanager:1.6.95
     container_name: kikoerumanager
     ports:
       # host_port:container_port — 容器内 uvicorn 默认监听 5555，可通过 PORT 环境变量修改
@@ -13,6 +13,7 @@ services:
       - /volume1/docker/kikoerumanager/config:/app/config
       # 数据库、日志等运行时数据
       - /volume1/docker/kikoerumanager/data:/app/data
+      # 内置 Redis 的 AOF、日志和短期运行态位于 /app/data/redis
       # 内置 PostgreSQL 数据目录
       - /volume1/docker/kikoerumanager/postgres:/app/postgres
 
@@ -31,6 +32,10 @@ services:
       - CONFIG_PATH=/app/config/config.yaml
       - DATA_PATH=/app/data
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-kikoerumanager}
+      # 未设置 DATABASE_URL / KIKOERUMANAGER_REDIS_URL 时使用容器内置实例。
+      # 接外部实例时取消注释并改成实际连接串：
+      # - DATABASE_URL=postgresql+psycopg://user:password@db-host:5432/kikoerumanager
+      # - KIKOERUMANAGER_REDIS_URL=redis://:password@redis-host:6379/0
       - TZ=Asia/Shanghai
       - PORT=5555
     # 使用 root 权限运行（文件操作需要）
