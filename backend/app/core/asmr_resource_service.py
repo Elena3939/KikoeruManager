@@ -77,6 +77,7 @@ class ASMRResourceService:
         engine,
         session_id: str,
         retry_paths: Optional[set[str]] = None,
+        exclude_task_id: str = "",
     ):
         active_statuses = {"pending", "processing", "paused", "waiting_retry", "waiting_manual"}
         normalized_retry_paths = {
@@ -86,6 +87,8 @@ class ASMRResourceService:
         }
         matching = []
         for task in engine.get_tasks_by_session(session_id):
+            if exclude_task_id and str(getattr(task, "id", "") or "") == str(exclude_task_id):
+                continue
             task_type = str(getattr(getattr(task, "type", ""), "value", getattr(task, "type", ""))).strip()
             task_status = str(getattr(getattr(task, "status", ""), "value", getattr(task, "status", ""))).strip().lower()
             if task_type != "asmr_sync_download" or task_status not in active_statuses:
@@ -1000,7 +1003,7 @@ class ASMRResourceService:
                 record.match_status = str(item.get("match_status") or record.match_status or "unmatched")
                 record.verify_status = str(item.get("verify_status") or record.verify_status or "pending")
                 record.upload_status = str(item.get("upload_status") or record.upload_status or "pending")
-                record.missing_reason = str(item.get("missing_reason") or "") or None
+                record.missing_reason = str(item.get("missing_reason") or "")[:120] or None
                 record.session_id = str(item.get("session_id") or session_id or "") or record.session_id
                 record.retry_count = int(item.get("retry_count") or record.retry_count or 0)
                 record.last_seen_at = datetime.now()
@@ -1120,6 +1123,117 @@ class ASMRResourceService:
             record.updated_at = datetime.now()
             db.commit()
             return record.to_dict()
+        finally:
+            db.close()
+
+    def _merge_retry_session_result(
+        self,
+        session_id: str,
+        *,
+        task_id: str,
+        attempted_resources: List[Dict[str, Any]],
+        failed_resources: List[Dict[str, Any]],
+        statistics: Dict[str, Any],
+        verification_failures: Optional[List[Dict[str, Any]]] = None,
+        local_download_root: str = "",
+    ) -> Dict[str, Any]:
+        from .task_engine import get_task_engine
+
+        attempted_paths = {
+            str(item.get("relative_path") or item.get("file_name") or "").strip()
+            for item in attempted_resources
+            if str(item.get("relative_path") or item.get("file_name") or "").strip()
+        }
+        failed_by_path = {
+            str(item.get("relative_path") or item.get("name") or "").strip(): dict(item)
+            for item in failed_resources
+            if str(item.get("relative_path") or item.get("name") or "").strip()
+        }
+        other_active_task = self._find_active_session_download_task(
+            get_task_engine(),
+            session_id,
+            exclude_task_id=task_id,
+        )
+
+        db = SessionLocal()
+        try:
+            record = (
+                db.query(ASMRDownloadSession)
+                .filter(ASMRDownloadSession.id == session_id)
+                .with_for_update()
+                .first()
+            )
+            if record is None:
+                raise ValueError("会话不存在")
+
+            current_summary = dict(record.failure_summary or {})
+            merged_failed_by_path = {
+                str(item.get("relative_path") or item.get("name") or "").strip(): dict(item)
+                for item in current_summary.get("failed_resources") or []
+                if str(item.get("relative_path") or item.get("name") or "").strip()
+            }
+            for path in attempted_paths:
+                merged_failed_by_path.pop(path, None)
+            merged_failed_by_path.update(failed_by_path)
+            merged_failed = list(merged_failed_by_path.values())
+            merged_verification_by_path = {
+                str(item.get("relative_path") or item.get("name") or "").strip(): dict(item)
+                for item in current_summary.get("verification_failures") or []
+                if str(item.get("relative_path") or item.get("name") or "").strip()
+            }
+            for path in attempted_paths:
+                merged_verification_by_path.pop(path, None)
+            for item in verification_failures or []:
+                path = str(item.get("relative_path") or item.get("name") or "").strip()
+                if path:
+                    merged_verification_by_path[path] = dict(item)
+
+            selected_count = max(
+                len(record.selected_resources or []),
+                int((record.statistics or {}).get("selected_resource_count") or 0),
+                len(attempted_paths),
+            )
+            success_count = max(0, selected_count - len(merged_failed))
+            final_status = (
+                "downloading"
+                if other_active_task is not None
+                else ("completed" if not merged_failed else ("partial_failed" if success_count > 0 else "failed"))
+            )
+
+            merged_statistics = dict(record.statistics or {})
+            merged_statistics.update(statistics or {})
+            merged_statistics.update(
+                {
+                    "selected_resource_count": selected_count,
+                    "success_count": success_count,
+                    "failed_count": len(merged_failed),
+                }
+            )
+            if local_download_root:
+                merged_statistics["download_root"] = local_download_root
+
+            record.status = final_status
+            record.statistics = merged_statistics
+            record.failure_summary = {
+                **current_summary,
+                "failed_resources": merged_failed,
+                "verification_failures": list(merged_verification_by_path.values()),
+            }
+            record.local_download_ready = bool(
+                final_status == "completed"
+                and local_download_root
+                and success_count > 0
+                and os.path.isdir(local_download_root)
+            )
+            record.local_download_root = str(local_download_root or "").strip() or None
+            record.local_downloaded_count = success_count if record.local_download_root else 0
+            record.completed_at = None if final_status in self.RETRY_ACTIVE_SESSION_STATUSES else datetime.now()
+            record.updated_at = datetime.now()
+            db.commit()
+            return record.to_dict()
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 
@@ -2483,6 +2597,7 @@ class ASMRResourceService:
         upload_progress_state: Dict[str, Dict[str, Any]] = {}
         semaphore = asyncio.Semaphore(per_session_concurrency)
         state_lock = asyncio.Lock()
+        session_result_persisted = False
         completed_count = 0
         total_files = max(len(selected_resources), 1)
         expected_download_total_bytes = sum(
@@ -2853,20 +2968,6 @@ class ASMRResourceService:
                 if result.get("upload_path"):
                     uploaded_files.append({"name": result.get("name"), "upload_path": result.get("upload_path"), "relative_path": result.get("relative_path")})
 
-            carried_failed_files = [
-                dict(item)
-                for item in metadata.get("remaining_failed_resources") or []
-                if str(item.get("relative_path") or "").strip()
-            ]
-            if carried_failed_files:
-                failed_by_path = {
-                    str(item.get("relative_path") or "").strip(): item
-                    for item in carried_failed_files
-                }
-                for item in failed_files:
-                    failed_by_path[str(item.get("relative_path") or "").strip()] = item
-                failed_files = list(failed_by_path.values())
-
             duration_ms = int((datetime.now() - started_at).total_seconds() * 1000)
             total_bytes = sum(int(item.get("size_bytes") or 0) for item in success_files)
             uploaded_bytes = sum(int(item.get("size_bytes") or 0) for item in uploaded_files)
@@ -2984,23 +3085,41 @@ class ASMRResourceService:
             self._upsert_resource_records(rjcode, work_info, persisted_resources, session_id=session_id)
 
             if not success_files:
-                has_previous_success = session_success_count > 0
-                session_failure_status = "partial_failed" if has_previous_success else "failed"
+                merged_session = None
+                if session_id:
+                    if is_retry_download:
+                        merged_session = self._merge_retry_session_result(
+                            session_id,
+                            task_id=task.id,
+                            attempted_resources=selected_resources,
+                            failed_resources=failed_files,
+                            statistics={**session_performance_metrics, "download_root": download_root},
+                            verification_failures=verification_failures,
+                            local_download_root=download_root,
+                        )
+                    else:
+                        merged_session = self._update_session(
+                            session_id,
+                            status="partial_failed" if session_success_count > 0 else "failed",
+                            statistics={**session_performance_metrics, "download_root": download_root},
+                            failure_summary={"failed_resources": failed_files},
+                            local_download_ready=False,
+                            local_download_root=download_root,
+                            local_downloaded_count=session_success_count,
+                        )
+                    session_result_persisted = True
+                merged_statistics = dict((merged_session or {}).get("statistics") or {})
+                merged_failed_count = len(
+                    ((merged_session or {}).get("failure_summary") or {}).get("failed_resources") or failed_files
+                )
+                merged_success_count = int(merged_statistics.get("success_count") or session_success_count)
+                has_previous_success = merged_success_count > 0
                 failure_message = (
-                    f"{rjcode} 本轮重试失败，会话仍已完成 {session_success_count} 个文件"
+                    f"{rjcode} 本轮重试失败，会话仍已完成 {merged_success_count} 个文件"
                     if has_previous_success
                     else f"{rjcode} 下载失败，没有任何文件成功"
                 )
                 if session_id:
-                    self._update_session(
-                        session_id,
-                        status=session_failure_status,
-                        statistics={**session_performance_metrics, "download_root": download_root},
-                        failure_summary={"failed_resources": failed_files},
-                        local_download_ready=False,
-                        local_download_root=download_root,
-                        local_downloaded_count=session_success_count,
-                    )
                     log_asmr_sync_event(
                         "session_partial_failed",
                         status="partial_success" if has_previous_success else "failed",
@@ -3008,7 +3127,13 @@ class ASMRResourceService:
                         session_id=session_id,
                         rjcode=rjcode,
                         task_id=task.id,
-                        detail={"resource_count": len(selected_resources), "target_path": upload_options["target_path"], "network_retry_count": max_retries, "exception_type": "all_failed"},
+                        detail={
+                            "resource_count": len(selected_resources),
+                            "target_path": upload_options["target_path"],
+                            "network_retry_count": max_retries,
+                            "exception_type": "all_failed",
+                            "remaining_failed_count": merged_failed_count,
+                        },
                     )
                 raise ValueError("本轮没有任何文件下载成功" if has_previous_success else "没有任何文件下载成功")
 
@@ -3090,26 +3215,49 @@ class ASMRResourceService:
             persisted_local_root = download_root if os.path.isdir(download_root) else ""
             persisted_local_count = len(success_files) if persisted_local_root else 0
             if session_id:
-                self._update_session(
-                    session_id,
-                    status=final_status,
-                    statistics={**session_performance_metrics, "verify_summary": verify_summary, "upload_summary": upload_summary, "download_root": download_root},
-                    failure_summary={"failed_resources": failed_files, "verification_failures": verification_failures},
-                    local_download_ready=bool(final_status == "completed" and persisted_local_root and persisted_local_count > 0),
-                    local_download_root=persisted_local_root,
-                    local_downloaded_count=session_success_count if persisted_local_root else 0,
-                )
+                if is_retry_download:
+                    updated_session = self._merge_retry_session_result(
+                        session_id,
+                        task_id=task.id,
+                        attempted_resources=selected_resources,
+                        failed_resources=failed_files,
+                        statistics={
+                            **session_performance_metrics,
+                            "verify_summary": verify_summary,
+                            "upload_summary": upload_summary,
+                            "download_root": download_root,
+                        },
+                        verification_failures=verification_failures,
+                        local_download_root=persisted_local_root,
+                    )
+                else:
+                    updated_session = self._update_session(
+                        session_id,
+                        status=final_status,
+                        statistics={**session_performance_metrics, "verify_summary": verify_summary, "upload_summary": upload_summary, "download_root": download_root},
+                        failure_summary={"failed_resources": failed_files, "verification_failures": verification_failures},
+                        local_download_ready=bool(final_status == "completed" and persisted_local_root and persisted_local_count > 0),
+                        local_download_root=persisted_local_root,
+                        local_downloaded_count=session_success_count if persisted_local_root else 0,
+                    )
+                session_result_persisted = True
+                updated_failure_summary = dict(updated_session.get("failure_summary") or {})
+                updated_failed_count = len(updated_failure_summary.get("failed_resources") or [])
+                updated_statistics = dict(updated_session.get("statistics") or {})
+                updated_success_count = int(updated_statistics.get("success_count") or session_success_count)
+                updated_status = str(updated_session.get("status") or final_status)
                 log_asmr_sync_event(
-                    "session_partial_failed" if final_status == "partial_failed" else "session_completed",
-                    status="partial_success" if final_status == "partial_failed" else "success",
-                    summary=f"{rjcode} 增强下载完成，累计成功 {session_success_count} 个，失败 {len(failed_files)} 个",
+                    "session_partial_failed" if updated_failed_count else "session_completed",
+                    status="partial_success" if updated_failed_count else "success",
+                    summary=f"{rjcode} 增强下载完成，累计成功 {updated_success_count} 个，失败 {updated_failed_count} 个",
                     session_id=session_id,
                     rjcode=rjcode,
                     task_id=task.id,
                     detail={
                         "resource_count": session_selected_resource_count,
-                        "success_count": session_success_count,
-                        "failed_count": len(failed_files),
+                        "success_count": updated_success_count,
+                        "failed_count": updated_failed_count,
+                        "session_status": updated_status,
                         "downloaded_bytes": total_bytes,
                         "duration_ms": duration_ms,
                         "download_root": download_root,
@@ -3145,27 +3293,51 @@ class ASMRResourceService:
             self._finalize_download_runtime(task, "failed")
             self._finalize_upload_runtime(task, "failed")
             self._append_task_log(task, f"任务失败: {str(exc)}", "error")
-            if session_id:
+            if session_id and not session_result_persisted:
                 session_selected_resource_count = max(
                     len(selected_resources),
                     int(metadata.get("session_selected_resource_count") or 0),
                 )
                 session_success_count = max(0, session_selected_resource_count - len(failed_files))
-                self._update_session(
-                    session_id,
-                    status="partial_failed" if session_success_count > 0 else "failed",
-                    statistics={
-                        **(task.task_metadata.get("performance_metrics") or {}),
-                        "selected_resource_count": session_selected_resource_count,
-                        "success_count": session_success_count,
-                        "failed_count": len(failed_files),
-                        "download_root": download_root,
-                    },
-                    failure_summary={"failed_resources": failed_files, "verification_failures": verification_failures},
-                    local_download_ready=False,  # 下载失败/异常，不标记为可入库
-                    local_download_root=download_root if os.path.isdir(download_root) else "",
-                    local_downloaded_count=session_success_count,
-                )
+                exception_failed_files = failed_files or [
+                    {
+                        "name": str(item.get("file_name") or os.path.basename(str(item.get("relative_path") or "")) or "未知文件"),
+                        "relative_path": str(item.get("relative_path") or item.get("file_name") or ""),
+                        "reason": str(exc),
+                        "resource": dict(item),
+                        "stage": "download",
+                    }
+                    for item in selected_resources
+                ]
+                if is_retry_download:
+                    self._merge_retry_session_result(
+                        session_id,
+                        task_id=task.id,
+                        attempted_resources=selected_resources,
+                        failed_resources=exception_failed_files,
+                        statistics={
+                            **(task.task_metadata.get("performance_metrics") or {}),
+                            "download_root": download_root,
+                        },
+                        verification_failures=verification_failures,
+                        local_download_root=download_root if os.path.isdir(download_root) else "",
+                    )
+                else:
+                    self._update_session(
+                        session_id,
+                        status="partial_failed" if session_success_count > 0 else "failed",
+                        statistics={
+                            **(task.task_metadata.get("performance_metrics") or {}),
+                            "selected_resource_count": session_selected_resource_count,
+                            "success_count": session_success_count,
+                            "failed_count": len(exception_failed_files),
+                            "download_root": download_root,
+                        },
+                        failure_summary={"failed_resources": exception_failed_files, "verification_failures": verification_failures},
+                        local_download_ready=False,
+                        local_download_root=download_root if os.path.isdir(download_root) else "",
+                        local_downloaded_count=session_success_count,
+                    )
             if os.path.isdir(download_root):
                 self._append_task_log(task, "已保留未完成下载片段，后续重试将优先尝试断点续传")
             raise

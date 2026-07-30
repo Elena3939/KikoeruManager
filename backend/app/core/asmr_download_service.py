@@ -22,6 +22,8 @@ from .ttl_cache import TTLCache
 logger = logging.getLogger(__name__)
 
 ASMR_DOWNLOAD_STREAM_CHUNK_BYTES = 256 * 1024
+ASMR_DOWNLOAD_MAX_SEGMENT_REQUESTS = 24
+ASMR_DOWNLOAD_SEGMENT_REQUEST_MULTIPLIER = 8
 ASMR_PROBE_STATUS_AVAILABLE = "available"
 ASMR_PROBE_STATUS_MISSING = "missing"
 ASMR_PROBE_STATUS_UNAVAILABLE = "unavailable"
@@ -695,6 +697,15 @@ class ASMRDownloadService:
         request_headers = self._download_headers()
         request_url = self._build_download_request_url(url)
         request_url_text = str(request_url)
+        max_failures = max(1, int(max_retries or 1))
+        max_request_attempts = min(
+            ASMR_DOWNLOAD_MAX_SEGMENT_REQUESTS,
+            max(max_failures, max_failures * ASMR_DOWNLOAD_SEGMENT_REQUEST_MULTIPLIER),
+        )
+        failed_attempts = 0
+        request_attempt = 0
+        known_total_size = 0
+        temp_path = dest_path + '.downloading'
 
         def push_log(message: str, level: str = "info") -> None:
             if log_callback:
@@ -703,13 +714,49 @@ class ASMRDownloadService:
                 except Exception:
                     logger.debug("[下载] 日志回调失败", exc_info=True)
 
-        for attempt in range(max_retries):
+        def current_partial_size() -> int:
+            sizes = [
+                os.path.getsize(path)
+                for path in (temp_path, dest_path)
+                if os.path.exists(path)
+            ]
+            return max(sizes, default=0)
+
+        async def continue_productive_segment(start_offset: int, error: BaseException) -> bool:
+            nonlocal failed_attempts
+            partial_size = current_partial_size()
+            if partial_size <= max(0, int(start_offset or 0)):
+                return False
+            failed_attempts = 0
+            if progress_callback and known_total_size > 0:
+                progress_callback(partial_size, known_total_size)
+            added_bytes = partial_size - max(0, int(start_offset or 0))
+            logger.warning(
+                "[下载] 源站分段断流，已保留新增片段并继续续传: file=%s, added=%s, partial=%s, total=%s, request=%s/%s, error=%s",
+                os.path.basename(dest_path),
+                added_bytes,
+                partial_size,
+                known_total_size or "unknown",
+                request_attempt,
+                max_request_attempts,
+                error,
+            )
+            push_log(
+                f"{os.path.basename(dest_path)} 源站中途断流，但本段已新增 {added_bytes} 字节，"
+                f"已保留 {partial_size}/{known_total_size or '未知'} 并继续断点续传",
+                "warning",
+            )
+            await asyncio.sleep(1)
+            return True
+
+        while failed_attempts < max_failures and request_attempt < max_request_attempts:
+            request_attempt += 1
+            request_start_offset = 0
             try:
                 # 确保目标目录存在
                 os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
                 # 检查是否有未完成的下载（断点续传）
-                temp_path = dest_path + '.downloading'
                 resume_offset = 0
 
                 if os.path.exists(temp_path):
@@ -719,6 +766,7 @@ class ASMRDownloadService:
                 elif os.path.exists(dest_path):
                     # 文件已存在，检查大小是否完整
                     existing_size = os.path.getsize(dest_path)
+                    request_start_offset = existing_size
                     # 先获取远程文件大小
                     push_log(f"{os.path.basename(dest_path)} 检查已存在文件完整性")
                     async with session.head(
@@ -729,6 +777,7 @@ class ASMRDownloadService:
                     ) as head_response:
                         if head_response.status == 200:
                             remote_size = int(head_response.headers.get('content-length', 0))
+                            known_total_size = max(known_total_size, remote_size)
                             if remote_size > 0 and existing_size == remote_size:
                                 logger.debug(f"[下载] 文件已存在且完整，跳过: {os.path.basename(dest_path)}")
                                 push_log(f"{os.path.basename(dest_path)} 已存在且完整，跳过下载", "success")
@@ -759,8 +808,12 @@ class ASMRDownloadService:
                 headers = dict(request_headers)
                 if resume_offset > 0:
                     headers['Range'] = f'bytes={resume_offset}-'
+                request_start_offset = resume_offset
 
-                push_log(f"{os.path.basename(dest_path)} 开始请求资源，第 {attempt + 1}/{max_retries} 次尝试")
+                push_log(
+                    f"{os.path.basename(dest_path)} 开始请求资源，"
+                    f"第 {request_attempt}/{max_request_attempts} 次分段请求"
+                )
                 push_log(f"{os.path.basename(dest_path)} 等待源站响应", "info")
 
                 async with get_resource_budget_service().acquire("network_download", reason="asmr.download_file"), session.get(
@@ -784,6 +837,7 @@ class ASMRDownloadService:
 
                         range_start = int(range_match.group(1))
                         total_size = int(range_match.group(3)) if range_match.group(3).isdigit() else 0
+                        known_total_size = max(known_total_size, total_size)
 
                         if range_start != resume_offset:
                             logger.warning(
@@ -825,7 +879,9 @@ class ASMRDownloadService:
                         # 服务器不支持断点续传，重新下载
                         resume_offset = 0
                         total_size = int(response.headers.get('content-length', 0))
+                        known_total_size = max(known_total_size, total_size)
                         downloaded = 0
+                        request_start_offset = 0
                         if os.path.exists(temp_path):
                             await asyncio.to_thread(os.remove, temp_path)
                         logger.debug("[下载] 服务器不支持断点续传，重新下载")
@@ -834,6 +890,7 @@ class ASMRDownloadService:
                         content_range = str(response.headers.get('content-range') or '').strip()
                         total_match = re.match(r'^bytes\s+\*/(\d+)$', content_range, re.IGNORECASE)
                         remote_total = int(total_match.group(1)) if total_match else 0
+                        known_total_size = max(known_total_size, remote_total)
                         if remote_total > 0 and resume_offset == remote_total and os.path.exists(temp_path):
                             if os.path.exists(dest_path):
                                 await asyncio.to_thread(os.remove, dest_path)
@@ -862,16 +919,17 @@ class ASMRDownloadService:
                         await asyncio.sleep(1)
                         continue
                     elif response.status != 200:
+                        failed_attempts += 1
                         logger.error(
                             "[下载] 下载失败: HTTP %s, URL: %s, dest=%s, attempt=%s/%s",
                             response.status,
                             mask_url_for_log(request_url_text),
                             os.path.basename(dest_path),
-                            attempt + 1,
-                            max_retries,
+                            failed_attempts,
+                            max_failures,
                         )
-                        if attempt < max_retries - 1:
-                            wait_time = min(5 * (attempt + 1), 30)  # 递增等待时间，最多30秒
+                        if failed_attempts < max_failures and request_attempt < max_request_attempts:
+                            wait_time = min(5 * failed_attempts, 30)
                             logger.debug(f"[下载] 等待 {wait_time} 秒后重试...")
                             push_log(f"{os.path.basename(dest_path)} 源站返回 HTTP {response.status}，{wait_time} 秒后重试", "warning")
                             await asyncio.sleep(wait_time)
@@ -880,6 +938,7 @@ class ASMRDownloadService:
                         return False
                     else:
                         total_size = int(response.headers.get('content-length', 0))
+                        known_total_size = max(known_total_size, total_size)
                         downloaded = 0
                         push_log(f"{os.path.basename(dest_path)} 源站已响应，开始接收数据")
 
@@ -950,35 +1009,52 @@ class ASMRDownloadService:
                     push_log(f"{os.path.basename(dest_path)} 下载完成", "success")
                     return True
 
-            except asyncio.TimeoutError:
-                logger.warning(f"[下载] 超时({timeout}秒)，第 {attempt + 1}/{max_retries} 次尝试: {os.path.basename(dest_path)}")
-                if attempt < max_retries - 1:
-                    wait_time = min(5 * (attempt + 1), 30)
+            except asyncio.TimeoutError as e:
+                if await continue_productive_segment(request_start_offset, e):
+                    continue
+                failed_attempts += 1
+                logger.warning(f"[下载] 超时({timeout}秒)，第 {failed_attempts}/{max_failures} 次连续失败: {os.path.basename(dest_path)}")
+                if failed_attempts < max_failures and request_attempt < max_request_attempts:
+                    wait_time = min(5 * failed_attempts, 30)
                     logger.debug(f"[下载] 等待 {wait_time} 秒后重试...")
-                    push_log(f"{os.path.basename(dest_path)} 等待源站响应超时，第 {attempt + 1}/{max_retries} 次尝试失败，{wait_time} 秒后重试", "warning")
+                    push_log(f"{os.path.basename(dest_path)} 等待源站响应超时，第 {failed_attempts}/{max_failures} 次连续失败，{wait_time} 秒后重试", "warning")
                     await asyncio.sleep(wait_time)
                 else:
                     push_log(f"{os.path.basename(dest_path)} 等待源站响应超时，重试已耗尽", "error")
             except aiohttp.ClientError as e:
-                logger.warning(f"[下载] 连接错误 {e}，第 {attempt + 1}/{max_retries} 次尝试: {os.path.basename(dest_path)}")
-                if attempt < max_retries - 1:
-                    wait_time = min(5 * (attempt + 1), 30)
+                if await continue_productive_segment(request_start_offset, e):
+                    continue
+                failed_attempts += 1
+                logger.warning(f"[下载] 连接错误 {e}，第 {failed_attempts}/{max_failures} 次连续失败: {os.path.basename(dest_path)}")
+                if failed_attempts < max_failures and request_attempt < max_request_attempts:
+                    wait_time = min(5 * failed_attempts, 30)
                     logger.debug(f"[下载] 等待 {wait_time} 秒后重试...")
-                    push_log(f"{os.path.basename(dest_path)} 连接错误：{e}，第 {attempt + 1}/{max_retries} 次尝试失败，{wait_time} 秒后重试", "warning")
+                    push_log(f"{os.path.basename(dest_path)} 连接错误：{e}，第 {failed_attempts}/{max_failures} 次连续失败，{wait_time} 秒后重试", "warning")
                     await asyncio.sleep(wait_time)
                 else:
                     push_log(f"{os.path.basename(dest_path)} 连接错误：{e}，重试已耗尽", "error")
             except Exception as e:
+                failed_attempts += 1
                 logger.error(f"下载文件失败: {e}")
-                if attempt < max_retries - 1:
+                if failed_attempts < max_failures and request_attempt < max_request_attempts:
                     push_log(f"{os.path.basename(dest_path)} 下载异常：{e}，5 秒后重试", "warning")
                     await asyncio.sleep(5)
                 else:
                     push_log(f"{os.path.basename(dest_path)} 下载异常：{e}，重试已耗尽", "error")
 
         # 返回失败，但保留临时文件以支持后续续传
-        logger.error(f"[下载] 文件下载失败，已尝试 {max_retries} 次: {os.path.basename(dest_path)}")
-        push_log(f"{os.path.basename(dest_path)} 下载失败，已尝试 {max_retries} 次", "error")
+        logger.error(
+            "[下载] 文件下载失败，连续失败=%s，请求次数=%s/%s: %s",
+            failed_attempts,
+            request_attempt,
+            max_request_attempts,
+            os.path.basename(dest_path),
+        )
+        push_log(
+            f"{os.path.basename(dest_path)} 下载失败，连续失败 {failed_attempts} 次，"
+            f"分段请求 {request_attempt}/{max_request_attempts} 次",
+            "error",
+        )
         return False
 
     def filter_files(self, files: List[Dict], filter_rules: List) -> List[Dict]:
