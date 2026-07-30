@@ -245,6 +245,78 @@ async def test_download_file_restarts_oversized_partial_after_http_416(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_download_file_keeps_resuming_productive_payload_disconnects(monkeypatch, tmp_path):
+    service = ASMRDownloadService()
+    target_path = tmp_path / "voice.wav"
+    request_headers = []
+
+    class Budget:
+        @asynccontextmanager
+        async def acquire(self, *_args, **_kwargs):
+            yield
+
+    class SegmentContent:
+        def __init__(self, payload, disconnect=True):
+            self.payload = payload
+            self.disconnect = disconnect
+
+        async def iter_chunked(self, _size):
+            yield self.payload
+            if self.disconnect:
+                raise aiohttp.ClientPayloadError("payload disconnected")
+
+    class FakeResponse:
+        def __init__(self, status, headers, content):
+            self.status = status
+            self.headers = headers
+            self.content = content
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    responses = [
+        FakeResponse(200, {"content-length": "10"}, SegmentContent(b"ab")),
+        FakeResponse(206, {"content-range": "bytes 2-9/10"}, SegmentContent(b"cd")),
+        FakeResponse(206, {"content-range": "bytes 4-9/10"}, SegmentContent(b"ef")),
+        FakeResponse(206, {"content-range": "bytes 6-9/10"}, SegmentContent(b"gh")),
+        FakeResponse(206, {"content-range": "bytes 8-9/10"}, SegmentContent(b"ij", disconnect=False)),
+    ]
+
+    class FakeSession:
+        closed = False
+
+        def get(self, *_args, **kwargs):
+            request_headers.append(dict(kwargs.get("headers") or {}))
+            return responses.pop(0)
+
+    async def _no_wait():
+        return None
+
+    service._session = FakeSession()
+    monkeypatch.setattr("app.core.asmr_download_service.get_resource_budget_service", lambda: Budget())
+    monkeypatch.setattr("app.core.asmr_download_service.asyncio.sleep", lambda *_args: _no_wait())
+
+    ok = await service.download_file(
+        "https://media.example.test/voice.wav",
+        str(target_path),
+        max_retries=2,
+    )
+
+    assert ok is True
+    assert target_path.read_bytes() == b"abcdefghij"
+    assert [headers.get("Range") for headers in request_headers] == [
+        None,
+        "bytes=2-",
+        "bytes=4-",
+        "bytes=6-",
+        "bytes=8-",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_fetch_work_info_short_circuits_after_api_failures():
     service = ASMRDownloadService()
     service.CIRCUIT_FAILURE_THRESHOLD = 2
