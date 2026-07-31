@@ -389,6 +389,18 @@ def _circle_bonus_probe_business_key(
 
 
 def _api_rename_metadata_skip_reason(metadata: Dict[str, Any], rjcode: str) -> str:
+    from ..core.dlsite_metadata_trust import attach_dlsite_metadata_verification
+
+    attach_dlsite_metadata_verification(metadata, rjcode)
+    verification_status = str(
+        metadata.get("metadata_verification_status") or ""
+    ).strip().lower()
+    verification_reason = str(
+        metadata.get("metadata_verification_reason") or ""
+    ).strip()
+    if verification_status != "verified":
+        return verification_reason or "DLsite 元数据未经验证，已跳过重命名"
+
     source = str(metadata.get("metadata_source") or "").strip().lower()
     normalized_rj = str(rjcode or metadata.get("rjcode") or "").strip().upper()
     work_name = str(metadata.get("work_name") or "").strip()
@@ -12314,6 +12326,8 @@ async def api_rename_library_file(request: Request):
     metadata_source = ""
     dlsite_circuit_open = False
     rename_skipped_reason = ""
+    metadata_verification_status = "unverified"
+    metadata_verification_reason = ""
     prepared = None
     mutation_service = None
     planned_effects: List[Dict[str, Any]] = []
@@ -12402,6 +12416,12 @@ async def api_rename_library_file(request: Request):
             metadata_source = str(metadata.get("metadata_source") or "")
             dlsite_circuit_open = bool(metadata.get("dlsite_circuit_open"))
             rename_skipped_reason = skip_reason
+            metadata_verification_status = str(
+                metadata.get("metadata_verification_status") or "unverified"
+            )
+            metadata_verification_reason = str(
+                metadata.get("metadata_verification_reason") or skip_reason or ""
+            )
             logger.info(
                 "获取到元数据: %s metadata_source=%s dlsite_circuit_open=%s rename_skipped_reason=%s",
                 metadata,
@@ -12410,7 +12430,15 @@ async def api_rename_library_file(request: Request):
                 skip_reason,
             )
             if skip_reason:
-                raise HTTPException(status_code=422, detail=skip_reason)
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "detail": skip_reason,
+                        "skipped": True,
+                        "metadata_verification_status": metadata_verification_status,
+                        "metadata_verification_reason": metadata_verification_reason,
+                    },
+                )
         except HTTPException:
             raise
         except Exception as e:
@@ -12506,6 +12534,8 @@ async def api_rename_library_file(request: Request):
                 "new_name": new_name,
                 "path": file_path,
                 "new_path": file_path,
+                "metadata_verification_status": metadata_verification_status,
+                "metadata_verification_reason": metadata_verification_reason,
             }
 
         # 执行重命名
@@ -12585,7 +12615,9 @@ async def api_rename_library_file(request: Request):
             "new_name": new_name,
             "path": new_path,
             "new_path": new_path,
-            "metadata": metadata
+            "metadata": metadata,
+            "metadata_verification_status": metadata_verification_status,
+            "metadata_verification_reason": metadata_verification_reason,
         }
         if prepared is not None:
             try:
@@ -12989,6 +13021,12 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                         metadata_service = MetadataService()
                         metadata = await metadata_service.fetch(path, temp_task)
                         skip_reason = _api_rename_metadata_skip_reason(metadata, rjcode)
+                        verification_status = str(
+                            metadata.get("metadata_verification_status") or "unverified"
+                        )
+                        verification_reason = str(
+                            metadata.get("metadata_verification_reason") or skip_reason or ""
+                        )
                         logger.info(
                             "[批量 API重命名] 元数据结果 path=%s rj=%s metadata_source=%s dlsite_circuit_open=%s skip=%s",
                             path,
@@ -13012,6 +13050,8 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                                     "metadata_source": metadata.get("metadata_source") or "",
                                     "dlsite_circuit_open": bool(metadata.get("dlsite_circuit_open")),
                                     "rename_skipped_reason": skip_reason,
+                                    "metadata_verification_status": verification_status,
+                                    "metadata_verification_reason": verification_reason,
                                 },
                             )
                             return {
@@ -13022,6 +13062,8 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                                     "skipped": True,
                                     "error": skip_reason,
                                     "metadata_source": metadata.get("metadata_source") or "",
+                                    "metadata_verification_status": verification_status,
+                                    "metadata_verification_reason": verification_reason,
                                 },
                             }
 
@@ -13093,6 +13135,8 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                                     "message": "名称已是最新",
                                     "new_name": new_name,
                                     "new_path": path,
+                                    "metadata_verification_status": verification_status,
+                                    "metadata_verification_reason": verification_reason,
                                 },
                             }
 
@@ -13105,6 +13149,8 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                                 "old_name": old_name,
                                 "new_name": new_name,
                                 "rjcode": child_rjcode,
+                                "metadata_verification_status": verification_status,
+                                "metadata_verification_reason": verification_reason,
                             },
                         }
 
@@ -13157,6 +13203,8 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                     "old_name": plan["old_name"],
                     "new_name": plan["new_name"],
                     "rjcode": plan["rjcode"],
+                    "metadata_verification_status": plan["metadata_verification_status"],
+                    "metadata_verification_reason": plan["metadata_verification_reason"],
                 }
 
             for bucket in rename_plans_by_library.values():
@@ -13254,6 +13302,8 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                         "success": True,
                         "new_path": new_path,
                         "new_name": meta["new_name"],
+                        "metadata_verification_status": meta["metadata_verification_status"],
+                        "metadata_verification_reason": meta["metadata_verification_reason"],
                     })
                     successful_library_ids.add(item_library.id)
                     if meta.get("index_effects"):

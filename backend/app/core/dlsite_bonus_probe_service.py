@@ -1666,6 +1666,7 @@ class DLsiteBonusProbeService:
         for row in (
             db.query(WorkCanonicalLink)
             .filter(
+                WorkCanonicalLink.evidence_status == "verified",
                 WorkCanonicalLink.linked_rjcode == normalized_bonus,
                 WorkCanonicalLink.link_type == "bonus",
             )
@@ -1974,6 +1975,8 @@ class DLsiteBonusProbeService:
             db.add(row)
         row.link_type = "bonus"
         row.lang = ""
+        row.evidence_source = "dlsite_bonus_probe"
+        row.evidence_status = "verified"
         row.cached_at = datetime.now()
         row.updated_at = datetime.now()
 

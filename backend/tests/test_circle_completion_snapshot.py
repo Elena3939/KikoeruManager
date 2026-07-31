@@ -456,7 +456,6 @@ async def test_collect_external_snapshot_dedupes_kikoeru_probes_by_canonical(
     新实现只对 2 个 canonical 调，结果回灌给链上所有 RJ 的 cache。
     """
     service = CircleCompletionService()
-    service._kikoeru_state_cache.clear()
     service._asmr_probe_cache.clear()  # type: ignore[attr-defined]
 
     # 模拟 DLsite：每个候选 RJ 的 canonical 链路
@@ -486,28 +485,8 @@ async def test_collect_external_snapshot_dedupes_kikoeru_probes_by_canonical(
 
     service.asmr_service = _NoOpASMR()  # type: ignore[assignment]
 
-    # 关键 stub：记录 _probe_kikoeru_state 调用次数 + 调用的 RJ
-    probe_calls: List[str] = []
-
-    async def fake_probe_state(rj: str, *, use_cache: bool = True) -> Dict[str, Any]:
-        probe_calls.append(rj)
-        # 链路 A 在 Kikoeru 命中、链路 B 未命中——状态各异，方便核对回灌
-        if rj == "RJ001":
-            return {"has_kikoeru": True, "found_rjcodes": ["RJ001"], "subtitle_rjcodes": []}
-        if rj == "RJ100":
-            return {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
-        # 其他 RJ 不应该被 probe（因为新流程按 canonical 去重）
-        raise AssertionError(f"unexpected probe call: {rj}")
-
-    monkeypatch.setattr(service, "_probe_kikoeru_state", fake_probe_state)
-
     snapshot = await service._collect_external_snapshot(
         ["RJ001", "RJ002", "RJ100", "RJ101"],
-    )
-
-    # ---- 性能不变量：probe 只跑了 2 次（canonical 数），不是 5 次（all_rjcodes 数）
-    assert sorted(probe_calls) == ["RJ001", "RJ100"], (
-        f"应只对 canonical 各 probe 一次,实际调用 RJ：{probe_calls}"
     )
 
     # ---- 链路映射正确
@@ -523,20 +502,6 @@ async def test_collect_external_snapshot_dedupes_kikoeru_probes_by_canonical(
     # all_rjcodes 是所有链路的并集
     assert sorted(snapshot.all_rjcodes) == ["RJ001", "RJ002", "RJ100", "RJ101", "RJ102"]
 
-    # ---- 关键正确性：链上每个 RJ 都被回灌了同一份 state
-    state_a = service._kikoeru_state_cache.get("RJ001")
-    assert state_a is not None and state_a["has_kikoeru"] is True
-    for rj in ("RJ001", "RJ002"):
-        cached = service._kikoeru_state_cache.get(rj)
-        assert cached is state_a, f"链路 A 上 {rj} 的 cache 必须复用同一份 state"
-
-    state_b = service._kikoeru_state_cache.get("RJ100")
-    assert state_b is not None and state_b["has_kikoeru"] is False
-    for rj in ("RJ100", "RJ101", "RJ102"):
-        cached = service._kikoeru_state_cache.get(rj)
-        assert cached is state_b, f"链路 B 上 {rj} 的 cache 必须复用同一份 state"
-
-
 @pytest.mark.asyncio
 async def test_collect_external_snapshot_fallbacks_when_canonical_resolution_fails(
     monkeypatch: pytest.MonkeyPatch,
@@ -544,7 +509,6 @@ async def test_collect_external_snapshot_fallbacks_when_canonical_resolution_fai
     """``resolve_canonical_rj`` 抛错时必须 fallback 把 rj 自己当独立链路 canonical，
     不能漏掉任何候选作品。"""
     service = CircleCompletionService()
-    service._kikoeru_state_cache.clear()
     service._asmr_probe_cache.clear()  # type: ignore[attr-defined]
 
     async def fake_metadata(rj: str) -> Dict[str, Any]:
@@ -565,18 +529,9 @@ async def test_collect_external_snapshot_fallbacks_when_canonical_resolution_fai
 
     service.asmr_service = _NoOpASMR()  # type: ignore[assignment]
 
-    probe_calls: List[str] = []
-
-    async def fake_probe_state(rj: str, *, use_cache: bool = True) -> Dict[str, Any]:
-        probe_calls.append(rj)
-        return {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
-
-    monkeypatch.setattr(service, "_probe_kikoeru_state", fake_probe_state)
-
     snapshot = await service._collect_external_snapshot(["RJ001", "RJ002"])
 
-    # canonical 失败时每个 rj 自成一条独立链路，仍然各 probe 一次（不会漏作品）
-    assert sorted(probe_calls) == ["RJ001", "RJ002"]
+    # canonical 失败时每个 rj 自成一条独立链路，仍然不会漏作品。
     assert sorted(snapshot.all_rjcodes) == ["RJ001", "RJ002"]
     assert snapshot.canonical_rj_by_rj == {"RJ001": "RJ001", "RJ002": "RJ002"}
     assert sorted(snapshot.chain_rjs_by_canonical.keys()) == ["RJ001", "RJ002"]
@@ -589,7 +544,6 @@ async def test_collect_external_snapshot_progress_uses_business_wording(
     """进度回调文案应使用业务化语言（"在 ASMR.one 上核对作品"等），
     避免出现旧的"收集 ASMR.one 数据"这类内部用语。"""
     service = CircleCompletionService()
-    service._kikoeru_state_cache.clear()
 
     async def fake_metadata(rj: str) -> Dict[str, Any]:
         return {}
@@ -609,11 +563,6 @@ async def test_collect_external_snapshot_progress_uses_business_wording(
 
     service.asmr_service = _NoOpASMR()  # type: ignore[assignment]
 
-    async def fake_probe_state(rj: str, *, use_cache: bool = True) -> Dict[str, Any]:
-        return {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
-
-    monkeypatch.setattr(service, "_probe_kikoeru_state", fake_probe_state)
-
     progress_steps: List[str] = []
 
     def on_progress(pct: int, step: str) -> None:
@@ -628,11 +577,9 @@ async def test_collect_external_snapshot_progress_uses_business_wording(
     # 关键业务词
     assert "DLsite 作品关联链" in joined
     assert "ASMR.one" in joined
-    assert "Kikoeru" in joined
     assert "作品链路" in joined
     # 不应再出现纯内部用语
     assert "收集 ASMR.one 数据" not in joined
-    assert "收集 Kikoeru 数据" not in joined
     assert "展开 RJ 全集" not in joined
 
 
@@ -650,7 +597,6 @@ async def test_collect_external_snapshot_asmr_chain_probe_stops_on_first_hit(
     压到"1 条命中即停"，单社团 70-80% 的 ASMR.one HTTP 调用直接消失。
     """
     service = CircleCompletionService()
-    service._kikoeru_state_cache.clear()
     service._asmr_probe_cache.clear()  # type: ignore[attr-defined]
 
     # canonical=RJ100 (日文原作), 链上还有 RJ101 (简中)、RJ102 (繁中)
@@ -684,12 +630,6 @@ async def test_collect_external_snapshot_asmr_chain_probe_stops_on_first_hit(
 
     service.asmr_service = _PreferredHitASMR()  # type: ignore[assignment]
 
-    # Kikoeru stub：保证 wave 2b 不爆
-    async def fake_probe_state(rj: str, *, use_cache: bool = True) -> Dict[str, Any]:
-        return {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
-
-    monkeypatch.setattr(service, "_probe_kikoeru_state", fake_probe_state)
-
     snapshot = await service._collect_external_snapshot(["RJ100"])
 
     # ★ 关键正确性：preferred=RJ101 优先探，命中即停，原作 / 繁中不再打 ASMR.one
@@ -716,7 +656,6 @@ async def test_collect_external_snapshot_asmr_chain_probe_falls_back_to_chain(
     """preferred 在 ASMR.one miss 时按链上次序 fallback 探到原作 / 其他翻译版，
     全 miss 时链上每个 RJ 都标 None。"""
     service = CircleCompletionService()
-    service._kikoeru_state_cache.clear()
     service._asmr_probe_cache.clear()  # type: ignore[attr-defined]
 
     canonical_info = {
@@ -750,11 +689,6 @@ async def test_collect_external_snapshot_asmr_chain_probe_falls_back_to_chain(
             return [{"file": f"{rj}.mp3"}] if rj == "RJ200" else None
 
     service.asmr_service = _OriginalHitASMR()  # type: ignore[assignment]
-
-    async def fake_probe_state(rj: str, *, use_cache: bool = True) -> Dict[str, Any]:
-        return {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
-
-    monkeypatch.setattr(service, "_probe_kikoeru_state", fake_probe_state)
 
     snapshot = await service._collect_external_snapshot(["RJ200"])
 

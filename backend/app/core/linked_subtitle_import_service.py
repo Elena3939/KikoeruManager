@@ -2061,6 +2061,7 @@ class LinkedSubtitleImportService:
             row = (
                 db.query(WorkCanonicalLink)
                 .filter(
+                    WorkCanonicalLink.evidence_status == "verified",
                     WorkCanonicalLink.linked_rjcode == normalized_source,
                     WorkCanonicalLink.link_type.in_(("translation", "child_translation")),
                     WorkCanonicalLink.canonical_rjcode != normalized_source,
@@ -2082,7 +2083,15 @@ class LinkedSubtitleImportService:
 
     async def _resolve_translation_target_rjcode(self, source_rjcode: str, translation_info: Any) -> str:
         target_rjcode = ""
-        if translation_info and not getattr(translation_info, "is_original", False):
+        translation_verified = (
+            str(getattr(translation_info, "evidence_status", "") or "").strip().lower()
+            == "verified"
+        )
+        if (
+            translation_info
+            and translation_verified
+            and not getattr(translation_info, "is_original", False)
+        ):
             target_rjcode = str(getattr(translation_info, "original_workno", "") or "").strip().upper()
         if target_rjcode or not source_rjcode:
             return target_rjcode
@@ -2106,7 +2115,13 @@ class LinkedSubtitleImportService:
             product_info = None
             logger.warning("[字幕补配] 读取作品语言版本失败: source_rj=%s error=%s", source_rjcode, exc)
 
-        if product_info and product_info.get("product"):
+        if (
+            product_info
+            and product_info.get("product")
+            and str(
+                product_info.get("metadata_verification_status") or ""
+            ).strip().lower() == "verified"
+        ):
             product = product_info.get("product") or {}
             language_editions = product.get("language_editions", [])
             if isinstance(language_editions, dict):
@@ -2143,6 +2158,10 @@ class LinkedSubtitleImportService:
         for workno, work in (linked_works or {}).items():
             normalized = str(workno or "").strip().upper()
             if not normalized or normalized == source_rjcode:
+                continue
+            if str(
+                getattr(work, "evidence_status", "") or ""
+            ).strip().lower() != "verified":
                 continue
             work_type = str(getattr(work, "work_type", "") or "").lower()
             lang = str(getattr(work, "lang", "") or "").strip().upper()

@@ -2763,17 +2763,15 @@ class TaskEngine:
                                         or "DLsite 关联链结果不完整，疑似翻译作品，等待重试后重新预检"
                                     )
                                     task.output_path = ""
-                                    retry_after = datetime.now() + timedelta(minutes=15)
-                                    task.task_metadata = {
-                                        **(task.task_metadata or {}),
-                                        "retry_source": "linked_subtitle_precheck",
-                                        "retry_kind": "dlsite_linkage_uncertain",
-                                    }
-                                    task.set_waiting_retry(_reason, retry_after)
-                                    logger.warning(
-                                        f"[{rjcode}] DLsite 关联链不完整，疑似翻译作品，等待重试: "
-                                        f"reason={_reason} retry_after={retry_after.isoformat()}"
+                                    retry_after = self._schedule_dlsite_linkage_retry(
+                                        task,
+                                        _reason,
                                     )
+                                    if retry_after is not None:
+                                        logger.warning(
+                                            f"[{rjcode}] DLsite 关联链不完整，疑似翻译作品，等待重试: "
+                                            f"reason={_reason} retry_after={retry_after.isoformat()}"
+                                        )
                                     await self._abort_precheck(precheck_task)
                                     return
                                 if self._should_block_linked_translation_without_subtitles(preview):
@@ -3860,21 +3858,118 @@ class TaskEngine:
                 # 计算下次执行时间
                 cron = croniter(cron_expr, datetime.now())
                 next_run = cron.get_next(datetime)
-                wait_seconds = (next_run - datetime.now()).total_seconds()
+                now = datetime.now()
+                retry_after_values = []
+                for task in self.tasks.values():
+                    if task.status != TaskStatus.WAITING_RETRY:
+                        continue
+                    raw_retry_after = str(
+                        (task.task_metadata or {}).get("retry_after") or ""
+                    ).strip()
+                    if not raw_retry_after:
+                        continue
+                    try:
+                        retry_after_values.append(datetime.fromisoformat(raw_retry_after))
+                    except ValueError:
+                        logger.warning(
+                            "[重试调度器] 忽略无效 retry_after: task=%s value=%s",
+                            task.id,
+                            raw_retry_after,
+                        )
+                earliest_retry_after = min(retry_after_values) if retry_after_values else None
+                wake_at = min(next_run, earliest_retry_after) if earliest_retry_after else next_run
+                wait_seconds = max(0.0, (wake_at - now).total_seconds())
 
-                logger.info(f"[重试调度器] Cron: {cron_expr}, 下次执行: {next_run.strftime('%Y-%m-%d %H:%M:%S')} UTC, 等待 {wait_seconds/3600:.1f} 小时")
+                logger.info(
+                    "[重试调度器] Cron=%s cron_at=%s retry_at=%s wake_at=%s wait=%.1fs",
+                    cron_expr,
+                    next_run.isoformat(),
+                    earliest_retry_after.isoformat() if earliest_retry_after else "",
+                    wake_at.isoformat(),
+                    wait_seconds,
+                )
 
                 if wait_seconds > 0:
                     await asyncio.sleep(wait_seconds)
 
                 # 检查待重试任务
-                await self._check_retry_tasks()
+                await self._check_retry_tasks(
+                    allow_without_retry_after=datetime.now() >= next_run,
+                )
 
             except Exception as e:
                 logger.error(f"重试调度器错误: {e}")
                 await asyncio.sleep(60)  # 出错后等待1分钟再重试
 
-    async def _check_retry_tasks(self):
+    def _mark_dlsite_linkage_retry_exhausted(self, task: Task, reason: str) -> None:
+        task.task_metadata = {
+            **(task.task_metadata or {}),
+            "retry_exhausted": True,
+            "retry_exhausted_at": datetime.now().isoformat(),
+            "available_actions": ["RETRY", "SKIP"],
+        }
+        try:
+            self._record_problem_work_for_task_failure(task, task.rjcode, reason)
+        except Exception:
+            logger.warning(
+                "[%s] DLsite 关联链重试耗尽后写入问题作品失败",
+                task.rjcode or "未知",
+                exc_info=True,
+            )
+        with task._set_state_silent():
+            task.status = TaskStatus.WAITING_MANUAL
+            task.current_step = "等待人工: DLsite 关联链仍不完整，已停止自动重试"
+            task.completed_at = datetime.now()
+        task.mark_changed("status")
+        self._remove_waiting_retry_task(task.rjcode)
+
+    def _schedule_dlsite_linkage_retry(
+        self,
+        task: Task,
+        reason: str,
+    ) -> Optional[datetime]:
+        delays = (
+            timedelta(minutes=15),
+            timedelta(hours=1),
+            timedelta(hours=6),
+        )
+        completed_retry_count = max(
+            0,
+            int((task.task_metadata or {}).get("retry_count") or 0),
+        )
+        if completed_retry_count >= len(delays):
+            self._mark_dlsite_linkage_retry_exhausted(task, reason)
+            return None
+
+        retry_after = datetime.now() + delays[completed_retry_count]
+        attempt_number = completed_retry_count + 1
+        attempt_history = [
+            dict(item)
+            for item in list(
+                (task.task_metadata or {}).get("dlsite_linkage_attempt_history") or []
+            )
+            if isinstance(item, dict)
+        ]
+        attempt_history.append({
+            "attempt": attempt_number,
+            "scheduled_at": datetime.now().isoformat(),
+            "retry_after": retry_after.isoformat(),
+            "reason": reason,
+        })
+        normalized_rjcode = str(task.rjcode or "").strip().upper()
+        task.task_metadata = {
+            **(task.task_metadata or {}),
+            "retry_source": "linked_subtitle_precheck",
+            "retry_kind": "dlsite_linkage_uncertain",
+            "business_key": f"{normalized_rjcode}:dlsite_linkage",
+            "dlsite_linkage_attempt_history": attempt_history,
+            "dlsite_linkage_max_retry_count": len(delays),
+        }
+        task.business_key = task.task_metadata["business_key"]
+        task.set_waiting_retry(reason, retry_after)
+        return retry_after
+
+    async def _check_retry_tasks(self, *, allow_without_retry_after: bool = True):
         """检查并重试等待中的任务（由cron调度器触发）"""
         from ..config.settings import get_config
 
@@ -3884,33 +3979,31 @@ class TaskEngine:
         retry_count = 0
         for task_id, task in list(self.tasks.items()):
             if task.status == TaskStatus.WAITING_RETRY:
+                raw_retry_after = str(
+                    (task.task_metadata or {}).get("retry_after") or ""
+                ).strip()
+                if raw_retry_after and not task.can_retry_now():
+                    continue
+                if not raw_retry_after and not allow_without_retry_after:
+                    continue
                 # 检查重试次数
-                if task.task_metadata.get('retry_count', 0) >= max_retry:
-                    if str(task.task_metadata.get("retry_kind") or "") == "dlsite_linkage_uncertain":
+                is_dlsite_linkage_retry = (
+                    str(task.task_metadata.get("retry_kind") or "")
+                    == "dlsite_linkage_uncertain"
+                )
+                retry_limit = 3 if is_dlsite_linkage_retry else max_retry
+                exhausted = (
+                    task.task_metadata.get('retry_count', 0) > retry_limit
+                    if is_dlsite_linkage_retry
+                    else task.task_metadata.get('retry_count', 0) >= retry_limit
+                )
+                if exhausted:
+                    if is_dlsite_linkage_retry:
                         reason = str(
                             task.task_metadata.get("retry_reason")
                             or "DLsite 关联链仍不完整，已停止自动重试"
                         ).strip()
-                        task.task_metadata = {
-                            **(task.task_metadata or {}),
-                            "retry_exhausted": True,
-                            "retry_exhausted_at": datetime.now().isoformat(),
-                            "available_actions": ["RETRY", "SKIP"],
-                        }
-                        try:
-                            self._record_problem_work_for_task_failure(task, task.rjcode, reason)
-                        except Exception:
-                            logger.warning(
-                                "[%s] DLsite 关联链重试耗尽后写入问题作品失败",
-                                task.rjcode or "未知",
-                                exc_info=True,
-                            )
-                        with task._set_state_silent():
-                            task.status = TaskStatus.WAITING_MANUAL
-                            task.current_step = "等待人工: DLsite 关联链仍不完整，已停止自动重试"
-                            task.completed_at = datetime.now()
-                        task.mark_changed("status")
-                        self._remove_waiting_retry_task(task.rjcode)
+                        self._mark_dlsite_linkage_retry_exhausted(task, reason)
                         logger.warning(
                             "[%s] DLsite 关联链达到最大重试次数 %s，已转等待人工",
                             task.rjcode or "未知",

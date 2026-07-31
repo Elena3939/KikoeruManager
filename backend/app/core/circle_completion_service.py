@@ -1268,6 +1268,7 @@ class CircleCompletionService:
             anchor_rows = (
                 db.query(WorkCanonicalLink)
                 .filter(
+                    WorkCanonicalLink.evidence_status == "verified",
                     sa_or(
                         WorkCanonicalLink.linked_rjcode == normalized_rj,
                         WorkCanonicalLink.canonical_rjcode == normalized_rj,
@@ -1286,7 +1287,10 @@ class CircleCompletionService:
 
             link_rows = (
                 db.query(WorkCanonicalLink)
-                .filter(WorkCanonicalLink.canonical_rjcode.in_(canonical_rjcodes))
+                .filter(
+                    WorkCanonicalLink.evidence_status == "verified",
+                    WorkCanonicalLink.canonical_rjcode.in_(canonical_rjcodes),
+                )
                 .all()
             )
             link_meta_by_rj: Dict[str, Dict[str, Any]] = {}
@@ -2598,7 +2602,10 @@ class CircleCompletionService:
             )
             link_rows = (
                 db.query(WorkCanonicalLink)
-                .filter(WorkCanonicalLink.canonical_rjcode.in_(work_canonical_rjcodes))
+                .filter(
+                    WorkCanonicalLink.evidence_status == "verified",
+                    WorkCanonicalLink.canonical_rjcode.in_(work_canonical_rjcodes),
+                )
                 .all()
                 if works else []
             )
@@ -3589,6 +3596,7 @@ class CircleCompletionService:
             if not rows:
                 return {}
             links = db.query(WorkCanonicalLink).filter(
+                WorkCanonicalLink.evidence_status == "verified",
                 WorkCanonicalLink.canonical_rjcode.in_([row.canonical_rjcode for row in rows]),
             ).all()
             link_map_by_canonical: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
@@ -4184,6 +4192,8 @@ class CircleCompletionService:
                         linked_rjcode=linked,
                         link_type=row.get("link_type") or "linked",
                         lang=row.get("lang") or "",
+                        evidence_source=row.get("evidence_source") or "unknown",
+                        evidence_status=row.get("evidence_status") or "unverified",
                         cached_at=now,
                     ))
             db.commit()
@@ -4242,6 +4252,7 @@ class CircleCompletionService:
             all_rows = (
                 db.query(WorkCanonicalLink)
                 .filter(
+                    WorkCanonicalLink.evidence_status == "verified",
                     (WorkCanonicalLink.linked_rjcode.in_(normalized))
                     | (WorkCanonicalLink.canonical_rjcode.in_(normalized))
                 )
@@ -4281,10 +4292,13 @@ class CircleCompletionService:
                     self.normalize_rjcode(row.linked_rjcode): {
                         "link_type": row.link_type,
                         "lang": row.lang,
+                        "evidence_source": row.evidence_source or "",
+                        "evidence_status": row.evidence_status or "unverified",
                     }
                     for row in rows
                     if self.normalize_rjcode(row.linked_rjcode)
                 },
+                "evidence_status": "verified",
             }
             # 链路上每个 RJ 共享同一份 payload（与 resolve_canonical_rj 写 cache 时一致）
             for linked_rj in linked or [actual_canonical]:
@@ -4357,10 +4371,13 @@ class CircleCompletionService:
                     self.normalize_rjcode(row.linked_rjcode): {
                         "link_type": row.link_type,
                         "lang": row.lang,
+                        "evidence_source": row.evidence_source or "",
+                        "evidence_status": row.evidence_status or "unverified",
                     }
                     for row in rows
                     if self.normalize_rjcode(row.linked_rjcode)
                 },
+                "evidence_status": "verified",
             }
 
         # ⚠ 性能优化：buffered 模式下（wave1 批量场景）跳过 Block 1 的 DB SELECT。
@@ -4374,6 +4391,7 @@ class CircleCompletionService:
                 cached_rows = (
                     db.query(WorkCanonicalLink)
                     .filter(
+                        WorkCanonicalLink.evidence_status == "verified",
                         (WorkCanonicalLink.linked_rjcode == normalized_rj)
                         | (WorkCanonicalLink.canonical_rjcode == normalized_rj)
                     )
@@ -4395,7 +4413,10 @@ class CircleCompletionService:
                     ):
                         cached_rows = (
                             db.query(WorkCanonicalLink)
-                            .filter(WorkCanonicalLink.canonical_rjcode.in_(cached_canonicals))
+                            .filter(
+                                WorkCanonicalLink.evidence_status == "verified",
+                                WorkCanonicalLink.canonical_rjcode.in_(cached_canonicals),
+                            )
                             .all()
                         )
                     payload = build_canonical_payload(cached_rows, normalized_rj)
@@ -4428,12 +4449,22 @@ class CircleCompletionService:
                     continue
                 work_type = str(getattr(linked_work, "work_type", "") or "linked").strip() or "linked"
                 lang = str(getattr(linked_work, "lang", "") or "").strip()
+                evidence_source = str(
+                    getattr(linked_work, "evidence_source", "") or "unknown"
+                ).strip()
+                evidence_status = str(
+                    getattr(linked_work, "evidence_status", "") or "unverified"
+                ).strip().lower()
+                if evidence_status != "verified":
+                    continue
                 if work_type == "original":
                     canonical_rjcode = linked_rj_norm
                 link_rows.append({
                     "linked_rjcode": linked_rj_norm,
                     "link_type": work_type,
                     "lang": lang,
+                    "evidence_source": evidence_source,
+                    "evidence_status": evidence_status,
                 })
             canonical_rjcode = _select_canonical_from_link_rows(link_rows, canonical_rjcode)
         degraded_refresh = bool(refresh and len(link_rows) <= 1 and canonical_rjcode == normalized_rj)
@@ -4457,19 +4488,43 @@ class CircleCompletionService:
                             continue
                         work_type = str(getattr(linked_work, "work_type", "") or "linked").strip() or "linked"
                         lang = str(getattr(linked_work, "lang", "") or "").strip()
+                        evidence_source = str(
+                            getattr(linked_work, "evidence_source", "") or "unknown"
+                        ).strip()
+                        evidence_status = str(
+                            getattr(linked_work, "evidence_status", "") or "unverified"
+                        ).strip().lower()
+                        if evidence_status != "verified":
+                            continue
                         if work_type == "original":
                             recovered_canonical = linked_rj_norm
                         recovered_rows.append({
                             "linked_rjcode": linked_rj_norm,
                             "link_type": work_type,
                             "lang": lang,
+                            "evidence_source": evidence_source,
+                            "evidence_status": evidence_status,
                         })
                     if recovered_rows:
                         link_rows = recovered_rows
                         canonical_rjcode = recovered_canonical
         if not link_rows:
-            link_rows = [{"linked_rjcode": normalized_rj, "link_type": "self", "lang": ""}]
-            canonical_rjcode = normalized_rj
+            payload = {
+                "canonical_rjcode": normalized_rj,
+                "linked_rjcodes": [normalized_rj],
+                "link_map": {
+                    normalized_rj: {
+                        "link_type": "self",
+                        "lang": "",
+                        "evidence_source": "unknown",
+                        "evidence_status": "unverified",
+                    }
+                },
+                "evidence_status": "unverified",
+                "evidence_reason": "DLsite 关联链缺少已验证证据",
+            }
+            self._canonical_cache[normalized_rj] = payload
+            return payload
 
         # ⚠ 性能优化：buffered 模式下跳过 Block 2 的 overlap SELECT。
         # 该 SELECT 的目的是"如果别的链路也包含这些 RJ，合并 link_rows 以避免误删"，
@@ -4484,6 +4539,7 @@ class CircleCompletionService:
                     existing_overlap_rows = (
                         db.query(WorkCanonicalLink)
                         .filter(
+                            WorkCanonicalLink.evidence_status == "verified",
                             (WorkCanonicalLink.linked_rjcode.in_(overlap_codes))
                             | (WorkCanonicalLink.canonical_rjcode.in_(overlap_codes))
                         )
@@ -4505,6 +4561,8 @@ class CircleCompletionService:
                                     "linked_rjcode": linked,
                                     "link_type": str(existing.link_type or ""),
                                     "lang": str(existing.lang or ""),
+                                    "evidence_source": str(existing.evidence_source or ""),
+                                    "evidence_status": str(existing.evidence_status or ""),
                                 }
                         link_rows = list(merged_by_rj.values())
                         canonical_rjcode = _select_canonical_from_link_rows(link_rows, canonical_rjcode)
@@ -4531,6 +4589,8 @@ class CircleCompletionService:
                         linked_rjcode=row["linked_rjcode"],
                         link_type=row["link_type"],
                         lang=row["lang"],
+                        evidence_source=row.get("evidence_source") or "unknown",
+                        evidence_status=row.get("evidence_status") or "unverified",
                         cached_at=datetime.now(),
                     ))
                 db.commit()
@@ -4547,9 +4607,12 @@ class CircleCompletionService:
                 row["linked_rjcode"]: {
                     "link_type": row["link_type"],
                     "lang": row["lang"],
+                    "evidence_source": row.get("evidence_source") or "",
+                    "evidence_status": row.get("evidence_status") or "unverified",
                 }
                 for row in link_rows
             },
+            "evidence_status": "verified",
         }
         for linked_rjcode in payload.get("linked_rjcodes") or [normalized_rj]:
             normalized_linked = self.normalize_rjcode(linked_rjcode)
@@ -6463,6 +6526,7 @@ class CircleCompletionService:
             rows = (
                 db.query(WorkCanonicalLink.linked_rjcode)
                 .filter(
+                    WorkCanonicalLink.evidence_status == "verified",
                     WorkCanonicalLink.linked_rjcode.in_(normalized_codes),
                     WorkCanonicalLink.link_type == "bonus",
                 )
@@ -7516,7 +7580,10 @@ class CircleCompletionService:
             try:
                 link_rows = (
                     db.query(WorkCanonicalLink)
-                    .filter(WorkCanonicalLink.canonical_rjcode.in_(list(aggregated.keys())))
+                    .filter(
+                        WorkCanonicalLink.evidence_status == "verified",
+                        WorkCanonicalLink.canonical_rjcode.in_(list(aggregated.keys())),
+                    )
                     .all()
                     if aggregated else []
                 )
@@ -8092,7 +8159,10 @@ class CircleCompletionService:
             )
             link_rows = (
                 db.query(WorkCanonicalLink)
-                .filter(WorkCanonicalLink.canonical_rjcode.in_(work_canonical_rjcodes))
+                .filter(
+                    WorkCanonicalLink.evidence_status == "verified",
+                    WorkCanonicalLink.canonical_rjcode.in_(work_canonical_rjcodes),
+                )
                 .all()
                 if works else []
             )

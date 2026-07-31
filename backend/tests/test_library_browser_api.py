@@ -1,6 +1,8 @@
 import asyncio
+import json
 import os
 import threading
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -266,7 +268,7 @@ def test_library_browser_endpoints_support_multi_library(client, monkeypatch, tm
 
     create_response = client.post(
         "/api/library/browser/create-folder",
-        headers={"Idempotency-Key": "test-create-library-folder"},
+        headers={"Idempotency-Key": f"test-create-library-folder-{uuid.uuid4().hex}"},
         json={
             "library_id": "local-a",
             "parent_path": str(target_dir),
@@ -279,7 +281,7 @@ def test_library_browser_endpoints_support_multi_library(client, monkeypatch, tm
 
     duplicate_response = client.post(
         "/api/library/browser/create-folder",
-        headers={"Idempotency-Key": "test-create-library-folder-duplicate"},
+        headers={"Idempotency-Key": f"test-create-library-folder-duplicate-{uuid.uuid4().hex}"},
         json={
             "library_id": "local-a",
             "parent_path": str(target_dir),
@@ -1997,6 +1999,7 @@ def test_api_rename_locks_metadata_to_target_folder_rjcode(monkeypatch):
                 "work_name": "目标作品",
                 "maker_name": "青春",
                 "cvs": [],
+                "metadata_evidence_source": "dlsite_product",
             }
 
     class FakeRenameService:
@@ -2092,6 +2095,7 @@ def test_local_api_rename_commits_mutation_fence(monkeypatch, tmp_path):
                 "work_name": "目标作品",
                 "maker_name": "目标社团",
                 "cvs": [],
+                "metadata_evidence_source": "dlsite_product",
             }
 
     class FakeMutationService:
@@ -2196,16 +2200,18 @@ def test_api_rename_rejects_minimal_metadata_without_renaming(monkeypatch):
     monkeypatch.setattr("app.core.metadata_service.MetadataService", lambda: FakeMetadataService())
     monkeypatch.setattr("app.core.activity_log_service.log_api_rename_action", lambda **_kwargs: None)
 
-    with pytest.raises(routes_module.HTTPException) as exc_info:
-        asyncio.run(
-            routes_module.api_rename_library_file(_FakeJsonRequest({
-                "library_id": "remote-a",
-                "path": "/library_amsr/青春/RJ01572763",
-            }))
-        )
+    response = asyncio.run(
+        routes_module.api_rename_library_file(_FakeJsonRequest({
+            "library_id": "remote-a",
+            "path": "/library_amsr/青春/RJ01572763",
+        }))
+    )
+    payload = json.loads(response.body)
 
-    assert exc_info.value.status_code == 422
-    assert "DLsite 元数据不可用" in str(exc_info.value.detail)
+    assert response.status_code == 422
+    assert payload["skipped"] is True
+    assert payload["metadata_verification_status"] == "unverified"
+    assert "元数据" in payload["detail"]
     assert captured["metadata_task_rjcode"] == "RJ01572763"
     assert captured["force_refresh"] is False
     assert "rename_called" not in captured
@@ -2247,15 +2253,14 @@ def test_api_rename_normalizes_markdown_rjcode_before_metadata_fetch(monkeypatch
     monkeypatch.setattr("app.core.activity_log_service.log_api_rename_action", lambda **_kwargs: None)
 
     markdown_path = "/library_amsr/[RJ01649758](https://www.dlsite.com/maniax/work/=/product_id/RJ01649758.html)"
-    with pytest.raises(routes_module.HTTPException) as exc_info:
-        asyncio.run(
-            routes_module.api_rename_library_file(_FakeJsonRequest({
-                "library_id": "remote-a",
-                "path": markdown_path,
-            }))
-        )
+    response = asyncio.run(
+        routes_module.api_rename_library_file(_FakeJsonRequest({
+            "library_id": "remote-a",
+            "path": markdown_path,
+        }))
+    )
 
-    assert exc_info.value.status_code == 422
+    assert response.status_code == 422
     assert captured["metadata_task_rjcode"] == "RJ01649758"
     assert captured["metadata_task_metadata"] == {
         "rjcode": "RJ01649758",
@@ -2439,6 +2444,7 @@ def test_local_batch_api_rename_fence_contains_only_successful_items(monkeypatch
                 "work_name": f"作品 {task.rjcode}",
                 "maker_name": "目标社团",
                 "cvs": [],
+                "metadata_evidence_source": "dlsite_product",
             }
 
     class FakeMutationService:
