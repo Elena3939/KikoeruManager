@@ -126,7 +126,12 @@ class DLsiteMetadataRepairService:
         finally:
             db.close()
 
-    async def build_plan(self, candidate: RepairCandidate) -> dict[str, Any]:
+    async def build_plan(
+        self,
+        candidate: RepairCandidate,
+        *,
+        include_filesystem: bool = True,
+    ) -> dict[str, Any]:
         rjcode = candidate.rjcode
         self._dlsite.invalidate_rj_graph_cache(rjcode)
         product_info = await self._dlsite.get_product_info(rjcode, refresh=True)
@@ -154,7 +159,7 @@ class DLsiteMetadataRepairService:
         new_path = ""
         conflict = False
         filesystem_action = "none"
-        if candidate.old_path and candidate.library_id:
+        if include_filesystem and candidate.old_path and candidate.library_id:
             library = self._manager.get_library_definition(candidate.library_id)
             new_name = self._build_api_rename_name(rjcode, metadata)
             safe_maker = self._sanitize_filename(new_maker_name)
@@ -163,6 +168,8 @@ class DLsiteMetadataRepairService:
                 os.path.abspath(candidate.old_path)
             )
             filesystem_action = "skip" if rjcode in FILESYSTEM_SKIP_RJCODES else "rename_and_move"
+        elif candidate.old_path:
+            filesystem_action = "metadata_only"
 
         return {
             "rjcode": rjcode,
@@ -179,10 +186,20 @@ class DLsiteMetadataRepairService:
             "metadata": metadata,
         }
 
-    async def build_plans(self, rjcodes: Optional[Iterable[str]] = None) -> list[dict[str, Any]]:
+    async def build_plans(
+        self,
+        rjcodes: Optional[Iterable[str]] = None,
+        *,
+        include_filesystem: bool = True,
+    ) -> list[dict[str, Any]]:
         plans = []
         for candidate in self.enumerate_candidates(rjcodes):
-            plans.append(await self.build_plan(candidate))
+            plans.append(
+                await self.build_plan(
+                    candidate,
+                    include_filesystem=include_filesystem,
+                )
+            )
         return plans
 
     async def apply_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
