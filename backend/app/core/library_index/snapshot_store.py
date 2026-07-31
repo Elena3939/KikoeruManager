@@ -432,6 +432,99 @@ DELETE FROM library_index_entries AS target
  )
 """
 
+_REBUILD_STAGE_MERGE_SUBTREE_SQL = f"""
+INSERT INTO library_index_entries (
+    library_id,
+    generation,
+    materialized_seq,
+    entry_type,
+    relative_path,
+    absolute_path,
+    name,
+    name_sort_key,
+    rjcode,
+    parent_path,
+    size,
+    file_count,
+    mtime,
+    depth,
+    indexed_at
+)
+SELECT
+    staged.library_id,
+    staged.generation,
+    staged.materialized_seq,
+    staged.entry_type,
+    staged.relative_path,
+    staged.absolute_path,
+    staged.name,
+    staged.name_sort_key,
+    staged.rjcode,
+    staged.parent_path,
+    staged.size,
+    staged.file_count,
+    staged.mtime,
+    staged.depth,
+    staged.indexed_at
+FROM {_REBUILD_STAGE_TABLE_NAME} AS staged
+WHERE staged.library_id = :library_id
+  AND staged.generation = :generation
+ON CONFLICT(library_id, generation, relative_path) DO UPDATE SET
+    materialized_seq = excluded.materialized_seq,
+    entry_type = excluded.entry_type,
+    absolute_path = excluded.absolute_path,
+    name = excluded.name,
+    name_sort_key = excluded.name_sort_key,
+    rjcode = excluded.rjcode,
+    parent_path = excluded.parent_path,
+    size = excluded.size,
+    file_count = excluded.file_count,
+    mtime = excluded.mtime,
+    depth = excluded.depth,
+    indexed_at = excluded.indexed_at
+WHERE library_index_entries.materialized_seq IS DISTINCT FROM excluded.materialized_seq
+   OR library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
+   OR library_index_entries.absolute_path IS DISTINCT FROM excluded.absolute_path
+   OR library_index_entries.name IS DISTINCT FROM excluded.name
+   OR library_index_entries.name_sort_key IS DISTINCT FROM excluded.name_sort_key
+   OR library_index_entries.rjcode IS DISTINCT FROM excluded.rjcode
+   OR library_index_entries.parent_path IS DISTINCT FROM excluded.parent_path
+   OR library_index_entries.size IS DISTINCT FROM excluded.size
+   OR library_index_entries.file_count IS DISTINCT FROM excluded.file_count
+   OR library_index_entries.mtime IS DISTINCT FROM excluded.mtime
+   OR library_index_entries.depth IS DISTINCT FROM excluded.depth
+"""
+
+_REBUILD_STAGE_DELETE_SUBTREE_MISSING_SQL = f"""
+DELETE FROM library_index_entries AS target
+ WHERE target.library_id = :library_id
+   AND target.generation = :generation
+   AND (
+       (
+           :scope = 'subtree'
+           AND (
+               :relative_path = ''
+               OR target.relative_path = :relative_path
+               OR (
+                   target.relative_path >= :subtree_start
+                   AND target.relative_path < :subtree_end
+               )
+           )
+       )
+       OR (
+           :scope = 'exact'
+           AND target.relative_path = :relative_path
+       )
+   )
+   AND NOT EXISTS (
+       SELECT 1
+         FROM {_REBUILD_STAGE_TABLE_NAME} AS staged
+        WHERE staged.library_id = target.library_id
+          AND staged.generation = target.generation
+          AND staged.relative_path = target.relative_path
+   )
+"""
+
 DEFAULT_BULK_UPSERT_CHUNK_SIZE = 500
 DEFAULT_SELF_MUTATION_DELETE_CHUNK_SIZE = 200
 DEFAULT_SELF_MUTATION_MOVE_CHUNK_SIZE = 50
@@ -3429,6 +3522,52 @@ class SnapshotRebuildWriter:
         result["inserted"] = inserted_total
         result["updated"] = updated_total
         result["deleted"] = deleted_total
+        return result
+
+    def finish_subtree_atomic(
+        self,
+        *,
+        generation: int,
+        relative_path: str,
+        scope: str,
+        before_commit,
+    ) -> dict[str, int]:
+        """单事务合并子树、删除 stale，并由调用方推进 ledger 水位。"""
+        if self._conn is None:
+            raise RuntimeError("SnapshotRebuildWriter 尚未初始化")
+        normalized_scope = str(scope or "exact").strip().lower()
+        if normalized_scope not in {"exact", "subtree"}:
+            raise ValueError(f"不支持的 staging reconcile scope: {normalized_scope}")
+        normalized_path = str(relative_path or "").replace("\\", "/").strip("/")
+        params = {
+            "library_id": self.library_id,
+            "generation": int(generation),
+            "scope": normalized_scope,
+            "relative_path": normalized_path,
+            "subtree_start": f"{normalized_path}/",
+            "subtree_end": f"{normalized_path}0",
+        }
+        with get_resource_budget_service().acquire_sync(
+            "library_index_write",
+            reason="library_index.reconcile_stage_cutover",
+        ):
+            with self._conn.begin():
+                self._conn.execute(text(_REBUILD_STAGE_ANALYZE_SQL))
+                merged = self._conn.execute(
+                    text(_REBUILD_STAGE_MERGE_SUBTREE_SQL),
+                    params,
+                )
+                deleted = self._conn.execute(
+                    text(_REBUILD_STAGE_DELETE_SUBTREE_MISSING_SQL),
+                    params,
+                )
+                before_commit(self._conn)
+                result = {
+                    "staged": int(self.staged_rows or 0),
+                    "merged": max(0, int(merged.rowcount or 0)),
+                    "deleted": max(0, int(deleted.rowcount or 0)),
+                }
+        self._store._invalidate_children_total_cache(self.library_id)
         return result
 
     def close(self) -> None:

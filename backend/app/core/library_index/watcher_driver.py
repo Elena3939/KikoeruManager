@@ -25,6 +25,7 @@ MAX_DIRTY_PATHS = 20000
 SCRUB_INTERVAL_SECONDS = 300.0
 SCRUB_MAX_DIRECTORIES = 200
 SCRUB_MAX_SECONDS = 2.0
+GENERATION_RECOVERY_DEBOUNCE_SECONDS = 5.0
 _INOTIFY_LIMIT_PATHS = {
     "max_user_watches": "/proc/sys/fs/inotify/max_user_watches",
     "max_user_instances": "/proc/sys/fs/inotify/max_user_instances",
@@ -96,7 +97,11 @@ class _InventoryEventHandler(FileSystemEventHandler):
                 self.owner.mark_dirty(self.library_id, self.root_path, str(path))
 
     def on_error(self, _event) -> None:
-        self.owner.mark_dirty(self.library_id, self.root_path, self.root_path)
+        self.owner.request_generation_recovery(
+            self.library_id,
+            self.root_path,
+            reason="watcher_error",
+        )
 
 
 class LibraryIndexWatcherDriver:
@@ -114,6 +119,9 @@ class LibraryIndexWatcherDriver:
         self._scrub_elapsed_ms = 0
         self._scrub_cursor: dict[str, int] = {}
         self._scrub_signatures: dict[tuple[str, str], tuple] = {}
+        self._generation_recovery_requested: dict[str, tuple[str, float]] = {}
+        self._generation_recovery_running: set[str] = set()
+        self._generation_recovery_count = 0
         self._watcher_mode = "stopped"
         self._last_start_error: Optional[str] = None
         self._last_start_errno: Optional[int] = None
@@ -241,6 +249,13 @@ class LibraryIndexWatcherDriver:
                 return
         except ValueError:
             return
+        if os.path.normcase(normalized) == os.path.normcase(root_path):
+            self.request_generation_recovery(
+                library_id,
+                root_path,
+                reason="root_structure_changed",
+            )
+            return
         try:
             relative_path = os.path.relpath(normalized, root_path).replace("\\", "/")
             if relative_path == ".":
@@ -258,7 +273,6 @@ class LibraryIndexWatcherDriver:
             bucket = self._dirty.setdefault(library_id, {})
             if normalized not in bucket and len(bucket) >= MAX_DIRTY_PATHS:
                 bucket.clear()
-                bucket[root_path] = _DirtyPath(first_at=now, last_at=now)
                 self._overflow_count += 1
                 overflowed = True
             else:
@@ -271,10 +285,10 @@ class LibraryIndexWatcherDriver:
         try:
             redis = get_redis_service()
             if overflowed:
-                redis.upsert_library_index_dirty_paths_sync(
+                self.request_generation_recovery(
                     library_id,
-                    [""],
-                    score_ms=time.time() * 1000,
+                    root_path,
+                    reason="dirty_overflow",
                 )
             else:
                 redis.upsert_library_index_dirty_paths_sync(
@@ -285,6 +299,95 @@ class LibraryIndexWatcherDriver:
         except Exception:
             logger.debug("[索引 watcher] Redis dirty 热提示失败", exc_info=True)
         self._wake_event.set()
+
+    def request_generation_recovery(
+        self,
+        library_id: str,
+        root_path: str,
+        *,
+        reason: str,
+    ) -> None:
+        now = time.monotonic()
+        with self._lock:
+            self._roots[library_id] = root_path
+            self._dirty.pop(library_id, None)
+            current = self._generation_recovery_requested.get(library_id)
+            first_at = current[1] if current else now
+            self._generation_recovery_requested[library_id] = (
+                str(reason or "watcher"),
+                first_at,
+            )
+        try:
+            get_redis_service().remove_library_index_dirty_paths_sync(
+                library_id,
+                [""],
+                include_descendants=True,
+            )
+        except Exception:
+            logger.debug("[索引 watcher] recovery 清理 Redis dirty 失败", exc_info=True)
+        self._wake_event.set()
+
+    def _take_generation_recoveries(self) -> list[tuple[str, str, str]]:
+        now = time.monotonic()
+        selected: list[tuple[str, str, str]] = []
+        with self._lock:
+            for library_id, (reason, first_at) in list(
+                self._generation_recovery_requested.items()
+            ):
+                if library_id in self._generation_recovery_running:
+                    continue
+                if now - first_at < GENERATION_RECOVERY_DEBOUNCE_SECONDS:
+                    continue
+                root_path = self._roots.get(library_id)
+                if not root_path:
+                    self._generation_recovery_requested.pop(library_id, None)
+                    continue
+                self._generation_recovery_requested.pop(library_id, None)
+                self._generation_recovery_running.add(library_id)
+                selected.append((library_id, root_path, reason))
+        return selected
+
+    def _start_generation_recovery(
+        self,
+        library_id: str,
+        root_path: str,
+        reason: str,
+    ) -> None:
+        def run() -> None:
+            try:
+                from .service import get_library_index_service
+
+                get_library_index_service().rebuild_local_generation(
+                    library_id,
+                    root_path,
+                )
+                self._generation_recovery_count += 1
+                logger.info(
+                    "[索引 watcher] generation recovery 完成 library=%s reason=%s",
+                    library_id,
+                    reason,
+                )
+            except Exception:
+                logger.exception(
+                    "[索引 watcher] generation recovery 失败 library=%s reason=%s",
+                    library_id,
+                    reason,
+                )
+                with self._lock:
+                    self._generation_recovery_requested[library_id] = (
+                        reason,
+                        time.monotonic(),
+                    )
+            finally:
+                with self._lock:
+                    self._generation_recovery_running.discard(library_id)
+                self._wake_event.set()
+
+        threading.Thread(
+            target=run,
+            name=f"library-index-generation-recovery-{library_id}",
+            daemon=True,
+        ).start()
 
     def _requeue(self, library_id: str, absolute_paths: list[str]) -> None:
         now = time.monotonic()
@@ -393,6 +496,8 @@ class LibraryIndexWatcherDriver:
         while not self._stop_event.is_set():
             self._wake_event.wait(0.25)
             self._wake_event.clear()
+            for library_id, root_path, reason in self._take_generation_recoveries():
+                self._start_generation_recovery(library_id, root_path, reason)
             for library_id, paths in self._take_due().items():
                 try:
                     self._dispatch(library_id, paths)
@@ -407,17 +512,22 @@ class LibraryIndexWatcherDriver:
                 next_scrub_at = time.monotonic() + SCRUB_INTERVAL_SECONDS
 
     @staticmethod
-    def _direct_signature(directory: str) -> tuple:
+    def _direct_signature(
+        directory: str,
+        *,
+        ignore_directory_stats: bool = False,
+    ) -> tuple:
         rows = []
         with os.scandir(directory) as iterator:
             for entry in iterator:
                 try:
                     stat_result = entry.stat(follow_symlinks=False)
+                    is_dir = bool(entry.is_dir(follow_symlinks=False))
                     rows.append((
                         entry.name,
-                        bool(entry.is_dir(follow_symlinks=False)),
-                        int(stat_result.st_size or 0),
-                        int(stat_result.st_mtime_ns or 0),
+                        is_dir,
+                        None if is_dir and ignore_directory_stats else int(stat_result.st_size or 0),
+                        None if is_dir and ignore_directory_stats else int(stat_result.st_mtime_ns or 0),
                     ))
                 except OSError:
                     rows.append((entry.name, None, None, None))
@@ -437,7 +547,11 @@ class LibraryIndexWatcherDriver:
                     if entry.is_dir(follow_symlinks=False)
                 )
             except OSError:
-                self.mark_dirty(library_id, root_path, root_path)
+                self.request_generation_recovery(
+                    library_id,
+                    root_path,
+                    reason="root_scan_error",
+                )
                 continue
             cursor = int(self._scrub_cursor.get(library_id, 0) or 0) % max(len(directories), 1)
             for offset in range(len(directories)):
@@ -448,7 +562,12 @@ class LibraryIndexWatcherDriver:
                 visited += 1
                 key = (library_id, os.path.normcase(directory))
                 try:
-                    signature = self._direct_signature(directory)
+                    signature = self._direct_signature(
+                        directory,
+                        ignore_directory_stats=(
+                            os.path.normcase(directory) == os.path.normcase(root_path)
+                        ),
+                    )
                 except OSError:
                     signature = ()
                 previous = self._scrub_signatures.get(key)
@@ -463,6 +582,9 @@ class LibraryIndexWatcherDriver:
     def diagnostics(self) -> dict[str, object]:
         with self._lock:
             dirty = {library_id: len(paths) for library_id, paths in self._dirty.items()}
+            observed_libraries = sorted(self._roots)
+            recovery_running = sorted(self._generation_recovery_running)
+            recovery_pending = sorted(self._generation_recovery_requested)
         return {
             "running": bool(self._thread and self._thread.is_alive()),
             "watcher_mode": self._watcher_mode,
@@ -475,9 +597,12 @@ class LibraryIndexWatcherDriver:
             "start_error": self._last_start_error,
             "start_errno": self._last_start_errno,
             "inotify_limits": dict(self._inotify_limits),
-            "observed_libraries": sorted(self._roots),
+            "observed_libraries": observed_libraries,
             "dirty_paths": dirty,
             "overflow_count": self._overflow_count,
+            "generation_recovery_count": self._generation_recovery_count,
+            "generation_recovery_running": recovery_running,
+            "generation_recovery_pending": recovery_pending,
             "dispatched_count": self._dispatched_count,
             "scrubbed_directories": self._scrubbed_directories,
             "last_scrub_elapsed_ms": self._scrub_elapsed_ms,

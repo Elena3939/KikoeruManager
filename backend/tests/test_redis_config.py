@@ -1,4 +1,6 @@
 import errno
+import os
+import time
 from types import SimpleNamespace
 
 from app.api import routes
@@ -689,6 +691,74 @@ def test_library_index_watcher_keeps_memory_dirty_when_redis_or_ledger_fails(mon
         driver._requeue("library-a", due)
 
     assert driver.diagnostics()["dirty_paths"] == {"library-a": 1}
+
+
+def test_library_index_root_signature_ignores_child_directory_mtime(tmp_path):
+    root = tmp_path / "library"
+    child = root / "circle"
+    child.mkdir(parents=True)
+    driver = LibraryIndexWatcherDriver()
+
+    root_signature = driver._direct_signature(
+        str(root),
+        ignore_directory_stats=True,
+    )
+    regular_signature = driver._direct_signature(str(root))
+    changed_mtime = time.time() + 60
+    os.utime(child, (changed_mtime, changed_mtime))
+
+    assert driver._direct_signature(
+        str(root),
+        ignore_directory_stats=True,
+    ) == root_signature
+    assert driver._direct_signature(str(root)) != regular_signature
+
+    (root / "new-circle").mkdir()
+    assert driver._direct_signature(
+        str(root),
+        ignore_directory_stats=True,
+    ) != root_signature
+
+
+def test_library_index_generation_recovery_is_debounced_and_singleflight(
+    monkeypatch,
+    tmp_path,
+):
+    root = tmp_path / "library"
+    root.mkdir()
+    calls = []
+
+    class FakeRedis:
+        def remove_library_index_dirty_paths_sync(self, *args, **kwargs):
+            calls.append(("redis_remove", args, kwargs))
+
+    monkeypatch.setattr(watcher_module, "get_redis_service", lambda: FakeRedis())
+    driver = LibraryIndexWatcherDriver()
+    driver.request_generation_recovery(
+        "library-a",
+        str(root),
+        reason="watcher_error",
+    )
+    driver.request_generation_recovery(
+        "library-a",
+        str(root),
+        reason="dirty_overflow",
+    )
+
+    assert driver._take_generation_recoveries() == []
+    with driver._lock:
+        reason, first_at = driver._generation_recovery_requested["library-a"]
+        driver._generation_recovery_requested["library-a"] = (
+            reason,
+            first_at - watcher_module.GENERATION_RECOVERY_DEBOUNCE_SECONDS - 1,
+        )
+    selected = driver._take_generation_recoveries()
+
+    assert selected == [("library-a", str(root), "dirty_overflow")]
+    assert driver._take_generation_recoveries() == []
+    diagnostics = driver.diagnostics()
+    assert diagnostics["generation_recovery_running"] == ["library-a"]
+    assert diagnostics["generation_recovery_pending"] == []
 
 
 def test_library_index_watcher_degrades_cleanly_when_inotify_limit_is_reached(monkeypatch, tmp_path):

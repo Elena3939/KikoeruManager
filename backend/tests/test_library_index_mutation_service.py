@@ -9,6 +9,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 
 import app.core.library_index.mutation_service as mutation_module
@@ -16,6 +17,7 @@ import app.core.library_index.snapshot_store as snapshot_store_module
 import app.core.library_manager as library_manager_module
 from app.core.library_index.mutation_service import LibraryIndexMutationService
 from app.core.library_index.snapshot_store import SnapshotStore
+from app.core.library_index.types import IndexEntry
 from app.models.database import (
     LibraryIndexEntry,
     LibraryIndexGeneration,
@@ -563,6 +565,69 @@ def test_reconcile_materializes_current_filesystem_state(mutation_env, monkeypat
         db.close()
 
 
+def test_reconcile_staging_handles_220k_entries_with_fixed_bind_count(mutation_env):
+    env = mutation_env
+    library_id = "large-reconcile-lib"
+    _seed_entry(env, library_id, "", entry_type="dir")
+    _seed_entry(env, library_id, "stale.txt")
+    observed_bind_counts: list[int] = []
+
+    def capture_bind_count(_conn, _cursor, statement, parameters, _context, _executemany):
+        if "library_index_rebuild_stage" not in statement or not parameters:
+            return
+        if isinstance(parameters, dict):
+            observed_bind_counts.append(len(parameters))
+        elif isinstance(parameters, (list, tuple)):
+            observed_bind_counts.append(len(parameters))
+
+    event.listen(env.store.bind_engine, "before_cursor_execute", capture_bind_count)
+    try:
+        now = int(time.time() * 1000)
+        with env.store.create_rebuild_writer(library_id, chunk_size=500) as writer:
+            for start in range(0, 220_001, 500):
+                batch = []
+                for index in range(start, min(start + 500, 220_001)):
+                    relative_path = f"bulk/file-{index:06d}.txt"
+                    batch.append(IndexEntry(
+                        library_id=library_id,
+                        generation=1,
+                        materialized_seq=1,
+                        entry_type="file",
+                        relative_path=relative_path,
+                        absolute_path=f"/library/{library_id}/{relative_path}",
+                        name=f"file-{index:06d}.txt",
+                        parent_path="bulk",
+                        size=1,
+                        file_count=0,
+                        mtime=now,
+                        depth=2,
+                        indexed_at=now,
+                    ))
+                writer.stage(batch)
+            result = writer.finish_subtree_atomic(
+                generation=1,
+                relative_path="",
+                scope="subtree",
+                before_commit=lambda _conn: None,
+            )
+    finally:
+        event.remove(env.store.bind_engine, "before_cursor_execute", capture_bind_count)
+
+    assert result["staged"] == 220_001
+    assert result["deleted"] == 2
+    assert observed_bind_counts
+    assert max(observed_bind_counts) <= 15
+
+    db = env.Session()
+    try:
+        assert db.query(LibraryIndexEntry).filter_by(
+            library_id=library_id,
+            generation=1,
+        ).count() == 220_001
+    finally:
+        db.close()
+
+
 def test_poison_event_blocks_after_ten_attempts_and_retry_can_complete(
     mutation_env,
     monkeypatch,
@@ -614,7 +679,18 @@ def test_poison_event_blocks_after_ten_attempts_and_retry_can_complete(
             db.close()
 
     assert env.service._claim_next(library_id) is None
-    retry_status = env.service.retry_blocked(library_id)
+    with pytest.raises(ValueError, match="blocked_seq 已变化"):
+        env.service.retry_blocked(library_id, expected_blocked_seq=287)
+    db = env.Session()
+    try:
+        still_blocked = db.query(LibraryIndexStatus).filter_by(
+            library_id=library_id
+        ).one()
+        assert still_blocked.blocked_seq == 1
+    finally:
+        db.close()
+
+    retry_status = env.service.retry_blocked(library_id, expected_blocked_seq=1)
     assert retry_status["blocked_seq"] is None
     assert retry_status["catchup_state"] == "catching_up"
     should_fail["value"] = False
