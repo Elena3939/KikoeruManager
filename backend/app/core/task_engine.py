@@ -2519,7 +2519,7 @@ class TaskEngine:
         from .filter_service import FilterService
         from .metadata_service import MetadataService
         from .rename_service import RenameService
-        from .classifier import SmartClassifier
+        from .classifier import InventoryEmptyShellChangedError, SmartClassifier
         
         inferred_rjcode = self._extract_rjcode(str((task.task_metadata or {}).get('inferred_rjcode') or '')) or str((task.task_metadata or {}).get('inferred_rjcode') or '').strip().upper()
         task_metadata_rjcode = self._get_effective_rjcode(task)
@@ -2733,15 +2733,20 @@ class TaskEngine:
                                 await self._abort_precheck(precheck_task)
                                 return
                             if preview.get("kikoeru_target_is_empty_shell"):
-                                _empty_reason = "字幕补配时发现服务器作品为空壳"
-                                task.fail(_empty_reason)
-                                self._record_problem_work_for_extract_failure(task, rjcode, _empty_reason)
+                                empty_shell_rjcode = self._extract_rjcode(
+                                    str(preview.get("target_rjcode") or "")
+                                ) or rjcode
+                                task.task_metadata = {
+                                    **(task.task_metadata or {}),
+                                    "replace_inventory_empty_shell": True,
+                                    "inventory_empty_shell_rjcode": empty_shell_rjcode,
+                                    "inventory_empty_shell_detected_at": datetime.now().isoformat(),
+                                    "linked_subtitle_preview": preview,
+                                }
                                 logger.warning(
-                                    f"[{rjcode}] 服务器作品文件树为空，已转入问题作品: "
-                                    f"target={preview.get('target_rjcode', '')}"
+                                    f"[{rjcode}] 发现库存空壳，切换为新作入库并在成功后删除空目录: "
+                                    f"target={empty_shell_rjcode}"
                                 )
-                                await self._abort_precheck(precheck_task)
-                                return
                             logger.info(
                                 f"[{rjcode}] 未进入字幕补配预检分支: "
                                 f"target={preview.get('target_rjcode', '')} "
@@ -2825,10 +2830,14 @@ class TaskEngine:
                                     _kikoeru_confident = bool(
                                         preview.get("target_route_confident", preview.get("kikoeru_route_confident"))
                                     )
-                                    if (
+                                    if _kikoeru_empty_shell:
+                                        logger.info(
+                                            f"[{rjcode}] 小型压缩包命中库存空壳，按新作继续正式解压入库: "
+                                            f"source={os.path.basename(task.source_path)}"
+                                        )
+                                    elif (
                                         _kikoeru_has_work
                                         and not _kikoeru_needs_subtitle
-                                        and not _kikoeru_empty_shell
                                     ):
                                         # 本地库存已有字幕 → 小包视为重复，转问题作品
                                         _reason = "小型压缩包对应作品在本地库存已有字幕，按重复处理"
@@ -3247,7 +3256,26 @@ class TaskEngine:
                 logger.debug(f"[{rjcode}] 步骤6: 智能分类")
                 if config.auto_process.classify and task.auto_classify:
                     task.update_progress(80, "智能分类")
-                    final_path = await classifier.classify_and_move(renamed_path, metadata, task)
+                    try:
+                        final_path = await classifier.classify_and_move(renamed_path, metadata, task)
+                    except InventoryEmptyShellChangedError as exc:
+                        task.output_path = str(exc.preserved_path or renamed_path)
+                        task.status = TaskStatus.WAITING_MANUAL
+                        task.completed_at = datetime.now()
+                        task.current_step = f"等待人工: {str(exc)}"
+                        task.task_metadata = {
+                            **(task.task_metadata or {}),
+                            "inventory_empty_shell_status": "waiting_manual",
+                            "inventory_empty_shell_error": str(exc),
+                            "available_actions": ["RETRY", "SKIP"],
+                        }
+                        task.update_progress(100, task.current_step)
+                        logger.warning(
+                            "[%s] 库存空壳并发校验失败，已保留新作产物等待人工: %s",
+                            rjcode,
+                            task.output_path,
+                        )
+                        return
                     task.output_path = final_path
                     logger.debug(f"[{rjcode}] 分类后路径: {final_path}")
                 else:
