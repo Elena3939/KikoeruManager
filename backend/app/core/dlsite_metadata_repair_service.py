@@ -135,17 +135,20 @@ class DLsiteMetadataRepairService:
         rjcode = candidate.rjcode
         self._dlsite.invalidate_rj_graph_cache(rjcode)
         product_info = await self._dlsite.get_product_info(rjcode, refresh=True)
-        verification_status = str(
-            (product_info or {}).get("metadata_verification_status") or "unverified"
-        ).lower()
+        product = dict((product_info or {}).get("product") or {})
+        maker_fields = await self._resolve_maker_fields(rjcode, product, product_info)
+        verification_status = str(maker_fields.get("evidence_status") or "unverified").lower()
         verification_reason = str(
-            (product_info or {}).get("metadata_verification_reason") or ""
+            (product_info or {}).get("metadata_verification_reason")
+            or maker_fields.get("reason")
+            or ""
         )
         evidence_source = str(
-            (product_info or {}).get("metadata_evidence_source") or "unknown"
+            maker_fields.get("evidence_source")
+            or (product_info or {}).get("metadata_evidence_source")
+            or "unknown"
         )
-        product = dict((product_info or {}).get("product") or {})
-        new_maker_name = str(product.get("maker_name") or "").strip()
+        new_maker_name = str(maker_fields.get("maker_name") or "").strip()
         if verification_status != "verified" or is_translation_placeholder_maker(new_maker_name):
             return {
                 **asdict(candidate),
@@ -156,6 +159,8 @@ class DLsiteMetadataRepairService:
             }
 
         metadata = self._metadata_from_product(rjcode, product)
+        metadata["maker_id"] = str(maker_fields.get("maker_id") or metadata.get("maker_id") or "")
+        metadata["maker_name"] = new_maker_name
         new_path = ""
         conflict = False
         filesystem_action = "none"
@@ -254,6 +259,68 @@ class DLsiteMetadataRepairService:
                 if isinstance(item, dict) and str(item.get("name") or "").strip()
             ],
             "cover_url": str((product.get("image_main") or {}).get("url") or "").strip(),
+        }
+
+    async def _resolve_maker_fields(
+        self,
+        rjcode: str,
+        product: dict[str, Any],
+        product_info: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
+        translation_info = dict(product.get("translation_info") or {})
+        original_workno = normalize_rjcode(
+            translation_info.get("original_workno")
+            or translation_info.get("parent_workno")
+            or ""
+        )
+        maker_id = str(product.get("maker_id") or "").strip()
+        maker_name = str(product.get("maker_name") or "").strip()
+        evidence_source = str(
+            (product_info or {}).get("metadata_evidence_source")
+            or "dlsite_product"
+        )
+        evidence_status = str(
+            (product_info or {}).get("metadata_verification_status")
+            or "unverified"
+        ).strip().lower()
+        reason = str((product_info or {}).get("metadata_verification_reason") or "")
+        resolved_from = rjcode
+
+        if not original_workno or not is_translation_placeholder_maker(maker_name):
+            return {
+                "maker_id": maker_id,
+                "maker_name": maker_name,
+                "evidence_source": evidence_source,
+                "evidence_status": evidence_status,
+                "reason": reason,
+                "resolved_from": resolved_from,
+            }
+
+        original_info = await self._dlsite.get_product_info(original_workno, refresh=True)
+        original_product = dict((original_info or {}).get("product") or {})
+        original_status = str(
+            (original_info or {}).get("metadata_verification_status") or "unverified"
+        ).strip().lower()
+        original_maker_name = str(original_product.get("maker_name") or "").strip()
+        if original_product and original_status == "verified" and not is_translation_placeholder_maker(original_maker_name):
+            return {
+                "maker_id": str(original_product.get("maker_id") or maker_id or "").strip(),
+                "maker_name": original_maker_name,
+                "evidence_source": str(
+                    (original_info or {}).get("metadata_evidence_source") or "language_editions"
+                ),
+                "evidence_status": "verified",
+                "reason": "",
+                "resolved_from": original_workno,
+            }
+
+        return {
+            "maker_id": maker_id,
+            "maker_name": maker_name,
+            "evidence_source": evidence_source,
+            "evidence_status": evidence_status,
+            "reason": reason or f"原作社团未通过验证: {original_workno}",
+            "resolved_from": resolved_from,
         }
 
     def _build_api_rename_name(self, rjcode: str, metadata: dict[str, Any]) -> str:
