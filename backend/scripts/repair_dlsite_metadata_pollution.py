@@ -17,6 +17,11 @@ from app.core.dlsite_metadata_repair_service import DLsiteMetadataRepairService
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="修复 DLsite 翻译占位社团元数据和库存目录")
     parser.add_argument("--apply", action="store_true", help="执行元数据更新和库存 mutation")
+    parser.add_argument(
+        "--metadata-only",
+        action="store_true",
+        help="只修复 work_metadata，不读取或移动库存目录",
+    )
     parser.add_argument("--rjcode", action="append", default=[], help="仅处理指定 RJ，可重复传入")
     return parser.parse_args()
 
@@ -24,14 +29,28 @@ def parse_args() -> argparse.Namespace:
 async def run() -> int:
     args = parse_args()
     service = DLsiteMetadataRepairService()
-    plans = await service.build_plans(args.rjcode or None)
+    plans = await service.build_plans(
+        args.rjcode or None,
+        include_filesystem=not args.metadata_only,
+    )
     results = []
     for plan in plans:
         if args.apply and plan.get("status") == "ready":
             results.append(await service.apply_plan(plan))
         else:
             results.append(plan)
-    print(json.dumps({"apply": args.apply, "count": len(results), "items": results}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "apply": args.apply,
+                "metadata_only": args.metadata_only,
+                "count": len(results),
+                "items": results,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0 if all(item.get("status") in {"ready", "skipped"} for item in results) else 2
 
 

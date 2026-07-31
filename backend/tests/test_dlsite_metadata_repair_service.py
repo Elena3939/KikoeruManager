@@ -75,3 +75,36 @@ async def test_repair_plan_builds_verified_inventory_target(monkeypatch):
     assert plan["new_maker_name"] == "原作社团"
     assert plan["new_path"].replace("\\", "/") == "D:/library/原作社团/[原作社团][RJ01619669]"
     assert plan["filesystem_action"] == "rename_and_move"
+
+
+@pytest.mark.asyncio
+async def test_metadata_only_plan_does_not_resolve_inventory_library():
+    dlsite = FakeDLsite(
+        {
+            "product": {
+                "workno": "RJ01619669",
+                "work_name": "作品名",
+                "maker_name": "原作社团",
+            },
+            "metadata_verification_status": "verified",
+            "metadata_evidence_source": "language_editions",
+        }
+    )
+
+    class RejectingManager:
+        def get_library_definition(self, _library_id):
+            raise AssertionError("metadata-only 不应读取库存配置")
+
+    service = DLsiteMetadataRepairService(dlsite=dlsite, manager=RejectingManager())
+    plan = await service.build_plan(
+        RepairCandidate(
+            rjcode="RJ01619669",
+            library_id="default-local",
+            old_path="/library/みんなで翻訳/[みんなで翻訳][RJ01619669]",
+        ),
+        include_filesystem=False,
+    )
+
+    assert plan["status"] == "ready"
+    assert plan["filesystem_action"] == "metadata_only"
+    assert plan["new_path"] == ""
