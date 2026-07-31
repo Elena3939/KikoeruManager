@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable, Optional
 
 from sqlalchemy import and_, case, exists, func, or_
+from sqlalchemy.orm import Session
 
 from ...models.database import (
     LibraryIndexEntry,
@@ -615,12 +616,13 @@ class LibraryIndexMutationService:
         generation: int,
         owner: str,
         epoch: int,
-    ) -> None:
+        complete_callback=None,
+    ) -> bool:
         from ..library_manager import get_library_manager
 
         library = get_library_manager().get_library_definition(library_id)
         if library.type != "local":
-            return
+            return False
         root = os.path.abspath(library.root_path or "")
         target = os.path.abspath(os.path.join(root, *relative_path.split("/"))) if relative_path else root
         try:
@@ -640,6 +642,15 @@ class LibraryIndexMutationService:
                 materialized_seq=materialized_seq,
             )
         if not os.path.exists(target):
+            if complete_callback is not None:
+                with store.create_rebuild_writer(library_id) as writer:
+                    writer.finish_subtree_atomic(
+                        generation=generation,
+                        relative_path=relative_path,
+                        scope=scope,
+                        before_commit=complete_callback,
+                    )
+                return True
             with get_resource_budget_service().acquire_sync(
                 "library_index_write",
                 reason="library_index.materialize_missing_path",
@@ -663,55 +674,35 @@ class LibraryIndexMutationService:
                     raise
                 finally:
                     db.close()
-            return
+            return False
         scanner = LocalScanner()
         buffer = []
-        seen: set[str] = set()
-        for entry in scanner.scan_subtree(library_id, root, target):
-            entry.materialized_seq = int(materialized_seq)
-            entry.generation = int(generation)
-            buffer.append(entry)
-            seen.add(entry.relative_path)
-            if len(buffer) >= DEFAULT_BULK_UPSERT_CHUNK_SIZE:
-                store.bulk_upsert(
-                    buffer,
-                    maintain_status_stats=False,
-                    maintain_parent_dir_stats=False,
-                    before_commit=validate_chunk_fence,
-                )
-                buffer.clear()
-        if buffer:
-            store.bulk_upsert(
-                buffer,
-                maintain_status_stats=False,
-                maintain_parent_dir_stats=False,
-                before_commit=validate_chunk_fence,
+
+        def validate_connection(conn) -> None:
+            db = Session(bind=conn, join_transaction_mode="rollback_only")
+            try:
+                validate_chunk_fence(db)
+                db.flush()
+            finally:
+                db.close()
+
+        with store.create_rebuild_writer(library_id) as writer:
+            for entry in scanner.scan_subtree(library_id, root, target):
+                entry.materialized_seq = int(materialized_seq)
+                entry.generation = int(generation)
+                buffer.append(entry)
+                if len(buffer) >= DEFAULT_BULK_UPSERT_CHUNK_SIZE:
+                    writer.stage(buffer)
+                    buffer.clear()
+            if buffer:
+                writer.stage(buffer)
+            writer.finish_subtree_atomic(
+                generation=generation,
+                relative_path=relative_path,
+                scope=scope,
+                before_commit=complete_callback or validate_connection,
             )
-        if scope == "subtree":
-            with get_resource_budget_service().acquire_sync(
-                "library_index_write",
-                reason="library_index.materialize_stale_delete",
-            ):
-                db = SessionLocal()
-                try:
-                    validate_chunk_fence(db)
-                    condition = self._path_filter(
-                        LibraryIndexEntry.relative_path,
-                        relative_path,
-                        "subtree",
-                    )
-                    db.query(LibraryIndexEntry).filter(
-                        LibraryIndexEntry.library_id == library_id,
-                        LibraryIndexEntry.generation == generation,
-                        condition,
-                        LibraryIndexEntry.relative_path.notin_(seen or {"\0"}),
-                    ).delete(synchronize_session=False)
-                    db.commit()
-                except Exception:
-                    db.rollback()
-                    raise
-                finally:
-                    db.close()
+        return complete_callback is not None
 
     def _claim_next(self, library_id: str) -> Optional[tuple[int, int]]:
         db = SessionLocal()
@@ -850,31 +841,73 @@ class LibraryIndexMutationService:
         finally:
             db.close()
         try:
+            if any(
+                effect.kind == "reconcile"
+                and str(effect.relative_path or "") == ""
+                and str(effect.scope or "") == "subtree"
+                for effect in effects
+            ):
+                from ..library_manager import get_library_manager
+                from .service import get_library_index_service
+
+                library = get_library_manager().get_library_definition(library_id)
+                if library.type != "local":
+                    raise RuntimeError("根目录 generation recovery 仅支持本地库存")
+                get_library_index_service().rebuild_local_generation(
+                    library_id,
+                    library.root_path,
+                )
+                return True
             with self._materializer_heartbeat(
                 library_id,
                 epoch=epoch,
                 generation=generation,
                 expected_seq=expected_seq,
             ) as assert_fence:
-                for effect in effects:
+                completed_in_reconcile = False
+                for index, effect in enumerate(effects):
                     assert_fence()
-                    self._apply_effect(
-                        library_id,
-                        effect,
-                        materialized_seq=expected_seq,
-                        generation=generation,
-                        owner=self._consumer_name,
-                        epoch=epoch,
-                    )
+                    is_last = index == len(effects) - 1
+                    if effect.kind not in {"delete", "move"} and is_last:
+                        completed_in_reconcile = self._reconcile_path(
+                            library_id,
+                            effect.relative_path,
+                            effect.scope,
+                            materialized_seq=expected_seq,
+                            generation=generation,
+                            owner=self._consumer_name,
+                            epoch=epoch,
+                            complete_callback=lambda conn: self._complete_seq_on_connection(
+                                conn,
+                                library_id,
+                                expected_seq,
+                                ledger.id,
+                                epoch,
+                                generation,
+                                effects,
+                            ),
+                        )
+                    else:
+                        self._apply_effect(
+                            library_id,
+                            effect,
+                            materialized_seq=expected_seq,
+                            generation=generation,
+                            owner=self._consumer_name,
+                            epoch=epoch,
+                        )
                 assert_fence()
-            self._complete_seq(
-                library_id,
-                expected_seq,
-                ledger.id,
-                epoch,
-                generation,
-                effects,
-            )
+            if completed_in_reconcile:
+                self._broadcast_libraries({library_id}, "mutation_materialized")
+            else:
+                self._complete_seq(
+                    library_id,
+                    expected_seq,
+                    ledger.id,
+                    epoch,
+                    generation,
+                    effects,
+                )
             return True
         except Exception as exc:
             logger.exception("[索引追赶] 物化失败 library=%s seq=%s", library_id, expected_seq)
@@ -891,6 +924,133 @@ class LibraryIndexMutationService:
                 result.append(current)
         return result
 
+    def _complete_seq_in_session(
+        self,
+        db,
+        library_id: str,
+        seq: int,
+        ledger_id: int,
+        epoch: int,
+        generation: int,
+        effects: list[LibraryIndexMutationEffect],
+    ) -> None:
+        status = db.query(LibraryIndexStatus).filter(
+            LibraryIndexStatus.library_id == library_id
+        ).with_for_update().one()
+        if (
+            status.materializer_owner != self._consumer_name
+            or int(status.materializer_epoch or 0) != epoch
+            or int(status.active_generation or 1) != generation
+            or int(status.materialized_seq or 0) + 1 != seq
+        ):
+            raise RuntimeError("库存索引 materializer fencing 校验失败")
+        ledger = db.query(LibraryIndexMutationLedger).filter(
+            LibraryIndexMutationLedger.id == ledger_id
+        ).with_for_update().one()
+        ledger.applied_at = get_local_now()
+        ledger.error = None
+        ledger.next_retry_at = None
+        ancestors = sorted({
+            ancestor
+            for effect in effects
+            for ancestor in self._ancestor_paths(effect.relative_path)
+        })
+        for ancestor in ancestors:
+            aggregate = db.query(LibraryIndexEntry).filter(
+                LibraryIndexEntry.library_id == library_id,
+                LibraryIndexEntry.generation == generation,
+                LibraryIndexEntry.relative_path == ancestor,
+                LibraryIndexEntry.entry_type == "dir",
+            ).first()
+            if aggregate is None:
+                continue
+            total_size, file_count = db.query(
+                func.coalesce(
+                    func.sum(
+                        func.greatest(func.coalesce(LibraryIndexEntry.size, 0), 0)
+                    ),
+                    0,
+                ),
+                func.count(LibraryIndexEntry.id),
+            ).filter(
+                LibraryIndexEntry.library_id == library_id,
+                LibraryIndexEntry.generation == generation,
+                LibraryIndexEntry.materialized_seq <= seq,
+                LibraryIndexEntry.entry_type == "file",
+                LibraryIndexEntry.relative_path >= ancestor + "/",
+                LibraryIndexEntry.relative_path < ancestor + "0",
+            ).one()
+            aggregate.size = int(total_size or 0)
+            aggregate.file_count = int(file_count or 0)
+            aggregate.materialized_seq = seq
+            aggregate.indexed_at = int(time.time() * 1000)
+
+        total_entries, total_size_bytes, folder_count = db.query(
+            func.count(LibraryIndexEntry.id),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            LibraryIndexEntry.entry_type == "file",
+                            func.greatest(func.coalesce(LibraryIndexEntry.size, 0), 0),
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.count(LibraryIndexEntry.id).filter(
+                LibraryIndexEntry.entry_type == "dir",
+                LibraryIndexEntry.relative_path != "",
+                func.coalesce(LibraryIndexEntry.parent_path, "") == "",
+            ),
+        ).filter(
+            LibraryIndexEntry.library_id == library_id,
+            LibraryIndexEntry.generation == generation,
+            LibraryIndexEntry.materialized_seq <= seq,
+        ).one()
+        status.total_entries = int(total_entries or 0)
+        status.total_size_bytes = int(total_size_bytes or 0)
+        status.folder_count = int(folder_count or 0)
+        db.query(LibraryIndexPendingMask).filter(
+            LibraryIndexPendingMask.library_id == library_id,
+            LibraryIndexPendingMask.ledger_seq == seq,
+        ).delete(synchronize_session=False)
+        status.materialized_seq = seq
+        status.state_revision = int(status.state_revision or 0) + 1
+        status.view_revision = int(status.view_revision or 0) + 1
+        status.catchup_state = (
+            "catching_up" if int(status.accepted_seq or 0) > seq else "idle"
+        )
+        status.catchup_error = None
+        status.materializer_lease_until = get_local_now() + timedelta(seconds=LEASE_SECONDS)
+        status.updated_at = int(time.time() * 1000)
+
+    def _complete_seq_on_connection(
+        self,
+        conn,
+        library_id: str,
+        seq: int,
+        ledger_id: int,
+        epoch: int,
+        generation: int,
+        effects: list[LibraryIndexMutationEffect],
+    ) -> None:
+        db = Session(bind=conn, join_transaction_mode="rollback_only")
+        try:
+            self._complete_seq_in_session(
+                db,
+                library_id,
+                seq,
+                ledger_id,
+                epoch,
+                generation,
+                effects,
+            )
+            db.flush()
+        finally:
+            db.close()
+
     def _complete_seq(
         self,
         library_id: str,
@@ -902,101 +1062,15 @@ class LibraryIndexMutationService:
     ) -> None:
         db = SessionLocal()
         try:
-            status = db.query(LibraryIndexStatus).filter(
-                LibraryIndexStatus.library_id == library_id
-            ).with_for_update().one()
-            if (
-                status.materializer_owner != self._consumer_name
-                or int(status.materializer_epoch or 0) != epoch
-                or int(status.active_generation or 1) != generation
-                or int(status.materialized_seq or 0) + 1 != seq
-            ):
-                raise RuntimeError("库存索引 materializer fencing 校验失败")
-            ledger = db.query(LibraryIndexMutationLedger).filter(
-                LibraryIndexMutationLedger.id == ledger_id
-            ).with_for_update().one()
-            ledger.applied_at = get_local_now()
-            ledger.error = None
-            ledger.next_retry_at = None
-            ancestors = sorted({
-                ancestor
-                for effect in effects
-                for ancestor in self._ancestor_paths(effect.relative_path)
-            })
-            for ancestor in ancestors:
-                aggregate = db.query(
-                    LibraryIndexEntry,
-                ).filter(
-                    LibraryIndexEntry.library_id == library_id,
-                    LibraryIndexEntry.generation == generation,
-                    LibraryIndexEntry.relative_path == ancestor,
-                    LibraryIndexEntry.entry_type == "dir",
-                ).first()
-                if aggregate is None:
-                    continue
-                total_size, file_count = db.query(
-                    func.coalesce(
-                        func.sum(
-                            func.greatest(func.coalesce(LibraryIndexEntry.size, 0), 0)
-                        ),
-                        0,
-                    ),
-                    func.count(LibraryIndexEntry.id),
-                ).filter(
-                    LibraryIndexEntry.library_id == library_id,
-                    LibraryIndexEntry.generation == generation,
-                    LibraryIndexEntry.materialized_seq <= seq,
-                    LibraryIndexEntry.entry_type == "file",
-                    LibraryIndexEntry.relative_path >= ancestor + "/",
-                    LibraryIndexEntry.relative_path < ancestor + "0",
-                ).one()
-                aggregate.size = int(total_size or 0)
-                aggregate.file_count = int(file_count or 0)
-                aggregate.materialized_seq = seq
-                aggregate.indexed_at = int(time.time() * 1000)
-
-            # 不能把整个库存索引拉回 Python 再求和。216k 条索引会放大每次字幕
-            # 重命名/删除后的 materialize 事务并阻塞数据库连接池。
-            total_entries, total_size_bytes, folder_count = db.query(
-                func.count(LibraryIndexEntry.id),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (
-                                LibraryIndexEntry.entry_type == "file",
-                                func.greatest(func.coalesce(LibraryIndexEntry.size, 0), 0),
-                            ),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ),
-                func.count(LibraryIndexEntry.id).filter(
-                    LibraryIndexEntry.entry_type == "dir",
-                    LibraryIndexEntry.relative_path != "",
-                    func.coalesce(LibraryIndexEntry.parent_path, "") == "",
-                ),
-            ).filter(
-                LibraryIndexEntry.library_id == library_id,
-                LibraryIndexEntry.generation == generation,
-                LibraryIndexEntry.materialized_seq <= seq,
-            ).one()
-            status.total_entries = int(total_entries or 0)
-            status.total_size_bytes = int(total_size_bytes or 0)
-            status.folder_count = int(folder_count or 0)
-            db.query(LibraryIndexPendingMask).filter(
-                LibraryIndexPendingMask.library_id == library_id,
-                LibraryIndexPendingMask.ledger_seq == seq,
-            ).delete(synchronize_session=False)
-            status.materialized_seq = seq
-            status.state_revision = int(status.state_revision or 0) + 1
-            status.view_revision = int(status.view_revision or 0) + 1
-            status.catchup_state = (
-                "catching_up" if int(status.accepted_seq or 0) > seq else "idle"
+            self._complete_seq_in_session(
+                db,
+                library_id,
+                seq,
+                ledger_id,
+                epoch,
+                generation,
+                effects,
             )
-            status.catchup_error = None
-            status.materializer_lease_until = get_local_now() + timedelta(seconds=LEASE_SECONDS)
-            status.updated_at = int(time.time() * 1000)
             db.commit()
         except Exception:
             db.rollback()
@@ -1038,11 +1112,20 @@ class LibraryIndexMutationService:
             db.close()
         self._broadcast_libraries({library_id}, "mutation_retry")
 
-    def retry_blocked(self, library_id: str) -> dict[str, Any]:
+    def retry_blocked(
+        self,
+        library_id: str,
+        expected_blocked_seq: Optional[int] = None,
+    ) -> dict[str, Any]:
         db = SessionLocal()
         try:
             status = self._ensure_status(db, library_id, for_update=True)
             blocked_seq = status.blocked_seq
+            if expected_blocked_seq is not None and blocked_seq != int(expected_blocked_seq):
+                raise ValueError(
+                    f"blocked_seq 已变化: expected={int(expected_blocked_seq)} "
+                    f"actual={blocked_seq}"
+                )
             if blocked_seq is not None:
                 ledger = db.query(LibraryIndexMutationLedger).filter(
                     LibraryIndexMutationLedger.library_id == library_id,

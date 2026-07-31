@@ -438,29 +438,30 @@ class LibraryIndexService:
     def _building_generation_stats(library_id: str, generation: int) -> dict[str, int]:
         db = SessionLocal()
         try:
-            rows = db.query(
-                LibraryIndexEntry.entry_type,
-                LibraryIndexEntry.relative_path,
-                LibraryIndexEntry.parent_path,
-                LibraryIndexEntry.size,
+            total_entries, total_size_bytes, folder_count = db.query(
+                func.count(LibraryIndexEntry.id),
+                func.coalesce(
+                    func.sum(
+                        func.greatest(
+                            func.coalesce(LibraryIndexEntry.size, 0),
+                            0,
+                        )
+                    ).filter(LibraryIndexEntry.entry_type == "file"),
+                    0,
+                ),
+                func.count(LibraryIndexEntry.id).filter(
+                    LibraryIndexEntry.entry_type == "dir",
+                    LibraryIndexEntry.relative_path != "",
+                    func.coalesce(LibraryIndexEntry.parent_path, "") == "",
+                ),
             ).filter(
                 LibraryIndexEntry.library_id == library_id,
                 LibraryIndexEntry.generation == generation,
-            ).all()
+            ).one()
             return {
-                "total_entries": len(rows),
-                "total_size_bytes": sum(
-                    max(0, int(row.size or 0))
-                    for row in rows
-                    if row.entry_type == "file"
-                ),
-                "folder_count": sum(
-                    1
-                    for row in rows
-                    if row.entry_type == "dir"
-                    and bool(row.relative_path)
-                    and str(row.parent_path or "") == ""
-                ),
+                "total_entries": int(total_entries or 0),
+                "total_size_bytes": int(total_size_bytes or 0),
+                "folder_count": int(folder_count or 0),
             }
         finally:
             db.close()

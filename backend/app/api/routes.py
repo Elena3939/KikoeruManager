@@ -8157,6 +8157,11 @@ class LibraryIndexRebuildRequest(BaseModel):
     library_id: str
 
 
+class LibraryIndexRetryBlockedRequest(BaseModel):
+    library_id: str
+    expected_blocked_seq: int
+
+
 def _request_idempotency_key(request: Request) -> str:
     return str(request.headers.get("Idempotency-Key") or "").strip()
 
@@ -8439,6 +8444,22 @@ async def get_library_index_status(library_id: Optional[str] = None):
         "items": [_index_status_to_dict(item) for item in statuses],
         "count": len(statuses),
     }
+
+
+@app.post("/api/library/index/mutations/retry-blocked")
+async def retry_blocked_library_index_mutation(
+    request: LibraryIndexRetryBlockedRequest,
+):
+    library_id = str(request.library_id or "").strip()
+    if not library_id:
+        raise HTTPException(status_code=400, detail="library_id 不能为空")
+    try:
+        return get_library_index_mutation_service().retry_blocked(
+            library_id,
+            expected_blocked_seq=request.expected_blocked_seq,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/library/index/search")
