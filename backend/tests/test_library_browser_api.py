@@ -72,6 +72,52 @@ def test_library_manager_create_folder_targets_current_directory(monkeypatch, tm
     assert not (library_root / "越界目录").exists()
 
 
+def test_find_rj_in_ready_index_uses_usable_snapshot_while_catching_up(monkeypatch):
+    library = library_manager_module.LibraryDefinition(
+        id="local-catching-up",
+        name="追赶中库存",
+        type="local",
+        path="D:/library",
+    )
+    entry = IndexEntry(
+        library_id=library.id,
+        entry_type="dir",
+        relative_path="社团/RJ01618558",
+        absolute_path="D:/library/社团/RJ01618558",
+        name="RJ01618558",
+        rjcode="RJ01618558",
+        file_count=30,
+        materialized_seq=287,
+    )
+
+    class _IndexService:
+        def is_ready(self, _library_id):
+            return False
+
+        def has_usable_snapshot(self, _library_id):
+            return True
+
+        def find_by_rjcode(self, *_args, **_kwargs):
+            return [entry]
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    manager._active_libraries = lambda: [library]
+    monkeypatch.setattr(
+        library_index_module,
+        "get_library_index_service",
+        lambda: _IndexService(),
+    )
+
+    result = manager.find_rj_in_ready_index(
+        "RJ01618558",
+        include_subtitle_state=False,
+    )
+
+    assert result["RJ01618558"][0]["path"] == entry.absolute_path
+    assert result["RJ01618558"][0]["file_count"] == 30
+    assert manager.has_ready_index() is True
+
+
 def test_legacy_library_mutations_invalidate_subtitle_folder_summary_cache(monkeypatch):
     library = SimpleNamespace(id="library-a")
     invalidated = []

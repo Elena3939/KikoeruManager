@@ -9,7 +9,7 @@ import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -3514,6 +3514,7 @@ class LinkedSubtitleImportService:
         refresh_candidates: bool,
         force_refresh_candidates: bool,
         refresh_min_interval_seconds: int,
+        current_index_view_token: str,
     ) -> bool:
         if not refresh_candidates:
             return False
@@ -3527,19 +3528,66 @@ class LinkedSubtitleImportService:
             return False
 
         analysis_info = dict(conflict.analysis_info or {})
+        previous_token = str(
+            analysis_info.get("candidate_index_view_token") or ""
+        ).strip()
+        if previous_token != str(current_index_view_token or "").strip():
+            return True
+
+        next_refresh_at = str(
+            analysis_info.get("candidate_next_refresh_at") or ""
+        ).strip()
+        if next_refresh_at:
+            try:
+                return datetime.now() >= datetime.fromisoformat(next_refresh_at)
+            except ValueError:
+                return True
+
         refreshed_at = str(analysis_info.get("candidate_refreshed_at") or "").strip()
         if not refreshed_at:
             return True
-
         try:
             refreshed_time = datetime.fromisoformat(refreshed_at)
         except ValueError:
             return True
 
-        # not_found 时使用更长间隔（5分钟），避免每 12s 轮询一次远端仍搜不到的作品
         candidate_search_status = str(preview.get("candidate_search_status") or "").strip().lower()
         effective_interval = 300 if candidate_search_status == "not_found" else max(1, int(refresh_min_interval_seconds or 0))
         return (datetime.now() - refreshed_time).total_seconds() >= effective_interval
+
+    @staticmethod
+    def _candidate_refresh_metadata(
+        preview: Dict[str, Any],
+        *,
+        index_view_token: str,
+        refresh_min_interval_seconds: int,
+    ) -> Dict[str, Any]:
+        refreshed_at = datetime.now()
+        status = str(preview.get("candidate_search_status") or "").strip().lower()
+        interval = (
+            300
+            if status == "not_found"
+            else max(1, int(refresh_min_interval_seconds or 0))
+        )
+        return {
+            "candidate_refreshed_at": refreshed_at.isoformat(),
+            "candidate_search_status": status or "unknown",
+            "candidate_next_refresh_at": (
+                refreshed_at + timedelta(seconds=interval)
+            ).isoformat(),
+            "candidate_index_view_token": str(index_view_token or ""),
+        }
+
+    def _current_candidate_index_view_token(self) -> str:
+        manager = getattr(self, "library_manager", None)
+        getter = getattr(manager, "inventory_index_view_token", None)
+        if not callable(getter):
+            return "index-unavailable"
+        try:
+            return str(getter() or "index-unavailable")
+        except Exception:
+            logger.debug("[字幕补配] 读取库存索引视图 token 失败", exc_info=True)
+            return "index-unavailable"
 
     async def queue_pending_archive_import(self, task: Task, rjcode: str, hint_password: Optional[str] = None) -> Dict[str, Any]:
         hinted_rjcode = self._extract_rjcode(
@@ -3626,6 +3674,11 @@ class LinkedSubtitleImportService:
                 "preview": preview,
                 "source_mode": self.PENDING_SOURCE_MODE,
                 "queued_at": datetime.now().isoformat(),
+                **self._candidate_refresh_metadata(
+                    preview,
+                    index_view_token=self._current_candidate_index_view_token(),
+                    refresh_min_interval_seconds=self.PENDING_REFRESH_MIN_INTERVAL_SECONDS,
+                ),
             }
             existing_path = (preview.get("selected_candidate") or {}).get("folder_path") or ""
 
@@ -3714,6 +3767,7 @@ class LinkedSubtitleImportService:
             db.close()
 
         # Phase B: 无 session 跑 IO，算每行的决策
+        current_index_view_token = self._current_candidate_index_view_token()
         items: List[Dict[str, Any]] = []
         decisions: List[Dict[str, Any]] = []
         for row in rows:
@@ -3733,13 +3787,15 @@ class LinkedSubtitleImportService:
                     original_preview,
                     source_path=str(row.new_path or ""),
                 )
-                if self._should_refresh_pending_record(
+                did_candidate_query = self._should_refresh_pending_record(
                     row,
                     preview,
                     refresh_candidates=refresh_candidates,
                     force_refresh_candidates=force_refresh_candidates,
                     refresh_min_interval_seconds=refresh_min_interval_seconds,
-                ):
+                    current_index_view_token=current_index_view_token,
+                )
+                if did_candidate_query:
                     refreshed_preview = await self._refresh_pending_preview_candidates(
                         preview,
                         force=force_refresh_candidates,
@@ -3771,11 +3827,19 @@ class LinkedSubtitleImportService:
 
                 # 保留为 pending：可能要更新 analysis_info（新 preview）
                 next_analysis_info = None
-                if refreshed_preview != original_preview:
+                if refreshed_preview != original_preview or did_candidate_query:
                     next_analysis_info = {
                         **(row.analysis_info or {}),
                         "preview": refreshed_preview,
-                        "candidate_refreshed_at": datetime.now().isoformat(),
+                        **(
+                            self._candidate_refresh_metadata(
+                                refreshed_preview,
+                                index_view_token=current_index_view_token,
+                                refresh_min_interval_seconds=refresh_min_interval_seconds,
+                            )
+                            if did_candidate_query
+                            else {}
+                        ),
                     }
                     decisions.append({
                         "record_id": str(row.id),
