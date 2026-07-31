@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import asyncio
+import uuid
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Optional, Dict
@@ -15,6 +16,13 @@ from ..core.folder_compare_service import get_folder_compare_service
 from ..core.json_safety import database_safe_text, safe_json_value
 
 logger = logging.getLogger(__name__)
+
+
+class InventoryEmptyShellChangedError(RuntimeError):
+    def __init__(self, message: str, *, preserved_path: str = ""):
+        super().__init__(message)
+        self.preserved_path = str(preserved_path or "")
+
 
 class SmartClassifier:
     """智能分类器"""
@@ -281,6 +289,209 @@ class SmartClassifier:
                 "[索引] classify 后通知索引 upsert 失败 path=%s", final_path, exc_info=True,
             )
 
+    @staticmethod
+    def _directory_has_files(path: str) -> bool:
+        for _root, _dirs, files in os.walk(path):
+            if files:
+                return True
+        return False
+
+    @staticmethod
+    def _path_is_within(root_path: str, candidate_path: str) -> bool:
+        try:
+            root = os.path.normcase(os.path.realpath(root_path))
+            candidate = os.path.normcase(os.path.realpath(candidate_path))
+            return os.path.commonpath([root, candidate]) == root
+        except (OSError, ValueError):
+            return False
+
+    def _find_inventory_empty_shell(
+        self,
+        manager,
+        rjcode: str,
+        source_path: str,
+        intended_final_path: str,
+    ) -> Optional[Dict]:
+        hits = manager.find_rj_in_ready_index(
+            [rjcode],
+            include_subtitle_state=False,
+        )
+        valid: list[Dict] = []
+        source_abs = os.path.normcase(os.path.abspath(source_path))
+        intended_abs = os.path.normcase(os.path.abspath(intended_final_path))
+        for hit in hits.get(rjcode) or []:
+            if str(hit.get("library_type") or "").strip().lower() != "local":
+                continue
+            library = manager.get_library_definition(str(hit.get("library_id") or ""))
+            path = str(hit.get("path") or "").strip()
+            if library is None or not path or not os.path.isdir(path):
+                continue
+            path_abs = os.path.normcase(os.path.abspath(path))
+            if not self._path_is_within(library.root_path, path):
+                continue
+            if not re.search(rf"(?<!\d){re.escape(rjcode)}(?!\d)", path, re.IGNORECASE):
+                continue
+            if path_abs == source_abs:
+                continue
+            if path_abs != intended_abs and (
+                self._path_is_within(path, intended_final_path)
+                or self._path_is_within(intended_final_path, path)
+            ):
+                continue
+            if self._directory_has_files(path):
+                raise InventoryEmptyShellChangedError(
+                    f"库存空壳目录已出现文件，禁止删除: {path}",
+                )
+            valid.append({**hit, "library": library, "path": path})
+
+        exact = [
+            item
+            for item in valid
+            if os.path.normcase(os.path.abspath(item["path"])) == intended_abs
+        ]
+        if exact:
+            return exact[0]
+        if len(valid) > 1:
+            raise InventoryEmptyShellChangedError(
+                f"发现多个可删除的库存空壳，需人工确认: {rjcode}",
+            )
+        return valid[0] if valid else None
+
+    async def _replace_inventory_empty_shell(
+        self,
+        *,
+        manager,
+        target_library,
+        source_path: str,
+        target_path: str,
+        rjcode: str,
+        task: Task,
+        progress_cb,
+    ) -> Optional[str]:
+        intended_final = os.path.join(target_path, os.path.basename(source_path))
+        empty_shell = self._find_inventory_empty_shell(
+            manager,
+            rjcode,
+            source_path,
+            intended_final,
+        )
+        if empty_shell is None:
+            task.task_metadata["inventory_empty_shell_status"] = "not_found"
+            return None
+
+        old_path = str(empty_shell["path"])
+        old_library = empty_shell["library"]
+        old_relative = manager._index_relative_path(old_library, old_path)
+        intended_relative = manager._index_relative_path(target_library, intended_final)
+        if old_relative is None or intended_relative is None:
+            raise InventoryEmptyShellChangedError("库存空壳路径无法建立安全索引 mutation")
+
+        effects_by_library: Dict[str, list[Dict]] = {
+            old_library.id: [{
+                "kind": "delete",
+                "relative_path": old_relative,
+                "scope": "subtree",
+            }],
+        }
+        effects_by_library.setdefault(target_library.id, []).append({
+            "kind": "reconcile",
+            "relative_path": intended_relative,
+            "scope": "subtree",
+        })
+
+        from .library_index import get_library_index_mutation_service
+
+        mutation_service = get_library_index_mutation_service()
+        prepared = mutation_service.prepare(
+            kind="replace_inventory_empty_shell",
+            effects_by_library=effects_by_library,
+            idempotency_key=f"replace-empty-shell:{task.id}:{uuid.uuid4()}",
+        )
+        mutation_service.mark_filesystem_started(prepared.operation_id)
+        final_path = ""
+        old_deleted = False
+        try:
+            final_path = await asyncio.to_thread(
+                self._move_with_rename,
+                source_path,
+                target_path,
+                progress_cb,
+            )
+            if not self._directory_has_files(final_path):
+                raise RuntimeError("新作入库产物没有文件，拒绝删除库存空壳")
+            if not os.path.isdir(old_path) or self._directory_has_files(old_path):
+                actual_relative = manager._index_relative_path(target_library, final_path)
+                actual_effects = {
+                    target_library.id: [{
+                        "kind": "reconcile",
+                        "relative_path": actual_relative or intended_relative,
+                        "scope": "subtree",
+                    }],
+                }
+                mutation_service.finalize(
+                    prepared.operation_id,
+                    actual_effects_by_library=actual_effects,
+                    actual_result={
+                        "source": "replace_inventory_empty_shell",
+                        "status": "waiting_manual",
+                        "old_path": old_path,
+                        "preserved_path": final_path,
+                    },
+                )
+                raise InventoryEmptyShellChangedError(
+                    f"库存空壳目录在入库期间出现文件，已保留新作等待人工处理: {old_path}",
+                    preserved_path=final_path,
+                )
+
+            os.rmdir(old_path)
+            old_deleted = True
+            if os.path.normcase(os.path.abspath(final_path)) != os.path.normcase(os.path.abspath(old_path)):
+                if os.path.normcase(os.path.abspath(intended_final)) == os.path.normcase(os.path.abspath(old_path)):
+                    os.replace(final_path, old_path)
+                    final_path = old_path
+
+            final_relative = manager._index_relative_path(target_library, final_path)
+            actual_effects: Dict[str, list[Dict]] = {
+                old_library.id: [{
+                    "kind": "delete",
+                    "relative_path": old_relative,
+                    "scope": "subtree",
+                }],
+            }
+            actual_effects.setdefault(target_library.id, []).append({
+                "kind": "reconcile",
+                "relative_path": final_relative or intended_relative,
+                "scope": "subtree",
+            })
+            mutation_service.finalize(
+                prepared.operation_id,
+                actual_effects_by_library=actual_effects,
+                actual_result={
+                    "source": "replace_inventory_empty_shell",
+                    "status": "completed",
+                    "old_path": old_path,
+                    "final_path": final_path,
+                },
+            )
+            task.task_metadata.update({
+                "inventory_empty_shell_status": "replaced",
+                "inventory_empty_shell_path": old_path,
+                "inventory_empty_shell_operation_id": prepared.operation_id,
+            })
+            return final_path
+        except InventoryEmptyShellChangedError:
+            raise
+        except Exception as exc:
+            mutation_service.mark_reconcile_required(prepared.operation_id, exc)
+            if old_deleted:
+                logger.error(
+                    "[空壳替换] 旧空目录已删除但新作归位失败: old=%s final=%s",
+                    old_path,
+                    final_path,
+                    exc_info=True,
+                )
+            raise
+
     async def classify_and_move(self, source_path: str, metadata: Dict, task: Task) -> str:
         """
         智能分类并移动到库存
@@ -373,12 +584,29 @@ class SmartClassifier:
                 except Exception:
                     logger.debug("classify 移动进度回调异常已忽略", exc_info=True)
 
-            final_path = await asyncio.to_thread(
-                self._move_with_rename,
-                source_path,
-                target_path,
-                _classify_move_progress,
-            )
+            final_path = None
+            if bool((task.task_metadata or {}).get("replace_inventory_empty_shell")):
+                empty_shell_rjcode = str(
+                    (task.task_metadata or {}).get("inventory_empty_shell_rjcode")
+                    or rjcode
+                    or ""
+                ).strip().upper()
+                final_path = await self._replace_inventory_empty_shell(
+                    manager=manager,
+                    target_library=target_library,
+                    source_path=source_path,
+                    target_path=target_path,
+                    rjcode=empty_shell_rjcode,
+                    task=task,
+                    progress_cb=_classify_move_progress,
+                )
+            if not final_path:
+                final_path = await asyncio.to_thread(
+                    self._move_with_rename,
+                    source_path,
+                    target_path,
+                    _classify_move_progress,
+                )
         else:
             relative_target_dir = os.path.relpath(target_path, target_library.root_path).replace("\\", "/")
             if relative_target_dir == '.':
@@ -396,12 +624,13 @@ class SmartClassifier:
         # 5. 通知索引把新子树扫进去（解压入库 / KEEP_NEW / MERGE / 远程上传共用通路）
         # 不在 classify_and_move 里 await：本地 upsert 同步即可（小子树 ms 级），
         # 远程 upsert 由 LibraryManager 自己起后台 task；这里只触发一下。
-        self._notify_library_index_after_classify(
-            manager,
-            target_library,
-            final_path,
-            existing_path=existing_subtree_to_clear,
-        )
+        if not bool((task.task_metadata or {}).get("inventory_empty_shell_operation_id")):
+            self._notify_library_index_after_classify(
+                manager,
+                target_library,
+                final_path,
+                existing_path=existing_subtree_to_clear,
+            )
 
         return final_path
     
