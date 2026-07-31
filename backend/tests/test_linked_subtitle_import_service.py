@@ -57,6 +57,71 @@ class _SubtitleCacheRedisService:
         return True
 
 
+def test_pending_candidate_negative_cache_and_index_token_invalidation():
+    service = object.__new__(LinkedSubtitleImportService)
+    now = datetime.now()
+    conflict = ConflictWork(
+        id="pending-cache",
+        conflict_type=LinkedSubtitleImportService.PENDING_CONFLICT_TYPE,
+        status="PENDING",
+        analysis_info={
+            "candidate_refreshed_at": now.isoformat(),
+            "candidate_next_refresh_at": (now + timedelta(minutes=5)).isoformat(),
+            "candidate_index_view_token": "local:ready:1:286:9",
+        },
+    )
+    preview = {
+        "target_rjcode": "RJ01618558",
+        "is_translation_work": True,
+        "kikoeru_has_work": True,
+        "candidate_search_status": "not_found",
+    }
+
+    assert service._should_refresh_pending_record(
+        conflict,
+        preview,
+        refresh_candidates=True,
+        force_refresh_candidates=False,
+        refresh_min_interval_seconds=12,
+        current_index_view_token="local:ready:1:286:9",
+    ) is False
+    assert service._should_refresh_pending_record(
+        conflict,
+        preview,
+        refresh_candidates=True,
+        force_refresh_candidates=False,
+        refresh_min_interval_seconds=12,
+        current_index_view_token="local:ready:1:310:10",
+    ) is True
+
+    conflict.analysis_info["candidate_next_refresh_at"] = (
+        now - timedelta(seconds=1)
+    ).isoformat()
+    conflict.analysis_info["candidate_index_view_token"] = "local:ready:1:286:9"
+    assert service._should_refresh_pending_record(
+        conflict,
+        preview,
+        refresh_candidates=True,
+        force_refresh_candidates=False,
+        refresh_min_interval_seconds=12,
+        current_index_view_token="local:ready:1:286:9",
+    ) is True
+
+
+def test_candidate_refresh_metadata_uses_five_minute_not_found_ttl():
+    metadata = LinkedSubtitleImportService._candidate_refresh_metadata(
+        {"candidate_search_status": "not_found"},
+        index_view_token="local:ready:2:310:11",
+        refresh_min_interval_seconds=12,
+    )
+
+    refreshed_at = datetime.fromisoformat(metadata["candidate_refreshed_at"])
+    next_refresh_at = datetime.fromisoformat(metadata["candidate_next_refresh_at"])
+    assert metadata["candidate_search_status"] == "not_found"
+    assert metadata["candidate_index_view_token"] == "local:ready:2:310:11"
+    assert 299 <= (next_refresh_at - refreshed_at).total_seconds() <= 301
+
+
 def test_prefer_deepest_target_rj_candidate_keeps_inner_same_rj_folder():
     service = object.__new__(LinkedSubtitleImportService)
     candidates = [
@@ -1033,6 +1098,10 @@ async def test_queue_pending_archive_import_preserves_timeout_as_pending(db_sess
     ).one()
     assert row.rjcode == "RJ01608823"
     assert row.new_metadata["source_subtitle_probe_status"] == "timeout"
+    assert row.analysis_info["candidate_search_status"] == "unknown"
+    assert row.analysis_info["candidate_index_view_token"] == "index-unavailable"
+    assert row.analysis_info["candidate_refreshed_at"]
+    assert row.analysis_info["candidate_next_refresh_at"]
 
 
 @pytest.mark.asyncio
@@ -1116,6 +1185,73 @@ async def test_queue_pending_archive_import_preserves_extract_failure_as_pending
     ).one()
     assert row.rjcode == "RJ01638438"
     assert row.new_metadata["source_subtitle_probe_status"] == "missing_password"
+
+
+@pytest.mark.asyncio
+async def test_list_pending_imports_persists_refresh_metadata_when_preview_is_unchanged(
+    db_session,
+    monkeypatch,
+):
+    def fake_get_db():
+        yield db_session
+
+    monkeypatch.setattr(linked_subtitle_module, "get_db", fake_get_db)
+
+    preview = {
+        "source_rjcode": "RJ01618558",
+        "target_rjcode": "RJ01618558",
+        "is_translation_work": True,
+        "kikoeru_has_work": True,
+        "candidate_search_status": "not_found",
+        "can_stage_pending": True,
+    }
+    row = ConflictWork(
+        id="pending-unchanged",
+        task_id="task-unchanged",
+        rjcode="RJ01618558",
+        conflict_type=LinkedSubtitleImportService.PENDING_CONFLICT_TYPE,
+        new_path="D:/input/RJ01618558.7z",
+        status="PENDING",
+        analysis_info={
+            "preview": preview,
+            "source_mode": LinkedSubtitleImportService.PENDING_SOURCE_MODE,
+        },
+        new_metadata={},
+        created_at=datetime.now(),
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    service = object.__new__(LinkedSubtitleImportService)
+    service.PENDING_CONFLICT_TYPE = LinkedSubtitleImportService.PENDING_CONFLICT_TYPE
+    service.PENDING_EXECUTING_STATUS = LinkedSubtitleImportService.PENDING_EXECUTING_STATUS
+    service.PENDING_SOURCE_MODE = LinkedSubtitleImportService.PENDING_SOURCE_MODE
+    service.library_manager = SimpleNamespace(
+        inventory_index_view_token=lambda: "local:ready:1:310:12"
+    )
+    service._repair_cached_preview_rj_fields = AsyncMock(return_value=preview)
+    service._refresh_pending_preview_candidates = AsyncMock(return_value=preview)
+    service._should_create_pending_import = lambda _preview: True
+    service._is_imported_record_awaiting_manual_match = lambda _row: False
+    service._serialize_pending_record = lambda pending: {
+        "id": pending.id,
+        "preview": dict((pending.analysis_info or {}).get("preview") or {}),
+    }
+
+    items = await service.list_pending_imports()
+
+    assert [item["id"] for item in items] == ["pending-unchanged"]
+    service._refresh_pending_preview_candidates.assert_awaited_once()
+    refreshed = db_session.query(ConflictWork).filter(
+        ConflictWork.id == "pending-unchanged"
+    ).one()
+    assert refreshed.analysis_info["candidate_search_status"] == "not_found"
+    assert (
+        refreshed.analysis_info["candidate_index_view_token"]
+        == "local:ready:1:310:12"
+    )
+    assert refreshed.analysis_info["candidate_refreshed_at"]
+    assert refreshed.analysis_info["candidate_next_refresh_at"]
 
 
 @pytest.mark.asyncio

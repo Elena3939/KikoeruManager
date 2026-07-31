@@ -2686,7 +2686,7 @@ class LibraryManager:
         usable_libraries: list[LibraryDefinition] = []
         for library in libraries:
             try:
-                has_snapshot = service.is_ready(library.id)
+                has_snapshot = self._index_has_usable_snapshot(service, library.id)
             except Exception:
                 logger.debug("[索引] 判断库存快照可用性失败 library=%s", library.id, exc_info=True)
                 has_snapshot = False
@@ -2800,6 +2800,48 @@ class LibraryManager:
                     })
         return result
 
+    def inventory_index_view_token(
+        self,
+        *,
+        library_ids: Optional[list[str]] = None,
+    ) -> str:
+        """返回候选查询依赖的 active index view 版本，不触发扫盘。"""
+        libraries = self._active_libraries()
+        if library_ids:
+            wanted = {str(lid).strip() for lid in library_ids if str(lid).strip()}
+            libraries = [library for library in libraries if library.id in wanted]
+        libraries = [
+            library
+            for library in libraries
+            if self._library_uses_inventory_index(library)
+        ]
+        try:
+            from .library_index import get_library_index_service
+
+            service = get_library_index_service()
+        except Exception:
+            return "index-unavailable"
+
+        tokens: list[str] = []
+        for library in sorted(libraries, key=lambda item: str(item.id)):
+            try:
+                status = service.get_status(library.id)
+            except Exception:
+                status = None
+            if status is None:
+                tokens.append(f"{library.id}:missing")
+                continue
+            tokens.append(
+                ":".join([
+                    str(library.id),
+                    str(getattr(status, "status", "") or ""),
+                    str(int(getattr(status, "active_generation", 1) or 1)),
+                    str(int(getattr(status, "materialized_seq", 0) or 0)),
+                    str(int(getattr(status, "view_revision", 0) or 0)),
+                ])
+            )
+        return "|".join(tokens) if tokens else "no-local-library"
+
     def has_ready_index(self, *, library_ids: Optional[list[str]] = None) -> bool:
         """是否至少有一个活动库存的索引处于 ready；不触发扫描。"""
         libraries = self._active_libraries()
@@ -2817,7 +2859,7 @@ class LibraryManager:
             return False
         for library in libraries:
             try:
-                if service.is_ready(library.id):
+                if self._index_has_usable_snapshot(service, library.id):
                     return True
             except Exception:
                 logger.debug("[索引] 判断 ready 状态失败 library=%s", library.id, exc_info=True)
