@@ -623,6 +623,8 @@ class WorkCanonicalLink(Base):
     linked_rjcode = Column(String(20), index=True)
     link_type = Column(String(20), default='linked')
     lang = Column(String(20), default='')
+    evidence_source = Column(String(80), default='legacy')
+    evidence_status = Column(String(30), default='legacy_unverified', index=True)
     cached_at = Column(DateTime, default=get_local_now)
     created_at = Column(DateTime, default=get_local_now)
     updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
@@ -638,6 +640,8 @@ class WorkCanonicalLink(Base):
             'linked_rjcode': self.linked_rjcode,
             'link_type': self.link_type,
             'lang': self.lang,
+            'evidence_source': self.evidence_source or '',
+            'evidence_status': self.evidence_status or 'legacy_unverified',
             'cached_at': self.cached_at.isoformat() if self.cached_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
@@ -3846,6 +3850,49 @@ def _migrate_library_owned_works_schema(conn, existing_tables: Optional[set[str]
         )
 
 
+def _migrate_work_canonical_links_schema(
+    conn,
+    existing_tables: Optional[set[str]] = None,
+) -> None:
+    if existing_tables is not None:
+        if "work_canonical_links" not in existing_tables:
+            return
+    elif not _table_exists(conn, "work_canonical_links"):
+        return
+    columns = (
+        ("evidence_source", "VARCHAR(80)", "'legacy'"),
+        ("evidence_status", "VARCHAR(30)", "'legacy_unverified'"),
+    )
+    existing_columns = _existing_columns(
+        conn,
+        "work_canonical_links",
+        [name for name, _type, _default in columns],
+    )
+    for column_name, column_type, default_sql in columns:
+        _add_column_if_missing(
+            conn,
+            "work_canonical_links",
+            column_name,
+            column_type,
+            default_sql,
+            existing_columns=existing_columns,
+        )
+    conn.execute(text(
+        "UPDATE work_canonical_links "
+        "SET evidence_status = 'legacy_unverified' "
+        "WHERE evidence_status IS NULL OR evidence_status = ''"
+    ))
+    conn.execute(text(
+        "UPDATE work_canonical_links "
+        "SET evidence_source = 'legacy' "
+        "WHERE evidence_source IS NULL OR evidence_source = ''"
+    ))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_work_canonical_links_evidence_status "
+        "ON work_canonical_links(evidence_status)"
+    ))
+
+
 def _migrate_library_index_entries_schema(conn, existing_tables: Optional[set[str]] = None) -> None:
     if existing_tables is not None:
         if "library_index_entries" not in existing_tables:
@@ -4137,6 +4184,7 @@ def _migrate_compat_schema(conn) -> None:
     _migrate_library_index_status_schema(conn, existing_tables)
     _migrate_library_index_consistency_tables(conn)
     _migrate_library_owned_works_schema(conn, existing_tables)
+    _migrate_work_canonical_links_schema(conn, existing_tables)
     _migrate_dlsite_bonus_probe_cache_schema(conn, existing_tables)
     _migrate_notification_inbox_items_schema(conn, existing_tables)
     _migrate_activity_logs_projection(conn, existing_tables, compat_index_definitions)

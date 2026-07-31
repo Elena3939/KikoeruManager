@@ -100,6 +100,8 @@ class TranslationInfo:
     original_workno: Optional[str] = None
     child_worknos: List[str] = field(default_factory=list)
     lang: str = "JPN"
+    evidence_source: str = "unknown"
+    evidence_status: str = "unverified"
 
 
 @dataclass
@@ -109,13 +111,17 @@ class LinkedWork:
     work_type: str  # original, translation, child_translation
     lang: str = "JPN"
     title: str = ""
+    evidence_source: str = "unknown"
+    evidence_status: str = "unverified"
     
     def to_dict(self) -> dict:
         return {
             'workno': self.workno,
             'work_type': self.work_type,
             'lang': self.lang,
-            'title': self.title
+            'title': self.title,
+            'evidence_source': self.evidence_source,
+            'evidence_status': self.evidence_status,
         }
 
 
@@ -298,6 +304,34 @@ class DLsiteApiService:
         # 包括对所有翻译版子探测）。加 cache 后，同一任务内同一个 RJ 只算一次完整递归，
         # 其他调用走 self.cache 短路；inflight 防止并发协程同时算同一 RJ。
         self._linked_works_inflight: Dict[str, asyncio.Task] = {}
+        self._product_info_inflight: Dict[str, asyncio.Task] = {}
+
+    @staticmethod
+    def _cache_entry_fresh(entry: Dict[str, Any], default_ttl_seconds: int = 86400) -> bool:
+        timestamp = entry.get("timestamp")
+        if not isinstance(timestamp, datetime):
+            return False
+        ttl_seconds = max(1, int(entry.get("ttl_seconds") or default_ttl_seconds))
+        return datetime.now() - timestamp < timedelta(seconds=ttl_seconds)
+
+    def invalidate_rj_graph_cache(self, *rjcodes: str) -> int:
+        normalized = {
+            self._normalize_workno(value)
+            for value in rjcodes
+            if self._normalize_workno(value)
+        }
+        if not normalized:
+            return 0
+        removed = 0
+        for key in list(self.cache):
+            key_text = str(key or "").upper()
+            if any(rjcode in key_text for rjcode in normalized):
+                self.cache.pop(key, None)
+                removed += 1
+        for rjcode in normalized:
+            if self._translation_info_cache.pop(rjcode, None) is not None:
+                removed += 1
+        return removed
 
     def _normalize_workno(self, rjcode: str) -> str:
         value = str(rjcode or '').strip().upper()
@@ -1357,7 +1391,14 @@ class DLsiteApiService:
         }
         return available
 
-    async def get_product_info(self, rjcode: str, locale: Optional[str] = None) -> Optional[Dict]:
+    async def get_product_info(
+        self,
+        rjcode: str,
+        locale: Optional[str] = None,
+        *,
+        refresh: bool = False,
+        _inflight_owner: bool = False,
+    ) -> Optional[Dict]:
         requested_workno = self._normalize_workno(rjcode)
         if not requested_workno:
             return None
@@ -1372,15 +1413,37 @@ class DLsiteApiService:
         # 加函数级 cache 后，同一 RJ 同一任务内的 fallback 链只跑一次；失败也 cache
         # 一份（沿用 self.cache 的 24h TTL，远超单任务时长）。
         cache_key = f"product_info:{requested_workno}:{locale or ''}"
-        if cache_key in self.cache:
+        if not _inflight_owner:
+            if refresh:
+                self.invalidate_rj_graph_cache(requested_workno)
+            inflight = self._product_info_inflight.get(cache_key)
+            if inflight is not None:
+                return await asyncio.shield(inflight)
+            task = asyncio.create_task(
+                self.get_product_info(
+                    requested_workno,
+                    locale=locale,
+                    refresh=refresh,
+                    _inflight_owner=True,
+                )
+            )
+            self._product_info_inflight[cache_key] = task
+            try:
+                return await asyncio.shield(task)
+            finally:
+                if self._product_info_inflight.get(cache_key) is task:
+                    self._product_info_inflight.pop(cache_key, None)
+        if not refresh and cache_key in self.cache:
             cached_data = self.cache[cache_key]
-            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+            if self._cache_entry_fresh(cached_data):
                 cached_payload = cached_data.get('data')
                 # cached_payload 可能是 None（失败 cache）或正常 dict——都直接返回
                 return cached_payload if cached_payload is not None else None
 
         product = await self._fetch_product_payload(requested_workno, locale=locale)
         if product:
+            from .dlsite_metadata_trust import attach_dlsite_metadata_verification
+
             payload = {
                 'product': product,
                 'requested_workno': requested_workno,
@@ -1390,7 +1453,25 @@ class DLsiteApiService:
                 'parent_workno': '',
                 'edition_info': None,
             }
-            self.cache[cache_key] = {'data': payload, 'timestamp': datetime.now()}
+            verification_input = {
+                **product,
+                "resolved_workno": payload["resolved_workno"],
+                "metadata_evidence_source": "dlsite_product",
+            }
+            verification = attach_dlsite_metadata_verification(
+                verification_input,
+                requested_workno,
+            )
+            payload.update({
+                "metadata_verification_status": verification["metadata_verification_status"],
+                "metadata_verification_reason": verification["metadata_verification_reason"],
+                "metadata_evidence_source": verification["metadata_evidence_source"],
+            })
+            self.cache[cache_key] = {
+                'data': payload,
+                'timestamp': datetime.now(),
+                'ttl_seconds': 86400,
+            }
             return payload
 
         fallback = await self._resolve_translation_page_fallback(requested_workno, locale=locale) or {}
@@ -1438,7 +1519,33 @@ class DLsiteApiService:
                     'parent_workno': parent_workno,
                     'edition_info': edition_info,
                 }
-                self.cache[cache_key] = {'data': payload, 'timestamp': datetime.now()}
+                from .dlsite_metadata_trust import attach_dlsite_metadata_verification
+
+                verification_input = {
+                    **effective_product,
+                    "resolved_workno": parent_workno,
+                    "verified_parent_workno": parent_workno,
+                    "verified_parent_child_relation": bool(edition_info),
+                    "metadata_evidence_source": (
+                        "language_editions"
+                        if edition_info
+                        else "translation_page"
+                    ),
+                }
+                verification = attach_dlsite_metadata_verification(
+                    verification_input,
+                    requested_workno,
+                )
+                payload.update({
+                    "metadata_verification_status": verification["metadata_verification_status"],
+                    "metadata_verification_reason": verification["metadata_verification_reason"],
+                    "metadata_evidence_source": verification["metadata_evidence_source"],
+                })
+                self.cache[cache_key] = {
+                    'data': payload,
+                    'timestamp': datetime.now(),
+                    'ttl_seconds': 86400 if edition_info else 900,
+                }
                 return payload
 
             logger.warning(
@@ -1457,12 +1564,23 @@ class DLsiteApiService:
                 'fallback_source': 'page_metadata',
                 'parent_workno': parent_workno,
                 'edition_info': None,
+                'metadata_verification_status': 'unverified',
+                'metadata_verification_reason': '页面 fallback 元数据未经结构化关联验证',
+                'metadata_evidence_source': 'page_metadata_unverified',
             }
-            self.cache[cache_key] = {'data': payload, 'timestamp': datetime.now()}
+            self.cache[cache_key] = {
+                'data': payload,
+                'timestamp': datetime.now(),
+                'ttl_seconds': 900,
+            }
             return payload
 
         # ★ 同样 cache 失败结果（None），防止同一任务内重复跑两层 HTML fallback 链。
-        self.cache[cache_key] = {'data': None, 'timestamp': datetime.now()}
+        self.cache[cache_key] = {
+            'data': None,
+            'timestamp': datetime.now(),
+            'ttl_seconds': 300,
+        }
         return None
     
     async def _get_client(self) -> httpx.AsyncClient:
@@ -1791,7 +1909,7 @@ class DLsiteApiService:
         """
         workno = self._normalize_workno(rjcode)
         if not workno:
-            return TranslationInfo(is_original=True)
+            return TranslationInfo()
 
         # 专项缓存命中（translation_info 独立缓存，避免每次走完整 get_product_info）
         if workno in self._translation_info_cache:
@@ -1804,6 +1922,13 @@ class DLsiteApiService:
         if product_info and product_info.get('product'):
             product = dict(product_info.get('product') or {})
             translation_info = dict(product.get('translation_info', {}) or {})
+            product_evidence_source = str(
+                product_info.get("metadata_evidence_source") or "unknown"
+            ).strip()
+            product_verification_status = str(
+                product_info.get("metadata_verification_status") or "unverified"
+            ).strip().lower()
+            has_structured_translation_info = bool(translation_info)
             result = TranslationInfo(
                 is_original=translation_info.get('is_original', False),
                 is_parent=translation_info.get('is_parent', False),
@@ -1815,7 +1940,18 @@ class DLsiteApiService:
                     for w in list(translation_info.get('child_worknos') or [])
                     if self._normalize_workno(w)
                 ],
-                lang=translation_info.get('lang', 'JPN')
+                lang=translation_info.get('lang', 'JPN'),
+                evidence_source=(
+                    "translation_info"
+                    if has_structured_translation_info
+                    else product_evidence_source
+                ),
+                evidence_status=(
+                    "verified"
+                    if product_verification_status == "verified"
+                    and has_structured_translation_info
+                    else "unverified"
+                ),
             )
             has_explicit_linkage = any([
                 result.is_original,
@@ -1852,6 +1988,8 @@ class DLsiteApiService:
                     parent_workno=fallback_parent,
                     original_workno=fallback_parent,
                     lang=fallback_lang,
+                    evidence_source="page_metadata_unverified",
+                    evidence_status="unverified",
                 )
                 logger.info(
                     '[DLsite] 使用页面 fallback 补全翻译父作品: requested=%s parent=%s lang=%s source=%s',
@@ -1869,8 +2007,10 @@ class DLsiteApiService:
                 result.child_worknos,
             ]) and looks_like_translation_title:
                 return TranslationInfo(lang="")
-            # 只缓存"成功拿到 product 的"明确结果。
-            self._translation_info_cache[workno] = (result, datetime.now())
+            # 只有结构化证据通过验证的关系才进入 24h 专项缓存。
+            # 页面推断继续由 product_info 的 15m cache 控制，避免旁路缓存把它放大到 24h。
+            if str(result.evidence_status or "").strip().lower() == "verified":
+                self._translation_info_cache[workno] = (result, datetime.now())
             return result
 
         # ★ 修复 BUG #1（韩英版被误认为原作）：
@@ -1928,13 +2068,12 @@ class DLsiteApiService:
             # 一并清掉，避免下面 _compute_linked_works 跑出来还是旧 BUG 时段的
             # 错误标记。translation_info 只在内存，清掉后续 get_translation_info
             # 自动重新打 product.json。
-            self.cache.pop(cache_key, None)
-            self._translation_info_cache.pop(normalized_rjcode, None)
+            self.invalidate_rj_graph_cache(normalized_rjcode)
 
         # 1. cache 短路（同一任务内重复调用近乎免费）
         if not refresh and cache_key in self.cache:
             cached_data = self.cache[cache_key]
-            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+            if self._cache_entry_fresh(cached_data):
                 # 浅拷贝避免上游误改 cache 内 LinkedWork 引用
                 return dict(cached_data['data'] or {})
 
@@ -1951,9 +2090,21 @@ class DLsiteApiService:
         finally:
             self._linked_works_inflight.pop(normalized_rjcode, None)
 
+        result_values = list((result or {}).values())
+        has_verified = any(
+            str(getattr(item, "evidence_status", "") or "").strip().lower()
+            == "verified"
+            for item in result_values
+        )
+        has_page_evidence = any(
+            str(getattr(item, "evidence_source", "") or "").strip().lower()
+            in {"translation_page", "page_metadata", "page_metadata_unverified"}
+            for item in result_values
+        )
         self.cache[cache_key] = {
             'data': dict(result),
             'timestamp': datetime.now(),
+            'ttl_seconds': 86400 if has_verified else (900 if has_page_evidence else 300),
         }
         return dict(result)
 
@@ -1983,6 +2134,18 @@ class DLsiteApiService:
                 if existing is None:
                     result[workno] = work
                     continue
+                existing_verified = (
+                    str(getattr(existing, "evidence_status", "") or "").strip().lower()
+                    == "verified"
+                )
+                incoming_verified = (
+                    str(getattr(work, "evidence_status", "") or "").strip().lower()
+                    == "verified"
+                )
+                if incoming_verified != existing_verified:
+                    if incoming_verified:
+                        result[workno] = work
+                    continue
                 old_rank = priority.get(str(existing.work_type or "").strip(), 99)
                 new_rank = priority.get(str(work.work_type or "").strip(), 99)
                 if new_rank < old_rank:
@@ -1996,9 +2159,25 @@ class DLsiteApiService:
             product = dict((product_info or {}).get('product') or {})
             api = product
             result: Dict[str, LinkedWork] = {}
+            product_verified = str(
+                (product_info or {}).get("metadata_verification_status") or ""
+            ).strip().lower() == "verified"
+            relation_verified = (
+                str(getattr(trans, "evidence_status", "") or "").strip().lower()
+                == "verified"
+            )
+            relation_source = str(
+                getattr(trans, "evidence_source", "") or "translation_info"
+            ).strip()
 
             if trans.is_original:
-                result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='original', lang='JPN')
+                result[target_rjcode] = LinkedWork(
+                    workno=target_rjcode,
+                    work_type='original',
+                    lang='JPN',
+                    evidence_source=relation_source,
+                    evidence_status="verified" if relation_verified else "unverified",
+                )
                 language_editions = api.get('language_editions', [])
                 if isinstance(language_editions, dict):
                     language_editions = list(language_editions.values())
@@ -2019,6 +2198,8 @@ class DLsiteApiService:
                         work_type='translation',
                         lang=edition_lang,
                         title=str(edition.get('work_name') or '').strip(),
+                        evidence_source="language_editions",
+                        evidence_status="verified" if product_verified else "unverified",
                     )
             elif trans.is_parent:
                 original_workno = self._normalize_workno(trans.original_workno or '')
@@ -2031,21 +2212,51 @@ class DLsiteApiService:
                 # 自己，每个翻译版都会被独立成卡。这里显式保留"target 就是原作"的语义，
                 # 别再让自己的 translation 标记把 original 盖掉。
                 if original_workno and original_workno != target_rjcode:
-                    result[original_workno] = LinkedWork(workno=original_workno, work_type='original', lang='JPN')
-                    result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='translation', lang=trans.lang or 'JPN')
+                    result[original_workno] = LinkedWork(
+                        workno=original_workno,
+                        work_type='original',
+                        lang='JPN',
+                        evidence_source=relation_source,
+                        evidence_status="verified" if relation_verified else "unverified",
+                    )
+                    result[target_rjcode] = LinkedWork(
+                        workno=target_rjcode,
+                        work_type='translation',
+                        lang=trans.lang or 'JPN',
+                        evidence_source=relation_source,
+                        evidence_status="verified" if relation_verified else "unverified",
+                    )
                 else:
                     # target 自身就是日语原作：保留 original/JPN 标记，避免被翻译/翻译子节点覆盖。
-                    result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='original', lang='JPN')
+                    result[target_rjcode] = LinkedWork(
+                        workno=target_rjcode,
+                        work_type='original',
+                        lang='JPN',
+                        evidence_source=relation_source,
+                        evidence_status="verified" if relation_verified else "unverified",
+                    )
                 for child_workno in list(trans.child_worknos or []):
                     normalized_child = self._normalize_workno(child_workno)
                     if not normalized_child:
                         continue
-                    result[normalized_child] = LinkedWork(workno=normalized_child, work_type='child_translation', lang=trans.lang or 'JPN')
+                    result[normalized_child] = LinkedWork(
+                        workno=normalized_child,
+                        work_type='child_translation',
+                        lang=trans.lang or 'JPN',
+                        evidence_source=relation_source,
+                        evidence_status="verified" if relation_verified else "unverified",
+                    )
             elif trans.is_child:
                 original_workno = self._normalize_workno(trans.original_workno or '')
                 parent_workno = self._normalize_workno(trans.parent_workno or '')
                 if original_workno:
-                    result[original_workno] = LinkedWork(workno=original_workno, work_type='original', lang='JPN')
+                    result[original_workno] = LinkedWork(
+                        workno=original_workno,
+                        work_type='original',
+                        lang='JPN',
+                        evidence_source=relation_source,
+                        evidence_status="verified" if relation_verified else "unverified",
+                    )
                 # ★ 修复"同一作品所有翻译版独立成卡"BUG（详见上方 is_parent 分支注释）：
                 # 直系翻译版的常见场景是 parent_workno == original_workno（parent 就是日语原作）。
                 # 之前这里无条件 `result[parent_workno] = translation/<child.lang>` 会把刚写入的
@@ -2055,14 +2266,34 @@ class DLsiteApiService:
                 # 一张卡。父翻译只有在它确实是另一个 RJ（嵌套翻译链：原作 → 父翻译 → 子翻译）
                 # 时才需要单独写入。
                 if parent_workno and parent_workno != original_workno:
-                    result[parent_workno] = LinkedWork(workno=parent_workno, work_type='translation', lang=trans.lang or 'JPN')
-                result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='child_translation', lang=trans.lang or 'JPN')
+                    result[parent_workno] = LinkedWork(
+                        workno=parent_workno,
+                        work_type='translation',
+                        lang=trans.lang or 'JPN',
+                        evidence_source=relation_source,
+                        evidence_status="verified" if relation_verified else "unverified",
+                    )
+                result[target_rjcode] = LinkedWork(
+                    workno=target_rjcode,
+                    work_type='child_translation',
+                    lang=trans.lang or 'JPN',
+                    evidence_source=relation_source,
+                    evidence_status="verified" if relation_verified else "unverified",
+                )
             else:
                 # ★ 修复 BUG #1：trans 完全没信号（API 失败或返回空）时，**不要**无中生有
                 # 声称这是 'original/JPN'。原先这里硬塞 original/JPN，让下游的 link_map
                 # 把已下架的韩英翻译版误认成日语原作。改成 ``unknown / UNKNOWN``，让
                 # ``_variant_group`` 归类为 ``other``，下游闸门可识别并过滤。
-                result[target_rjcode] = LinkedWork(workno=target_rjcode, work_type='unknown', lang='UNKNOWN')
+                result[target_rjcode] = LinkedWork(
+                    workno=target_rjcode,
+                    work_type='unknown',
+                    lang='UNKNOWN',
+                    evidence_source=str(
+                        (product_info or {}).get("metadata_evidence_source") or "unknown"
+                    ),
+                    evidence_status="unverified",
+                )
 
             return result
 
@@ -2109,7 +2340,15 @@ class DLsiteApiService:
             logger.debug(traceback.format_exc())
             # ★ 修复 BUG #1：异常 fallback 也不再无中生有声称 original/JPN，
             # 改成 'unknown / UNKNOWN'，避免把可能是韩英版的 RJ 错认成日语原作。
-            return {normalized_rjcode: LinkedWork(workno=normalized_rjcode, work_type='unknown', lang='UNKNOWN')}
+            return {
+                normalized_rjcode: LinkedWork(
+                    workno=normalized_rjcode,
+                    work_type='unknown',
+                    lang='UNKNOWN',
+                    evidence_source="exception",
+                    evidence_status="unverified",
+                )
+            }
     
     async def get_full_linkage(self, rjcode: str, cue_languages: List[str] = None) -> Dict[str, LinkedWork]:
         """

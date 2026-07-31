@@ -68,6 +68,7 @@ async def test_translation_title_without_parent_remains_unverified():
     assert result.original_workno is None
     assert result.parent_workno is None
     assert result.lang == ""
+    assert result.evidence_status == "unverified"
     assert "RJ01609999" not in service._translation_info_cache
 
 
@@ -91,7 +92,8 @@ async def test_normal_product_without_translation_linkage_keeps_default_result()
     assert result.is_parent is False
     assert result.is_child is False
     assert result.lang == "JPN"
-    assert "RJ01608888" in service._translation_info_cache
+    assert result.evidence_status == "unverified"
+    assert "RJ01608888" not in service._translation_info_cache
 
 
 @pytest.mark.asyncio
@@ -106,6 +108,8 @@ async def test_explicit_api_translation_info_wins_over_page_fallback():
         },
         "parent_workno": "RJ01600000",
         "fallback_source": "page_metadata",
+        "metadata_evidence_source": "dlsite_product",
+        "metadata_verification_status": "verified",
     })
 
     result = await service.get_translation_info("RJ01600001")
@@ -114,3 +118,5 @@ async def test_explicit_api_translation_info_wins_over_page_fallback():
     assert result.is_child is False
     assert result.original_workno is None
     assert result.lang == "JPN"
+    assert result.evidence_status == "verified"
+    assert "RJ01600001" in service._translation_info_cache

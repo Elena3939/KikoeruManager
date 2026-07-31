@@ -10,6 +10,7 @@ from app.core import circle_completion_service as circle_module
 from app.core import dlsite_bonus_probe_service as bonus_probe_module
 from app.core.circle_image_cache_service import CircleImageCacheService
 from app.core.circle_completion_service import CircleCompletionService
+from app.core.dlsite_service import LinkedWork
 from app.models.database import (
     CircleCatalog,
     CircleWork,
@@ -212,6 +213,8 @@ async def test_resolve_canonical_rj_expands_cached_translation_chain(
             linked_rjcode="RJ01673480",
             link_type="translation",
             lang="JPN",
+            evidence_source="translation_info",
+            evidence_status="verified",
         ),
         WorkCanonicalLink(
             id="cached-english",
@@ -219,6 +222,8 @@ async def test_resolve_canonical_rj_expands_cached_translation_chain(
             linked_rjcode="RJ01673617",
             link_type="translation",
             lang="ENG",
+            evidence_source="translation_info",
+            evidence_status="verified",
         ),
         WorkCanonicalLink(
             id="cached-dirty-bonus",
@@ -226,6 +231,8 @@ async def test_resolve_canonical_rj_expands_cached_translation_chain(
             linked_rjcode="RJ01678200",
             link_type="bonus",
             lang="",
+            evidence_source="dlsite_bonus_probe",
+            evidence_status="verified",
         ),
     ])
     db_session.commit()
@@ -234,6 +241,45 @@ async def test_resolve_canonical_rj_expands_cached_translation_chain(
 
     assert payload["canonical_rjcode"] == "RJ01673480"
     assert payload["linked_rjcodes"] == ["RJ01673480", "RJ01673617", "RJ01678200"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_canonical_rj_ignores_legacy_unverified_cache(
+    service: CircleCompletionService,
+    db_session,
+    monkeypatch,
+) -> None:
+    db_session.add(
+        WorkCanonicalLink(
+            id="legacy-unverified-link",
+            canonical_rjcode="RJ01673480",
+            linked_rjcode="RJ01673617",
+            link_type="translation",
+            lang="ENG",
+        )
+    )
+    db_session.commit()
+
+    async def unverified_links(_rjcode, refresh=False):
+        return {
+            "RJ01673617": LinkedWork(
+                workno="RJ01673617",
+                work_type="unknown",
+                lang="UNKNOWN",
+            )
+        }
+
+    monkeypatch.setattr(
+        service.dlsite_service,
+        "get_linked_works",
+        unverified_links,
+    )
+
+    payload = await service.resolve_canonical_rj("RJ01673617")
+
+    assert payload["canonical_rjcode"] == "RJ01673617"
+    assert payload["linked_rjcodes"] == ["RJ01673617"]
+    assert payload["evidence_status"] == "unverified"
 
 
 def test_circle_image_cache_restores_historical_display_alias(tmp_path) -> None:
@@ -856,6 +902,8 @@ async def test_owned_original_subtitle_state_survives_translation_variant_priori
                 linked_rjcode=linked_rjcode,
                 link_type=link_type,
                 lang=lang,
+                evidence_source="language_editions",
+                evidence_status="verified",
             )
         )
         db_session.add(
@@ -957,6 +1005,8 @@ async def test_missing_work_keeps_translation_variant_priority(
                 linked_rjcode=linked_rjcode,
                 link_type=link_type,
                 lang=lang,
+                evidence_source="language_editions",
+                evidence_status="verified",
             )
         )
     db_session.commit()

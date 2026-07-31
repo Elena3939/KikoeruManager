@@ -1335,6 +1335,7 @@ class LibraryCircleAggregationService:
             link_rows = (
                 db.query(WorkCanonicalLink.canonical_rjcode, WorkCanonicalLink.linked_rjcode)
                 .filter(
+                    WorkCanonicalLink.evidence_status == "verified",
                     or_(
                         WorkCanonicalLink.linked_rjcode.in_(normalized),
                         WorkCanonicalLink.canonical_rjcode.in_(normalized),

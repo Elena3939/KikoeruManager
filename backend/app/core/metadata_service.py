@@ -78,6 +78,9 @@ class WorkMetadata:
         self.is_bonus_work: bool = False
         self.has_bonus: bool = False
         self.metadata_source: str = "unknown"
+        self.metadata_verification_status: str = "unverified"
+        self.metadata_verification_reason: str = ""
+        self.metadata_evidence_source: str = ""
         self.dlsite_circuit_open: bool = False
         self.rename_skipped_reason: str = ""
         # _apply_dlsite_bonus_info 成功时写入当前时间。
@@ -103,6 +106,9 @@ class WorkMetadata:
             'has_bonus': self.has_bonus,
             'bonus_info_checked_at': self.bonus_info_checked_at.isoformat() if self.bonus_info_checked_at else None,
             'metadata_source': self.metadata_source,
+            'metadata_verification_status': self.metadata_verification_status,
+            'metadata_verification_reason': self.metadata_verification_reason,
+            'metadata_evidence_source': self.metadata_evidence_source,
             'dlsite_circuit_open': self.dlsite_circuit_open,
         }
 
@@ -163,11 +169,16 @@ class MetadataService:
         *,
         locale: Optional[str] = None,
         purpose: str = "metadata",
+        refresh: bool = False,
     ) -> Optional[Dict]:
         timeout = self._product_info_timeout_seconds()
         try:
             return await asyncio.wait_for(
-                get_dlsite_service().get_product_info(rjcode, locale=locale),
+                get_dlsite_service().get_product_info(
+                    rjcode,
+                    locale=locale,
+                    refresh=refresh,
+                ),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
@@ -236,12 +247,16 @@ class MetadataService:
                 payload = cached.to_dict()
                 payload["metadata_source"] = "cache"
                 payload["dlsite_circuit_open"] = _dlsite_metadata_circuit_state()["open"]
+                from .dlsite_metadata_trust import attach_dlsite_metadata_verification
+
+                payload["metadata_evidence_source"] = "legacy_cache"
+                attach_dlsite_metadata_verification(payload, rjcode)
                 return payload
             if cached:
                 logger.info("缓存元数据命中但已判定需要刷新: %s maker_name=%s", rjcode, cached.maker_name)
 
         circuit_state = _dlsite_metadata_circuit_state()
-        if circuit_state["open"]:
+        if circuit_state["open"] and not force_refresh:
             logger.warning(
                 "[%s] DLsite 元数据短熔断中，跳过外部请求 remaining=%.1fs last_error=%s",
                 rjcode,
@@ -251,12 +266,22 @@ class MetadataService:
             metadata = self._build_minimal_metadata(rjcode, path)
             metadata.dlsite_circuit_open = True
             metadata.rename_skipped_reason = "DLsite 元数据短熔断中"
-            return metadata.to_dict()
+            payload = metadata.to_dict()
+            from .dlsite_metadata_trust import attach_dlsite_metadata_verification
+
+            attach_dlsite_metadata_verification(payload, rjcode)
+            return payload
 
         metadata = None
         last_error = ""
         try:
-            metadata = await self._fetch_from_dlsite_product_info(rjcode)
+            if force_refresh:
+                metadata = await self._fetch_from_dlsite_product_info(
+                    rjcode,
+                    refresh=True,
+                )
+            else:
+                metadata = await self._fetch_from_dlsite_product_info(rjcode)
         except Exception as exc:
             last_error = str(exc)
             logger.warning("[%s] DLsite product_info 链路失败: %s", rjcode, exc)
@@ -278,7 +303,11 @@ class MetadataService:
         if self.config.metadata.cache_enabled and metadata.metadata_source != "minimal":
             self._cache_metadata(metadata)
 
-        return metadata.to_dict()
+        payload = metadata.to_dict()
+        from .dlsite_metadata_trust import attach_dlsite_metadata_verification
+
+        attach_dlsite_metadata_verification(payload, rjcode)
+        return payload
 
     def _should_refresh_cached_metadata(self, cached: WorkMetadataModel) -> bool:
         maker_name = str(getattr(cached, "maker_name", "") or "").strip()
@@ -315,6 +344,8 @@ class MetadataService:
         return False
 
     async def _resolve_original_maker_fields(self, product: Dict, rjcode: str) -> Dict[str, str]:
+        from .dlsite_metadata_trust import is_translation_placeholder_maker
+
         translation_info = dict(product.get('translation_info') or {})
         original_workno = str(
             translation_info.get('original_workno')
@@ -328,6 +359,9 @@ class MetadataService:
             'maker_name': product.get('maker_name', '') or '',
             'original_workno': original_workno,
         }
+        if is_translation_placeholder_maker(maker_fields["maker_name"]):
+            maker_fields["maker_id"] = ""
+            maker_fields["maker_name"] = ""
         if is_original or not original_workno:
             return maker_fields
 
@@ -338,14 +372,32 @@ class MetadataService:
                 purpose="original_maker",
             )
             original_product = dict((product_info or {}).get('product') or {})
-            if original_product:
+            verification_status = str(
+                (product_info or {}).get("metadata_verification_status") or ""
+            ).strip().lower()
+            original_maker_name = str(
+                original_product.get("maker_name") or ""
+            ).strip()
+            if (
+                original_product
+                and verification_status == "verified"
+                and not is_translation_placeholder_maker(original_maker_name)
+            ):
                 maker_fields['maker_id'] = original_product.get('maker_id', '') or maker_fields['maker_id']
-                maker_fields['maker_name'] = original_product.get('maker_name', '') or maker_fields['maker_name']
+                maker_fields['maker_name'] = original_maker_name or maker_fields['maker_name']
                 logger.info(
                     "[%s] 使用原作社团信息: original=%s maker_name=%s",
                     rjcode,
                     original_workno,
                     maker_fields['maker_name'],
+                )
+            elif original_product:
+                logger.warning(
+                    "[%s] 原作社团元数据未通过验证，拒绝回填: original=%s status=%s maker=%s",
+                    rjcode,
+                    original_workno,
+                    verification_status or "unverified",
+                    original_maker_name or "missing",
                 )
         except Exception as exc:
             logger.warning("[%s] 获取原作社团信息失败 %s: %s", rjcode, original_workno, exc)
@@ -708,7 +760,12 @@ class MetadataService:
 
         return metadata
 
-    async def _fetch_from_dlsite_product_info(self, rjcode: str) -> Optional[WorkMetadata]:
+    async def _fetch_from_dlsite_product_info(
+        self,
+        rjcode: str,
+        *,
+        refresh: bool = False,
+    ) -> Optional[WorkMetadata]:
         await asyncio.sleep(self.config.metadata.sleep_interval)
 
         try:
@@ -716,6 +773,7 @@ class MetadataService:
                 rjcode,
                 locale=self.config.metadata.locale,
                 purpose="primary",
+                refresh=refresh,
             )
             if not product_info or not product_info.get('product'):
                 return None
@@ -735,6 +793,15 @@ class MetadataService:
             )
             if product_info.get('fallback_used'):
                 metadata.metadata_source = "fallback"
+            metadata.metadata_evidence_source = str(
+                product_info.get("fallback_source") or "dlsite_product"
+            )
+            metadata.metadata_verification_status = str(
+                product_info.get("metadata_verification_status") or "unverified"
+            )
+            metadata.metadata_verification_reason = str(
+                product_info.get("metadata_verification_reason") or ""
+            )
             return metadata
         except Exception as e:
             logger.warning(f"[{rjcode}] DLsite product_info 链路失败，回退到直连 API: {e}")
@@ -762,6 +829,7 @@ class MetadataService:
             product = data[0]
             metadata = WorkMetadata()
             metadata.metadata_source = "dlsite"
+            metadata.metadata_evidence_source = "dlsite_product"
             metadata.rjcode = product.get('workno', rjcode)
             metadata.work_name = product.get('work_name', '')
 

@@ -951,6 +951,8 @@ def test_selected_target_cache_reuse_ignores_explicit_link_to_other_original(db_
             canonical_rjcode="RJ01165316",
             linked_rjcode="RJ01171174",
             link_type="bonus",
+            evidence_source="dlsite_bonus_probe",
+            evidence_status="verified",
         )
     )
     db_session.commit()
@@ -1024,6 +1026,8 @@ async def test_probe_date_selected_scope_does_not_steal_bonus_linked_to_other_or
             canonical_rjcode="RJ01165316",
             linked_rjcode="RJ01171174",
             link_type="bonus",
+            evidence_source="dlsite_bonus_probe",
+            evidence_status="verified",
         )
     )
     db_session.commit()
