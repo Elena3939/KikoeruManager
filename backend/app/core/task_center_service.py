@@ -380,36 +380,79 @@ class TaskCenterService:
     def _should_skip_directory_file_tree_snapshot(self, metadata: Dict[str, Any], domain: str) -> bool:
         return domain == "http_download"
 
-    def _ensure_file_tree_metadata(self, metadata: Dict[str, Any], resolved_target_path: str, source_path: str, domain: str = "") -> Dict[str, Any]:
-        if metadata.get("file_tree_items"):
-            return metadata
+    def _ensure_file_tree_metadata(
+        self,
+        metadata: Dict[str, Any],
+        resolved_target_path: str,
+        source_path: str,
+        domain: str = "",
+        task_status: str = "",
+    ) -> Dict[str, Any]:
+        enriched = dict(metadata)
+        legacy_items = list(enriched.get("file_tree_items") or [])
+        if legacy_items and not enriched.get("extracted_file_tree_items"):
+            enriched["extracted_file_tree_items"] = legacy_items
+            enriched["extracted_file_tree_root_path"] = self._safe_text(
+                enriched.get("file_tree_root_path")
+            )
+            enriched["extracted_file_tree_root_label"] = self._safe_text(
+                enriched.get("file_tree_root_label")
+            )
         if self._should_skip_directory_file_tree_snapshot(metadata, domain):
-            return metadata
+            return enriched
 
-        candidate_paths: List[str] = []
+        final_candidate_paths: List[str] = []
         for candidate in (
+            metadata.get("renamed_output_path"),
             metadata.get("final_output_path"),
             metadata.get("target_path"),
             resolved_target_path,
             metadata.get("folder_path"),
-            source_path,
         ):
             normalized = self._safe_text(candidate)
-            if not normalized or normalized in candidate_paths:
+            if not normalized or normalized in final_candidate_paths:
                 continue
             if os.path.isdir(normalized):
-                candidate_paths.append(normalized)
+                final_candidate_paths.append(normalized)
 
-        for candidate in candidate_paths:
-            snapshot = self._snapshot_directory_items(candidate)
-            if snapshot:
-                enriched = dict(metadata)
-                enriched["file_tree_items"] = snapshot
-                enriched["file_tree_root_path"] = candidate
-                enriched["file_tree_root_label"] = self._basename(candidate)
-                return enriched
+        if not enriched.get("final_file_tree_items"):
+            for candidate in final_candidate_paths:
+                snapshot = self._snapshot_directory_items(candidate)
+                if snapshot:
+                    enriched["final_file_tree_items"] = snapshot
+                    enriched["final_file_tree_root_path"] = candidate
+                    enriched["final_file_tree_root_label"] = self._basename(candidate)
+                    break
 
-        return metadata
+        if not enriched.get("extracted_file_tree_items"):
+            extracted_candidates: List[str] = []
+            for candidate in (
+                metadata.get("staging_dir"),
+                metadata.get("extract_dir"),
+                metadata.get("output_path"),
+                source_path,
+            ):
+                normalized = self._safe_text(candidate)
+                if not normalized or normalized in extracted_candidates:
+                    continue
+                if os.path.isdir(normalized) and normalized not in final_candidate_paths:
+                    extracted_candidates.append(normalized)
+            for candidate in extracted_candidates:
+                snapshot = self._snapshot_directory_items(candidate)
+                if snapshot:
+                    enriched["extracted_file_tree_items"] = snapshot
+                    enriched["extracted_file_tree_root_path"] = candidate
+                    enriched["extracted_file_tree_root_label"] = self._basename(candidate)
+                    break
+
+        completed = self._safe_text(task_status).lower() == TaskStatus.COMPLETED.value
+        if completed and enriched.get("final_file_tree_items"):
+            enriched["file_tree_view_kind"] = "final"
+        elif enriched.get("extracted_file_tree_items"):
+            enriched["file_tree_view_kind"] = "extracted_snapshot" if completed else "extracted"
+        elif enriched.get("final_file_tree_items"):
+            enriched["file_tree_view_kind"] = "final"
+        return enriched
 
     def _format_duration_ms(self, value: Any) -> str:
         try:
@@ -1095,7 +1138,13 @@ class TaskCenterService:
         )
         # 关键优化：summary 模式跳过 os.walk，它只给详情面板的文件树用
         if mode == "detail":
-            metadata = self._ensure_file_tree_metadata(metadata, resolved_target_path, source_path, domain)
+            metadata = self._ensure_file_tree_metadata(
+                metadata,
+                resolved_target_path,
+                source_path,
+                domain,
+                task.status.value,
+            )
         rjcode = self._normalize_rjcode(
             self._safe_text(getattr(task, "rjcode", ""))
             or self._first_metadata_rjcode(metadata)

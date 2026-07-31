@@ -1143,9 +1143,8 @@ function mapDownloadFiles(item) {
   })).filter((row) => row.relative_path || row.name)
 }
 
-function mapFileTreeItems(item) {
-  const metadata = item?.details?.metadata || {}
-  const treeItems = Array.isArray(metadata.file_tree_items) ? metadata.file_tree_items : []
+function mapFileTreeItems(items) {
+  const treeItems = Array.isArray(items) ? items : []
   return treeItems.map((current, index) => ({
     key: normalizeTaskFileTreePath(current?.relative_path || current?.path || current?.name || `${index}`),
     relative_path: normalizeTaskFileTreePath(current?.relative_path || current?.path || current?.name || ''),
@@ -1154,6 +1153,39 @@ function mapFileTreeItems(item) {
     size: current?.size,
     status: 'default',
   })).filter((row) => row.relative_path || row.name)
+}
+
+function resolveFileTreeSnapshot(item) {
+  const metadata = item?.details?.metadata || {}
+  const finalItems = Array.isArray(metadata.final_file_tree_items) ? metadata.final_file_tree_items : []
+  const extractedItems = Array.isArray(metadata.extracted_file_tree_items)
+    ? metadata.extracted_file_tree_items
+    : (Array.isArray(metadata.file_tree_items) ? metadata.file_tree_items : [])
+  if (item?.status === 'completed' && finalItems.length) {
+    return {
+      items: finalItems,
+      kind: 'final',
+      label: '最终库存文件',
+      rootLabel: metadata.final_file_tree_root_label || '',
+    }
+  }
+  if (extractedItems.length) {
+    return {
+      items: extractedItems,
+      kind: item?.status === 'completed' ? 'extracted_snapshot' : 'extracted',
+      label: item?.status === 'completed' ? '解压产物快照' : '解压产物',
+      rootLabel: metadata.extracted_file_tree_root_label || metadata.file_tree_root_label || '',
+    }
+  }
+  if (finalItems.length) {
+    return {
+      items: finalItems,
+      kind: 'final',
+      label: '最终库存文件',
+      rootLabel: metadata.final_file_tree_root_label || '',
+    }
+  }
+  return { items: [], kind: '', label: '文件列表', rootLabel: '' }
 }
 
 let fileTreeCacheSignature = ''
@@ -1210,6 +1242,11 @@ function buildFileTreeCacheSignature(item) {
     item.output_path || '',
     item.target_path || '',
     item.source_path || '',
+    metadata.file_tree_view_kind || '',
+    metadata.final_file_tree_root_label || '',
+    metadata.extracted_file_tree_root_label || '',
+    buildFileTreeArraySignature(metadata.final_file_tree_items),
+    buildFileTreeArraySignature(metadata.extracted_file_tree_items),
     buildFileTreeArraySignature(metadata.file_tree_items),
     buildFileTreeArraySignature(metadata.upload_files),
     buildFileTreeArraySignature(metadata.uploaded_files),
@@ -1229,11 +1266,14 @@ function buildTaskFileTreeSections(item) {
   const metadata = item?.details?.metadata || {}
   const removedItems = mapFilteredItems(item)
   const sourceItems = []
-  const hasSnapshotTree = Array.isArray(metadata.file_tree_items) && metadata.file_tree_items.length
-  const rootLabel = hasSnapshotTree ? inferSnapshotFileTreeRoot(item) : inferTaskFileTreeRoot(item)
+  const snapshot = resolveFileTreeSnapshot(item)
+  const hasSnapshotTree = snapshot.items.length > 0
+  const rootLabel = snapshot.rootLabel || (
+    hasSnapshotTree ? inferSnapshotFileTreeRoot(item) : inferTaskFileTreeRoot(item)
+  )
 
   if (hasSnapshotTree) {
-    sourceItems.push(...mapFileTreeItems(item))
+    sourceItems.push(...mapFileTreeItems(snapshot.items))
   } else if (
     (Array.isArray(metadata.upload_files) && metadata.upload_files.length) ||
     (Array.isArray(metadata.uploaded_files) && metadata.uploaded_files.length)
@@ -1323,7 +1363,8 @@ function buildTaskFileTreeSections(item) {
     : true
   const section = {
     key: 'file-list',
-    label: '文件列表',
+    label: snapshot.label,
+    snapshotKind: snapshot.kind,
     rows: buildTreeRows(filtered),
     totalCount: mergedItems.length,
     removedCount,

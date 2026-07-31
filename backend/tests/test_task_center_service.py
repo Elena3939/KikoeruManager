@@ -156,6 +156,85 @@ def test_summary_engine_item_cache_reuses_unchanged_task(monkeypatch):
     assert serialize.call_count == 2
 
 
+def test_completed_task_detail_prefers_final_file_tree(monkeypatch, tmp_path):
+    extracted = tmp_path / "RJ01645332_1"
+    final = tmp_path / "巨乳大好き屋" / "[巨乳大好き屋][RJ01645332]"
+    extracted.mkdir()
+    final.mkdir(parents=True)
+    (extracted / "临时.txt").write_text("staging", encoding="utf-8")
+    (final / "最终.wav").write_bytes(b"final")
+
+    task = Task(
+        TaskType.EXTRACT,
+        str(tmp_path / "RJ01645332.zip"),
+        task_id="task-final-tree",
+        metadata={
+            "file_tree_items": [
+                {
+                    "relative_path": "临时.txt",
+                    "name": "临时.txt",
+                    "type": "file",
+                    "size": 7,
+                }
+            ],
+            "file_tree_root_path": str(extracted),
+            "file_tree_root_label": extracted.name,
+            "final_output_path": str(final),
+        },
+    )
+    task.complete()
+
+    item = TaskCenterService()._serialize_engine_task(task, mode="detail")
+    metadata = item["details"]["metadata"]
+
+    assert metadata["file_tree_view_kind"] == "final"
+    assert metadata["extracted_file_tree_root_path"] == str(extracted)
+    assert metadata["extracted_file_tree_items"][0]["name"] == "临时.txt"
+    assert metadata["final_file_tree_root_path"] == str(final)
+    assert metadata["final_file_tree_items"][0]["name"] == "最终.wav"
+
+
+def test_completed_task_detail_marks_legacy_tree_as_extracted_snapshot(tmp_path):
+    missing_final = tmp_path / "missing-final"
+    task = Task(
+        TaskType.EXTRACT,
+        str(tmp_path / "RJ000000.zip"),
+        task_id="task-legacy-tree",
+        metadata={
+            "file_tree_items": [{"relative_path": "旧文件.txt", "name": "旧文件.txt", "type": "file"}],
+            "file_tree_root_path": str(tmp_path / "RJ000000_1"),
+            "file_tree_root_label": "RJ000000_1",
+            "final_output_path": str(missing_final),
+        },
+    )
+    task.complete()
+
+    metadata = TaskCenterService()._serialize_engine_task(task, mode="detail")["details"]["metadata"]
+
+    assert metadata["file_tree_view_kind"] == "extracted_snapshot"
+    assert metadata["extracted_file_tree_items"][0]["name"] == "旧文件.txt"
+    assert not metadata.get("final_file_tree_items")
+
+
+def test_summary_serialization_never_scans_file_tree(monkeypatch, tmp_path):
+    final = tmp_path / "RJ01645332"
+    final.mkdir()
+    task = Task(
+        TaskType.EXTRACT,
+        str(tmp_path / "RJ01645332.zip"),
+        task_id="task-summary-no-walk",
+        metadata={"final_output_path": str(final)},
+    )
+    service = TaskCenterService()
+    monkeypatch.setattr(
+        service,
+        "_snapshot_directory_items",
+        Mock(side_effect=AssertionError("summary 不应扫描目录")),
+    )
+
+    service._serialize_engine_task(task, mode="summary")
+
+
 def test_task_snapshot_materializes_task_center_item(monkeypatch):
     engine_db = create_engine(
         "sqlite:///:memory:",
