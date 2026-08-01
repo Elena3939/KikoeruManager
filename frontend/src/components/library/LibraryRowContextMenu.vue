@@ -91,6 +91,17 @@
         </button>
 
         <button
+          v-if="showRealMove"
+          type="button"
+          class="menu-item"
+          :disabled="disableRealMove"
+          @click="emit('action', 'real_move')"
+        >
+          <PackageOpen :size="14" :stroke-width="2.2" class="menu-item-icon text-amber-600" />
+          <span>移库到真库存</span>
+        </button>
+
+        <button
           v-if="showUpload"
           type="button"
           class="menu-item"
@@ -210,7 +221,7 @@
 
 <script setup>
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { Captions, Copy, ExternalLink, Eye, FolderCog, FolderInput, FolderOpen, FolderSync, HardDrive, MapPin, Pencil, Sparkles, Tags, Trash2, UploadCloud } from 'lucide-vue-next'
+import { Captions, Copy, ExternalLink, Eye, FolderCog, FolderInput, FolderOpen, FolderSync, HardDrive, MapPin, PackageOpen, Pencil, Sparkles, Tags, Trash2, UploadCloud } from 'lucide-vue-next'
 import baiduNetdiskIcon from '../../assets/platforms/baidu-netdisk.ico'
 
 const props = defineProps({
@@ -236,6 +247,8 @@ const props = defineProps({
   computingSizeId: { type: String, default: null },
   showMove: { type: Boolean, default: false },
   disableMove: { type: Boolean, default: false },
+  showRealMove: { type: Boolean, default: false },
+  disableRealMove: { type: Boolean, default: false },
   showUpload: { type: Boolean, default: false },
   disableUpload: { type: Boolean, default: false },
   showBaiduUpload: { type: Boolean, default: false },

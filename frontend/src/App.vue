@@ -168,6 +168,26 @@
 
           <div class="version-info">
             <span class="version-text">KikoeruManager</span>
+            <div class="skin-switcher" role="group" aria-label="界面主题选择">
+              <button
+                type="button"
+                class="skin-switcher-item"
+                :class="{ 'is-active': skin === 'default' }"
+                title="默认主题"
+                @click="setSkin('default')"
+              >
+                默认
+              </button>
+              <button
+                type="button"
+                class="skin-switcher-item"
+                :class="{ 'is-active': skin === 'animal' }"
+                title="动森主题"
+                @click="setSkin('animal')"
+              >
+                动森
+              </button>
+            </div>
             <AnimatedThemeToggler
               v-if="!isGateRoute"
               direction="ltr"
@@ -241,6 +261,33 @@ const mobileNavOpen = ref(false)
 const sidebarPinnedStorageKey = 'kikoerumanager.sidebarPinned'
 const sidebarPinned = ref(false)
 const { applyTheme } = useTheme()
+const SKIN_STORAGE_KEY = 'kikoerumanager.skin'
+const skin = ref('default')
+
+function readInitialSkin () {
+  if (typeof window === 'undefined') return 'default'
+  try {
+    return window.localStorage.getItem(SKIN_STORAGE_KEY) === 'animal' ? 'animal' : 'default'
+  } catch {
+    return 'default'
+  }
+}
+
+function applySkin () {
+  if (typeof document === 'undefined') return
+  document.documentElement.classList.toggle('kikoerumanager-animal', skin.value === 'animal')
+  try {
+    window.localStorage.setItem(SKIN_STORAGE_KEY, skin.value)
+  } catch {
+    // localStorage 不可用时主题选择只在当前会话生效
+  }
+}
+
+function setSkin (value) {
+  skin.value = value
+  applySkin()
+}
+
 const realtimeEvents = useRealtimeEvents()
 const { panelOpen: notificationPanelOpen } = useNotifications()
 let realtimeEventsStarted = false
@@ -300,6 +347,8 @@ const WATCHER_STATUS_POLL_MAX_MS = 120000
 
 onMounted(async () => {
   sidebarPinned.value = readInitialSidebarPinned()
+  skin.value = readInitialSkin()
+  applySkin()
   applyTheme()
   await refreshAppVersion()
   if (isGateRoute.value) return
@@ -5657,6 +5706,140 @@ html.kikoerumanager-dark .detail-body .path {
   opacity: 1;
   padding: 4px 10px;
   transform: translate3d(0, 0, 0);
+}
+
+.skin-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  width: 0;
+  min-height: 26px;
+  padding: 2px;
+  overflow: hidden;
+  opacity: 0;
+  border: 1px solid rgba(29, 29, 31, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.62);
+  transition:
+    width 0.2s var(--sidebar-ease),
+    opacity 0.16s ease,
+    background-color 0.24s ease,
+    border-color 0.24s ease;
+}
+
+.sidebar:hover .skin-switcher,
+.sidebar.is-sidebar-pinned .skin-switcher,
+.sidebar.is-notification-panel-open .skin-switcher {
+  width: 112px;
+  opacity: 1;
+}
+
+.skin-switcher-item {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 20px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(29, 29, 31, 0.62);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 20px;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.skin-switcher-item:hover {
+  color: #1d1d1f;
+}
+
+.skin-switcher-item:active {
+  transform: scale(0.94);
+}
+
+.skin-switcher-item.is-active {
+  background: #b7c6e5;
+  color: #ffffff;
+}
+
+:global(html.kikoerumanager-dark) .skin-switcher {
+  border-color: rgba(147, 197, 253, 0.16);
+  background: rgba(15, 23, 42, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+:global(html.kikoerumanager-dark) .skin-switcher-item {
+  color: rgba(226, 232, 240, 0.62);
+}
+
+:global(html.kikoerumanager-dark) .skin-switcher-item:hover {
+  color: #f8fafc;
+}
+
+:global(html.kikoerumanager-dark) .skin-switcher-item.is-active {
+  background: rgba(96, 165, 250, 0.34);
+  color: #f8fafc;
+}
+
+:global(html.kikoerumanager-animal) .sidebar-shell {
+  background:
+    radial-gradient(circle, rgba(159, 146, 125, 0.08) 1.5px, transparent 1.5px) 0 0 / 24px 24px,
+    #f5efdc;
+  border: 2px dashed #e3dccb;
+  box-shadow:
+    0 18px 42px rgba(121, 79, 39, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+:global(html.kikoerumanager-animal) .logo {
+  border-bottom: 2px dashed #e3dccb;
+}
+
+:global(html.kikoerumanager-animal) .logo-mark {
+  color: #19c8b9;
+}
+
+:global(html.kikoerumanager-animal) .logo-text,
+:global(html.kikoerumanager-animal) .logo-subtitle {
+  color: #794f27;
+}
+
+:global(html.kikoerumanager-animal) :deep(.sidebar-menu .el-menu-item) {
+  color: #8a7b66;
+  font-weight: 600;
+}
+
+:global(html.kikoerumanager-animal) :deep(.sidebar-menu .el-menu-item:hover) {
+  background: #d6dff0;
+  color: #5a6b8c;
+}
+
+:global(html.kikoerumanager-animal) :deep(.sidebar-menu .el-menu-item.is-active) {
+  background: #b7c6e5;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+:global(html.kikoerumanager-animal) .sidebar-footer {
+  border-top: 2px dashed #e3dccb;
+}
+
+:global(html.kikoerumanager-animal) .version-text {
+  background: #efe9d5;
+  color: #9f927d;
+  box-shadow: inset 0 0 0 1px rgba(159, 146, 125, 0.16);
+}
+
+:global(html.kikoerumanager-animal) .skin-switcher {
+  border-color: rgba(159, 146, 125, 0.18);
+  background: rgba(255, 252, 240, 0.82);
+}
+
+:global(html.kikoerumanager-animal) .skin-switcher-item.is-active {
+  background: #19c8b9;
+  color: #ffffff;
 }
 
 .main-frame {

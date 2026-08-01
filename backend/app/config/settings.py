@@ -62,6 +62,7 @@ class StorageConfig(BaseModel):
     input_path: str = "/input"
     temp_path: str = "/temp"
     library_path: str = "/library"
+    real_library_path: str = ""  # 真库存文件夹路径（一键移库的目标，空表示未配置）
     processed_archives_path: str = "/processed"
     existing_folders_path: str = "/existing"  # 已存在文件夹目录（非软件解压的文件夹）
     asmr_subtitle_path: str = ""  # ASMR同步字幕文件夹路径
@@ -177,6 +178,7 @@ class MetadataConfig(BaseModel):
     fetch_cover: bool = True
     make_folder_icon: bool = True
     remove_jpg_file: bool = True
+    voicehub_enabled: bool = True  # 启用 voicehub.top 作为备用元数据源
 
 class RenameConfig(BaseModel):
     """重命名配置"""
@@ -287,6 +289,12 @@ class ASMRSyncConfig(BaseModel):
     ]
     # 字幕繁简转换配置
     simplify_chinese_enabled: bool = True  # 是否启用字幕繁体转简体
+
+    # ??????????????????
+    # 自定义服务器配置（留空则使用默认值）
+    custom_api_url: str = ""  # 自定义服务器地址（如 https://api.asmr-300.com），末尾不要有斜杠，留空用默认
+    custom_meta_template: str = ""  # meta 请求模板（如 /workInfo/{rjcode}），留空用默认
+    custom_track_template: str = ""  # track 请求模板（如 /tracks/{rjcode}），留空用默认
 
 class PikPakAccountConfig(BaseModel):
     """PikPak 多账号配置"""

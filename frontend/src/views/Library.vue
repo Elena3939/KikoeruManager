@@ -291,6 +291,20 @@
 
 
 
+            <button
+              v-if="libraryViewMode === 'directory' && !isRemoteCurrentLibrary"
+              type="button"
+              class="lib-btn lib-btn-icon-tinted lib-icon-real-move"
+              :disabled="!realLibUsable || !files.length || moveAllLoading"
+              :title="realLibStatus.error ? ('真库存配置异常: ' + realLibStatus.error) : (realLibUsable ? '将当前列表项目移动到真库存（目标已存在则跳过，绝不覆盖）' : '请先在设置页配置真库存文件夹路径')"
+              @click="moveAllItems"
+            >
+              <IconPackageOpen :size="14" :stroke-width="2.2" :class="{ 'animate-pulse': moveAllLoading }" />
+              <span>{{ moveAllLoading ? moveAllProgressText : '全部移库' }}</span>
+            </button>
+
+
+
             <button v-if="libraryViewMode === 'directory'" type="button" class="lib-btn lib-btn-icon-tinted lib-icon-select" @click="toggleAllSelection">
 
               <IconCheckSquare :size="14" :stroke-width="2.2" />
@@ -783,6 +797,10 @@
         :show-move="libraryRowContextMenuProps.showMove"
 
         :disable-move="libraryRowContextMenuProps.disableMove"
+
+        :show-real-move="libraryRowContextMenuProps.showRealMove"
+
+        :disable-real-move="libraryRowContextMenuProps.disableRealMove"
 
         :show-upload="libraryRowContextMenuProps.showUpload"
 
@@ -1965,6 +1983,8 @@ import {
 
   LoaderCircle as IconLoaderCircle,
 
+  PackageOpen as IconPackageOpen,
+
   ChevronLeft as IconChevronLeft,
 
   ChevronRight as IconChevronRight,
@@ -1979,7 +1999,7 @@ import {
 
 import { classifyLibraryEntryKind, libraryEntryIconFor, libraryEntryMetaFor } from '../components/library/_libraryFileKind'
 
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 
 import { aiSubtitleMatchApi, asmrSyncApi, baiduNetdiskApi, configApi, isCanceledApiRequest, libraryApi, localUploadApi, rjSubtitleApi, taskApi, taskCenterApi, synologyOtpRequired } from '../api'
 
@@ -2863,6 +2883,14 @@ let pathBreadcrumbDragOpenTimer = null
 let pathBreadcrumbDragCloseTimer = null
 
 const libraryRowContextMenu = ref({ visible: false, x: 0, y: 0, row: null, batchMode: false })
+
+// 一键移库（暂存库 -> 真库存）
+const realLibStatus = ref({ configured: false, path: '', exists: false, error: null })
+const movingId = ref(null)
+const moveAllLoading = ref(false)
+const moveAllProgressText = ref('')
+
+const realLibUsable = computed(() => realLibStatus.value.configured && !realLibStatus.value.error)
 
 const moveDialogState = ref({ visible: false, sourceLibraryId: '', initialPath: '', items: [], submitting: false })
 
@@ -4990,6 +5018,8 @@ const libraryRowContextMenuProps = computed(() => {
     disableDelete: batchMode ? batchDeleting.value : (batchDeleting.value || (!rowWritable && !hasCircleVirtualTargets) || (!circleRealRow && !hasCircleVirtualTargets)),
     showMove: Boolean(hasRow && localLibrary && circleRealRow),
     disableMove: !rowWritable || moveDialogState.value.submitting || directMoveSubmitting.value || (batchMode && !selectedRows.value.length),
+    showRealMove: Boolean(hasRow && localLibrary && circleRealRow),
+    disableRealMove: !realLibUsable.value || !rowWritable || Boolean(movingId.value) || batchMode,
     showUpload: Boolean(actionRow?.path && localLibrary && circleRealRow),
     disableUpload: !hasRemoteUploadLibraries.value || localUploadSubmitting.value || (batchMode && selectedUploadCount.value === 0),
     showBaiduUpload: Boolean(actionRow?.path && localLibrary && circleRealRow),
@@ -7622,6 +7652,8 @@ onMounted(async () => {
   bindLibraryMarqueeDismiss()
 
   bindLibraryKeydown()
+
+  refreshRealLibStatus()
 
   startSubtitleRealtimeEvents()
 
@@ -18831,6 +18863,151 @@ async function refreshCurrentView () {
 
 
 
+async function refreshRealLibStatus () {
+  try {
+    realLibStatus.value = await libraryApi.realLibraryStatus()
+    if (realLibStatus.value.error) {
+      ElMessage.warning('真库存配置异常: ' + realLibStatus.value.error)
+    }
+  } catch (error) {
+    console.error('获取真库存状态失败:', error)
+  }
+}
+
+// 汇总移库结果并提示
+function notifyMoveResults (results, { showTarget = false } = {}) {
+  const { moved = [], skipped = [], failed = [] } = results
+
+  if (moved.length > 0) {
+    const target = showTarget && moved[0].target ? `\n目标: ${moved[0].target}` : ''
+    ElMessage.success(`移库成功 ${moved.length} 项${target}`)
+  }
+  if (skipped.length > 0) {
+    ElMessage.warning(`跳过 ${skipped.length} 项（目标已存在，未覆盖）`)
+  }
+  if (failed.length > 0) {
+    ElMessage.error(`失败 ${failed.length} 项: ${failed[0].reason || '未知错误'}`)
+  }
+  return { moved, skipped, failed }
+}
+
+// 单个项目移库
+async function moveItem (row) {
+  try {
+    await showSystemConfirm(
+      {
+        title: '移库确认',
+        message: `确定将此项目移动到真库存吗？\n\n源: ${row.name}\n目标: ${realLibStatus.value.path}\n\n目标已存在时会跳过，绝不覆盖。`,
+        tone: 'info',
+        confirmText: '确定移库',
+        cancelText: '取消'
+      }
+    )
+  } catch {
+    return
+  }
+
+  movingId.value = row.id
+  try {
+    const results = await libraryApi.moveToReal([row.path])
+    notifyMoveResults(results, { showTarget: true })
+    await refreshLibrary({ silent: true })
+  } catch (error) {
+    console.error('移库失败:', error)
+    ElMessage.error('移库失败: ' + (error.response?.data?.detail || error.message))
+  } finally {
+    movingId.value = null
+  }
+}
+
+// 全部移库：先预检，确认后逐个移动并显示进度
+async function moveAllItems () {
+  const items = files.value
+  if (items.length === 0) {
+    ElMessage.info('库内没有可移动的项目')
+    return
+  }
+
+  // 1. 预检（dry_run，不做任何改动）
+  let plan
+  try {
+    plan = await libraryApi.moveToReal(items.map(f => f.path), true)
+  } catch (error) {
+    ElMessage.error('移库预检失败: ' + (error.response?.data?.detail || error.message))
+    return
+  }
+
+  const movable = plan.moved || []
+  const skipped = plan.skipped || []
+  const failedPre = plan.failed || []
+
+  if (movable.length === 0) {
+    ElMessage.warning(`没有可移动的项目（跳过 ${skipped.length}，失败 ${failedPre.length}）`)
+    return
+  }
+
+  // 2. 确认
+  try {
+    await showSystemConfirm(
+      {
+        title: '全部移库确认',
+        message: `将全部 ${items.length} 个项目移动到真库存：\n\n` +
+          `可移动: ${movable.length} 项\n` +
+          `跳过（目标已存在）: ${skipped.length} 项\n` +
+          `无法移动: ${failedPre.length} 项\n\n` +
+          `目标: ${realLibStatus.value.path}\n\n` +
+          `仅执行移动操作，不会删除或覆盖任何文件。`,
+        tone: 'warning',
+        confirmText: `开始移库 (${movable.length} 项)`,
+        cancelText: '取消'
+      }
+    )
+  } catch {
+    return
+  }
+
+  // 3. 逐个移动，显示进度（单项失败不中断整体）
+  moveAllLoading.value = true
+  const totalMoved = []
+  const totalSkipped = [...skipped]
+  const totalFailed = [...failedPre]
+
+  for (let i = 0; i < movable.length; i++) {
+    const item = movable[i]
+    moveAllProgressText.value = `移库中 ${i + 1}/${movable.length}`
+    try {
+      const results = await libraryApi.moveToReal([item.path])
+      totalMoved.push(...(results.moved || []))
+      totalSkipped.push(...(results.skipped || []))
+      totalFailed.push(...(results.failed || []))
+    } catch (error) {
+      totalFailed.push({ path: item.path, reason: error.response?.data?.detail || error.message })
+    }
+  }
+
+  moveAllLoading.value = false
+  moveAllProgressText.value = ''
+
+  // 4. 汇总结果
+  const failedDetail = totalFailed.length > 0
+    ? `\n\n失败明细（前5项）:\n${totalFailed.slice(0, 5).map(f => `· ${f.path.split(/[\\/]/).pop()}: ${f.reason}`).join('\n')}`
+    : ''
+  const skippedDetail = totalSkipped.length > 0
+    ? `\n跳过的项目保留在暂存库中（目标已存在，未覆盖）`
+    : ''
+
+  ElNotification({
+    title: '全部移库完成',
+    message: `成功 ${totalMoved.length} 项，跳过 ${totalSkipped.length} 项，失败 ${totalFailed.length} 项。${skippedDetail}${failedDetail}`,
+    type: totalFailed.length > 0 ? 'warning' : 'success',
+    duration: 8000
+  })
+
+  await refreshLibrary({ silent: true })
+}
+
+
+
 function resolveSubtitleAvailabilityTarget () {
 
   if (activeSubtitleTask.value) {
@@ -22088,6 +22265,8 @@ async function handleLibraryRowContextMenuAction (action) {
   if (action === 'rename') return renameItem(row)
 
   if (action === 'move') return openMoveDialog([row])
+
+  if (action === 'real_move') return moveItem(row)
 
   if (action === 'upload') return openLocalUploadDialog(row)
 

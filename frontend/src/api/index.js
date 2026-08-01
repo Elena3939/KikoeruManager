@@ -1364,6 +1364,20 @@ export const libraryApi = {
     return response.data
   },
 
+  realLibraryStatus: async () => {
+    const response = await apiClient.get('/library/real-library-status')
+    return response.data
+  },
+
+  moveToReal: async (paths, dryRun = false) => {
+    // 跨设备移动大文件夹可能耗时较长，单独放大超时到 30 分钟
+    const response = await apiClient.post('/library/move-to-real',
+      { paths, dry_run: dryRun },
+      { timeout: 30 * 60 * 1000 }
+    )
+    return response.data
+  },
+
   browserOpenFolder: async (libraryId, path, forceLocal = false) => {
     const response = await apiClient.post('/library/browser/open-folder', {
       library_id: libraryId,
