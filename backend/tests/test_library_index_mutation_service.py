@@ -15,6 +15,11 @@ from sqlalchemy.orm import sessionmaker
 import app.core.library_index.mutation_service as mutation_module
 import app.core.library_index.snapshot_store as snapshot_store_module
 import app.core.library_manager as library_manager_module
+from app.core.library_index.materializer_db import (
+    _materializer_connect_args,
+    dispose_materializer_engine,
+    get_materializer_engine,
+)
 from app.core.library_index.mutation_service import LibraryIndexMutationService
 from app.core.library_index.snapshot_store import SnapshotStore
 from app.core.library_index.types import IndexEntry
@@ -27,6 +32,7 @@ from app.models.database import (
     LibraryIndexPendingMask,
     LibraryIndexStatus,
     get_local_now,
+    library_index_name_sort_key,
 )
 from tests.postgres_test_utils import truncate_all_tables
 
@@ -99,6 +105,7 @@ def _seed_entry(
     entry_type: str = "file",
     size: int = 10,
     materialized_seq: int = 0,
+    rjcode: str | None = None,
 ) -> None:
     db = env.Session()
     try:
@@ -128,7 +135,8 @@ def _seed_entry(
             relative_path=relative_path,
             absolute_path=f"/library/{library_id}/{relative_path}",
             name=name,
-            name_sort_key=name.casefold(),
+            name_sort_key=library_index_name_sort_key(name),
+            rjcode=rjcode,
             parent_path=(
                 relative_path.rsplit("/", 1)[0]
                 if "/" in relative_path
@@ -565,6 +573,72 @@ def test_reconcile_materializes_current_filesystem_state(mutation_env, monkeypat
         db.close()
 
 
+def test_targeted_reconcile_uses_unnest_without_temp_table(mutation_env):
+    env = mutation_env
+    library_id = "targeted-reconcile-lib"
+    _seed_entry(env, library_id, "incoming", entry_type="dir", materialized_seq=7)
+    _seed_entry(env, library_id, "incoming/current.txt", size=11, materialized_seq=7)
+    _seed_entry(env, library_id, "incoming/stale.txt", size=99, materialized_seq=3)
+
+    statements: list[str] = []
+
+    def capture_sql(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(env.store.bind_engine, "before_cursor_execute", capture_sql)
+    try:
+        result = env.store.reconcile_entries(
+            library_id,
+            [
+                IndexEntry(
+                    library_id=library_id,
+                    generation=1,
+                    materialized_seq=9,
+                    entry_type="dir",
+                    relative_path="incoming",
+                    absolute_path=f"/library/{library_id}/incoming",
+                    name="incoming",
+                    parent_path="",
+                    size=0,
+                    file_count=1,
+                    mtime=1,
+                    depth=1,
+                    indexed_at=9,
+                ),
+                IndexEntry(
+                    library_id=library_id,
+                    generation=1,
+                    materialized_seq=9,
+                    entry_type="file",
+                    relative_path="incoming/current.txt",
+                    absolute_path=f"/library/{library_id}/incoming/current.txt",
+                    name="current.txt",
+                    parent_path="incoming",
+                    size=11,
+                    file_count=0,
+                    mtime=1,
+                    depth=2,
+                    indexed_at=9,
+                ),
+            ],
+            generation=1,
+            relative_path="incoming",
+            scope="subtree",
+        )
+    finally:
+        event.remove(env.store.bind_engine, "before_cursor_execute", capture_sql)
+
+    assert result["scanned"] == 2
+    assert result["deleted"] == 1
+    assert not any("CREATE TEMP TABLE" in statement for statement in statements)
+    assert not any("ANALYZE library_index_rebuild_stage" in statement for statement in statements)
+    assert env.store.get_entry(library_id, "incoming/stale.txt") is None
+    current = env.store.get_entry(library_id, "incoming/current.txt")
+    assert current is not None
+    assert current.materialized_seq == 7
+    assert current.indexed_at == 1
+
+
 def test_reconcile_staging_handles_220k_entries_with_fixed_bind_count(mutation_env):
     env = mutation_env
     library_id = "large-reconcile-lib"
@@ -626,6 +700,53 @@ def test_reconcile_staging_handles_220k_entries_with_fixed_bind_count(mutation_e
         ).count() == 220_001
     finally:
         db.close()
+
+
+
+def test_temporary_database_timeout_does_not_increment_ledger_attempt(
+    mutation_env,
+    monkeypatch,
+):
+    env = mutation_env
+    library_id = "temporary-timeout-lib"
+    _prepare_and_finalize(
+        env.service,
+        library_id=library_id,
+        idempotency_key="temporary-timeout-key",
+        effect={
+            "kind": "delete",
+            "relative_path": "missing.txt",
+            "scope": "exact",
+        },
+    )
+    original_apply = env.service._apply_effect
+    monkeypatch.setattr(
+        env.service,
+        "_apply_effect",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("canceling statement due to statement timeout")
+        ),
+    )
+
+    assert env.service._process_next(library_id) is False
+    db = env.Session()
+    try:
+        ledger = db.query(LibraryIndexMutationLedger).filter_by(
+            library_id=library_id,
+            seq=1,
+        ).one()
+        status = db.query(LibraryIndexStatus).filter_by(
+            library_id=library_id,
+        ).one()
+        assert ledger.attempt_count == 0
+        assert ledger.next_retry_at is None
+        assert status.blocked_seq is None
+        assert status.materialized_seq == 0
+    finally:
+        db.close()
+
+    monkeypatch.setattr(env.service, "_apply_effect", original_apply)
+    assert env.service._process_next(library_id) is True
 
 
 def test_poison_event_blocks_after_ten_attempts_and_retry_can_complete(
@@ -907,3 +1028,328 @@ def test_redis_wake_failure_does_not_change_committed_mutation_result(mutation_e
         assert remaining == {"redis-down-lib"}
     finally:
         db.close()
+
+
+def test_fast_path_unchanged_upsert_keeps_original_row_watermark(mutation_env):
+    env = mutation_env
+    env.service._fast_path_enabled = True
+    library_id = "fast-upsert-unchanged"
+    relative_path = "RJ123456/file.txt"
+    _seed_entry(
+        env,
+        library_id,
+        relative_path,
+        size=10,
+        rjcode="RJ123456",
+    )
+    effect = {
+        "kind": "upsert",
+        "relative_path": relative_path,
+        "scope": "exact",
+        "payload": {
+            "entry_snapshot": {
+                "entry_type": "file",
+                "relative_path": relative_path,
+                "absolute_path": f"/library/{library_id}/{relative_path}",
+                "name": "file.txt",
+                "rjcode": "RJ123456",
+                "parent_path": "RJ123456",
+                "size": 10,
+                "file_count": 0,
+                "mtime": 1,
+                "depth": 2,
+                "indexed_at": 999999,
+            },
+        },
+    }
+    _prepare_and_finalize(
+        env.service,
+        library_id=library_id,
+        idempotency_key="fast-upsert-unchanged",
+        effect=effect,
+    )
+
+    assert env.service._process_next(library_id) is True
+    db = env.Session()
+    try:
+        row = db.query(LibraryIndexEntry).filter_by(
+            library_id=library_id,
+            relative_path=relative_path,
+        ).one()
+        status = db.query(LibraryIndexStatus).filter_by(
+            library_id=library_id,
+        ).one()
+        assert row.materialized_seq == 0
+        assert row.indexed_at == 1
+        assert status.materialized_seq == 1
+    finally:
+        db.close()
+
+
+def test_fast_path_delete_treats_percent_underscore_and_unicode_literally(
+    mutation_env,
+):
+    env = mutation_env
+    env.service._fast_path_enabled = True
+    library_id = "fast-special-path"
+    target = "作品_%/你好_100%"
+    _seed_entry(env, library_id, target, entry_type="dir")
+    _seed_entry(env, library_id, f"{target}/目标_.txt")
+    _seed_entry(env, library_id, "作品_%/你好_100%0/保留.txt")
+    effect = {
+        "kind": "delete",
+        "relative_path": target,
+        "scope": "subtree",
+    }
+    _prepare_and_finalize(
+        env.service,
+        library_id=library_id,
+        idempotency_key="fast-special-path-delete",
+        effect=effect,
+    )
+
+    assert env.service._process_next(library_id) is True
+    db = env.Session()
+    try:
+        paths = {
+            row[0]
+            for row in db.query(LibraryIndexEntry.relative_path).filter_by(
+                library_id=library_id,
+            ).all()
+        }
+        assert target not in paths
+        assert f"{target}/目标_.txt" not in paths
+        assert "作品_%/你好_100%0/保留.txt" in paths
+    finally:
+        db.close()
+
+
+def test_fast_path_same_library_move_skips_reconcile_and_scanner(
+    mutation_env,
+    monkeypatch,
+    tmp_path,
+):
+    env = mutation_env
+    env.service._fast_path_enabled = True
+    library_id = "fast-same-move"
+    root = tmp_path / library_id
+    root.mkdir()
+    _seed_entry(env, library_id, "old", entry_type="dir")
+    _seed_entry(env, library_id, "old/child.txt")
+    manager = SimpleNamespace(
+        get_library_definition=lambda requested_id: SimpleNamespace(
+            id=requested_id,
+            type="local",
+            root_path=str(root),
+        )
+    )
+    monkeypatch.setattr(library_manager_module, "get_library_manager", lambda: manager)
+
+    def fail_scan(*_args, **_kwargs):
+        raise AssertionError("同库 move fast-path 不应调用扫描器")
+
+    monkeypatch.setattr(mutation_module.LocalScanner, "scan_subtree", fail_scan)
+    effects = [
+        {
+            "kind": "move",
+            "relative_path": "old",
+            "scope": "subtree",
+            "target_library_id": library_id,
+            "target_path": "new",
+            "payload": {
+                "old_absolute_path": str(root / "old"),
+                "new_absolute_path": str(root / "new"),
+            },
+        },
+        {
+            "kind": "move_target",
+            "relative_path": "new",
+            "scope": "subtree",
+        },
+    ]
+    prepared = env.service.prepare(
+        kind="same_library_move",
+        effects_by_library={library_id: effects},
+        idempotency_key="fast-same-library-move",
+    )
+    env.service.finalize(
+        prepared.operation_id,
+        actual_effects_by_library={library_id: effects},
+    )
+
+    assert env.service._process_next(library_id) is True
+    db = env.Session()
+    try:
+        paths = {
+            row[0]
+            for row in db.query(LibraryIndexEntry.relative_path).filter_by(
+                library_id=library_id,
+            ).all()
+        }
+        assert paths == {"new", "new/child.txt"}
+        assert db.query(LibraryIndexPendingMask).filter_by(
+            library_id=library_id,
+        ).count() == 0
+    finally:
+        db.close()
+
+
+def test_fast_path_cross_library_move_advances_both_ledgers_atomically(
+    mutation_env,
+    monkeypatch,
+    tmp_path,
+):
+    env = mutation_env
+    env.service._fast_path_enabled = True
+    source_id = "fast-cross-source"
+    target_id = "fast-cross-target"
+    source_root = tmp_path / source_id
+    target_root = tmp_path / target_id
+    source_root.mkdir()
+    target_root.mkdir()
+    _seed_entry(env, source_id, "old", entry_type="dir")
+    _seed_entry(env, source_id, "old/child.txt")
+    _seed_entry(env, target_id, "keep.txt")
+    roots = {source_id: source_root, target_id: target_root}
+    manager = SimpleNamespace(
+        get_library_definition=lambda requested_id: SimpleNamespace(
+            id=requested_id,
+            type="local",
+            root_path=str(roots[requested_id]),
+        )
+    )
+    monkeypatch.setattr(library_manager_module, "get_library_manager", lambda: manager)
+    effects = {
+        source_id: [{
+            "kind": "move",
+            "relative_path": "old",
+            "scope": "subtree",
+            "target_library_id": target_id,
+            "target_path": "new",
+            "payload": {
+                "old_absolute_path": str(source_root / "old"),
+                "new_absolute_path": str(target_root / "new"),
+            },
+        }],
+        target_id: [{
+            "kind": "move_target",
+            "relative_path": "new",
+            "scope": "subtree",
+        }],
+    }
+    prepared = env.service.prepare(
+        kind="cross_library_move",
+        effects_by_library=effects,
+        idempotency_key="fast-cross-library-move",
+    )
+    env.service.finalize(
+        prepared.operation_id,
+        actual_effects_by_library=effects,
+    )
+
+    assert env.service._process_next(source_id) is True
+    db = env.Session()
+    try:
+        statuses = {
+            row.library_id: row
+            for row in db.query(LibraryIndexStatus).filter(
+                LibraryIndexStatus.library_id.in_([source_id, target_id])
+            ).all()
+        }
+        assert statuses[source_id].materialized_seq == 1
+        assert statuses[target_id].materialized_seq == 1
+        assert db.query(LibraryIndexMutationLedger).filter_by(
+            operation_id=prepared.operation_id,
+            applied_at=None,
+        ).count() == 0
+        assert db.query(LibraryIndexPendingMask).filter(
+            LibraryIndexPendingMask.library_id.in_([source_id, target_id])
+        ).count() == 0
+        source_paths = {
+            row[0]
+            for row in db.query(LibraryIndexEntry.relative_path).filter_by(
+                library_id=source_id,
+            ).all()
+        }
+        target_paths = {
+            row[0]
+            for row in db.query(LibraryIndexEntry.relative_path).filter_by(
+                library_id=target_id,
+            ).all()
+        }
+        assert source_paths == set()
+        assert target_paths == {"keep.txt", "new", "new/child.txt"}
+    finally:
+        db.close()
+
+
+def test_fast_path_over_budget_uses_chunked_slow_delete(
+    mutation_env,
+    monkeypatch,
+    db_engine,
+):
+    env = mutation_env
+    env.service._fast_path_enabled = True
+    monkeypatch.setattr(mutation_module, "FAST_PATH_MAX_ROWS", 2)
+    monkeypatch.setattr(env.service, "_should_pause_fast_path", lambda: False)
+    library_id = "fast-chunked-delete"
+    _seed_entry(env, library_id, "folder", entry_type="dir")
+    for index in range(4):
+        _seed_entry(env, library_id, f"folder/file-{index}.txt")
+    effect = {
+        "kind": "delete",
+        "relative_path": "folder",
+        "scope": "subtree",
+    }
+    _prepare_and_finalize(
+        env.service,
+        library_id=library_id,
+        idempotency_key="fast-chunked-delete",
+        effect=effect,
+    )
+    delete_batches = []
+
+    def capture_delete(_conn, _cursor, statement, parameters, _context, _many):
+        normalized = " ".join(str(statement).lower().split())
+        if normalized.startswith("delete from library_index_entries"):
+            delete_batches.append(parameters)
+
+    event.listen(db_engine, "before_cursor_execute", capture_delete)
+    try:
+        assert env.service._process_next(library_id) is True
+    finally:
+        event.remove(db_engine, "before_cursor_execute", capture_delete)
+
+    assert len(delete_batches) == 3
+    db = env.Session()
+    try:
+        status = db.query(LibraryIndexStatus).filter_by(
+            library_id=library_id,
+        ).one()
+        assert status.materialized_seq == 1
+        assert status.total_entries == 0
+        assert db.query(LibraryIndexEntry).filter_by(
+            library_id=library_id,
+        ).count() == 0
+        assert db.query(LibraryIndexPendingMask).filter_by(
+            library_id=library_id,
+        ).count() == 0
+    finally:
+        db.close()
+
+
+def test_materializer_engine_is_single_connection_and_inherits_sslmode():
+    dispose_materializer_engine()
+    engine = get_materializer_engine()
+    try:
+        connect_args = _materializer_connect_args()
+        assert engine.pool.size() == 1
+        assert engine.pool._max_overflow == 0
+        assert engine.pool.timeout() == 1
+        assert connect_args["connect_timeout"] == 1
+        assert connect_args["application_name"] == (
+            "kikoerumanager-library-index-materializer"
+        )
+        assert connect_args.get("sslmode") == "prefer"
+    finally:
+        dispose_materializer_engine()

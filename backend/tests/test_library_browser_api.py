@@ -1160,11 +1160,21 @@ def test_notify_index_move_batch_filters_workbench_subtitles_but_indexes_audio(m
             "scope": "exact",
             "target_library_id": "local-a",
             "target_path": "RJ01000001/new.wav",
+            "payload": {
+                "old_absolute_path": str(work_dir / "old.wav"),
+                "new_absolute_path": str(work_dir / "new.wav"),
+            },
         },
         {
-            "kind": "reconcile",
+            "kind": "move_target",
             "relative_path": "RJ01000001/new.wav",
             "scope": "exact",
+            "payload": {
+                "source_library_id": "local-a",
+                "source_path": "RJ01000001/old.wav",
+                "old_absolute_path": str(work_dir / "old.wav"),
+                "new_absolute_path": str(work_dir / "new.wav"),
+            },
         },
     ]
 
@@ -1319,7 +1329,11 @@ def test_record_index_move_many_returns_finalize_response(monkeypatch, tmp_path)
     assert response["operation_id"] == "circle-move-operation"
     assert response["index_fences"][0]["accepted_seq"] == 12
     effects = captured["finalize"]["actual_effects_by_library"][library.id]
-    assert [effect["kind"] for effect in effects] == ["move", "reconcile"]
+    assert [effect["kind"] for effect in effects] == ["move", "move_target"]
+    assert effects[0]["payload"] == {
+        "old_absolute_path": str(source_path),
+        "new_absolute_path": str(destination),
+    }
 
 
 def test_local_move_preview_prefers_index_and_versions_redis_plan(monkeypatch, tmp_path):
@@ -2392,6 +2406,11 @@ def test_batch_api_rename_skips_minimal_metadata_without_batch_renaming(monkeypa
     assert response["results"][0]["skipped"] is True
     assert "DLsite 元数据短熔断中" in response["results"][0]["error"]
     assert response["results"][0]["metadata_source"] == "minimal"
+    assert response["results"][0]["metadata_verification_status"] == "unverified"
+    assert (
+        response["results"][0]["metadata_verification_reason"]
+        == "元数据来源缺少可验证的结构化证据"
+    )
     assert captured["metadata_task_rjcode"] == "RJ01572763"
     assert captured["metadata_task_metadata"] == {
         "rjcode": "RJ01572763",

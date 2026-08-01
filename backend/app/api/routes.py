@@ -392,6 +392,10 @@ def _api_rename_metadata_skip_reason(metadata: Dict[str, Any], rjcode: str) -> s
     from ..core.dlsite_metadata_trust import attach_dlsite_metadata_verification
 
     attach_dlsite_metadata_verification(metadata, rjcode)
+    source = str(metadata.get("metadata_source") or "").strip().lower()
+    # 熔断时的 minimal 数据必然没有可信重命名证据，但先反馈可重试的运行态原因。
+    if source == "minimal" and bool(metadata.get("dlsite_circuit_open")):
+        return "DLsite 元数据短熔断中，已跳过重命名"
     verification_status = str(
         metadata.get("metadata_verification_status") or ""
     ).strip().lower()
@@ -401,7 +405,6 @@ def _api_rename_metadata_skip_reason(metadata: Dict[str, Any], rjcode: str) -> s
     if verification_status != "verified":
         return verification_reason or "DLsite 元数据未经验证，已跳过重命名"
 
-    source = str(metadata.get("metadata_source") or "").strip().lower()
     normalized_rj = str(rjcode or metadata.get("rjcode") or "").strip().upper()
     work_name = str(metadata.get("work_name") or "").strip()
     maker_name = str(metadata.get("maker_name") or "").strip()
@@ -415,8 +418,6 @@ def _api_rename_metadata_skip_reason(metadata: Dict[str, Any], rjcode: str) -> s
     )
 
     if source == "minimal":
-        if metadata.get("dlsite_circuit_open"):
-            return "DLsite 元数据短熔断中，已跳过重命名"
         return "DLsite 元数据不可用，已跳过重命名"
     if not maker_name and work_name.upper() == normalized_rj and not has_any_detail:
         return "元数据不完整，已跳过重命名"
@@ -3987,7 +3988,14 @@ def get_library_index_runtime_status():
         "replay_count": int(mutation.get("replay_count") or 0),
         "materializer": {
             "worker_alive": bool(mutation.get("worker_alive")),
+            "publisher_alive": bool(mutation.get("publisher_alive")),
+            "listener_alive": bool(mutation.get("listener_alive")),
+            "listener_hint_batches": int(
+                mutation.get("listener_hint_batches") or 0
+            ),
             "consumer": mutation.get("consumer"),
+            "fast_path": mutation.get("fast_path") or {},
+            "pool": mutation.get("materializer_pool") or {},
         },
         "watcher": watcher,
         "redis": redis_status,

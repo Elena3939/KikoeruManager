@@ -92,8 +92,7 @@ ON CONFLICT(library_id, generation, relative_path) DO UPDATE SET
     mtime = excluded.mtime,
     depth = excluded.depth,
     indexed_at = excluded.indexed_at
-WHERE library_index_entries.materialized_seq IS DISTINCT FROM excluded.materialized_seq
-   OR library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
+WHERE library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
    OR library_index_entries.absolute_path IS DISTINCT FROM excluded.absolute_path
    OR library_index_entries.name IS DISTINCT FROM excluded.name
    OR library_index_entries.name_sort_key IS DISTINCT FROM excluded.name_sort_key
@@ -189,8 +188,7 @@ ON CONFLICT(library_id, generation, relative_path) DO UPDATE SET
     mtime = excluded.mtime,
     depth = excluded.depth,
     indexed_at = excluded.indexed_at
-WHERE library_index_entries.materialized_seq IS DISTINCT FROM excluded.materialized_seq
-   OR library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
+WHERE library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
    OR library_index_entries.absolute_path IS DISTINCT FROM excluded.absolute_path
    OR library_index_entries.name IS DISTINCT FROM excluded.name
    OR library_index_entries.name_sort_key IS DISTINCT FROM excluded.name_sort_key
@@ -222,6 +220,32 @@ INSERT INTO library_index_entries (
 )
 {_BULK_UNNEST_SOURCE_SQL}
 ON CONFLICT(library_id, generation, relative_path) DO NOTHING
+"""
+
+_TARGETED_RECONCILE_DELETE_SQL = """
+DELETE FROM library_index_entries AS target
+WHERE target.library_id = :library_id
+  AND target.generation = :generation
+  AND (
+      (
+          :scope = 'subtree'
+          AND (
+              :relative_path = ''
+              OR target.relative_path = :relative_path
+              OR (
+                  target.relative_path >= :subtree_start
+                  AND target.relative_path < :subtree_end
+              )
+          )
+      )
+      OR (
+          :scope = 'exact'
+          AND target.relative_path = :relative_path
+      )
+  )
+  AND NOT (
+      target.relative_path = ANY(CAST(:relative_paths AS text[]))
+  )
 """
 
 _REBUILD_STAGE_TABLE_NAME = "library_index_rebuild_stage"
@@ -373,8 +397,7 @@ WITH changed AS (
      WHERE target.library_id = :library_id
        AND staged.library_id = :library_id
        AND (
-           target.materialized_seq IS DISTINCT FROM staged.materialized_seq
-           OR target.entry_type IS DISTINCT FROM staged.entry_type
+           target.entry_type IS DISTINCT FROM staged.entry_type
            OR target.absolute_path IS DISTINCT FROM staged.absolute_path
            OR target.name IS DISTINCT FROM staged.name
            OR target.name_sort_key IS DISTINCT FROM staged.name_sort_key
@@ -482,8 +505,7 @@ ON CONFLICT(library_id, generation, relative_path) DO UPDATE SET
     mtime = excluded.mtime,
     depth = excluded.depth,
     indexed_at = excluded.indexed_at
-WHERE library_index_entries.materialized_seq IS DISTINCT FROM excluded.materialized_seq
-   OR library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
+WHERE library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
    OR library_index_entries.absolute_path IS DISTINCT FROM excluded.absolute_path
    OR library_index_entries.name IS DISTINCT FROM excluded.name
    OR library_index_entries.name_sort_key IS DISTINCT FROM excluded.name_sort_key
@@ -1022,6 +1044,99 @@ class SnapshotStore:
                 )
         return written
 
+    def _reconcile_entries_in_session(
+        self,
+        db: Session,
+        library_id: str,
+        entries: Sequence[IndexEntry],
+        *,
+        generation: int,
+        relative_path: str,
+        scope: str,
+        chunk_size: int = DEFAULT_BULK_UPSERT_CHUNK_SIZE,
+    ) -> dict[str, int]:
+        """在单事务内合并小规模路径快照并删除扫描结果中已不存在的条目。"""
+        normalized_scope = str(scope or "exact").strip().lower()
+        if normalized_scope not in {"exact", "subtree"}:
+            raise ValueError(f"不支持的 targeted reconcile scope: {normalized_scope}")
+        normalized_path = self._normalize_relative_path(relative_path)
+        normalized_generation = max(1, int(generation or 1))
+
+        deduped: dict[str, IndexEntry] = {}
+        subtree_prefix = f"{normalized_path}/" if normalized_path else ""
+        for entry in entries:
+            safe_entry = _database_safe_entry(entry)
+            if safe_entry.library_id != library_id:
+                raise ValueError("targeted reconcile 条目跨库存")
+            if max(1, int(safe_entry.generation or 1)) != normalized_generation:
+                raise ValueError("targeted reconcile 条目 generation 不一致")
+            in_scope = (
+                safe_entry.relative_path == normalized_path
+                if normalized_scope == "exact"
+                else (
+                    not normalized_path
+                    or safe_entry.relative_path == normalized_path
+                    or safe_entry.relative_path.startswith(subtree_prefix)
+                )
+            )
+            if in_scope:
+                deduped[safe_entry.relative_path] = safe_entry
+
+        payload = list(deduped.values())
+        self._ensure_status_row(db, library_id)
+        merged = 0
+        chunk_size = max(1, int(chunk_size or DEFAULT_BULK_UPSERT_CHUNK_SIZE))
+        for offset in range(0, len(payload), chunk_size):
+            chunk = payload[offset:offset + chunk_size]
+            result = db.execute(
+                text(_BULK_UPSERT_UNNEST_SQL),
+                self._chunk_to_unnest_params(chunk),
+            )
+            affected = int(result.rowcount or 0)
+            merged += affected if affected >= 0 else len(chunk)
+
+        delete_result = db.execute(
+            text(_TARGETED_RECONCILE_DELETE_SQL),
+            {
+                "library_id": library_id,
+                "generation": normalized_generation,
+                "scope": normalized_scope,
+                "relative_path": normalized_path,
+                "subtree_start": f"{normalized_path}/",
+                "subtree_end": f"{normalized_path}0",
+                "relative_paths": list(deduped),
+            },
+        )
+        return {
+            "scanned": len(payload),
+            "merged": max(0, merged),
+            "deleted": max(0, int(delete_result.rowcount or 0)),
+        }
+
+    def reconcile_entries(
+        self,
+        library_id: str,
+        entries: Sequence[IndexEntry],
+        *,
+        generation: int,
+        relative_path: str,
+        scope: str,
+        before_commit=None,
+    ) -> dict[str, int]:
+        """无需 TEMP TABLE 合并有界扫描结果，并允许 ledger 在同一事务推进。"""
+        with self._write_session() as db:
+            result = self._reconcile_entries_in_session(
+                db,
+                library_id,
+                entries,
+                generation=generation,
+                relative_path=relative_path,
+                scope=scope,
+            )
+            if before_commit is not None:
+                before_commit(db.connection())
+            return result
+
     def create_rebuild_writer(
         self,
         library_id: str,
@@ -1090,7 +1205,6 @@ class SnapshotStore:
     def _row_differs_from_entry(row: LibraryIndexEntry, entry: IndexEntry) -> bool:
         return (
             int(row.generation or 1) != max(1, int(entry.generation or 1))
-            or int(row.materialized_seq or 0) != max(0, int(entry.materialized_seq or 0))
             or row.entry_type != entry.entry_type
             or row.absolute_path != entry.absolute_path
             or row.name != entry.name
@@ -1341,6 +1455,9 @@ class SnapshotStore:
         self,
         db: Session,
         deltas: dict[str, dict[str, dict[str, int]]],
+        *,
+        generation: Optional[int] = None,
+        materialized_seq: Optional[int] = None,
     ) -> None:
         for library_id, by_path in deltas.items():
             rows = [
@@ -1360,6 +1477,7 @@ class SnapshotStore:
                     UPDATE library_index_entries AS target
                        SET size = GREATEST(0, target.size + delta.size_delta),
                            file_count = GREATEST(0, target.file_count + delta.file_delta),
+                           materialized_seq = COALESCE(CAST(:materialized_seq AS bigint), target.materialized_seq),
                            indexed_at = :indexed_at
                       FROM (
                           SELECT *
@@ -1368,11 +1486,14 @@ class SnapshotStore:
                       ) AS delta
                      WHERE target.library_id = :library_id
                        AND target.entry_type = 'dir'
+                       AND (CAST(:generation AS integer) IS NULL OR target.generation = CAST(:generation AS integer))
                        AND target.relative_path = delta.relative_path
                     """
                 ),
                 {
                     "library_id": library_id,
+                    "generation": generation,
+                    "materialized_seq": materialized_seq,
                     "indexed_at": _now_ms(),
                     "deltas": json.dumps(rows, ensure_ascii=False),
                 },
@@ -1594,30 +1715,35 @@ class SnapshotStore:
         *,
         size_delta: int = 0,
         file_count_delta: int = 0,
+        generation: Optional[int] = None,
+        materialized_seq: Optional[int] = None,
     ) -> None:
         if not (size_delta or file_count_delta):
             return
         ancestors = self._ancestor_relative_paths(relative_path)
         if not ancestors:
             return
-        db.query(LibraryIndexEntry).filter(
+        query = db.query(LibraryIndexEntry).filter(
             LibraryIndexEntry.library_id == library_id,
             LibraryIndexEntry.entry_type == 'dir',
             LibraryIndexEntry.relative_path.in_(ancestors),
-        ).update(
-            {
-                LibraryIndexEntry.size: func.greatest(
-                    0,
-                    LibraryIndexEntry.size + int(size_delta or 0),
-                ),
-                LibraryIndexEntry.file_count: func.greatest(
-                    0,
-                    LibraryIndexEntry.file_count + int(file_count_delta or 0),
-                ),
-                LibraryIndexEntry.indexed_at: _now_ms(),
-            },
-            synchronize_session=False,
         )
+        if generation is not None:
+            query = query.filter(LibraryIndexEntry.generation == int(generation))
+        values = {
+            LibraryIndexEntry.size: func.greatest(
+                0,
+                LibraryIndexEntry.size + int(size_delta or 0),
+            ),
+            LibraryIndexEntry.file_count: func.greatest(
+                0,
+                LibraryIndexEntry.file_count + int(file_count_delta or 0),
+            ),
+            LibraryIndexEntry.indexed_at: _now_ms(),
+        }
+        if materialized_seq is not None:
+            values[LibraryIndexEntry.materialized_seq] = int(materialized_seq)
+        query.update(values, synchronize_session=False)
 
     def apply_parent_dir_delta(
         self,
@@ -1660,12 +1786,59 @@ class SnapshotStore:
             return new_prefix + current[len(old_prefix):]
         return current
 
-    def _subtree_query(self, db: Session, library_id: str, relative_path: str):
+    def _subtree_query(
+        self,
+        db: Session,
+        library_id: str,
+        relative_path: str,
+        *,
+        generation: Optional[int] = None,
+    ):
         normalized = self._normalize_relative_path(relative_path)
         q = db.query(LibraryIndexEntry).filter(LibraryIndexEntry.library_id == library_id)
+        if generation is not None:
+            q = q.filter(LibraryIndexEntry.generation == int(generation))
         if not normalized:
             return q
         return q.filter(self._subtree_column_condition(LibraryIndexEntry.relative_path, normalized))
+
+    def _delete_exact_in_session(
+        self,
+        db: Session,
+        library_id: str,
+        relative_path: str,
+        *,
+        status_delta_accumulator: Optional[dict[str, dict[str, int]]] = None,
+        generation: Optional[int] = None,
+        materialized_seq: Optional[int] = None,
+    ) -> tuple[int, int, int, int]:
+        normalized = self._normalize_relative_path(relative_path)
+        q = db.query(LibraryIndexEntry).filter(
+            LibraryIndexEntry.library_id == library_id,
+            LibraryIndexEntry.relative_path == normalized,
+        )
+        if generation is not None:
+            q = q.filter(LibraryIndexEntry.generation == int(generation))
+        total_size, folder_count, entry_count, file_count = self._query_stats_delta(q)
+        deleted = q.delete(synchronize_session=False)
+        self._apply_ancestor_dir_delta(
+            db,
+            library_id,
+            normalized,
+            size_delta=-total_size,
+            file_count_delta=-file_count,
+            generation=generation,
+            materialized_seq=materialized_seq,
+        )
+        self._apply_status_delta(
+            db,
+            library_id,
+            size_delta=-total_size,
+            folder_delta=-folder_count,
+            entry_delta=-entry_count,
+            accumulator=status_delta_accumulator,
+        )
+        return deleted, total_size, folder_count, entry_count
 
     def _delete_subtree_in_session(
         self,
@@ -1674,8 +1847,15 @@ class SnapshotStore:
         relative_path: str,
         *,
         status_delta_accumulator: Optional[dict[str, dict[str, int]]] = None,
+        generation: Optional[int] = None,
+        materialized_seq: Optional[int] = None,
     ) -> tuple[int, int, int, int]:
-        q = self._subtree_query(db, library_id, relative_path)
+        q = self._subtree_query(
+            db,
+            library_id,
+            relative_path,
+            generation=generation,
+        )
         total_size, folder_count, entry_count, file_count = self._query_stats_delta(q)
         deleted = q.delete(synchronize_session=False)
         self._apply_ancestor_dir_delta(
@@ -1684,6 +1864,8 @@ class SnapshotStore:
             relative_path,
             size_delta=-total_size,
             file_count_delta=-file_count,
+            generation=generation,
+            materialized_seq=materialized_seq,
         )
         self._apply_status_delta(
             db,
@@ -1737,6 +1919,8 @@ class SnapshotStore:
         old_absolute_path: str,
         new_absolute_path: str,
         status_delta_accumulator: Optional[dict[str, dict[str, int]]] = None,
+        generation: Optional[int] = None,
+        materialized_seq: Optional[int] = None,
     ) -> int:
         old_rel = self._normalize_relative_path(old_relative_path)
         new_rel = self._normalize_relative_path(new_relative_path)
@@ -1758,8 +1942,10 @@ class SnapshotStore:
                 LibraryIndexEntry.library_id == library_id,
                 LibraryIndexEntry.relative_path == old_rel,
             )
-            .first()
         )
+        if generation is not None:
+            root_row = root_row.filter(LibraryIndexEntry.generation == int(generation))
+        root_row = root_row.first()
         if root_row is None:
             return 0
         old_size, old_folders = self._row_stats(root_row)
@@ -1782,6 +1968,8 @@ class SnapshotStore:
             library_id,
             new_rel,
             status_delta_accumulator=status_delta_accumulator,
+            generation=generation,
+            materialized_seq=materialized_seq,
         )
 
         result = db.execute(
@@ -1816,8 +2004,10 @@ class SnapshotStore:
                            WHEN depth IS NULL THEN NULL
                            ELSE depth + :depth_delta
                        END,
+                       materialized_seq = COALESCE(CAST(:materialized_seq AS bigint), materialized_seq),
                        indexed_at = :indexed_at
                  WHERE library_id = :library_id
+                   AND (CAST(:generation AS integer) IS NULL OR generation = CAST(:generation AS integer))
                    AND (
                        relative_path = :old_rel
                        OR (
@@ -1841,6 +2031,8 @@ class SnapshotStore:
                 "old_rel_suffix_start": len(old_rel) + 1,
                 "old_abs_suffix_start": len(old_abs) + 1,
                 "depth_delta": depth_delta,
+                "generation": generation,
+                "materialized_seq": materialized_seq,
                 "indexed_at": now,
             },
         )
@@ -1852,6 +2044,8 @@ class SnapshotStore:
                 old_rel,
                 size_delta=-subtree_file_size,
                 file_count_delta=-subtree_file_count,
+                generation=generation,
+                materialized_seq=materialized_seq,
             )
             self._apply_ancestor_dir_delta(
                 db,
@@ -1859,6 +2053,8 @@ class SnapshotStore:
                 new_rel,
                 size_delta=subtree_file_size,
                 file_count_delta=subtree_file_count,
+                generation=generation,
+                materialized_seq=materialized_seq,
             )
             self._apply_status_delta(
                 db,
@@ -1943,6 +2139,10 @@ class SnapshotStore:
         old_absolute_path: str,
         new_absolute_path: str,
         status_delta_accumulator: Optional[dict[str, dict[str, int]]] = None,
+        source_generation: Optional[int] = None,
+        target_generation: Optional[int] = None,
+        source_materialized_seq: Optional[int] = None,
+        target_materialized_seq: Optional[int] = None,
     ) -> int:
         old_rel = self._normalize_relative_path(old_relative_path)
         new_rel = self._normalize_relative_path(new_relative_path)
@@ -1958,27 +2158,39 @@ class SnapshotStore:
         new_parent = self._relative_parent(new_rel)
         new_name = self._relative_name(new_rel)
         new_name_sort_key = library_index_name_sort_key(new_name)
-        source_q = self._subtree_query(db, source_library_id, old_rel)
+        source_q = self._subtree_query(
+            db,
+            source_library_id,
+            old_rel,
+            generation=source_generation,
+        )
         source_size, _source_folders, source_entries, _source_file_count = self._query_stats_delta(source_q)
         if not source_entries:
             return 0
 
-        source_root = (
+        source_root_query = (
             db.query(LibraryIndexEntry.entry_type)
             .filter(
                 LibraryIndexEntry.library_id == source_library_id,
                 LibraryIndexEntry.relative_path == old_rel,
             )
-            .first()
         )
-        source_root_row = (
+        source_root_row_query = (
             db.query(LibraryIndexEntry)
             .filter(
                 LibraryIndexEntry.library_id == source_library_id,
                 LibraryIndexEntry.relative_path == old_rel,
             )
-            .first()
         )
+        if source_generation is not None:
+            source_root_query = source_root_query.filter(
+                LibraryIndexEntry.generation == int(source_generation)
+            )
+            source_root_row_query = source_root_row_query.filter(
+                LibraryIndexEntry.generation == int(source_generation)
+            )
+        source_root = source_root_query.first()
+        source_root_row = source_root_row_query.first()
         if source_root_row is None:
             return 0
         subtree_file_size = int(source_root_row.size or 0) if source_root_row.entry_type == 'dir' else source_size
@@ -1996,6 +2208,8 @@ class SnapshotStore:
             target_library_id,
             new_rel,
             status_delta_accumulator=status_delta_accumulator,
+            generation=target_generation,
+            materialized_seq=target_materialized_seq,
         )
 
         insert_result = db.execute(
@@ -2003,6 +2217,8 @@ class SnapshotStore:
                 """
                 INSERT INTO library_index_entries (
                     library_id,
+                    generation,
+                    materialized_seq,
                     entry_type,
                     relative_path,
                     absolute_path,
@@ -2018,6 +2234,8 @@ class SnapshotStore:
                 )
                 SELECT
                     :target_library_id,
+                    COALESCE(CAST(:target_generation AS integer), generation),
+                    COALESCE(CAST(:target_materialized_seq AS bigint), materialized_seq),
                     entry_type,
                     CASE
                         WHEN relative_path = :old_rel THEN :new_rel
@@ -2054,6 +2272,7 @@ class SnapshotStore:
                     :indexed_at
                 FROM library_index_entries
                 WHERE library_id = :source_library_id
+                  AND (CAST(:source_generation AS integer) IS NULL OR generation = CAST(:source_generation AS integer))
                   AND (
                       relative_path = :old_rel
                       OR (
@@ -2066,6 +2285,9 @@ class SnapshotStore:
             {
                 "source_library_id": source_library_id,
                 "target_library_id": target_library_id,
+                "source_generation": source_generation,
+                "target_generation": target_generation,
+                "target_materialized_seq": target_materialized_seq,
                 "old_rel": old_rel,
                 "new_rel": new_rel,
                 "old_abs": old_abs,
@@ -2088,6 +2310,8 @@ class SnapshotStore:
             source_library_id,
             old_rel,
             status_delta_accumulator=status_delta_accumulator,
+            generation=source_generation,
+            materialized_seq=source_materialized_seq,
         )
 
         self._apply_ancestor_dir_delta(
@@ -2096,6 +2320,8 @@ class SnapshotStore:
             new_rel,
             size_delta=subtree_file_size,
             file_count_delta=subtree_file_count,
+            generation=target_generation,
+            materialized_seq=target_materialized_seq,
         )
 
         self._apply_status_delta(
