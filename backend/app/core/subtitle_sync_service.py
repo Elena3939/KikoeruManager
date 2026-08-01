@@ -925,6 +925,7 @@ class SubtitleSyncService:
         self,
         work_dir: str,
         *,
+        external_subtitle_folder: Optional[str] = None,
         priority_languages: Optional[List[str]] = None,
         use_ai_match: bool = False,
         task_id: str = "",
@@ -950,6 +951,10 @@ class SubtitleSyncService:
             return result
 
         versions = self._collect_subtitle_versions(work_dir)
+        if external_subtitle_folder and os.path.isdir(external_subtitle_folder):
+            external_versions = self._collect_subtitle_versions(external_subtitle_folder)
+            for label, files in external_versions.items():
+                versions.setdefault(label, []).extend(files)
         if not versions:
             result["skipped"] = "no_subtitles_in_work_dir"
             return result

@@ -5697,9 +5697,14 @@ class TaskEngine:
             # 步骤4: 同步字幕文件
             if config.asmr_sync_step.sync_subtitle:
                 task.update_progress(75, "同步字幕文件")
-                sync_result = subtitle_service.sync_subtitles_to_download(
-                    download_dir=download_dir,
-                    subtitle_folder=subtitle_folder
+                subtitle_sync_config = getattr(config, "subtitle_sync", None)
+                sync_result = await subtitle_service.sync_subtitles_to_audio_folder(
+                    download_dir,
+                    external_subtitle_folder=subtitle_folder,
+                    priority_languages=list(getattr(subtitle_sync_config, "language_priority", None) or []),
+                    use_ai_match=bool(getattr(subtitle_sync_config, "use_ai_match", True)),
+                    task_id=task.id,
+                    rjcode=actual_rjcode or rjcode,
                 )
 
                 # 保存字幕同步结果到任务元数据
