@@ -168,26 +168,17 @@
 
           <div class="version-info">
             <span class="version-text">KikoeruManager</span>
-            <div class="skin-switcher" role="group" aria-label="界面主题选择">
-              <button
-                type="button"
-                class="skin-switcher-item"
-                :class="{ 'is-active': skin === 'default' }"
-                title="默认主题"
-                @click="setSkin('default')"
-              >
-                默认
-              </button>
-              <button
-                type="button"
-                class="skin-switcher-item"
-                :class="{ 'is-active': skin === 'animal' }"
-                title="动森主题"
-                @click="setSkin('animal')"
-              >
-                动森
-              </button>
-            </div>
+            <button
+              v-if="!isGateRoute"
+              type="button"
+              class="theme-toggle-button skin-toggle-button"
+              :class="{ 'is-animal': skin === 'animal' }"
+              :title="skin === 'animal' ? '动森主题，点击切回默认主题' : '默认主题，点击切换动森主题'"
+              @click="setSkin(skin === 'animal' ? 'default' : 'animal')"
+            >
+              <Palette v-if="skin !== 'animal'" :size="16" :stroke-width="2.2" />
+              <Leaf v-else :size="16" :stroke-width="2.2" />
+            </button>
             <AnimatedThemeToggler
               v-if="!isGateRoute"
               direction="ltr"
@@ -235,7 +226,9 @@ import {
   KeyRound,
   ListTodo,
   Menu,
+  Leaf,
   Package2,
+  Palette,
   ScrollText,
   Settings2,
   Tags,
@@ -5708,79 +5701,28 @@ html.kikoerumanager-dark .detail-body .path {
   transform: translate3d(0, 0, 0);
 }
 
-.skin-switcher {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  width: 0;
-  min-height: 26px;
-  padding: 2px;
-  overflow: hidden;
-  opacity: 0;
-  border: 1px solid rgba(29, 29, 31, 0.08);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.62);
-  transition:
-    width 0.2s var(--sidebar-ease),
-    opacity 0.16s ease,
-    background-color 0.24s ease,
-    border-color 0.24s ease;
+.theme-toggle-button.skin-toggle-button {
+  position: absolute;
+  left: calc(var(--sidebar-collapsed-width) / 2 - 1px);
+  bottom: 56px;
+  transform: translate3d(-50%, 0, 0);
 }
 
-.sidebar:hover .skin-switcher,
-.sidebar.is-sidebar-pinned .skin-switcher,
-.sidebar.is-notification-panel-open .skin-switcher {
-  width: 112px;
-  opacity: 1;
+.theme-toggle-button.skin-toggle-button.is-animal {
+  border-color: rgba(25, 200, 185, 0.34);
+  color: #0f9d90;
+  box-shadow: inset 0 0 0 1px rgba(25, 200, 185, 0.18);
 }
 
-.skin-switcher-item {
-  flex: 1 1 0;
-  min-width: 0;
-  height: 20px;
-  padding: 0 6px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: rgba(29, 29, 31, 0.62);
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 20px;
-  cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+.theme-toggle-button.skin-toggle-button.is-animal:hover {
+  border-color: rgba(25, 200, 185, 0.5);
+  color: #0b877c;
 }
 
-.skin-switcher-item:hover {
-  color: #1d1d1f;
-}
-
-.skin-switcher-item:active {
-  transform: scale(0.94);
-}
-
-.skin-switcher-item.is-active {
-  background: #b7c6e5;
-  color: #ffffff;
-}
-
-:global(html.kikoerumanager-dark) .skin-switcher {
-  border-color: rgba(147, 197, 253, 0.16);
-  background: rgba(15, 23, 42, 0.42);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
-}
-
-:global(html.kikoerumanager-dark) .skin-switcher-item {
-  color: rgba(226, 232, 240, 0.62);
-}
-
-:global(html.kikoerumanager-dark) .skin-switcher-item:hover {
-  color: #f8fafc;
-}
-
-:global(html.kikoerumanager-dark) .skin-switcher-item.is-active {
-  background: rgba(96, 165, 250, 0.34);
-  color: #f8fafc;
+:global(html.kikoerumanager-dark) .theme-toggle-button.skin-toggle-button.is-animal {
+  background: rgba(25, 200, 185, 0.16);
+  border-color: rgba(25, 200, 185, 0.32);
+  color: #5eead4;
 }
 
 :global(html.kikoerumanager-animal) .sidebar-shell {
@@ -5832,13 +5774,9 @@ html.kikoerumanager-dark .detail-body .path {
   box-shadow: inset 0 0 0 1px rgba(159, 146, 125, 0.16);
 }
 
-:global(html.kikoerumanager-animal) .skin-switcher {
-  border-color: rgba(159, 146, 125, 0.18);
-  background: rgba(255, 252, 240, 0.82);
-}
-
-:global(html.kikoerumanager-animal) .skin-switcher-item.is-active {
+:global(html.kikoerumanager-animal) .theme-toggle-button.skin-toggle-button.is-animal {
   background: #19c8b9;
+  border-color: #19c8b9;
   color: #ffffff;
 }
 
