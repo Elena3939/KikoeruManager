@@ -953,12 +953,20 @@ class SubtitleSyncService:
         rjcode: str = "",
     ) -> Optional[List[Dict]]:
         from ..config.settings import get_config
-        from .ai_subtitle_match_service import get_ai_subtitle_match_service
+        from .ai_subtitle_match_service import get_ai_subtitle_match_service, normalize_ai_match_mode
 
         ai_config = getattr(get_config(), "ai_subtitle_matching", None)
         if not ai_config or not getattr(ai_config, "enabled", False):
             return None
-        mode = "ai_auto" if getattr(ai_config, "auto_apply_enabled", False) else "ai_assist"
+        mode = normalize_ai_match_mode(getattr(ai_config, "default_mode", "rule_ai_auto"))
+        if mode == "rule":
+            return None
+        # 同步流程没有人工确认界面，ai_assist 只出建议不自动落盘，交给规则兜底。
+        if mode == "ai_assist":
+            return None
+
+        rule_matches = self.match_audio_subtitle(audio_paths, subtitle_files)
+        base_match_result = {"matches": rule_matches} if mode == "rule_ai_auto" else {}
 
         service = get_ai_subtitle_match_service()
         audio_index = [
@@ -981,7 +989,7 @@ class SubtitleSyncService:
             config=ai_config,
             audio_index=audio_index,
             subtitle_groups=subtitle_groups,
-            base_match_result={},
+            base_match_result=base_match_result,
             mode=mode,
             naming_strategy="audio",
             threshold=None,
@@ -990,20 +998,24 @@ class SubtitleSyncService:
         )
         matches = (result.get("match_result") or {}).get("matches") or []
         pairs = []
+        subtitle_by_path = {item.get("path"): item for item in subtitle_files}
         for match in matches:
             audio = audio_by_id.get(match.get("audio_id"))
             group = group_by_id.get(match.get("subtitle_group_id"))
-            if not audio or not group:
+            if audio and group:
+                audio_path = audio.get("path")
+                group_base = group.get("base_name")
+                subtitle = next((item for item in subtitle_files if item["base_name"] == group_base), None)
+            else:
+                audio_path = match.get("audio_path")
+                subtitle = subtitle_by_path.get(match.get("subtitle_path"))
+            if not audio_path or not subtitle:
                 continue
-            audio_path = audio.get("path")
-            group_base = group.get("base_name")
-            subtitle = next((item for item in subtitle_files if item["base_name"] == group_base), None)
-            if audio_path and subtitle:
-                pairs.append({
-                    "audio_path": audio_path,
-                    "subtitle": subtitle,
-                    "new_audio_name": subtitle["base_name"] + os.path.splitext(audio_path)[1],
-                })
+            pairs.append({
+                "audio_path": audio_path,
+                "subtitle": subtitle,
+                "new_audio_name": subtitle["base_name"] + os.path.splitext(audio_path)[1],
+            })
         return pairs or None
 
     async def sync_subtitles_to_audio_folder(

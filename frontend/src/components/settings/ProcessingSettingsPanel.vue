@@ -129,7 +129,7 @@
           <textarea v-model="subtitlePriorityText" class="field-input template-textarea" rows="5" spellcheck="false" placeholder="简体中文|简中|简体&#10;繁體中文|繁中|繁体|繁體&#10;English|英文|EN|英语&#10;日本語|日文|Japanese|JP|日語"></textarea>
         </SettingsFieldCard>
         <SettingsToggleRow v-model="config.subtitle_sync.content_detection_first" title="字幕内容检测优先" subtitle="开启后先按字幕内容字符判断版本，目录名称仅作校验；关闭则相反" />
-        <SettingsToggleRow v-model="config.subtitle_sync.use_ai_match" title="AI 辅助配对" subtitle="发送音频时长和字幕最后时间戳辅助识别" />
+        <SettingsToggleRow v-model="config.subtitle_sync.use_ai_match" title="AI 辅助配对" subtitle="开启后按 AI 配对设置中的模式调用（默认规则 + AI 自动补全），需先启用 AI 并配置模型、API Key 与自动应用" />
       </div>
     </div>
 
