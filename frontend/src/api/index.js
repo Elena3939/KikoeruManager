@@ -1690,7 +1690,7 @@ export const asmrSyncApi = {
     return response.data
   },
 
-  startEnhanced: async (items, autoClassify = false) => {
+  startEnhanced: async (items, autoClassify = true) => {
     const response = await apiClient.post('/asmr-sync/enhanced/start', {
       items,
       auto_classify: autoClassify

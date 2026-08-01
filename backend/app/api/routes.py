@@ -17006,7 +17006,7 @@ class ASMRSyncEnhancedPlanRequest(BaseModel):
 class ASMRSyncEnhancedStartRequest(BaseModel):
     """增强下载启动请求"""
     items: List[dict]  # [{rjcode, work_title, selected_resources, folder_path, upload_options}]
-    auto_classify: bool = False
+    auto_classify: bool = True
 
 
 class ASMRSyncEnhancedPriorityRequest(BaseModel):
