@@ -2375,8 +2375,24 @@ class ASMRResourceService:
 
         task.update_progress(97, "准备入库")
         renamed_root = download_root
-        if postprocess_options.get("naming_mode") == "api":
+        flatten_files = bool(postprocess_options.get("flatten_files"))
+        rename_step_enabled = bool(getattr(config.asmr_sync_step, "rename", True))
+        if not rename_step_enabled:
+            logger.info("[%s] 步骤[重命名]已禁用，跳过", rjcode)
+        elif postprocess_options.get("naming_mode") != "api":
+            logger.info("[%s] 保留原作品目录名（naming_mode=preserve）", rjcode)
+        if rename_step_enabled and postprocess_options.get("naming_mode") == "api":
             renamed_root = await self._api_rename_download_root(download_root, rjcode, final_metadata)
+        if getattr(config.rename, "flatten_single_subfolder", False) and not flatten_files:
+            from .rename_service import RenameService
+
+            task.update_progress(97, "扁平化文件夹结构")
+            renamed_root = await asyncio.to_thread(
+                RenameService()._flatten_single_subfolder,
+                renamed_root,
+            )
+        elif flatten_files:
+            logger.info("[%s] 直放模式下跳过单层文件夹扁平化", rjcode)
 
         manager = get_library_manager()
         target_library_id = str(postprocess_options.get("target_library_id") or "").strip()
@@ -2387,7 +2403,6 @@ class ASMRResourceService:
         classifier = SmartClassifier()
         target_subdir = str(postprocess_options.get("target_subdir") or "").strip().strip("/\\")
         classify_mode = str(postprocess_options.get("classify_mode") or "").strip().lower()
-        flatten_files = bool(postprocess_options.get("flatten_files"))
         if classify_mode == "smart" and not flatten_files:
             circle_dir = self._resolve_smart_classification_dir(
                 classifier,
