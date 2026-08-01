@@ -4491,11 +4491,21 @@ class LibraryManager:
                 "scope": scope,
                 "target_library_id": target_library.id,
                 "target_path": new_relative,
+                "payload": {
+                    "old_absolute_path": source_path,
+                    "new_absolute_path": destination,
+                },
             })
             effects_by_library.setdefault(target_library.id, []).append({
-                "kind": "reconcile",
+                "kind": "move_target",
                 "relative_path": new_relative,
                 "scope": scope,
+                "payload": {
+                    "source_library_id": source_library.id,
+                    "source_path": old_relative,
+                    "old_absolute_path": source_path,
+                    "new_absolute_path": destination,
+                },
             })
         effects_by_library = {
             library_id: effects

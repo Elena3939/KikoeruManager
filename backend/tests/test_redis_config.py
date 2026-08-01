@@ -435,31 +435,32 @@ def test_library_index_materializer_uses_durable_ack_contract(monkeypatch):
     class FakeRedis:
         def read_library_index_mutation_hints_sync(self, *args, **kwargs):
             calls.append(("read", args, kwargs))
+            service._stop_event.set()
             return "2-0", [hint]
 
         def ack_durable_library_index_mutation_hints_sync(self, hints, **kwargs):
             calls.append(("durable_ack", hints, kwargs))
-            service._stop_event.set()
-            return {"acked": 1}
+            return {"acked": 1, "deferred_message_ids": []}
 
         def ack_library_index_mutation_hints_sync(self, _message_ids):
             raise AssertionError("materializer 不得绕过 PostgreSQL 水位直接 ACK")
 
     fake_redis = FakeRedis()
     monkeypatch.setattr(mutation_module, "get_redis_service", lambda: fake_redis)
-    monkeypatch.setattr(service, "_recover_prepared", lambda: None)
-    monkeypatch.setattr(service, "_pending_library_ids", lambda: ["library-a"])
-    process_results = iter([True, False])
-    monkeypatch.setattr(service, "_process_next", lambda _library_id: next(process_results))
     monkeypatch.setattr(
         service,
         "_hint_ack_state",
         lambda _hints: ({"library-a": 3}, {("library-b", 7)}),
     )
 
-    service._run()
-
+    service._listener_run()
     assert service._reclaim_cursor == "2-0"
+    assert service._listener_hints_queue.qsize() == 1
+    assert service._wake_event.is_set()
+
+    service._stop_event.clear()
+    service._ack_listener_hints()
+
     assert calls[-1] == (
         "durable_ack",
         [hint],
@@ -468,7 +469,7 @@ def test_library_index_materializer_uses_durable_ack_contract(monkeypatch):
             "retry_persisted_seqs": {("library-b", 7)},
         },
     )
-
+    assert service._listener_hints_queue.empty()
 
 def test_library_index_recovery_effects_reconcile_source_and_target():
     effects = LibraryIndexMutationService._recovery_effects([

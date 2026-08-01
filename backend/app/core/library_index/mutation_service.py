@@ -6,16 +6,20 @@ import hashlib
 import json
 import logging
 import os
+import pickle
+import queue
 import socket
+import tempfile
 import threading
 import time
 import uuid
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable, Optional
 
-from sqlalchemy import and_, case, exists, func, or_
+from sqlalchemy import and_, case, exists, func, or_, text
 from sqlalchemy.orm import Session
 
 from ...models.database import (
@@ -27,18 +31,30 @@ from ...models.database import (
     LibraryIndexPendingMask,
     LibraryIndexStatus,
     SessionLocal,
+    engine as main_engine,
     get_local_now,
 )
 from ..redis_service import get_redis_service
 from ..resource_budget_service import get_resource_budget_service
 from .local_scanner import LocalScanner
-from .snapshot_store import DEFAULT_BULK_UPSERT_CHUNK_SIZE, get_snapshot_store
+from .materializer_db import (
+    dispose_materializer_engine,
+    get_materializer_session_factory,
+    materializer_pool_diagnostics,
+)
+from .snapshot_store import (
+    DEFAULT_BULK_UPSERT_CHUNK_SIZE,
+    SnapshotStore,
+    get_snapshot_store,
+)
+from .types import IndexEntry
 
 logger = logging.getLogger(__name__)
+_DEFAULT_SESSION_FACTORY = SessionLocal
 
 LEASE_SECONDS = 30
 HEARTBEAT_SECONDS = 10
-SWEEP_SECONDS = 2.0
+SWEEP_SECONDS = 0.25
 MAX_ATTEMPTS = 10
 RETRY_DELAYS_SECONDS = (1, 2, 5, 10, 30, 60)
 RECOVERY_BATCH_SIZE = 100
@@ -47,6 +63,20 @@ RECOVERY_SWEEP_SECONDS = 30.0
 LEDGER_RETENTION_DAYS = 7
 LEDGER_CLEANUP_SWEEP_SECONDS = 3600.0
 LEDGER_CLEANUP_CHUNK_SIZE = 500
+FAST_PATH_MAX_EFFECTS = 50
+FAST_PATH_MAX_ROWS = 5000
+FAST_PATH_LOCK_TIMEOUT_MS = 200
+FAST_PATH_STATEMENT_TIMEOUT_MS = 1500
+FAST_PATH_PAUSE_SECONDS = 1.0
+TARGETED_RECONCILE_MAX_ROWS = 5000
+
+
+class _FastPathLimitExceeded(RuntimeError):
+    """精确事务超过 effects/行数预算，交回原有慢通道。"""
+
+
+class _FastPathRetryLater(RuntimeError):
+    """锁或语句超时，回滚后等待 safety sweep 重试。"""
 
 
 def _normalize_relative_path(value: Any) -> str:
@@ -64,7 +94,14 @@ def _normalize_relative_path(value: Any) -> str:
 def _normalize_effect(raw: dict[str, Any]) -> dict[str, Any]:
     effect = dict(raw or {})
     kind = str(effect.get("kind") or "reconcile").strip().lower()
-    if kind not in {"delete", "replace", "move", "reconcile", "upsert"}:
+    if kind not in {
+        "delete",
+        "replace",
+        "move",
+        "move_target",
+        "reconcile",
+        "upsert",
+    }:
         raise ValueError(f"不支持的库存索引 effect: {kind}")
     scope = str(effect.get("scope") or "exact").strip().lower()
     if scope not in {"exact", "subtree"}:
@@ -103,7 +140,12 @@ class PreparedMutation:
 
 
 class LibraryIndexMutationService:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        materializer_session_factory=None,
+        fast_path_enabled: Optional[bool] = None,
+    ) -> None:
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._recovery_event = threading.Event()
@@ -114,6 +156,77 @@ class LibraryIndexMutationService:
         self._replay_count = 0
         self._prepared_scopes_lock = threading.Lock()
         self._prepared_scopes: dict[str, list[dict[str, Any]]] = {}
+        self._materializer_session_factory = materializer_session_factory
+        self._fast_path_enabled = (
+            bool(fast_path_enabled)
+            if fast_path_enabled is not None
+            else str(os.getenv("KIKOERUMANAGER_LIBRARY_INDEX_FAST_PATH", "0")).lower()
+            in {"1", "true", "yes", "on"}
+        )
+        self._publisher_queue: queue.Queue[tuple[str, int, str]] = queue.Queue()
+        self._publisher_thread: Optional[threading.Thread] = None
+        self._listener_thread: Optional[threading.Thread] = None
+        self._listener_hints_queue: queue.Queue[
+            list[tuple[str, dict[str, Any]]]
+        ] = queue.Queue()
+        self._last_fast_path_pause_until = 0.0
+        self._fast_path_last_duration_ms = 0.0
+        self._fast_path_timeout_count = 0
+        self._fast_path_last_fallback_reason: Optional[str] = None
+
+    def _materializer_session(self):
+        factory = self._materializer_session_factory
+        if factory is None:
+            # 测试会替换模块级 SessionLocal；此时必须继续使用测试事务，不能连接真实专用池。
+            factory = (
+                SessionLocal
+                if SessionLocal is not _DEFAULT_SESSION_FACTORY
+                else get_materializer_session_factory()
+            )
+        return factory()
+
+    def _materializer_store(self) -> SnapshotStore:
+        factory = self._materializer_session_factory
+        if factory is None and SessionLocal is not _DEFAULT_SESSION_FACTORY:
+            return get_snapshot_store()
+        if factory is None:
+            factory = get_materializer_session_factory()
+        return SnapshotStore(session_factory=factory)
+
+    @staticmethod
+    def _main_pool_under_pressure() -> bool:
+        try:
+            pool = main_engine.pool
+            pool_size = max(1, int(pool.size()))
+            checked_out = int(pool.checkedout())
+            threshold = max(1, int(pool_size * 0.7))
+            return checked_out >= threshold or pool_size - min(checked_out, pool_size) < min(3, pool_size)
+        except Exception:
+            return False
+
+    def _should_pause_fast_path(self) -> bool:
+        if time.monotonic() < self._last_fast_path_pause_until:
+            return True
+        try:
+            snapshot = get_resource_budget_service().snapshot()
+            database_write = (snapshot.get("resources") or {}).get("database_write") or {}
+            if int(database_write.get("waiting") or 0) > 0:
+                return True
+        except Exception:
+            pass
+        if self._main_pool_under_pressure():
+            return True
+        if self._fast_path_last_duration_ms > 500:
+            self._last_fast_path_pause_until = time.monotonic() + SWEEP_SECONDS
+            self._fast_path_last_duration_ms = 0.0
+            return True
+        return False
+
+    def _materializer_pool_diagnostics(self) -> dict[str, int]:
+        try:
+            return materializer_pool_diagnostics()
+        except Exception:
+            return {"pool_size": 1, "checked_out": 0, "overflow": 0}
 
     @staticmethod
     def _ensure_status(db, library_id: str, *, for_update: bool = False) -> LibraryIndexStatus:
@@ -459,6 +572,13 @@ class LibraryIndexMutationService:
             self._prepared_scopes.pop(operation_id, None)
         redis = get_redis_service()
         for library_id, seq in hints:
+            self._enqueue_mutation_hint(redis, library_id, seq, operation_id)
+        self._wake_event.set()
+        return response
+
+    def _enqueue_mutation_hint(self, redis, library_id: str, seq: int, operation_id: str) -> None:
+        """提交后唤醒与 Redis 发布解耦；未启动后台线程时保留同步兼容行为。"""
+        if self._publisher_thread is None or not self._publisher_thread.is_alive():
             try:
                 redis.publish_library_index_mutation_hint_sync(library_id, seq, operation_id)
             except Exception:
@@ -470,8 +590,85 @@ class LibraryIndexMutationService:
                     operation_id,
                     exc_info=True,
                 )
-        self._wake_event.set()
-        return response
+            return
+        self._publisher_queue.put((str(library_id), int(seq), str(operation_id)))
+
+    def _publisher_run(self) -> None:
+        while not self._stop_event.is_set() or not self._publisher_queue.empty():
+            try:
+                library_id, seq, operation_id = self._publisher_queue.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            try:
+                get_redis_service().publish_library_index_mutation_hint_sync(
+                    library_id,
+                    seq,
+                    operation_id,
+                )
+            except Exception:
+                logger.warning(
+                    "[索引追赶] Redis wake hint 异步发布失败，等待 PostgreSQL safety sweep "
+                    "library=%s seq=%s operation=%s",
+                    library_id,
+                    seq,
+                    operation_id,
+                    exc_info=True,
+                )
+            finally:
+                self._publisher_queue.task_done()
+
+    def _listener_run(self) -> None:
+        """阻塞读取 Redis Stream，仅投递内存提示并唤醒 PostgreSQL 物化器。"""
+        while not self._stop_event.is_set():
+            try:
+                redis = get_redis_service()
+                self._reclaim_cursor, hints = (
+                    redis.read_library_index_mutation_hints_sync(
+                        self._consumer_name,
+                        count=100,
+                        block_ms=250,
+                        reclaim_idle_ms=60000,
+                        reclaim_cursor=self._reclaim_cursor,
+                    )
+                )
+                if hints:
+                    self._listener_hints_queue.put(hints)
+                    self._wake_event.set()
+            except Exception:
+                logger.debug("[索引追赶] Redis hint listener 读取失败", exc_info=True)
+                self._stop_event.wait(SWEEP_SECONDS)
+
+    def _ack_listener_hints(self) -> None:
+        batches: list[list[tuple[str, dict[str, Any]]]] = []
+        while True:
+            try:
+                batches.append(self._listener_hints_queue.get_nowait())
+            except queue.Empty:
+                break
+        if not batches:
+            return
+        hints = [hint for batch in batches for hint in batch]
+        try:
+            redis = get_redis_service()
+            watermarks, retry_seqs = self._hint_ack_state(hints)
+            result = redis.ack_durable_library_index_mutation_hints_sync(
+                hints,
+                materialized_seq_by_library=watermarks,
+                retry_persisted_seqs=retry_seqs,
+            )
+            deferred = set(result.get("deferred_message_ids") or [])
+            if deferred:
+                retry_hints = [
+                    hint for hint in hints if str(hint[0]) in deferred
+                ]
+                if retry_hints:
+                    self._listener_hints_queue.put(retry_hints)
+        except Exception:
+            self._listener_hints_queue.put(hints)
+            logger.debug("[索引追赶] Redis hint ACK 判定失败", exc_info=True)
+        finally:
+            for batch in batches:
+                self._listener_hints_queue.task_done()
 
     @staticmethod
     def _fence(status, operation_id: str, seq: int, effects: list[dict[str, Any]]) -> dict[str, Any]:
@@ -485,7 +682,11 @@ class LibraryIndexMutationService:
             "effects": [
                 {
                     "seq": int(seq),
-                    "kind": effect["kind"],
+                    "kind": (
+                        "reconcile"
+                        if effect["kind"] == "move_target"
+                        else effect["kind"]
+                    ),
                     "relative_path": effect["relative_path"],
                     "scope": effect["scope"],
                 }
@@ -531,6 +732,738 @@ class LibraryIndexMutationService:
                 return True
         return False
 
+    @staticmethod
+    def _fast_path_timeout(exc: Exception) -> bool:
+        message = str(exc or "").lower()
+        return any(
+            marker in message
+            for marker in (
+                "lock timeout",
+                "statement timeout",
+                "canceling statement",
+                "deadlock detected",
+                "connection timed out",
+            )
+        )
+
+    def _entry_snapshot_for_exact_effect(
+        self,
+        library_id: str,
+        effect: LibraryIndexMutationEffect,
+        *,
+        generation: int,
+        materialized_seq: int,
+    ) -> Optional[IndexEntry]:
+        payload = dict(effect.payload or {})
+        snapshot = payload.get("entry_snapshot")
+        if not isinstance(snapshot, dict):
+            snapshot = payload if payload.get("entry_type") else None
+        if snapshot is None:
+            from ..library_manager import get_library_manager
+
+            library = get_library_manager().get_library_definition(library_id)
+            if library.type != "local":
+                return None
+            root = os.path.abspath(library.root_path or "")
+            target = os.path.abspath(
+                os.path.join(root, *str(effect.relative_path or "").split("/"))
+            )
+            try:
+                if os.path.commonpath([root, target]).casefold() != root.casefold():
+                    return None
+                stat_result = os.stat(target)
+            except (OSError, ValueError):
+                return None
+            entry_type = "dir" if os.path.isdir(target) else "file"
+            snapshot = {
+                "entry_type": entry_type,
+                "relative_path": effect.relative_path,
+                "absolute_path": target,
+                "name": os.path.basename(target) or os.path.basename(root),
+                "parent_path": (
+                    str(effect.relative_path or "").rsplit("/", 1)[0]
+                    if "/" in str(effect.relative_path or "")
+                    else ""
+                ),
+                "size": int(stat_result.st_size or 0) if entry_type == "file" else 0,
+                "file_count": 0,
+                "mtime": int(stat_result.st_mtime * 1000),
+                "depth": str(effect.relative_path or "").count("/") + 1
+                if effect.relative_path
+                else 0,
+            }
+        relative_path = _normalize_relative_path(
+            snapshot.get("relative_path") or effect.relative_path
+        )
+        if relative_path != _normalize_relative_path(effect.relative_path):
+            return None
+        entry_type = str(snapshot.get("entry_type") or "file").lower()
+        if entry_type not in {"file", "dir"}:
+            return None
+        parent_path = snapshot.get("parent_path")
+        if parent_path is None:
+            parent_path = relative_path.rsplit("/", 1)[0] if "/" in relative_path else ""
+        absolute_path = str(snapshot.get("absolute_path") or "")
+        if not absolute_path:
+            from ..library_manager import get_library_manager
+
+            library = get_library_manager().get_library_definition(library_id)
+            if library.type == "local":
+                absolute_path = os.path.join(
+                    os.path.abspath(library.root_path or ""),
+                    *relative_path.split("/"),
+                )
+        return IndexEntry(
+            library_id=library_id,
+            generation=int(generation),
+            materialized_seq=int(materialized_seq),
+            entry_type=entry_type,
+            relative_path=relative_path,
+            absolute_path=absolute_path,
+            name=str(snapshot.get("name") or relative_path.rsplit("/", 1)[-1]),
+            rjcode=snapshot.get("rjcode"),
+            parent_path=parent_path,
+            size=max(0, int(snapshot.get("size") or 0)),
+            file_count=max(0, int(snapshot.get("file_count") or 0)),
+            mtime=(
+                None
+                if snapshot.get("mtime") is None
+                else int(snapshot.get("mtime") or 0)
+            ),
+            depth=(
+                None
+                if snapshot.get("depth") is None
+                else int(snapshot.get("depth") or 0)
+            ),
+            indexed_at=int(snapshot.get("indexed_at") or int(time.time() * 1000)),
+        )
+
+    def _estimate_fast_effect_rows(
+        self,
+        db,
+        store: SnapshotStore,
+        library_id: str,
+        effect: LibraryIndexMutationEffect,
+        *,
+        generation: int,
+    ) -> Optional[int]:
+        kind = str(effect.kind or "").lower()
+        if kind in {"reconcile", "replace"} and effect.scope == "subtree":
+            return None
+        if (
+            kind == "move"
+            and effect.target_library_id
+            and effect.target_library_id != library_id
+        ):
+            return None
+        if kind in {"delete", "move"}:
+            if kind == "delete" and effect.scope == "exact":
+                count_query = db.query(LibraryIndexEntry.id).filter(
+                    LibraryIndexEntry.library_id == library_id,
+                    LibraryIndexEntry.generation == generation,
+                    LibraryIndexEntry.relative_path == effect.relative_path,
+                )
+            else:
+                count_query = store._subtree_query(
+                    db,
+                    library_id,
+                    effect.relative_path,
+                    generation=generation,
+                )
+            row_count = int(
+                count_query.with_entities(func.count(LibraryIndexEntry.id)).scalar()
+                or 0
+            )
+            if kind == "move":
+                row_count += int(
+                    store._subtree_query(
+                        db,
+                        library_id,
+                        str(effect.target_path or ""),
+                        generation=generation,
+                    ).with_entities(func.count(LibraryIndexEntry.id)).scalar()
+                    or 0
+                )
+            return row_count
+        if kind in {"upsert", "replace"} and effect.scope == "exact":
+            return 1
+        return None
+
+    def _apply_fast_effect_in_session(
+        self,
+        db,
+        store: SnapshotStore,
+        library_id: str,
+        effect: LibraryIndexMutationEffect,
+        *,
+        materialized_seq: int,
+        generation: int,
+        status_deltas: dict[str, dict[str, int]],
+    ) -> Optional[int]:
+        kind = str(effect.kind or "").lower()
+        if kind in {"reconcile", "replace"} and effect.scope == "subtree":
+            return None
+        if kind == "move" and effect.target_library_id and effect.target_library_id != library_id:
+            return None
+        if kind in {"delete", "move"}:
+            if kind == "delete":
+                delete_method = (
+                    store._delete_exact_in_session
+                    if effect.scope == "exact"
+                    else store._delete_subtree_in_session
+                )
+                deleted, _size, _folders, _entries = delete_method(
+                    db,
+                    library_id,
+                    effect.relative_path,
+                    generation=generation,
+                    materialized_seq=materialized_seq,
+                    status_delta_accumulator=status_deltas,
+                )
+                return int(deleted or 0)
+            old_absolute_path = str(effect.payload.get("old_absolute_path") or "")
+            new_absolute_path = str(effect.payload.get("new_absolute_path") or "")
+            if not old_absolute_path or not new_absolute_path:
+                from ..library_manager import get_library_manager
+
+                library = get_library_manager().get_library_definition(library_id)
+                if library.type != "local":
+                    return None
+                root = os.path.abspath(library.root_path or "")
+                old_absolute_path = os.path.join(root, *effect.relative_path.split("/"))
+                new_absolute_path = os.path.join(root, *str(effect.target_path or "").split("/"))
+            moved = store._move_subtree_same_library_in_session(
+                db,
+                library_id,
+                old_relative_path=effect.relative_path,
+                new_relative_path=str(effect.target_path or ""),
+                old_absolute_path=old_absolute_path,
+                new_absolute_path=new_absolute_path,
+                generation=generation,
+                materialized_seq=materialized_seq,
+                status_delta_accumulator=status_deltas,
+            )
+            if not moved:
+                raise _FastPathLimitExceeded("move 未命中旧索引，转入 reconcile")
+            return int(moved)
+        if kind in {"upsert", "replace"} and effect.scope == "exact":
+            entry = self._entry_snapshot_for_exact_effect(
+                library_id,
+                effect,
+                generation=generation,
+                materialized_seq=materialized_seq,
+            )
+            if entry is None:
+                return None
+            old = store._get_existing_stats_map(
+                db,
+                library_id,
+                [entry.relative_path],
+                generation=generation,
+            )
+            old_size, old_folders = old.get(entry.relative_path, (0, 0))
+            new_size, new_folders = store._entry_stats(entry)
+            ancestor_deltas = store._build_bulk_upsert_ancestor_deltas(
+                db,
+                [entry],
+                insert_only=False,
+            )
+            written = store._upsert_one(db, entry)
+            if not written:
+                return 0
+            store._flush_ancestor_deltas(
+                db,
+                ancestor_deltas,
+                generation=generation,
+                materialized_seq=materialized_seq,
+            )
+            store._apply_status_delta(
+                db,
+                library_id,
+                size_delta=new_size - old_size,
+                folder_delta=new_folders - old_folders,
+                entry_delta=0 if entry.relative_path in old else 1,
+                accumulator=status_deltas,
+            )
+            return 1
+        return None
+
+    def _complete_seq_without_recompute(
+        self,
+        db,
+        library_id: str,
+        seq: int,
+        ledger_id: int,
+        epoch: int,
+        generation: int,
+    ) -> None:
+        status = db.query(LibraryIndexStatus).filter(
+            LibraryIndexStatus.library_id == library_id
+        ).with_for_update().one()
+        if (
+            status.materializer_owner != self._consumer_name
+            or int(status.materializer_epoch or 0) != int(epoch)
+            or int(status.active_generation or 1) != int(generation)
+            or int(status.materialized_seq or 0) + 1 != int(seq)
+        ):
+            raise RuntimeError("库存索引 fast-path fencing 校验失败")
+        ledger = db.query(LibraryIndexMutationLedger).filter(
+            LibraryIndexMutationLedger.id == ledger_id
+        ).with_for_update().one()
+        ledger.applied_at = get_local_now()
+        ledger.error = None
+        ledger.next_retry_at = None
+        db.query(LibraryIndexPendingMask).filter(
+            LibraryIndexPendingMask.library_id == library_id,
+            LibraryIndexPendingMask.ledger_seq == seq,
+        ).delete(synchronize_session=False)
+        status.materialized_seq = int(seq)
+        status.state_revision = int(status.state_revision or 0) + 1
+        status.view_revision = int(status.view_revision or 0) + 1
+        status.catchup_state = (
+            "catching_up" if int(status.accepted_seq or 0) > int(seq) else "idle"
+        )
+        status.catchup_error = None
+        status.materializer_lease_until = get_local_now() + timedelta(seconds=LEASE_SECONDS)
+        status.updated_at = int(time.time() * 1000)
+
+    def _apply_fast_path_batch(
+        self,
+        library_id: str,
+        *,
+        epoch: int,
+        generation: int,
+        expected_seq: int,
+        ledger_id: int,
+    ) -> bool:
+        if not self._fast_path_enabled:
+            return False
+        started = time.monotonic()
+        with get_resource_budget_service().acquire_sync(
+            "library_index_write",
+            reason="library_index.materialize.fast_path",
+        ):
+            db = self._materializer_session()
+            try:
+                db.execute(text(f"SET LOCAL lock_timeout = '{FAST_PATH_LOCK_TIMEOUT_MS}ms'"))
+                db.execute(text(f"SET LOCAL statement_timeout = '{FAST_PATH_STATEMENT_TIMEOUT_MS}ms'"))
+                status = db.query(LibraryIndexStatus).filter(
+                    LibraryIndexStatus.library_id == library_id
+                ).with_for_update().one()
+                if (
+                    status.materializer_owner != self._consumer_name
+                    or int(status.materializer_epoch or 0) != int(epoch)
+                    or int(status.active_generation or 1) != int(generation)
+                    or int(status.materialized_seq or 0) + 1 != int(expected_seq)
+                ):
+                    raise RuntimeError("库存索引 fast-path claim fencing 校验失败")
+                effects = db.query(LibraryIndexMutationEffect).filter(
+                    LibraryIndexMutationEffect.ledger_id == int(ledger_id)
+                ).order_by(LibraryIndexMutationEffect.effect_no.asc()).all()
+                if not effects or len(effects) > FAST_PATH_MAX_EFFECTS:
+                    db.rollback()
+                    return False
+                if any(
+                    effect.kind == "move"
+                    and effect.target_library_id
+                    and effect.target_library_id != library_id
+                    for effect in effects
+                ):
+                    db.rollback()
+                    return False
+                store = self._materializer_store()
+                status_deltas: dict[str, dict[str, int]] = {}
+                total_rows = 0
+                move_targets = {
+                    (str(effect.target_path or ""), str(effect.scope or "exact"))
+                    for effect in effects
+                    if effect.kind == "move"
+                    and str(effect.target_library_id or library_id) == library_id
+                }
+                executable_effects: list[LibraryIndexMutationEffect] = []
+                for effect in effects:
+                    if effect.kind in {"reconcile", "move_target"} and (
+                        str(effect.relative_path or ""),
+                        str(effect.scope or "exact"),
+                    ) in move_targets:
+                        continue
+                    estimated_rows = self._estimate_fast_effect_rows(
+                        db,
+                        store,
+                        library_id,
+                        effect,
+                        generation=generation,
+                    )
+                    if estimated_rows is None:
+                        db.rollback()
+                        return False
+                    total_rows += int(estimated_rows)
+                    if total_rows > FAST_PATH_MAX_ROWS:
+                        raise _FastPathLimitExceeded(
+                            f"ledger 行数超过 fast-path 限制: {total_rows} > {FAST_PATH_MAX_ROWS}"
+                        )
+                    executable_effects.append(effect)
+                for effect in executable_effects:
+                    affected_rows = self._apply_fast_effect_in_session(
+                        db,
+                        store,
+                        library_id,
+                        effect,
+                        materialized_seq=expected_seq,
+                        generation=generation,
+                        status_deltas=status_deltas,
+                    )
+                    if affected_rows is None:
+                        raise RuntimeError(
+                            "库存索引 fast-path 预估后 effect 变为不可确定"
+                        )
+                store._flush_status_deltas(db, status_deltas)
+                self._complete_seq_without_recompute(
+                    db,
+                    library_id,
+                    expected_seq,
+                    ledger_id,
+                    epoch,
+                    generation,
+                )
+                db.commit()
+                self._fast_path_last_duration_ms = (time.monotonic() - started) * 1000
+                self._broadcast_libraries({library_id}, "mutation_materialized_fast_path")
+                return True
+            except _FastPathLimitExceeded as exc:
+                db.rollback()
+                self._fast_path_last_fallback_reason = str(exc)
+                return False
+            except Exception as exc:
+                db.rollback()
+                self._fast_path_last_duration_ms = (time.monotonic() - started) * 1000
+                if self._fast_path_timeout(exc):
+                    self._fast_path_timeout_count += 1
+                    self._last_fast_path_pause_until = (
+                        time.monotonic() + FAST_PATH_PAUSE_SECONDS
+                    )
+                    self._fast_path_last_fallback_reason = (
+                        f"single_library_timeout:{type(exc).__name__}"
+                    )
+                    raise _FastPathRetryLater(str(exc)) from exc
+                raise
+            finally:
+                db.close()
+
+    def _operation_has_cross_library_move(self, operation_id: str) -> bool:
+        db = SessionLocal()
+        try:
+            return db.query(LibraryIndexMutationEffect.id).filter(
+                LibraryIndexMutationEffect.operation_id == operation_id,
+                LibraryIndexMutationEffect.kind == "move",
+                LibraryIndexMutationEffect.target_library_id.is_not(None),
+                LibraryIndexMutationEffect.target_library_id
+                != LibraryIndexMutationEffect.library_id,
+            ).first() is not None
+        finally:
+            db.close()
+
+    @staticmethod
+    def _cross_operation_is_deterministic(
+        effects: list[LibraryIndexMutationEffect],
+    ) -> bool:
+        move_targets = Counter(
+            (
+                str(effect.target_library_id or ""),
+                str(effect.target_path or ""),
+                str(effect.scope or "exact"),
+            )
+            for effect in effects
+            if effect.kind == "move"
+            and effect.target_library_id
+            and effect.target_library_id != effect.library_id
+        )
+        target_markers = Counter(
+            (
+                str(effect.library_id or ""),
+                str(effect.relative_path or ""),
+                str(effect.scope or "exact"),
+            )
+            for effect in effects
+            if effect.kind in {"move_target", "reconcile"}
+        )
+        if not move_targets or move_targets != target_markers:
+            return False
+        return all(
+            effect.kind in {"move", "move_target", "reconcile"}
+            for effect in effects
+        )
+
+    def _apply_cross_library_operation(self, operation_id: str) -> Optional[bool]:
+        """当 operation 的所有库存 ledger 都在队头时原子搬迁索引子树。"""
+        if not self._fast_path_enabled:
+            return False
+        if self._should_pause_fast_path():
+            return None
+        started = time.monotonic()
+        with get_resource_budget_service().acquire_sync(
+            "library_index_write",
+            reason="library_index.materialize.cross_library_fast_path",
+        ):
+            db = self._materializer_session()
+            try:
+                db.execute(text(f"SET LOCAL lock_timeout = '{FAST_PATH_LOCK_TIMEOUT_MS}ms'"))
+                db.execute(text(f"SET LOCAL statement_timeout = '{FAST_PATH_STATEMENT_TIMEOUT_MS}ms'"))
+                ledgers = db.query(LibraryIndexMutationLedger).filter(
+                    LibraryIndexMutationLedger.operation_id == operation_id
+                ).order_by(LibraryIndexMutationLedger.library_id.asc()).all()
+                if len(ledgers) < 2:
+                    db.rollback()
+                    return False
+                effects = db.query(LibraryIndexMutationEffect).filter(
+                    LibraryIndexMutationEffect.operation_id == operation_id
+                ).order_by(
+                    LibraryIndexMutationEffect.library_id.asc(),
+                    LibraryIndexMutationEffect.effect_no.asc(),
+                ).all()
+                if (
+                    not effects
+                    or len(effects) > FAST_PATH_MAX_EFFECTS
+                    or not self._cross_operation_is_deterministic(effects)
+                ):
+                    db.rollback()
+                    return False
+
+                library_ids = sorted({str(ledger.library_id) for ledger in ledgers})
+                statuses = db.query(LibraryIndexStatus).filter(
+                    LibraryIndexStatus.library_id.in_(library_ids)
+                ).order_by(LibraryIndexStatus.library_id.asc()).with_for_update().all()
+                if len(statuses) != len(library_ids):
+                    db.rollback()
+                    return False
+                status_by_library = {str(row.library_id): row for row in statuses}
+                ledger_by_library = {str(row.library_id): row for row in ledgers}
+                now = get_local_now()
+                for library_id in library_ids:
+                    status = status_by_library[library_id]
+                    ledger = ledger_by_library[library_id]
+                    if (
+                        status.blocked_seq is not None
+                        or int(status.materialized_seq or 0) + 1 != int(ledger.seq)
+                        or ledger.applied_at is not None
+                        or (ledger.next_retry_at and ledger.next_retry_at > now)
+                    ):
+                        db.rollback()
+                        return None
+                    owner = str(status.materializer_owner or "")
+                    lease_until = status.materializer_lease_until
+                    if owner and owner != self._consumer_name and lease_until and lease_until > now:
+                        db.rollback()
+                        return None
+                    if owner != self._consumer_name or not lease_until or lease_until <= now:
+                        status.materializer_epoch = int(status.materializer_epoch or 0) + 1
+                    status.materializer_owner = self._consumer_name
+                    status.materializer_lease_until = now + timedelta(seconds=LEASE_SECONDS)
+
+                from ..library_manager import get_library_manager
+
+                manager = get_library_manager()
+                store = self._materializer_store()
+                status_deltas: dict[str, dict[str, int]] = {}
+                total_rows = 0
+                prepared_moves: list[dict[str, Any]] = []
+                for effect in effects:
+                    if effect.kind != "move":
+                        continue
+                    source_library_id = str(effect.library_id)
+                    target_library_id = str(effect.target_library_id or "")
+                    source_status = status_by_library[source_library_id]
+                    target_status = status_by_library[target_library_id]
+                    source_ledger = ledger_by_library[source_library_id]
+                    target_ledger = ledger_by_library[target_library_id]
+                    source_library = manager.get_library_definition(source_library_id)
+                    target_library = manager.get_library_definition(target_library_id)
+                    if source_library.type != "local" or target_library.type != "local":
+                        db.rollback()
+                        return False
+                    old_absolute_path = str(
+                        effect.payload.get("old_absolute_path")
+                        or os.path.join(
+                            os.path.abspath(source_library.root_path or ""),
+                            *str(effect.relative_path or "").split("/"),
+                        )
+                    )
+                    new_absolute_path = str(
+                        effect.payload.get("new_absolute_path")
+                        or os.path.join(
+                            os.path.abspath(target_library.root_path or ""),
+                            *str(effect.target_path or "").split("/"),
+                        )
+                    )
+                    source_count = int(
+                        store._subtree_query(
+                            db,
+                            source_library_id,
+                            effect.relative_path,
+                            generation=int(source_status.active_generation or 1),
+                        ).with_entities(func.count(LibraryIndexEntry.id)).scalar()
+                        or 0
+                    )
+                    target_count = int(
+                        store._subtree_query(
+                            db,
+                            target_library_id,
+                            str(effect.target_path or ""),
+                            generation=int(target_status.active_generation or 1),
+                        ).with_entities(func.count(LibraryIndexEntry.id)).scalar()
+                        or 0
+                    )
+                    total_rows += source_count + target_count
+                    if total_rows > FAST_PATH_MAX_ROWS:
+                        raise _FastPathLimitExceeded(
+                            f"跨库 move 行数超过 fast-path 限制: {total_rows}"
+                        )
+                    prepared_moves.append({
+                        "effect": effect,
+                        "source_library_id": source_library_id,
+                        "target_library_id": target_library_id,
+                        "source_generation": int(source_status.active_generation or 1),
+                        "target_generation": int(target_status.active_generation or 1),
+                        "source_seq": int(source_ledger.seq),
+                        "target_seq": int(target_ledger.seq),
+                        "old_absolute_path": old_absolute_path,
+                        "new_absolute_path": new_absolute_path,
+                    })
+                for move in prepared_moves:
+                    effect = move["effect"]
+                    moved = store._move_subtree_between_libraries_in_session(
+                        db,
+                        move["source_library_id"],
+                        move["target_library_id"],
+                        old_relative_path=effect.relative_path,
+                        new_relative_path=str(effect.target_path or ""),
+                        old_absolute_path=move["old_absolute_path"],
+                        new_absolute_path=move["new_absolute_path"],
+                        source_generation=move["source_generation"],
+                        target_generation=move["target_generation"],
+                        source_materialized_seq=move["source_seq"],
+                        target_materialized_seq=move["target_seq"],
+                        status_delta_accumulator=status_deltas,
+                    )
+                    if not moved:
+                        raise _FastPathLimitExceeded(
+                            "跨库 move 未命中旧索引，转入最小路径 reconcile"
+                        )
+                store._flush_status_deltas(db, status_deltas)
+                for library_id in library_ids:
+                    status = status_by_library[library_id]
+                    ledger = ledger_by_library[library_id]
+                    self._complete_seq_without_recompute(
+                        db,
+                        library_id,
+                        int(ledger.seq),
+                        int(ledger.id),
+                        int(status.materializer_epoch or 0),
+                        int(status.active_generation or 1),
+                    )
+                db.commit()
+                self._fast_path_last_duration_ms = (time.monotonic() - started) * 1000
+                self._broadcast_libraries(
+                    set(library_ids),
+                    "mutation_materialized_cross_library_fast_path",
+                )
+                return True
+            except _FastPathLimitExceeded:
+                db.rollback()
+                return False
+            except Exception as exc:
+                db.rollback()
+                self._fast_path_last_duration_ms = (time.monotonic() - started) * 1000
+                if self._fast_path_timeout(exc):
+                    self._fast_path_timeout_count += 1
+                    self._last_fast_path_pause_until = (
+                        time.monotonic() + FAST_PATH_PAUSE_SECONDS
+                    )
+                    self._fast_path_last_fallback_reason = (
+                        f"cross_library_timeout:{type(exc).__name__}"
+                    )
+                    logger.warning(
+                        "[索引追赶] 跨库 fast-path 暂时性数据库超时，等待重试 "
+                        "operation=%s",
+                        operation_id,
+                    )
+                    return None
+                raise
+            finally:
+                db.close()
+
+    def _delete_effect_in_chunks(
+        self,
+        library_id: str,
+        effect: LibraryIndexMutationEffect,
+        *,
+        materialized_seq: int,
+        generation: int,
+        owner: str,
+        epoch: int,
+    ) -> None:
+        while not self._stop_event.is_set():
+            while self._should_pause_fast_path() and not self._stop_event.is_set():
+                self._stop_event.wait(SWEEP_SECONDS)
+            with get_resource_budget_service().acquire_sync(
+                "library_index_write",
+                reason="library_index.materialize_delete_chunk",
+            ):
+                db = self._materializer_session()
+                try:
+                    db.execute(
+                        text(
+                            f"SET LOCAL lock_timeout = '{FAST_PATH_LOCK_TIMEOUT_MS}ms'"
+                        )
+                    )
+                    db.execute(
+                        text(
+                            "SET LOCAL statement_timeout = "
+                            f"'{FAST_PATH_STATEMENT_TIMEOUT_MS}ms'"
+                        )
+                    )
+                    self._validate_chunk_fence(
+                        db,
+                        library_id,
+                        owner=owner,
+                        epoch=epoch,
+                        generation=generation,
+                        materialized_seq=materialized_seq,
+                    )
+                    ids = (
+                        db.query(LibraryIndexEntry.id)
+                        .filter(
+                            LibraryIndexEntry.library_id == library_id,
+                            LibraryIndexEntry.generation == generation,
+                            self._path_filter(
+                                LibraryIndexEntry.relative_path,
+                                effect.relative_path,
+                                effect.scope,
+                            ),
+                        )
+                        .order_by(LibraryIndexEntry.id.asc())
+                        .limit(FAST_PATH_MAX_ROWS)
+                        .all()
+                    )
+                    entry_ids = [int(row[0]) for row in ids]
+                    if not entry_ids:
+                        db.rollback()
+                        return
+                    deleted = (
+                        db.query(LibraryIndexEntry)
+                        .filter(LibraryIndexEntry.id.in_(entry_ids))
+                        .delete(synchronize_session=False)
+                    )
+                    db.commit()
+                    if int(deleted or 0) < FAST_PATH_MAX_ROWS:
+                        return
+                except Exception:
+                    db.rollback()
+                    raise
+                finally:
+                    db.close()
+        raise RuntimeError("库存索引物化在切片删除完成前停止")
+
     def _apply_effect(
         self,
         library_id: str,
@@ -542,36 +1475,14 @@ class LibraryIndexMutationService:
         epoch: int,
     ) -> None:
         if effect.kind in {"delete", "move"}:
-            with get_resource_budget_service().acquire_sync(
-                "library_index_write",
-                reason="library_index.materialize_delete",
-            ):
-                db = SessionLocal()
-                try:
-                    self._validate_chunk_fence(
-                        db,
-                        library_id,
-                        owner=owner,
-                        epoch=epoch,
-                        generation=generation,
-                        materialized_seq=materialized_seq,
-                    )
-                    q = db.query(LibraryIndexEntry).filter(
-                        LibraryIndexEntry.library_id == library_id,
-                        LibraryIndexEntry.generation == generation,
-                    )
-                    q = q.filter(self._path_filter(
-                        LibraryIndexEntry.relative_path,
-                        effect.relative_path,
-                        effect.scope,
-                    ))
-                    q.delete(synchronize_session=False)
-                    db.commit()
-                except Exception:
-                    db.rollback()
-                    raise
-                finally:
-                    db.close()
+            self._delete_effect_in_chunks(
+                library_id,
+                effect,
+                materialized_seq=materialized_seq,
+                generation=generation,
+                owner=owner,
+                epoch=epoch,
+            )
             return
         self._reconcile_path(
             library_id,
@@ -631,52 +1542,7 @@ class LibraryIndexMutationService:
             raise ValueError("reconcile 路径跨库存根") from exc
         if os.path.normcase(common) != os.path.normcase(root):
             raise ValueError("reconcile 路径越出库存根")
-        store = get_snapshot_store()
-        def validate_chunk_fence(db) -> None:
-            self._validate_chunk_fence(
-                db,
-                library_id,
-                owner=owner,
-                epoch=epoch,
-                generation=generation,
-                materialized_seq=materialized_seq,
-            )
-        if not os.path.exists(target):
-            if complete_callback is not None:
-                with store.create_rebuild_writer(library_id) as writer:
-                    writer.finish_subtree_atomic(
-                        generation=generation,
-                        relative_path=relative_path,
-                        scope=scope,
-                        before_commit=complete_callback,
-                    )
-                return True
-            with get_resource_budget_service().acquire_sync(
-                "library_index_write",
-                reason="library_index.materialize_missing_path",
-            ):
-                db = SessionLocal()
-                try:
-                    validate_chunk_fence(db)
-                    q = db.query(LibraryIndexEntry).filter(
-                        LibraryIndexEntry.library_id == library_id,
-                        LibraryIndexEntry.generation == generation,
-                    )
-                    q = q.filter(self._path_filter(
-                        LibraryIndexEntry.relative_path,
-                        relative_path,
-                        scope,
-                    ))
-                    q.delete(synchronize_session=False)
-                    db.commit()
-                except Exception:
-                    db.rollback()
-                    raise
-                finally:
-                    db.close()
-            return False
-        scanner = LocalScanner()
-        buffer = []
+        store = self._materializer_store()
 
         def validate_connection(conn) -> None:
             db = Session(bind=conn, join_transaction_mode="rollback_only")
@@ -686,26 +1552,88 @@ class LibraryIndexMutationService:
             finally:
                 db.close()
 
-        with store.create_rebuild_writer(library_id) as writer:
-            for entry in scanner.scan_subtree(library_id, root, target):
-                entry.materialized_seq = int(materialized_seq)
-                entry.generation = int(generation)
-                buffer.append(entry)
-                if len(buffer) >= DEFAULT_BULK_UPSERT_CHUNK_SIZE:
-                    writer.stage(buffer)
-                    buffer.clear()
-            if buffer:
-                writer.stage(buffer)
-            writer.finish_subtree_atomic(
+        if not os.path.exists(target):
+            store.reconcile_entries(
+                library_id,
+                [],
                 generation=generation,
                 relative_path=relative_path,
                 scope=scope,
                 before_commit=complete_callback or validate_connection,
             )
-        return complete_callback is not None
+            return complete_callback is not None
+
+        scanner = LocalScanner()
+        entries: list[IndexEntry] = []
+        scan_buffer = None
+        spilled = False
+        try:
+            # 5000 条以内留在内存并直接走 UNNEST；超限后才落盘给 staging writer。
+            with get_resource_budget_service().acquire_sync(
+                "disk_io_local",
+                reason="library_index.reconcile_scan",
+            ):
+                for entry in scanner.scan_subtree(library_id, root, target):
+                    entry.materialized_seq = int(materialized_seq)
+                    entry.generation = int(generation)
+                    if not spilled:
+                        entries.append(entry)
+                        if len(entries) > TARGETED_RECONCILE_MAX_ROWS:
+                            scan_buffer = tempfile.TemporaryFile(
+                                prefix="kikoerumanager_index_scan_"
+                            )
+                            for buffered_entry in entries:
+                                pickle.dump(
+                                    buffered_entry,
+                                    scan_buffer,
+                                    protocol=pickle.HIGHEST_PROTOCOL,
+                                )
+                            entries.clear()
+                            spilled = True
+                    else:
+                        pickle.dump(
+                            entry,
+                            scan_buffer,
+                            protocol=pickle.HIGHEST_PROTOCOL,
+                        )
+
+            if not spilled:
+                store.reconcile_entries(
+                    library_id,
+                    entries,
+                    generation=generation,
+                    relative_path=relative_path,
+                    scope=scope,
+                    before_commit=complete_callback or validate_connection,
+                )
+                return complete_callback is not None
+
+            scan_buffer.seek(0)
+            with store.create_rebuild_writer(library_id) as writer:
+                batch: list[IndexEntry] = []
+                while True:
+                    try:
+                        batch.append(pickle.load(scan_buffer))
+                    except EOFError:
+                        break
+                    if len(batch) >= DEFAULT_BULK_UPSERT_CHUNK_SIZE:
+                        writer.stage(batch)
+                        batch.clear()
+                if batch:
+                    writer.stage(batch)
+                writer.finish_subtree_atomic(
+                    generation=generation,
+                    relative_path=relative_path,
+                    scope=scope,
+                    before_commit=complete_callback or validate_connection,
+                )
+            return complete_callback is not None
+        finally:
+            if scan_buffer is not None:
+                scan_buffer.close()
 
     def _claim_next(self, library_id: str) -> Optional[tuple[int, int]]:
-        db = SessionLocal()
+        db = self._materializer_session()
         try:
             status = self._ensure_status(db, library_id, for_update=True)
             if status.blocked_seq is not None:
@@ -740,6 +1668,29 @@ class LibraryIndexMutationService:
         except Exception:
             db.rollback()
             raise
+        finally:
+            db.close()
+
+    def _peek_next_operation_id(self, library_id: str) -> Optional[str]:
+        """无锁读取连续队头，只用于决定是否进入跨库原子 claim。"""
+        db = SessionLocal()
+        try:
+            status = db.query(
+                LibraryIndexStatus.materialized_seq,
+                LibraryIndexStatus.accepted_seq,
+                LibraryIndexStatus.blocked_seq,
+            ).filter(LibraryIndexStatus.library_id == library_id).first()
+            if status is None or status.blocked_seq is not None:
+                return None
+            next_seq = int(status.materialized_seq or 0) + 1
+            if next_seq > int(status.accepted_seq or 0):
+                return None
+            ledger = db.query(LibraryIndexMutationLedger.operation_id).filter(
+                LibraryIndexMutationLedger.library_id == library_id,
+                LibraryIndexMutationLedger.seq == next_seq,
+                LibraryIndexMutationLedger.applied_at.is_(None),
+            ).first()
+            return str(ledger.operation_id) if ledger is not None else None
         finally:
             db.close()
 
@@ -821,11 +1772,18 @@ class LibraryIndexMutationService:
             heartbeat.join(timeout=max(1.0, float(HEARTBEAT_SECONDS) + 1.0))
 
     def _process_next(self, library_id: str) -> bool:
+        operation_id = self._peek_next_operation_id(library_id)
+        if operation_id and self._operation_has_cross_library_move(operation_id):
+            cross_result = self._apply_cross_library_operation(operation_id)
+            if cross_result is True:
+                return True
+            if cross_result is None:
+                return False
         claim = self._claim_next(library_id)
         if claim is None:
             return False
         epoch, generation = claim
-        db = SessionLocal()
+        db = self._materializer_session()
         try:
             status = db.query(LibraryIndexStatus).filter(
                 LibraryIndexStatus.library_id == library_id
@@ -838,9 +1796,22 @@ class LibraryIndexMutationService:
             effects = db.query(LibraryIndexMutationEffect).filter(
                 LibraryIndexMutationEffect.ledger_id == ledger.id
             ).order_by(LibraryIndexMutationEffect.effect_no.asc()).all()
+            ledger_id = int(ledger.id)
         finally:
             db.close()
         try:
+            try:
+                fast_path_applied = self._apply_fast_path_batch(
+                    library_id,
+                    epoch=epoch,
+                    generation=generation,
+                    expected_seq=expected_seq,
+                    ledger_id=ledger_id,
+                )
+            except _FastPathRetryLater:
+                return False
+            if fast_path_applied:
+                return True
             if any(
                 effect.kind == "reconcile"
                 and str(effect.relative_path or "") == ""
@@ -910,6 +1881,21 @@ class LibraryIndexMutationService:
                 )
             return True
         except Exception as exc:
+            if self._fast_path_timeout(exc):
+                self._fast_path_timeout_count += 1
+                self._last_fast_path_pause_until = (
+                    time.monotonic() + FAST_PATH_PAUSE_SECONDS
+                )
+                self._fast_path_last_fallback_reason = (
+                    f"slow_path_timeout:{type(exc).__name__}"
+                )
+                logger.warning(
+                    "[索引追赶] 慢通道暂时性数据库超时，保留 ledger 等待重试 "
+                    "library=%s seq=%s",
+                    library_id,
+                    expected_seq,
+                )
+                return False
             logger.exception("[索引追赶] 物化失败 library=%s seq=%s", library_id, expected_seq)
             self._record_failure(library_id, expected_seq, ledger.id, epoch, exc)
             return False
@@ -1060,7 +2046,7 @@ class LibraryIndexMutationService:
         generation: int,
         effects: list[LibraryIndexMutationEffect],
     ) -> None:
-        db = SessionLocal()
+        db = self._materializer_session()
         try:
             self._complete_seq_in_session(
                 db,
@@ -1080,7 +2066,7 @@ class LibraryIndexMutationService:
         self._broadcast_libraries({library_id}, "mutation_materialized")
 
     def _record_failure(self, library_id: str, seq: int, ledger_id: int, epoch: int, exc: Exception) -> None:
-        db = SessionLocal()
+        db = self._materializer_session()
         try:
             status = db.query(LibraryIndexStatus).filter(
                 LibraryIndexStatus.library_id == library_id
@@ -1152,7 +2138,7 @@ class LibraryIndexMutationService:
         return result
 
     def _pending_library_ids(self) -> list[str]:
-        db = SessionLocal()
+        db = self._materializer_session()
         try:
             rows = db.query(LibraryIndexStatus.library_id).filter(
                 LibraryIndexStatus.accepted_seq > LibraryIndexStatus.materialized_seq,
@@ -1165,7 +2151,7 @@ class LibraryIndexMutationService:
     def cleanup_applied_ledger(self, *, chunk_size: int = LEDGER_CLEANUP_CHUNK_SIZE) -> int:
         """清理 7 天前已应用且不再被任何 building generation 需要的 ledger。"""
         cutoff = get_local_now() - timedelta(days=LEDGER_RETENTION_DAYS)
-        db = SessionLocal()
+        db = self._materializer_session()
         try:
             still_needed = exists().where(
                 LibraryIndexGeneration.library_id == LibraryIndexMutationLedger.library_id,
@@ -1296,7 +2282,7 @@ class LibraryIndexMutationService:
         failed_operation_ids: set[str],
         active_prepared_operation_ids: set[str],
     ) -> list[dict[str, Any]]:
-        db = SessionLocal()
+        db = self._materializer_session()
         try:
             prepared_cutoff = recovery_now - timedelta(seconds=PREPARED_RECOVERY_STALE_SECONDS)
             reconcile_condition = LibraryIndexMutationOperation.state == "reconcile_required"
@@ -1402,6 +2388,18 @@ class LibraryIndexMutationService:
                 return
             self._stop_event.clear()
             self._recovery_event.clear()
+            self._publisher_thread = threading.Thread(
+                target=self._publisher_run,
+                name="library-index-redis-publisher",
+                daemon=True,
+            )
+            self._publisher_thread.start()
+            self._listener_thread = threading.Thread(
+                target=self._listener_run,
+                name="library-index-redis-listener",
+                daemon=True,
+            )
+            self._listener_thread.start()
             self._thread = threading.Thread(
                 target=self._run,
                 name="library-index-materializer",
@@ -1412,11 +2410,23 @@ class LibraryIndexMutationService:
     def stop(self, timeout: float = 5.0) -> None:
         with self._lifecycle_lock:
             thread = self._thread
+            publisher_thread = self._publisher_thread
+            listener_thread = self._listener_thread
             self._stop_event.set()
             self._wake_event.set()
             self._recovery_event.set()
+        join_timeout = max(0.1, float(timeout or 5.0))
         if thread and thread.is_alive():
-            thread.join(timeout=max(0.1, float(timeout or 5.0)))
+            thread.join(timeout=join_timeout)
+        if listener_thread and listener_thread.is_alive():
+            listener_thread.join(timeout=join_timeout)
+        if publisher_thread and publisher_thread.is_alive():
+            publisher_thread.join(timeout=join_timeout)
+        if (
+            self._materializer_session_factory is None
+            and SessionLocal is _DEFAULT_SESSION_FACTORY
+        ):
+            dispose_materializer_engine()
 
     def _run(self) -> None:
         self._recovery_event.clear()
@@ -1440,32 +2450,28 @@ class LibraryIndexMutationService:
                 except Exception:
                     logger.exception("[索引追赶] ledger 清理失败")
                 next_cleanup_at = time.monotonic() + LEDGER_CLEANUP_SWEEP_SECONDS
-            redis = get_redis_service()
-            hints: list[tuple[str, dict[str, Any]]] = []
-            try:
-                self._reclaim_cursor, hints = redis.read_library_index_mutation_hints_sync(
-                    self._consumer_name,
-                    count=100,
-                    block_ms=250,
-                    reclaim_idle_ms=60000,
-                    reclaim_cursor=self._reclaim_cursor,
-                )
-            except Exception:
-                logger.debug("[索引追赶] Redis hint 读取失败", exc_info=True)
             progressed = False
-            for library_id in self._pending_library_ids():
-                while not self._stop_event.is_set() and self._process_next(library_id):
-                    progressed = True
-            if hints:
-                try:
-                    watermarks, retry_seqs = self._hint_ack_state(hints)
-                    redis.ack_durable_library_index_mutation_hints_sync(
-                        hints,
-                        materialized_seq_by_library=watermarks,
-                        retry_persisted_seqs=retry_seqs,
-                    )
-                except Exception:
-                    logger.debug("[索引追赶] Redis hint ACK 判定失败", exc_info=True)
+            if not self._should_pause_fast_path():
+                for library_id in self._pending_library_ids():
+                    if self._stop_event.is_set():
+                        break
+                    try:
+                        item_progressed = self._process_next(library_id)
+                    except Exception:
+                        self._last_fast_path_pause_until = (
+                            time.monotonic() + FAST_PATH_PAUSE_SECONDS
+                        )
+                        logger.exception(
+                            "[索引追赶] 单库存物化异常，等待 safety sweep 重试 "
+                            "library=%s",
+                            library_id,
+                        )
+                        item_progressed = False
+                    if item_progressed:
+                        progressed = True
+                        # 每轮只做一个 ledger，重新评估主池和业务写等待，禁止无限 drain。
+                        break
+            self._ack_listener_hints()
             if not progressed:
                 self._wake_event.wait(SWEEP_SECONDS)
                 self._wake_event.clear()
@@ -1516,8 +2522,25 @@ class LibraryIndexMutationService:
             ).group_by(LibraryIndexPendingMask.library_id).all())
             return {
                 "worker_alive": bool(self._thread and self._thread.is_alive()),
+                "publisher_alive": bool(
+                    self._publisher_thread and self._publisher_thread.is_alive()
+                ),
+                "listener_alive": bool(
+                    self._listener_thread and self._listener_thread.is_alive()
+                ),
+                "listener_hint_batches": int(self._listener_hints_queue.qsize()),
                 "consumer": self._consumer_name,
                 "replay_count": self._replay_count,
+                "fast_path": {
+                    "enabled": bool(self._fast_path_enabled),
+                    "max_effects": FAST_PATH_MAX_EFFECTS,
+                    "max_rows": FAST_PATH_MAX_ROWS,
+                    "last_duration_ms": round(self._fast_path_last_duration_ms, 3),
+                    "timeout_count": int(self._fast_path_timeout_count),
+                    "last_fallback_reason": self._fast_path_last_fallback_reason,
+                    "paused": time.monotonic() < self._last_fast_path_pause_until,
+                },
+                "materializer_pool": self._materializer_pool_diagnostics(),
                 "pending_libraries": [row.to_dict() for row in pending],
                 "oldest_prepared_at": oldest_prepared.prepared_at.isoformat() if oldest_prepared else None,
                 "oldest_ledger_by_library": oldest_ledger_by_library,
