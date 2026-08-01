@@ -4446,6 +4446,18 @@ async def update_configuration(request: Request):
                 logger.error(f"[SECURITY_GATE] security_gate 配置验证失败: {e}")
                 raise HTTPException(status_code=400, detail=f"安全门禁配置无效: {e}")
 
+        storage_payload = config_data.get("storage")
+        if isinstance(storage_payload, dict) and isinstance(storage_payload.get("libraries"), list):
+            move_targets = [
+                lib for lib in storage_payload["libraries"]
+                if isinstance(lib, dict) and lib.get("is_move_target")
+            ]
+            if len(move_targets) > 1:
+                raise HTTPException(status_code=400, detail="一键移库目标只能开启一个库存")
+            for lib in move_targets:
+                if (lib.get("type") or "local").lower() != "local":
+                    raise HTTPException(status_code=400, detail="只有本地库存可以设置为一键移库目标")
+
         result = save_config(config_data)
         if _should_log_config_save_info(config_keys):
             logger.info(
@@ -13410,6 +13422,23 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
         raise HTTPException(status_code=500, detail=f"批量重命名失败：{str(e)}")
 
 
+def _find_move_target_library(config):
+    """返回当前开启一键移库目标开关的本地库存，未配置或多选时抛出错误"""
+    targets = [
+        lib for lib in config.storage.libraries
+        if getattr(lib, "is_move_target", False) and lib.enabled and str(lib.type or "local").lower() == "local"
+    ]
+    if len(targets) > 1:
+        raise HTTPException(status_code=400, detail="一键移库目标只能开启一个库存")
+    if not targets:
+        raise HTTPException(status_code=400, detail="未配置一键移库目标库存，请先在库存工作台开启开关")
+    target = targets[0]
+    real_path = (target.path or "").strip()
+    if not real_path:
+        raise HTTPException(status_code=400, detail=f"一键移库目标库存「{target.name}」未配置路径")
+    return target, real_path
+
+
 def _validate_real_library_config(config):
     """校验移库配置，返回 (暂存库真实路径, 真库存真实路径)
 
@@ -13417,7 +13446,7 @@ def _validate_real_library_config(config):
     - 真库存必须已配置
     - 两库路径不能相同，也不能互为子目录（防止把文件移进自身内部）
     """
-    real_path = (config.storage.real_library_path or "").strip()
+    target, real_path = _find_move_target_library(config)
     if not real_path:
         raise HTTPException(status_code=400, detail="未配置真库存路径，请先在设置页配置")
 
@@ -13435,7 +13464,7 @@ def _validate_real_library_config(config):
     except ValueError:
         pass  # 不同盘符/驱动器，无包含关系，安全
 
-    return lib_real, real_real
+    return lib_real, real_real, target
 
 
 def _is_within_library(path: str, lib_real: str) -> bool:
@@ -13452,18 +13481,29 @@ async def get_real_library_status():
     """获取真库存（移库目标）配置状态"""
     try:
         config = get_config()
-        real_path = (config.storage.real_library_path or "").strip()
+        try:
+            target, real_path = _find_move_target_library(config)
+        except HTTPException as e:
+            return {
+                "configured": False,
+                "path": "",
+                "library_id": "",
+                "library_name": "",
+                "exists": False,
+                "error": e.detail,
+            }
         status = {
-            "configured": bool(real_path),
+            "configured": True,
             "path": real_path,
-            "exists": os.path.isdir(real_path) if real_path else False,
+            "library_id": target.id,
+            "library_name": target.name,
+            "exists": os.path.isdir(real_path),
             "error": None,
         }
-        if real_path:
-            try:
-                _validate_real_library_config(config)
-            except HTTPException as e:
-                status["error"] = e.detail
+        try:
+            _validate_real_library_config(config)
+        except HTTPException as e:
+            status["error"] = e.detail
         return status
     except Exception as e:
         logger.error(f"获取真库存状态失败: {e}", exc_info=True)
@@ -13491,8 +13531,8 @@ async def move_to_real_library(request: Request):
 
         config = get_config()
         library_path = config.storage.library_path
-        lib_real, real_real = _validate_real_library_config(config)
-        real_path = config.storage.real_library_path.strip()
+        lib_real, real_real, target = _validate_real_library_config(config)
+        real_path = (target.path or "").strip()
 
         results = {"moved": [], "skipped": [], "failed": []}
 

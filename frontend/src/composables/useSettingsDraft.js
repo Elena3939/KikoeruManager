@@ -50,6 +50,7 @@ export function createDefaultLibrary(type = 'local', index = 1) {
     browse_path: '',
     enabled: true,
     writable: true,
+    is_move_target: false,
     description: '',
     tags: [],
     synology_profile_id: '',

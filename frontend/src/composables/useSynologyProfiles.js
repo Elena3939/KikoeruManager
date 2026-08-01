@@ -297,6 +297,11 @@ export function useSynologyProfiles(config) {
       ...current,
       [key]: value
     }, index + 1)
+    if (key === 'is_move_target' && value) {
+      config.value.storage.libraries.forEach((item, i) => {
+        if (i !== index) item.is_move_target = false
+      })
+    }
     config.value.storage.libraries.splice(index, 1, next)
   }
 

@@ -296,7 +296,7 @@
               type="button"
               class="lib-btn lib-btn-icon-tinted lib-icon-real-move"
               :disabled="!realLibUsable || !files.length || moveAllLoading"
-              :title="realLibStatus.error ? ('真库存配置异常: ' + realLibStatus.error) : (realLibUsable ? '将当前列表项目移动到真库存（目标已存在则跳过，绝不覆盖）' : '请先在设置页配置真库存文件夹路径')"
+              :title="realLibStatus.error ? ('一键移库目标配置异常: ' + realLibStatus.error) : (realLibUsable ? '将当前列表项目移动到目标库存（目标已存在则跳过，绝不覆盖）' : '请先在库存工作台开启一键移库目标库存')"
               @click="moveAllItems"
             >
               <IconPackageOpen :size="14" :stroke-width="2.2" :class="{ 'animate-pulse': moveAllLoading }" />
@@ -18897,7 +18897,7 @@ async function moveItem (row) {
     await showSystemConfirm(
       {
         title: '移库确认',
-        message: `确定将此项目移动到真库存吗？\n\n源: ${row.name}\n目标: ${realLibStatus.value.path}\n\n目标已存在时会跳过，绝不覆盖。`,
+        message: `确定将此项目移动到目标库存吗？\n\n源: ${row.name}\n目标: ${realLibStatus.value.path}\n\n目标已存在时会跳过，绝不覆盖。`,
         tone: 'info',
         confirmText: '确定移库',
         cancelText: '取消'
@@ -18951,7 +18951,7 @@ async function moveAllItems () {
     await showSystemConfirm(
       {
         title: '全部移库确认',
-        message: `将全部 ${items.length} 个项目移动到真库存：\n\n` +
+        message: `将全部 ${items.length} 个项目移动到目标库存：\n\n` +
           `可移动: ${movable.length} 项\n` +
           `跳过（目标已存在）: ${skipped.length} 项\n` +
           `无法移动: ${failedPre.length} 项\n\n` +

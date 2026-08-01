@@ -98,7 +98,7 @@
           @click="emit('action', 'real_move')"
         >
           <PackageOpen :size="14" :stroke-width="2.2" class="menu-item-icon text-amber-600" />
-          <span>移库到真库存</span>
+          <span>移库到目标库存</span>
         </button>
 
         <button

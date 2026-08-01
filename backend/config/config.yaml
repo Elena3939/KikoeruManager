@@ -2,7 +2,6 @@ storage:
   input_path: D:\VJC\ziliao\新建文件夹\待处理
   temp_path: D:\VJC\ziliao\新建文件夹\temp
   library_path: D:\VJC\ziliao\新建文件夹\asmr
-  real_library_path: ""
   processed_archives_path: D:\VJC\ziliao\新建文件夹\新建文件夹
   existing_folders_path: E:\0\临时\asmr\已存在
   asmr_subtitle_path: E:\0\临时\asmr\字幕

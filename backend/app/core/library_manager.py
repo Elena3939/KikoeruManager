@@ -479,6 +479,7 @@ class LibraryDefinition:
     browse_path: str = ""
     enabled: bool = True
     writable: bool = True
+    is_move_target: bool = False
     description: str = ""
     tags: list[str] = field(default_factory=list)
     synology_profile_id: str = ""
@@ -542,6 +543,7 @@ def load_library_config() -> dict[str, Any]:
                 browse_path=item.get("browse_path") or "",
                 enabled=item.get("enabled", True),
                 writable=item.get("writable", True),
+                is_move_target=item.get("is_move_target", False),
                 description=item.get("description") or "",
                 tags=item.get("tags") or [],
                 synology_profile_id=synology_profile_id,
@@ -2082,6 +2084,7 @@ class LibraryManager:
                     "web_url": build_synology_web_url(library.synology.base_url, library.root_path) if library.type == "synology_filestation" and library.synology else None,
                     "description": library.description,
                     "writable": library.writable,
+                    "is_move_target": library.is_move_target,
                     "health": health,
                 }
             )
@@ -2136,6 +2139,7 @@ class LibraryManager:
             browse_path=payload.get("browse_path") or "",
             enabled=payload.get("enabled", True),
             writable=payload.get("writable", True),
+            is_move_target=payload.get("is_move_target", False),
             description=payload.get("description") or "",
             tags=payload.get("tags") or [],
             synology_profile_id=synology_profile_id,

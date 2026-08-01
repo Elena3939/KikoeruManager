@@ -22,6 +22,7 @@
           <span>{{ library.id }}</span>
           <span>{{ library.enabled ? '启用中' : '已停用' }}</span>
           <span v-if="library.isRemote">{{ library.profileName || '未绑定模板' }}</span>
+          <span v-if="library.is_move_target" class="library-target-pill">一键移库目标</span>
         </div>
       </button>
 
@@ -126,6 +127,14 @@
             subtitle="远程上传、落盘和分类会使用这个权限。"
             @update:model-value="emitLibraryFlag(selectedLibrary.id, 'writable', $event)"
           />
+          <template v-if="selectedLibrary.type !== 'synology_filestation'">
+            <SettingsToggleRow
+              :model-value="Boolean(selectedLibrary.is_move_target)"
+              title="一键移库目标库存"
+              subtitle="开启后，一键移库会把暂存库内容移动到该库存；全库只能开启一个。"
+              @update:model-value="emitLibraryFlag(selectedLibrary.id, 'is_move_target', $event)"
+            />
+          </template>
         </div>
       </template>
 
@@ -297,6 +306,19 @@ function emitLibraryFlag(libraryId, key, value) {
   border-color: var(--set-tag-remote-border);
   background: var(--set-tag-remote-bg);
   color: var(--set-tag-remote-text);
+}
+
+.library-target-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(245, 158, 11, 0.34);
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .library-meta,

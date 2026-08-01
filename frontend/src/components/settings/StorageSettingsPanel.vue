@@ -126,7 +126,6 @@ const pathCards = [
   { key: 'input_path', label: '待处理目录', placeholder: '例如 D:\\KikoeruManager\\Input', tip: '自动扫描和手动导入默认从这里开始。' },
   { key: 'temp_path', label: '临时目录', placeholder: '例如 D:\\KikoeruManager\\Temp', tip: '解压、下载和中转文件优先写到这里。' },
   { key: 'library_path', label: '主库存目录（旧版兼容）', placeholder: '例如 D:\\KikoeruManager\\Library', tip: '⚠ 仅在"库存工作台"中没有本地库存条目时才会生效。若已在下方库存工作台配置了本地库存，请直接在那里修改路径，此字段不会覆盖它。' },
-  { key: 'real_library_path', label: '真库存文件夹路径（一键移库目标）', placeholder: '例如 D:\\KikoeruManager\\RealLibrary', tip: '一键移库的目标目录；留空表示未配置。移库只做移动，目标已存在时跳过，绝不覆盖。' },
   { key: 'processed_archives_path', label: '已处理压缩包目录', placeholder: '例如 D:\\KikoeruManager\\Processed', tip: '处理完成后的压缩包归档目录。' },
   { key: 'existing_folders_path', label: '已有文件夹目录', placeholder: '例如 D:\\KikoeruManager\\Existing', tip: '处理非软件解压来源的目录时优先使用。' },
   { key: 'asmr_subtitle_path', label: 'ASMR 字幕目录', placeholder: '例如 D:\\KikoeruManager\\Subtitles', tip: 'ASMR 同步链路默认使用的字幕目录。' }
