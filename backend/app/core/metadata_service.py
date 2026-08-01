@@ -294,6 +294,13 @@ class MetadataService:
                 logger.warning("[%s] DLsite API 直连链路失败: %s", rjcode, exc)
 
         if metadata is None:
+            try:
+                metadata = await self._fetch_from_voicehub(rjcode)
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning("[%s] voicehub.top 备用链路失败: %s", rjcode, exc)
+
+        if metadata is None:
             logger.warning("[%s] 所有元数据链路都失败，降级为最小元数据", rjcode)
             _record_dlsite_metadata_failure(last_error or "metadata_not_found")
             metadata = self._build_minimal_metadata(rjcode, path)
@@ -935,6 +942,147 @@ class MetadataService:
             raise Exception(f"获取元数据失败: {e}")
 
     
+    async def _fetch_from_voicehub(self, rjcode: str) -> Optional[WorkMetadata]:
+        """从 voicehub.top API 获取元数据（DLsite 的备用源）"""
+        if not self.config.metadata.voicehub_enabled:
+            logger.info(f"[{rjcode}] voicehub.top 已禁用，跳过")
+            return None
+
+        # voicehub.top 可能接受带 RJ 前缀或不带前缀的编号
+        api_urls = [
+            f"https://www.voicehub.top/api/work/{rjcode}",
+            f"https://www.voicehub.top/api/works/{rjcode}",
+        ]
+
+        for url in api_urls:
+            try:
+                logger.info(f"[{rjcode}] 尝试 voicehub.top 备用源: {url}")
+                response = await asyncio.to_thread(
+                    self.session.get,
+                    url,
+                    timeout=(self.config.metadata.connect_timeout, self.config.metadata.read_timeout),
+                )
+                if response.status_code == 200:
+                    data = await asyncio.to_thread(response.json)
+                    # voicehub 的响应可能直接是作品对象，也可能是 {data: {...}} 包裹
+                    if isinstance(data, dict):
+                        # 有些 API 将数据包裹在 data/work 字段中
+                        work = data.get('data') or data.get('work') or data
+
+                        title = work.get('work_name') or work.get('title') or ''
+                        if not title:
+                            logger.warning(f"[{rjcode}] voicehub.top 返回数据无标题，跳过")
+                            continue
+
+                        metadata = WorkMetadata()
+                        metadata.metadata_source = "voicehub"
+                        metadata.metadata_evidence_source = "voicehub"
+                        metadata.rjcode = work.get('workno') or work.get('rjcode') or rjcode
+                        metadata.work_name = title
+
+                        # 社团名：支持 maker_name / circle.name / circle_name
+                        circle = work.get('circle', {})
+                        if isinstance(circle, dict):
+                            metadata.maker_name = circle.get('name', '')
+                            metadata.maker_id = str(circle.get('id', ''))
+                        else:
+                            metadata.maker_name = work.get('maker_name', '')
+                            metadata.maker_id = str(work.get('maker_id', ''))
+
+                        # 发售日：支持 release / release_date / regist_date
+                        release = work.get('release') or work.get('release_date') or work.get('regist_date', '')
+                        if isinstance(release, str):
+                            metadata.release_date = release[:10]
+
+                        # 声优：支持 vas[] / cvs[] / voice_by[]
+                        vas = work.get('vas') or work.get('cvs') or work.get('voice_by') or []
+                        for va in vas:
+                            if isinstance(va, dict):
+                                metadata.cvs.append(va.get('name', ''))
+                            elif isinstance(va, str):
+                                metadata.cvs.append(va)
+
+                        # 标签：支持 tags[] / genres[]
+                        tags = work.get('tags') or work.get('genres') or []
+                        for tag in tags:
+                            if isinstance(tag, dict):
+                                tag_name = tag.get('name', '')
+                                if tag_name:
+                                    metadata.tags.append(tag_name)
+                            elif isinstance(tag, str):
+                                metadata.tags.append(tag)
+
+                        # 年龄分级：支持 age_category (数字/字符串)
+                        age_cat = work.get('age_category') or work.get('age_category_string', '')
+                        if isinstance(age_cat, int):
+                            if age_cat == 1:
+                                metadata.age_category = 'GEN'
+                            elif age_cat == 2:
+                                metadata.age_category = 'R15'
+                            else:
+                                metadata.age_category = 'ADL'
+                        elif isinstance(age_cat, str):
+                            age_cat_lower = age_cat.lower()
+                            if 'adult' in age_cat_lower or age_cat_lower == '3':
+                                metadata.age_category = 'ADL'
+                            elif 'r15' in age_cat_lower or age_cat_lower == '2':
+                                metadata.age_category = 'R15'
+                            else:
+                                metadata.age_category = 'GEN'
+
+                        # 封面
+                        metadata.cover_url = work.get('cover_url') or work.get('mainCoverUrl') or ''
+                        if metadata.cover_url and metadata.cover_url.startswith('//'):
+                            metadata.cover_url = 'https:' + metadata.cover_url
+
+                        logger.info(f"[{rjcode}] voicehub.top 元数据获取成功: {metadata.work_name}")
+                        return metadata
+
+                    elif isinstance(data, list) and len(data) > 0:
+                        # 可能是搜索结果的数组格式
+                        work = data[0]
+                        title = work.get('work_name') or work.get('title') or ''
+                        if title:
+                            metadata = WorkMetadata()
+                            metadata.metadata_source = "voicehub"
+                            metadata.metadata_evidence_source = "voicehub"
+                            metadata.rjcode = work.get('workno') or work.get('rjcode') or rjcode
+                            metadata.work_name = title
+                            circle = work.get('circle', {})
+                            if isinstance(circle, dict):
+                                metadata.maker_name = circle.get('name', '')
+                            else:
+                                metadata.maker_name = work.get('maker_name', '')
+                            release = work.get('release') or work.get('release_date', '')
+                            if isinstance(release, str):
+                                metadata.release_date = release[:10]
+                            for va in work.get('vas', []):
+                                if isinstance(va, dict):
+                                    metadata.cvs.append(va.get('name', ''))
+                            for tag in work.get('tags', []):
+                                if isinstance(tag, dict):
+                                    metadata.tags.append(tag.get('name', ''))
+                                elif isinstance(tag, str):
+                                    metadata.tags.append(tag)
+                            metadata.cover_url = work.get('cover_url') or work.get('mainCoverUrl', '')
+                            if metadata.cover_url and metadata.cover_url.startswith('//'):
+                                metadata.cover_url = 'https:' + metadata.cover_url
+                            logger.info(f"[{rjcode}] voicehub.top 元数据获取成功(数组格式): {metadata.work_name}")
+                            return metadata
+
+                elif response.status_code == 404:
+                    logger.info(f"[{rjcode}] voicehub.top 未找到作品 (404)，尝试下一个 URL")
+                    continue
+                else:
+                    logger.warning(f"[{rjcode}] voicehub.top 返回 HTTP {response.status_code}")
+                    continue
+
+            except Exception as e:
+                logger.warning(f"[{rjcode}] voicehub.top 请求失败 ({url}): {e}")
+
+        logger.warning(f"[{rjcode}] voicehub.top 所有 URL 均未找到作品")
+        return None
+
     async def _fetch_translated_title(self, rjcode: str, lang: str, validate_chinese: bool = True) -> Optional[str]:
         """获取指定语言的翻译标题。"""
         await asyncio.sleep(self.config.metadata.sleep_interval)

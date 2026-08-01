@@ -393,6 +393,17 @@
                 <IconShield :size="13" :stroke-width="2.2" class="vault-dialog-note-icon is-violet" />
                 <span>每行一个密码；此处导入的都是通用密码（不绑定 RJ / 文件名），适合添加常见公共解压密码。</span>
               </p>
+              <div class="vault-import-clipboard-row">
+                <button
+                  type="button"
+                  class="vault-btn vault-btn-ghost"
+                  :disabled="clipboardLoading"
+                  @click="importFromClipboard"
+                >
+                  {{ clipboardLoading ? '读取中…' : '从剪贴板导入' }}
+                </button>
+                <span class="vault-import-clipboard-hint">自动读取剪贴板内容，已有内容时追加</span>
+              </div>
               <textarea
                 v-model="importText"
                 class="vault-import-textarea"
@@ -478,6 +489,7 @@ const showCleanupDialog = ref(false)
 const isEditing = ref(false)
 const submitting = ref(false)
 const importing = ref(false)
+const clipboardLoading = ref(false)
 const cleanupLoading = ref(false)
 const importText = ref('')
 const formPasswordError = ref('')
@@ -632,6 +644,52 @@ async function handleImport() {
     console.error('导入失败:', error)
     ElMessage.error('导入失败: ' + (error.response?.data?.detail || error.message))
   } finally { importing.value = false }
+}
+
+async function importFromClipboard() {
+  clipboardLoading.value = true
+  const applyText = (text) => {
+    const trimmed = (text || '').trim()
+    if (!trimmed) {
+      ElMessage.warning('剪贴板为空或无有效内容')
+      return
+    }
+    if (importText.value.trim()) {
+      importText.value = importText.value.trim() + '\n' + trimmed
+    } else {
+      importText.value = trimmed
+    }
+    ElMessage.success(`已从剪贴板读取 ${importLineCount.value} 个密码`)
+  }
+  try {
+    // 优先使用现代 Clipboard API（HTTPS）
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      const text = await navigator.clipboard.readText()
+      applyText(text)
+      return
+    }
+    // HTTP 环境降级：隐藏 textarea + execCommand
+    const textarea = document.createElement('textarea')
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    textarea.style.top = '0'
+    document.body.appendChild(textarea)
+    textarea.focus()
+    document.execCommand('paste')
+    await new Promise(resolve => setTimeout(resolve, 100))
+    const text = textarea.value
+    document.body.removeChild(textarea)
+    if (text && text.trim()) {
+      applyText(text)
+    } else {
+      ElMessage.warning('请使用 Ctrl+V 粘贴到文本框，或检查浏览器是否允许访问剪贴板')
+    }
+  } catch (error) {
+    console.error('读取剪贴板失败:', error)
+    ElMessage.warning('读取剪贴板失败，请使用 Ctrl+V 手动粘贴')
+  } finally {
+    clipboardLoading.value = false
+  }
 }
 
 function resetForm() {
@@ -1639,6 +1697,18 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
   margin-top: 8px;
   color: #64748b;
   font-size: 12px;
+}
+
+.vault-import-clipboard-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.vault-import-clipboard-hint {
+  font-size: 12px;
+  color: #94a3b8;
 }
 
 .vault-import-count b {
