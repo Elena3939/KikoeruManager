@@ -190,11 +190,11 @@ const props = defineProps({
 const autoProcessItems = [
   { key: 'check_duplicate', label: '预检重复' },
   { key: 'import_linked_translation_subtitles', label: '字幕补配预检' },
-  { key: 'sync_subtitle', label: '同步字幕' },
   { key: 'extract', label: '解压文件' },
   { key: 'fetch_metadata', label: '获取元数据' },
   { key: 'rename', label: '重命名' },
   { key: 'filter', label: '文件过滤' },
+  { key: 'sync_subtitle', label: '同步字幕' },
   { key: 'classify', label: '智能分类' },
   { key: 'archive', label: '归档压缩包' }
 ]
