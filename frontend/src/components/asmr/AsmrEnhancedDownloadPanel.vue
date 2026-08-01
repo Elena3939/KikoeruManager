@@ -49,6 +49,10 @@
             <div class="asmr-batch-toolbar-actions">
               <button class="asmr-mini-btn" type="button" @click="$emit('select-all')">全选</button>
               <button class="asmr-mini-btn" type="button" @click="$emit('clear-selection')">清空</button>
+              <label class="asmr-default-filter-toggle" title="开启后，下载预览会默认勾选经过过滤规则的文件">
+                <input type="checkbox" :checked="defaultFilterEnabled" @change="$emit('update:default-filter-enabled', $event.target.checked)" />
+                <span>是否开启默认过滤</span>
+              </label>
               <button
                 class="asmr-mini-btn is-primary"
                 type="button"
@@ -133,6 +137,7 @@ const props = defineProps({
   planning: { type: Boolean, default: false },
   starting: { type: Boolean, default: false },
   hasWorkbenchTasks: { type: Boolean, default: false },
+  defaultFilterEnabled: { type: Boolean, default: false },
   getResourceTypeLabel: { type: Function, required: true }
 })
 
@@ -143,7 +148,8 @@ defineEmits([
   'select-all',
   'clear-selection',
   'download-selected',
-  'toggle-plan'
+  'toggle-plan',
+  'update:default-filter-enabled'
 ])
 
 const resourceTypeLabelMap = {
@@ -353,6 +359,31 @@ function hiddenResourceGroupTitle(plan) {
   font-size: 12px;
   font-weight: 700;
   color: var(--asmr-text-strong);
+}
+.asmr-default-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--asmr-border);
+  border-radius: 10px;
+  background: var(--asmr-surface-soft);
+  color: var(--asmr-text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.asmr-default-filter-toggle:hover {
+  border-color: rgba(53, 120, 229, 0.34);
+  color: var(--asmr-primary-text);
+  transform: translateY(-1px);
+}
+.asmr-default-filter-toggle input {
+  accent-color: #3578e5;
+  cursor: pointer;
 }
 .lib-chip {
   display: inline-flex;
@@ -626,7 +657,8 @@ function hiddenResourceGroupTitle(plan) {
     justify-content: center;
     width: 100%;
   }
-  .asmr-batch-toolbar-actions > .asmr-mini-btn:nth-child(3) {
+  .asmr-batch-toolbar-actions > .asmr-default-filter-toggle,
+  .asmr-batch-toolbar-actions > .asmr-mini-btn:last-child {
     grid-column: 1 / -1;
   }
   .enhanced-plan-grid {

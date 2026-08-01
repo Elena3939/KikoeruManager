@@ -412,7 +412,8 @@ const props = defineProps({
   circleName: { type: String, default: '' },
   enableDirectMode: { type: Boolean, default: false },
   existingPaths: { type: Object, default: () => ({}) },
-  directLoading: { type: Boolean, default: false }
+  directLoading: { type: Boolean, default: false },
+  defaultFilterEnabled: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['submit', 'update:visible'])
@@ -776,13 +777,25 @@ watch(() => props.plans, (plans) => {
   filterApplied.value = false
   planStates.value = Array.isArray(plans) ? plans.map(buildPlanState) : []
   // Preload filter rules
+  if (props.defaultFilterEnabled) {
+    filterApplied.value = true
+  }
   if (!cachedFilterRules.value) {
     configApi.get().then(config => {
       const rules = config?.filter?.rules
       if (Array.isArray(rules)) cachedFilterRules.value = rules.filter(r => r.enabled !== false && r.action === 'exclude')
+      if (props.defaultFilterEnabled) applyFilterToSelection(true)
     }).catch(() => {})
+  } else if (props.defaultFilterEnabled) {
+    applyFilterToSelection(true)
   }
 }, { deep: true, immediate: true })
+
+watch(() => props.defaultFilterEnabled, (enabled) => {
+  if (!planStates.value.length) return
+  filterApplied.value = enabled
+  applyFilterToSelection(enabled)
+})
 
 function emitSubmit() {
   if (!isDirectMode.value && !String(props.settings?.targetLibraryId || '').trim()) {
@@ -1087,41 +1100,43 @@ function resetRecommended() {
   })
 }
 
-function toggleFilterSelection() {
-  filterApplied.value = !filterApplied.value
-  const applyFilter = filterApplied.value
-  let compiledRules = null
-  if (applyFilter) {
-    compiledRules = (cachedFilterRules.value || []).map(rule => {
-      try { return { regex: new RegExp(rule.pattern, 'i'), target: rule.target || 'all' } }
-      catch { return null }
-    }).filter(Boolean)
-  }
-  requestAnimationFrame(() => {
-    planStates.value.forEach(plan => {
-      let changed = false
-      plan.selectable_resources.forEach(item => {
-        let newVal
-        if (!applyFilter) {
-          newVal = Boolean(item.recommended)
-        } else {
-          newVal = Boolean(item.recommended)
-          if (newVal && compiledRules.length > 0) {
-            const fileName = String(item.file_name || '')
-            const relativePath = String(item.relative_path || '')
-            const folderPath = relativePath.includes('/') ? relativePath.substring(0, relativePath.lastIndexOf('/')) : ''
-            for (const { regex, target } of compiledRules) {
-              if (target === 'file' && regex.test(fileName)) { newVal = false; break }
-              if (target === 'folder' && folderPath && regex.test(folderPath)) { newVal = false; break }
-              if (target === 'all' && (regex.test(fileName) || regex.test(relativePath))) { newVal = false; break }
-            }
+function compilePreviewFilterRules() {
+  return (cachedFilterRules.value || []).map(rule => {
+    try { return { regex: new RegExp(rule.pattern, 'i'), target: rule.target || 'all' } }
+    catch { return null }
+  }).filter(Boolean)
+}
+
+function applyFilterToSelection(applyFilter) {
+  const compiledRules = applyFilter ? compilePreviewFilterRules() : []
+  planStates.value.forEach(plan => {
+    let changed = false
+    plan.selectable_resources.forEach(item => {
+      let newVal
+      if (!applyFilter) {
+        newVal = Boolean(item.recommended)
+      } else {
+        newVal = Boolean(item.recommended)
+        if (newVal && compiledRules.length > 0) {
+          const fileName = String(item.file_name || '')
+          const relativePath = String(item.relative_path || '')
+          const folderPath = relativePath.includes('/') ? relativePath.substring(0, relativePath.lastIndexOf('/')) : ''
+          for (const { regex, target } of compiledRules) {
+            if (target === 'file' && regex.test(fileName)) { newVal = false; break }
+            if (target === 'folder' && folderPath && regex.test(folderPath)) { newVal = false; break }
+            if (target === 'all' && (regex.test(fileName) || regex.test(relativePath))) { newVal = false; break }
           }
         }
-        if (item.selected !== newVal) { item.selected = newVal; changed = true }
-      })
-      if (changed) refreshPlanTree(plan)
+      }
+      if (item.selected !== newVal) { item.selected = newVal; changed = true }
     })
+    if (changed) refreshPlanTree(plan)
   })
+}
+
+function toggleFilterSelection() {
+  filterApplied.value = !filterApplied.value
+  applyFilterToSelection(filterApplied.value)
 }
 
 function getTreeRowIconComponent(row) {

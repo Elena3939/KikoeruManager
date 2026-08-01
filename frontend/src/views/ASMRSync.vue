@@ -101,6 +101,7 @@
         :planning="enhancedPlanning"
         :starting="enhancedStarting"
         :has-workbench-tasks="enhancedDownloadWorkbenchTaskIds.length > 0"
+        :default-filter-enabled="enhancedDefaultFilterEnabled"
         :get-resource-type-label="getResourceTypeLabel"
         @query="buildEnhancedPlans"
         @open-workbench="enhancedDownloadWorkbenchVisible = true"
@@ -108,6 +109,7 @@
         @clear-selection="clearPlanSelection"
         @download-selected="openEnhancedPreview"
         @toggle-plan="togglePlanSelect"
+        @update:default-filter-enabled="enhancedDefaultFilterEnabled = $event"
       />
 
       <HttpDownloadPanel
@@ -246,6 +248,7 @@
       :enable-direct-mode="true"
       :existing-paths="existingRJPaths"
       :direct-loading="locatingRJ"
+      :default-filter-enabled="enhancedDefaultFilterEnabled"
       @submit="handlePreviewSubmit"
     />
 
@@ -893,6 +896,7 @@ const baiduNetdiskWorkbenchRequestGuard = createLatestRequestGuard()
 
 // Enhanced preview dialog state
 const enhancedPreviewVisible = ref(false)
+const enhancedDefaultFilterEnabled = ref(false)
 const previewStarting = ref(false)
 const previewPlans = ref([])
 const libraries = ref([])
