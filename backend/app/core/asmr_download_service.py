@@ -1117,12 +1117,13 @@ class ASMRDownloadService:
             target = _get_rule_prop(rule, 'target', 'file')
             pattern = _get_rule_prop(rule, 'pattern', '')
             name = _get_rule_prop(rule, 'name', '')
+            action = _get_rule_prop(rule, 'action', 'exclude')
             if not pattern:
                 continue
             if target == 'folder':
-                folder_rules.append((pattern, name))
+                folder_rules.append((pattern, name, action))
             else:
-                file_rules.append((pattern, name, target))
+                file_rules.append((pattern, name, target, action))
 
         excluded_count = 0
 
@@ -1131,9 +1132,10 @@ class ASMRDownloadService:
         for file_info in files:
             file_path = file_info.get('path', file_info.get('title', ''))
             should_exclude = False
-            for pattern, name in folder_rules:
+            for pattern, name, action in folder_rules:
                 try:
-                    if re.search(pattern, file_path, re.IGNORECASE):
+                    matched = bool(re.search(pattern, file_path, re.IGNORECASE))
+                    if (action == 'exclude' and matched) or (action == 'include' and not matched):
                         should_exclude = True
                         excluded_count += 1
                         logger.info(f"[筛选][文件夹] 文件被规则 [{name}] 过滤: {file_path} (匹配'{pattern}')")
@@ -1151,13 +1153,14 @@ class ASMRDownloadService:
             file_name = file_info.get('title', '')
             file_path = file_info.get('path', file_name)
             should_exclude = False
-            for pattern, name, target in file_rules:
+            for pattern, name, target, action in file_rules:
                 try:
                     if target == 'all':
                         check_content = file_path
                     else:
                         check_content = file_name
-                    if re.search(pattern, check_content, re.IGNORECASE):
+                    matched = bool(re.search(pattern, check_content, re.IGNORECASE))
+                    if (action == 'exclude' and matched) or (action == 'include' and not matched):
                         should_exclude = True
                         excluded_count += 1
                         logger.info(f"[筛选][文件] 文件被规则 [{name}] 过滤: {file_name} (匹配'{pattern}')")

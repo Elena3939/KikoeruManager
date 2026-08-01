@@ -18971,10 +18971,11 @@ async def asmr_sync_preview(request: Request):
             "files": [
                 {
                     "title": f.get('title'),
+                    "path": f.get('path', f.get('title')),
                     "size": f.get('size', 0),
                     "type": f.get('type')
                 }
-                for f in filtered_files  # 返回全量文件列表
+                for f in all_files  # 返回全量文件列表，由前端按规则实时筛选
             ],
             "file_tree": file_tree
         }

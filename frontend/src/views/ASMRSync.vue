@@ -515,9 +515,63 @@
           </div>
         </div>
 
+        <!-- Filter Rules -->
+        <div class="asmr-preview-filter-section">
+          <div class="asmr-preview-filter-head">
+            <h4 class="asmr-section-title text-sm font-semibold">过滤规则（下载前实时筛选）</h4>
+            <button type="button" class="asmr-filter-add-btn" @click="addPreviewFilterRule">
+              <Plus :size="13" :stroke-width="2.4" />
+              添加规则
+            </button>
+          </div>
+          <div class="overflow-auto" style="max-height: 220px;">
+            <el-table :data="previewFilterRules" size="small">
+              <el-table-column label="启用" width="60">
+                <template #default="{ row }">
+                  <el-switch v-model="row.enabled" size="small" @change="reapplyPreviewFilter" />
+                </template>
+              </el-table-column>
+              <el-table-column label="名称" width="140">
+                <template #default="{ row }">
+                  <el-input v-model="row.name" size="small" placeholder="规则名称" @input="reapplyPreviewFilter" />
+                </template>
+              </el-table-column>
+              <el-table-column label="正则表达式" min-width="200">
+                <template #default="{ row }">
+                  <el-input v-model="row.pattern" size="small" placeholder="正则表达式" @input="reapplyPreviewFilter" />
+                </template>
+              </el-table-column>
+              <el-table-column label="目标" width="90">
+                <template #default="{ row }">
+                  <el-select v-model="row.target" size="small" @change="reapplyPreviewFilter">
+                    <el-option label="文件" value="file" />
+                    <el-option label="文件夹" value="folder" />
+                    <el-option label="全部" value="all" />
+                  </el-select>
+                </template>
+              </el-table-column>
+              <el-table-column label="排除/包含" width="90">
+                <template #default="{ row }">
+                  <el-select v-model="row.action" size="small" @change="reapplyPreviewFilter">
+                    <el-option label="排除" value="exclude" />
+                    <el-option label="包含" value="include" />
+                  </el-select>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="60">
+                <template #default="{ $index }">
+                  <button type="button" class="asmr-filter-remove-btn" :aria-label="`删除规则 ${$index + 1}`" @click="removePreviewFilterRule($index)">
+                    <Trash2 :size="13" :stroke-width="2.2" />
+                  </button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </div>
+
         <!-- File List -->
         <div>
-          <h4 class="asmr-section-title text-sm font-semibold mb-2">下载文件 ({{ previewData.filtered_files }})</h4>
+          <h4 class="asmr-section-title text-sm font-semibold mb-2">下载文件 ({{ previewFilteredFiles.length }}/{{ previewData.total_files }})</h4>
           <div class="overflow-auto" style="max-height: 350px;">
             <el-table
               :data="previewPaginatedFiles"
@@ -547,11 +601,11 @@
               </el-table-column>
             </el-table>
           </div>
-          <div v-if="previewData.files?.length > previewPageSize" class="flex justify-end mt-2">
+          <div v-if="previewFilteredFiles.length > previewPageSize" class="flex justify-end mt-2">
             <el-pagination
               v-model:current-page="previewPage"
               v-model:page-size="previewPageSize"
-              :total="previewData.files.length"
+              :total="previewFilteredFiles.length"
               :page-sizes="[50, 100, 200, 500]"
               layout="total, sizes, prev, pager, next"
               small
@@ -565,7 +619,7 @@
       </div>
       <template v-if="previewData?.success" #footer>
         <div class="flex items-center justify-between gap-3">
-          <span class="text-xs asmr-muted-text">已选择 {{ previewSelectedTitles.length }} / {{ previewData.filtered_files }} 个文件</span>
+          <span class="text-xs asmr-muted-text">已选择 {{ previewSelectedTitles.length }} / {{ previewFilteredFiles.length }} 个文件</span>
           <div class="flex items-center gap-2">
             <el-button size="small" @click="previewDialogVisible = false">取消</el-button>
             <el-button
@@ -660,6 +714,8 @@ import {
   Activity,
   Hourglass,
   Loader2,
+  Plus,
+  Trash2,
   ChevronLeft,
   ChevronRight,
 } from 'lucide-vue-next'
@@ -783,6 +839,9 @@ const previewPageSize = ref(50)
 const previewSelectedTitles = ref([])
 const previewSubtitleFolder = ref('')
 const previewStartSyncing = ref(false)
+const previewFilterRules = ref([])
+const previewAllFiles = ref([])
+const previewFilteredFiles = ref([])
 const tasks = ref([])
 const nextRetryTime = ref('')
 const enhancedInput = ref('')
@@ -2405,13 +2464,23 @@ const previewDownload = async (row) => {
   previewData.value = null
   previewPage.value = 1
   previewSelectedTitles.value = []
+  previewFilterRules.value = []
+  previewAllFiles.value = []
+  previewFilteredFiles.value = []
   previewSubtitleFolder.value = row.folder_path || ''
   row.previewing = true
   try {
     const result = await asmrSyncApi.preview(row.rjcode)
     previewData.value = result
     if (result.success) {
-      previewSelectedTitles.value = (result.files || []).map(f => f.title).filter(Boolean)
+      previewAllFiles.value = result.files || []
+      try {
+        const cfg = await configApi.get()
+        previewFilterRules.value = (cfg.filter?.rules || []).map(r => ({ target: 'file', action: 'exclude', ...r }))
+      } catch {
+        previewFilterRules.value = []
+      }
+      reapplyPreviewFilter()
     }
     if (!result.success) ElMessage.warning(result.error || '未找到可用版本')
   } catch (error) {
@@ -2423,10 +2492,51 @@ const previewDownload = async (row) => {
 }
 
 const previewPaginatedFiles = computed(() => {
-  const files = previewData.value?.files || []
+  const files = previewFilteredFiles.value
   const start = (previewPage.value - 1) * previewPageSize.value
   return files.slice(start, start + previewPageSize.value)
 })
+
+const reapplyPreviewFilter = () => {
+  const allFiles = previewAllFiles.value || []
+  const enabledRules = previewFilterRules.value.filter(r => r.enabled && r.pattern)
+  let files = allFiles
+  if (enabledRules.length > 0) {
+    files = allFiles.filter(file => {
+      const title = String(file.title || file.path || '')
+      for (const rule of enabledRules) {
+        try {
+          const regex = new RegExp(rule.pattern, 'i')
+          const target = rule.target === 'file' ? title : String(file.path || title)
+          const match = regex.test(target)
+          if (rule.action === 'exclude' && match) return false
+          if (rule.action === 'include' && !match) return false
+        } catch {
+          // 非法正则表达式忽略该规则
+        }
+      }
+      return true
+    })
+  }
+  previewFilteredFiles.value = files
+  previewSelectedTitles.value = files.map(f => f.title).filter(Boolean)
+  previewPage.value = 1
+}
+
+const addPreviewFilterRule = () => {
+  previewFilterRules.value.push({
+    name: '新规则',
+    pattern: '',
+    target: 'file',
+    action: 'exclude',
+    enabled: true
+  })
+}
+
+const removePreviewFilterRule = (index) => {
+  previewFilterRules.value.splice(index, 1)
+  reapplyPreviewFilter()
+}
 
 const previewSelectionChange = (selection) => {
   previewSelectedTitles.value = (selection || []).map(row => row.title).filter(Boolean)
@@ -2443,6 +2553,7 @@ const startPreviewDownload = async () => {
         subtitle_folder: previewSubtitleFolder.value,
         work_title: previewData.value.title || '',
         selected_files: [...previewSelectedTitles.value],
+        filter_rules: previewFilterRules.value.filter(r => r.enabled && r.pattern).map(r => ({ ...r })),
       }
     ])
     if (result.success) {
@@ -3514,6 +3625,67 @@ html.kikoerumanager-dark .asmr-floating-page-dot.is-active {
 .asmr-danger-text {
   color: var(--asmr-danger-text);
 }
+.asmr-preview-filter-section {
+  padding: 12px;
+  border: 1px solid rgba(29, 29, 31, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.asmr-preview-filter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.asmr-filter-add-btn,
+.asmr-filter-remove-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(53, 120, 229, 0.22);
+  border-radius: 10px;
+  background: rgba(53, 120, 229, 0.08);
+  color: #3578e5;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.asmr-filter-add-btn:hover {
+  transform: translateY(-2px) scale(1.02);
+}
+
+.asmr-filter-add-btn:active,
+.asmr-filter-remove-btn:active {
+  transform: scale(0.96);
+}
+
+.asmr-filter-remove-btn {
+  width: 28px;
+  padding: 0;
+  border-color: rgba(220, 38, 38, 0.2);
+  background: rgba(220, 38, 38, 0.08);
+  color: #dc2626;
+}
+
+:global(html.kikoerumanager-dark) .asmr-preview-filter-section {
+  border-color: rgba(148, 163, 184, 0.16);
+  background: rgba(15, 23, 42, 0.4);
+}
+
+:global(html.kikoerumanager-dark) .asmr-filter-add-btn {
+  border-color: rgba(96, 165, 250, 0.28);
+  background: rgba(30, 64, 175, 0.22);
+  color: #93c5fd;
+}
+
 .asmr-preview-stat,
 .asmr-preview-row {
   background: var(--asmr-surface-soft);
