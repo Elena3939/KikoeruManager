@@ -190,9 +190,9 @@ import { configApi } from '../api'
 
 const sectionKeyMap = {
   storage: ['storage'],
-  processing: ['watcher', 'processing', 'extract', 'auto_process', 'process_existing'],
+  processing: ['watcher', 'processing', 'extract', 'auto_process', 'process_existing', 'asmr_sync_step'],
   rules: ['filter', 'rename', 'classification', 'path_mappings', 'path_mapping_enabled'],
-  services: ['kikoeru_server', 'asmr_sync', 'asmr_sync_step', 'rj_subtitle', 'email_watcher', 'bonus_probe', 'circle_external_search'],
+  services: ['kikoeru_server', 'asmr_sync', 'rj_subtitle', 'email_watcher', 'bonus_probe', 'circle_external_search'],
   aiSubtitle: ['ai_subtitle_matching'],
   httpDownload: ['http_downloader'],
   baiduNetdisk: ['baidu_netdisk'],

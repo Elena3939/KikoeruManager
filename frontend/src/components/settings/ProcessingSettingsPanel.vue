@@ -115,6 +115,13 @@
       </div>
     </div>
 
+    <div class="settings-card">
+      <div class="card-title">RJ 号同步流程</div>
+      <div class="pill-switch-grid">
+        <SettingsToggleChip v-for="item in asmrSyncStepItems" :key="item.key" v-model="config.asmr_sync_step[item.key]" :label="item.label" />
+      </div>
+    </div>
+
     <div class="settings-card performance-diagnostics-card">
       <div class="card-title diagnostics-title">
         <span>运行诊断</span>
@@ -188,6 +195,14 @@ const processExistingItems = [
   { key: 'filter', label: '文件过滤' },
   { key: 'import_lrc', label: '导入 LRC' },
   { key: 'classify', label: '智能分类' }
+]
+
+const asmrSyncStepItems = [
+  { key: 'download', label: '下载文件' },
+  { key: 'sync_subtitle', label: '同步字幕' },
+  { key: 'rename', label: '重命名' },
+  { key: 'classify', label: '智能分类' },
+  { key: 'move_subtitle_folder', label: '移动字幕文件夹' }
 ]
 
 const zipEncodingOptions = [
