@@ -691,6 +691,7 @@ class AISubtitleMatchService:
             audio_files.append({
                 "id": audio_id,
                 "filename": _safe_text(audio.get("display_name")) or os.path.basename(audio_path),
+                "duration_seconds": audio.get("duration_seconds"),
             })
 
         for group in subtitle_groups:
@@ -706,6 +707,7 @@ class AISubtitleMatchService:
                     {
                         "id": f"{group_id}_s{file_index}",
                         "filename": _safe_text(item.get("name")),
+                        "last_timestamp": item.get("last_timestamp"),
                     }
                     for file_index, item in enumerate(group.get("files") or [], start=1)
                 ],

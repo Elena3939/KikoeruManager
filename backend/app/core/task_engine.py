@@ -3250,6 +3250,9 @@ class TaskEngine:
                 if task.is_cancelled():
                     return
 
+                if getattr(config.auto_process, "sync_subtitle", False):
+                    await self._sync_subtitle_in_work_dir(task, renamed_path, "auto_process")
+
                 # 步骤6: 智能分类
                 logger.debug(f"[{rjcode}] 步骤6: 智能分类")
                 if config.auto_process.classify and task.auto_classify:
@@ -3610,6 +3613,9 @@ class TaskEngine:
                 await task.wait_if_paused()
                 if task.is_cancelled():
                     return
+
+                if getattr(config.process_existing, "sync_subtitle", False):
+                    await self._sync_subtitle_in_work_dir(task, renamed_path, "process_existing")
 
                 # 步骤5: 智能分类
                 logger.debug(f"[{rjcode}] 步骤5: 智能分类")
@@ -5468,6 +5474,45 @@ class TaskEngine:
             return (9, 0, name)
 
         return sorted(files, key=key)
+
+    async def _sync_subtitle_in_work_dir(self, task: Task, work_dir: str, flow: str) -> None:
+        from ..config.settings import get_config
+        from .subtitle_sync_service import get_subtitle_sync_service
+
+        if not work_dir or not os.path.isdir(work_dir):
+            return
+        config = get_config()
+        subtitle_sync = getattr(config, "subtitle_sync", None)
+        priority = list(getattr(subtitle_sync, "language_priority", None) or [])
+        use_ai = bool(getattr(subtitle_sync, "use_ai_match", True))
+        task.update_progress(82, "同步字幕")
+        try:
+            result = await get_subtitle_sync_service().sync_subtitles_to_audio_folder(
+                work_dir,
+                priority_languages=priority,
+                use_ai_match=use_ai,
+                task_id=task.id,
+                rjcode=str(task.rjcode or ""),
+            )
+            task.task_metadata = {
+                **(task.task_metadata or {}),
+                f"{flow}_subtitle_sync_result": result,
+            }
+            if result.get("success"):
+                logger.info(
+                    "[%s] 字幕同步完成: %s 个音频重命名，%s 个字幕复制",
+                    task.rjcode or "未知",
+                    len(result.get("renamed_files") or []),
+                    len(result.get("copied_subtitles") or []),
+                )
+            else:
+                logger.info(
+                    "[%s] 字幕同步跳过: %s",
+                    task.rjcode or "未知",
+                    result.get("skipped") or "no_match",
+                )
+        except Exception as exc:
+            logger.warning("[%s] 字幕同步失败: %s", task.rjcode or "未知", exc, exc_info=True)
 
     async def _process_asmr_sync_download(self, task: Task):
         """

@@ -662,6 +662,292 @@ class SubtitleSyncService:
         return result
 
 
+    # ---- 作品目录内字幕版本同步 ----
+    def _detect_subtitle_version(self, filename: str, rel_dir: str = "") -> str:
+        text = f"{rel_dir} {filename}".lower()
+        hans_keys = ["简体中文", "简中", "中文(简体)", "中文（简体）", "zh-hans", "zh_cn", "chs", "简体", "漢化", "汉化"]
+        hant_keys = ["繁體中文", "繁体中文", "繁中", "中文(繁體)", "中文（繁體）", "zh-hant", "cht", "繁体", "正體", "正体"]
+        en_keys = ["english", "英文", "英语", "eng", "en"]
+        ja_keys = ["日本語", "日文", "日语", "japanese", "jpn", "ja"]
+        for key in hans_keys:
+            if key.lower() in text:
+                return "简体中文"
+        for key in hant_keys:
+            if key.lower() in text:
+                return "繁體中文"
+        for key in en_keys:
+            if key.lower() in text:
+                return "English"
+        for key in ja_keys:
+            if key.lower() in text:
+                return "日本語"
+        return "未指定"
+
+    def _find_audio_dirs_without_subtitles(self, root: str) -> List[str]:
+        candidates = []
+        for dirpath, _dirnames, filenames in os.walk(root):
+            has_subtitle = any(
+                os.path.splitext(name)[1].lower() in self.SUBTITLE_EXTENSIONS
+                for name in filenames
+            )
+            if has_subtitle:
+                continue
+            audio_hits = [
+                name for name in filenames
+                if os.path.splitext(name)[1].lower() in self.AUDIO_EXTENSIONS
+            ]
+            if audio_hits:
+                candidates.append(dirpath)
+        if not candidates:
+            return []
+        root_abs = os.path.abspath(root)
+        root_hits = [path for path in candidates if os.path.abspath(path) == root_abs]
+        if root_hits:
+            return root_hits
+        candidates.sort(key=lambda path: len(Path(path).parts))
+        return [candidates[0]]
+
+    def _collect_subtitle_versions(self, root: str) -> Dict[str, List[Dict]]:
+        versions: Dict[str, List[Dict]] = {}
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for name in filenames:
+                ext = os.path.splitext(name)[1].lower()
+                if ext not in self.SUBTITLE_EXTENSIONS:
+                    continue
+                full_path = os.path.join(dirpath, name)
+                rel_dir = os.path.relpath(dirpath, root)
+                version = self._detect_subtitle_version(name, rel_dir)
+                versions.setdefault(version, []).append({
+                    'name': name,
+                    'path': full_path,
+                    'ext': ext,
+                    'base_name': os.path.splitext(name)[0],
+                    'version': version,
+                    'last_timestamp': self._read_subtitle_last_timestamp(full_path),
+                })
+        return versions
+
+    def _select_subtitle_version(
+        self,
+        versions: Dict[str, List[Dict]],
+        priority_languages: Optional[List[str]] = None,
+    ) -> Tuple[Optional[str], List[Dict]]:
+        if not versions:
+            return None, []
+        labels = list(versions.keys())
+        if len(labels) == 1:
+            return labels[0], versions[labels[0]]
+        for wanted in (priority_languages or []):
+            if wanted in versions:
+                return wanted, versions[wanted]
+        specified = [label for label in labels if label != "未指定"]
+        if specified:
+            return specified[0], versions[specified[0]]
+        return labels[0], versions[labels[0]]
+
+    def _read_subtitle_last_timestamp(self, path: str) -> Optional[str]:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+        except Exception:
+            return None
+        last = None
+        for line in lines:
+            match = re.search(
+                r"(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})",
+                line,
+            )
+            if match:
+                hours = int(match.group(5))
+                minutes = int(match.group(6))
+                seconds = int(match.group(7))
+                millis = int(match.group(8).ljust(3, "0"))
+                last = f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
+                continue
+            lrc_match = re.search(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]", line)
+            if lrc_match:
+                total_seconds = int(lrc_match.group(1)) * 60 + int(lrc_match.group(2))
+                fraction = (lrc_match.group(3) or "0").ljust(3, "0")
+                hours, remainder = divmod(total_seconds, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                last = f"{hours:02d}:{minutes:02d}:{seconds:02d}.{fraction[:3]}"
+                continue
+            generic = re.findall(r"\d{1,2}:\d{2}:\d{2}[.:]\d{1,3}", line)
+            if generic:
+                last = generic[-1]
+        return last
+
+    def _read_audio_duration(self, path: str) -> Optional[float]:
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            from mutagen import File as MutagenFile
+
+            audio = MutagenFile(path)
+            if audio and getattr(audio, "info", None) and getattr(audio.info, "length", None):
+                return round(float(audio.info.length), 3)
+        except Exception:
+            return None
+        return None
+
+    async def _ai_match_audio_subtitles(
+        self,
+        audio_paths: List[str],
+        subtitle_files: List[Dict],
+        *,
+        task_id: str = "",
+        rjcode: str = "",
+    ) -> Optional[List[Dict]]:
+        from ..config.settings import get_config
+        from .ai_subtitle_match_service import get_ai_subtitle_match_service
+
+        ai_config = getattr(get_config(), "ai_subtitle_matching", None)
+        if not ai_config or not getattr(ai_config, "enabled", False):
+            return None
+        mode = "ai_auto" if getattr(ai_config, "auto_apply_enabled", False) else "ai_assist"
+
+        service = get_ai_subtitle_match_service()
+        audio_index = [
+            {
+                "path": path,
+                "display_name": os.path.basename(path),
+                "duration_seconds": self._read_audio_duration(path),
+            }
+            for path in audio_paths
+        ]
+        subtitle_groups = [
+            {
+                "base_name": item["base_name"],
+                "files": [{"name": item["name"], "last_timestamp": item.get("last_timestamp")}],
+            }
+            for item in subtitle_files
+        ]
+        _payload, audio_by_id, group_by_id = service._build_safe_payload(audio_index, subtitle_groups)
+        result = await service.build_auto_match_result(
+            config=ai_config,
+            audio_index=audio_index,
+            subtitle_groups=subtitle_groups,
+            base_match_result={},
+            mode=mode,
+            naming_strategy="audio",
+            threshold=None,
+            task_id=task_id,
+            rjcode=rjcode,
+        )
+        matches = (result.get("match_result") or {}).get("matches") or []
+        pairs = []
+        for match in matches:
+            audio = audio_by_id.get(match.get("audio_id"))
+            group = group_by_id.get(match.get("subtitle_group_id"))
+            if not audio or not group:
+                continue
+            audio_path = audio.get("path")
+            group_base = group.get("base_name")
+            subtitle = next((item for item in subtitle_files if item["base_name"] == group_base), None)
+            if audio_path and subtitle:
+                pairs.append({
+                    "audio_path": audio_path,
+                    "subtitle": subtitle,
+                    "new_audio_name": subtitle["base_name"] + os.path.splitext(audio_path)[1],
+                })
+        return pairs or None
+
+    async def sync_subtitles_to_audio_folder(
+        self,
+        work_dir: str,
+        *,
+        priority_languages: Optional[List[str]] = None,
+        use_ai_match: bool = False,
+        task_id: str = "",
+        rjcode: str = "",
+    ) -> Dict:
+        result = {
+            "success": False,
+            "skipped": None,
+            "version": None,
+            "version_count": 0,
+            "ai_used": False,
+            "renamed_files": [],
+            "copied_subtitles": [],
+            "errors": [],
+        }
+        if not work_dir or not os.path.isdir(work_dir):
+            result["skipped"] = "work_dir_missing"
+            return result
+
+        audio_dirs = self._find_audio_dirs_without_subtitles(work_dir)
+        if not audio_dirs:
+            result["skipped"] = "no_audio_without_subtitles"
+            return result
+
+        versions = self._collect_subtitle_versions(work_dir)
+        if not versions:
+            result["skipped"] = "no_subtitles_in_work_dir"
+            return result
+
+        selected_version, selected_files = self._select_subtitle_version(versions, priority_languages)
+        result["version"] = selected_version
+        result["version_count"] = len(versions)
+
+        audio_dir = audio_dirs[0]
+        audio_paths = [
+            os.path.join(audio_dir, name)
+            for name in os.listdir(audio_dir)
+            if os.path.splitext(name)[1].lower() in self.AUDIO_EXTENSIONS
+        ]
+        pairs = None
+        if use_ai_match:
+            try:
+                pairs = await self._ai_match_audio_subtitles(
+                    audio_paths,
+                    selected_files,
+                    task_id=task_id,
+                    rjcode=rjcode,
+                )
+                result["ai_used"] = pairs is not None
+            except Exception as exc:
+                logger.warning("[字幕同步] AI 辅助配对失败，回退规则匹配: %s", sanitize_text_for_log(exc))
+
+        if not pairs:
+            rule_matches = self.match_audio_subtitle(audio_paths, selected_files)
+            subtitle_by_path = {item["path"]: item for item in selected_files}
+            pairs = [
+                {
+                    "audio_path": match["audio_path"],
+                    "subtitle": subtitle_by_path.get(match["subtitle_path"]),
+                    "new_audio_name": match["new_audio_name"],
+                }
+                for match in rule_matches
+                if match.get("subtitle_path") in subtitle_by_path
+            ]
+
+        for pair in pairs:
+            subtitle = pair.get("subtitle")
+            if not subtitle:
+                continue
+            success, new_path_or_error = self.rename_audio_to_match_subtitle(
+                pair["audio_path"],
+                pair["new_audio_name"],
+            )
+            if success:
+                result["renamed_files"].append({
+                    "original": os.path.basename(pair["audio_path"]),
+                    "new": pair["new_audio_name"],
+                    "subtitle": subtitle["name"],
+                })
+                subtitle_dest = os.path.join(os.path.dirname(pair["audio_path"]), subtitle["name"])
+                try:
+                    shutil.copy2(subtitle["path"], subtitle_dest)
+                    result["copied_subtitles"].append(subtitle["name"])
+                except Exception as exc:
+                    result["errors"].append(f"复制字幕失败: {exc}")
+            else:
+                result["errors"].append(f"重命名失败: {new_path_or_error}")
+
+        result["success"] = len(result["renamed_files"]) > 0
+        return result
+
+
 # 全局服务实例
 _subtitle_sync_service: Optional[SubtitleSyncService] = None
 

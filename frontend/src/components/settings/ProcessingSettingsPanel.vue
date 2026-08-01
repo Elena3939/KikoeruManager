@@ -122,6 +122,16 @@
       </div>
     </div>
 
+    <div class="settings-card">
+      <div class="card-title">字幕同步设置</div>
+      <div class="field-stack">
+        <SettingsFieldCard label="字幕版本优先级" hint="目录内出现多个版本字幕时按此顺序选择，每行一个版本">
+          <textarea v-model="subtitlePriorityText" class="field-input template-textarea" rows="4" spellcheck="false" placeholder="简体中文&#10;繁體中文&#10;English"></textarea>
+        </SettingsFieldCard>
+        <SettingsToggleRow v-model="config.subtitle_sync.use_ai_match" title="AI 辅助配对" subtitle="发送音频时长和字幕最后时间戳辅助识别" />
+      </div>
+    </div>
+
     <div class="settings-card performance-diagnostics-card">
       <div class="card-title diagnostics-title">
         <span>运行诊断</span>
@@ -180,6 +190,7 @@ const props = defineProps({
 const autoProcessItems = [
   { key: 'check_duplicate', label: '预检重复' },
   { key: 'import_linked_translation_subtitles', label: '字幕补配预检' },
+  { key: 'sync_subtitle', label: '同步字幕' },
   { key: 'extract', label: '解压文件' },
   { key: 'fetch_metadata', label: '获取元数据' },
   { key: 'rename', label: '重命名' },
@@ -194,6 +205,7 @@ const processExistingItems = [
   { key: 'rename', label: '重命名' },
   { key: 'filter', label: '文件过滤' },
   { key: 'import_lrc', label: '导入 LRC' },
+  { key: 'sync_subtitle', label: '同步字幕' },
   { key: 'classify', label: '智能分类' }
 ]
 
@@ -219,6 +231,20 @@ const filenamePasswordSniffTemplatesText = computed({
   },
   set(value) {
     props.config.extract.filename_password_sniff_templates = String(value || '')
+      .split(/\r?\n/)
+      .map(item => item.trim())
+      .filter(Boolean)
+  }
+})
+
+const subtitlePriorityText = computed({
+  get() {
+    const priority = props.config?.subtitle_sync?.language_priority
+    return Array.isArray(priority) ? priority.join('\n') : ''
+  },
+  set(value) {
+    if (!props.config.subtitle_sync) props.config.subtitle_sync = {}
+    props.config.subtitle_sync.language_priority = String(value || '')
       .split(/\r?\n/)
       .map(item => item.trim())
       .filter(Boolean)

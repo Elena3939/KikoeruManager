@@ -398,6 +398,7 @@ class AutoProcessConfig(BaseModel):
     """正常解压缩流程步骤配置"""
     check_duplicate: bool = True  # 预检重复
     import_linked_translation_subtitles: bool = True  # 命中关联原作且原作无字幕时，自动仅导入字幕
+    sync_subtitle: bool = False  # 同步字幕：音频目录无字幕且找到字幕版本时启用
     extract: bool = True  # 解压（不建议关闭）
     fetch_metadata: bool = True  # 获取元数据
     rename: bool = True  # 重命名
@@ -412,6 +413,7 @@ class ProcessExistingFolderConfig(BaseModel):
     rename: bool = True  # 重命名
     filter: bool = True  # 过滤
     import_lrc: bool = True  # LRC导入
+    sync_subtitle: bool = False  # 同步字幕：音频目录无字幕且找到字幕版本时启用
     classify: bool = True  # 智能分类
 
 class ASMRSyncStepConfig(BaseModel):
@@ -421,6 +423,11 @@ class ASMRSyncStepConfig(BaseModel):
     rename: bool = True  # 重命名
     classify: bool = True  # 智能分类
     move_subtitle_folder: bool = True  # 移动字幕文件夹
+
+class SubtitleSyncConfig(BaseModel):
+    """字幕同步版本优先级配置"""
+    language_priority: list[str] = Field(default_factory=lambda: ["简体中文", "繁體中文", "English"])
+    use_ai_match: bool = True  # 配对时发送音频时长和字幕最后时间戳辅助识别
 
 class RJSubtitleConfig(BaseModel):
     """RJ 字幕抓取配置"""
@@ -461,6 +468,7 @@ class AISubtitleMatchingConfig(BaseModel):
         "你是字幕文件名匹配器。你只能根据文件名判断音频和字幕组是否对应。\n"
         "不要假设文件内容、字幕正文、音频时长、音频 metadata 或目录路径。\n"
         "输入包含 audio_files 与 subtitle_groups。每项只有 id 和 filename/base_name。\n"
+        "每个音频可附带 duration_seconds，每个字幕文件可附带 last_timestamp，作为辅助判断依据。\n"
         "请只输出 JSON，格式为：\n"
         '{"matches":[{"audio_id":"a1","subtitle_group_id":"g1","confidence":0,"reason":"简短中文原因"}],'
         '"unmatched_audio_ids":[],"unmatched_subtitle_group_ids":[]}\n'
@@ -756,6 +764,7 @@ class AppConfig(BaseModel):
     auto_process: AutoProcessConfig = AutoProcessConfig()
     process_existing: ProcessExistingFolderConfig = ProcessExistingFolderConfig()
     asmr_sync_step: ASMRSyncStepConfig = ASMRSyncStepConfig()
+    subtitle_sync: SubtitleSyncConfig = SubtitleSyncConfig()
     rj_subtitle: RJSubtitleConfig = RJSubtitleConfig()
     ai_subtitle_matching: AISubtitleMatchingConfig = AISubtitleMatchingConfig()
     backup_zip: BackupZipConfig = BackupZipConfig()

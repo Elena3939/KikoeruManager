@@ -297,6 +297,7 @@ export const defaultConfig = {
   auto_process: {
     check_duplicate: true,
     import_linked_translation_subtitles: true,
+    sync_subtitle: false,
     extract: true,
     fetch_metadata: true,
     rename: true,
@@ -310,6 +311,7 @@ export const defaultConfig = {
     rename: true,
     filter: true,
     import_lrc: true,
+    sync_subtitle: false,
     classify: true
   },
   asmr_sync_step: {
@@ -318,6 +320,10 @@ export const defaultConfig = {
     rename: true,
     classify: true,
     move_subtitle_folder: true
+  },
+  subtitle_sync: {
+    language_priority: ['简体中文', '繁體中文', 'English'],
+    use_ai_match: true
   },
   rj_subtitle: {
     overwrite_existing: false,
@@ -558,6 +564,7 @@ function hydrateConfig(data = {}) {
     auto_process: { ...defaultConfig.auto_process, ...(data?.auto_process || {}) },
     process_existing: { ...defaultConfig.process_existing, ...(data?.process_existing || {}) },
     asmr_sync_step: { ...defaultConfig.asmr_sync_step, ...(data?.asmr_sync_step || {}) },
+    subtitle_sync: { ...defaultConfig.subtitle_sync, ...(data?.subtitle_sync || {}) },
     rj_subtitle: { ...defaultConfig.rj_subtitle, ...(data?.rj_subtitle || {}) },
     bonus_probe: { ...defaultConfig.bonus_probe, ...(data?.bonus_probe || {}) },
     circle_external_search: { ...defaultConfig.circle_external_search, ...(data?.circle_external_search || {}) },
@@ -613,6 +620,7 @@ function serializeConfig(config) {
     auto_process: payload.auto_process,
     process_existing: payload.process_existing,
     asmr_sync_step: payload.asmr_sync_step,
+    subtitle_sync: payload.subtitle_sync,
     rj_subtitle: payload.rj_subtitle,
     bonus_probe: payload.bonus_probe,
     circle_external_search: payload.circle_external_search,

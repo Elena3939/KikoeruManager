@@ -3696,6 +3696,7 @@ def get_configuration():
         auto_process=config.auto_process.model_dump() if hasattr(config, 'auto_process') else None,
         process_existing=config.process_existing.model_dump() if hasattr(config, 'process_existing') else None,
         asmr_sync_step=config.asmr_sync_step.model_dump() if hasattr(config, 'asmr_sync_step') else None,
+        subtitle_sync=config.subtitle_sync.model_dump() if hasattr(config, 'subtitle_sync') else None,
         rj_subtitle=config.rj_subtitle.model_dump() if hasattr(config, 'rj_subtitle') else None,
         ai_subtitle_matching=_mask_ai_subtitle_matching_config(config),
         backup_zip=config.backup_zip.model_dump() if hasattr(config, 'backup_zip') else None,
