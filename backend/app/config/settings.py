@@ -426,7 +426,13 @@ class ASMRSyncStepConfig(BaseModel):
 
 class SubtitleSyncConfig(BaseModel):
     """字幕同步版本优先级配置"""
-    language_priority: list[str] = Field(default_factory=lambda: ["简体中文", "繁體中文", "English"])
+    language_priority: list[str] = Field(default_factory=lambda: [
+        r"简体中文|简中|简体",
+        r"繁體中文|繁中|繁体|繁體",
+        r"English|英文|EN|英语",
+        r"日本語|日文|Japanese|JP|日語",
+    ])
+    content_detection_first: bool = True  # 字幕内容字符检测优先；关闭后目录/文件名检测优先，另一种方法仅作校验
     use_ai_match: bool = True  # 配对时发送音频时长和字幕最后时间戳辅助识别
 
 class RJSubtitleConfig(BaseModel):

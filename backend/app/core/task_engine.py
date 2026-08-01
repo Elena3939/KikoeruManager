@@ -5475,6 +5475,36 @@ class TaskEngine:
 
         return sorted(files, key=key)
 
+    def _record_subtitle_sync_detection_conflicts(self, task: Task, rjcode: str, conflicts: list) -> None:
+        """字幕版本检测结论完全冲突时写入问题作品，等待人工确认。"""
+        if not conflicts:
+            return
+        from .classifier import SmartClassifier
+
+        source_path = str(task.source_path or "").strip()
+        if not source_path or not os.path.exists(source_path):
+            return
+        normalized_rjcode = (rjcode or "").strip()
+        metadata = dict(task.task_metadata or {})
+        metadata["failure_stage"] = "subtitle_sync"
+        metadata["subtitle_detection_conflicts"] = conflicts
+        metadata["error_message"] = f"字幕版本检测冲突 {len(conflicts)} 项，需人工确认"
+        metadata["available_actions"] = ["SKIP"]
+        first_path = next(
+            (item.get("path") for item in conflicts if item.get("path")),
+            source_path,
+        )
+        classifier = SmartClassifier()
+        classifier._add_to_conflict_works(
+            task.id,
+            normalized_rjcode or None,
+            "MULTIPLE_VERSIONS",
+            "",
+            first_path,
+            metadata,
+            status="PENDING",
+        )
+
     async def _sync_subtitle_in_work_dir(self, task: Task, work_dir: str, flow: str) -> None:
         from ..config.settings import get_config
         from .subtitle_sync_service import get_subtitle_sync_service
@@ -5484,12 +5514,14 @@ class TaskEngine:
         config = get_config()
         subtitle_sync = getattr(config, "subtitle_sync", None)
         priority = list(getattr(subtitle_sync, "language_priority", None) or [])
+        content_first = bool(getattr(subtitle_sync, "content_detection_first", True))
         use_ai = bool(getattr(subtitle_sync, "use_ai_match", True))
         task.update_progress(82, "同步字幕")
         try:
             result = await get_subtitle_sync_service().sync_subtitles_to_audio_folder(
                 work_dir,
                 priority_languages=priority,
+                content_detection_first=content_first,
                 use_ai_match=use_ai,
                 task_id=task.id,
                 rjcode=str(task.rjcode or ""),
@@ -5498,6 +5530,11 @@ class TaskEngine:
                 **(task.task_metadata or {}),
                 f"{flow}_subtitle_sync_result": result,
             }
+            self._record_subtitle_sync_detection_conflicts(
+                task,
+                str(task.rjcode or ""),
+                result.get("conflicts") or [],
+            )
             if result.get("success"):
                 logger.info(
                     "[%s] 字幕同步完成: %s 个音频重命名，%s 个字幕复制",
@@ -5702,6 +5739,7 @@ class TaskEngine:
                     download_dir,
                     external_subtitle_folder=subtitle_folder,
                     priority_languages=list(getattr(subtitle_sync_config, "language_priority", None) or []),
+                    content_detection_first=bool(getattr(subtitle_sync_config, "content_detection_first", True)),
                     use_ai_match=bool(getattr(subtitle_sync_config, "use_ai_match", True)),
                     task_id=task.id,
                     rjcode=actual_rjcode or rjcode,
@@ -5712,8 +5750,14 @@ class TaskEngine:
                     'success': sync_result['success'],
                     'renamed_files': sync_result.get('renamed_files', []),
                     'copied_subtitles': sync_result.get('copied_subtitles', []),
-                    'errors': sync_result.get('errors', [])
+                    'errors': sync_result.get('errors', []),
+                    'conflicts': sync_result.get('conflicts', [])
                 }
+                self._record_subtitle_sync_detection_conflicts(
+                    task,
+                    actual_rjcode or rjcode,
+                    sync_result.get('conflicts') or [],
+                )
 
                 if not sync_result['success']:
                     logger.warning(f"[{rjcode}] 字幕同步部分失败: {sync_result.get('errors', [])}")

@@ -322,7 +322,13 @@ export const defaultConfig = {
     move_subtitle_folder: true
   },
   subtitle_sync: {
-    language_priority: ['简体中文', '繁體中文', 'English'],
+    language_priority: [
+      '简体中文|简中|简体',
+      '繁體中文|繁中|繁体|繁體',
+      'English|英文|EN|英语',
+      '日本語|日文|Japanese|JP|日語'
+    ],
+    content_detection_first: true,
     use_ai_match: true
   },
   rj_subtitle: {

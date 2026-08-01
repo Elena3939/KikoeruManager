@@ -746,6 +746,59 @@ class SubtitleSyncService:
             return filename_version, "filename_chars"
         return "未指定", "none"
 
+    def _detect_subtitle_version_with_verification(
+        self,
+        filename: str,
+        rel_dir: str = "",
+        content_sample: Optional[str] = None,
+        content_first: bool = True,
+    ) -> Dict[str, Optional[str]]:
+        """按优先级方法判断字幕版本，另一种方法仅作校验，结论完全不符时标记冲突。"""
+        name_keyword = self._detect_subtitle_version(filename, rel_dir)
+        content_version = self._detect_subtitle_version_from_text(content_sample) if content_sample else None
+        filename_chars_version = self._detect_subtitle_version_from_text(os.path.splitext(filename)[0])
+
+        def concrete(value):
+            return value is not None and value != "未指定"
+
+        if content_first:
+            primary = content_version
+            primary_source = "content"
+            verification = name_keyword if concrete(name_keyword) else None
+            verification_source = "folder_or_filename"
+        else:
+            primary = name_keyword if concrete(name_keyword) else None
+            primary_source = "folder_or_filename"
+            verification = content_version
+            verification_source = "content"
+
+        if not concrete(primary):
+            if content_first:
+                primary = name_keyword if concrete(name_keyword) else None
+                primary_source = "folder_or_filename"
+            else:
+                primary = content_version if concrete(content_version) else None
+                primary_source = "content"
+        if not concrete(primary):
+            primary = filename_chars_version
+            primary_source = "filename_chars"
+
+        final_version = primary if concrete(primary) else "未指定"
+        conflict = bool(
+            concrete(primary)
+            and concrete(verification)
+            and primary != verification
+        )
+        return {
+            "version": final_version,
+            "version_source": primary_source if concrete(primary) else "none",
+            "conflict": conflict,
+            "primary_version": primary if concrete(primary) else None,
+            "primary_source": primary_source,
+            "verification_version": verification if concrete(verification) else None,
+            "verification_source": verification_source,
+        }
+
     def _find_audio_dirs_without_subtitles(self, root: str) -> List[str]:
         candidates = []
         for dirpath, _dirnames, filenames in os.walk(root):
@@ -770,8 +823,9 @@ class SubtitleSyncService:
         candidates.sort(key=lambda path: len(Path(path).parts))
         return [candidates[0]]
 
-    def _collect_subtitle_versions(self, root: str) -> Dict[str, List[Dict]]:
+    def _collect_subtitle_versions(self, root: str, content_first: bool = True) -> Tuple[Dict[str, List[Dict]], List[Dict]]:
         versions: Dict[str, List[Dict]] = {}
+        conflicts: List[Dict] = []
         for dirpath, _dirnames, filenames in os.walk(root):
             for name in filenames:
                 ext = os.path.splitext(name)[1].lower()
@@ -779,22 +833,37 @@ class SubtitleSyncService:
                     continue
                 full_path = os.path.join(dirpath, name)
                 rel_dir = os.path.relpath(dirpath, root)
+                rel_dir = "" if rel_dir == "." else rel_dir
                 content_sample = self._read_subtitle_content_sample(full_path)
-                version, version_source = self._detect_subtitle_version_for_file(
+                detection = self._detect_subtitle_version_with_verification(
                     name,
                     rel_dir,
                     content_sample,
+                    content_first=content_first,
                 )
-                versions.setdefault(version, []).append({
+                item = {
                     'name': name,
                     'path': full_path,
                     'ext': ext,
                     'base_name': os.path.splitext(name)[0],
-                    'version': version,
-                    'version_source': version_source,
+                    'version': detection['version'],
+                    'version_source': detection['version_source'],
                     'last_timestamp': self._read_subtitle_last_timestamp(full_path),
-                })
-        return versions
+                    'rel_dir': rel_dir,
+                    'file_text': f"{rel_dir} {name}".strip(),
+                }
+                if detection['conflict']:
+                    item.update({
+                        'conflict': True,
+                        'primary_version': detection['primary_version'],
+                        'primary_source': detection['primary_source'],
+                        'verification_version': detection['verification_version'],
+                        'verification_source': detection['verification_source'],
+                    })
+                    conflicts.append(item)
+                    continue
+                versions.setdefault(detection['version'], []).append(item)
+        return versions, conflicts
 
     def _select_subtitle_version(
         self,
@@ -807,8 +876,24 @@ class SubtitleSyncService:
         if len(labels) == 1:
             return labels[0], versions[labels[0]]
         for wanted in (priority_languages or []):
-            if wanted in versions:
-                return wanted, versions[wanted]
+            if not wanted:
+                continue
+            try:
+                pattern = re.compile(str(wanted), re.IGNORECASE)
+            except re.error:
+                pattern = None
+            for label in labels:
+                items = versions[label]
+                if pattern:
+                    matched = bool(pattern.search(label)) or any(
+                        pattern.search(str(item.get("rel_dir") or ""))
+                        or pattern.search(str(item.get("file_text") or ""))
+                        for item in items
+                    )
+                    if matched:
+                        return label, items
+                elif label == wanted:
+                    return label, items
         specified = [label for label in labels if label != "未指定"]
         if specified:
             return specified[0], versions[specified[0]]
@@ -927,6 +1012,7 @@ class SubtitleSyncService:
         *,
         external_subtitle_folder: Optional[str] = None,
         priority_languages: Optional[List[str]] = None,
+        content_detection_first: bool = True,
         use_ai_match: bool = False,
         task_id: str = "",
         rjcode: str = "",
@@ -940,6 +1026,7 @@ class SubtitleSyncService:
             "renamed_files": [],
             "copied_subtitles": [],
             "errors": [],
+            "conflicts": [],
         }
         if not work_dir or not os.path.isdir(work_dir):
             result["skipped"] = "work_dir_missing"
@@ -950,13 +1037,18 @@ class SubtitleSyncService:
             result["skipped"] = "no_audio_without_subtitles"
             return result
 
-        versions = self._collect_subtitle_versions(work_dir)
+        versions, conflicts = self._collect_subtitle_versions(work_dir, content_detection_first)
         if external_subtitle_folder and os.path.isdir(external_subtitle_folder):
-            external_versions = self._collect_subtitle_versions(external_subtitle_folder)
+            external_versions, external_conflicts = self._collect_subtitle_versions(
+                external_subtitle_folder,
+                content_detection_first,
+            )
             for label, files in external_versions.items():
                 versions.setdefault(label, []).extend(files)
+            conflicts.extend(external_conflicts)
+        result["conflicts"] = conflicts
         if not versions:
-            result["skipped"] = "no_subtitles_in_work_dir"
+            result["skipped"] = "detection_conflicts" if conflicts else "no_subtitles_in_work_dir"
             return result
 
         selected_version, selected_files = self._select_subtitle_version(versions, priority_languages)

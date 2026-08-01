@@ -125,9 +125,10 @@
     <div class="settings-card">
       <div class="card-title">字幕同步设置</div>
       <div class="field-stack">
-        <SettingsFieldCard label="字幕版本优先级" hint="目录内出现多个版本字幕时按此顺序选择，每行一个版本">
-          <textarea v-model="subtitlePriorityText" class="field-input template-textarea" rows="4" spellcheck="false" placeholder="简体中文&#10;繁體中文&#10;English"></textarea>
+        <SettingsFieldCard label="字幕版本优先级" hint="按正则匹配字幕目录/版本名称，每行一个正则，越靠前优先级越高">
+          <textarea v-model="subtitlePriorityText" class="field-input template-textarea" rows="5" spellcheck="false" placeholder="简体中文|简中|简体&#10;繁體中文|繁中|繁体|繁體&#10;English|英文|EN|英语&#10;日本語|日文|Japanese|JP|日語"></textarea>
         </SettingsFieldCard>
+        <SettingsToggleRow v-model="config.subtitle_sync.content_detection_first" title="字幕内容检测优先" subtitle="开启后先按字幕内容字符判断版本，目录名称仅作校验；关闭则相反" />
         <SettingsToggleRow v-model="config.subtitle_sync.use_ai_match" title="AI 辅助配对" subtitle="发送音频时长和字幕最后时间戳辅助识别" />
       </div>
     </div>
