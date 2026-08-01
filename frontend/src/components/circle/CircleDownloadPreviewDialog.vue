@@ -1908,6 +1908,12 @@ html.kikoerumanager-dark .circle-download-preview-overlay {
   color: #6d28d9;
 }
 
+.soft-button.mode-smart.active {
+  background: rgba(237, 233, 254, 0.84);
+  border-color: rgba(139, 92, 246, 0.42);
+  color: #6d28d9;
+}
+
 .soft-button.mode-direct.active {
   background: rgba(204, 251, 241, 0.84);
   border-color: rgba(13, 148, 136, 0.42);
@@ -2134,6 +2140,12 @@ html.kikoerumanager-dark .circle-download-preview-modal .soft-button.mode-classi
 }
 
 html.kikoerumanager-dark .circle-download-preview-modal .soft-button.mode-api.active {
+  background: rgba(124, 58, 237, 0.28) !important;
+  border-color: rgba(167, 139, 250, 0.62) !important;
+  color: #ddd6fe !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .soft-button.mode-smart.active {
   background: rgba(124, 58, 237, 0.28) !important;
   border-color: rgba(167, 139, 250, 0.62) !important;
   color: #ddd6fe !important;

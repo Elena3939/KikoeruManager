@@ -751,6 +751,7 @@ const ASMR_SYNC_HTTP_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.asmrSync.httpDownl
 const ASMR_SYNC_BAIDU_NETDISK_WORKBENCH_KEY = 'kikoerumanager.asmrSync.baiduNetdiskWorkbench'
 const ASMR_SYNC_HTTP_DOWNLOAD_DRAFT_KEY = 'kikoerumanager.asmrSync.httpDownloadDraft'
 const ASMR_SYNC_BAIDU_NETDISK_DRAFT_KEY = 'kikoerumanager.asmrSync.baiduNetdiskDraft'
+const ASMR_SYNC_ENHANCED_DRAFT_KEY = 'kikoerumanager.asmrSync.enhancedDraft'
 const ASMR_SYNC_DOWNLOAD_PREVIEW_CACHE_VERSION = 3
 const ASMR_SYNC_DOWNLOAD_PREVIEW_CACHE_TTL_MS = 30 * 60 * 1000
 const ASMR_SYNC_DOWNLOAD_PREVIEW_CACHE_SESSION_ID = getDownloadPreviewCacheSessionId()
@@ -827,6 +828,41 @@ function persistDownloadDraft(key, value) {
   } catch (_) {}
 }
 
+function normalizeEnhancedDownloadDraft(value = {}) {
+  const settings = value?.settings && typeof value.settings === 'object' ? value.settings : {}
+  return {
+    defaultFilterEnabled: Boolean(value?.defaultFilterEnabled),
+    settings: {
+      mode: String(settings.mode || 'classify'),
+      targetLibraryId: String(settings.targetLibraryId || ''),
+      targetSubdir: String(settings.targetSubdir || ''),
+      namingMode: settings.namingMode === 'preserve' ? 'preserve' : 'api',
+      classifyMode: ['circle', 'smart', 'none'].includes(settings.classifyMode) ? settings.classifyMode : 'smart',
+      downloadBasePath: String(settings.downloadBasePath || ''),
+      directLibraryId: String(settings.directLibraryId || ''),
+      directBasePath: String(settings.directBasePath || ''),
+      directLibraryType: String(settings.directLibraryType || ''),
+      directSubPath: String(settings.directSubPath || '')
+    }
+  }
+}
+
+function readEnhancedDownloadDraft() {
+  try {
+    if (typeof window === 'undefined') return normalizeEnhancedDownloadDraft()
+    return normalizeEnhancedDownloadDraft(JSON.parse(window.localStorage.getItem(ASMR_SYNC_ENHANCED_DRAFT_KEY) || '{}'))
+  } catch (_) {
+    return normalizeEnhancedDownloadDraft()
+  }
+}
+
+function persistEnhancedDownloadDraft(value) {
+  try {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(ASMR_SYNC_ENHANCED_DRAFT_KEY, JSON.stringify(normalizeEnhancedDownloadDraft(value)))
+  } catch (_) {}
+}
+
 const subtitleFolder = ref('')
 const scanning = ref(false)
 const syncing = ref(false)
@@ -896,7 +932,8 @@ const baiduNetdiskWorkbenchRequestGuard = createLatestRequestGuard()
 
 // Enhanced preview dialog state
 const enhancedPreviewVisible = ref(false)
-const enhancedDefaultFilterEnabled = ref(false)
+const enhancedDownloadDraft = readEnhancedDownloadDraft()
+const enhancedDefaultFilterEnabled = ref(Boolean(enhancedDownloadDraft.defaultFilterEnabled))
 const previewStarting = ref(false)
 const previewPlans = ref([])
 const libraries = ref([])
@@ -910,7 +947,8 @@ const downloadSettings = ref({
   directLibraryId: '',
   directBasePath: '',
   directLibraryType: '',
-  directSubPath: ''
+  directSubPath: '',
+  ...enhancedDownloadDraft.settings
 })
 const existingRJPaths = ref({})
 const locatingRJ = ref(false)
@@ -2853,6 +2891,13 @@ watch(baiduNetdiskWorkbenchTaskIds, () => {
 
 watch(baiduNetdiskDraft, (value) => {
   persistDownloadDraft(ASMR_SYNC_BAIDU_NETDISK_DRAFT_KEY, value)
+}, { deep: true })
+
+watch([enhancedDefaultFilterEnabled, downloadSettings], () => {
+  persistEnhancedDownloadDraft({
+    defaultFilterEnabled: enhancedDefaultFilterEnabled.value,
+    settings: downloadSettings.value
+  })
 }, { deep: true })
 
 watch(() => route.query?.tab, (value) => {
