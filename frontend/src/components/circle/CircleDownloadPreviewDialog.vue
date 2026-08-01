@@ -783,7 +783,7 @@ watch(() => props.plans, (plans) => {
   if (!cachedFilterRules.value) {
     configApi.get().then(config => {
       const rules = config?.filter?.rules
-      if (Array.isArray(rules)) cachedFilterRules.value = rules.filter(r => r.enabled !== false && r.action === 'exclude')
+      if (Array.isArray(rules)) cachedFilterRules.value = rules.filter(r => r.enabled !== false)
       if (props.defaultFilterEnabled) applyFilterToSelection(true)
     }).catch(() => {})
   } else if (props.defaultFilterEnabled) {
@@ -1102,7 +1102,7 @@ function resetRecommended() {
 
 function compilePreviewFilterRules() {
   return (cachedFilterRules.value || []).map(rule => {
-    try { return { regex: new RegExp(rule.pattern, 'i'), target: rule.target || 'all' } }
+    try { return { regex: new RegExp(rule.pattern, 'i'), target: rule.target || 'all', action: rule.action || 'exclude' } }
     catch { return null }
   }).filter(Boolean)
 }
@@ -1121,10 +1121,13 @@ function applyFilterToSelection(applyFilter) {
           const fileName = String(item.file_name || '')
           const relativePath = String(item.relative_path || '')
           const folderPath = relativePath.includes('/') ? relativePath.substring(0, relativePath.lastIndexOf('/')) : ''
-          for (const { regex, target } of compiledRules) {
-            if (target === 'file' && regex.test(fileName)) { newVal = false; break }
-            if (target === 'folder' && folderPath && regex.test(folderPath)) { newVal = false; break }
-            if (target === 'all' && (regex.test(fileName) || regex.test(relativePath))) { newVal = false; break }
+          for (const { regex, target, action } of compiledRules) {
+            let matched = false
+            if (target === 'file') matched = regex.test(fileName)
+            else if (target === 'folder') matched = Boolean(folderPath) && regex.test(folderPath)
+            else matched = regex.test(fileName) || regex.test(relativePath)
+            if (action === 'include' && !matched) { newVal = false; break }
+            if (action === 'exclude' && matched) { newVal = false; break }
           }
         }
       }

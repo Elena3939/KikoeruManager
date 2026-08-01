@@ -1442,7 +1442,39 @@ async function openEnhancedPreview() {
   const selectedRjs = selectedPlanSet.value
   const plans = enhancedPlans.value.filter(plan => selectedRjs.has(plan.rjcode))
   if (!plans.length) return ElMessage.warning('请先选中至少一个计划')
-  previewPlans.value = plans
+  const previewPlansRaw = plans.map(plan => ({
+    ...plan,
+    selectable_resources: (plan.selectable_resources || []).map(item => ({ ...item }))
+  }))
+  if (enhancedDefaultFilterEnabled.value) {
+    try {
+      const cfg = await configApi.get()
+      const rules = (cfg.filter?.rules || []).filter(r => r.enabled !== false)
+      const compiledRules = rules.map(rule => {
+        try { return { regex: new RegExp(rule.pattern, 'i'), target: rule.target || 'all', action: rule.action || 'exclude' } }
+        catch { return null }
+      }).filter(Boolean)
+      previewPlansRaw.forEach(plan => {
+        (plan.selectable_resources || []).forEach(item => {
+          if (!item.selected || compiledRules.length === 0) return
+          const fileName = String(item.file_name || '')
+          const relativePath = String(item.relative_path || '')
+          const folderPath = relativePath.includes('/') ? relativePath.substring(0, relativePath.lastIndexOf('/')) : ''
+          for (const { regex, target, action } of compiledRules) {
+            let matched = false
+            if (target === 'file') matched = regex.test(fileName)
+            else if (target === 'folder') matched = Boolean(folderPath) && regex.test(folderPath)
+            else matched = regex.test(fileName) || regex.test(relativePath)
+            if (action === 'include' && !matched) { item.selected = false; break }
+            if (action === 'exclude' && matched) { item.selected = false; break }
+          }
+        })
+      })
+    } catch (error) {
+      console.warn('加载默认过滤规则失败', error)
+    }
+  }
+  previewPlans.value = previewPlansRaw
   enhancedPreviewVisible.value = true
   loadLibraries()
   loadExistingRJPaths(plans.map(plan => plan.rjcode))
