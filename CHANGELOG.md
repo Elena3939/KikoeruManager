@@ -6,6 +6,7 @@
 
 - 发布源切换：本仓库 `GinatWiki/KikoeruTool` 作为主要发布源，README 克隆、Releases、GHCR 镜像、Docker Compose 与 Unraid 模板统一指向 `ghcr.io/ginatwiki/kikoerutool`。
 - 文档：README 增加上游贡献徽章与“项目来源与协作”说明，明确项目由 canforgiveher 发起、Elena3939/KikoeruManager 基于原项目开发并贡献大量代码，双方均采用 MIT 许可。
+- 修复：Windows 发布流水线改用 `KikoeruManager` 产物命名，Docker 文档清理旧镜像与旧仓库链接。
 
 ## v2.3.13
 

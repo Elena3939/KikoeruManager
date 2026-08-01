@@ -132,7 +132,7 @@ def main():
         print(f"打包版本号: {app_version}")
 
         print("=" * 50)
-        print("Building kikoerumanager - two versions")
+        print("Building KikoeruManager - two versions")
         print("=" * 50)
 
         success = True

@@ -54,8 +54,8 @@ jobs:
       run: |
         $tag = "${{ github.event.inputs.tag }}"
         if (-not $tag) { $tag = "${{ github.ref_name }}" }
-        Compress-Archive -Path backend/dist/prekikoeru.exe -DestinationPath "prekikoeru-$tag-windows-console.zip" -Force
-        Compress-Archive -Path backend/dist/prekikoeru-noconsole.exe -DestinationPath "prekikoeru-$tag-windows-noconsole.zip" -Force
+        Compress-Archive -Path backend/dist/KikoeruManager.exe -DestinationPath "kikoerumanager-$tag-windows-console.zip" -Force
+        Compress-Archive -Path backend/dist/KikoeruManager-noconsole.exe -DestinationPath "kikoerumanager-$tag-windows-noconsole.zip" -Force
         Get-ChildItem *.zip
 
     - name: Create GitHub Release

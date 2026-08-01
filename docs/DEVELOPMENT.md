@@ -99,14 +99,14 @@ python build.py
 
 | 文件 | 说明 |
 |------|------|
-| `prekikoeru.exe` | 带控制台版本，方便调试 |
-| `prekikoeru-noconsole.exe` | 无控制台版本，日常使用 |
+| `KikoeruManager.exe` | 带控制台版本，方便调试 |
+| `KikoeruManager-noconsole.exe` | 无控制台版本，日常使用 |
 
 ### 手动构建单个版本
 
 ```bash
-pyinstaller build_prekikoeru.spec --clean
-pyinstaller build_prekikoeru-noconsole.spec --clean
+pyinstaller build_KikoeruManager.spec --clean
+pyinstaller build_KikoeruManager-noconsole.spec --clean
 ```
 
 ---
@@ -173,7 +173,7 @@ LOG_LEVEL=DEBUG python -m app.main
 tail -f backend/logs/app.log
 
 # Docker
-docker logs -f prekikoeru
+docker logs -f kikoerumanager
 ```
 
 ### 数据库检查
@@ -215,7 +215,7 @@ chmod -R 777 test_data
 ## 项目结构
 
 ```
-prekikoeru/
+kikoerumanager/
 ├── backend/
 │   ├── app/
 │   │   ├── api/routes.py      # API 路由

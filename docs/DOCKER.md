@@ -17,9 +17,9 @@
 version: '3.8'
 
 services:
-  prekikoeru:
-    image: ghcr.io/canforgive/kikoerutool:latest
-    container_name: prekikoeru
+  kikoerumanager:
+    image: ghcr.io/ginatwiki/kikoerutool:latest
+    container_name: kikoerumanager
     ports:
       - "8000:8000"
     environment:
@@ -44,7 +44,7 @@ docker-compose up -d
 
 ```bash
 docker run -d \
-  --name prekikoeru \
+  --name kikoerumanager \
   -p 8000:8000 \
   -v ./config:/app/config \
   -v ./data:/app/data \
@@ -52,7 +52,7 @@ docker run -d \
   -v /path/to/library:/library \
   -v /path/to/temp:/temp \
   -e TZ=Asia/Shanghai \
-  ghcr.io/canforgive/kikoerutool:latest
+  ghcr.io/ginatwiki/kikoerutool:latest
 ```
 
 ---
@@ -62,7 +62,7 @@ docker run -d \
 ### 方法 1：Community Applications
 
 1. 打开 Unraid Web 界面，进入 **Apps** 标签
-2. 搜索 "Prekikoeru"
+2. 搜索 "KikoeruManager"
 3. 点击安装，配置映射路径
 
 ### 方法 2：手动模板
@@ -72,8 +72,8 @@ docker run -d \
 
 | 容器路径 | 说明 | 建议映射 |
 |---------|------|---------|
-| `/app/config` | 配置文件 | `appdata/prekikoeru/config` |
-| `/app/data` | 数据库和日志 | `appdata/prekikoeru/data` |
+| `/app/config` | 配置文件 | `appdata/kikoerumanager/config` |
+| `/app/data` | 数据库和日志 | `appdata/kikoerumanager/data` |
 | `/input` | 待处理压缩包 | 下载目录 |
 | `/temp` | 解压临时文件 | SSD 缓存目录 |
 | `/library` | 整理好的作品库 | 媒体库目录 |
@@ -120,8 +120,8 @@ docker run -d \
 
 ### Q: 无法访问 Web 界面
 
-1. 检查容器状态：`docker ps | grep prekikoeru`
-2. 查看日志：`docker logs prekikoeru`
+1. 检查容器状态：`docker ps | grep kikoerumanager`
+2. 查看日志：`docker logs kikoerumanager`
 3. 确认端口未被占用
 
 ### Q: 文件权限问题
@@ -159,5 +159,5 @@ docker-compose up -d
 
 ## 技术支持
 
-- **GitHub Issues**: https://github.com/canforgive/KikoeruTool/issues
+- **GitHub Issues**: https://github.com/GinatWiki/KikoeruTool/issues
 - **API 文档**: http://localhost:8000/docs
