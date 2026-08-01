@@ -18,9 +18,9 @@
 
 - 产品名统一为 `KikoeruManager`；技术命名统一小写 `kikoerumanager`。
 - 不要把旧名 `Prekikoeru`、`KikoeruTool_Elena`、`kikoeruTool` 混回标题、exe、镜像、文档、环境变量、localStorage key、SSE 事件名。
-- GitHub 目标仓库是 `Elena3939/KikoeruManager`。
-- GHCR 镜像目标：`ghcr.io/elena3939/kikoerumanager`。
-- Docker Hub 镜像目标：`elena39/kikoerumanager`。
+- GitHub 主发布仓库是 `GinatWiki/KikoeruTool`；上游来源仓库是 `Elena3939/KikoeruManager`（`upstream` remote，代码来源与协作）。
+- GHCR 镜像目标：`ghcr.io/ginatwiki/kikoerutool`。
+- 上游兼容镜像仍为 `elena39/kikoerumanager`（由 Elena3939/KikoeruManager 发布，不作为本仓库默认目标）。
 - 当前产品是多工作台桌面化工具，不是传统后台管理系统。
 - 高频业务：仪表盘、库存主工作台、RJ 字幕工作台、任务中心、操作历史、问题作品、社团补全、下载 / 上传工作台、HTTP 外链下载（含 PikPak / Google Drive / Gofile / OneDrive / Transfer.it）、百度网盘、AI 字幕配对、密码工作台、库存备份、安全网关、通知模板。
 

@@ -2,8 +2,9 @@
 
 一个面向 DLsite 同人音声库的本地 / 远程一体化工作台。它不是单纯的“解压重命名脚本”，而是把压缩包识别、自动解压、元数据抓取、库存入库、字幕配对、ASMR 补全、DLsite 特典探测、HTTP 外链下载、百度网盘转存、重复冲突处理、任务中心、操作审计和通知模板串成完整业务链路，适合长期维护本地多盘与群晖远程库存。
 
-[![GHCR](https://img.shields.io/badge/ghcr.io-kikoerumanager-2496ED?logo=docker)](https://github.com/Elena3939/KikoeruManager/pkgs/container/kikoerumanager)
+[![GHCR](https://img.shields.io/badge/ghcr.io-kikoerutool-2496ED?logo=docker)](https://github.com/GinatWiki/KikoeruTool/pkgs/container/kikoerutool)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![upstream](https://img.shields.io/badge/upstream-Elena3939%2FKikoeruManager-2496ED?logo=github)](https://github.com/Elena3939/KikoeruManager)
 
 ## 项目来源与协作
 
@@ -104,8 +105,8 @@ Windows 本地首次使用建议直接运行：
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/Elena3939/KikoeruManager.git
-cd KikoeruManager
+git clone https://github.com/GinatWiki/KikoeruTool.git
+cd KikoeruTool
 
 # 2. 后端（非 Windows 或手动模式需先准备 PostgreSQL）
 cd backend
@@ -129,7 +130,7 @@ npm run dev
 
 ### Windows 桌面版
 
-打包好的 exe 见 [Releases](https://github.com/Elena3939/KikoeruManager/releases)，下载解压后双击 `KikoeruManager.exe` 即可，自带托盘 + 自动打开 Web。
+打包好的 exe 见 [Releases](https://github.com/GinatWiki/KikoeruTool/releases)，下载解压后双击 `KikoeruManager.exe` 即可，自带托盘 + 自动打开 Web。
 
 也可在本地从源码打包：
 
@@ -140,20 +141,18 @@ npm run dev
 ### Docker 部署
 
 ```bash
-# 拉取镜像（Docker Hub）
-docker pull elena39/kikoerumanager:<版本号>
-```
-```bash
 # 拉取镜像（GHCR）
-docker pull ghcr.io/elena3939/kikoerumanager:<版本号>
+docker pull ghcr.io/ginatwiki/kikoerutool:<版本号>
 ```
+
+上游 [Elena3939/KikoeruManager](https://github.com/Elena3939/KikoeruManager) 的镜像仍发布在 `elena39/kikoerumanager`，可作兼容备选。
 
 或用 `docker-compose.yml`：
 
 ```yaml
 services:
   kikoerumanager:
-    image: ghcr.io/elena3939/kikoerumanager:<版本号>
+    image: ghcr.io/ginatwiki/kikoerutool:<版本号>
     container_name: kikoerumanager
     ports:
       - "5555:5555"
@@ -312,6 +311,7 @@ services:
 - [构建指南](docs/BUILD.md)
 - [Docker 部署](DOCKER_DEPLOY.md)
 - [快速上手](START_GUIDE.md)
+- [版本更新记录](CHANGELOG.md)
 - [给后续 AI / 自动化代理的接手说明](AGENTS.md)
 - API 文档：服务启动后访问 <http://localhost:5555/docs>
 
