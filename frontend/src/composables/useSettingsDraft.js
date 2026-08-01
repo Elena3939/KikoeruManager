@@ -492,6 +492,7 @@ function sanitizeLibraryForSave(library = {}, index = 1) {
     browse_path: normalized.browse_path,
     enabled: normalized.enabled,
     writable: normalized.writable,
+    is_move_target: Boolean(normalized.is_move_target),
     description: normalized.description,
     tags: Array.isArray(normalized.tags) ? [...normalized.tags] : [],
     synology_profile_id: normalized.synology_profile_id || '',
