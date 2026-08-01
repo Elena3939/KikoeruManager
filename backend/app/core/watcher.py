@@ -7,6 +7,7 @@
 import os
 import asyncio
 import re
+import threading
 from pathlib import Path
 from typing import Callable, Optional, Set
 from watchdog.observers import Observer
@@ -171,19 +172,27 @@ class FolderWatcher:
             return
         self._paused = False
         if self.observer and self.handler:
-            try:
-                watch_path = self.config.storage.input_path
-                self.observer.schedule(self.handler, watch_path, recursive=True)
-                logger.debug("已恢复文件监听")
-            except Exception as e:
-                logger.warning(f"恢复监听失败: {e}")
+            watch_path = self.config.storage.input_path
 
-    def start(self):
+            def _reschedule():
+                try:
+                    self.observer.schedule(self.handler, watch_path, recursive=True)
+                    logger.debug("已恢复文件监听")
+                except Exception as e:
+                    logger.warning(f"恢复监听失败: {e}")
+
+            threading.Thread(
+                target=_reschedule,
+                name="watcher-resume-schedule",
+                daemon=True,
+            ).start()
+
+    async def start(self):
         """启动监视器"""
         if self.is_running:
             return
 
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
 
         watch_path = self.config.storage.input_path
         if not os.path.exists(watch_path):
@@ -196,7 +205,8 @@ class FolderWatcher:
             self._mark_file_processed
         )
         observer = Observer()
-        observer.schedule(self.handler, watch_path, recursive=True)
+        # inotify 后端 schedule 会递归 os.walk 监视目录，放到线程执行避免阻塞主事件循环
+        await asyncio.to_thread(observer.schedule, self.handler, watch_path, True)
         observer.start()
         self.observer = observer
 

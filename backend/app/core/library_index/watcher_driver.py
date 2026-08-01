@@ -611,6 +611,7 @@ class LibraryIndexWatcherDriver:
 
 _watcher_driver: Optional[LibraryIndexWatcherDriver] = None
 _watcher_lock = threading.Lock()
+_driver_start_lock = threading.Lock()
 
 
 def get_library_index_watcher_driver() -> LibraryIndexWatcherDriver:
@@ -623,7 +624,16 @@ def get_library_index_watcher_driver() -> LibraryIndexWatcherDriver:
 
 
 def start_library_index_watcher_driver() -> None:
-    get_library_index_watcher_driver().start()
+    """后台启动库存索引 watcher，避免 inotify 递归 os.walk 阻塞启动事件循环。"""
+    with _driver_start_lock:
+        driver = get_library_index_watcher_driver()
+        if driver._thread and driver._thread.is_alive():
+            return
+        threading.Thread(
+            target=driver.start,
+            name="library-index-watcher-start",
+            daemon=True,
+        ).start()
 
 
 def stop_library_index_watcher_driver() -> None:

@@ -2453,7 +2453,7 @@ async def startup_event():
     config = get_config()
     if config.watcher.enabled:
         watcher = get_watcher()
-        watcher.start()
+        await watcher.start()
 
     # 启动密码库智能清理服务
     cleanup_service = get_cleanup_service()
@@ -4588,7 +4588,7 @@ async def get_library_backup_checkpoint():
 async def start_watcher():
     """启动文件夹监视器"""
     watcher = get_watcher()
-    watcher.start()
+    await watcher.start()
     return {"message": "监视器已启动"}
 
 @app.post("/api/watcher/stop")
