@@ -29,6 +29,10 @@ class SubtitleSyncService:
     # 支持的音频格式
     AUDIO_EXTENSIONS = {'.wav', '.mp3', '.flac', '.m4a', '.ogg', '.wma', '.aac'}
 
+    # 用于字符覆盖率判定的高频简繁差异字
+    SIMPLIFIED_ONLY_CHARS = "简体汉语门国时经关对发长车风东马乐见龙这个们从后进过说还开写边间题实义动台场样体点线给红级纪约终组经统维网"
+    TRADITIONAL_ONLY_CHARS = "繁體學國會與無門時經關對發長車風東馬樂見龍這箇們從後進過說還開寫邊間題實義動臺場樣體點線給紅級紀約終組經統維網"
+
     # LRC广告清理正则表达式
     LRC_AD_PATTERNS = [
         # Telegram账号
@@ -683,6 +687,65 @@ class SubtitleSyncService:
                 return "日本語"
         return "未指定"
 
+    def _read_subtitle_content_sample(self, path: str, max_lines: int = 200) -> str:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+        except Exception:
+            return ""
+        kept = []
+        for line in lines:
+            clean = re.sub(r"\[[^\]]*\]", "", line)
+            stripped = clean.strip()
+            if not stripped:
+                continue
+            if re.fullmatch(r"\d{1,4}", stripped):
+                continue
+            if re.search(r"-->\s*\d", stripped) or re.search(r"^\d{1,2}:\d{2}:\d{2}", stripped):
+                continue
+            kept.append(stripped)
+            if len(kept) >= max_lines:
+                break
+        return "\n".join(kept)
+
+    def _detect_subtitle_version_from_text(self, text: Optional[str]) -> Optional[str]:
+        if not text:
+            return None
+        kana = len(re.findall(r"[\u3040-\u30ff]", text))
+        cjk = len(re.findall(r"[\u3400-\u9fff]", text))
+        latin = len(re.findall(r"[A-Za-z]", text))
+        simp = sum(1 for ch in text if ch in self.SIMPLIFIED_ONLY_CHARS)
+        trad = sum(1 for ch in text if ch in self.TRADITIONAL_ONLY_CHARS)
+        meaningful = max(1, kana + cjk + latin)
+        if kana >= 3 and kana / meaningful >= 0.08:
+            return "日本語"
+        if latin >= 10 and cjk == 0 and latin / meaningful >= 0.8:
+            return "English"
+        if simp >= 3 or trad >= 3:
+            if simp > trad and simp >= 3:
+                return "简体中文"
+            if trad > simp and trad >= 3:
+                return "繁體中文"
+        return None
+
+    def _detect_subtitle_version_for_file(
+        self,
+        filename: str,
+        rel_dir: str = "",
+        content_sample: Optional[str] = None,
+    ) -> Tuple[str, str]:
+        keyword = self._detect_subtitle_version(filename, rel_dir)
+        if keyword != "未指定":
+            return keyword, "folder_or_filename"
+        if content_sample:
+            content_version = self._detect_subtitle_version_from_text(content_sample)
+            if content_version:
+                return content_version, "content"
+        filename_version = self._detect_subtitle_version_from_text(os.path.splitext(filename)[0])
+        if filename_version:
+            return filename_version, "filename_chars"
+        return "未指定", "none"
+
     def _find_audio_dirs_without_subtitles(self, root: str) -> List[str]:
         candidates = []
         for dirpath, _dirnames, filenames in os.walk(root):
@@ -716,13 +779,19 @@ class SubtitleSyncService:
                     continue
                 full_path = os.path.join(dirpath, name)
                 rel_dir = os.path.relpath(dirpath, root)
-                version = self._detect_subtitle_version(name, rel_dir)
+                content_sample = self._read_subtitle_content_sample(full_path)
+                version, version_source = self._detect_subtitle_version_for_file(
+                    name,
+                    rel_dir,
+                    content_sample,
+                )
                 versions.setdefault(version, []).append({
                     'name': name,
                     'path': full_path,
                     'ext': ext,
                     'base_name': os.path.splitext(name)[0],
                     'version': version,
+                    'version_source': version_source,
                     'last_timestamp': self._read_subtitle_last_timestamp(full_path),
                 })
         return versions
