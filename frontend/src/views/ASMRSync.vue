@@ -519,7 +519,13 @@
         <div>
           <h4 class="asmr-section-title text-sm font-semibold mb-2">下载文件 ({{ previewData.filtered_files }})</h4>
           <div class="overflow-auto" style="max-height: 350px;">
-            <el-table :data="previewData.files" size="small">
+            <el-table
+              :data="previewPaginatedFiles"
+              size="small"
+              row-key="title"
+              @selection-change="previewSelectionChange"
+            >
+              <el-table-column type="selection" width="44" reserve-selection />
               <el-table-column type="index" label="#" width="50" />
               <el-table-column label="文件路径" min-width="300">
                 <template #default="{ row }">
@@ -541,11 +547,39 @@
               </el-table-column>
             </el-table>
           </div>
+          <div v-if="previewData.files?.length > previewPageSize" class="flex justify-end mt-2">
+            <el-pagination
+              v-model:current-page="previewPage"
+              v-model:page-size="previewPageSize"
+              :total="previewData.files.length"
+              :page-sizes="[50, 100, 200, 500]"
+              layout="total, sizes, prev, pager, next"
+              small
+              background
+            />
+          </div>
         </div>
       </div>
       <div v-else class="py-10">
         <AppEmptyState description="无法获取预览信息" size="sm" />
       </div>
+      <template v-if="previewData?.success" #footer>
+        <div class="flex items-center justify-between gap-3">
+          <span class="text-xs asmr-muted-text">已选择 {{ previewSelectedTitles.length }} / {{ previewData.filtered_files }} 个文件</span>
+          <div class="flex items-center gap-2">
+            <el-button size="small" @click="previewDialogVisible = false">取消</el-button>
+            <el-button
+              size="small"
+              type="primary"
+              :loading="previewStartSyncing"
+              :disabled="!previewSelectedTitles.length || !previewSubtitleFolder"
+              @click="startPreviewDownload"
+            >
+              开始下载
+            </el-button>
+          </div>
+        </div>
+      </template>
     </el-dialog>
 
     <!-- Enhanced Session Drawer -->
@@ -744,6 +778,11 @@ const selectAll = ref(false)
 const previewDialogVisible = ref(false)
 const previewLoading = ref(false)
 const previewData = ref(null)
+const previewPage = ref(1)
+const previewPageSize = ref(50)
+const previewSelectedTitles = ref([])
+const previewSubtitleFolder = ref('')
+const previewStartSyncing = ref(false)
 const tasks = ref([])
 const nextRetryTime = ref('')
 const enhancedInput = ref('')
@@ -2364,16 +2403,59 @@ const previewDownload = async (row) => {
   previewLoading.value = true
   previewDialogVisible.value = true
   previewData.value = null
+  previewPage.value = 1
+  previewSelectedTitles.value = []
+  previewSubtitleFolder.value = row.folder_path || ''
   row.previewing = true
   try {
     const result = await asmrSyncApi.preview(row.rjcode)
     previewData.value = result
+    if (result.success) {
+      previewSelectedTitles.value = (result.files || []).map(f => f.title).filter(Boolean)
+    }
     if (!result.success) ElMessage.warning(result.error || '未找到可用版本')
   } catch (error) {
     ElMessage.error('获取预览信息失败')
   } finally {
     previewLoading.value = false
     row.previewing = false
+  }
+}
+
+const previewPaginatedFiles = computed(() => {
+  const files = previewData.value?.files || []
+  const start = (previewPage.value - 1) * previewPageSize.value
+  return files.slice(start, start + previewPageSize.value)
+})
+
+const previewSelectionChange = (selection) => {
+  previewSelectedTitles.value = (selection || []).map(row => row.title).filter(Boolean)
+}
+
+const startPreviewDownload = async () => {
+  if (!previewSelectedTitles.value.length) return ElMessage.warning('请先选择要下载的文件')
+  if (!previewSubtitleFolder.value) return ElMessage.warning('缺少下载目标目录')
+  previewStartSyncing.value = true
+  try {
+    const result = await asmrSyncApi.start([
+      {
+        rjcode: previewData.value.rjcode,
+        subtitle_folder: previewSubtitleFolder.value,
+        work_title: previewData.value.title || '',
+        selected_files: [...previewSelectedTitles.value],
+      }
+    ])
+    if (result.success) {
+      ElMessage.success('已创建下载任务')
+      previewDialogVisible.value = false
+      await refreshStatus()
+    } else {
+      ElMessage.warning(result.message || '创建任务失败')
+    }
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '启动下载失败')
+  } finally {
+    previewStartSyncing.value = false
   }
 }
 

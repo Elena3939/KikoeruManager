@@ -5527,7 +5527,7 @@ class TaskEngine:
                 task.update_progress(progress, step)
 
             # 获取筛选规则
-            filter_rules = config.filter.rules
+            filter_rules = task.task_metadata.get('filter_rules') or config.filter.rules
             logger.info(f"[ASMR同步] 筛选规则数量: {len(filter_rules)}")
             for i, rule in enumerate(filter_rules):
                 if isinstance(rule, dict):
@@ -5571,7 +5571,8 @@ class TaskEngine:
                 filter_rules=filter_rules,
                 progress_callback=progress_callback,
                 file_progress_callback=file_progress_callback,
-                check_pause=check_pause
+                check_pause=check_pause,
+                selected_files=task.task_metadata.get('selected_files')
             )
 
             # 保存失败文件列表

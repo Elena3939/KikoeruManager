@@ -79,6 +79,36 @@ class ASMRDownloadService:
         self._cache: TTLCache = TTLCache(max_size=1024, ttl_seconds=300, name="asmr_download.linked")
         self._cache_ttl = 300  # 5分钟缓存（给现有内层 TTL 判定用，兼容）
 
+    def _get_api_urls(self) -> list:
+        """API URL 列表：优先自定义服务器，否则用默认列表。"""
+        if self.config is not None:
+            cfg = getattr(self.config, "asmr_sync", self.config)
+            custom = str(getattr(cfg, "custom_api_url", "") or "").strip()
+            if custom:
+                url = custom.rstrip("/")
+                if not url.endswith("/api"):
+                    url = url + "/api"
+                return [url]
+        return self.API_BASE_URLS
+
+    def _get_meta_path(self, rjcode_num: str) -> str:
+        """meta 请求路径：优先自定义模板，否则默认 /workInfo/{rjcode}。"""
+        if self.config is not None:
+            cfg = getattr(self.config, "asmr_sync", self.config)
+            tpl = str(getattr(cfg, "custom_meta_template", "") or "").strip()
+            if tpl:
+                return tpl.format(rjcode=rjcode_num)
+        return f"/workInfo/{rjcode_num}"
+
+    def _get_track_path(self, rjcode_num: str) -> str:
+        """track 请求路径：优先自定义模板，否则默认 /tracks/{rjcode}。"""
+        if self.config is not None:
+            cfg = getattr(self.config, "asmr_sync", self.config)
+            tpl = str(getattr(cfg, "custom_track_template", "") or "").strip()
+            if tpl:
+                return tpl.format(rjcode=rjcode_num)
+        return f"/tracks/{rjcode_num}"
+
     async def _get_session(self) -> aiohttp.ClientSession:
         """获取或创建 HTTP 会话"""
         if self._session is None or self._session.closed:
@@ -93,11 +123,16 @@ class ASMRDownloadService:
 
     def _get_api_base(self) -> str:
         """获取当前 API 基础 URL"""
-        return self.API_BASE_URLS[self._current_api_index]
+        urls = self._get_api_urls()
+        return urls[self._current_api_index % len(urls)]
 
     async def _switch_api(self):
         """切换到下一个 API 服务器"""
-        self._current_api_index = (self._current_api_index + 1) % len(self.API_BASE_URLS)
+        urls = self._get_api_urls()
+        if len(urls) <= 1:
+            self._record_asmr_api_failure("switch_api_single")
+            return
+        self._current_api_index = (self._current_api_index + 1) % len(urls)
         logger.info(f"切换 API 服务器到: {self._get_api_base()}")
 
     def _asmr_api_circuit_remaining(self) -> int:
@@ -248,9 +283,11 @@ class ASMRDownloadService:
                     'message': str(exc),
                 })
 
-        await run_check('ASMR.one 主节点', f'{self.API_BASE_URLS[0]}/workInfo/00000000')
+        api_urls = self._get_api_urls()
+        await run_check('ASMR.one 主节点', f'{api_urls[0]}/workInfo/00000000')
         if len(self.API_BASE_URLS) > 1:
-            await run_check('ASMR.one 备用节点', f'{self.API_BASE_URLS[1]}/workInfo/00000000')
+            if len(api_urls) > 1:
+                await run_check('ASMR.one 备用节点', f'{api_urls[1]}/workInfo/00000000')
         await run_check('DLsite 关联接口', f'{self.DLSITE_API}?workno=RJ00000000')
 
         ok_count = len([item for item in checks if item['ok']])
@@ -316,9 +353,11 @@ class ASMRDownloadService:
                     'message': str(exc),
                 })
 
-        await run_check('ASMR.one 主节点', f'{self.API_BASE_URLS[0]}/workInfo/00000000')
+        api_urls = self._get_api_urls()
+        await run_check('ASMR.one 主节点', f'{api_urls[0]}/workInfo/00000000')
         if len(self.API_BASE_URLS) > 1:
-            await run_check('ASMR.one 备用节点', f'{self.API_BASE_URLS[1]}/workInfo/00000000')
+            if len(api_urls) > 1:
+                await run_check('ASMR.one 备用节点', f'{api_urls[1]}/workInfo/00000000')
 
         ok_count = len([item for item in checks if item['ok']])
         return {
@@ -427,9 +466,10 @@ class ASMRDownloadService:
         request_kwargs = self._proxy_request_kwargs()
 
         # 尝试所有 API 服务器
-        for attempt in range(len(self.API_BASE_URLS)):
-            api_base = self._get_api_base()
-            url = f"{api_base}/workInfo/{rjcode_num}"
+        api_urls = self._get_api_urls()
+        for attempt in range(len(api_urls)):
+            api_base = api_urls[attempt % len(api_urls)]
+            url = f"{api_base}{self._get_meta_path(rjcode_num)}"
 
             try:
                 logger.info(f"[ASMR] 获取作品信息: {url}")
@@ -519,9 +559,10 @@ class ASMRDownloadService:
         session = await self._get_session()
         request_kwargs = self._proxy_request_kwargs()
 
-        for attempt in range(len(self.API_BASE_URLS)):
-            api_base = self._get_api_base()
-            url = f"{api_base}/tracks/{rjcode_num}"
+        api_urls = self._get_api_urls()
+        for attempt in range(len(api_urls)):
+            api_base = api_urls[attempt % len(api_urls)]
+            url = f"{api_base}{self._get_track_path(rjcode_num)}"
 
             try:
                 logger.debug("[ASMR] 获取文件列表: %s", mask_url_for_log(url))
@@ -1058,102 +1099,77 @@ class ASMRDownloadService:
         return False
 
     def filter_files(self, files: List[Dict], filter_rules: List) -> List[Dict]:
-        """
-        应用筛选规则过滤文件列表
-
-        Args:
-            files: 文件列表
-            filter_rules: 筛选规则列表（可以是对象或字典）
-
-        Returns:
-            过滤后的文件列表
-        """
+        """应用筛选规则过滤文件列表（两阶段：先文件夹规则，再文件规则）"""
         if not filter_rules:
-            logger.debug("[筛选] 没有筛选规则，保留所有文件")
+            logger.info("[筛选] 没有筛选规则，保留所有文件")
             return files
 
-        # 音频扩展名集合
-        audio_extensions = {'.wav', '.mp3', '.flac', '.m4a', '.ogg', '.wma', '.aac'}
-
-        # 先打印所有筛选规则的状态
-        logger.debug(f"[筛选] 共有 {len(filter_rules)} 条筛选规则:")
-        for i, rule in enumerate(filter_rules):
+        def _get_rule_prop(rule, prop, default=''):
             if isinstance(rule, dict):
-                name = rule.get('name', f'规则{i+1}')
-                enabled = rule.get('enabled', True)
-                pattern = rule.get('pattern', '')
-                target = rule.get('target', 'file')
-            else:
-                name = getattr(rule, 'name', f'规则{i+1}')
-                enabled = getattr(rule, 'enabled', True)
-                pattern = getattr(rule, 'pattern', '')
-                target = getattr(rule, 'target', 'file')
-            status = "启用" if enabled else "禁用"
-            logger.debug(f"[筛选]   - {name}: pattern='{pattern}', target='{target}', 状态={status}")
+                return rule.get(prop, default)
+            return getattr(rule, prop, default)
 
-        filtered_files = []
+        folder_rules = []
+        file_rules = []
+        for rule in filter_rules:
+            if not _get_rule_prop(rule, 'enabled', True):
+                continue
+            target = _get_rule_prop(rule, 'target', 'file')
+            pattern = _get_rule_prop(rule, 'pattern', '')
+            name = _get_rule_prop(rule, 'name', '')
+            if not pattern:
+                continue
+            if target == 'folder':
+                folder_rules.append((pattern, name))
+            else:
+                file_rules.append((pattern, name, target))
+
         excluded_count = 0
 
-        # 调试：打印前几个文件名
-        if files:
-            logger.debug(f"[筛选] 前5个文件名示例:")
-            for i, f in enumerate(files[:5]):
-                logger.debug(f"[筛选]   {i+1}. title='{f.get('title', '')}', path='{f.get('path', '')}'")
-
+        # 阶段1：文件夹规则过滤（路径含命中文件夹规则则整个排除）
+        stage1_files = []
         for file_info in files:
-            file_name = file_info.get('title', '')
-            file_path = file_info.get('path', file_name)  # 完整路径，包含文件夹名
-            ext = os.path.splitext(file_name)[1].lower()
-
-            # 只处理音频文件
-            if ext not in audio_extensions:
-                # 非音频文件（如图片、文本等）直接保留
-                filtered_files.append(file_info)
-                continue
-
-            # 应用筛选规则
+            file_path = file_info.get('path', file_info.get('title', ''))
             should_exclude = False
-            for rule in filter_rules:
-                # 支持字典和对象两种访问方式
-                if isinstance(rule, dict):
-                    enabled = rule.get('enabled', True)
-                    target = rule.get('target', 'file')
-                    pattern = rule.get('pattern', '')
-                    name = rule.get('name', '')
-                else:
-                    enabled = getattr(rule, 'enabled', True)
-                    target = getattr(rule, 'target', 'file')
-                    pattern = getattr(rule, 'pattern', '')
-                    name = getattr(rule, 'name', '')
-
-                if not enabled:
-                    continue
-
+            for pattern, name in folder_rules:
                 try:
-                    # 根据target决定检查什么内容
-                    if target == 'folder':
-                        # 文件夹规则：检查完整路径（包含文件夹名）
-                        check_content = file_path
-                    elif target == 'all':
-                        # 全部规则：检查路径和文件名
-                        check_content = file_path
-                    else:
-                        # file规则：只检查文件名
-                        check_content = file_name
-
-                    if re.search(pattern, check_content, re.IGNORECASE):
+                    if re.search(pattern, file_path, re.IGNORECASE):
                         should_exclude = True
-                        logger.debug(f"[筛选] 文件被规则 [{name}] 过滤: {file_path} (匹配'{pattern}')")
                         excluded_count += 1
+                        logger.info(f"[筛选][文件夹] 文件被规则 [{name}] 过滤: {file_path} (匹配'{pattern}')")
                         break
                 except re.error as e:
                     logger.error(f"正则表达式错误: {pattern}, {e}")
-
             if not should_exclude:
-                filtered_files.append(file_info)
+                stage1_files.append(file_info)
 
-        logger.info(f"[筛选] 原始文件数: {len(files)}, 筛选后: {len(filtered_files)}, 排除: {excluded_count}")
-        return filtered_files
+        logger.info(f"[筛选] 阶段1(文件夹): {len(files)} -> {len(stage1_files)}")
+
+        # 阶段2：文件规则过滤（在阶段1剩余文件上）
+        stage2_files = []
+        for file_info in stage1_files:
+            file_name = file_info.get('title', '')
+            file_path = file_info.get('path', file_name)
+            should_exclude = False
+            for pattern, name, target in file_rules:
+                try:
+                    if target == 'all':
+                        check_content = file_path
+                    else:
+                        check_content = file_name
+                    if re.search(pattern, check_content, re.IGNORECASE):
+                        should_exclude = True
+                        excluded_count += 1
+                        logger.info(f"[筛选][文件] 文件被规则 [{name}] 过滤: {file_name} (匹配'{pattern}')")
+                        break
+                except re.error as e:
+                    logger.error(f"正则表达式错误: {pattern}, {e}")
+            if not should_exclude:
+                stage2_files.append(file_info)
+
+        logger.info(f"[筛选] 阶段2(文件): {len(stage1_files)} -> {len(stage2_files)}")
+        logger.info(f"[筛选] 总计: 原始 {len(files)}, 筛选后 {len(stage2_files)}, 排除 {excluded_count}")
+        return stage2_files
 
     async def download_work(
         self,
@@ -1162,7 +1178,8 @@ class ASMRDownloadService:
         filter_rules: List = None,
         progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
         file_progress_callback: Optional[Callable[[str, int, int, int, int], None]] = None,
-        check_pause: Optional[Callable[[], bool]] = None
+        check_pause: Optional[Callable[[], bool]] = None,
+        selected_files: Optional[List[str]] = None
     ) -> Dict:
         """
         下载整个作品并应用筛选规则
@@ -1268,6 +1285,8 @@ class ASMRDownloadService:
             failed_files = []  # 记录失败的文件
 
             for i, file_info in enumerate(all_files):
+                if selected_files is not None and file_info.get('title', '') not in selected_files:
+                    continue
                 # 检查是否需要暂停
                 if check_pause and check_pause():
                     result['paused'] = True

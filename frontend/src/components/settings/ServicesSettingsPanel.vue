@@ -127,6 +127,19 @@
             <SettingsFieldCard label="HTTP 代理" hint="用于 asmr.one 音频下载。">
               <input v-model="config.asmr_sync.http_proxy" class="field-input" type="text" placeholder="127.0.0.1:7890">
             </SettingsFieldCard>
+            <SettingsFieldCard label="自定义服务器地址" hint="留空使用默认服务器。例如 https://api.asmr-300.com">
+              <input v-model="config.asmr_sync.custom_api_url" class="field-input" type="text" placeholder="https://api.asmr-300.com">
+            </SettingsFieldCard>
+          </div>
+          <div class="mini-grid two">
+            <SettingsFieldCard label="meta 请求模板" hint="留空使用默认 /workInfo/{rjcode}">
+              <input v-model="config.asmr_sync.custom_meta_template" class="field-input" type="text" placeholder="/workInfo/{rjcode}">
+            </SettingsFieldCard>
+            <SettingsFieldCard label="track 请求模板" hint="留空使用默认 /tracks/{rjcode}">
+              <input v-model="config.asmr_sync.custom_track_template" class="field-input" type="text" placeholder="/tracks/{rjcode}">
+            </SettingsFieldCard>
+          </div>
+          <div class="mini-grid two">
             <SettingsFieldCard label="元数据代理" hint="用于 DLsite 元数据、社团作品列表、封面抓取，以及 Kikoeru 查重前的 DLsite 关联链查询。">
               <div class="service-inline-row metadata-proxy-row">
                 <input v-model="config.metadata.http_proxy" class="field-input" type="text" placeholder="127.0.0.1:7890">
