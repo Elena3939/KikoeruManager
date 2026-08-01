@@ -168,17 +168,6 @@
 
           <div class="version-info">
             <span class="version-text">KikoeruManager</span>
-            <button
-              v-if="!isGateRoute"
-              type="button"
-              class="theme-toggle-button skin-toggle-button"
-              :class="{ 'is-animal': skin === 'animal' }"
-              :title="skin === 'animal' ? '动森主题，点击切回默认主题' : '默认主题，点击切换动森主题'"
-              @click="setSkin(skin === 'animal' ? 'default' : 'animal')"
-            >
-              <Palette v-if="skin !== 'animal'" :size="16" :stroke-width="2.2" />
-              <Leaf v-else :size="16" :stroke-width="2.2" />
-            </button>
             <AnimatedThemeToggler
               v-if="!isGateRoute"
               direction="ltr"
@@ -226,9 +215,7 @@ import {
   KeyRound,
   ListTodo,
   Menu,
-  Leaf,
   Package2,
-  Palette,
   ScrollText,
   Settings2,
   Tags,
@@ -254,32 +241,6 @@ const mobileNavOpen = ref(false)
 const sidebarPinnedStorageKey = 'kikoerumanager.sidebarPinned'
 const sidebarPinned = ref(false)
 const { applyTheme } = useTheme()
-const SKIN_STORAGE_KEY = 'kikoerumanager.skin'
-const skin = ref('default')
-
-function readInitialSkin () {
-  if (typeof window === 'undefined') return 'default'
-  try {
-    return window.localStorage.getItem(SKIN_STORAGE_KEY) === 'animal' ? 'animal' : 'default'
-  } catch {
-    return 'default'
-  }
-}
-
-function applySkin () {
-  if (typeof document === 'undefined') return
-  document.documentElement.classList.toggle('kikoerumanager-animal', skin.value === 'animal')
-  try {
-    window.localStorage.setItem(SKIN_STORAGE_KEY, skin.value)
-  } catch {
-    // localStorage 不可用时主题选择只在当前会话生效
-  }
-}
-
-function setSkin (value) {
-  skin.value = value
-  applySkin()
-}
 
 const realtimeEvents = useRealtimeEvents()
 const { panelOpen: notificationPanelOpen } = useNotifications()
@@ -340,8 +301,6 @@ const WATCHER_STATUS_POLL_MAX_MS = 120000
 
 onMounted(async () => {
   sidebarPinned.value = readInitialSidebarPinned()
-  skin.value = readInitialSkin()
-  applySkin()
   applyTheme()
   await refreshAppVersion()
   if (isGateRoute.value) return
@@ -5699,85 +5658,6 @@ html.kikoerumanager-dark .detail-body .path {
   opacity: 1;
   padding: 4px 10px;
   transform: translate3d(0, 0, 0);
-}
-
-.theme-toggle-button.skin-toggle-button {
-  position: absolute;
-  left: calc(var(--sidebar-collapsed-width) / 2 - 1px);
-  bottom: 56px;
-  transform: translate3d(-50%, 0, 0);
-}
-
-.theme-toggle-button.skin-toggle-button.is-animal {
-  border-color: rgba(25, 200, 185, 0.34);
-  color: #0f9d90;
-  box-shadow: inset 0 0 0 1px rgba(25, 200, 185, 0.18);
-}
-
-.theme-toggle-button.skin-toggle-button.is-animal:hover {
-  border-color: rgba(25, 200, 185, 0.5);
-  color: #0b877c;
-}
-
-:global(html.kikoerumanager-dark) .theme-toggle-button.skin-toggle-button.is-animal {
-  background: rgba(25, 200, 185, 0.16);
-  border-color: rgba(25, 200, 185, 0.32);
-  color: #5eead4;
-}
-
-:global(html.kikoerumanager-animal) .sidebar-shell {
-  background:
-    radial-gradient(circle, rgba(159, 146, 125, 0.08) 1.5px, transparent 1.5px) 0 0 / 24px 24px,
-    #f5efdc;
-  border: 2px dashed #e3dccb;
-  box-shadow:
-    0 18px 42px rgba(121, 79, 39, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.72);
-}
-
-:global(html.kikoerumanager-animal) .logo {
-  border-bottom: 2px dashed #e3dccb;
-}
-
-:global(html.kikoerumanager-animal) .logo-mark {
-  color: #19c8b9;
-}
-
-:global(html.kikoerumanager-animal) .logo-text,
-:global(html.kikoerumanager-animal) .logo-subtitle {
-  color: #794f27;
-}
-
-:global(html.kikoerumanager-animal) :deep(.sidebar-menu .el-menu-item) {
-  color: #8a7b66;
-  font-weight: 600;
-}
-
-:global(html.kikoerumanager-animal) :deep(.sidebar-menu .el-menu-item:hover) {
-  background: #d6dff0;
-  color: #5a6b8c;
-}
-
-:global(html.kikoerumanager-animal) :deep(.sidebar-menu .el-menu-item.is-active) {
-  background: #b7c6e5;
-  color: #ffffff;
-  font-weight: 700;
-}
-
-:global(html.kikoerumanager-animal) .sidebar-footer {
-  border-top: 2px dashed #e3dccb;
-}
-
-:global(html.kikoerumanager-animal) .version-text {
-  background: #efe9d5;
-  color: #9f927d;
-  box-shadow: inset 0 0 0 1px rgba(159, 146, 125, 0.16);
-}
-
-:global(html.kikoerumanager-animal) .theme-toggle-button.skin-toggle-button.is-animal {
-  background: #19c8b9;
-  border-color: #19c8b9;
-  color: #ffffff;
 }
 
 .main-frame {
