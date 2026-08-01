@@ -41,6 +41,7 @@ from datetime import datetime
 
 from ..config.settings import get_config
 from ..core.archive_detection import detect_embedded_zip_offset
+from ..core.polyglot_detector import find_embedded_archive
 from ..core.task_engine import Task
 from ..core.password_utils import (
     normalize_filename_value,
@@ -2009,6 +2010,37 @@ class ExtractService:
             return None
         return offset if offset > 0 else None
 
+    def _get_cached_embedded_archive_offset(self, archive_path: str, task: Optional[Task]) -> Optional[int]:
+        """读取 ZIP/RAR/7z polyglot 任务元数据里已缓存的 payload 偏移。"""
+        metadata = getattr(task, "task_metadata", None) or {}
+        for source_key, offset_key in (
+            ("embedded_archive_source_path", "embedded_archive_offset"),
+            ("embedded_zip_source_path", "embedded_zip_offset"),
+        ):
+            cached_path = str(metadata.get(source_key) or "").strip()
+            if cached_path and os.path.abspath(cached_path) != os.path.abspath(archive_path):
+                continue
+            raw_offset = metadata.get(offset_key)
+            try:
+                offset = int(raw_offset)
+            except (TypeError, ValueError):
+                continue
+            if offset > 0:
+                return offset
+        return None
+
+    def _find_embedded_archive_offset_sync(self, file_path: str) -> Optional[int]:
+        """同步探测 polyglot 内嵌压缩包偏移（ZIP 优先走 archive_detection，RAR/7z 走流式扫描）。"""
+        try:
+            offset = detect_embedded_zip_offset(file_path)
+            if offset is not None:
+                return offset
+            result = find_embedded_archive(file_path)
+            return result[1] if result else None
+        except Exception:
+            logger.debug("polyglot 内嵌压缩包探测失败: %s", file_path, exc_info=True)
+            return None
+
     def _configured_temp_root(self) -> Optional[str]:
         temp_root = str(getattr(self.config.storage, "temp_path", "") or "").strip()
         return temp_root or None
@@ -2159,6 +2191,77 @@ class ExtractService:
         )
         return view_path
 
+    async def _prepare_embedded_archive(
+        self,
+        archive_path: str,
+        task: Task,
+        *,
+        materialize: bool = True,
+    ) -> Optional[str]:
+        """????? MP4/??????? RAR/7z payload ?????ZIP ? _prepare_embedded_zip_archive??"""
+        zip_view = await self._prepare_embedded_zip_archive(archive_path, task, materialize=materialize)
+        if zip_view is not None:
+            return zip_view
+
+        offset = self._get_cached_embedded_archive_offset(archive_path, task)
+        embedded_type = ""
+        if offset is None:
+            result = find_embedded_archive(archive_path)
+            if result is None:
+                return None
+            embedded_type, offset = result
+        else:
+            metadata = getattr(task, "task_metadata", None) or {}
+            embedded_type = str(metadata.get("embedded_archive_type") or "").strip()
+        if not embedded_type or embedded_type == "zip" or offset is None or offset <= 0:
+            return None
+
+        suffix = ".7z" if embedded_type == "7z" else ".rar"
+        if not materialize:
+            self._set_extract_meta(
+                task,
+                embedded_archive_type=embedded_type,
+                embedded_archive_source_path=archive_path,
+                embedded_archive_offset=offset,
+            )
+            logger.info(
+                "[Extract] ????? %s?????????: source=%s offset=%s",
+                embedded_type.upper(),
+                archive_path,
+                offset,
+            )
+            return archive_path
+
+        task.update_progress(12, "???????????????")
+        async with get_resource_budget_service().acquire("disk_io_local", reason="extract.embedded_archive_copy"):
+            fd, view_path = await self._create_temp_file_with_fallback(
+                "kikoerumanager_embedded_archive_",
+                suffix,
+                "extract.embedded_archive_copy",
+            )
+            view_path = await asyncio.to_thread(self._copy_embedded_zip_payload, archive_path, offset, fd, view_path)
+        try:
+            view_size = os.path.getsize(view_path)
+        except OSError:
+            view_size = 0
+        self._set_extract_meta(
+            task,
+            embedded_archive_type=embedded_type,
+            embedded_archive_source_path=archive_path,
+            embedded_archive_view_path=view_path,
+            embedded_archive_offset=offset,
+            embedded_archive_size=view_size,
+        )
+        logger.info(
+            "[Extract] ????? %s??????????: source=%s offset=%s view=%s size=%s",
+            embedded_type.upper(),
+            archive_path,
+            offset,
+            view_path,
+            view_size,
+        )
+        return view_path
+
     def _cleanup_embedded_zip_view(self, task: Optional[Task]) -> None:
         metadata = getattr(task, "task_metadata", None) or {}
         view_path = str(metadata.get("embedded_zip_view_path") or "").strip()
@@ -2169,9 +2272,20 @@ class ExtractService:
                 os.remove(view_path)
                 logger.info("[Extract] 已清理伪装 ZIP 临时视图: %s", view_path)
 
+    def _cleanup_embedded_archive_view(self, task: Optional[Task]) -> None:
+        metadata = getattr(task, "task_metadata", None) or {}
+        view_path = str(metadata.get("embedded_archive_view_path") or "").strip()
+        if not view_path:
+            return
+        with contextlib.suppress(OSError):
+            if os.path.exists(view_path):
+                os.remove(view_path)
+                logger.info("[Extract] ????????????: %s", view_path)
+
     async def _cleanup_extract_runtime_state(self, task: Task) -> None:
         """收口解压运行期临时状态清理，避免失败/取消分支漏还原。"""
         self._cleanup_embedded_zip_view(task)
+        self._cleanup_embedded_archive_view(task)
         await self._rollback_exe_e_remap(task)
         await self._rollback_zip_numeric_remap(task)
         await self._rollback_part_exe_remap(task)
@@ -2214,7 +2328,7 @@ class ExtractService:
         task.update_progress(10, "检测文件类型")
         # 视频壳 / 媒体壳里嵌 ZIP 时，Linux 下的 7zz 不能稳定识别前缀。
         # 一旦命中就直接生成纯 ZIP 临时视图，避免清单阶段把结构错误误判为密码错误。
-        embedded_zip_direct_path = await self._prepare_embedded_zip_archive(
+        embedded_zip_direct_path = await self._prepare_embedded_archive(
             archive_path,
             task,
             materialize=True,
@@ -2409,7 +2523,7 @@ class ExtractService:
                 extract_failure_reason,
             )
             await self._cleanup_extract_attempt(output_path)
-            view_path = await self._prepare_embedded_zip_archive(
+            view_path = await self._prepare_embedded_archive(
                 embedded_source_path,
                 task,
                 materialize=True,
@@ -3764,7 +3878,7 @@ class ExtractService:
         filename = Path(file_path).name
         current_ext = Path(file_path).suffix.lower()
 
-        if detect_embedded_zip_offset(file_path) is not None:
+        if self._find_embedded_archive_offset_sync(file_path) is not None:
             logger.info(f"[Extract] 检测到带前缀伪装 ZIP，跳过后缀修复: {file_path}")
             return file_path
 
@@ -3873,7 +3987,7 @@ class ExtractService:
         filename = path.name
         current_ext = path.suffix.lower()
 
-        if detect_embedded_zip_offset(file_path) is not None:
+        if self._find_embedded_archive_offset_sync(file_path) is not None:
             logger.info(f"[Normalize] 检测到带前缀伪装 ZIP，保持原始文件名: {file_path}")
             return file_path
 
@@ -4054,7 +4168,7 @@ class ExtractService:
 
         logger.debug(f"[Normalize] 检查文件: {filename}, 当前后缀: {current_ext}")
 
-        if detect_embedded_zip_offset(file_path) is not None:
+        if self._find_embedded_archive_offset_sync(file_path) is not None:
             logger.debug("[Normalize] 带前缀伪装 ZIP 不做文件名预览修复")
             return None
 

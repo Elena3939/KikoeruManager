@@ -17,6 +17,7 @@ import logging
 
 from ..config.settings import get_config
 from ..core.archive_detection import has_embedded_zip_archive
+from ..core.polyglot_detector import find_embedded_archive
 from ..core.task_engine import Task, TaskType, get_task_engine
 from .deferred_archive_service import get_deferred_archive_service
 
@@ -410,6 +411,13 @@ class FileProcessor:
                 return True
             if has_embedded_zip_archive(file_path):
                 logger.info(f"[FileProcessor] 检测到带前缀伪装的 ZIP 压缩包: {file_path}")
+                return True
+            embedded = find_embedded_archive(file_path)
+            if embedded is not None:
+                logger.info(
+                    f"[FileProcessor] 检测到 polyglot 内嵌压缩包: {file_path} "
+                    f"(type={embedded[0]} offset={embedded[1]})"
+                )
                 return True
             return False
 
