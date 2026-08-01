@@ -1100,9 +1100,13 @@ function resetRecommended() {
   })
 }
 
+function normalizeFilterPattern(pattern) {
+  return String(pattern || '').replace(/\(\?[imsx]+\)/g, '')
+}
+
 function compilePreviewFilterRules() {
   return (cachedFilterRules.value || []).map(rule => {
-    try { return { regex: new RegExp(rule.pattern, 'i'), target: rule.target || 'all', action: rule.action || 'exclude' } }
+    try { return { regex: new RegExp(normalizeFilterPattern(rule.pattern), 'i'), target: rule.target || 'all', action: rule.action || 'exclude' } }
     catch { return null }
   }).filter(Boolean)
 }

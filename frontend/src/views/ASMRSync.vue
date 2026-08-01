@@ -1452,7 +1452,7 @@ async function openEnhancedPreview() {
       const cfg = await configApi.get()
       const rules = (cfg.filter?.rules || []).filter(r => r.enabled !== false)
       const compiledRules = rules.map(rule => {
-        try { return { regex: new RegExp(rule.pattern, 'i'), target: rule.target || 'all', action: rule.action || 'exclude' } }
+        try { return { regex: new RegExp(normalizeFilterPattern(rule.pattern), 'i'), target: rule.target || 'all', action: rule.action || 'exclude' } }
         catch { return null }
       }).filter(Boolean)
       previewPlansRaw.forEach(plan => {
@@ -2534,6 +2534,8 @@ const previewPaginatedFiles = computed(() => {
   return files.slice(start, start + previewPageSize.value)
 })
 
+const normalizeFilterPattern = (pattern) => String(pattern || '').replace(/\(\?[imsx]+\)/g, '')
+
 const reapplyPreviewFilter = () => {
   const allFiles = previewAllFiles.value || []
   const enabledRules = previewFilterRules.value.filter(r => r.enabled && r.pattern)
@@ -2543,7 +2545,7 @@ const reapplyPreviewFilter = () => {
       const title = String(file.title || file.path || '')
       for (const rule of enabledRules) {
         try {
-          const regex = new RegExp(rule.pattern, 'i')
+          const regex = new RegExp(normalizeFilterPattern(rule.pattern), 'i')
           const target = rule.target === 'file' ? title : String(file.path || title)
           const match = regex.test(target)
           if (rule.action === 'exclude' && match) return false
