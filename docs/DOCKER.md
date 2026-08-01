@@ -18,7 +18,7 @@ version: '3.8'
 
 services:
   kikoerumanager:
-    image: ghcr.io/ginatwiki/kikoerutool:latest
+    image: ghcr.io/ginatwiki/kikoerumanager:latest
     container_name: kikoerumanager
     ports:
       - "8000:8000"
@@ -52,7 +52,7 @@ docker run -d \
   -v /path/to/library:/library \
   -v /path/to/temp:/temp \
   -e TZ=Asia/Shanghai \
-  ghcr.io/ginatwiki/kikoerutool:latest
+  ghcr.io/ginatwiki/kikoerumanager:latest
 ```
 
 ---
@@ -159,5 +159,5 @@ docker-compose up -d
 
 ## 技术支持
 
-- **GitHub Issues**: https://github.com/GinatWiki/KikoeruTool/issues
+- **GitHub Issues**: https://github.com/GinatWiki/KikoeruManager/issues
 - **API 文档**: http://localhost:8000/docs

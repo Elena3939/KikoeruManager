@@ -124,6 +124,6 @@ KikoeruManager 是一个面向 DLsite 同人音声库存的桌面化管理工作
 
 - Windows 桌面版：下载 Release 后运行 `KikoeruManager.exe`。
 - 源码开发：后端 FastAPI，前端 Vite。
-- Docker：使用 `ghcr.io/ginatwiki/kikoerutool:<版本号>`，持久化挂载 `/app/postgres` 和 `/app/data`。默认内置 PostgreSQL 18 与 Redis；设置 `DATABASE_URL` 或 `KIKOERUMANAGER_REDIS_URL` 后分别改用外部实例。镜像启动会执行 Alembic 迁移；正式 tag 构建会把版本号写入前端静态文件名，避免反向代理缓存旧 chunk 后继续命中同一个 `/assets/*.js` URL。
+- Docker：使用 `ghcr.io/ginatwiki/kikoerumanager:<版本号>`，持久化挂载 `/app/postgres` 和 `/app/data`。默认内置 PostgreSQL 18 与 Redis；设置 `DATABASE_URL` 或 `KIKOERUMANAGER_REDIS_URL` 后分别改用外部实例。镜像启动会执行 Alembic 迁移；正式 tag 构建会把版本号写入前端静态文件名，避免反向代理缓存旧 chunk 后继续命中同一个 `/assets/*.js` URL。
 
 详细部署命令见项目根目录的 `README.md`、`START_GUIDE.md` 和 `DOCKER_DEPLOY.md`。

@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v2.0.0)'
-        required: true
+        description: 'Release tag (e.g. v2.3.14, optional when triggered by tag push)'
+        required: false
         type: string
 
 permissions:
@@ -47,13 +47,23 @@ jobs:
 
     - name: Build EXE (console + noconsole)
       working-directory: backend
+      env:
+        KIKOERUMANAGER_VERSION: ${{ github.event.inputs.tag || github.ref_name }}
       run: python build.py
+
+    - name: Verify EXE outputs
+      shell: pwsh
+      working-directory: backend
+      run: |
+        Get-ChildItem dist/KikoeruManager.exe, dist/KikoeruManager-noconsole.exe | Select-Object Name, Length
+        if (-not (Test-Path dist/KikoeruManager.exe)) { throw "dist/KikoeruManager.exe 未生成" }
+        if (-not (Test-Path dist/KikoeruManager-noconsole.exe)) { throw "dist/KikoeruManager-noconsole.exe 未生成" }
 
     - name: Package archives
       shell: pwsh
       run: |
-        $tag = "${{ github.event.inputs.tag }}"
-        if (-not $tag) { $tag = "${{ github.ref_name }}" }
+        $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+        if (-not $tag.StartsWith("v")) { $tag = "v" + $tag }
         Compress-Archive -Path backend/dist/KikoeruManager.exe -DestinationPath "kikoerumanager-$tag-windows-console.zip" -Force
         Compress-Archive -Path backend/dist/KikoeruManager-noconsole.exe -DestinationPath "kikoerumanager-$tag-windows-noconsole.zip" -Force
         Get-ChildItem *.zip

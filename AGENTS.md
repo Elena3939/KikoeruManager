@@ -18,8 +18,8 @@
 
 - 产品名统一为 `KikoeruManager`；技术命名统一小写 `kikoerumanager`。
 - 不要把旧名 `Prekikoeru`、`KikoeruTool_Elena`、`kikoeruTool` 混回标题、exe、镜像、文档、环境变量、localStorage key、SSE 事件名。
-- GitHub 主发布仓库是 `GinatWiki/KikoeruTool`；上游来源仓库是 `Elena3939/KikoeruManager`（`upstream` remote，代码来源与协作）。
-- GHCR 镜像目标：`ghcr.io/ginatwiki/kikoerutool`。
+- GitHub 主发布仓库是 `GinatWiki/KikoeruManager`；上游来源仓库是 `Elena3939/KikoeruManager`（`upstream` remote，代码来源与协作）。
+- GHCR 镜像目标：`ghcr.io/ginatwiki/kikoerumanager`。
 - 上游兼容镜像仍为 `elena39/kikoerumanager`（由 Elena3939/KikoeruManager 发布，不作为本仓库默认目标）。
 - 分支约定：`main` 为稳定发布分支，`codex/merge-upstream` 为开发测试分支；开发与验证先合入开发测试分支，验证通过后再合并到 `main` 并发布 tag。
 - 当前产品是多工作台桌面化工具，不是传统后台管理系统。

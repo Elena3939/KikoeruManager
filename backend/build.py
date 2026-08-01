@@ -31,6 +31,8 @@ def resolve_app_version():
             version = ""
     if not version:
         version = "dev"
+    if not version.lower().startswith("v") and version != "dev":
+        version = "v" + version
     return version[1:] if version.lower().startswith("v") else version
 
 def check_build_dependencies():

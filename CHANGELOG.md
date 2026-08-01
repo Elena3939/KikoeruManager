@@ -2,11 +2,12 @@
 
 本文件记录 KikoeruManager 的版本变化、功能更新与问题修复。更早的历史版本可通过 GitHub Tags 与提交历史查看。
 
-## 未发布
+## v2.3.14
 
-- 发布源切换：本仓库 `GinatWiki/KikoeruTool` 作为主要发布源，README 克隆、Releases、GHCR 镜像、Docker Compose 与 Unraid 模板统一指向 `ghcr.io/ginatwiki/kikoerutool`。
+- 发布源切换：本仓库更名为 `GinatWiki/KikoeruManager`，README 克隆、Releases、GHCR 镜像、Docker Compose 与 Unraid 模板统一指向 `ghcr.io/ginatwiki/kikoerumanager`。
 - 文档：README 增加上游贡献徽章与“项目来源与协作”说明，明确项目由 canforgiveher 发起、Elena3939/KikoeruManager 基于原项目开发并贡献大量代码，双方均采用 MIT 许可。
 - 修复：Windows 发布流水线改用 `KikoeruManager` 产物命名，Docker 文档清理旧镜像与旧仓库链接。
+- 修复：Windows exe 发行版打包路径与产物名一致，手动触发时支持填写版本号；发布流水线新增 exe 产物校验。
 
 ## v2.3.13
 

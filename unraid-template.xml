@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Container version="2">
   <Name>kikoerumanager</Name>
-  <Repository>ghcr.io/ginatwiki/kikoerutool:latest</Repository>
-  <Registry>https://github.com/GinatWiki/KikoeruTool/pkgs/container/kikoerutool</Registry>
+  <Repository>ghcr.io/ginatwiki/kikoerumanager:latest</Repository>
+  <Registry>https://github.com/GinatWiki/KikoeruManager/pkgs/container/kikoerumanager</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>sh</Shell>
   <Privileged>true</Privileged>
-  <Support>https://github.com/GinatWiki/KikoeruTool/issues</Support>
-  <Project>https://github.com/GinatWiki/KikoeruTool</Project>
+  <Support>https://github.com/GinatWiki/KikoeruManager/issues</Support>
+  <Project>https://github.com/GinatWiki/KikoeruManager</Project>
   <Overview>KikoeruManager - DLsite 同人音声库存工作台。支持自动解压、元数据获取、库存索引、字幕配对、外链下载、百度网盘、任务中心和操作审计；镜像内置 PostgreSQL 18。</Overview>
   <Category>MediaApp:Other</Category>
   <WebUI>http://[IP]:[PORT:5555]</WebUI>
