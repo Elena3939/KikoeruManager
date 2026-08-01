@@ -13556,7 +13556,9 @@ async def move_to_real_library(request: Request):
 
                 # 3. 目标已存在 → 跳过，绝不覆盖
                 if os.path.exists(dst):
-                    results["skipped"].append({"path": src, "target": dst, "reason": "目标已存在，跳过（不覆盖）"})
+                    skip_reason = "目标已存在，跳过（不覆盖）"
+                    logger.info(f"[移库] 跳过 {src} -> {dst}: {skip_reason}")
+                    results["skipped"].append({"path": src, "target": dst, "reason": skip_reason})
                     continue
 
                 if dry_run:

@@ -18942,7 +18942,13 @@ async function moveAllItems () {
   const failedPre = plan.failed || []
 
   if (movable.length === 0) {
-    ElMessage.warning(`没有可移动的项目（跳过 ${skipped.length}，失败 ${failedPre.length}）`)
+    const skippedDetail = skipped.length > 0
+      ? `\n跳过的项目:\n${skipped.slice(0, 5).map(s => `· ${s.path.split(/[\\/]/).pop()}: ${s.reason || '目标已存在'}`).join('\n')}`
+      : ''
+    const failedDetail = failedPre.length > 0
+      ? `\n失败的项目:\n${failedPre.slice(0, 5).map(f => `· ${f.path.split(/[\\/]/).pop()}: ${f.reason || '未知原因'}`).join('\n')}`
+      : ''
+    ElMessage.warning(`没有可移动的项目（跳过 ${skipped.length}，失败 ${failedPre.length}）${skippedDetail}${failedDetail}`)
     return
   }
 
