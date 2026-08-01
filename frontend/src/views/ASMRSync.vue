@@ -1392,7 +1392,8 @@ const buildEnhancedPlans = async () => {
       resource_types: ['audio', 'subtitle', 'cover'],
       audio_formats: [],
       subtitle_languages: [],
-      include_existing: false
+      include_existing: false,
+      apply_default_filter: enhancedDefaultFilterEnabled.value
     })
     enhancedPlans.value = (result.plans || []).map(plan => ({
       ...plan,

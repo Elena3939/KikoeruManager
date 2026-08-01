@@ -16998,6 +16998,7 @@ class ASMRSyncEnhancedPlanRequest(BaseModel):
     audio_formats: List[str] = []
     subtitle_languages: List[str] = []
     include_existing: bool = False
+    apply_default_filter: bool = False
     refresh: bool = False
 
 
@@ -19074,6 +19075,7 @@ async def asmr_sync_enhanced_plan(request: ASMRSyncEnhancedPlanRequest):
                 rjcode=normalized_rjcode,
                 folder_path=str(request.folder_path or "").strip(),
                 filters=filters,
+                apply_default_filter=bool(request.apply_default_filter),
                 refresh=bool(request.refresh),
             )
             plans.append(plan)

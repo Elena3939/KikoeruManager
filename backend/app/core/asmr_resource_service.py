@@ -873,6 +873,49 @@ class ASMRResourceService:
             selected.append(next_item)
         return selected
 
+    def _apply_default_filter_to_resources(self, resources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """按配置过滤规则调整默认选中项，命中排除规则或未命中包含规则的文件取消勾选"""
+        filter_config = get_config().filter
+        rules = list(filter_config.rules or [])
+        if not filter_config.enabled or not rules:
+            return resources
+
+        result: List[Dict[str, Any]] = []
+        for item in resources:
+            next_item = dict(item)
+            if next_item.get("selected"):
+                file_name = str(item.get("file_name") or "")
+                relative_path = str(item.get("relative_path") or file_name)
+                folder_path = relative_path.rsplit("/", 1)[0] if "/" in relative_path else ""
+                filtered_out = False
+                for rule in rules:
+                    if not getattr(rule, "enabled", True):
+                        continue
+                    pattern = str(getattr(rule, "pattern", "") or "")
+                    if not pattern:
+                        continue
+                    target = str(getattr(rule, "target", "file") or "file").lower()
+                    action = str(getattr(rule, "action", "exclude") or "exclude").lower()
+                    try:
+                        if target == "file":
+                            matched = bool(re.search(pattern, file_name, re.IGNORECASE))
+                        elif target == "folder":
+                            matched = bool(folder_path) and bool(re.search(pattern, folder_path, re.IGNORECASE))
+                        else:
+                            matched = bool(re.search(pattern, file_name, re.IGNORECASE) or re.search(pattern, relative_path, re.IGNORECASE))
+                    except re.error:
+                        continue
+                    if action == "include" and not matched:
+                        filtered_out = True
+                        break
+                    if action == "exclude" and matched:
+                        filtered_out = True
+                        break
+                if filtered_out:
+                    next_item["selected"] = False
+            result.append(next_item)
+        return result
+
     def _group_resources(self, resources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         grouped: Dict[str, Dict[str, Any]] = {}
         for item in resources:
@@ -1970,6 +2013,7 @@ class ASMRResourceService:
         rjcode: str,
         folder_path: str = "",
         filters: Optional[Dict[str, Any]] = None,
+        apply_default_filter: bool = False,
         refresh: bool = True,
         emit_activity_log: bool = True,
     ) -> Dict[str, Any]:
@@ -1997,6 +2041,8 @@ class ASMRResourceService:
 
             filtered_resources = self._apply_filters(remote_catalog, filters or {})
             selectable_resources = self._select_default_resources(filtered_resources)
+            if apply_default_filter:
+                selectable_resources = self._apply_default_filter_to_resources(selectable_resources)
             session_id = self._create_download_session(
                 rjcode=normalized_rjcode,
                 work_title=str(work_info.get("title") or ""),
