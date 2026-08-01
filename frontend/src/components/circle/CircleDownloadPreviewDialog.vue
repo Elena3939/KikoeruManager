@@ -139,16 +139,26 @@
                 </div>
               </section>
 
-              <div class="action-buttons grid grid-cols-3 gap-3">
+              <div class="action-buttons grid grid-cols-4 gap-3">
                 <button
                   type="button"
                   class="soft-button mode-classify interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 font-medium text-slate-700"
                   :class="{ active: settings.classifyMode === 'circle', 'is-disabled': settings.flattenFiles }"
                   :disabled="settings.flattenFiles"
                   :title="settings.flattenFiles ? '直放指定目录模式下不再按社团归类' : ''"
-                  @click="toggleClassifyMode"
+                  @click="setClassifyMode('circle')"
                 >
                   按社团归类
+                </button>
+                <button
+                  type="button"
+                  class="soft-button mode-smart interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 font-medium text-slate-700"
+                  :class="{ active: settings.classifyMode === 'smart', 'is-disabled': settings.flattenFiles }"
+                  :disabled="settings.flattenFiles"
+                  :title="settings.flattenFiles ? '直放指定目录模式下不再按智能分类规则归类' : ''"
+                  @click="setClassifyMode('smart')"
+                >
+                  智能分类规则
                 </button>
                 <button
                   type="button"
@@ -496,6 +506,8 @@ const finalPathPreview = computed(() => {
   if (props.settings.classifyMode === 'circle') {
     const circle = String(props.circleName || '').trim() || '{社团名}'
     parts.push(circle)
+  } else if (props.settings.classifyMode === 'smart') {
+    parts.push('{智能分类规则目录}')
   }
   const workDir = props.settings.namingMode === 'api' ? '{API命名作品目录}' : '{作品目录}'
   parts.push(workDir)
@@ -513,6 +525,8 @@ const finalPathDescription = computed(() => {
   hints.push(subdir ? '落到指定子目录下' : '落到库存根目录')
   if (props.settings.classifyMode === 'circle') {
     hints.push('按社团名再归类一层')
+  } else if (props.settings.classifyMode === 'smart') {
+    hints.push('按智能分类规则归类一层')
   } else {
     hints.push('不再按社团归类')
   }
@@ -527,6 +541,11 @@ const finalPathDescription = computed(() => {
 function toggleClassifyMode() {
   if (props.settings.flattenFiles) return
   props.settings.classifyMode = props.settings.classifyMode === 'circle' ? 'none' : 'circle'
+}
+
+function setClassifyMode(mode) {
+  if (props.settings.flattenFiles) return
+  props.settings.classifyMode = props.settings.classifyMode === mode ? 'none' : mode
 }
 
 function toggleNamingMode() {
@@ -807,7 +826,11 @@ function emitSubmit() {
   const flattenFiles = !isDirectMode.value && Boolean(props.settings.flattenFiles)
   // flatten 直放模式下：强制 preserve / none，避免后端再创建作品目录 / 社团目录层。
   const namingMode = flattenFiles ? 'preserve' : (props.settings.namingMode === 'api' ? 'api' : 'preserve')
-  const classifyMode = flattenFiles ? 'none' : (props.settings.classifyMode === 'circle' ? 'circle' : 'none')
+  const classifyMode = flattenFiles
+    ? 'none'
+    : (props.settings.classifyMode === 'circle' || props.settings.classifyMode === 'smart'
+        ? props.settings.classifyMode
+        : 'none')
 
   const items = planStates.value
     .map(plan => buildSubmitItem(plan, isDirectMode.value))
@@ -860,7 +883,11 @@ function buildSubmitItem(plan, isDirectMode) {
     const useImmediateSynologyUpload = selectedTargetLibrary.value?.type === 'synology_filestation' && String(props.settings.targetLibraryId || '').trim()
     const subdir = String(props.settings.targetSubdir || '').trim().replace(/^[\\/]+|[\\/]+$/g, '')
     const namingMode = flattenFiles ? 'preserve' : (props.settings.namingMode === 'api' ? 'api' : 'preserve')
-    const classifyMode = flattenFiles ? 'none' : (props.settings.classifyMode === 'circle' ? 'circle' : 'none')
+    const classifyMode = flattenFiles
+      ? 'none'
+      : (props.settings.classifyMode === 'circle' || props.settings.classifyMode === 'smart'
+          ? props.settings.classifyMode
+          : 'none')
     return {
       ...baseItem,
       upload_options: {

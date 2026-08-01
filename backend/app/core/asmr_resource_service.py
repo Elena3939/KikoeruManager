@@ -2342,15 +2342,62 @@ class ASMRResourceService:
             final_metadata["maker_name"] = str(final_metadata.get("maker_name") or circle_name).strip() or circle_name
 
         task.task_metadata.update(final_metadata)
+        # 字幕简中化与统一字幕同步（RJ 号同步流程开关）
+        try:
+            from .subtitle_sync_service import get_subtitle_sync_service
+            subtitle_service = get_subtitle_sync_service()
+            if getattr(config.asmr_sync, "simplify_chinese_enabled", False):
+                simplify_result = subtitle_service.convert_subtitles_to_simplified_in_folder(download_root)
+                if simplify_result.get("converted_files", 0) > 0:
+                    self._append_task_log(task, f"字幕简中化完成: {simplify_result['converted_files']} 个文件")
+            if getattr(config.asmr_sync_step, "sync_subtitle", False):
+                subtitle_sync_config = getattr(config, "subtitle_sync", None)
+                sync_result = await subtitle_service.sync_subtitles_to_audio_folder(
+                    download_root,
+                    priority_languages=list(getattr(subtitle_sync_config, "language_priority", None) or []),
+                    content_detection_first=bool(getattr(subtitle_sync_config, "content_detection_first", True)),
+                    use_ai_match=bool(getattr(subtitle_sync_config, "use_ai_match", True)),
+                    task_id=task.id,
+                    rjcode=rjcode,
+                )
+                task.task_metadata["asmr_sync_subtitle_result"] = sync_result
+                if sync_result.get("success"):
+                    self._append_task_log(
+                        task,
+                        f"字幕同步完成: 重命名 {len(sync_result.get('renamed_files') or [])} 个音频，"
+                        f"复制 {len(sync_result.get('copied_subtitles') or [])} 个字幕",
+                    )
+                conflicts = list(sync_result.get("conflicts") or [])
+                if conflicts:
+                    self._record_enhanced_subtitle_conflicts(task, rjcode, conflicts)
+        except Exception as exc:
+            logger.warning("[字幕] 增强下载字幕处理失败 rj=%s error=%s", rjcode, exc, exc_info=True)
+
         task.update_progress(97, "准备入库")
         renamed_root = download_root
         if postprocess_options.get("naming_mode") == "api":
             renamed_root = await self._api_rename_download_root(download_root, rjcode, final_metadata)
 
+        manager = get_library_manager()
+        target_library_id = str(postprocess_options.get("target_library_id") or "").strip()
+        target_library = None
+        if target_library_id:
+            target_library = manager.get_library_definition(target_library_id)
+
+        classifier = SmartClassifier()
         target_subdir = str(postprocess_options.get("target_subdir") or "").strip().strip("/\\")
         classify_mode = str(postprocess_options.get("classify_mode") or "").strip().lower()
         flatten_files = bool(postprocess_options.get("flatten_files"))
-        if classify_mode == "circle" and not flatten_files:
+        if classify_mode == "smart" and not flatten_files:
+            circle_dir = self._resolve_smart_classification_dir(
+                classifier,
+                final_metadata,
+                renamed_root,
+                target_library,
+                config,
+            )
+            task.update_progress(98, "按智能分类规则入库")
+        elif classify_mode == "circle" and not flatten_files:
             circle_dir = self._sanitize_folder_name(circle_name or final_metadata.get("maker_name") or "未分类社团", "未分类社团")
             task.update_progress(98, "按社团入库")
         else:
@@ -2359,12 +2406,8 @@ class ASMRResourceService:
                 task.update_progress(98, "直放到指定目录" if target_subdir else "直放到库存根目录")
             else:
                 task.update_progress(98, "入库到指定目录" if target_subdir else "入库")
-        manager = get_library_manager()
-        target_library_id = str(postprocess_options.get("target_library_id") or "").strip()
-        classifier = SmartClassifier()
 
         if target_library_id:
-            target_library = manager.get_library_definition(target_library_id)
             if target_library and target_library.type != "local":
                 relative_parts = [part for part in [target_subdir, circle_dir] if part]
                 relative_target_dir = "/".join(relative_parts)
@@ -2522,6 +2565,61 @@ class ASMRResourceService:
                 final_path, exc_info=True,
             )
         return final_path
+
+    def _resolve_smart_classification_dir(
+        self,
+        classifier,
+        metadata,
+        source_path,
+        target_library,
+        config,
+    ) -> str:
+        try:
+            smart_target = classifier._apply_classification_rules(metadata, source_path, target_library)
+            if not smart_target:
+                return ""
+            base = str(
+                target_library.root_path if target_library else config.storage.library_path
+            ).replace("\\", "/").rstrip("/")
+            target_str = str(smart_target).replace("\\", "/").rstrip("/")
+            if target_str == base:
+                return ""
+            if base and target_str.startswith(base + "/"):
+                return target_str[len(base):].strip("/")
+            if os.path.isabs(str(smart_target)):
+                rel = os.path.relpath(
+                    str(smart_target),
+                    target_library.root_path if target_library else config.storage.library_path,
+                )
+                return str(rel).replace("\\", "/").strip("/")
+            return target_str.strip("/")
+        except Exception:
+            logger.warning("[分类] 智能分类规则应用失败，回退根目录", exc_info=True)
+            return ""
+
+    def _record_enhanced_subtitle_conflicts(self, task, rjcode, conflicts) -> None:
+        if not conflicts:
+            return
+        from .classifier import SmartClassifier
+
+        metadata = dict(task.task_metadata or {})
+        metadata["failure_stage"] = "subtitle_sync"
+        metadata["subtitle_detection_conflicts"] = conflicts
+        metadata["error_message"] = f"字幕版本检测冲突 {len(conflicts)} 项，需人工确认"
+        metadata["available_actions"] = ["SKIP"]
+        first_path = next(
+            (item.get("path") for item in conflicts if item.get("path")),
+            str(task.source_path or ""),
+        )
+        SmartClassifier()._add_to_conflict_works(
+            task.id,
+            str(rjcode or "").strip() or None,
+            "MULTIPLE_VERSIONS",
+            "",
+            first_path,
+            metadata,
+            status="PENDING",
+        )
 
     async def _sync_circle_completion_owned_state(self, rjcode: str, folder_path: str, library_id: str = "") -> None:
         if not rjcode or not folder_path:

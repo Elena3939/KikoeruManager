@@ -905,7 +905,7 @@ const downloadSettings = ref({
   targetLibraryId: '',
   targetSubdir: '',
   namingMode: 'api',
-  classifyMode: 'none',
+  classifyMode: 'smart',
   downloadBasePath: '',
   directLibraryId: '',
   directBasePath: '',
