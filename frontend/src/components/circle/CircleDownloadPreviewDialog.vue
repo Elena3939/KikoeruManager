@@ -1139,7 +1139,22 @@ function applyFilterToSelection(applyFilter) {
 
 function toggleFilterSelection() {
   filterApplied.value = !filterApplied.value
-  applyFilterToSelection(filterApplied.value)
+  if (!filterApplied.value) {
+    applyFilterToSelection(false)
+    return
+  }
+  const rules = cachedFilterRules.value || []
+  if (rules.length === 0) {
+    ElMessage.info('未找到启用的过滤规则')
+    applyFilterToSelection(true)
+    return
+  }
+  const beforeCount = planStates.value.reduce((sum, plan) => sum + plan.selectable_resources.filter(item => item.selected).length, 0)
+  applyFilterToSelection(true)
+  const afterCount = planStates.value.reduce((sum, plan) => sum + plan.selectable_resources.filter(item => item.selected).length, 0)
+  if (afterCount === beforeCount) {
+    ElMessage.info('过滤规则未命中当前文件，勾选保持不变')
+  }
 }
 
 function getTreeRowIconComponent(row) {
