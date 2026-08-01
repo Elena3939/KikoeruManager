@@ -7,7 +7,7 @@
 
 ## 项目来源与协作
 
-本项目与上游 [Elena3939/KikoeruManager](https://github.com/Elena3939/KikoeruManager) 是两个独立的 GitHub 仓库，本项目在保留上游代码来源的基础上持续合并更新并二次开发。
+本项目最初由 canforgiveher 发起（原 canforgiveher/KikoeruTool，账号被盗后已迁移至本仓库 [GinatWiki/KikoeruTool](https://github.com/GinatWiki/KikoeruTool)）。[Elena3939/KikoeruManager](https://github.com/Elena3939/KikoeruManager) 在原始 KikoeruTool 基础上开发并贡献了大量代码，本项目在保留原项目与上游代码来源的前提下持续合并更新并二次开发。原项目、上游与本仓库在 GitHub 上均为独立仓库：GitHub 不支持把已存在的独立仓库事后转换为 fork，因此本项目不挂 fork 徽章，改用本段落、LICENSE 与提交历史保留来源与署名。
 
 本地通过 `upstream` remote 跟踪上游代码：
 
@@ -15,6 +15,8 @@
 git remote add upstream https://github.com/Elena3939/KikoeruManager.git
 git fetch upstream
 ```
+
+本项目与上游均采用 MIT 许可（见 [LICENSE](LICENSE)）。README、文档与代码都可以基于上游内容修改后重新发布，但必须保留 MIT 版权与许可声明，并在显著位置注明来源。本项目 LICENSE 使用与上游一致的 `KikoeruManager contributors` 版权行，覆盖项目发起者与主要代码贡献者。
 
 共同开发以 PR 为主：功能与修复先提交到本项目；需要回馈上游的改动可单独向上游仓库发起 PR。合并上游代码时按业务模块拆分提交，提交信息使用中文并说明业务影响。
 
@@ -320,7 +322,7 @@ services:
 - [Sakyoriii/prekikoeru](https://github.com/Sakyoriii/prekikoeru) — DLsite 资源自动解压整理工具
 - [yodhcn/dlsite-doujin-renamer](https://github.com/yodhcn/dlsite-doujin-renamer) — DLsite 同人作品重命名工具
 - [Number178/kikoeru-express](https://github.com/Number178/kikoeru-express) — 同人音声专用流媒体服务器
-- [canforgive/KikoeruTool](https://github.com/canforgive/KikoeruTool) — DLsite 音声作品智能整理工具（基于原型开发）
+- canforgiveher/KikoeruTool（原始项目，账号被盗后迁移） — DLsite 音声作品智能整理工具，本项目原型
 
 ### 声明
 
