@@ -1,714 +1,692 @@
 <template>
-  <div class="dashboard">
-    <div class="title-row">
-      <AcTitle size="large" color="teal">工作台</AcTitle>
-    </div>
+  <div class="dashboard-page-shell flex h-full min-h-0 w-full flex-col overflow-hidden px-2 pb-2 pt-1 text-slate-900">
+    <DashboardHero
+      :watcher-running="watcherRunning"
+      :loading="loading"
+      :kpi-cards="kpiCards"
+      @refresh="refreshDashboardOnResume(false)"
+      @kpi-click="openKpiTarget"
+      @upload-success="handleUploadSuccess"
+    />
 
-    <!-- 统计卡片 -->
-    <el-row :gutter="20" class="stats-row">
-      <el-col :span="6">
-        <el-card class="stat-card clickable" @click="$router.push('/tasks')">
-          <div class="stat-icon" style="background-color: #889df0;">
-            <el-icon :size="24"><Document /></el-icon>
-          </div>
-          <div class="stat-info">
-            <div class="stat-value">{{ stats.pending }}</div>
-            <div class="stat-label">待处理</div>
-          </div>
-        </el-card>
-      </el-col>
+    <DashboardCommandStrip
+      :scanning="scanning"
+      :watcher-running="watcherRunning"
+      @scan="handleManualScan"
+      @toggle-watcher="handleWatcherToggle"
+      @go="(path) => router.push(path)"
+    />
 
-      <el-col :span="6">
-        <el-card class="stat-card clickable" @click="$router.push('/tasks')">
-          <div class="stat-icon" style="background-color: #f7cd67;">
-            <el-icon :size="24"><Loading /></el-icon>
-          </div>
-          <div class="stat-info">
-            <div class="stat-value">{{ stats.processing }}</div>
-            <div class="stat-label">处理中</div>
-          </div>
-        </el-card>
-      </el-col>
+    <main class="grid min-h-0 flex-1 grid-cols-1 items-stretch gap-3 overflow-hidden lg:grid-cols-[minmax(0,1fr)_360px]">
+      <DashboardActiveTasks
+        :tasks="recentTasks"
+        :status-cards="statusCards"
+        class="min-h-0"
+        @go="(path) => router.push(path)"
+        @action="handleTaskCenterAction"
+      />
 
-      <el-col :span="6">
-        <el-card class="stat-card clickable" @click="$router.push('/library')">
-          <div class="stat-icon" style="background-color: #8ac68a;">
-            <el-icon :size="24"><CircleCheck /></el-icon>
-          </div>
-          <div class="stat-info">
-            <div class="stat-value">{{ stats.completed }}</div>
-            <div class="stat-label">已完成（查看库存）</div>
-          </div>
-        </el-card>
-      </el-col>
-
-      <el-col :span="6">
-        <el-card class="stat-card clickable" @click="$router.push('/conflicts')">
-          <div class="stat-icon" style="background-color: #fc736d;">
-            <el-icon :size="24"><Warning /></el-icon>
-          </div>
-          <div class="stat-info">
-            <div class="stat-value">{{ stats.conflicts }}</div>
-            <div class="stat-label">问题作品</div>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
-
-    <!-- 快捷操作栏 -->
-    <el-card class="action-card">
-      <template #header>
-        <div class="card-header">
-          <span>快捷操作</span>
-        </div>
-      </template>
-      <div class="action-buttons">
-        <el-button
-          type="primary"
-          size="large"
-          @click="handleManualScan"
-          :loading="scanning"
-        >
-          <el-icon><Search /></el-icon>
-          扫描输入目录
-        </el-button>
-        <el-button
-          type="warning"
-          size="large"
-          @click="handleScanProcessedArchives"
-          :loading="scanningProcessed"
-        >
-          <el-icon><Refresh /></el-icon>
-          扫描已处理目录
-        </el-button>
-        <el-button
-          type="success"
-          size="large"
-          @click="handleWatcherToggle"
-        >
-          <el-icon><VideoPlay v-if="!watcherRunning" /><VideoPause v-else /></el-icon>
-          {{ watcherRunning ? '停止监视器' : '启动监视器' }}
-        </el-button>
-        <el-button
-          type="info"
-          size="large"
-          @click="$router.push('/conflicts')"
-        >
-          <el-icon><Warning /></el-icon>
-          问题作品 ({{ stats.conflicts }})
-        </el-button>
-      </div>
-      <el-divider />
-      <FileUploader @upload-success="handleUploadSuccess" />
-    </el-card>
-
-    <!-- 工作台：密码入库 / 已有文件夹 / 同步下载 -->
-    <el-row :gutter="20" class="workbench-row">
-      <!-- 密码快速入库 -->
-      <el-col :span="10">
-        <el-card class="workbench-card password-card">
-          <template #header>
-            <div class="card-header">
-              <span><el-icon><Lock /></el-icon> 密码快速入库</span>
-              <el-button link type="primary" @click="$router.push('/passwords')">
-                管理密码库
-              </el-button>
-            </div>
-          </template>
-          <el-input
-            v-model="quickImportText"
-            type="textarea"
-            :rows="4"
-            placeholder="每行一个密码，粘贴后点击下方按钮即可（自动匹配RJ号）&#10;支持格式：纯密码 / RJ号,密码 / 文件名 密码"
-            class="quick-import-input"
-          />
-          <div class="quick-import-footer">
-            <span v-if="quickImportResult" class="quick-import-result">{{ quickImportResult }}</span>
-            <span v-else class="quick-import-hint">
-              {{ quickImportCount > 0 ? `待导入 ${quickImportCount} 个` : '粘贴密码文本即可' }}
-            </span>
-            <el-button
-              type="primary"
-              @click="handleQuickImport"
-              :loading="quickImporting"
-              :disabled="quickImportCount === 0"
-            >
-              <el-icon><Key /></el-icon>
-              一键入库{{ quickImportCount > 0 ? ` (${quickImportCount})` : '' }}
-            </el-button>
-          </div>
-        </el-card>
-      </el-col>
-
-      <!-- 已有文件夹 -->
-      <el-col :span="7">
-        <el-card class="workbench-card clickable-card" @click="$router.push('/existing-folders')">
-          <div class="entry-card-content">
-            <div class="entry-icon" style="background-color: #e59266;">
-              <el-icon :size="26"><Folder /></el-icon>
-            </div>
-            <div class="entry-info">
-              <div class="entry-title">已有文件夹</div>
-              <div class="entry-desc">
-                <template v-if="existingFoldersCount !== null">
-                  共 {{ existingFoldersCount }} 个待处理
-                </template>
-                <template v-else>加载中...</template>
-              </div>
-            </div>
-            <el-icon class="entry-arrow"><ArrowRight /></el-icon>
-          </div>
-        </el-card>
-
-        <!-- 同步下载 -->
-        <el-card class="workbench-card clickable-card" @click="$router.push('/asmr-sync')">
-          <div class="entry-card-content">
-            <div class="entry-icon" style="background-color: #b77dee;">
-              <el-icon :size="26"><Download /></el-icon>
-            </div>
-            <div class="entry-info">
-              <div class="entry-title">同步下载</div>
-              <div class="entry-desc">
-                <template v-if="asmrStatus">
-                  {{ asmrStatus.processing + asmrStatus.pending }} 进行中 / {{ asmrStatus.waiting_retry }} 待重试
-                </template>
-                <template v-else>加载中...</template>
-              </div>
-            </div>
-            <el-icon class="entry-arrow"><ArrowRight /></el-icon>
-          </div>
-        </el-card>
-      </el-col>
-
-      <!-- 监视器状态 -->
-      <el-col :span="7">
-        <el-card class="workbench-card watcher-card">
-          <div class="entry-card-content">
-            <div class="entry-icon" :style="{ backgroundColor: watcherRunning ? '#8ac68a' : '#c4b89e' }">
-              <el-icon :size="26"><View v-if="watcherRunning" /><Hide v-else /></el-icon>
-            </div>
-            <div class="entry-info">
-              <div class="entry-title">目录监视器</div>
-              <div class="entry-desc">{{ watcherRunning ? '正在监视输入目录' : '已停止' }}</div>
-            </div>
-            <el-switch
-              :model-value="watcherRunning"
-              @change="handleWatcherToggle"
-              @click.stop
-            />
-          </div>
-        </el-card>
-
-        <!-- 日志入口 -->
-        <el-card class="workbench-card clickable-card" @click="$router.push('/logs')">
-          <div class="entry-card-content">
-            <div class="entry-icon" style="background-color: #9a835a;">
-              <el-icon :size="26"><Document /></el-icon>
-            </div>
-            <div class="entry-info">
-              <div class="entry-title">运行日志</div>
-              <div class="entry-desc">查看处理日志与错误信息</div>
-            </div>
-            <el-icon class="entry-arrow"><ArrowRight /></el-icon>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
-
-    <!-- 当前任务 -->
-    <el-card class="tasks-card">
-      <template #header>
-        <div class="card-header">
-          <span>当前任务</span>
-          <el-button link @click="$router.push('/tasks')">查看全部</el-button>
-        </div>
-      </template>
-
-      <el-table :data="recentTasks" v-loading="loading" style="width: 100%">
-        <el-table-column prop="id" label="ID" width="80">
-          <template #default="{ row }">
-            <span class="task-id">{{ row.id.slice(0, 8) }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="source_path" label="源文件" show-overflow-tooltip />
-
-        <el-table-column prop="type" label="类型" width="100">
-          <template #default="{ row }">
-            <el-tag size="small">{{ getTaskTypeLabel(row.type) }}</el-tag>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="status" label="状态" width="100">
-          <template #default="{ row }">
-            <el-tag :type="getStatusType(row.status)" size="small">
-              {{ getStatusLabel(row.status) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="progress" label="进度" width="200">
-          <template #default="{ row }">
-            <div class="progress-wrapper">
-              <el-progress
-                :percentage="row.progress"
-                :status="getProgressStatus(row.status)"
-                :stroke-width="16"
-              />
-              <span class="progress-text">{{ row.current_step }}</span>
-            </div>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="操作" width="150" fixed="right">
-          <template #default="{ row }">
-            <el-button-group v-if="row.status === 'processing'">
-              <el-button size="small" @click="pauseTask(row.id)">暂停</el-button>
-              <el-button size="small" type="danger" @click="cancelTask(row.id)">取消</el-button>
-            </el-button-group>
-            <el-button
-              v-else-if="row.status === 'paused'"
-              size="small"
-              type="primary"
-              @click="resumeTask(row.id)"
-            >
-              恢复
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
-
-    <!-- 已处理压缩包 -->
-    <el-card class="archives-card">
-      <template #header>
-        <div class="card-header">
-          <span>已处理压缩包</span>
-          <div class="archives-header-actions">
-            <!-- 搜索框 -->
-            <el-input
-              v-model="archiveSearchQuery"
-              placeholder="搜索RJ号或文件名"
-              style="width: 200px; margin-right: 12px;"
-              clearable
-              @input="handleArchiveSearch"
-            >
-              <template #prefix>
-                <el-icon><Search /></el-icon>
-              </template>
-            </el-input>
-
-            <!-- 排序选择器 -->
-            <el-select v-model="archiveSortBy" style="width: 140px; margin-right: 8px;" @change="handleArchiveSortChange">
-              <el-option label="处理时间" value="processed_at" />
-              <el-option label="RJ号" value="rjcode" />
-              <el-option label="文件大小" value="file_size" />
-              <el-option label="处理次数" value="process_count" />
-              <el-option label="状态" value="status" />
-            </el-select>
-
-            <!-- 排序方向 -->
-            <el-button
-              link
-              @click="toggleArchiveSortOrder"
-              :title="archiveSortOrder === 'desc' ? '降序' : '升序'"
-            >
-              <el-icon>
-                <SortDown v-if="archiveSortOrder === 'desc'" />
-                <SortUp v-else />
-              </el-icon>
-            </el-button>
-
-            <el-button link @click="handleScanProcessedArchives" :loading="archivesLoading">
-              <el-icon><Refresh /></el-icon>扫描并刷新
-            </el-button>
-            <el-button link @click="toggleShowAllArchives">
-              {{ showAllArchives ? '收起' : '查看全部' }}
-            </el-button>
-          </div>
-        </div>
-      </template>
-
-      <el-table
-        :data="displayedArchives"
-        v-loading="archivesLoading"
-        style="width: 100%"
-        empty-text="暂无已处理压缩包"
-        row-key="id"
-      >
-        <el-table-column type="expand" width="40" v-if="displayedArchives.some(a => a.isVolumeGroup)">
-          <template #default="{ row }">
-            <div v-if="row.isVolumeGroup && row.volumes" class="volume-list">
-              <div class="volume-list-title">分卷文件列表：</div>
-              <div v-for="(vol, idx) in row.volumes" :key="idx" class="volume-item">
-                <span class="volume-name">{{ vol.filename }}</span>
-                <span class="volume-size">{{ formatFileSize(vol.file_size) }}</span>
-              </div>
-            </div>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="rjcode" label="RJ号" width="120">
-          <template #default="{ row }">
-            <el-tag type="primary" size="small" v-if="row.rjcode">{{ row.rjcode }}</el-tag>
-            <span v-else class="text-gray">-</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="filename" label="文件名" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{ row.filename }}
-            <el-tag v-if="row.isVolumeGroup" type="warning" size="small" class="volume-tag">
-              {{ row.volumes.length }}个分卷
-            </el-tag>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="file_size" label="大小" width="100">
-          <template #default="{ row }">
-            {{ formatFileSize(row.file_size) }}
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="process_count" label="处理次数" width="100">
-          <template #default="{ row }">
-            <el-tag type="info" size="small">{{ row.process_count || 1 }} 次</el-tag>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="processed_at" label="处理时间" width="160">
-          <template #default="{ row }">
-            <span class="time-text">{{ formatDate(row.processed_at) }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column prop="status" label="状态" width="100">
-          <template #default="{ row }">
-            <el-tag
-              :type="row.status === 'completed' ? 'success' : (row.status === 'reprocessing' ? 'warning' : 'info')"
-              size="small"
-            >
-              {{ row.status === 'completed' ? '已完成' : (row.status === 'reprocessing' ? '重新处理中' : '处理中') }}
-            </el-tag>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="操作" width="120" fixed="right">
-          <template #default="{ row }">
-            <el-button
-              size="small"
-              type="primary"
-              @click="reprocessArchive(row.id)"
-              :loading="reprocessingId === row.id"
-            >
-              重新解压
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-
-      <!-- 查看全部模式下的分页 -->
-      <div class="pagination-container" v-if="showAllArchives && groupedArchives.length > archivePageSize">
-        <el-pagination
-          v-model:current-page="archiveCurrentPage"
-          :page-size="archivePageSize"
-          :total="groupedArchives.length"
-          layout="total, prev, pager, next"
-        />
-      </div>
-    </el-card>
+      <DashboardArchive
+        :archives="displayedArchives"
+        :filtered-archives="filteredArchives"
+        :tabs="archiveDomainTabs"
+        :domain-filter="archiveDomainFilter"
+        :search-query="archiveSearchQuery"
+        :archives-loading="archivesLoading"
+        :reprocessing-id="reprocessingId"
+        :total="filteredArchives.length"
+        :page="archivePage"
+        :page-size="archivePageSize"
+        :get-meta="getArchiveTaskMeta"
+        :get-status-meta="getArchiveStatusMeta"
+        :format-date="formatDate"
+        :format-file-size="formatFileSize"
+        class="min-h-0"
+        @refresh="refreshArchivePanel"
+        @reprocess="reprocessArchive"
+        @change-page="handleArchivePageChange"
+        @update:search-query="onArchiveSearchInput"
+        @update:domain-filter="(v) => (archiveDomainFilter = v)"
+      />
+    </main>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
-import { Document, Loading, CircleCheck, Warning, Search, VideoPlay, VideoPause, Refresh, SortDown, SortUp, Lock, Key, Folder, Download, ArrowRight, View, Hide } from '@element-plus/icons-vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { useTaskStore } from '../stores'
-import { usePoller } from '../stores/poller'
-import { conflictApi, scanApi, watcherApi, processedArchiveApi, passwordApi, existingFolderApi, asmrSyncApi } from '../api'
-import FileUploader from '../components/FileUploader.vue'
-import AcTitle from '../components/AcTitle.vue'
+import {
+  Activity,
+  Archive,
+  Captions,
+  CloudDownload,
+  Database,
+  Download,
+  FileArchive,
+  ShieldAlert,
+  Sparkles,
+  Upload,
+  UploadCloud,
+} from 'lucide-vue-next'
+import { conflictApi, processedArchiveApi, scanApi, taskCenterApi, watcherApi } from '../api'
+import { getTaskDomainMeta } from '../components/common/taskDomainMeta.js'
+import { getHttpDownloadDisplayMeta, getHttpDownloadPlatformMeta } from '../components/common/httpDownloadPlatformMeta.js'
+import DashboardHero from '../components/dashboard/DashboardHero.vue'
+import DashboardCommandStrip from '../components/dashboard/DashboardCommandStrip.vue'
+import DashboardActiveTasks from '../components/dashboard/DashboardActiveTasks.vue'
+import DashboardArchive from '../components/dashboard/DashboardArchive.vue'
+import { normalizeTaskCenterRealtimePayloads, patchTaskCenterItemListBatch } from '../composables/taskCenterEventUtils'
+import { showSystemConfirm } from '../composables/useSystemPrompt'
+import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 
-const taskStore = useTaskStore()
+const router = useRouter()
+const realtimeEvents = useRealtimeEvents()
+
 const loading = ref(false)
 const scanning = ref(false)
-const scanningProcessed = ref(false)
 const watcherRunning = ref(false)
-const recentTasks = ref([])
-const stats = ref({
-  pending: 0,
-  processing: 0,
-  completed: 0,
-  conflicts: 0
+const taskCenterOverview = ref({
+  recent_items: [],
+  active_items: [],
+  counts_by_domain: {},
+  counts_by_status: {},
+  highlight_counts: {},
+  total: 0,
 })
+const stats = ref({ pending: 0, processing: 0, completed: 0, conflicts: 0 })
 
-// 已处理压缩包相关
 const archives = ref([])
+const archiveTotal = ref(0)
 const archivesLoading = ref(false)
 const reprocessingId = ref(null)
-const showAllArchives = ref(false)
+const archivePage = ref(1)
+const archivePageSize = ref(10)
 const archiveSearchQuery = ref('')
 const archiveSortBy = ref('processed_at')
 const archiveSortOrder = ref('desc')
-const archiveCurrentPage = ref(1)
-const archivePageSize = 20
 let archiveSearchTimeout = null
+let archiveLoadingCount = 0
 
-// 工作台：密码快速入库
-const quickImportText = ref('')
-const quickImporting = ref(false)
-const quickImportResult = ref('')
+let intervalId = null
+let dashboardInitialized = false
+let dashboardViewActive = false
+let refreshRunning = false
+let refreshPending = false
+let refreshRequestId = 0
+let visibilityBound = false
+let lastConflictRefreshTime = 0
+let cachedConflictCount = 0
+let streamRefreshTimer = null
+let archiveStreamRefreshTimer = null
+let lastTaskCenterStreamEventAt = 0
+const CONFLICT_REFRESH_INTERVAL = 30000
+const STREAM_REFRESH_DEBOUNCE_MS = 500
+const ARCHIVE_STREAM_REFRESH_DEBOUNCE_MS = 350
+const FALLBACK_POLL_INTERVAL_MS = 30000
+const FALLBACK_POLL_MAX_INTERVAL_MS = 120000
+const STREAM_FULL_REFRESH_MIN_INTERVAL_MS = 2500
+const DASHBOARD_ARCHIVE_LIMIT = 120
+let lastTaskCenterFullRefreshAt = 0
+let archivesRequestId = 0
+let dashboardPollFailureCount = 0
 
-// 工作台：入口卡片数据
-const existingFoldersCount = ref(null)
-const asmrStatus = ref(null)
+const domainCounts = computed(() => ({
+  import: Number(taskCenterOverview.value?.counts_by_domain?.import || 0),
+  rj_subtitle: Number(taskCenterOverview.value?.counts_by_domain?.rj_subtitle || 0),
+  subtitle_import: Number(taskCenterOverview.value?.counts_by_domain?.subtitle_import || 0),
+  asmr_sync: Number(taskCenterOverview.value?.counts_by_domain?.asmr_sync || 0),
+  http_download: Number(taskCenterOverview.value?.counts_by_domain?.http_download || 0),
+  baidu_netdisk: Number(taskCenterOverview.value?.counts_by_domain?.baidu_netdisk || 0),
+  upload: Number(taskCenterOverview.value?.counts_by_domain?.upload || 0),
+  circle_completion: Number(taskCenterOverview.value?.counts_by_domain?.circle_completion || 0),
+}))
 
-// 合并分卷压缩包组
+const recentTasks = computed(() => {
+  const active = Array.isArray(taskCenterOverview.value?.active_items) ? taskCenterOverview.value.active_items : []
+  const recent = Array.isArray(taskCenterOverview.value?.recent_items) ? taskCenterOverview.value.recent_items : []
+  return active.length ? active : recent.slice(0, 10)
+})
+
+const kpiCards = computed(() => [
+  { key: 'import', label: '导入处理', value: domainCounts.value.import, icon: FileArchive, route: '/library' },
+  { key: 'rj', label: 'RJ 字幕', value: domainCounts.value.rj_subtitle, icon: Captions, route: '/library' },
+  { key: 'subtitle', label: '字幕补配', value: domainCounts.value.subtitle_import, icon: Sparkles, route: '/subtitle-import' },
+  { key: 'asmr', label: 'ASMR 同步', value: domainCounts.value.asmr_sync, icon: UploadCloud, route: { path: '/asmr-sync', query: { tab: 'enhanced' } } },
+  { key: 'http', label: 'HTTP 下载', value: domainCounts.value.http_download, icon: Download, route: { path: '/asmr-sync', query: { tab: 'http' } } },
+  { key: 'upload', label: '库存上传', value: domainCounts.value.upload, icon: Upload, route: '/library' },
+  { key: 'conflicts', label: '问题作品', value: stats.value.conflicts, icon: ShieldAlert, route: '/conflicts' },
+])
+
+const statusCards = computed(() => [
+  { key: 'processing', label: '处理中', value: Number(taskCenterOverview.value?.highlight_counts?.processing || 0) },
+  {
+    key: 'waiting_total',
+    label: '等待中',
+    value: Number(
+      taskCenterOverview.value?.highlight_counts?.waiting_total
+      ?? (
+        Number(taskCenterOverview.value?.counts_by_status?.pending || 0)
+        + Number(taskCenterOverview.value?.counts_by_status?.paused || 0)
+        + Number(taskCenterOverview.value?.counts_by_status?.waiting_manual || 0)
+        + Number(taskCenterOverview.value?.counts_by_status?.waiting_retry || 0)
+      )
+    ),
+  },
+  { key: 'completed', label: '已完成', value: Number(taskCenterOverview.value?.highlight_counts?.completed || taskCenterOverview.value?.counts_by_status?.completed || 0) },
+  { key: 'waiting', label: '等待人工', value: Number(taskCenterOverview.value?.highlight_counts?.waiting_manual || 0) },
+  { key: 'retry', label: '等待重试', value: Number(taskCenterOverview.value?.highlight_counts?.waiting_retry || 0) },
+  { key: 'failed', label: '失败', value: Number(taskCenterOverview.value?.highlight_counts?.failed || 0) },
+])
+
+function parseVolumeArchiveFilename(filename) {
+  const text = String(filename || '').trim()
+  if (!text) return null
+
+  let match = text.match(/^(.*)\.part(\d+)\.(rar|zip|7z|exe)$/i)
+  if (match) {
+    return {
+      groupKey: `${match[1].toLowerCase()}::${match[3].toLowerCase()}`,
+      displayName: `${match[1]}.${match[3].toLowerCase()}`,
+      volumeIndex: Number(match[2] || 0),
+    }
+  }
+
+  match = text.match(/^(.*)\.(zip|7z|rar)\.(\d{2,3})$/i)
+  if (match) {
+    return {
+      groupKey: `${match[1].toLowerCase()}::${match[2].toLowerCase()}`,
+      displayName: `${match[1]}.${match[2].toLowerCase()}`,
+      volumeIndex: Number(match[3] || 0),
+    }
+  }
+
+  match = text.match(/^(.*)\.(z|r)(\d{2,3})$/i)
+  if (match) {
+    const family = String(match[2] || '').toLowerCase()
+    return {
+      groupKey: `${match[1].toLowerCase()}::${family}`,
+      displayName: `${match[1]}.${family}`,
+      volumeIndex: Number(match[3] || 0),
+    }
+  }
+
+  return null
+}
+
+function normalizeArchiveVolumeCount(archive) {
+  const directCount = Number(archive?.volume_count ?? archive?.volumeCount ?? archive?.volumes_count)
+  if (Number.isFinite(directCount) && directCount > 1) return Math.floor(directCount)
+
+  const volumes = Array.isArray(archive?.volumes) ? archive.volumes : []
+  if (volumes.length > 1) return volumes.length
+
+  return 1
+}
+
 const groupedArchives = computed(() => {
   const groups = new Map()
   const singles = []
-
-  archives.value.forEach(archive => {
-    const filename = archive.filename
-    // 检查是否是分卷压缩包（支持 .part1.rar, .part2.rar, .part1.exe 等）
-    const volumeMatch = filename.match(/^(.*)\.part(\d+)\.(rar|zip|7z|exe)$/i)
-
-    if (volumeMatch) {
-      // 提取基础组名（如：RJ01207739，不包含 .part 和扩展名）
-      const baseName = volumeMatch[1]
-      const groupKey = baseName + '_volume_group'
-
-      if (!groups.has(groupKey)) {
-        groups.set(groupKey, {
-          id: archive.id,
-          rjcode: archive.rjcode,
-          filename: baseName + '（分卷组）',
-          originalFilename: filename,
-          file_size: 0,
-          process_count: archive.process_count || 1,
-          processed_at: archive.processed_at || new Date(0).toISOString(),
-          status: archive.status,
-          isVolumeGroup: true,
-          groupKey: groupKey,
-          volumes: []
-        })
-      }
-
-      const group = groups.get(groupKey)
-      group.volumes.push(archive)
-      group.file_size += (archive.file_size || 0)
-
-      // 使用最新的处理时间和状态（使用 Date 对象比较，避免字符串比较问题）
-      const archiveTime = archive.processed_at ? new Date(archive.processed_at).getTime() : 0
-      const groupTime = group.processed_at ? new Date(group.processed_at).getTime() : 0
-      if (archiveTime > groupTime) {
-        group.processed_at = archive.processed_at
-        // 同时更新状态为最新的状态
-        group.status = archive.status
-        group.process_count = archive.process_count || 1
-      }
-      // 优先使用 part1 作为组的ID
-      if (filename.toLowerCase().includes('.part1.')) {
-        group.id = archive.id
-      }
-      // 如果没有 part1，使用第一个作为ID
-      if (!group.id) {
-        group.id = archive.id
-      }
-    } else {
-      // 非分卷文件，直接添加
+  for (const archive of archives.value) {
+    const filename = String(archive.filename || '')
+    const archiveVolumeCount = normalizeArchiveVolumeCount(archive)
+    const volumeInfo = parseVolumeArchiveFilename(filename)
+    if (!volumeInfo) {
       singles.push({
         ...archive,
-        isVolumeGroup: false
+        source: 'processed_archive',
+        isVolumeGroup: archiveVolumeCount > 1,
+        volume_count: archiveVolumeCount,
+      })
+      continue
+    }
+    const groupKey = volumeInfo.groupKey
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, {
+        id: archive.id,
+        rjcode: archive.rjcode,
+        filename: `${volumeInfo.displayName}（分卷组）`,
+        file_size: 0,
+        process_count: archive.process_count || 1,
+        processed_at: archive.processed_at || new Date(0).toISOString(),
+        status: archive.status,
+        isVolumeGroup: true,
+        volumes: [],
+        volume_count: 0,
+        volumeIndex: volumeInfo.volumeIndex || 0,
       })
     }
-  })
-
-  // 合并组和非分卷文件
-  const result = [...groups.values(), ...singles]
-
-  // 按处理时间排序（降序，最新的在前）
-  result.sort((a, b) => {
-    const timeA = a.processed_at ? new Date(a.processed_at).getTime() : 0
-    const timeB = b.processed_at ? new Date(b.processed_at).getTime() : 0
-    return timeB - timeA
-  })
-
-  return result
-})
-
-// 显示的归档列表（默认前5条，查看全部时分页显示）
-const displayedArchives = computed(() => {
-  if (showAllArchives.value) {
-    const start = (archiveCurrentPage.value - 1) * archivePageSize
-    return groupedArchives.value.slice(start, start + archivePageSize)
+    const group = groups.get(groupKey)
+    group.volumes.push(archive)
+    group.volume_count += archiveVolumeCount
+    group.file_size += Number(archive.file_size || 0)
+    if (archive.rjcode && !group.rjcode) group.rjcode = archive.rjcode
+    if (archive.status && group.status !== 'failed') group.status = archive.status
+    if (volumeInfo.volumeIndex && (!group.volumeIndex || volumeInfo.volumeIndex < group.volumeIndex)) {
+      group.volumeIndex = volumeInfo.volumeIndex
+      group.id = archive.id
+    }
+    if (filename.toLowerCase().includes('.part1.')) {
+      group.id = archive.id
+    }
   }
-  return groupedArchives.value.slice(0, 5)
+  return [...groups.values(), ...singles]
+    .map((item) => {
+      if (!item.isVolumeGroup || !Array.isArray(item.volumes) || !item.volumes.length) {
+        return { ...item, source: item.source || 'processed_archive' }
+      }
+      const latestArchive = item.volumes.reduce((latest, current) => {
+        const latestTime = new Date(latest?.processed_at || 0).getTime()
+        const currentTime = new Date(current?.processed_at || 0).getTime()
+        return currentTime >= latestTime ? current : latest
+      }, item.volumes[0])
+      return {
+        ...item,
+        id: item.id || latestArchive?.id,
+        rjcode: item.rjcode || latestArchive?.rjcode,
+        processed_at: latestArchive?.processed_at || item.processed_at,
+        process_count: Math.max(...item.volumes.map((volume) => Number(volume?.process_count || 1))),
+        volume_count: Math.max(Number(item.volume_count || 0), item.volumes.length),
+        source: 'processed_archive',
+      }
+    })
 })
 
-// 待导入密码数量
-const quickImportCount = computed(() => {
-  const text = quickImportText.value.trim()
+function parseMetricBytes(value) {
+  const text = String(value || '').trim().replace(/,/g, '')
   if (!text) return 0
-  return text.split('\n').filter(l => l.trim()).length
+  const match = text.match(/([0-9]+(?:\.[0-9]+)?)\s*([kmgtp]?i?b|bytes?|字节)?/i)
+  if (!match) return 0
+  const amount = Number(match[1])
+  if (!Number.isFinite(amount) || amount <= 0) return 0
+  const unit = String(match[2] || 'B').toLowerCase()
+  const multiplierMap = {
+    b: 1,
+    byte: 1,
+    bytes: 1,
+    kb: 1024,
+    kib: 1024,
+    mb: 1024 ** 2,
+    mib: 1024 ** 2,
+    gb: 1024 ** 3,
+    gib: 1024 ** 3,
+    tb: 1024 ** 4,
+    tib: 1024 ** 4,
+    pb: 1024 ** 5,
+    pib: 1024 ** 5,
+    '字节': 1,
+  }
+  const multiplier = multiplierMap[unit] || 1
+  return Math.round(amount * multiplier)
+}
+
+function resolveTaskArchiveSize(task) {
+  const metrics = Array.isArray(task?.metrics) ? task.metrics : []
+  const metricLabels = ['大小', '下载大小', '上传大小']
+  for (const label of metricLabels) {
+    const metric = metrics.find((item) => String(item?.label || '').trim() === label)
+    const bytes = parseMetricBytes(metric?.value)
+    if (bytes > 0) return bytes
+  }
+
+  const metadata = task?.details?.metadata || {}
+  const runtimeCandidates = [
+    metadata?.download_runtime?.total_bytes,
+    metadata?.upload_runtime?.total_bytes,
+    metadata?.performance_metrics?.downloaded_bytes,
+    metadata?.performance_metrics?.uploaded_bytes,
+    metadata?.archive_size,
+    metadata?.archive_size_bytes,
+    metadata?.output_size_bytes,
+    metadata?.extract_output_bytes,
+  ]
+  for (const value of runtimeCandidates) {
+    const bytes = Number(value || 0)
+    if (Number.isFinite(bytes) && bytes > 0) return Math.round(bytes)
+  }
+
+  const fileRows = [
+    ...(Array.isArray(metadata?.download_files) ? metadata.download_files : []),
+    ...(Array.isArray(metadata?.upload_files) ? metadata.upload_files : []),
+    ...(Array.isArray(metadata?.uploaded_files) ? metadata.uploaded_files : []),
+  ]
+  const summed = fileRows.reduce((sum, item) => (
+    sum + Number(item?.total || item?.size || item?.size_bytes || item?.uploaded_bytes || 0)
+  ), 0)
+  return Number.isFinite(summed) && summed > 0 ? Math.round(summed) : 0
+}
+
+const taskArchiveItems = computed(() => {
+  const items = Array.isArray(taskCenterOverview.value?.recent_items) ? taskCenterOverview.value.recent_items : []
+  return items.map((task) => {
+    const domain = String(task.domain || 'system').trim()
+    const title = String(task.title || task.subtitle || task.id || '未命名任务').trim()
+    return {
+      id: `task-${task.id}`,
+      source: 'task_center',
+      filename: title,
+      rjcode: formatRJ(task.rjcode),
+      status: task.status,
+      task_domain: domain,
+      domain,
+      task_kind: task.kind || task.type || '',
+      processed_at: task.completed_at || task.started_at || task.created_at,
+      file_size: resolveTaskArchiveSize(task),
+      summary: task.subtitle || task.current_step || '',
+      status_label: task.status_label || '',
+      error_message: task.error_message || '',
+      current_step: task.current_step || '',
+      source_label: task.source_label || '',
+      platform_label: task.platform_label || task.details?.metadata?.platform_label || '',
+      platforms: Array.isArray(task.platforms) ? task.platforms : (task.details?.metadata?.platforms || []),
+      download_mode: task.download_mode || task.details?.metadata?.download_mode || '',
+      source_modes: Array.isArray(task.source_modes) ? task.source_modes : (task.details?.metadata?.source_modes || []),
+      metrics: Array.isArray(task.metrics) ? task.metrics : [],
+      details: task.details || {},
+      route_hint: task.route_hint,
+    }
+  })
+})
+
+const displayedArchives = computed(() => {
+  const archiveItems = groupedArchives.value
+  const taskItems = taskArchiveItems.value.filter((item) => item.task_domain !== 'import')
+  return [...taskItems, ...archiveItems]
+    .sort((a, b) => new Date(b.processed_at || 0).getTime() - new Date(a.processed_at || 0).getTime())
+})
+
+const archiveDomainFilter = ref('all')
+
+const archiveDomainTabMeta = {
+  all: { key: 'all', label: '全部', icon: Archive, chipIcon: 'text-slate-500', chipBg: 'bg-slate-100', chipText: 'text-slate-600' },
+  import: { key: 'import', label: '解压入库', icon: FileArchive, chipIcon: 'text-amber-600', chipBg: 'bg-amber-50', chipText: 'text-amber-700' },
+  subtitle_import: { key: 'subtitle_import', label: '字幕补配', icon: Sparkles, chipIcon: 'text-violet-600', chipBg: 'bg-violet-50', chipText: 'text-violet-700' },
+  rj_subtitle: { key: 'rj_subtitle', label: 'RJ 字幕', icon: Captions, chipIcon: 'text-sky-600', chipBg: 'bg-sky-50', chipText: 'text-sky-700' },
+  asmr_sync: { key: 'asmr_sync', label: 'ASMR', icon: UploadCloud, chipIcon: 'text-emerald-600', chipBg: 'bg-emerald-50', chipText: 'text-emerald-700' },
+  http_download: { key: 'http_download', label: 'HTTP 下载', icon: Download, chipIcon: 'text-orange-600', chipBg: 'bg-orange-50', chipText: 'text-orange-700' },
+  baidu_netdisk: { key: 'baidu_netdisk', label: '百度网盘', icon: CloudDownload, chipIcon: 'text-blue-600', chipBg: 'bg-blue-50', chipText: 'text-blue-700' },
+  upload: { key: 'upload', label: '库存上传', icon: Upload, chipIcon: 'text-blue-600', chipBg: 'bg-blue-50', chipText: 'text-blue-700' },
+  circle_completion: { key: 'circle_completion', label: '社团补全', icon: Database, chipIcon: 'text-teal-600', chipBg: 'bg-teal-50', chipText: 'text-teal-700' },
+  system: { key: 'system', label: '系统', icon: Activity, chipIcon: 'text-slate-600', chipBg: 'bg-slate-100', chipText: 'text-slate-700' },
+}
+
+const archiveDomainOrder = ['import', 'http_download', 'baidu_netdisk', 'subtitle_import', 'rj_subtitle', 'asmr_sync', 'upload', 'circle_completion', 'system']
+
+const archiveDomainTabs = computed(() => {
+  const domainCountMap = new Map()
+  for (const item of displayedArchives.value) {
+    const key = getArchiveTaskMeta(item).key
+    if (!key) continue
+    domainCountMap.set(key, (domainCountMap.get(key) || 0) + 1)
+  }
+  const tabs = [{ ...archiveDomainTabMeta.all, count: displayedArchives.value.length }]
+  for (const key of archiveDomainOrder) {
+    const count = domainCountMap.get(key) || 0
+    if (count > 0) tabs.push({ ...archiveDomainTabMeta[key], count })
+  }
+  return tabs
+})
+
+watch(
+  archiveDomainTabs,
+  (tabs) => {
+    const isCurrentFilterAvailable = tabs.some((tab) => tab.key === archiveDomainFilter.value)
+    if (!isCurrentFilterAvailable) archiveDomainFilter.value = 'all'
+  },
+  { immediate: true }
+)
+
+const filteredArchives = computed(() => {
+  const keyword = archiveSearchQuery.value.trim().toLowerCase()
+  const all = keyword
+    ? displayedArchives.value.filter((item) => {
+        const text = [item.filename, item.rjcode, item.summary, item.task_domain, item.domain]
+          .join(' ')
+          .toLowerCase()
+        return text.includes(keyword)
+      })
+    : displayedArchives.value
+  if (archiveDomainFilter.value === 'all') return all
+  return all.filter((a) => {
+    const domain = String(a?.task_domain || a?.domain || a?.task_kind || a?.kind || 'import')
+      .trim()
+      .toLowerCase()
+    return domain === archiveDomainFilter.value
+  })
 })
 
 onMounted(async () => {
-  await refreshData()
-  await fetchWatcherStatus()
-  await fetchProcessedArchives()
-  await fetchWorkbenchData()
+  await initializeDashboardPage()
+  dashboardViewActive = true
+  bindDashboardVisibilityRefresh()
+  bindTaskCenterStreamEvents()
+  startDashboardPolling()
 })
 
-// 统一轮询调度（卸载自动注销）
-usePoller('dashboard', refreshData)
+onActivated(async () => {
+  if (dashboardViewActive) return
+  dashboardViewActive = true
+  await refreshDashboardOnResume()
+  bindTaskCenterStreamEvents()
+  startDashboardPolling()
+})
 
-let previousCompletedCount = 0
-let lastRefreshTime = 0
+onDeactivated(() => {
+  dashboardViewActive = false
+  unbindTaskCenterStreamEvents()
+  stopDashboardPolling()
+})
 
-async function refreshData() {
-  await taskStore.fetchTasks()
-  recentTasks.value = taskStore.tasks.slice(0, 5)
-
-  // 获取当前完成的任务数
-  const currentCompletedCount = recentTasks.value.filter(task =>
-    task.status === 'completed' || task.status === 'COMPLETED'
-  ).length
-
-  // 如果完成的任务数增加了，或者距离上次刷新已处理压缩包已超过30秒，则刷新
-  const now = Date.now()
-  const shouldRefreshArchives =
-    currentCompletedCount > previousCompletedCount ||
-    (now - lastRefreshTime > 30000 && recentTasks.value.length > 0)
-
-  if (shouldRefreshArchives) {
-    console.log('检测到任务状态变化，刷新已处理压缩包列表')
-    await fetchProcessedArchives()
-    lastRefreshTime = now
+onUnmounted(() => {
+  dashboardViewActive = false
+  stopDashboardPolling()
+  unbindDashboardVisibilityRefresh()
+  unbindTaskCenterStreamEvents()
+  if (archiveSearchTimeout) {
+    clearTimeout(archiveSearchTimeout)
+    archiveSearchTimeout = null
   }
+})
 
-  previousCompletedCount = currentCompletedCount
-
-  // 获取问题作品数量
-  let conflictCount = 0
-  try {
-    const data = await conflictApi.list()
-    conflictCount = data.conflicts?.length || 0
-  } catch (error) {
-    console.error('获取问题作品数量失败:', error)
-  }
-
-  stats.value = {
-    pending: taskStore.pendingTasks.length,
-    processing: taskStore.processingTasks.length,
-    completed: taskStore.completedTasks.length,
-    conflicts: conflictCount
+function stopDashboardPolling() {
+  if (intervalId) {
+    clearTimeout(intervalId)
+    intervalId = null
   }
 }
 
-// 工作台入口数据（已有文件夹数量 / 同步下载状态）
-async function fetchWorkbenchData() {
-  try {
-    const folders = await existingFolderApi.list()
-    existingFoldersCount.value = Array.isArray(folders) ? folders.length : 0
-  } catch (error) {
-    console.error('获取已有文件夹数量失败:', error)
-    existingFoldersCount.value = 0
+function startDashboardPolling() {
+  if (!dashboardViewActive) return
+  scheduleDashboardPolling(FALLBACK_POLL_INTERVAL_MS)
+}
+
+function scheduleDashboardPolling(delay = FALLBACK_POLL_INTERVAL_MS) {
+  stopDashboardPolling()
+  intervalId = setTimeout(async () => {
+    intervalId = null
+    if (!dashboardViewActive) return
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+    if (realtimeEvents.connected.value) {
+      scheduleDashboardPolling(FALLBACK_POLL_INTERVAL_MS)
+      return
+    }
+    const ok = await refreshData({ silent: true })
+    const nextDelay = ok
+      ? FALLBACK_POLL_INTERVAL_MS
+      : Math.min(FALLBACK_POLL_MAX_INTERVAL_MS, FALLBACK_POLL_INTERVAL_MS * 2 ** Math.min(dashboardPollFailureCount, 2))
+    scheduleDashboardPolling(nextDelay)
+  }, delay)
+}
+
+function bindDashboardVisibilityRefresh() {
+  if (visibilityBound) return
+  visibilityBound = true
+  window.addEventListener('focus', handleDashboardVisibilityRefresh)
+  document.addEventListener('visibilitychange', handleDashboardVisibilityRefresh)
+}
+
+function unbindDashboardVisibilityRefresh() {
+  if (!visibilityBound) return
+  visibilityBound = false
+  window.removeEventListener('focus', handleDashboardVisibilityRefresh)
+  document.removeEventListener('visibilitychange', handleDashboardVisibilityRefresh)
+}
+
+function handleDashboardVisibilityRefresh() {
+  if (!dashboardViewActive || document.visibilityState === 'hidden') return
+  dashboardPollFailureCount = 0
+  if (!realtimeEvents.connected.value) refreshData({ silent: true })
+  if (!intervalId) startDashboardPolling()
+}
+
+function bindTaskCenterStreamEvents() {
+  window.removeEventListener('kikoerumanager:events:message', handleTaskCenterStreamEvent)
+  window.addEventListener('kikoerumanager:events:message', handleTaskCenterStreamEvent)
+}
+
+function unbindTaskCenterStreamEvents() {
+  window.removeEventListener('kikoerumanager:events:message', handleTaskCenterStreamEvent)
+  if (streamRefreshTimer) {
+    clearTimeout(streamRefreshTimer)
+    streamRefreshTimer = null
   }
-  try {
-    asmrStatus.value = await asmrSyncApi.status()
-  } catch (error) {
-    console.error('获取同步下载状态失败:', error)
+  if (archiveStreamRefreshTimer) {
+    clearTimeout(archiveStreamRefreshTimer)
+    archiveStreamRefreshTimer = null
   }
 }
 
-// 密码快速入库（一键完成）
-async function handleQuickImport() {
-  const text = quickImportText.value.trim()
-  if (!text) return
+function normalizeRealtimeDashboardEvent(detail = {}) {
+  if (detail.type === 'processed_archive.changed') {
+    return { type: 'processed_archive_changed', ...(detail.payload || {}) }
+  }
+  if (detail.type === 'connected') return { type: 'connected' }
+  return detail
+}
 
-  quickImporting.value = true
-  quickImportResult.value = ''
+function scheduleDashboardStreamRefresh() {
+  if (!dashboardViewActive) return
+  if (streamRefreshTimer) clearTimeout(streamRefreshTimer)
+  streamRefreshTimer = setTimeout(() => {
+    streamRefreshTimer = null
+    const now = Date.now()
+    if (now - lastTaskCenterFullRefreshAt < STREAM_FULL_REFRESH_MIN_INTERVAL_MS) return
+    refreshData({ silent: true })
+  }, STREAM_REFRESH_DEBOUNCE_MS)
+}
+
+function scheduleArchiveStreamRefresh() {
+  if (!dashboardViewActive) return
+  if (archiveStreamRefreshTimer) clearTimeout(archiveStreamRefreshTimer)
+  archiveStreamRefreshTimer = setTimeout(() => {
+    archiveStreamRefreshTimer = null
+    fetchProcessedArchives({ silent: true })
+  }, ARCHIVE_STREAM_REFRESH_DEBOUNCE_MS)
+}
+
+function patchDashboardTaskOverview(payloads) {
+  const events = Array.isArray(payloads) ? payloads : [payloads]
+  const current = taskCenterOverview.value || {}
+  taskCenterOverview.value = {
+    ...current,
+    active_items: patchTaskCenterItemListBatch(current.active_items || [], events),
+    recent_items: patchTaskCenterItemListBatch(current.recent_items || [], events),
+  }
+}
+
+function handleTaskCenterStreamEvent(event) {
+  const detail = event?.detail || {}
+  const payload = normalizeRealtimeDashboardEvent(detail)
+  if (!payload?.type) return
+  lastTaskCenterStreamEventAt = Date.now()
+  if (payload.type === 'processed_archive_changed') {
+    scheduleArchiveStreamRefresh()
+    return
+  }
+  if (payload.type === 'connected') {
+    refreshData({ silent: true })
+    fetchProcessedArchives({ silent: true })
+    return
+  }
+  const payloads = normalizeTaskCenterRealtimePayloads(detail)
+    .filter((item) => item?.type === 'task_center_changed')
+  if (!payloads.length) return
+  patchDashboardTaskOverview(payloads)
+  scheduleDashboardStreamRefresh()
+}
+
+async function initializeDashboardPage() {
+  if (dashboardInitialized) return
+  await refreshDashboardOnResume(false)
+  dashboardInitialized = true
+}
+
+async function refreshDashboardOnResume(silent = true) {
+  await refreshData({ silent, forceConflictRefresh: true })
+  await fetchWatcherStatus()
+  await fetchProcessedArchives({ silent: true })
+}
+
+async function refreshData(options = {}) {
+  const { silent = false, forceConflictRefresh = false } = options
+  if (refreshRunning) {
+    refreshPending = true
+    return true
+  }
+  refreshRunning = true
+  const currentRequestId = ++refreshRequestId
+  if (!silent) loading.value = true
   try {
-    const { imported, skipped } = await passwordApi.importFromText(text)
-    quickImportText.value = ''
-    quickImportResult.value = `已入库 ${imported} 个` + (skipped > 0 ? `，跳过重复 ${skipped} 个` : '')
-    ElMessage.success(`密码入库成功：${imported} 个`)
+    const now = Date.now()
+    const shouldRefreshConflicts =
+      forceConflictRefresh || !lastConflictRefreshTime || now - lastConflictRefreshTime >= CONFLICT_REFRESH_INTERVAL
+
+    const overviewPromise = taskCenterApi.overview({ _t: now })
+    const conflictCountPromise = shouldRefreshConflicts
+      ? conflictApi.count().catch((error) => {
+          console.error('获取问题作品数量失败:', error)
+          return null
+        })
+      : Promise.resolve(null)
+
+    const [overview, conflictCount] = await Promise.all([overviewPromise, conflictCountPromise])
+    if (currentRequestId !== refreshRequestId) return
+    taskCenterOverview.value = overview || taskCenterOverview.value
+    lastTaskCenterFullRefreshAt = Date.now()
+
+    if (conflictCount) {
+      cachedConflictCount = Number(conflictCount?.count || 0)
+      lastConflictRefreshTime = now
+    }
+
+    stats.value = {
+      pending: Number(overview?.counts_by_status?.pending || 0),
+      processing: Number(overview?.counts_by_status?.processing || 0),
+      completed: Number(overview?.counts_by_status?.completed || 0),
+      conflicts: cachedConflictCount,
+    }
+    dashboardPollFailureCount = 0
+    return true
   } catch (error) {
-    console.error('密码入库失败:', error)
-    ElMessage.error('入库失败: ' + (error.response?.data?.detail || error.message))
+    dashboardPollFailureCount += 1
+    console.error('获取概览失败:', error)
+    if (!silent) {
+      ElMessage.error('获取概览失败: ' + (error.response?.data?.detail || error.message))
+    }
+    return false
   } finally {
-    quickImporting.value = false
+    refreshRunning = false
+    if (!silent) loading.value = false
+    if (refreshPending) {
+      refreshPending = false
+      refreshData({ silent: true })
+    }
   }
-}
-
-function toggleShowAllArchives() {
-  showAllArchives.value = !showAllArchives.value
-  archiveCurrentPage.value = 1
-}
-
-function getTaskTypeLabel(type) {
-  const labels = {
-    'auto_process': '自动处理',
-    'extract': '解压',
-    'filter': '过滤',
-    'metadata': '元数据',
-    'rename': '重命名'
-  }
-  return labels[type] || type
-}
-
-function getStatusLabel(status) {
-  const labels = {
-    'pending': '等待中',
-    'processing': '处理中',
-    'paused': '已暂停',
-    'waiting_manual': '等待手动处理',
-    'completed': '已完成',
-    'failed': '失败'
-  }
-  return labels[status] || status
-}
-
-function getStatusType(status) {
-  const types = {
-    'pending': 'info',
-    'processing': 'warning',
-    'paused': '',
-    'waiting_manual': 'warning',
-    'completed': 'success',
-    'failed': 'danger'
-  }
-  return types[status] || ''
-}
-
-function getProgressStatus(status) {
-  if (status === 'failed') return 'exception'
-  if (status === 'completed') return 'success'
-  return ''
-}
-
-async function pauseTask(taskId) {
-  await taskStore.pauseTask(taskId)
-}
-
-async function resumeTask(taskId) {
-  await taskStore.resumeTask(taskId)
-}
-
-async function cancelTask(taskId) {
-  await taskStore.cancelTask(taskId)
-}
-
-function handleUploadSuccess() {
-  refreshData()
 }
 
 async function handleManualScan() {
   scanning.value = true
   try {
-    ElMessage.info('正在扫描输入目录...')
     const data = await scanApi.scan()
     ElMessage.success(data.message)
     await refreshData()
@@ -720,100 +698,102 @@ async function handleManualScan() {
   }
 }
 
-async function handleScanProcessedArchives() {
-  scanningProcessed.value = true
-  try {
-    ElMessage.info('正在扫描已处理压缩包目录...')
-    await processedArchiveApi.scan()
-    await fetchProcessedArchives()
-    ElMessage.success('已处理压缩包目录扫描完成')
-  } catch (error) {
-    console.error('扫描已处理目录失败:', error)
-    ElMessage.error('扫描失败: ' + (error.response?.data?.detail || error.message))
-  } finally {
-    scanningProcessed.value = false
-  }
-}
-
 async function handleWatcherToggle() {
   try {
     if (watcherRunning.value) {
       await watcherApi.stop()
-      ElMessage.success('监视器已停止')
       watcherRunning.value = false
+      ElMessage.success('监视器已停止')
     } else {
       await watcherApi.start()
-      ElMessage.success('监视器已启动')
       watcherRunning.value = true
+      ElMessage.success('监视器已启动')
     }
   } catch (error) {
-    console.error('操作失败:', error)
+    console.error('操作监视器失败:', error)
     ElMessage.error('操作失败: ' + (error.response?.data?.detail || error.message))
   }
+}
+
+function handleUploadSuccess() {
+  refreshData()
+  fetchProcessedArchives({ silent: true })
 }
 
 async function fetchWatcherStatus() {
   try {
     const data = await watcherApi.status()
-    watcherRunning.value = data.is_running
+    watcherRunning.value = Boolean(data?.is_running)
   } catch (error) {
     console.error('获取监视器状态失败:', error)
   }
 }
 
-// 获取已处理压缩包列表（只获取列表，不触发扫描）
-async function fetchProcessedArchives() {
-  archivesLoading.value = true
+async function fetchProcessedArchives(options = {}) {
+  const { silent = false, scan = false } = options
+  const currentRequestId = ++archivesRequestId
+  const trackVisibleLoading = !silent
+  if (trackVisibleLoading) {
+    archiveLoadingCount += 1
+    archivesLoading.value = true
+  }
   try {
+    if (scan) {
+      await processedArchiveApi.scan()
+    }
     const params = {
       sort_by: archiveSortBy.value,
-      sort_order: archiveSortOrder.value
+      sort_order: archiveSortOrder.value,
+      limit: DASHBOARD_ARCHIVE_LIMIT,
+      offset: 0,
     }
-    if (archiveSearchQuery.value) {
-      params.search = archiveSearchQuery.value
-    }
+    if (archiveSearchQuery.value) params.search = archiveSearchQuery.value
     const data = await processedArchiveApi.list(params)
-    archives.value = data.archives || []
+    if (currentRequestId !== archivesRequestId) return
+    archives.value = data?.archives || []
+    archiveTotal.value = Number(data?.total || archives.value.length)
+    if (!silent) ElMessage.success('刷新成功')
   } catch (error) {
     console.error('获取已处理压缩包列表失败:', error)
-    ElMessage.error('获取已处理压缩包列表失败')
+    if (!silent) ElMessage.error('获取已处理压缩包列表失败')
   } finally {
-    archivesLoading.value = false
+    if (trackVisibleLoading) {
+      archiveLoadingCount = Math.max(0, archiveLoadingCount - 1)
+      if (archiveLoadingCount === 0) {
+        archivesLoading.value = false
+      }
+    } else if (currentRequestId === archivesRequestId && archiveLoadingCount === 0) {
+      archivesLoading.value = false
+    }
   }
 }
 
-// 处理搜索输入（防抖）
-function handleArchiveSearch() {
-  if (archiveSearchTimeout) {
-    clearTimeout(archiveSearchTimeout)
-  }
+async function refreshArchivePanel() {
+  await refreshData({ silent: true })
+  await fetchProcessedArchives({ scan: true })
+}
+
+function onArchiveSearchInput(value) {
+  archiveSearchQuery.value = String(value || '')
+  if (archiveSearchTimeout) clearTimeout(archiveSearchTimeout)
   archiveSearchTimeout = setTimeout(() => {
-    archiveCurrentPage.value = 1
-    fetchProcessedArchives()
-  }, 500)
+    archivePage.value = 1
+    fetchProcessedArchives({ silent: true })
+  }, 400)
 }
 
-// 处理排序字段变化
-function handleArchiveSortChange() {
-  archiveCurrentPage.value = 1
-  fetchProcessedArchives()
+function handleArchivePageChange(page) {
+  const totalPages = Math.max(1, Math.ceil((displayedArchives.value?.length || 0) / archivePageSize.value))
+  archivePage.value = Math.min(Math.max(1, page), totalPages)
 }
 
-// 切换排序方向
-function toggleArchiveSortOrder() {
-  archiveSortOrder.value = archiveSortOrder.value === 'desc' ? 'asc' : 'desc'
-  archiveCurrentPage.value = 1
-  fetchProcessedArchives()
-}
-
-// 重新处理压缩包
 async function reprocessArchive(archiveId) {
   reprocessingId.value = archiveId
   try {
     const data = await processedArchiveApi.reprocess(archiveId)
     ElMessage.success(data.message)
     await refreshData()
-    await fetchProcessedArchives()
+    await fetchProcessedArchives({ silent: true })
   } catch (error) {
     console.error('重新处理失败:', error)
     ElMessage.error('重新处理失败: ' + (error.response?.data?.detail || error.message))
@@ -822,321 +802,181 @@ async function reprocessArchive(archiveId) {
   }
 }
 
-// 格式化文件大小
-function formatFileSize(bytes) {
-  if (bytes === 0 || !bytes) return '-'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+async function handleTaskCenterAction(task, action) {
+  if (action === 'delete') {
+    try {
+      await showSystemConfirm({
+        title: '删除任务记录',
+        message: `确认删除「${task?.title || '该任务'}」的任务记录？`,
+        description: '只会清理任务中心记录，不会删除业务文件。',
+        tone: 'danger',
+        confirmText: '删除',
+      })
+    } catch (_) {
+      return
+    }
+  }
+  try {
+    const result = await taskCenterApi.action(task.id, action)
+    if (result?.route_hint) await router.push(result.route_hint)
+    ElMessage.success(result?.message || '操作成功')
+    await refreshData()
+  } catch (error) {
+    console.error('执行任务中心动作失败:', error)
+    ElMessage.error('操作失败: ' + (error.response?.data?.detail || error.message))
+  }
 }
 
-// 格式化日期
+function openKpiTarget(item) {
+  if (item.route) router.push(item.route)
+}
+
+function formatRJ(value) {
+  const text = String(value || '').trim().toUpperCase()
+  if (!text) return ''
+  const match = text.match(/[RVB]J\s*(\d{4,})/i)
+  return match ? `RJ${match[1]}` : text
+}
+
+function formatFileSize(bytes) {
+  const size = Number(bytes || 0)
+  if (!size) return '-'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let current = size
+  let index = 0
+  while (current >= 1024 && index < units.length - 1) {
+    current /= 1024
+    index += 1
+  }
+  return `${current.toFixed(index === 0 ? 0 : 2)} ${units[index]}`
+}
+
 function formatDate(dateString) {
   if (!dateString) return '-'
-  // 处理不同的日期格式
-  let date
-  if (typeof dateString === 'string') {
-    if (dateString.includes('T')) {
-      // 如果是ISO 8601格式，它是UTC时间，添加'Z'以正确解析为本地时间
-      date = new Date(dateString + 'Z')
-    } else {
-      date = new Date(dateString)
-    }
-  } else {
-    date = new Date(dateString)
-  }
+  const raw = String(dateString).trim()
+  const hasExplicitTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)
+  const normalized = hasExplicitTimezone ? raw : raw.replace(' ', 'T')
+  const date = new Date(normalized)
+  if (Number.isNaN(date.getTime())) return String(dateString)
   return date.toLocaleString('zh-CN', {
-    year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
-    second: '2-digit',
-    hour12: false
+    hour12: false,
   })
+}
+
+function getArchiveTaskMeta(archive) {
+  const domain = String(
+    archive?.task_domain || archive?.domain || archive?.task_kind || archive?.kind || 'import'
+  )
+    .trim()
+    .toLowerCase()
+  const known = ['import', 'rj_subtitle', 'subtitle_import', 'asmr_sync', 'http_download', 'baidu_netdisk', 'upload', 'circle_completion', 'system']
+  const key = known.includes(domain) ? domain : 'import'
+  const meta = getTaskDomainMeta(key)
+  if (key === 'http_download') {
+    const httpMeta = getHttpDownloadDisplayMeta(archive)
+    return {
+      key,
+      label: meta.label,
+      icon: httpMeta.icon || meta.icon,
+      iconWrap: meta.iconWrap,
+      chip: meta.chip,
+      chipIcon: httpMeta.icon ? 'dash-archive-platform-icon' : meta.chipIcon,
+      chipBg: meta.chipBg,
+      chipText: meta.chipText,
+      bar: meta.bar,
+    }
+  }
+  if (key === 'baidu_netdisk') {
+    const baiduMeta = getHttpDownloadPlatformMeta('baidu_netdisk')
+    return {
+      key,
+      label: meta.label,
+      icon: baiduMeta.icon || meta.icon,
+      iconWrap: meta.iconWrap,
+      chip: meta.chip,
+      chipIcon: baiduMeta.icon ? 'dash-archive-platform-icon' : meta.chipIcon,
+      chipBg: meta.chipBg,
+      chipText: meta.chipText,
+      bar: meta.bar,
+    }
+  }
+  return {
+    key,
+    label: meta.label,
+    icon: meta.icon,
+    iconWrap: meta.iconWrap,
+    chip: meta.chip,
+    chipIcon: meta.chipIcon,
+    chipBg: meta.chipBg,
+    chipText: meta.chipText,
+    bar: meta.bar,
+  }
+}
+
+function getArchiveStatusMeta(value) {
+  const item = value && typeof value === 'object' ? value : null
+  const normalized = String(item?.status || value || '').trim().toLowerCase()
+  const cancelText = [
+    item?.status_label,
+    item?.error_message,
+    item?.current_step,
+    item?.summary,
+    item?.details?.metadata?.cancel_reason,
+  ].join(' ')
+  if (normalized === 'cancelled' || normalized === 'canceled' || cancelText.includes('用户取消')) {
+    return { key: 'cancelled', label: '已取消' }
+  }
+  if (!normalized) return { key: 'unknown', label: '状态未知' }
+  if (['completed', 'success', 'finished'].includes(normalized)) return { key: 'completed', label: '已完成' }
+  if (['partial_failed', 'partial_success'].includes(normalized)) return { key: 'partial_failed', label: '部分成功' }
+  if (['failed', 'error'].includes(normalized)) return { key: 'failed', label: '失败' }
+  if (['processing', 'running'].includes(normalized)) return { key: 'processing', label: '处理中' }
+  if (['waiting_manual', 'awaiting_manual_match', 'manual_required'].includes(normalized)) return { key: 'waiting_manual', label: '等待人工' }
+  if (['waiting_retry', 'retry_waiting'].includes(normalized)) return { key: 'waiting_retry', label: '等待重试' }
+  if (['pending', 'waiting', 'queued'].includes(normalized)) return { key: 'pending', label: '待处理' }
+  return { key: 'unknown', label: normalized }
 }
 </script>
 
 <style scoped>
-.dashboard {
-  max-width: 1400px;
-  margin: 0 auto;
-}
-
-.title-row {
-  margin-bottom: 20px;
-}
-
-.stats-row {
-  margin-bottom: 24px;
-}
-
-.stat-card {
-  display: flex;
-  align-items: center;
-  padding: 20px;
-}
-
-.stat-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  margin-right: 16px;
-}
-
-.stat-info {
-  flex: 1;
-}
-
-.stat-value {
-  font-size: 28px;
-  font-weight: 800;
-  color: #794f27;
-  line-height: 1;
-}
-
-.stat-label {
-  font-size: 14px;
-  color: #9f927d;
-  margin-top: 4px;
-  font-weight: 600;
-}
-
-.upload-card {
-  margin-bottom: 24px;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.task-id {
-  font-family: 'Nunito', monospace;
-  font-weight: 700;
-  color: #9f927d;
-}
-
-.progress-wrapper {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.progress-text {
-  font-size: 12px;
-  color: #9f927d;
-}
-
-.action-card {
-  margin-bottom: 24px;
-}
-
-.action-buttons {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-  margin-bottom: 20px;
-}
-
-.action-buttons .el-button {
-  min-width: 160px;
-}
-
-.action-buttons .el-icon {
-  margin-right: 8px;
-}
-
-/* 工作台区域 */
-.workbench-row {
-  margin-bottom: 24px;
-}
-
-.workbench-card {
-  margin-bottom: 20px;
-}
-
-.workbench-card .card-header .el-icon {
-  margin-right: 6px;
-  vertical-align: -2px;
-}
-
-/* 密码快速入库 */
-.password-card {
-  height: calc(100% - 20px);
-}
-
-.quick-import-input {
-  margin-bottom: 12px;
-}
-
-.quick-import-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.quick-import-hint {
-  font-size: 13px;
-  color: #9f927d;
-  font-weight: 600;
-}
-
-.quick-import-result {
-  font-size: 13px;
-  color: #6fba2c;
-  font-weight: 700;
-}
-
-/* 入口卡片 */
-.clickable-card {
-  cursor: pointer;
-}
-
-.clickable-card:hover {
-  transform: translateY(-2px);
-}
-
-.entry-card-content {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.entry-icon {
-  width: 52px;
-  height: 52px;
-  border-radius: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  flex-shrink: 0;
-}
-
-.entry-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.entry-title {
-  font-size: 16px;
-  font-weight: 800;
-  color: #794f27;
-}
-
-.entry-desc {
-  font-size: 13px;
-  color: #9f927d;
-  font-weight: 600;
-  margin-top: 2px;
-}
-
-.entry-arrow {
-  color: #c4b89e;
-  font-size: 18px;
-}
-
-.clickable-card:hover .entry-arrow {
-  color: #19c8b9;
-}
-
-.archives-card {
-  margin-top: 24px;
-}
-
-.archives-card .card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.archives-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-wrap: wrap;
-}
-
-.pagination-container {
-  margin-top: 16px;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.text-gray {
-  color: #c4b89e;
-}
-
-.stat-card.clickable {
-  cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.stat-card.clickable:hover {
-  transform: translateY(-2px);
-}
-
-.stat-card.clickable:active {
-  transform: translateY(0);
-}
-
-.volume-tag {
-  margin-left: 8px;
-}
-
-.volume-list {
-  padding: 12px 24px;
-  background-color: rgba(248, 248, 240, 0.8);
-  border-radius: 12px;
-  margin: 8px 0;
-}
-
-.volume-list-title {
-  font-weight: 700;
-  color: #794f27;
-  margin-bottom: 8px;
-  font-size: 13px;
-}
-
-.time-text {
-  font-size: 12px;
-  color: #9f927d;
-  font-family: 'Nunito', 'Consolas', monospace;
-  font-weight: 600;
-}
-
-.volume-item {
-  display: flex;
-  justify-content: space-between;
-  padding: 6px 12px;
-  margin: 4px 0;
-  background-color: #fffdf5;
-  border-radius: 8px;
-  font-size: 13px;
-}
-
-.volume-name {
-  color: #725d42;
-  font-family: 'Nunito', 'Consolas', monospace;
-  font-weight: 600;
-}
-
-.volume-size {
-  color: #9f927d;
-  font-size: 12px;
-}
-
-:deep(.el-table__expand-icon) {
-  color: #19c8b9;
+/* ============================================================
+ * 移动端 (≤1024)：整页切到 stream 模式
+ * 桌面端零改动：仅 @media 内覆盖
+ * 痛点：桌面是 h-full + overflow-hidden + 双栏 grid 各自滚，
+ *      移动端会把 main 压成两个被挤死的小框（任务流只显 1 条、归档无内容）。
+ * 解法：让主壳 / main / 子组件 root / 子组件内部滚动区 都松绑高度，
+ *      改成自然内容高度 + 外层 .content-shell 整页滚动。
+ * ============================================================ */
+@media (max-width: 1024px) {
+  .dashboard-page-shell {
+    height: auto !important;
+    min-height: 100%;
+    overflow: visible !important;
+  }
+  .dashboard-page-shell main {
+    flex: 0 0 auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+  /* 任务流 + 归档：root 解锁高度 */
+  .dashboard-page-shell :deep([data-section="dashboard-tasks"]),
+  .dashboard-page-shell :deep([data-section="dashboard-archive"]) {
+    height: auto !important;
+    min-height: 0 !important;
+    flex: 0 0 auto !important;
+  }
+  /* 子组件内部的 overflow-auto / overflow-hidden + flex-1 列表区松绑：
+     让内容自然撑开高度（整页滚动而不是内部小框滚动） */
+  .dashboard-page-shell :deep([data-section="dashboard-tasks"] .overflow-auto),
+  .dashboard-page-shell :deep([data-section="dashboard-archive"] .overflow-auto) {
+    overflow: visible !important;
+    flex: 0 0 auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+  }
 }
 </style>

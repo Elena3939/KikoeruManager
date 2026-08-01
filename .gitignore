@@ -12,6 +12,8 @@ eggs/
 .eggs/
 lib/
 lib64/
+!frontend/src/lib/
+!frontend/src/lib/utils.js
 parts/
 sdist/
 var/
@@ -19,9 +21,14 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+venv/
+.venv/
+env/
+backend/venv/
 
 # Node
 node_modules/
+.npm-cache/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -36,6 +43,16 @@ yarn-error.log*
 # OS
 .DS_Store
 Thumbs.db
+*.exe
+*.dll
+*.bin
+
+# Log and DB
+*.log
+*.db
+backend/data/app.log
+backend/data/cache.db
+data/library_stats_cache.json
 
 # Project specific
 backend/build/
@@ -43,3 +60,76 @@ backend/dist/
 frontend/dist/
 frontend/node_modules/
 *.spec
+setup-run.log
+setup-run2.log
+config/config.yaml
+.claude/
+
+# Local AI skills / generated assets
+.agents/
+design-skills/
+design-skills-test/
+.agents.rar
+scripts/generate_design_skills.ps1
+scripts/install_design_skills_to_agents.ps1
+
+# Local runtime and sensitive files
+.env
+backend/data/
+data/
+# 本机 Redis 下载包与运行配置；Docker 镜像自行安装 Redis。
+tools/redis/
+update_dialog.py
+backend/app/version.txt
+
+# Backup artifacts
+*.bak-perf-*
+*.bak
+_orig_*.vue
+_orig_*.bak
+_commit_msg.txt
+
+# Frontend temporary work directories
+frontend/.Uploading_to_cloud/
+frontend/.download_icon/
+frontend/.npm-cache/
+frontend/.tmp*/
+frontend/src/assets/temp/
+frontend/src/assets/tempView/
+frontend/src/assets/anime/tempView/
+frontend/vite.config.js.timestamp-*.mjs
+
+# Codex / agent runtime caches and intermediate artifacts
+.codegraph/
+.codex/
+.codex-backups/
+.codex-chrome-profile/
+.codex-temp-visibility/
+.codex-temp/
+.cursor/
+.npm-codegraph-cache/
+.playwright-cli/
+
+# Backend / view scratch dirs
+backend/tempView/
+backend/_conflicts/
+backend/pytest_tmp*/
+
+# Local runtime helper scripts output
+.runtime/
+output/
+tools/baidupcs-go/
+tools/7zz-*/
+.tmp-baidupcs-*/
+.tmp_existing_folder_demo_data.py
+
+# pytest 临时目录（conftest.py 把 basetemp 重定向到这里规避 Windows %TEMP% 锁）
+backend/.pytest-*/
+.pytest-*/
+.pytest_cache/
+
+# 本地开发测试文件（不入仓库）
+backend/tests/test_library_index_fts.py
+backend/tests/test_library_index_snapshot_store.py
+backend/tests/test_library_index_performance_behavior.py
+backend/scripts/view.txt

@@ -1,0 +1,70 @@
+[
+  {
+    "id": "aaaaaaaa-0000-0000-0000-000000000003",
+    "category": "auto_import",
+    "action": "extract_archive",
+    "status": "success",
+    "summary": "解压入库完成：RJ333333.zip，压缩包 120.0 MB，解压产物 500.0 MB，耗时 3.2s",
+    "detail": {
+      "batch_id": "batch-2026-04-23-001",
+      "archive_input": true,
+      "archive_size_bytes": 125829120,
+      "extract_performed": true,
+      "extract_output_bytes": 524288000,
+      "duration_ms": 3200,
+      "output_path": "D:/library/RJ333333"
+    },
+    "rjcode": "RJ333333",
+    "task_id": "task-3",
+    "source_path": "D:/incoming/RJ333333.zip",
+    "created_at": "2026-04-23T10:05:03",
+    "batch_id": "batch-2026-04-23-001",
+    "session_key": null,
+    "parent_id": null
+  },
+  {
+    "id": "aaaaaaaa-0000-0000-0000-000000000002",
+    "category": "auto_import",
+    "action": "extract_archive",
+    "status": "success",
+    "summary": "解压入库完成：RJ222222.zip，压缩包 80.0 MB，解压产物 320.0 MB，耗时 2.1s",
+    "detail": {
+      "batch_id": "batch-2026-04-23-001",
+      "archive_input": true,
+      "archive_size_bytes": 83886080,
+      "extract_performed": true,
+      "extract_output_bytes": 335544320,
+      "duration_ms": 2100,
+      "output_path": "D:/library/RJ222222"
+    },
+    "rjcode": "RJ222222",
+    "task_id": "task-2",
+    "source_path": "D:/incoming/RJ222222.zip",
+    "created_at": "2026-04-23T10:05:02",
+    "batch_id": "batch-2026-04-23-001",
+    "session_key": null,
+    "parent_id": null
+  },
+  {
+    "id": "aaaaaaaa-0000-0000-0000-000000000001",
+    "category": "auto_import",
+    "action": "extract_archive",
+    "status": "failed",
+    "summary": "解压入库失败：RJ111111.zip，压缩包 50.0 MB，耗时 1.0s",
+    "detail": {
+      "batch_id": "batch-2026-04-23-001",
+      "archive_input": true,
+      "archive_size_bytes": 52428800,
+      "extract_performed": false,
+      "duration_ms": 1000,
+      "error": "unzip failed: bad crc"
+    },
+    "rjcode": "RJ111111",
+    "task_id": "task-1",
+    "source_path": "D:/incoming/RJ111111.zip",
+    "created_at": "2026-04-23T10:05:01",
+    "batch_id": "batch-2026-04-23-001",
+    "session_key": null,
+    "parent_id": null
+  }
+]

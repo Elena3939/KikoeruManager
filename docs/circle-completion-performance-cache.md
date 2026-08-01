@@ -1,0 +1,57 @@
+# 社团补全性能缓存说明
+
+## 目标
+
+社团补全读路径拆成 `state`、`summary`、`page`、`work-codes`、`recent` 几层缓存，减少切社团、翻页、全选、特典操作时对同一个社团重复构建完整状态。
+
+## 缓存层级
+
+- L1：进程内 `TTLCache`，命中最快，用于同 worker 内短时间复用。
+- L2：Redis JSON 缓存，跨请求、跨 worker、重启后仍可短 TTL 复用。
+- Source：PostgreSQL，缓存 miss 时才构建完整社团状态。
+
+Redis 不可用时会自动降级为 L1 + 数据库，不影响功能。
+
+## 失效规则
+
+- 单社团写路径调用 `invalidate_completion_view_cache(circle_id)` 后，递增 `circle-completion:version:{circle_id}` 并清本进程 L1。
+- 全量未知影响范围调用 `invalidate_completion_view_cache()` 后，递增全局 epoch，让旧 Redis key 自然失效。
+- `/recent` 目录使用独立 `recent` 版本，社团索引、刷新、拥有态同步后会主动失效。
+
+## 前端交互
+
+- 切社团默认只请求 `/works`，不再并发请求 `/summary` 和 `/works` 两个冷读接口。
+- `/works` 响应中的 summary 字段直接用于首屏统计。
+- 翻页时保留旧页内容，叠加轻量 “更新中” 状态；新页数据返回后继续播放原有卡片入场、hover、active 动效。
+- `CircleWorksViewport` 在 server paging 翻页时不再强制 `measure()`，只在布局、列数、行高变化时重新测量。
+- `刷新特典拥有` 只批量查询 ready 库存索引并回写本地拥有态，不请求 DLsite、asmr.one、特典接口或封面。
+- `批量刷新状态` 的业务结果先落库；封面缺失继续由 `/cover` 按需缓存，封面网络异常不能阻塞状态刷新完成。
+- `批量刷新状态` 补刷特典字段时，`is_bonus_work` 只按作品自身的 canonical / display RJ 更新；关联 RJ 只用于聚合 `has_bonus`，避免附属特典把父作品误标为特典并从父卡片下拆开。
+- 特典卡读取标题、发售日和封面时固定优先自身 RJ；历史行残留原作翻译版封面或展示 RJ 时，在读取阶段立即纠正，手动刷新会同步回写，避免同社团同发售日规则把特典错挂到无关作品。
+- 本地封面缓存加载失败后停止组件内多级公网回退，改由用户点击重试按钮调用本地缓存下载接口；公网直链仍保留有限备用地址回退。按 RJ 复用页面级进行中的任务，避免滚动时重复请求和重复动画。
+- 后端封面预热和按需下载共享最多 `6` 个真实 CDN 传输名额，队列等待不计入单张 `12` 秒网络预算；页面自然触发的预热失败只记 DEBUG，用户主动重试失败才保留 WARN。
+- 下载工作台按任务 ID 追踪状态：新批次只置顶新增任务，不覆盖旧批次；轮询请求通过 `/api/asmr-sync/status?task_ids=...` 精确补齐已追踪任务，避免通用状态接口的最新 20 条窗口把旧任务挤掉。
+
+## 封面缓存
+
+- `/works` 返回的 `image_url` / `thumb_image_url` 使用 `/api/circle-completion/cover/{RJ}.jpg` 和 `/api/circle-completion/cover/{RJ}_sam.jpg`。
+- `image_url` 固定是卡片/弹层主图 `{RJ}.jpg`，`thumb_image_url` 固定是列表/特典小图 `{RJ}_sam.jpg`；点击特典小图直接切换到已提供的本地主图，不再调用补图接口或弹出“封面已获取”。只有加载失败后的手动重试才调用强制补图。
+- cover API 本地命中时直接返回 `data/img/` 文件；文件缺失时由服务端按 RJ 从 DLsite 下载一次、原子落盘，再向当前请求返回本地文件。浏览器不再为同一张图直接回退公网 CDN；文件存在后所有请求只读本地缓存，除非缓存文件被删除或用户显式强制重取。
+- Docker 环境优先使用 `DATA_PATH/img` 作为封面缓存目录；默认镜像里 `DATA_PATH=/app/data`，因此缓存会落到持久化卷 `/app/data/img`。
+- DLsite 图片路径里同时有目录 bucket RJ 和真实文件 RJ 时，缓存文件名取真实文件 RJ，避免翻译版 / 关联版显示 RJ 与封面 RJ 不一致导致 404。
+- 按需下载失败时仍返回 404，前端 `WorkCard` 保留原有 DLsite fallback；附属特典卡的小图失败时改用主图地址，主图也失败才显示礼物占位，不能保留浏览器破图图标。
+
+## DLsite 社团身份发现
+
+- 社团身份不依赖库存索引；库存只在作品目录建立后投影本地收录态。
+- 未知 maker ID 的社团先请求 DLsite 正式作品搜索页，只解析真实作品链接和 `.maker_name` 中的 `/circle/profile/=/maker_id/RG*.html`，不再对整页扫描全部 RJ。
+- 名称标准化后只接受唯一 maker ID；同名对应多个 RG 时直接返回歧义错误，不自动选择。
+- 作品搜索没有身份结果时可检查预告搜索，但预告结果同样必须含名称匹配的 maker 链接；`home-touch` 返回的全站预告页不会产生候选。
+- maker ID 确认后只抓 maker 专属 profile 和 maker 专属 announce；已有 maker ID 的路径跳过身份搜索，保持原有快速路径。
+- 搜索和预告同时发生网络异常时返回“DLsite 社团搜索暂时不可用”，不能误报为社团不存在。
+
+## 验证入口
+
+- 后端：`backend` 下执行 `.\venv\Scripts\python.exe -m pytest tests/test_circle_completion_announce_search.py tests/test_circle_completion_maker_discovery.py tests/test_circle_completion_paged_view.py tests/test_circle_completion_bonus_grouping.py -q`
+- 前端：`frontend` 下执行 `npm run build`
+- 浏览器：打开 `http://localhost:5556/circle-completion`，点击多个社团，再执行分页 `1 -> 2 -> 3 -> 2`，观察卡片是否保留、是否出现整体跳高或空白重建。

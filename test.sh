@@ -1,10 +1,10 @@
 #!/bin/bash
-# test.sh - Prekikoeru 快速测试脚本
+# test.sh - KikoeruManager 快速测试脚本
 
 set -e
 
 echo "=========================================="
-echo "   Prekikoeru 测试脚本"
+echo "   KikoeruManager 测试脚本"
 echo "=========================================="
 echo ""
 

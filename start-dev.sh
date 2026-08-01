@@ -1,10 +1,10 @@
 #!/bin/bash
-# start-dev.sh - Prekikoeru 本地开发启动脚本
+# start-dev.sh - KikoeruManager 本地开发启动脚本
 
 set -e
 
 echo "========================================"
-echo "   Prekikoeru 本地开发环境启动器"
+echo "   KikoeruManager 本地开发环境启动器"
 echo "========================================"
 echo ""
 

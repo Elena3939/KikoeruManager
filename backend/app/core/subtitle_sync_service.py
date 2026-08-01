@@ -15,6 +15,8 @@ import logging
 from typing import Optional, List, Dict, Tuple
 from pathlib import Path
 
+from .log_sanitizer import sanitize_text_for_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -653,7 +655,7 @@ class SubtitleSyncService:
             logger.info(f"字幕同步完成: 重命名 {len(result['renamed_files'])} 个文件")
 
         except Exception as e:
-            logger.error(f"字幕同步失败: {e}", exc_info=True)
+            logger.error("字幕同步失败: %s", sanitize_text_for_log(e))
             result['success'] = False
             result['errors'].append(str(e))
 

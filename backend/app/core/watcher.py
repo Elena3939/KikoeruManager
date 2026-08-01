@@ -15,6 +15,8 @@ import logging
 
 from ..config.settings import get_config
 from ..core.task_engine import Task, TaskType, get_task_engine
+from .archive_volume_utils import get_archive_volume_paths
+from .deferred_archive_service import get_deferred_archive_service
 from .file_processor import get_file_processor
 
 logger = logging.getLogger(__name__)
@@ -80,6 +82,9 @@ class ArchiveHandler(FileSystemEventHandler):
         if re.search(r'\.z\d{2}$', filename):
             logger.debug(f"ZIP 分卷文件标记为已处理: {file_path}")
             self.mark_processed(file_path)
+        elif re.search(r'\.r\d{2}$', filename):
+            logger.debug(f"旧式 RAR 分卷文件标记为已处理: {file_path}")
+            self.mark_processed(file_path)
         elif re.search(r'\.7z\.\d{3}$', filename):
             logger.debug(f"7z 分卷文件标记为已处理: {file_path}")
             self.mark_processed(file_path)
@@ -101,7 +106,7 @@ class FolderWatcher:
     """
 
     def __init__(self):
-        self.config = get_config()
+        # 不缓存配置，每次都获取最新配置
         self.observer = None
         self.handler = None
         self.is_running = False
@@ -111,6 +116,32 @@ class FolderWatcher:
         self._loop = None
         self._paused = False  # 暂停监听标志
         self._file_processor = get_file_processor()
+
+    @property
+    def config(self):
+        """动态获取最新配置"""
+        return get_config()
+
+    def _broadcast_status(self, reason: str = "status") -> None:
+        try:
+            from .realtime_event_service import broadcast_event
+
+            payload = {
+                "is_running": bool(self.is_running),
+                "watch_path": self.config.storage.input_path,
+                "pending_files": list(self.pending_files),
+            }
+            broadcast_event({
+                "type": "watcher.status.changed",
+                "reason": reason,
+                "id": "watcher",
+                "domain": "watcher",
+                "status": "running" if self.is_running else "stopped",
+                "current_step": f"{len(self.pending_files)} 个待处理文件" if self.pending_files else "",
+                "payload": payload,
+            })
+        except Exception:
+            logger.debug("广播 watcher 实时状态失败", exc_info=True)
 
     def _get_excluded_paths(self):
         """获取所有应该排除的路径（pending + processed）"""
@@ -173,6 +204,7 @@ class FolderWatcher:
 
         self.is_running = True
         logger.info(f"文件夹监视器已启动: {watch_path}")
+        self._broadcast_status("started")
 
     def stop(self):
         """停止监视器"""
@@ -188,6 +220,7 @@ class FolderWatcher:
 
         self.is_running = False
         logger.info("文件夹监视器已停止")
+        self._broadcast_status("stopped")
 
     def _on_archive_detected(self, file_path: str):
         """检测到压缩包"""
@@ -201,16 +234,16 @@ class FolderWatcher:
             return
 
         self.pending_files.add(file_path)
-        logger.info(f"检测到新文件: {file_path}")
-        logger.info(f"auto_start配置: {self.config.watcher.auto_start}")
+        logger.info("检测到新压缩包: path=%s auto_start=%s", file_path, self.config.watcher.auto_start)
+        self._broadcast_status("pending_added")
 
         # 创建自动处理任务
         if self.config.watcher.auto_start:
-            logger.info(f"准备创建处理任务: {file_path}")
+            logger.debug(f"准备创建处理任务: {file_path}")
             # 使用保存的事件循环来调度任务
             if self._loop and self._loop.is_running():
                 asyncio.run_coroutine_threadsafe(self._process_file(file_path), self._loop)
-                logger.info(f"任务已调度: {file_path}")
+                logger.debug(f"任务已调度: {file_path}")
             else:
                 logger.error(f"事件循环未就绪，无法调度任务: {file_path}")
         else:
@@ -218,7 +251,7 @@ class FolderWatcher:
 
     async def _process_file(self, file_path: str):
         """处理文件（使用 FileProcessor 统一流程）"""
-        logger.info(f"[Watcher] 开始处理文件: {file_path}")
+        logger.debug(f"[Watcher] 开始处理文件: {file_path}")
         original_path = file_path
 
         try:
@@ -248,10 +281,69 @@ class FolderWatcher:
                 if self.config.watcher.delete_after_process and not task.skip_archive:
                     if task.status.value == "completed":
                         try:
-                            # 检查文件是否还存在（可能已被归档移动）
-                            if os.path.exists(task.source_path):
-                                os.remove(task.source_path)
-                                logger.info(f"已删除原文件: {task.source_path}")
+                            source_path = task.source_path
+                            archive_status = str((task.task_metadata or {}).get("archive_queue_status") or "").strip()
+                            archive_enabled = bool(
+                                getattr(getattr(self.config, "auto_process", None), "archive", False)
+                            )
+                            if archive_enabled and archive_status != "completed":
+                                # 入队失败、尚未入队或等待归档时都必须保留源文件；否则
+                                # watcher 会删除唯一的可恢复压缩包。
+                                logger.warning(
+                                    "跳过 watcher 删除，归档尚未安全完成: path=%s status=%s",
+                                    source_path,
+                                    archive_status or "unknown",
+                                )
+                                return
+                            archive_service = get_deferred_archive_service()
+                            if await archive_service.is_source_claimed(source_path):
+                                # 延后归档已冻结完整分卷清单；只能由队列在安全发布后删源。
+                                logger.info("跳过 watcher 删除，源压缩包已由空闲归档队列声明: %s", source_path)
+                                return
+                            source_dir = os.path.dirname(source_path)
+                            files_to_delete = [
+                                path for path in get_archive_volume_paths(source_path)
+                                if os.path.exists(path)
+                            ]
+
+                            # 删除所有相关文件
+                            for fp in files_to_delete:
+                                try:
+                                    await asyncio.to_thread(os.remove, fp)
+                                    logger.info(f"已删除原文件: {fp}")
+                                except Exception as e:
+                                    logger.warning(f"删除原文件失败: {fp}, {e}")
+
+                            # 清理空源目录（逐级向上）
+                            if os.path.isdir(source_dir):
+                                config = get_config()
+                                protected = {
+                                    os.path.abspath(p) for p in [
+                                        getattr(config.storage, 'input_path', ''),
+                                        getattr(config.storage, 'processed_archives_path', ''),
+                                        getattr(config.storage, 'temp_path', ''),
+                                        getattr(config.storage, 'library_path', ''),
+                                        getattr(config.storage, 'existing_folders_path', ''),
+                                    ] if p
+                                }
+                                current = os.path.abspath(source_dir)
+                                while current:
+                                    parent = os.path.dirname(current)
+                                    if parent == current:
+                                        break
+                                    if not os.path.isdir(current):
+                                        break
+                                    if current in protected:
+                                        break
+                                    try:
+                                        if os.listdir(current):
+                                            break
+                                        await asyncio.to_thread(os.rmdir, current)
+                                        logger.info(f"已自动清理空源目录: {current}")
+                                        current = parent
+                                    except (FileNotFoundError, PermissionError, OSError) as exc:
+                                        logger.debug(f"清理空源目录停止: {current}, {exc}")
+                                        break
                         except Exception as e:
                             logger.warning(f"删除原文件失败: {task.source_path}, {e}")
                 elif task.skip_archive:
@@ -264,6 +356,7 @@ class FolderWatcher:
             self._processed_files.add(file_path)
         finally:
             self.pending_files.discard(original_path)
+            self._broadcast_status("pending_removed")
 
     async def _periodic_scan(self):
         """定期扫描文件夹"""
@@ -291,6 +384,8 @@ class FolderWatcher:
                     continue
 
                 if self.handler._is_archive(file_path):
+                    if await get_deferred_archive_service().is_source_claimed(file_path):
+                        continue
                     engine = get_task_engine()
                     existing = any(
                         t.source_path == file_path and t.status.value in ["pending", "processing"]

@@ -1,0 +1,95 @@
+[
+  {
+    "action": "session_completed",
+    "batch_id": null,
+    "category": "asmr_sync",
+    "category_label": "ASMR 同步",
+    "created_at": "2026-04-23T16:00:45",
+    "detail": {
+      "average_upload_speed_bytes": 0,
+      "child_row_count": 3,
+      "child_rows": [
+        {
+          "action": "session_started",
+          "category": "asmr_sync",
+          "category_label": "下载开始",
+          "child_rows": [],
+          "created_at": "2026-04-23T16:00:00",
+          "detail": {
+            "download_root": "D:/asmr-downloads/sess-001",
+            "requested_count": 3,
+            "session_id": "asmr-sess-001"
+          },
+          "id": "as-start-01",
+          "relation": "asmr_session",
+          "rjcode": null,
+          "source_path": "D:/asmr-downloads/sess-001",
+          "status": "success",
+          "summary": "ASMR 同步会话开始：asmr-sess-001",
+          "task_id": "asmr-task-01"
+        },
+        {
+          "action": "resource_downloaded",
+          "category": "asmr_sync",
+          "category_label": "下载文件",
+          "child_rows": [],
+          "created_at": "2026-04-23T16:00:15",
+          "detail": {
+            "rjcode": "RJ900001",
+            "session_id": "asmr-sess-001",
+            "size_bytes": 230686720
+          },
+          "id": "as-res-01",
+          "relation": "asmr_resource",
+          "rjcode": "RJ900001",
+          "source_path": "D:/asmr-downloads/sess-001/RJ900001",
+          "status": "success",
+          "summary": "ASMR 资源下载：RJ900001 220 MB",
+          "task_id": "asmr-task-01"
+        },
+        {
+          "action": "resource_downloaded",
+          "category": "asmr_sync",
+          "category_label": "下载文件",
+          "child_rows": [],
+          "created_at": "2026-04-23T16:00:30",
+          "detail": {
+            "rjcode": "RJ900002",
+            "session_id": "asmr-sess-001",
+            "size_bytes": 104857600
+          },
+          "id": "as-res-02",
+          "relation": "asmr_resource",
+          "rjcode": "RJ900002",
+          "source_path": "D:/asmr-downloads/sess-001/RJ900002",
+          "status": "success",
+          "summary": "ASMR 资源下载：RJ900002 100 MB",
+          "task_id": "asmr-task-01"
+        }
+      ],
+      "download_root": "D:/asmr-downloads/sess-001",
+      "downloaded_bytes": 335544320,
+      "duration_ms": 45000,
+      "failed_count": 0,
+      "latest_activity_at": "2026-04-23T16:00:45",
+      "recovered_by_success": false,
+      "session_id": "asmr-sess-001",
+      "success_count": 3,
+      "target_path": null,
+      "upload_mode": null,
+      "uploaded_bytes": 0,
+      "uploaded_count": 0,
+      "uploaded_files": []
+    },
+    "has_child_rows": true,
+    "id": "as-complete-01",
+    "latest_activity_at": "2026-04-23T16:00:45",
+    "parent_id": null,
+    "rjcode": null,
+    "session_key": "asmr-sess-001",
+    "source_path": "D:/asmr-downloads/sess-001",
+    "status": "success",
+    "summary": "下载 3 个文件 / 320.00 MB / 耗时 45秒",
+    "task_id": "asmr-task-01"
+  }
+]

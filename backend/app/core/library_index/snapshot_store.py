@@ -1,0 +1,3598 @@
+"""SnapshotStore：索引数据的 PostgreSQL CRUD 层。
+
+职责边界：
+- 只管读写 `library_index_entries` / `library_index_status` 两张表
+- 不做扫描、不做路径解析、不做 RJ 号提取
+- 上层 scanner / watcher 以 IndexEntry / WatcherEvent 为单位和本层交互
+
+幂等语义：
+- upsert 用 (library_id, generation, relative_path) 判重
+- bulk_upsert 会把同一库存、generation、相对路径的重复条目去重，保留最后一个
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import logging
+import re
+import time
+from contextlib import contextmanager
+from dataclasses import replace
+from typing import Iterable, Iterator, Optional, Sequence, Union
+
+from sqlalchemy import and_, case, exists, func, or_, text
+from sqlalchemy.orm import Session
+
+from ...models.database import (
+    LibraryIndexEntry,
+    LibraryIndexPendingMask,
+    LibraryIndexStatus,
+    SessionLocal,
+    library_index_name_sort_key,
+)
+from ..resource_budget_service import get_resource_budget_service
+from ..ttl_cache import TTLCache
+from ._helpers import extract_rjcode as _extract_rjcode
+from .types import (
+    IndexEntry,
+    IndexStatus,
+    IndexStatusName,
+    WatcherMode,
+)
+logger = logging.getLogger(__name__)
+
+_RJ_PREFIX_RE = re.compile(r"^(?:RJ)?\d{0,12}$", re.IGNORECASE)
+
+_BULK_UPSERT_SQL = """
+INSERT INTO library_index_entries (
+    library_id,
+    generation,
+    materialized_seq,
+    entry_type,
+    relative_path,
+    absolute_path,
+    name,
+    name_sort_key,
+    rjcode,
+    parent_path,
+    size,
+    file_count,
+    mtime,
+    depth,
+    indexed_at
+)
+VALUES (
+    :library_id,
+    :generation,
+    :materialized_seq,
+    :entry_type,
+    :relative_path,
+    :absolute_path,
+    :name,
+    :name_sort_key,
+    :rjcode,
+    :parent_path,
+    :size,
+    :file_count,
+    :mtime,
+    :depth,
+    :indexed_at
+)
+ON CONFLICT(library_id, generation, relative_path) DO UPDATE SET
+    materialized_seq = excluded.materialized_seq,
+    entry_type = excluded.entry_type,
+    absolute_path = excluded.absolute_path,
+    name = excluded.name,
+    name_sort_key = excluded.name_sort_key,
+    rjcode = excluded.rjcode,
+    parent_path = excluded.parent_path,
+    size = excluded.size,
+    file_count = excluded.file_count,
+    mtime = excluded.mtime,
+    depth = excluded.depth,
+    indexed_at = excluded.indexed_at
+WHERE library_index_entries.materialized_seq IS DISTINCT FROM excluded.materialized_seq
+   OR library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
+   OR library_index_entries.absolute_path IS DISTINCT FROM excluded.absolute_path
+   OR library_index_entries.name IS DISTINCT FROM excluded.name
+   OR library_index_entries.name_sort_key IS DISTINCT FROM excluded.name_sort_key
+   OR library_index_entries.rjcode IS DISTINCT FROM excluded.rjcode
+   OR library_index_entries.parent_path IS DISTINCT FROM excluded.parent_path
+   OR library_index_entries.size IS DISTINCT FROM excluded.size
+   OR library_index_entries.file_count IS DISTINCT FROM excluded.file_count
+   OR library_index_entries.mtime IS DISTINCT FROM excluded.mtime
+   OR library_index_entries.depth IS DISTINCT FROM excluded.depth
+"""
+
+_BULK_UNNEST_SOURCE_SQL = """
+SELECT
+    library_id,
+    generation,
+    materialized_seq,
+    entry_type,
+    relative_path,
+    absolute_path,
+    name,
+    name_sort_key,
+    rjcode,
+    parent_path,
+    size,
+    file_count,
+    mtime,
+    depth,
+    indexed_at
+FROM unnest(
+    CAST(:library_ids AS text[]),
+    CAST(:generations AS integer[]),
+    CAST(:materialized_seqs AS bigint[]),
+    CAST(:entry_types AS text[]),
+    CAST(:relative_paths AS text[]),
+    CAST(:absolute_paths AS text[]),
+    CAST(:names AS text[]),
+    CAST(:name_sort_keys AS text[]),
+    CAST(:rjcodes AS text[]),
+    CAST(:parent_paths AS text[]),
+    CAST(:sizes AS bigint[]),
+    CAST(:file_counts AS integer[]),
+    CAST(:mtimes AS bigint[]),
+    CAST(:depths AS integer[]),
+    CAST(:indexed_ats AS bigint[])
+) AS payload(
+    library_id,
+    generation,
+    materialized_seq,
+    entry_type,
+    relative_path,
+    absolute_path,
+    name,
+    name_sort_key,
+    rjcode,
+    parent_path,
+    size,
+    file_count,
+    mtime,
+    depth,
+    indexed_at
+)
+"""
+
+_BULK_UPSERT_UNNEST_SQL = f"""
+INSERT INTO library_index_entries (
+    library_id,
+    generation,
+    materialized_seq,
+    entry_type,
+    relative_path,
+    absolute_path,
+    name,
+    name_sort_key,
+    rjcode,
+    parent_path,
+    size,
+    file_count,
+    mtime,
+    depth,
+    indexed_at
+)
+{_BULK_UNNEST_SOURCE_SQL}
+ON CONFLICT(library_id, generation, relative_path) DO UPDATE SET
+    materialized_seq = excluded.materialized_seq,
+    entry_type = excluded.entry_type,
+    absolute_path = excluded.absolute_path,
+    name = excluded.name,
+    name_sort_key = excluded.name_sort_key,
+    rjcode = excluded.rjcode,
+    parent_path = excluded.parent_path,
+    size = excluded.size,
+    file_count = excluded.file_count,
+    mtime = excluded.mtime,
+    depth = excluded.depth,
+    indexed_at = excluded.indexed_at
+WHERE library_index_entries.materialized_seq IS DISTINCT FROM excluded.materialized_seq
+   OR library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
+   OR library_index_entries.absolute_path IS DISTINCT FROM excluded.absolute_path
+   OR library_index_entries.name IS DISTINCT FROM excluded.name
+   OR library_index_entries.name_sort_key IS DISTINCT FROM excluded.name_sort_key
+   OR library_index_entries.rjcode IS DISTINCT FROM excluded.rjcode
+   OR library_index_entries.parent_path IS DISTINCT FROM excluded.parent_path
+   OR library_index_entries.size IS DISTINCT FROM excluded.size
+   OR library_index_entries.file_count IS DISTINCT FROM excluded.file_count
+   OR library_index_entries.mtime IS DISTINCT FROM excluded.mtime
+   OR library_index_entries.depth IS DISTINCT FROM excluded.depth
+"""
+
+_BULK_INSERT_IGNORE_UNNEST_SQL = f"""
+INSERT INTO library_index_entries (
+    library_id,
+    generation,
+    materialized_seq,
+    entry_type,
+    relative_path,
+    absolute_path,
+    name,
+    name_sort_key,
+    rjcode,
+    parent_path,
+    size,
+    file_count,
+    mtime,
+    depth,
+    indexed_at
+)
+{_BULK_UNNEST_SOURCE_SQL}
+ON CONFLICT(library_id, generation, relative_path) DO NOTHING
+"""
+
+_REBUILD_STAGE_TABLE_NAME = "library_index_rebuild_stage"
+
+_CREATE_REBUILD_STAGE_SQL = f"""
+CREATE TEMP TABLE {_REBUILD_STAGE_TABLE_NAME} (
+    library_id TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 1,
+    materialized_seq BIGINT NOT NULL DEFAULT 0,
+    entry_type TEXT NOT NULL,
+    relative_path TEXT PRIMARY KEY,
+    absolute_path TEXT NOT NULL,
+    name TEXT NOT NULL,
+    name_sort_key TEXT NOT NULL DEFAULT '',
+    rjcode TEXT,
+    parent_path TEXT,
+    size BIGINT NOT NULL DEFAULT 0,
+    file_count INTEGER NOT NULL DEFAULT 0,
+    mtime BIGINT,
+    depth INTEGER,
+    indexed_at BIGINT NOT NULL
+) ON COMMIT PRESERVE ROWS
+"""
+
+_REBUILD_STAGE_UPSERT_UNNEST_SQL = f"""
+INSERT INTO {_REBUILD_STAGE_TABLE_NAME} (
+    library_id,
+    generation,
+    materialized_seq,
+    entry_type,
+    relative_path,
+    absolute_path,
+    name,
+    name_sort_key,
+    rjcode,
+    parent_path,
+    size,
+    file_count,
+    mtime,
+    depth,
+    indexed_at
+)
+{_BULK_UNNEST_SOURCE_SQL}
+ON CONFLICT(relative_path) DO UPDATE SET
+    library_id = excluded.library_id,
+    generation = excluded.generation,
+    materialized_seq = excluded.materialized_seq,
+    entry_type = excluded.entry_type,
+    absolute_path = excluded.absolute_path,
+    name = excluded.name,
+    name_sort_key = excluded.name_sort_key,
+    rjcode = excluded.rjcode,
+    parent_path = excluded.parent_path,
+    size = excluded.size,
+    file_count = excluded.file_count,
+    mtime = excluded.mtime,
+    depth = excluded.depth,
+    indexed_at = excluded.indexed_at
+"""
+
+_REBUILD_STAGE_STATS_SQL = f"""
+SELECT
+    count(*) AS total_entries,
+    COALESCE(SUM(CASE WHEN entry_type = 'file' THEN size ELSE 0 END), 0) AS total_size_bytes,
+    COALESCE(SUM(CASE
+        WHEN entry_type = 'dir'
+         AND relative_path != ''
+         AND COALESCE(parent_path, '') = ''
+        THEN 1
+        ELSE 0
+    END), 0) AS folder_count
+FROM {_REBUILD_STAGE_TABLE_NAME}
+WHERE library_id = :library_id
+"""
+
+_REBUILD_STAGE_ANALYZE_SQL = f"ANALYZE {_REBUILD_STAGE_TABLE_NAME}"
+
+_REBUILD_STAGE_INSERT_NEW_CHUNK_SQL = f"""
+INSERT INTO library_index_entries (
+    library_id,
+    generation,
+    materialized_seq,
+    entry_type,
+    relative_path,
+    absolute_path,
+    name,
+    name_sort_key,
+    rjcode,
+    parent_path,
+    size,
+    file_count,
+    mtime,
+    depth,
+    indexed_at
+)
+SELECT
+    s.library_id,
+    s.generation,
+    s.materialized_seq,
+    s.entry_type,
+    s.relative_path,
+    s.absolute_path,
+    s.name,
+    s.name_sort_key,
+    s.rjcode,
+    s.parent_path,
+    s.size,
+    s.file_count,
+    s.mtime,
+    s.depth,
+    s.indexed_at
+FROM {_REBUILD_STAGE_TABLE_NAME} s
+WHERE s.library_id = :library_id
+  AND NOT EXISTS (
+      SELECT 1
+        FROM library_index_entries AS existing
+       WHERE existing.library_id = s.library_id
+         AND existing.generation = s.generation
+         AND existing.relative_path = s.relative_path
+  )
+ORDER BY s.relative_path
+LIMIT :chunk_size
+ON CONFLICT(library_id, generation, relative_path) DO NOTHING
+"""
+
+_REBUILD_STAGE_UPDATE_CHANGED_CHUNK_SQL = f"""
+WITH changed AS (
+    SELECT
+        staged.library_id,
+        staged.generation,
+        staged.materialized_seq,
+        staged.entry_type,
+        staged.relative_path,
+        staged.absolute_path,
+        staged.name,
+        staged.name_sort_key,
+        staged.rjcode,
+        staged.parent_path,
+        staged.size,
+        staged.file_count,
+        staged.mtime,
+        staged.depth,
+        staged.indexed_at
+      FROM {_REBUILD_STAGE_TABLE_NAME} AS staged
+      JOIN library_index_entries AS target
+        ON target.library_id = staged.library_id
+       AND target.generation = staged.generation
+       AND target.relative_path = staged.relative_path
+     WHERE target.library_id = :library_id
+       AND staged.library_id = :library_id
+       AND (
+           target.materialized_seq IS DISTINCT FROM staged.materialized_seq
+           OR target.entry_type IS DISTINCT FROM staged.entry_type
+           OR target.absolute_path IS DISTINCT FROM staged.absolute_path
+           OR target.name IS DISTINCT FROM staged.name
+           OR target.name_sort_key IS DISTINCT FROM staged.name_sort_key
+           OR target.rjcode IS DISTINCT FROM staged.rjcode
+           OR target.parent_path IS DISTINCT FROM staged.parent_path
+           OR target.size IS DISTINCT FROM staged.size
+           OR target.file_count IS DISTINCT FROM staged.file_count
+           OR target.mtime IS DISTINCT FROM staged.mtime
+           OR target.depth IS DISTINCT FROM staged.depth
+       )
+     ORDER BY staged.relative_path
+     LIMIT :chunk_size
+)
+UPDATE library_index_entries AS target
+   SET materialized_seq = changed.materialized_seq,
+       entry_type = changed.entry_type,
+       absolute_path = changed.absolute_path,
+       name = changed.name,
+       name_sort_key = changed.name_sort_key,
+       rjcode = changed.rjcode,
+       parent_path = changed.parent_path,
+       size = changed.size,
+       file_count = changed.file_count,
+       mtime = changed.mtime,
+       depth = changed.depth,
+       indexed_at = changed.indexed_at
+  FROM changed
+ WHERE target.library_id = :library_id
+   AND changed.library_id = :library_id
+   AND target.generation = changed.generation
+   AND target.relative_path = changed.relative_path
+"""
+
+_REBUILD_STAGE_DELETE_MISSING_CHUNK_SQL = f"""
+DELETE FROM library_index_entries AS target
+ WHERE target.id IN (
+       SELECT stale.id
+         FROM library_index_entries AS stale
+        WHERE stale.library_id = :library_id
+          AND stale.generation = (
+              SELECT generation
+                FROM library_index_rebuild_stage
+               WHERE library_id = :library_id
+               LIMIT 1
+          )
+          AND NOT EXISTS (
+              SELECT 1
+                FROM {_REBUILD_STAGE_TABLE_NAME} AS staged
+               WHERE staged.library_id = :library_id
+                 AND staged.generation = stale.generation
+                 AND staged.relative_path = stale.relative_path
+          )
+        ORDER BY stale.id ASC
+        LIMIT :chunk_size
+ )
+"""
+
+_REBUILD_STAGE_MERGE_SUBTREE_SQL = f"""
+INSERT INTO library_index_entries (
+    library_id,
+    generation,
+    materialized_seq,
+    entry_type,
+    relative_path,
+    absolute_path,
+    name,
+    name_sort_key,
+    rjcode,
+    parent_path,
+    size,
+    file_count,
+    mtime,
+    depth,
+    indexed_at
+)
+SELECT
+    staged.library_id,
+    staged.generation,
+    staged.materialized_seq,
+    staged.entry_type,
+    staged.relative_path,
+    staged.absolute_path,
+    staged.name,
+    staged.name_sort_key,
+    staged.rjcode,
+    staged.parent_path,
+    staged.size,
+    staged.file_count,
+    staged.mtime,
+    staged.depth,
+    staged.indexed_at
+FROM {_REBUILD_STAGE_TABLE_NAME} AS staged
+WHERE staged.library_id = :library_id
+  AND staged.generation = :generation
+ON CONFLICT(library_id, generation, relative_path) DO UPDATE SET
+    materialized_seq = excluded.materialized_seq,
+    entry_type = excluded.entry_type,
+    absolute_path = excluded.absolute_path,
+    name = excluded.name,
+    name_sort_key = excluded.name_sort_key,
+    rjcode = excluded.rjcode,
+    parent_path = excluded.parent_path,
+    size = excluded.size,
+    file_count = excluded.file_count,
+    mtime = excluded.mtime,
+    depth = excluded.depth,
+    indexed_at = excluded.indexed_at
+WHERE library_index_entries.materialized_seq IS DISTINCT FROM excluded.materialized_seq
+   OR library_index_entries.entry_type IS DISTINCT FROM excluded.entry_type
+   OR library_index_entries.absolute_path IS DISTINCT FROM excluded.absolute_path
+   OR library_index_entries.name IS DISTINCT FROM excluded.name
+   OR library_index_entries.name_sort_key IS DISTINCT FROM excluded.name_sort_key
+   OR library_index_entries.rjcode IS DISTINCT FROM excluded.rjcode
+   OR library_index_entries.parent_path IS DISTINCT FROM excluded.parent_path
+   OR library_index_entries.size IS DISTINCT FROM excluded.size
+   OR library_index_entries.file_count IS DISTINCT FROM excluded.file_count
+   OR library_index_entries.mtime IS DISTINCT FROM excluded.mtime
+   OR library_index_entries.depth IS DISTINCT FROM excluded.depth
+"""
+
+_REBUILD_STAGE_DELETE_SUBTREE_MISSING_SQL = f"""
+DELETE FROM library_index_entries AS target
+ WHERE target.library_id = :library_id
+   AND target.generation = :generation
+   AND (
+       (
+           :scope = 'subtree'
+           AND (
+               :relative_path = ''
+               OR target.relative_path = :relative_path
+               OR (
+                   target.relative_path >= :subtree_start
+                   AND target.relative_path < :subtree_end
+               )
+           )
+       )
+       OR (
+           :scope = 'exact'
+           AND target.relative_path = :relative_path
+       )
+   )
+   AND NOT EXISTS (
+       SELECT 1
+         FROM {_REBUILD_STAGE_TABLE_NAME} AS staged
+        WHERE staged.library_id = target.library_id
+          AND staged.generation = target.generation
+          AND staged.relative_path = target.relative_path
+   )
+"""
+
+DEFAULT_BULK_UPSERT_CHUNK_SIZE = 500
+DEFAULT_SELF_MUTATION_DELETE_CHUNK_SIZE = 200
+DEFAULT_SELF_MUTATION_MOVE_CHUNK_SIZE = 50
+DIRECT_CHILD_TOTAL_CACHE_TTL_SECONDS = 10.0
+DIRECT_CHILD_TOTAL_CACHE_MAX_SIZE = 4096
+DIRECT_CHILD_PAGE_CURSOR_VERSION = 1
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _has_surrogate(value: str) -> bool:
+    return any('\ud800' <= char <= '\udfff' for char in value)
+
+
+def _database_safe_text(value: Optional[str]) -> Optional[str]:
+    """PostgreSQL 只能接收合法 UTF-8；本地坏文件名里的 surrogate 要转义后再入库。"""
+    if value is None or not _has_surrogate(value):
+        return value
+    return value.encode('utf-8', 'backslashreplace').decode('utf-8')
+
+
+def _database_safe_entry(entry: IndexEntry) -> IndexEntry:
+    safe_relative = _database_safe_text(entry.relative_path) or ''
+    safe_absolute = _database_safe_text(entry.absolute_path) or ''
+    safe_name = _database_safe_text(entry.name) or ''
+    safe_parent = _database_safe_text(entry.parent_path)
+    safe_rjcode = (
+        _extract_rjcode(_database_safe_text(entry.rjcode) or "")
+        or _extract_rjcode(safe_name)
+        or _extract_rjcode(safe_relative)
+        or _extract_rjcode(safe_absolute)
+    )
+    if (
+        safe_relative == entry.relative_path
+        and safe_absolute == entry.absolute_path
+        and safe_name == entry.name
+        and safe_parent == entry.parent_path
+        and safe_rjcode == entry.rjcode
+    ):
+        return entry
+    if (
+        safe_relative != entry.relative_path
+        or safe_absolute != entry.absolute_path
+        or safe_name != entry.name
+        or safe_parent != entry.parent_path
+    ):
+        logger.warning(
+            "[索引] 路径包含非法 UTF-8 字节，已转义后写入索引 library=%s path=%r",
+            entry.library_id,
+            safe_relative or safe_absolute or safe_name,
+        )
+    return replace(
+        entry,
+        relative_path=safe_relative,
+        absolute_path=safe_absolute,
+        name=safe_name,
+        rjcode=safe_rjcode,
+        parent_path=safe_parent,
+    )
+
+
+class SnapshotStore:
+    """索引快照 CRUD。"""
+
+    def __init__(self, session_factory=SessionLocal):
+        self._session_factory = session_factory
+        self._children_total_cache = TTLCache(
+            max_size=DIRECT_CHILD_TOTAL_CACHE_MAX_SIZE,
+            ttl_seconds=DIRECT_CHILD_TOTAL_CACHE_TTL_SECONDS,
+            name="library_index.children_total",
+        )
+
+    @property
+    def bind_engine(self):
+        return (getattr(self._session_factory, "kw", {}) or {}).get("bind")
+
+    @contextmanager
+    def _write_session(
+        self,
+        *,
+        relaxed_commit: bool = False,
+        invalidate_children_total_cache: bool = True,
+        before_commit=None,
+    ) -> Iterator[Session]:
+        with get_resource_budget_service().acquire_sync("library_index_write", reason="library_index.write"):
+            db = self._session_factory()
+            try:
+                if relaxed_commit:
+                    db.execute(text("SET LOCAL synchronous_commit = off"))
+                yield db
+                if before_commit is not None:
+                    before_commit(db)
+                db.commit()
+                if invalidate_children_total_cache:
+                    self._invalidate_children_total_cache()
+                pending_broadcasts = db.info.pop("library_index_status_broadcasts", {})
+                for snapshot, reason in pending_broadcasts.values():
+                    self._broadcast_status_change(snapshot, reason=reason)
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
+
+    @contextmanager
+    def _read_session(self) -> Iterator[Session]:
+        db = self._session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    @staticmethod
+    def _children_total_cache_key(
+        library_id: str,
+        parent_path: Optional[str],
+        entry_type: Optional[str],
+        active_generation: int,
+        view_revision: int,
+    ) -> str:
+        return (
+            f"{library_id}\0{active_generation}\0{view_revision}\0"
+            f"{parent_path or ''}\0{entry_type or ''}"
+        )
+
+    def _invalidate_children_total_cache(self, library_id: Optional[str] = None) -> None:
+        if library_id:
+            self._children_total_cache.invalidate_prefix(f"{library_id}\0")
+        else:
+            self._children_total_cache.clear()
+
+    def _count_direct_children(
+        self,
+        db: Session,
+        library_id: str,
+        parent_path: Optional[str],
+        entry_type: Optional[str],
+        q,
+    ) -> int:
+        status = db.query(
+            LibraryIndexStatus.active_generation,
+            LibraryIndexStatus.view_revision,
+        ).filter(LibraryIndexStatus.library_id == library_id).first()
+        cache_key = self._children_total_cache_key(
+            library_id,
+            parent_path,
+            entry_type,
+            int(getattr(status, "active_generation", 1) or 1),
+            int(getattr(status, "view_revision", 0) or 0),
+        )
+        cached = self._children_total_cache.get(cache_key)
+        if cached is not None:
+            return int(cached)
+        total = int(q.with_entities(func.count(LibraryIndexEntry.id)).scalar() or 0)
+        self._children_total_cache.set(cache_key, total)
+        return total
+
+    @staticmethod
+    def _active_view_query(db: Session, q, *, library_ids: Optional[Sequence[str]] = None):
+        """限制到 active generation/连续水位，并反连接所有生效 pending mask。"""
+        status = LibraryIndexStatus
+        mask = LibraryIndexPendingMask
+        q = q.join(status, status.library_id == LibraryIndexEntry.library_id).filter(
+            LibraryIndexEntry.generation == status.active_generation,
+            LibraryIndexEntry.materialized_seq <= status.materialized_seq,
+        )
+        if library_ids:
+            q = q.filter(LibraryIndexEntry.library_id.in_(list(library_ids)))
+        hidden = exists().where(
+            mask.library_id == LibraryIndexEntry.library_id,
+            or_(
+                and_(
+                    mask.scope == "exact",
+                    LibraryIndexEntry.relative_path == mask.relative_path,
+                ),
+                and_(
+                    mask.scope == "subtree",
+                    or_(
+                        mask.relative_path == "",
+                        LibraryIndexEntry.relative_path == mask.relative_path,
+                        and_(
+                            LibraryIndexEntry.relative_path >= mask.relative_path + "/",
+                            LibraryIndexEntry.relative_path < mask.relative_path + "0",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        return q.filter(~hidden)
+
+    @staticmethod
+    def _ensure_status_row(db: Session, library_id: str) -> LibraryIndexStatus:
+        """兼容旧写入口：generation-aware 读要求每个库存先有 active view。"""
+        row = (
+            db.query(LibraryIndexStatus)
+            .filter(LibraryIndexStatus.library_id == library_id)
+            .first()
+        )
+        if row is None:
+            row = LibraryIndexStatus(
+                library_id=library_id,
+                status="idle",
+                watcher_mode="disabled",
+                accepted_seq=0,
+                materialized_seq=0,
+                state_revision=0,
+                view_revision=0,
+                active_generation=1,
+                materializer_epoch=0,
+                catchup_state="idle",
+                updated_at=_now_ms(),
+            )
+            db.add(row)
+            db.flush()
+        return row
+
+    @classmethod
+    def _ensure_status_rows(cls, db: Session, library_ids: Iterable[str]) -> None:
+        normalized_ids = {
+            str(item or "").strip()
+            for item in library_ids
+            if str(item or "").strip()
+        }
+        for library_id in sorted(normalized_ids):
+            cls._ensure_status_row(db, library_id)
+
+    def apply_active_view(self, db: Session, q, *, library_ids: Optional[Sequence[str]] = None):
+        return self._active_view_query(db, q, library_ids=library_ids)
+
+    @staticmethod
+    def _encode_direct_child_page_cursor(
+        *,
+        library_id: str,
+        parent_path: Optional[str],
+        entry_type: Optional[str],
+        sort_by: str,
+        sort_order: str,
+        row: LibraryIndexEntry,
+    ) -> str:
+        payload = {
+            "v": DIRECT_CHILD_PAGE_CURSOR_VERSION,
+            "l": str(library_id or ""),
+            "p": str(parent_path or ""),
+            "e": str(entry_type or ""),
+            "s": str(sort_by or "name"),
+            "o": str(sort_order or "asc"),
+            "k": {
+                "n": str(row.name_sort_key or library_index_name_sort_key(row.name)),
+                "r": str(row.relative_path or ""),
+                "z": int(row.size or 0),
+                "t": None if row.mtime is None else int(row.mtime),
+            },
+        }
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_direct_child_page_cursor(
+        page_cursor: Optional[str],
+        *,
+        library_id: str,
+        parent_path: Optional[str],
+        entry_type: Optional[str],
+        sort_by: str,
+        sort_order: str,
+    ) -> Optional[dict[str, object]]:
+        if not page_cursor:
+            return None
+        token = str(page_cursor or "").strip()
+        if not token or len(token) > 2048:
+            return None
+        try:
+            padded = token + ("=" * (-len(token) % 4))
+            payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict) or payload.get("v") != DIRECT_CHILD_PAGE_CURSOR_VERSION:
+            return None
+        if (
+            payload.get("l") != str(library_id or "")
+            or payload.get("p") != str(parent_path or "")
+            or payload.get("e") != str(entry_type or "")
+            or payload.get("s") != str(sort_by or "name")
+            or payload.get("o") != str(sort_order or "asc")
+        ):
+            return None
+        key = payload.get("k")
+        return key if isinstance(key, dict) else None
+
+    @staticmethod
+    def _direct_child_secondary_after_condition(cursor_key: dict[str, object]):
+        last_name_sort_key = str(cursor_key.get("n") or "")
+        last_relative_path = str(cursor_key.get("r") or "")
+        return or_(
+            LibraryIndexEntry.name_sort_key > last_name_sort_key,
+            and_(
+                LibraryIndexEntry.name_sort_key == last_name_sort_key,
+                LibraryIndexEntry.relative_path > last_relative_path,
+            ),
+        )
+
+    @classmethod
+    def _direct_child_keyset_after_condition(
+        cls,
+        sort_by: str,
+        sort_order: str,
+        cursor_key: dict[str, object],
+    ):
+        secondary_after = cls._direct_child_secondary_after_condition(cursor_key)
+        descending = str(sort_order or "asc").lower() == "desc"
+        normalized_sort_by = str(sort_by or "name").lower()
+
+        if normalized_sort_by == "size":
+            try:
+                last_size = int(cursor_key.get("z") or 0)
+            except Exception:
+                last_size = 0
+            primary_after = (
+                LibraryIndexEntry.size < last_size
+                if descending
+                else LibraryIndexEntry.size > last_size
+            )
+            return or_(
+                primary_after,
+                and_(LibraryIndexEntry.size == last_size, secondary_after),
+            )
+
+        if normalized_sort_by == "time":
+            raw_mtime = cursor_key.get("t")
+            try:
+                last_mtime = None if raw_mtime is None else int(raw_mtime)
+            except Exception:
+                last_mtime = None
+            if last_mtime is None:
+                return and_(LibraryIndexEntry.mtime.is_(None), secondary_after)
+            primary_after = (
+                LibraryIndexEntry.mtime < last_mtime
+                if descending
+                else LibraryIndexEntry.mtime > last_mtime
+            )
+            return or_(
+                primary_after,
+                and_(LibraryIndexEntry.mtime == last_mtime, secondary_after),
+                LibraryIndexEntry.mtime.is_(None),
+            )
+
+        last_name_sort_key = str(cursor_key.get("n") or "")
+        primary_after = (
+            LibraryIndexEntry.name_sort_key < last_name_sort_key
+            if descending
+            else LibraryIndexEntry.name_sort_key > last_name_sort_key
+        )
+        return or_(
+            primary_after,
+            and_(
+                LibraryIndexEntry.name_sort_key == last_name_sort_key,
+                LibraryIndexEntry.relative_path > str(cursor_key.get("r") or ""),
+            ),
+        )
+
+    # ========== Entry 写入 ==========
+
+    def upsert(self, entry: IndexEntry) -> None:
+        """写入或更新一行索引，(library_id, generation, relative_path) 作为自然主键。"""
+        with self._write_session() as db:
+            entry = _database_safe_entry(entry)
+            self._ensure_status_row(db, entry.library_id)
+            old = self._get_existing_stats_map(
+                db,
+                entry.library_id,
+                [entry.relative_path],
+                generation=max(1, int(entry.generation or 1)),
+            )
+            old_size, old_folders = old.get(entry.relative_path, (0, 0))
+            new_size, new_folders = self._entry_stats(entry)
+            ancestor_deltas = self._build_bulk_upsert_ancestor_deltas(db, [entry])
+            self._upsert_one(db, entry)
+            self._flush_ancestor_deltas(db, ancestor_deltas)
+            self._apply_status_delta(
+                db,
+                entry.library_id,
+                size_delta=new_size - old_size,
+                folder_delta=new_folders - old_folders,
+                entry_delta=0 if entry.relative_path in old else 1,
+            )
+
+    def bulk_upsert(
+        self,
+        entries: Iterable[IndexEntry],
+        *,
+        chunk_size: int = DEFAULT_BULK_UPSERT_CHUNK_SIZE,
+        maintain_status_stats: bool = True,
+        maintain_parent_dir_stats: bool = False,
+        insert_only: bool = False,
+        relaxed_commit: bool = False,
+        before_commit=None,
+    ) -> int:
+        """批量写入 / 更新，返回实际写入条数。
+
+        主路径使用 PostgreSQL 数组 unnest + UPSERT，避免逐条 SELECT + ORM 物化。
+        全量首建可传 insert_only=True，空库首次导入时少走 UPDATE 分支。
+        异常环境下回退 `_upsert_one()`，保证用户现场可用。
+        """
+        deduped: dict[tuple[str, int, str], IndexEntry] = {}
+        for item in entries:
+            safe_item = _database_safe_entry(item)
+            deduped[
+                (
+                    safe_item.library_id,
+                    max(1, int(safe_item.generation or 1)),
+                    safe_item.relative_path,
+                )
+            ] = safe_item
+        if not deduped:
+            return 0
+
+        chunk_size = max(1, int(chunk_size or DEFAULT_BULK_UPSERT_CHUNK_SIZE))
+        payload = list(deduped.values())
+        try:
+            with self._write_session(
+                relaxed_commit=relaxed_commit,
+                before_commit=before_commit,
+            ) as db:
+                self._ensure_status_rows(db, (entry.library_id for entry in payload))
+                affected_total = 0
+                deltas = (
+                    self._build_bulk_upsert_status_deltas(db, payload, insert_only=insert_only)
+                    if maintain_status_stats else {}
+                )
+                ancestor_deltas = (
+                    self._build_bulk_upsert_ancestor_deltas(db, payload, insert_only=insert_only)
+                    if maintain_parent_dir_stats else {}
+                )
+                for i in range(0, len(payload), chunk_size):
+                    chunk = payload[i:i + chunk_size]
+                    sql = _BULK_INSERT_IGNORE_UNNEST_SQL if insert_only else _BULK_UPSERT_UNNEST_SQL
+                    result = db.execute(
+                        text(sql),
+                        self._chunk_to_unnest_params(chunk),
+                    )
+                    affected = int(result.rowcount or 0)
+                    affected_total += affected if affected >= 0 else len(chunk)
+                self._flush_ancestor_deltas(db, ancestor_deltas)
+                for library_id, delta in deltas.items():
+                    self._apply_status_delta(
+                        db,
+                        library_id,
+                        size_delta=delta["size"],
+                        folder_delta=delta["folders"],
+                        entry_delta=delta["entries"],
+                    )
+            return affected_total
+        except Exception:
+            logger.warning("[索引] 原生批量 UPSERT 失败，回退逐条写入", exc_info=True)
+
+        written = 0
+        with self._write_session(
+            relaxed_commit=relaxed_commit,
+            before_commit=before_commit,
+        ) as db:
+            self._ensure_status_rows(db, (entry.library_id for entry in payload))
+            deltas = (
+                self._build_bulk_upsert_status_deltas(db, payload, insert_only=insert_only)
+                if maintain_status_stats else {}
+            )
+            ancestor_deltas = (
+                self._build_bulk_upsert_ancestor_deltas(db, payload, insert_only=insert_only)
+                if maintain_parent_dir_stats else {}
+            )
+            for item in payload:
+                if insert_only:
+                    exists = (
+                        db.query(LibraryIndexEntry.id)
+                        .filter(
+                            LibraryIndexEntry.library_id == item.library_id,
+                            LibraryIndexEntry.generation == max(1, int(item.generation or 1)),
+                            LibraryIndexEntry.relative_path == item.relative_path,
+                        )
+                        .first()
+                    )
+                    if exists:
+                        continue
+                if self._upsert_one(db, item):
+                    written += 1
+            self._flush_ancestor_deltas(db, ancestor_deltas)
+            for library_id, delta in deltas.items():
+                self._apply_status_delta(
+                    db,
+                    library_id,
+                    size_delta=delta["size"],
+                    folder_delta=delta["folders"],
+                    entry_delta=delta["entries"],
+                )
+        return written
+
+    def create_rebuild_writer(
+        self,
+        library_id: str,
+        *,
+        chunk_size: int = DEFAULT_BULK_UPSERT_CHUNK_SIZE,
+        relaxed_commit: bool = False,
+    ) -> "SnapshotRebuildWriter":
+        return SnapshotRebuildWriter(
+            self,
+            library_id,
+            chunk_size=chunk_size,
+            relaxed_commit=relaxed_commit,
+        )
+
+    def _upsert_one(self, db: Session, entry: IndexEntry) -> bool:
+        entry = _database_safe_entry(entry)
+        row = (
+            db.query(LibraryIndexEntry)
+            .filter(
+                LibraryIndexEntry.library_id == entry.library_id,
+                LibraryIndexEntry.generation == max(1, int(entry.generation or 1)),
+                LibraryIndexEntry.relative_path == entry.relative_path,
+            )
+            .first()
+        )
+        indexed_at = entry.indexed_at or _now_ms()
+        if row is None:
+            row = LibraryIndexEntry(
+                library_id=entry.library_id,
+                generation=max(1, int(entry.generation or 1)),
+                materialized_seq=max(0, int(entry.materialized_seq or 0)),
+                entry_type=entry.entry_type,
+                relative_path=entry.relative_path,
+                absolute_path=entry.absolute_path,
+                name=entry.name,
+                name_sort_key=library_index_name_sort_key(entry.name),
+                rjcode=entry.rjcode,
+                parent_path=entry.parent_path,
+                size=entry.size or 0,
+                file_count=entry.file_count or 0,
+                mtime=entry.mtime,
+                depth=entry.depth,
+                indexed_at=indexed_at,
+            )
+            db.add(row)
+            return True
+        else:
+            if not self._row_differs_from_entry(row, entry):
+                return False
+            row.generation = max(1, int(entry.generation or 1))
+            row.materialized_seq = max(0, int(entry.materialized_seq or 0))
+            row.entry_type = entry.entry_type
+            row.absolute_path = entry.absolute_path
+            row.name = entry.name
+            row.name_sort_key = library_index_name_sort_key(entry.name)
+            row.rjcode = entry.rjcode
+            row.parent_path = entry.parent_path
+            row.size = entry.size or 0
+            row.file_count = entry.file_count or 0
+            row.mtime = entry.mtime
+            row.depth = entry.depth
+            row.indexed_at = indexed_at
+            return True
+
+    @staticmethod
+    def _row_differs_from_entry(row: LibraryIndexEntry, entry: IndexEntry) -> bool:
+        return (
+            int(row.generation or 1) != max(1, int(entry.generation or 1))
+            or int(row.materialized_seq or 0) != max(0, int(entry.materialized_seq or 0))
+            or row.entry_type != entry.entry_type
+            or row.absolute_path != entry.absolute_path
+            or row.name != entry.name
+            or row.name_sort_key != library_index_name_sort_key(entry.name)
+            or row.rjcode != entry.rjcode
+            or row.parent_path != entry.parent_path
+            or int(row.size or 0) != int(entry.size or 0)
+            or int(row.file_count or 0) != int(entry.file_count or 0)
+            or row.mtime != entry.mtime
+            or row.depth != entry.depth
+        )
+
+    @staticmethod
+    def _entry_to_upsert_params(entry: IndexEntry) -> dict:
+        return {
+            "library_id": entry.library_id,
+            "generation": max(1, int(entry.generation or 1)),
+            "materialized_seq": max(0, int(entry.materialized_seq or 0)),
+            "entry_type": entry.entry_type,
+            "relative_path": entry.relative_path,
+            "absolute_path": entry.absolute_path,
+            "name": entry.name,
+            "name_sort_key": library_index_name_sort_key(entry.name),
+            "rjcode": entry.rjcode,
+            "parent_path": entry.parent_path,
+            "size": entry.size or 0,
+            "file_count": entry.file_count or 0,
+            "mtime": entry.mtime,
+            "depth": entry.depth,
+            "indexed_at": entry.indexed_at or _now_ms(),
+        }
+
+    @classmethod
+    def _chunk_to_unnest_params(cls, entries: Sequence[IndexEntry]) -> dict:
+        rows = [cls._entry_to_upsert_params(entry) for entry in entries]
+        return {
+            "library_ids": [row["library_id"] for row in rows],
+            "generations": [row["generation"] for row in rows],
+            "materialized_seqs": [row["materialized_seq"] for row in rows],
+            "entry_types": [row["entry_type"] for row in rows],
+            "relative_paths": [row["relative_path"] for row in rows],
+            "absolute_paths": [row["absolute_path"] for row in rows],
+            "names": [row["name"] for row in rows],
+            "name_sort_keys": [row["name_sort_key"] for row in rows],
+            "rjcodes": [row["rjcode"] for row in rows],
+            "parent_paths": [row["parent_path"] for row in rows],
+            "sizes": [row["size"] for row in rows],
+            "file_counts": [row["file_count"] for row in rows],
+            "mtimes": [row["mtime"] for row in rows],
+            "depths": [row["depth"] for row in rows],
+            "indexed_ats": [row["indexed_at"] for row in rows],
+        }
+
+    @staticmethod
+    def _entry_stats(entry: IndexEntry) -> tuple[int, int]:
+        if entry.entry_type == 'file':
+            return max(0, int(entry.size or 0)), 0
+        if (
+            entry.entry_type == 'dir'
+            and bool(entry.relative_path)
+            and (entry.parent_path or '') == ''
+        ):
+            return 0, 1
+        return 0, 0
+
+    @staticmethod
+    def _row_stats(row: LibraryIndexEntry) -> tuple[int, int]:
+        if row.entry_type == 'file':
+            return max(0, int(row.size or 0)), 0
+        if (
+            row.entry_type == 'dir'
+            and bool(row.relative_path)
+            and (row.parent_path or '') == ''
+        ):
+            return 0, 1
+        return 0, 0
+
+    @staticmethod
+    def _stats_from_values(
+        entry_type: str,
+        relative_path: str,
+        parent_path: Optional[str],
+        size: int,
+    ) -> tuple[int, int]:
+        if entry_type == 'file':
+            return max(0, int(size or 0)), 0
+        if entry_type == 'dir' and bool(relative_path) and (parent_path or '') == '':
+            return 0, 1
+        return 0, 0
+
+    def _get_existing_stats_map(
+        self,
+        db: Session,
+        library_id: str,
+        relative_paths: Iterable[str],
+        *,
+        generation: int = 1,
+    ) -> dict[str, tuple[int, int]]:
+        paths = list(dict.fromkeys(relative_paths))
+        if not paths:
+            return {}
+        result: dict[str, tuple[int, int]] = {}
+        chunk_size = 500
+        for i in range(0, len(paths), chunk_size):
+            rows = (
+                db.query(
+                    LibraryIndexEntry.relative_path,
+                    LibraryIndexEntry.entry_type,
+                    LibraryIndexEntry.size,
+                    LibraryIndexEntry.parent_path,
+                )
+                .filter(
+                    LibraryIndexEntry.library_id == library_id,
+                    LibraryIndexEntry.generation == max(1, int(generation or 1)),
+                    LibraryIndexEntry.relative_path.in_(paths[i:i + chunk_size]),
+                )
+                .all()
+            )
+            for row in rows:
+                result[row.relative_path] = self._stats_from_values(
+                    row.entry_type,
+                    row.relative_path,
+                    row.parent_path,
+                    row.size,
+                )
+        return result
+
+    def _get_existing_file_stats_map(
+        self,
+        db: Session,
+        library_id: str,
+        relative_paths: Iterable[str],
+        *,
+        generation: int = 1,
+    ) -> dict[str, tuple[int, int]]:
+        paths = list(dict.fromkeys(relative_paths))
+        if not paths:
+            return {}
+        result: dict[str, tuple[int, int]] = {}
+        chunk_size = 500
+        for i in range(0, len(paths), chunk_size):
+            rows = (
+                db.query(
+                    LibraryIndexEntry.relative_path,
+                    LibraryIndexEntry.entry_type,
+                    LibraryIndexEntry.size,
+                )
+                .filter(
+                    LibraryIndexEntry.library_id == library_id,
+                    LibraryIndexEntry.generation == max(1, int(generation or 1)),
+                    LibraryIndexEntry.relative_path.in_(paths[i:i + chunk_size]),
+                )
+                .all()
+            )
+            for row in rows:
+                if row.entry_type == 'file':
+                    result[row.relative_path] = (max(0, int(row.size or 0)), 1)
+                else:
+                    result[row.relative_path] = (0, 0)
+        return result
+
+    def _build_bulk_upsert_status_deltas(
+        self,
+        db: Session,
+        payload: list[IndexEntry],
+        *,
+        insert_only: bool = False,
+    ) -> dict[str, dict[str, int]]:
+        by_library: dict[str, list[IndexEntry]] = {}
+        for item in payload:
+            by_library.setdefault(item.library_id, []).append(item)
+
+        deltas: dict[str, dict[str, int]] = {}
+        for library_id, items in by_library.items():
+            generations = {max(1, int(item.generation or 1)) for item in items}
+            if len(generations) != 1:
+                raise ValueError("同一库存批量状态统计不能混合多个 generation")
+            generation = generations.pop()
+            old = self._get_existing_stats_map(
+                db,
+                library_id,
+                [item.relative_path for item in items],
+                generation=generation,
+            )
+            size_delta = 0
+            folder_delta = 0
+            entry_delta = 0
+            for item in items:
+                if insert_only and item.relative_path in old:
+                    continue
+                old_size, old_folders = old.get(item.relative_path, (0, 0))
+                new_size, new_folders = self._entry_stats(item)
+                size_delta += new_size - old_size
+                folder_delta += new_folders - old_folders
+                if item.relative_path not in old:
+                    entry_delta += 1
+            if size_delta or folder_delta or entry_delta:
+                deltas[library_id] = {
+                    "size": size_delta,
+                    "folders": folder_delta,
+                    "entries": entry_delta,
+                }
+        return deltas
+
+    def _build_bulk_upsert_ancestor_deltas(
+        self,
+        db: Session,
+        payload: list[IndexEntry],
+        *,
+        insert_only: bool = False,
+    ) -> dict[str, dict[str, dict[str, int]]]:
+        by_library: dict[str, list[IndexEntry]] = {}
+        for item in payload:
+            by_library.setdefault(item.library_id, []).append(item)
+
+        deltas: dict[str, dict[str, dict[str, int]]] = {}
+        for library_id, items in by_library.items():
+            generations = {max(1, int(item.generation or 1)) for item in items}
+            if len(generations) != 1:
+                raise ValueError("同一库存祖先聚合不能混合多个 generation")
+            generation = generations.pop()
+            file_items = [item for item in items if item.entry_type == 'file']
+            if not file_items:
+                continue
+            old = self._get_existing_file_stats_map(
+                db,
+                library_id,
+                [item.relative_path for item in file_items],
+                generation=generation,
+            )
+            for item in file_items:
+                if insert_only and item.relative_path in old:
+                    continue
+                old_size, old_files = old.get(item.relative_path, (0, 0))
+                new_size, new_files = max(0, int(item.size or 0)), 1
+                size_delta = new_size - old_size
+                file_delta = new_files - old_files
+                if not (size_delta or file_delta):
+                    continue
+                bucket = deltas.setdefault(library_id, {})
+                for ancestor in self._ancestor_relative_paths(item.relative_path):
+                    row = bucket.setdefault(ancestor, {"size": 0, "files": 0})
+                    row["size"] += size_delta
+                    row["files"] += file_delta
+        return deltas
+
+    def _flush_ancestor_deltas(
+        self,
+        db: Session,
+        deltas: dict[str, dict[str, dict[str, int]]],
+    ) -> None:
+        for library_id, by_path in deltas.items():
+            rows = [
+                {
+                    "relative_path": relative_path,
+                    "size_delta": int(delta.get("size", 0) or 0),
+                    "file_delta": int(delta.get("files", 0) or 0),
+                }
+                for relative_path, delta in by_path.items()
+                if int(delta.get("size", 0) or 0) or int(delta.get("files", 0) or 0)
+            ]
+            if not rows:
+                continue
+            db.execute(
+                text(
+                    """
+                    UPDATE library_index_entries AS target
+                       SET size = GREATEST(0, target.size + delta.size_delta),
+                           file_count = GREATEST(0, target.file_count + delta.file_delta),
+                           indexed_at = :indexed_at
+                      FROM (
+                          SELECT *
+                            FROM jsonb_to_recordset(CAST(:deltas AS jsonb))
+                              AS x(relative_path text, size_delta bigint, file_delta integer)
+                      ) AS delta
+                     WHERE target.library_id = :library_id
+                       AND target.entry_type = 'dir'
+                       AND target.relative_path = delta.relative_path
+                    """
+                ),
+                {
+                    "library_id": library_id,
+                    "indexed_at": _now_ms(),
+                    "deltas": json.dumps(rows, ensure_ascii=False),
+                },
+            )
+
+    def _apply_status_delta(
+        self,
+        db: Session,
+        library_id: str,
+        *,
+        size_delta: int = 0,
+        folder_delta: int = 0,
+        entry_delta: int = 0,
+        accumulator: Optional[dict[str, dict[str, int]]] = None,
+    ) -> None:
+        if not (size_delta or folder_delta or entry_delta):
+            return
+        if accumulator is not None:
+            bucket = accumulator.setdefault(
+                library_id,
+                {"size": 0, "folders": 0, "entries": 0},
+            )
+            bucket["size"] += int(size_delta or 0)
+            bucket["folders"] += int(folder_delta or 0)
+            bucket["entries"] += int(entry_delta or 0)
+            return
+        row = (
+            db.query(LibraryIndexStatus)
+            .filter(LibraryIndexStatus.library_id == library_id)
+            .first()
+        )
+        if row is None or row.status not in {'ready', 'syncing'}:
+            return
+        row.total_size_bytes = max(0, int(row.total_size_bytes or 0) + int(size_delta or 0))
+        row.folder_count = max(0, int(row.folder_count or 0) + int(folder_delta or 0))
+        row.total_entries = max(0, int(row.total_entries or 0) + int(entry_delta or 0))
+        row.updated_at = _now_ms()
+        db.flush()
+        self._queue_status_broadcast(
+            db,
+            self._row_to_status(row),
+            reason="library_index_delta",
+        )
+
+    def _flush_status_deltas(
+        self,
+        db: Session,
+        accumulator: dict[str, dict[str, int]],
+    ) -> None:
+        for library_id, delta in accumulator.items():
+            self._apply_status_delta(
+                db,
+                library_id,
+                size_delta=delta.get("size", 0),
+                folder_delta=delta.get("folders", 0),
+                entry_delta=delta.get("entries", 0),
+            )
+
+    def _query_stats_delta(self, q) -> tuple[int, int, int, int]:
+        row = q.with_entities(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (LibraryIndexEntry.entry_type == 'file', LibraryIndexEntry.size),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            (
+                                (LibraryIndexEntry.entry_type == 'dir')
+                                & (LibraryIndexEntry.relative_path != '')
+                                & (func.coalesce(LibraryIndexEntry.parent_path, '') == '')
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.count(LibraryIndexEntry.id),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (LibraryIndexEntry.entry_type == 'file', 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+        ).first()
+        total_size = int(row[0] if row else 0)
+        folder_count = int(row[1] if row else 0)
+        entry_count = int(row[2] if row else 0)
+        file_count = int(row[3] if row else 0)
+        return max(0, total_size), max(0, folder_count), max(0, entry_count), max(0, file_count)
+
+    def _query_subtree_stats_many(
+        self,
+        db: Session,
+        library_id: str,
+        relative_paths: Sequence[str],
+    ) -> dict[str, tuple[int, int, int, int]]:
+        paths = [self._normalize_relative_path(path) for path in relative_paths if path is not None]
+        paths = [path for path in dict.fromkeys(paths) if path]
+        if not paths:
+            return {}
+        rows = db.execute(
+            text(
+                f"""
+                WITH roots AS (
+                    SELECT *
+                      FROM jsonb_to_recordset(CAST(:paths AS jsonb))
+                        AS x(relative_path text)
+                )
+                SELECT roots.relative_path AS relative_path,
+                       COALESCE(SUM(CASE WHEN e.entry_type = 'file' THEN e.size ELSE 0 END), 0) AS total_size,
+                       COALESCE(SUM(CASE
+                           WHEN e.entry_type = 'dir'
+                            AND e.relative_path != ''
+                            AND COALESCE(e.parent_path, '') = ''
+                           THEN 1 ELSE 0
+                       END), 0) AS folder_count,
+                       COUNT(e.id) AS entry_count,
+                       COALESCE(SUM(CASE WHEN e.entry_type = 'file' THEN 1 ELSE 0 END), 0) AS file_count
+                  FROM roots
+                  LEFT JOIN library_index_entries AS e
+                    ON e.library_id = :library_id
+                   AND (
+                       e.relative_path = roots.relative_path
+                       OR (
+                           e.relative_path >= roots.relative_path || '/'
+                           AND e.relative_path < roots.relative_path || '0'
+                       )
+                   )
+                 GROUP BY roots.relative_path
+                """
+            ),
+            {
+                "library_id": library_id,
+                "paths": json.dumps([{"relative_path": path} for path in paths], ensure_ascii=False),
+            },
+        ).mappings()
+        return {
+            str(row["relative_path"]): (
+                max(0, int(row["total_size"] or 0)),
+                max(0, int(row["folder_count"] or 0)),
+                max(0, int(row["entry_count"] or 0)),
+                max(0, int(row["file_count"] or 0)),
+            )
+            for row in rows
+        }
+
+    @staticmethod
+    def _normalize_relative_path(value: Optional[str]) -> str:
+        return str(value or "").strip("/")
+
+    @classmethod
+    def _compress_relative_subtree_paths(cls, paths: Iterable[str]) -> list[str]:
+        """去掉已被父目录覆盖的子路径，减少批量删除时的 OR 条件和索引探测次数。"""
+        unique = sorted(
+            dict.fromkeys(
+                normalized
+                for item in paths
+                if (normalized := cls._normalize_relative_path(item))
+            ),
+            key=lambda value: (value.count("/"), value),
+        )
+        kept: list[str] = []
+        kept_set: set[str] = set()
+        for path in unique:
+            parent = path
+            covered = False
+            while "/" in parent:
+                parent = parent.rsplit("/", 1)[0]
+                if parent in kept_set:
+                    covered = True
+                    break
+            if not covered:
+                kept.append(path)
+                kept_set.add(path)
+        return kept
+
+    @classmethod
+    def _subtree_column_condition(cls, column, relative_path: str):
+        return or_(
+            column == relative_path,
+            and_(
+                column >= f"{relative_path}/",
+                column < f"{relative_path}0",
+            ),
+        )
+
+    @staticmethod
+    def _relative_parent(relative_path: str) -> str:
+        value = str(relative_path or "").strip("/")
+        if "/" not in value:
+            return ""
+        return value.rsplit("/", 1)[0]
+
+    def _ancestor_relative_paths(self, relative_path: Optional[str]) -> list[str]:
+        current = self._relative_parent(str(relative_path or ""))
+        ancestors: list[str] = []
+        while current:
+            ancestors.append(current)
+            current = self._relative_parent(current)
+        return ancestors
+
+    def _apply_ancestor_dir_delta(
+        self,
+        db: Session,
+        library_id: str,
+        relative_path: Optional[str],
+        *,
+        size_delta: int = 0,
+        file_count_delta: int = 0,
+    ) -> None:
+        if not (size_delta or file_count_delta):
+            return
+        ancestors = self._ancestor_relative_paths(relative_path)
+        if not ancestors:
+            return
+        db.query(LibraryIndexEntry).filter(
+            LibraryIndexEntry.library_id == library_id,
+            LibraryIndexEntry.entry_type == 'dir',
+            LibraryIndexEntry.relative_path.in_(ancestors),
+        ).update(
+            {
+                LibraryIndexEntry.size: func.greatest(
+                    0,
+                    LibraryIndexEntry.size + int(size_delta or 0),
+                ),
+                LibraryIndexEntry.file_count: func.greatest(
+                    0,
+                    LibraryIndexEntry.file_count + int(file_count_delta or 0),
+                ),
+                LibraryIndexEntry.indexed_at: _now_ms(),
+            },
+            synchronize_session=False,
+        )
+
+    def apply_parent_dir_delta(
+        self,
+        library_id: str,
+        relative_path: str,
+        *,
+        size_delta: int = 0,
+        file_count_delta: int = 0,
+    ) -> None:
+        normalized = self._normalize_relative_path(relative_path)
+        if not normalized:
+            return
+        with self._write_session(invalidate_children_total_cache=False) as db:
+            self._apply_ancestor_dir_delta(
+                db,
+                library_id,
+                normalized,
+                size_delta=int(size_delta or 0),
+                file_count_delta=int(file_count_delta or 0),
+            )
+
+    @staticmethod
+    def _relative_name(relative_path: str) -> str:
+        value = str(relative_path or "").strip("/")
+        if not value:
+            return ""
+        return value.rsplit("/", 1)[-1]
+
+    @staticmethod
+    def _relative_depth(relative_path: str) -> int:
+        value = str(relative_path or "").strip("/")
+        return 0 if not value else value.count("/") + 1
+
+    @staticmethod
+    def _replace_prefix(value: Optional[str], old_prefix: str, new_prefix: str) -> str:
+        current = str(value or "")
+        if current == old_prefix:
+            return new_prefix
+        if old_prefix and current.startswith(old_prefix):
+            return new_prefix + current[len(old_prefix):]
+        return current
+
+    def _subtree_query(self, db: Session, library_id: str, relative_path: str):
+        normalized = self._normalize_relative_path(relative_path)
+        q = db.query(LibraryIndexEntry).filter(LibraryIndexEntry.library_id == library_id)
+        if not normalized:
+            return q
+        return q.filter(self._subtree_column_condition(LibraryIndexEntry.relative_path, normalized))
+
+    def _delete_subtree_in_session(
+        self,
+        db: Session,
+        library_id: str,
+        relative_path: str,
+        *,
+        status_delta_accumulator: Optional[dict[str, dict[str, int]]] = None,
+    ) -> tuple[int, int, int, int]:
+        q = self._subtree_query(db, library_id, relative_path)
+        total_size, folder_count, entry_count, file_count = self._query_stats_delta(q)
+        deleted = q.delete(synchronize_session=False)
+        self._apply_ancestor_dir_delta(
+            db,
+            library_id,
+            relative_path,
+            size_delta=-total_size,
+            file_count_delta=-file_count,
+        )
+        self._apply_status_delta(
+            db,
+            library_id,
+            size_delta=-total_size,
+            folder_delta=-folder_count,
+            entry_delta=-entry_count,
+            accumulator=status_delta_accumulator,
+        )
+        return deleted, total_size, folder_count, entry_count
+
+    def _transform_subtree_entry(
+        self,
+        entry: IndexEntry,
+        *,
+        target_library_id: str,
+        old_relative: str,
+        new_relative: str,
+        old_absolute: str,
+        new_absolute: str,
+        depth_delta: int,
+        indexed_at: int,
+    ) -> IndexEntry:
+        next_relative = self._replace_prefix(entry.relative_path, old_relative, new_relative)
+        next_absolute = self._replace_prefix(entry.absolute_path, old_absolute, new_absolute)
+        if entry.relative_path == old_relative:
+            next_parent = self._relative_parent(new_relative)
+            next_name = self._relative_name(new_relative) or entry.name
+        else:
+            next_parent = self._replace_prefix(entry.parent_path, old_relative, new_relative)
+            next_name = entry.name
+        next_depth = None if entry.depth is None else max(0, int(entry.depth or 0) + depth_delta)
+        return replace(
+            entry,
+            library_id=target_library_id,
+            relative_path=next_relative,
+            absolute_path=next_absolute,
+            parent_path=next_parent,
+            name=next_name,
+            depth=next_depth,
+            indexed_at=indexed_at,
+        )
+
+    def _move_subtree_same_library_in_session(
+        self,
+        db: Session,
+        library_id: str,
+        *,
+        old_relative_path: str,
+        new_relative_path: str,
+        old_absolute_path: str,
+        new_absolute_path: str,
+        status_delta_accumulator: Optional[dict[str, dict[str, int]]] = None,
+    ) -> int:
+        old_rel = self._normalize_relative_path(old_relative_path)
+        new_rel = self._normalize_relative_path(new_relative_path)
+        if not old_rel or not new_rel or old_rel == new_rel:
+            return 0
+        old_abs = str(old_absolute_path or "")
+        new_abs = str(new_absolute_path or "")
+        if not old_abs or not new_abs:
+            return 0
+
+        new_parent = self._relative_parent(new_rel)
+        new_name = self._relative_name(new_rel)
+        new_name_sort_key = library_index_name_sort_key(new_name)
+        depth_delta = self._relative_depth(new_rel) - self._relative_depth(old_rel)
+        now = _now_ms()
+        root_row = (
+            db.query(LibraryIndexEntry)
+            .filter(
+                LibraryIndexEntry.library_id == library_id,
+                LibraryIndexEntry.relative_path == old_rel,
+            )
+            .first()
+        )
+        if root_row is None:
+            return 0
+        old_size, old_folders = self._row_stats(root_row)
+        subtree_file_size = int(root_row.size or 0) if root_row.entry_type == 'dir' else old_size
+        subtree_file_count = int(root_row.file_count or 0) if root_row.entry_type == 'dir' else (1 if root_row.entry_type == 'file' else 0)
+        moved_root = self._transform_subtree_entry(
+            self._row_to_entry(root_row),
+            target_library_id=library_id,
+            old_relative=old_rel,
+            new_relative=new_rel,
+            old_absolute=old_abs,
+            new_absolute=new_abs,
+            depth_delta=depth_delta,
+            indexed_at=now,
+        )
+        new_size, new_folders = self._entry_stats(moved_root)
+
+        deleted, target_size, target_folders, target_entries = self._delete_subtree_in_session(
+            db,
+            library_id,
+            new_rel,
+            status_delta_accumulator=status_delta_accumulator,
+        )
+
+        result = db.execute(
+            text(
+                """
+                UPDATE library_index_entries
+                   SET relative_path = CASE
+                           WHEN relative_path = :old_rel THEN :new_rel
+                           ELSE :new_rel || substr(relative_path, :old_rel_suffix_start)
+                       END,
+                       absolute_path = CASE
+                           WHEN absolute_path = :old_abs THEN :new_abs
+                           ELSE :new_abs || substr(absolute_path, :old_abs_suffix_start)
+                       END,
+                       parent_path = CASE
+                           WHEN relative_path = :old_rel THEN :new_parent
+                           WHEN parent_path = :old_rel THEN :new_rel
+                           WHEN parent_path >= :old_child_lower
+                            AND parent_path < :old_child_upper
+                               THEN :new_rel || substr(parent_path, :old_rel_suffix_start)
+                           ELSE parent_path
+                       END,
+                       name = CASE
+                           WHEN relative_path = :old_rel THEN :new_name
+                           ELSE name
+                       END,
+                       name_sort_key = CASE
+                           WHEN relative_path = :old_rel THEN :new_name_sort_key
+                           ELSE name_sort_key
+                       END,
+                       depth = CASE
+                           WHEN depth IS NULL THEN NULL
+                           ELSE depth + :depth_delta
+                       END,
+                       indexed_at = :indexed_at
+                 WHERE library_id = :library_id
+                   AND (
+                       relative_path = :old_rel
+                       OR (
+                           relative_path >= :old_child_lower
+                           AND relative_path < :old_child_upper
+                       )
+                   )
+                """
+            ),
+            {
+                "library_id": library_id,
+                "old_rel": old_rel,
+                "new_rel": new_rel,
+                "old_abs": old_abs,
+                "new_abs": new_abs,
+                "new_parent": new_parent,
+                "new_name": new_name,
+                "new_name_sort_key": new_name_sort_key,
+                "old_child_lower": f"{old_rel}/",
+                "old_child_upper": f"{old_rel}0",
+                "old_rel_suffix_start": len(old_rel) + 1,
+                "old_abs_suffix_start": len(old_abs) + 1,
+                "depth_delta": depth_delta,
+                "indexed_at": now,
+            },
+        )
+        moved = int(result.rowcount or 0)
+        if moved:
+            self._apply_ancestor_dir_delta(
+                db,
+                library_id,
+                old_rel,
+                size_delta=-subtree_file_size,
+                file_count_delta=-subtree_file_count,
+            )
+            self._apply_ancestor_dir_delta(
+                db,
+                library_id,
+                new_rel,
+                size_delta=subtree_file_size,
+                file_count_delta=subtree_file_count,
+            )
+            self._apply_status_delta(
+                db,
+                library_id,
+                size_delta=new_size - old_size,
+                folder_delta=new_folders - old_folders,
+                entry_delta=0,
+                accumulator=status_delta_accumulator,
+            )
+        elif deleted:
+            logger.warning(
+                "[索引] 同库移动 fast-path 未命中旧子树，但已删除目标旧索引 library=%s old=%s new=%s",
+                library_id,
+                old_rel,
+                new_rel,
+            )
+        return moved
+
+    def move_subtree_same_library(
+        self,
+        library_id: str,
+        *,
+        old_relative_path: str,
+        new_relative_path: str,
+        old_absolute_path: str,
+        new_absolute_path: str,
+    ) -> int:
+        """同库移动索引 fast-path：单条 UPDATE 改写子树路径，不扫磁盘。"""
+        with self._write_session() as db:
+            status_deltas: dict[str, dict[str, int]] = {}
+            moved = self._move_subtree_same_library_in_session(
+                db,
+                library_id,
+                old_relative_path=old_relative_path,
+                new_relative_path=new_relative_path,
+                old_absolute_path=old_absolute_path,
+                new_absolute_path=new_absolute_path,
+                status_delta_accumulator=status_deltas,
+            )
+            self._flush_status_deltas(db, status_deltas)
+            return moved
+
+    def move_subtrees_same_library(
+        self,
+        library_id: str,
+        moves: Iterable[dict[str, str]],
+        *,
+        chunk_size: int = DEFAULT_SELF_MUTATION_MOVE_CHUNK_SIZE,
+    ) -> list[int]:
+        """同库批量移动索引 fast-path：按小批提交，避免千级移动形成长事务。"""
+        items = list(moves or [])
+        if not items:
+            return []
+        results: list[int] = []
+        chunk_size = max(1, int(chunk_size or DEFAULT_SELF_MUTATION_MOVE_CHUNK_SIZE))
+        for i in range(0, len(items), chunk_size):
+            chunk = items[i:i + chunk_size]
+            with self._write_session() as db:
+                status_deltas: dict[str, dict[str, int]] = {}
+                for item in chunk:
+                    moved = self._move_subtree_same_library_in_session(
+                        db,
+                        library_id,
+                        old_relative_path=str(item.get("old_relative_path") or ""),
+                        new_relative_path=str(item.get("new_relative_path") or ""),
+                        old_absolute_path=str(item.get("old_absolute_path") or ""),
+                        new_absolute_path=str(item.get("new_absolute_path") or ""),
+                        status_delta_accumulator=status_deltas,
+                    )
+                    results.append(moved)
+                self._flush_status_deltas(db, status_deltas)
+        return results
+
+    def _move_subtree_between_libraries_in_session(
+        self,
+        db: Session,
+        source_library_id: str,
+        target_library_id: str,
+        *,
+        old_relative_path: str,
+        new_relative_path: str,
+        old_absolute_path: str,
+        new_absolute_path: str,
+        status_delta_accumulator: Optional[dict[str, dict[str, int]]] = None,
+    ) -> int:
+        old_rel = self._normalize_relative_path(old_relative_path)
+        new_rel = self._normalize_relative_path(new_relative_path)
+        if not old_rel or not new_rel:
+            return 0
+        old_abs = str(old_absolute_path or "")
+        new_abs = str(new_absolute_path or "")
+        if not old_abs or not new_abs:
+            return 0
+
+        depth_delta = self._relative_depth(new_rel) - self._relative_depth(old_rel)
+        now = _now_ms()
+        new_parent = self._relative_parent(new_rel)
+        new_name = self._relative_name(new_rel)
+        new_name_sort_key = library_index_name_sort_key(new_name)
+        source_q = self._subtree_query(db, source_library_id, old_rel)
+        source_size, _source_folders, source_entries, _source_file_count = self._query_stats_delta(source_q)
+        if not source_entries:
+            return 0
+
+        source_root = (
+            db.query(LibraryIndexEntry.entry_type)
+            .filter(
+                LibraryIndexEntry.library_id == source_library_id,
+                LibraryIndexEntry.relative_path == old_rel,
+            )
+            .first()
+        )
+        source_root_row = (
+            db.query(LibraryIndexEntry)
+            .filter(
+                LibraryIndexEntry.library_id == source_library_id,
+                LibraryIndexEntry.relative_path == old_rel,
+            )
+            .first()
+        )
+        if source_root_row is None:
+            return 0
+        subtree_file_size = int(source_root_row.size or 0) if source_root_row.entry_type == 'dir' else source_size
+        subtree_file_count = int(source_root_row.file_count or 0) if source_root_row.entry_type == 'dir' else (1 if source_root_row.entry_type == 'file' else 0)
+        inserted_top_folders = (
+            1
+            if source_root is not None
+            and source_root[0] == 'dir'
+            and new_parent == ''
+            else 0
+        )
+
+        _, target_size, target_folders, target_entries = self._delete_subtree_in_session(
+            db,
+            target_library_id,
+            new_rel,
+            status_delta_accumulator=status_delta_accumulator,
+        )
+
+        insert_result = db.execute(
+            text(
+                """
+                INSERT INTO library_index_entries (
+                    library_id,
+                    entry_type,
+                    relative_path,
+                    absolute_path,
+                    name,
+                    name_sort_key,
+                    rjcode,
+                    parent_path,
+                    size,
+                    file_count,
+                    mtime,
+                    depth,
+                    indexed_at
+                )
+                SELECT
+                    :target_library_id,
+                    entry_type,
+                    CASE
+                        WHEN relative_path = :old_rel THEN :new_rel
+                        ELSE :new_rel || substr(relative_path, :old_rel_suffix_start)
+                    END,
+                    CASE
+                        WHEN absolute_path = :old_abs THEN :new_abs
+                        ELSE :new_abs || substr(absolute_path, :old_abs_suffix_start)
+                    END,
+                    CASE
+                        WHEN relative_path = :old_rel THEN :new_name
+                        ELSE name
+                    END,
+                    CASE
+                        WHEN relative_path = :old_rel THEN :new_name_sort_key
+                        ELSE name_sort_key
+                    END,
+                    rjcode,
+                    CASE
+                        WHEN relative_path = :old_rel THEN :new_parent
+                        WHEN parent_path = :old_rel THEN :new_rel
+                        WHEN parent_path >= :old_child_lower
+                         AND parent_path < :old_child_upper
+                            THEN :new_rel || substr(parent_path, :old_rel_suffix_start)
+                        ELSE parent_path
+                    END,
+                    size,
+                    file_count,
+                    mtime,
+                    CASE
+                        WHEN depth IS NULL THEN NULL
+                        ELSE depth + :depth_delta
+                    END,
+                    :indexed_at
+                FROM library_index_entries
+                WHERE library_id = :source_library_id
+                  AND (
+                      relative_path = :old_rel
+                      OR (
+                          relative_path >= :old_child_lower
+                          AND relative_path < :old_child_upper
+                      )
+                  )
+                """
+            ),
+            {
+                "source_library_id": source_library_id,
+                "target_library_id": target_library_id,
+                "old_rel": old_rel,
+                "new_rel": new_rel,
+                "old_abs": old_abs,
+                "new_abs": new_abs,
+                "new_parent": new_parent,
+                "new_name": new_name,
+                "new_name_sort_key": new_name_sort_key,
+                "old_child_lower": f"{old_rel}/",
+                "old_child_upper": f"{old_rel}0",
+                "old_rel_suffix_start": len(old_rel) + 1,
+                "old_abs_suffix_start": len(old_abs) + 1,
+                "depth_delta": depth_delta,
+                "indexed_at": now,
+            },
+        )
+        inserted = int(insert_result.rowcount or source_entries)
+
+        self._delete_subtree_in_session(
+            db,
+            source_library_id,
+            old_rel,
+            status_delta_accumulator=status_delta_accumulator,
+        )
+
+        self._apply_ancestor_dir_delta(
+            db,
+            target_library_id,
+            new_rel,
+            size_delta=subtree_file_size,
+            file_count_delta=subtree_file_count,
+        )
+
+        self._apply_status_delta(
+            db,
+            target_library_id,
+            size_delta=source_size,
+            folder_delta=inserted_top_folders,
+            entry_delta=inserted,
+            accumulator=status_delta_accumulator,
+        )
+        return inserted
+
+    def move_subtree_between_libraries(
+        self,
+        source_library_id: str,
+        target_library_id: str,
+        *,
+        old_relative_path: str,
+        new_relative_path: str,
+        old_absolute_path: str,
+        new_absolute_path: str,
+        chunk_size: int = 500,
+    ) -> int:
+        """跨库移动索引 fast-path：数据库内 INSERT...SELECT 搬迁，不扫磁盘。"""
+        with self._write_session() as db:
+            status_deltas: dict[str, dict[str, int]] = {}
+            moved = self._move_subtree_between_libraries_in_session(
+                db,
+                source_library_id,
+                target_library_id,
+                old_relative_path=old_relative_path,
+                new_relative_path=new_relative_path,
+                old_absolute_path=old_absolute_path,
+                new_absolute_path=new_absolute_path,
+                status_delta_accumulator=status_deltas,
+            )
+            self._flush_status_deltas(db, status_deltas)
+            return moved
+
+    def move_subtrees_between_libraries(
+        self,
+        source_library_id: str,
+        target_library_id: str,
+        moves: Iterable[dict[str, str]],
+        *,
+        chunk_size: int = DEFAULT_SELF_MUTATION_MOVE_CHUNK_SIZE,
+    ) -> list[int]:
+        """跨库批量移动索引 fast-path：按小批提交，避免千级移动形成长事务。"""
+        items = list(moves or [])
+        if not items:
+            return []
+        results: list[int] = []
+        chunk_size = max(1, int(chunk_size or DEFAULT_SELF_MUTATION_MOVE_CHUNK_SIZE))
+        for i in range(0, len(items), chunk_size):
+            chunk = items[i:i + chunk_size]
+            with self._write_session() as db:
+                status_deltas: dict[str, dict[str, int]] = {}
+                for item in chunk:
+                    moved = self._move_subtree_between_libraries_in_session(
+                        db,
+                        source_library_id,
+                        target_library_id,
+                        old_relative_path=str(item.get("old_relative_path") or ""),
+                        new_relative_path=str(item.get("new_relative_path") or ""),
+                        old_absolute_path=str(item.get("old_absolute_path") or ""),
+                        new_absolute_path=str(item.get("new_absolute_path") or ""),
+                        status_delta_accumulator=status_deltas,
+                    )
+                    results.append(moved)
+                self._flush_status_deltas(db, status_deltas)
+        return results
+
+    # ========== Entry 删除 ==========
+
+    def delete_by_relative_path(self, library_id: str, relative_path: str) -> int:
+        """删除单行。"""
+        with self._write_session() as db:
+            q = (
+                db.query(LibraryIndexEntry)
+                .filter(
+                    LibraryIndexEntry.library_id == library_id,
+                    LibraryIndexEntry.relative_path == relative_path,
+                )
+            )
+            total_size, folder_count, entry_count, file_count = self._query_stats_delta(q)
+            deleted = q.delete(synchronize_session=False)
+            self._apply_ancestor_dir_delta(
+                db,
+                library_id,
+                relative_path,
+                size_delta=-total_size,
+                file_count_delta=-file_count,
+            )
+            self._apply_status_delta(
+                db,
+                library_id,
+                size_delta=-total_size,
+                folder_delta=-folder_count,
+                entry_delta=-entry_count,
+            )
+            return deleted
+
+    def delete_subtree(self, library_id: str, relative_path: str) -> int:
+        """删除指定 relative_path 自身 + 所有后代。
+
+        watcher 处理目录删除 / 重命名时调用。
+        """
+        if relative_path is None:
+            return 0
+        normalized = relative_path.strip('/')
+        with self._write_session() as db:
+            q = db.query(LibraryIndexEntry).filter(
+                LibraryIndexEntry.library_id == library_id,
+            )
+            if normalized:
+                q = q.filter(self._subtree_column_condition(LibraryIndexEntry.relative_path, normalized))
+            total_size, folder_count, entry_count, file_count = self._query_stats_delta(q)
+            deleted = q.delete(synchronize_session=False)
+            self._apply_ancestor_dir_delta(
+                db,
+                library_id,
+                normalized,
+                size_delta=-total_size,
+                file_count_delta=-file_count,
+            )
+            self._apply_status_delta(
+                db,
+                library_id,
+                size_delta=-total_size,
+                folder_delta=-folder_count,
+                entry_delta=-entry_count,
+            )
+            return deleted
+
+    def delete_library(self, library_id: str) -> int:
+        """整库清空（rebuild 前调用）。"""
+        with self._write_session() as db:
+            return (
+                db.query(LibraryIndexEntry)
+                .filter(LibraryIndexEntry.library_id == library_id)
+                .delete(synchronize_session=False)
+            )
+
+    def delete_stale_library_entries(
+        self,
+        library_id: str,
+        *,
+        indexed_before_ms: int,
+        chunk_size: int = 500,
+        relaxed_commit: bool = False,
+    ) -> int:
+        """分块删除全量重建后未被本轮扫描刷新到的旧行。
+
+        rebuild 主路径会先 upsert 新快照，再按 indexed_at 边界清 stale。
+        这里故意不用一条大 DELETE，避免数据库写入和索引维护长时间占用。
+        """
+        chunk_size = max(1, int(chunk_size or 500))
+        cutoff = int(indexed_before_ms or 0)
+        deleted_total = 0
+        started = time.time()
+        while True:
+            with self._write_session(relaxed_commit=relaxed_commit) as db:
+                rows = (
+                    db.query(LibraryIndexEntry.id)
+                    .filter(
+                        LibraryIndexEntry.library_id == library_id,
+                        LibraryIndexEntry.indexed_at < cutoff,
+                    )
+                    .order_by(LibraryIndexEntry.id.asc())
+                    .limit(chunk_size)
+                    .all()
+                )
+                ids = [row.id for row in rows]
+                if not ids:
+                    break
+                deleted = (
+                    db.query(LibraryIndexEntry)
+                    .filter(LibraryIndexEntry.id.in_(ids))
+                    .delete(synchronize_session=False)
+                )
+                deleted_total += int(deleted or 0)
+            if deleted_total and deleted_total % (chunk_size * 10) == 0:
+                logger.info(
+                    "[索引] stale 分块清理中 library=%s deleted=%s cutoff=%s",
+                    library_id,
+                    deleted_total,
+                    cutoff,
+                )
+        if deleted_total:
+            logger.info(
+                "[索引] stale 分块清理完成 library=%s deleted=%s elapsed=%.2fs cutoff=%s",
+                library_id,
+                deleted_total,
+                time.time() - started,
+                cutoff,
+            )
+        return deleted_total
+
+    def analyze_entries_for_query_planner(
+        self,
+        *,
+        lock_timeout_ms: int = 500,
+        clean_trigram_pending: bool = False,
+    ) -> bool:
+        """全量重建后刷新 PostgreSQL 统计信息。
+
+        新增第二个库存时，主表已经不是空表，不能暂停二级索引；几十万行插入后
+        主动 ANALYZE 一次，避免搜索和子树查询短时间内按旧行数估算。
+        大批导入后可顺手清理 GIN pending list，避免刚建完索引后的第一次模糊搜索
+        额外扫描大量 pending 页面；日常千级 self-mutation 不走这里。
+        """
+        engine = self.bind_engine
+        if engine is None:
+            return False
+        from ...models.database import (
+            _POSTGRES_LIBRARY_TRIGRAM_INDEX_NAMES,
+            configure_postgres_online_maintenance_connection,
+            release_postgres_online_maintenance_lock,
+        )
+
+        conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+        lock_acquired = False
+        try:
+            lock_acquired = configure_postgres_online_maintenance_connection(
+                conn,
+                lock_timeout_ms=lock_timeout_ms,
+            )
+            if not lock_acquired:
+                return False
+            conn.execute(text("ANALYZE library_index_entries"))
+            if clean_trigram_pending:
+                for name in _POSTGRES_LIBRARY_TRIGRAM_INDEX_NAMES:
+                    exists = bool(
+                        conn.execute(
+                            text("SELECT to_regclass(:name) IS NOT NULL"),
+                            {"name": name},
+                        ).scalar()
+                    )
+                    if exists:
+                        conn.execute(
+                            text("SELECT gin_clean_pending_list(:name)"),
+                            {"name": name},
+                        )
+            return True
+        except Exception:
+            logger.debug("[索引] ANALYZE library_index_entries 跳过", exc_info=True)
+            return False
+        finally:
+            if lock_acquired:
+                try:
+                    release_postgres_online_maintenance_lock(conn)
+                except Exception:
+                    logger.debug("[索引] 释放库存索引维护锁失败", exc_info=True)
+            conn.close()
+
+    # ========== Entry 查询 ==========
+
+    def find_by_rjcode(
+        self,
+        library_id: Optional[Union[str, Sequence[str]]],
+        rjcode: str,
+        *,
+        entry_type: Optional[str] = 'dir',
+        limit: int = 100,
+    ) -> list[IndexEntry]:
+        """按 RJ 号精确查。
+
+        library_id：
+        - str → 仅该库存
+        - None / 空序列 → 跨全部库存
+        - Sequence[str] → 多库存（IN 子查询）
+        """
+        if not rjcode:
+            return []
+        normalized_rjcode = _extract_rjcode(str(rjcode or "")) or str(rjcode or "").strip().upper()
+        scope_ids: Optional[list[str]]
+        if library_id is None:
+            scope_ids = None
+        elif isinstance(library_id, str):
+            scope_ids = [library_id] if library_id else None
+        else:
+            scope_ids = [str(item) for item in library_id if item]
+            if not scope_ids:
+                scope_ids = None
+        def _query_rows(db: Session) -> list[LibraryIndexEntry]:
+            q = self._active_view_query(db, db.query(LibraryIndexEntry), library_ids=scope_ids)
+            filters = [LibraryIndexEntry.rjcode == normalized_rjcode]
+            if scope_ids:
+                if len(scope_ids) == 1:
+                    filters.append(LibraryIndexEntry.library_id == scope_ids[0])
+                else:
+                    filters.append(LibraryIndexEntry.library_id.in_(scope_ids))
+            if entry_type:
+                filters.append(LibraryIndexEntry.entry_type == entry_type)
+            # 稳定命中 idx_lie_rj_lookup；该 partial 索引只覆盖有 RJ 号的行，
+            # 避免几十万普通文件行拖慢重建和日常 upsert。
+            q = q.filter(*filters)
+            q = q.order_by(
+                LibraryIndexEntry.depth.asc(),
+                LibraryIndexEntry.relative_path.asc(),
+            )
+            return q.limit(limit).all()
+
+        with self._read_session() as db:
+            rows = _query_rows(db)
+        if not rows and self._repair_missing_rjcode_rows(
+            normalized_rjcode,
+            scope_ids=scope_ids,
+            entry_type=entry_type,
+        ):
+            with self._read_session() as db:
+                rows = _query_rows(db)
+            return [self._row_to_entry(row) for row in rows]
+        return [self._row_to_entry(row) for row in rows]
+
+    def find_by_rjcodes(
+        self,
+        library_id: Optional[Union[str, Sequence[str]]],
+        rjcodes: Sequence[str],
+        *,
+        entry_type: Optional[str] = 'dir',
+        limit: int = 100,
+    ) -> list[IndexEntry]:
+        """批量按 RJ 精确查询，一次 SQL 覆盖同语言翻译关联号。"""
+        normalized_rjcodes: list[str] = []
+        for value in rjcodes or ():
+            normalized = _extract_rjcode(str(value or "")) or str(value or "").strip().upper()
+            if normalized and normalized not in normalized_rjcodes:
+                normalized_rjcodes.append(normalized)
+        if not normalized_rjcodes:
+            return []
+
+        scope_ids: Optional[list[str]]
+        if library_id is None:
+            scope_ids = None
+        elif isinstance(library_id, str):
+            scope_ids = [library_id] if library_id else None
+        else:
+            scope_ids = [str(item) for item in library_id if item]
+            if not scope_ids:
+                scope_ids = None
+
+        with self._read_session() as db:
+            query = self._active_view_query(
+                db,
+                db.query(LibraryIndexEntry),
+                library_ids=scope_ids,
+            )
+            filters = [LibraryIndexEntry.rjcode.in_(normalized_rjcodes)]
+            if scope_ids:
+                if len(scope_ids) == 1:
+                    filters.append(LibraryIndexEntry.library_id == scope_ids[0])
+                else:
+                    filters.append(LibraryIndexEntry.library_id.in_(scope_ids))
+            if entry_type:
+                filters.append(LibraryIndexEntry.entry_type == entry_type)
+            rows = (
+                query
+                .filter(*filters)
+                .order_by(
+                    LibraryIndexEntry.depth.asc(),
+                    LibraryIndexEntry.relative_path.asc(),
+                )
+                .limit(limit)
+                .all()
+            )
+        return [self._row_to_entry(row) for row in rows]
+
+    def _repair_missing_rjcode_rows(
+        self,
+        rjcode: str,
+        *,
+        scope_ids: Optional[Sequence[str]],
+        entry_type: Optional[str],
+        limit: int = 200,
+    ) -> int:
+        if not re.fullmatch(r"[RVB]J\d{6}(?:\d{2})?", rjcode or "", re.IGNORECASE):
+            return 0
+        boundary = re.compile(rf"(?<![A-Z0-9]){re.escape(rjcode)}(?![A-Z0-9])", re.IGNORECASE)
+        filters = [
+            or_(LibraryIndexEntry.rjcode.is_(None), LibraryIndexEntry.rjcode == ""),
+            or_(
+                LibraryIndexEntry.name.ilike(f"%{rjcode}%"),
+                LibraryIndexEntry.relative_path.ilike(f"%{rjcode}%"),
+                LibraryIndexEntry.absolute_path.ilike(f"%{rjcode}%"),
+            ),
+        ]
+        if scope_ids:
+            if len(scope_ids) == 1:
+                filters.append(LibraryIndexEntry.library_id == scope_ids[0])
+            else:
+                filters.append(LibraryIndexEntry.library_id.in_(scope_ids))
+        if entry_type:
+            filters.append(LibraryIndexEntry.entry_type == entry_type)
+        with self._write_session(invalidate_children_total_cache=False) as db:
+            rows = (
+                self._active_view_query(
+                    db,
+                    db.query(LibraryIndexEntry),
+                    library_ids=scope_ids,
+                )
+                .filter(*filters)
+                .limit(limit)
+                .all()
+            )
+            repaired = 0
+            for row in rows:
+                haystack = " ".join([
+                    str(row.name or ""),
+                    str(row.relative_path or ""),
+                    str(row.absolute_path or ""),
+                ])
+                if not boundary.search(haystack):
+                    continue
+                row.rjcode = rjcode.upper()
+                repaired += 1
+            if repaired:
+                db.flush()
+        if repaired:
+            logger.info("[索引] 修复缺失 RJ 字段 rjcode=%s rows=%s", rjcode.upper(), repaired)
+        return repaired
+
+    def find_by_name(
+        self,
+        library_id: Optional[Union[str, Sequence[str]]],
+        name_like: str,
+        *,
+        entry_type: Optional[str] = None,
+        limit: int = 200,
+    ) -> list[IndexEntry]:
+        """按名称 / 路径 / RJ 号模糊搜索。
+
+        关键性能优化：
+        - PostgreSQL pg_trgm 索引加速 ILIKE，适合中文子串、文件名片段、
+          相对路径片段和 RJ 号搜索。
+
+        library_id：
+        - str → 仅该库存
+        - None / 空序列 → 跨全部库存（库存维度由调用方上层保证可见性）
+        - Sequence[str] → 多库存命中（IN 子查询）
+        """
+        if not name_like:
+            return []
+        scope_ids = self._normalize_scope_ids(library_id)
+        with self._read_session() as db:
+            return self._find_by_name_like(
+                db,
+                scope_ids,
+                name_like,
+                entry_type=entry_type,
+                limit=limit,
+            )
+
+    def _find_by_name_like(
+        self,
+        db: Session,
+        scope_ids: Optional[list[str]],
+        name_like: str,
+        *,
+        entry_type: Optional[str],
+        limit: int,
+    ) -> list[IndexEntry]:
+        rj_prefix = self._normalize_rj_prefix_query(name_like)
+        if rj_prefix:
+            return self._find_by_rj_prefix(
+                db,
+                scope_ids,
+                rj_prefix,
+                entry_type=entry_type,
+                limit=limit,
+            )
+        # 转义 SQL 通配符，让用户输入的 _ % ! 真正只匹配自身。
+        # 查询表达式必须和 idx_library_index_search_text_trgm 保持一致，PostgreSQL
+        # 才能用单个 GIN trigram 索引覆盖 name/path/rjcode/parent_path 的模糊搜索。
+        escaped = name_like.replace('!', '!!').replace('%', '!%').replace('_', '!_')
+        pattern = f"%{escaped}%"
+        q = self._active_view_query(
+            db,
+            db.query(LibraryIndexEntry),
+            library_ids=scope_ids,
+        ).filter(
+            text(
+                """
+                (COALESCE(name, '') || ' ' ||
+                 COALESCE(relative_path, '') || ' ' ||
+                 COALESCE(rjcode, '') || ' ' ||
+                 COALESCE(parent_path, '')) ILIKE :library_index_pattern ESCAPE '!'
+                """
+            ).bindparams(library_index_pattern=pattern)
+        )
+        if scope_ids:
+            if len(scope_ids) == 1:
+                q = q.filter(LibraryIndexEntry.library_id == scope_ids[0])
+            else:
+                q = q.filter(LibraryIndexEntry.library_id.in_(scope_ids))
+        if entry_type:
+            q = q.filter(LibraryIndexEntry.entry_type == entry_type)
+        q = q.order_by(
+            LibraryIndexEntry.depth.asc(),
+            LibraryIndexEntry.name_sort_key.asc(),
+            LibraryIndexEntry.relative_path.asc(),
+        )
+        return [self._row_to_entry(row) for row in q.limit(limit).all()]
+
+    @staticmethod
+    def _normalize_rj_prefix_query(value: str) -> Optional[str]:
+        text_value = str(value or "").strip().upper().replace(" ", "")
+        if not text_value or not _RJ_PREFIX_RE.match(text_value):
+            return None
+        if text_value.startswith("RJ"):
+            return text_value
+        if len(text_value) < 4:
+            return None
+        return f"RJ{text_value}"
+
+    def _find_by_rj_prefix(
+        self,
+        db: Session,
+        scope_ids: Optional[list[str]],
+        rj_prefix: str,
+        *,
+        entry_type: Optional[str],
+        limit: int,
+    ) -> list[IndexEntry]:
+        # 短 RJ 前缀（RJ / RJ12 / 123456）用 text_pattern_ops btree，避免
+        # trigram 在短 pattern 上退化成几十万行顺序扫。
+        q = self._active_view_query(
+            db,
+            db.query(LibraryIndexEntry),
+            library_ids=scope_ids,
+        ).filter(
+            LibraryIndexEntry.rjcode.like(f"{rj_prefix}%")
+        )
+        if scope_ids:
+            if len(scope_ids) == 1:
+                q = q.filter(LibraryIndexEntry.library_id == scope_ids[0])
+            else:
+                q = q.filter(LibraryIndexEntry.library_id.in_(scope_ids))
+        if entry_type:
+            q = q.filter(LibraryIndexEntry.entry_type == entry_type)
+        q = q.order_by(
+            LibraryIndexEntry.depth.asc(),
+            LibraryIndexEntry.relative_path.asc(),
+            LibraryIndexEntry.library_id.asc(),
+        )
+        return [self._row_to_entry(row) for row in q.limit(limit).all()]
+
+    def list_children(
+        self,
+        library_id: str,
+        parent_path: Optional[str],
+        *,
+        entry_type: Optional[str] = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        offset: int = 0,
+        limit: Optional[int] = None,
+        include_total: bool = False,
+    ) -> list[IndexEntry]:
+        """列指定 parent_path 的直接子项。parent_path='' 表示库根的一级子项。"""
+        return self.list_children_page(
+            library_id,
+            parent_path,
+            entry_type=entry_type,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            offset=offset,
+            limit=limit,
+            include_total=include_total,
+        )["entries"]
+
+    def list_children_page(
+        self,
+        library_id: str,
+        parent_path: Optional[str],
+        *,
+        entry_type: Optional[str] = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        offset: int = 0,
+        limit: Optional[int] = 200,
+        include_total: bool = True,
+        page_cursor: Optional[str] = None,
+    ) -> dict[str, object]:
+        """分页列指定 parent_path 的直接子项。
+
+        目录浏览热路径专用：排序和分页下推到 PostgreSQL，避免把大目录全量拉回
+        Python 后再切片。`page_cursor` 用于连续翻页的 keyset 快路径，跳页继续
+        走 offset 兼容老分页。
+        """
+        with self._read_session() as db:
+            q = self._active_view_query(
+                db,
+                db.query(LibraryIndexEntry),
+                library_ids=[library_id],
+            ).filter(
+                LibraryIndexEntry.library_id == library_id,
+                LibraryIndexEntry.parent_path == (parent_path or ''),
+            )
+            if entry_type:
+                q = q.filter(LibraryIndexEntry.entry_type == entry_type)
+            total = (
+                self._count_direct_children(db, library_id, parent_path, entry_type, q)
+                if include_total
+                else None
+            )
+            normalized_sort_by = str(sort_by or "name").lower()
+            normalized_sort_order = "desc" if str(sort_order or "asc").lower() == "desc" else "asc"
+            descending = normalized_sort_order == "desc"
+            cursor_key = self._decode_direct_child_page_cursor(
+                page_cursor,
+                library_id=library_id,
+                parent_path=parent_path,
+                entry_type=entry_type,
+                sort_by=normalized_sort_by,
+                sort_order=normalized_sort_order,
+            )
+            if cursor_key:
+                q = q.filter(
+                    self._direct_child_keyset_after_condition(
+                        normalized_sort_by,
+                        normalized_sort_order,
+                        cursor_key,
+                    )
+                )
+            if normalized_sort_by == "time":
+                primary = LibraryIndexEntry.mtime.desc() if descending else LibraryIndexEntry.mtime.asc()
+                q = q.order_by(
+                    primary.nullslast(),
+                    LibraryIndexEntry.name_sort_key.asc(),
+                    LibraryIndexEntry.relative_path.asc(),
+                )
+            elif normalized_sort_by == "size":
+                primary = LibraryIndexEntry.size.desc() if descending else LibraryIndexEntry.size.asc()
+                q = q.order_by(
+                    primary,
+                    LibraryIndexEntry.name_sort_key.asc(),
+                    LibraryIndexEntry.relative_path.asc(),
+                )
+            else:
+                primary = LibraryIndexEntry.name_sort_key.desc() if descending else LibraryIndexEntry.name_sort_key.asc()
+                q = q.order_by(
+                    primary,
+                    LibraryIndexEntry.relative_path.asc(),
+                )
+            if not cursor_key:
+                q = q.offset(max(0, int(offset or 0)))
+            if limit is not None:
+                q = q.limit(max(1, int(limit or 1)))
+            rows = q.all()
+            next_page_cursor = None
+            if rows and limit is not None and len(rows) >= max(1, int(limit or 1)):
+                next_page_cursor = self._encode_direct_child_page_cursor(
+                    library_id=library_id,
+                    parent_path=parent_path,
+                    entry_type=entry_type,
+                    sort_by=normalized_sort_by,
+                    sort_order=normalized_sort_order,
+                    row=rows[-1],
+                )
+            return {
+                "entries": [self._row_to_entry(row) for row in rows],
+                "total": total,
+                "next_page_cursor": next_page_cursor,
+                "used_page_cursor": bool(cursor_key),
+            }
+
+    def list_subtree_entries(
+        self,
+        library_id: str,
+        relative_path: Optional[str],
+        *,
+        include_self: bool = True,
+        entry_type: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> list[IndexEntry]:
+        normalized_path = str(relative_path or "").strip().strip("/")
+        with self._read_session() as db:
+            q = self._active_view_query(
+                db,
+                db.query(LibraryIndexEntry),
+                library_ids=[library_id],
+            ).filter(
+                LibraryIndexEntry.library_id == library_id,
+            )
+            if normalized_path:
+                if include_self:
+                    q = q.filter(self._subtree_column_condition(LibraryIndexEntry.relative_path, normalized_path))
+                else:
+                    q = q.filter(
+                        and_(
+                            LibraryIndexEntry.relative_path >= f"{normalized_path}/",
+                            LibraryIndexEntry.relative_path < f"{normalized_path}0",
+                        )
+                    )
+            if entry_type:
+                q = q.filter(LibraryIndexEntry.entry_type == entry_type)
+            q = q.order_by(
+                LibraryIndexEntry.depth.asc(),
+                LibraryIndexEntry.relative_path.asc(),
+            )
+            if limit is not None:
+                q = q.limit(max(1, int(limit or 1)))
+            return [self._row_to_entry(row) for row in q.all()]
+
+    def get_entry(self, library_id: str, relative_path: str) -> Optional[IndexEntry]:
+        with self._read_session() as db:
+            row = (
+                self._active_view_query(
+                    db,
+                    db.query(LibraryIndexEntry),
+                    library_ids=[library_id],
+                )
+                .filter(
+                    LibraryIndexEntry.library_id == library_id,
+                    LibraryIndexEntry.relative_path == relative_path,
+                )
+                .first()
+            )
+            return self._row_to_entry(row) if row else None
+
+    def sum_library_size(self, library_id: str) -> int:
+        """库存所有文件条目的总大小（字节）。目录行不累加，避免重复计数。"""
+        with self._read_session() as db:
+            total = (
+                self._active_view_query(
+                    db,
+                    db.query(func.coalesce(func.sum(LibraryIndexEntry.size), 0)),
+                    library_ids=[library_id],
+                )
+                .filter(
+                    LibraryIndexEntry.library_id == library_id,
+                    LibraryIndexEntry.entry_type == 'file',
+                )
+                .scalar()
+            )
+            return int(total or 0)
+
+    def get_library_stats(
+        self,
+        library_id: str,
+        *,
+        parent_path: Optional[str] = '',
+    ) -> dict[str, int]:
+        """读取持久化聚合快照。
+
+        parent_path 参数保留给旧调用方兼容；聚合快照按库存根维护，不在统计接口
+        热路径上重新按目录过滤 / SUM。
+        """
+        with self._read_session() as db:
+            row = (
+                db.query(LibraryIndexStatus)
+                .filter(LibraryIndexStatus.library_id == library_id)
+                .first()
+            )
+            if row is None:
+                return {"folder_count": 0, "total_size_bytes": 0}
+            return {
+                "folder_count": int(row.folder_count or 0),
+                "total_size_bytes": int(row.total_size_bytes or 0),
+            }
+
+    def calculate_library_stats(self, library_id: str) -> dict[str, int]:
+        """从 entries 表实时重算库存聚合，用于恢复中断的全量同步状态。"""
+        with self._read_session() as db:
+            q = self._active_view_query(
+                db,
+                db.query(LibraryIndexEntry),
+                library_ids=[library_id],
+            ).filter(
+                LibraryIndexEntry.library_id == library_id,
+            )
+            total_size, folder_count, entry_count, _file_count = self._query_stats_delta(q)
+            return {
+                "total_entries": entry_count,
+                "total_size_bytes": total_size,
+                "folder_count": folder_count,
+            }
+
+    def count_descendant_dirs_many(
+        self,
+        library_id: str,
+        relative_paths: Sequence[str],
+    ) -> dict[str, int]:
+        """批量统计目录下递归子目录数，不包含目录自身。"""
+        normalized_paths = [str(value or "").strip().strip("/") for value in (relative_paths or [])]
+        normalized_paths = [path for path in dict.fromkeys(normalized_paths) if path]
+        if not normalized_paths:
+            return {}
+        with self._read_session() as db:
+            status = db.query(LibraryIndexStatus).filter(
+                LibraryIndexStatus.library_id == library_id
+            ).first()
+            if status is None:
+                return {path: 0 for path in normalized_paths}
+            rows = db.execute(
+                text(
+                    f"""
+                    WITH roots AS (
+                        SELECT *
+                          FROM jsonb_to_recordset(CAST(:paths AS jsonb))
+                            AS x(relative_path text)
+                    )
+                    SELECT roots.relative_path AS relative_path,
+                           COALESCE(COUNT(e.id), 0) AS folder_count
+                      FROM roots
+                 LEFT JOIN library_index_entries AS e
+                        ON e.library_id = :library_id
+                       AND e.generation = :active_generation
+                       AND e.materialized_seq <= :materialized_seq
+                       AND e.entry_type = 'dir'
+                       AND e.relative_path >= roots.relative_path || '/'
+                       AND e.relative_path < roots.relative_path || '0'
+                       AND NOT EXISTS (
+                           SELECT 1
+                             FROM library_index_pending_masks AS mask
+                            WHERE mask.library_id = e.library_id
+                              AND (
+                                  (mask.scope = 'exact' AND e.relative_path = mask.relative_path)
+                                  OR (mask.scope = 'subtree' AND (
+                                      mask.relative_path = ''
+                                      OR e.relative_path = mask.relative_path
+                                      OR (e.relative_path >= mask.relative_path || '/'
+                                          AND e.relative_path < mask.relative_path || '0')
+                                  ))
+                              )
+                       )
+                     GROUP BY roots.relative_path
+                    """
+                )
+                ,
+                {
+                    "library_id": library_id,
+                    "active_generation": int(status.active_generation or 1),
+                    "materialized_seq": int(status.materialized_seq or 0),
+                    "paths": json.dumps([{"relative_path": path} for path in normalized_paths], ensure_ascii=False),
+                },
+            ).mappings()
+            return {str(row["relative_path"]): int(row["folder_count"] or 0) for row in rows}
+
+    def summarize_descendant_files_many(
+        self,
+        library_id: str,
+        relative_paths: Sequence[str],
+    ) -> dict[str, dict[str, int]]:
+        """批量汇总目录子树内文件数量和大小，不包含目录自身。"""
+        normalized_paths = [str(value or "").strip().strip("/") for value in (relative_paths or [])]
+        normalized_paths = [path for path in dict.fromkeys(normalized_paths) if path]
+        if not normalized_paths:
+            return {}
+        with self._read_session() as db:
+            status = db.query(LibraryIndexStatus).filter(
+                LibraryIndexStatus.library_id == library_id
+            ).first()
+            if status is None:
+                return {
+                    path: {"total_size": 0, "file_count": 0}
+                    for path in normalized_paths
+                }
+            rows = db.execute(
+                text(
+                    """
+                    WITH roots AS (
+                        SELECT *
+                          FROM jsonb_to_recordset(CAST(:paths AS jsonb))
+                            AS x(relative_path text)
+                    )
+                    SELECT roots.relative_path AS relative_path,
+                           COALESCE(SUM(CASE WHEN e.entry_type = 'file' THEN e.size ELSE 0 END), 0) AS total_size,
+                           COALESCE(SUM(CASE WHEN e.entry_type = 'file' THEN 1 ELSE 0 END), 0) AS file_count
+                      FROM roots
+                 LEFT JOIN library_index_entries AS e
+                        ON e.library_id = :library_id
+                       AND e.generation = :active_generation
+                       AND e.materialized_seq <= :materialized_seq
+                       AND e.entry_type = 'file'
+                       AND e.relative_path >= roots.relative_path || '/'
+                       AND e.relative_path < roots.relative_path || '0'
+                       AND NOT EXISTS (
+                           SELECT 1
+                             FROM library_index_pending_masks AS mask
+                            WHERE mask.library_id = e.library_id
+                              AND (
+                                  (mask.scope = 'exact' AND e.relative_path = mask.relative_path)
+                                  OR (mask.scope = 'subtree' AND (
+                                      mask.relative_path = ''
+                                      OR e.relative_path = mask.relative_path
+                                      OR (e.relative_path >= mask.relative_path || '/'
+                                          AND e.relative_path < mask.relative_path || '0')
+                                  ))
+                              )
+                       )
+                     GROUP BY roots.relative_path
+                    """
+                ),
+                {
+                    "library_id": library_id,
+                    "active_generation": int(status.active_generation or 1),
+                    "materialized_seq": int(status.materialized_seq or 0),
+                    "paths": json.dumps([{"relative_path": path} for path in normalized_paths], ensure_ascii=False),
+                },
+            ).mappings()
+            return {
+                str(row["relative_path"]): {
+                    "total_size": max(0, int(row["total_size"] or 0)),
+                    "file_count": max(0, int(row["file_count"] or 0)),
+                }
+                for row in rows
+            }
+
+    def count_library_entries(
+        self,
+        library_id: str,
+        *,
+        entry_type: Optional[str] = None,
+    ) -> int:
+        with self._read_session() as db:
+            q = self._active_view_query(
+                db,
+                db.query(func.count(LibraryIndexEntry.id)),
+                library_ids=[library_id],
+            ).filter(
+                LibraryIndexEntry.library_id == library_id,
+            )
+            if entry_type:
+                q = q.filter(LibraryIndexEntry.entry_type == entry_type)
+            return int(q.scalar() or 0)
+
+    def has_library_entries(
+        self,
+        library_id: str,
+        *,
+        entry_type: Optional[str] = None,
+    ) -> bool:
+        """判断某个库存是否已有索引行；重建前只需要存在性，不做 count(*)。"""
+        with self._read_session() as db:
+            q = self._active_view_query(
+                db,
+                db.query(LibraryIndexEntry.id),
+                library_ids=[library_id],
+            ).filter(
+                LibraryIndexEntry.library_id == library_id,
+            )
+            if entry_type:
+                q = q.filter(LibraryIndexEntry.entry_type == entry_type)
+            return q.limit(1).first() is not None
+
+    def has_any_entries(self) -> bool:
+        """判断索引表是否已有任何业务行。
+
+        这里刻意不用 count(*)：第二个库存加入时表里可能已经有几十万行，
+        EXISTS/LIMIT 1 能避免为了首建快路径判断扫大表。
+        """
+        with self._read_session() as db:
+            return (
+                self._active_view_query(db, db.query(LibraryIndexEntry.id))
+                .limit(1)
+                .first()
+                is not None
+            )
+
+    # ========== Status ==========
+
+    def get_status(self, library_id: str) -> Optional[IndexStatus]:
+        with self._read_session() as db:
+            row = (
+                db.query(LibraryIndexStatus)
+                .filter(LibraryIndexStatus.library_id == library_id)
+                .first()
+            )
+            return self._row_to_status(row) if row else None
+
+    def upsert_status(
+        self,
+        library_id: str,
+        *,
+        status: Optional[IndexStatusName] = None,
+        watcher_mode: Optional[WatcherMode] = None,
+        last_full_scan_at: Optional[int] = None,
+        last_event_at: Optional[int] = None,
+        total_entries: Optional[int] = None,
+        total_size_bytes: Optional[int] = None,
+        folder_count: Optional[int] = None,
+        error: Optional[str] = ...,  # type: ignore[assignment]
+    ) -> IndexStatus:
+        """写入状态。error 默认省略不动；显式传 None 才会清空。"""
+        now = _now_ms()
+        with self._write_session(invalidate_children_total_cache=False) as db:
+            row = (
+                db.query(LibraryIndexStatus)
+                .filter(LibraryIndexStatus.library_id == library_id)
+                .first()
+            )
+            if row is None:
+                row = LibraryIndexStatus(
+                    library_id=library_id,
+                    status=status or 'idle',
+                    watcher_mode=watcher_mode,
+                    last_full_scan_at=last_full_scan_at,
+                    last_event_at=last_event_at,
+                    total_entries=total_entries or 0,
+                    total_size_bytes=total_size_bytes or 0,
+                    folder_count=folder_count or 0,
+                    error=error if error is not ... else None,
+                    updated_at=now,
+                )
+                db.add(row)
+            else:
+                if status is not None:
+                    row.status = status
+                if watcher_mode is not None:
+                    row.watcher_mode = watcher_mode
+                if last_full_scan_at is not None:
+                    row.last_full_scan_at = last_full_scan_at
+                if last_event_at is not None:
+                    row.last_event_at = last_event_at
+                if total_entries is not None:
+                    row.total_entries = total_entries
+                if total_size_bytes is not None:
+                    row.total_size_bytes = max(0, int(total_size_bytes or 0))
+                if folder_count is not None:
+                    row.folder_count = max(0, int(folder_count or 0))
+                if error is not ...:
+                    row.error = error
+                row.updated_at = now
+            db.flush()
+            snapshot = self._row_to_status(row)
+            self._queue_status_broadcast(
+                db,
+                snapshot,
+                reason="library_index_status",
+            )
+        return snapshot
+
+    def delete_status(self, library_id: str) -> int:
+        with self._write_session(invalidate_children_total_cache=False) as db:
+            return (
+                db.query(LibraryIndexStatus)
+                .filter(LibraryIndexStatus.library_id == library_id)
+                .delete(synchronize_session=False)
+            )
+
+    def delete_subtrees(
+        self,
+        library_id: str,
+        relative_paths: Iterable[str],
+        *,
+        chunk_size: int = DEFAULT_SELF_MUTATION_DELETE_CHUNK_SIZE,
+    ) -> int:
+        """批量删除多个子树（自身 + 所有后代），按小批提交。
+
+        每个 path 的匹配规则与 delete_subtree 一致：
+        relative_path == p OR p + '/' <= relative_path < p + '0'
+
+        超过 chunk_size 个路径时分批提交，避免 SQL 过长和长事务拖住业务查询。
+        """
+        paths = self._compress_relative_subtree_paths(
+            p for p in relative_paths if p is not None
+        )
+        if not paths:
+            return 0
+        chunk_size = max(1, int(chunk_size or DEFAULT_SELF_MUTATION_DELETE_CHUNK_SIZE))
+        deleted = 0
+        for i in range(0, len(paths), chunk_size):
+            chunk = paths[i:i + chunk_size]
+            with self._write_session() as db:
+                root_rows = (
+                    db.query(
+                        LibraryIndexEntry.relative_path,
+                        LibraryIndexEntry.entry_type,
+                        LibraryIndexEntry.size,
+                    )
+                    .filter(
+                        LibraryIndexEntry.library_id == library_id,
+                        LibraryIndexEntry.relative_path.in_(chunk),
+                    )
+                    .all()
+                )
+                root_by_path = {row.relative_path: row for row in root_rows}
+                file_rows = [
+                    root_by_path[p]
+                    for p in chunk
+                    if p in root_by_path and root_by_path[p].entry_type == 'file'
+                ]
+                subtree_paths = [
+                    p
+                    for p in chunk
+                    if p not in root_by_path or root_by_path[p].entry_type != 'file'
+                ]
+
+                total_size = 0
+                folder_count = 0
+                entry_count = 0
+                ancestor_deltas: dict[str, dict[str, int]] = {}
+
+                if file_rows:
+                    file_paths = [row.relative_path for row in file_rows]
+                    file_size = sum(max(0, int(row.size or 0)) for row in file_rows)
+                    file_count = len(file_rows)
+                    deleted += (
+                        db.query(LibraryIndexEntry)
+                        .filter(
+                            LibraryIndexEntry.library_id == library_id,
+                            LibraryIndexEntry.entry_type == 'file',
+                            LibraryIndexEntry.relative_path.in_(file_paths),
+                        )
+                        .delete(synchronize_session=False)
+                    )
+                    total_size += file_size
+                    entry_count += file_count
+                    for row in file_rows:
+                        row_size = max(0, int(row.size or 0))
+                        for ancestor in self._ancestor_relative_paths(row.relative_path):
+                            delta = ancestor_deltas.setdefault(ancestor, {"size": 0, "files": 0})
+                            delta["size"] -= row_size
+                            delta["files"] -= 1
+
+                if subtree_paths:
+                    conditions = [
+                        self._subtree_column_condition(LibraryIndexEntry.relative_path, p)
+                        for p in subtree_paths
+                    ]
+                    per_path_stats = self._query_subtree_stats_many(db, library_id, subtree_paths)
+                    q = (
+                        db.query(LibraryIndexEntry)
+                        .filter(LibraryIndexEntry.library_id == library_id)
+                        .filter(or_(*conditions))
+                    )
+                    subtree_size, subtree_folders, subtree_entries, _subtree_files = self._query_stats_delta(q)
+                    deleted += q.delete(synchronize_session=False)
+                    total_size += subtree_size
+                    folder_count += subtree_folders
+                    entry_count += subtree_entries
+                    for p, (file_size, _path_folder_count, _path_entry_count, file_count) in per_path_stats.items():
+                        for ancestor in self._ancestor_relative_paths(p):
+                            delta = ancestor_deltas.setdefault(ancestor, {"size": 0, "files": 0})
+                            delta["size"] -= file_size
+                            delta["files"] -= file_count
+
+                if ancestor_deltas:
+                    self._flush_ancestor_deltas(db, {library_id: ancestor_deltas})
+                self._apply_status_delta(
+                    db,
+                    library_id,
+                    size_delta=-total_size,
+                    folder_delta=-folder_count,
+                    entry_delta=-entry_count,
+                )
+        return deleted
+
+    def list_all_status(self) -> list[IndexStatus]:
+        with self._read_session() as db:
+            rows = db.query(LibraryIndexStatus).all()
+            return [self._row_to_status(row) for row in rows]
+
+    # ========== helpers ==========
+
+    @staticmethod
+    def _row_to_entry(row: LibraryIndexEntry) -> IndexEntry:
+        return IndexEntry(
+            library_id=row.library_id,
+            entry_type=row.entry_type,
+            relative_path=row.relative_path,
+            absolute_path=row.absolute_path,
+            name=row.name,
+            rjcode=row.rjcode,
+            parent_path=row.parent_path,
+            size=int(row.size or 0),
+            file_count=int(row.file_count or 0),
+            mtime=row.mtime,
+            depth=row.depth,
+            indexed_at=int(row.indexed_at or 0),
+            generation=int(row.generation or 1),
+            materialized_seq=int(row.materialized_seq or 0),
+        )
+
+    @staticmethod
+    def _mapping_to_entry(row) -> IndexEntry:
+        return IndexEntry(
+            library_id=row["library_id"],
+            entry_type=row["entry_type"],
+            relative_path=row["relative_path"],
+            absolute_path=row["absolute_path"],
+            name=row["name"],
+            rjcode=row["rjcode"],
+            parent_path=row["parent_path"],
+            size=int(row["size"] or 0),
+            file_count=int(row["file_count"] or 0),
+            mtime=row["mtime"],
+            depth=row["depth"],
+            indexed_at=int(row["indexed_at"] or 0),
+            generation=int(row.get("generation", 1) or 1),
+            materialized_seq=int(row.get("materialized_seq", 0) or 0),
+        )
+
+    @staticmethod
+    def _normalize_scope_ids(
+        library_id: Optional[Union[str, Sequence[str]]],
+    ) -> Optional[list[str]]:
+        if library_id is None:
+            return None
+        if isinstance(library_id, str):
+            return [library_id] if library_id else None
+        scope_ids = [str(item) for item in library_id if item]
+        return scope_ids or None
+
+    @staticmethod
+    def _row_to_status(row: LibraryIndexStatus) -> IndexStatus:
+        return IndexStatus(
+            library_id=row.library_id,
+            status=row.status,
+            watcher_mode=row.watcher_mode,
+            last_full_scan_at=row.last_full_scan_at,
+            last_event_at=row.last_event_at,
+            total_entries=int(row.total_entries or 0),
+            total_size_bytes=int(row.total_size_bytes or 0),
+            folder_count=int(row.folder_count or 0),
+            error=row.error,
+            updated_at=int(row.updated_at or 0),
+            accepted_seq=int(row.accepted_seq or 0),
+            materialized_seq=int(row.materialized_seq or 0),
+            state_revision=int(row.state_revision or 0),
+            view_revision=int(row.view_revision or 0),
+            active_generation=int(row.active_generation or 1),
+            building_generation=(
+                int(row.building_generation) if row.building_generation is not None else None
+            ),
+            catchup_state=str(row.catchup_state or "idle"),
+            last_operation_id=row.last_operation_id,
+            materializer_owner=row.materializer_owner,
+            materializer_lease_until=(
+                row.materializer_lease_until.isoformat() if row.materializer_lease_until else None
+            ),
+            materializer_epoch=int(row.materializer_epoch or 0),
+            blocked_seq=int(row.blocked_seq) if row.blocked_seq is not None else None,
+            catchup_error=row.catchup_error,
+        )
+
+    @staticmethod
+    def _queue_status_broadcast(db: Session, status: IndexStatus, *, reason: str) -> None:
+        pending = db.info.setdefault("library_index_status_broadcasts", {})
+        pending[status.library_id] = (status, reason)
+
+    @staticmethod
+    def _broadcast_status_change(status: IndexStatus, *, reason: str) -> None:
+        try:
+            from ..task_center_event_service import broadcast_library_index_status_changed
+
+            broadcast_library_index_status_changed(status, reason=reason)
+        except Exception:
+            logger.debug("[索引] 广播状态变更失败 library=%s", status.library_id, exc_info=True)
+
+
+class SnapshotRebuildWriter:
+    """重复全量重建专用：先写临时快照表，再差量合并主表。
+
+    连接会被固定到 writer 生命周期，但每批 stage 都独立提交；扫描几十万文件时
+    不持有长事务，也不会因为未变化行刷新 indexed_at 而放大 GIN/btree 写入。
+    """
+
+    def __init__(
+        self,
+        store: SnapshotStore,
+        library_id: str,
+        *,
+        chunk_size: int = DEFAULT_BULK_UPSERT_CHUNK_SIZE,
+        relaxed_commit: bool = False,
+    ):
+        self._store = store
+        self.library_id = str(library_id or "")
+        self.chunk_size = max(1, int(chunk_size or DEFAULT_BULK_UPSERT_CHUNK_SIZE))
+        self.relaxed_commit = bool(relaxed_commit)
+        self._engine = store.bind_engine
+        self._conn = None
+        self._closed = False
+        self.staged_rows = 0
+        if self._engine is None:
+            raise RuntimeError("SnapshotRebuildWriter 需要绑定 PostgreSQL engine")
+
+    def __enter__(self) -> "SnapshotRebuildWriter":
+        self._conn = self._engine.connect()
+        self._execute_write(lambda conn: conn.execute(text(f"DROP TABLE IF EXISTS {_REBUILD_STAGE_TABLE_NAME}")))
+        self._execute_write(lambda conn: conn.execute(text(_CREATE_REBUILD_STAGE_SQL)))
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
+
+    def _execute_write(self, fn):
+        if self._conn is None:
+            raise RuntimeError("SnapshotRebuildWriter 尚未初始化")
+        with get_resource_budget_service().acquire_sync("library_index_write", reason="library_index.rebuild_stage"):
+            with self._conn.begin():
+                if self.relaxed_commit:
+                    self._conn.execute(text("SET LOCAL synchronous_commit = off"))
+                return fn(self._conn)
+
+    def stage(self, entries: Iterable[IndexEntry]) -> int:
+        deduped: dict[str, IndexEntry] = {}
+        for item in entries:
+            safe_item = _database_safe_entry(item)
+            if safe_item.library_id != self.library_id:
+                raise ValueError(
+                    f"重建快照写入器只接受 library={self.library_id}，收到 {safe_item.library_id}"
+                )
+            deduped[safe_item.relative_path] = safe_item
+        if not deduped:
+            return 0
+        payload = list(deduped.values())
+
+        def _stage(conn):
+            affected_total = 0
+            for i in range(0, len(payload), self.chunk_size):
+                chunk = payload[i:i + self.chunk_size]
+                result = conn.execute(
+                    text(_REBUILD_STAGE_UPSERT_UNNEST_SQL),
+                    SnapshotStore._chunk_to_unnest_params(chunk),
+                )
+                affected = int(result.rowcount or 0)
+                affected_total += affected if affected >= 0 else len(chunk)
+            return affected_total
+
+        affected_total = int(self._execute_write(_stage) or 0)
+        self.staged_rows += affected_total
+        return affected_total
+
+    def finish(self, *, delete_chunk_size: Optional[int] = None) -> dict[str, int]:
+        chunk_size = max(1, int(delete_chunk_size or self.chunk_size))
+
+        def _prepare_merge(conn):
+            conn.execute(text(_REBUILD_STAGE_ANALYZE_SQL))
+            stats_row = conn.execute(
+                text(_REBUILD_STAGE_STATS_SQL),
+                {"library_id": self.library_id},
+            ).mappings().first() or {}
+            return {
+                "staged": int(stats_row.get("total_entries") or 0),
+                "inserted": 0,
+                "updated": 0,
+                "deleted": 0,
+                "total_entries": int(stats_row.get("total_entries") or 0),
+                "total_size_bytes": int(stats_row.get("total_size_bytes") or 0),
+                "folder_count": int(stats_row.get("folder_count") or 0),
+            }
+
+        result = self._execute_write(_prepare_merge)
+        inserted_total = 0
+        while True:
+            inserted = int(
+                self._execute_write(
+                    lambda conn: conn.execute(
+                        text(_REBUILD_STAGE_INSERT_NEW_CHUNK_SQL),
+                        {
+                            "library_id": self.library_id,
+                            "chunk_size": chunk_size,
+                        },
+                    ).rowcount or 0
+                )
+            )
+            if not inserted:
+                break
+            inserted_total += inserted
+            if inserted_total and inserted_total % (chunk_size * 10) == 0:
+                logger.info(
+                    "[索引] staging 新增分块合并中 library=%s inserted=%s",
+                    self.library_id,
+                    inserted_total,
+                )
+
+        updated_total = 0
+        while True:
+            updated = int(
+                self._execute_write(
+                    lambda conn: conn.execute(
+                        text(_REBUILD_STAGE_UPDATE_CHANGED_CHUNK_SQL),
+                        {
+                            "library_id": self.library_id,
+                            "chunk_size": chunk_size,
+                        },
+                    ).rowcount or 0
+                )
+            )
+            if not updated:
+                break
+            updated_total += updated
+            if updated_total and updated_total % (chunk_size * 10) == 0:
+                logger.info(
+                    "[索引] staging 变更分块合并中 library=%s updated=%s",
+                    self.library_id,
+                    updated_total,
+                )
+
+        deleted_total = 0
+        while True:
+            deleted = int(
+                self._execute_write(
+                    lambda conn: conn.execute(
+                        text(_REBUILD_STAGE_DELETE_MISSING_CHUNK_SQL),
+                        {
+                            "library_id": self.library_id,
+                            "chunk_size": chunk_size,
+                        },
+                    ).rowcount or 0
+                )
+            )
+            if not deleted:
+                break
+            deleted_total += deleted
+            if deleted_total and deleted_total % (chunk_size * 10) == 0:
+                logger.info(
+                    "[索引] staging stale 分块清理中 library=%s deleted=%s",
+                    self.library_id,
+                    deleted_total,
+                )
+        if deleted_total:
+            logger.info(
+                "[索引] staging stale 分块清理完成 library=%s deleted=%s",
+                self.library_id,
+                deleted_total,
+            )
+        if inserted_total or updated_total or deleted_total:
+            self._store._invalidate_children_total_cache(self.library_id)
+            self._store.analyze_entries_for_query_planner(clean_trigram_pending=True)
+        result["inserted"] = inserted_total
+        result["updated"] = updated_total
+        result["deleted"] = deleted_total
+        return result
+
+    def finish_subtree_atomic(
+        self,
+        *,
+        generation: int,
+        relative_path: str,
+        scope: str,
+        before_commit,
+    ) -> dict[str, int]:
+        """单事务合并子树、删除 stale，并由调用方推进 ledger 水位。"""
+        if self._conn is None:
+            raise RuntimeError("SnapshotRebuildWriter 尚未初始化")
+        normalized_scope = str(scope or "exact").strip().lower()
+        if normalized_scope not in {"exact", "subtree"}:
+            raise ValueError(f"不支持的 staging reconcile scope: {normalized_scope}")
+        normalized_path = str(relative_path or "").replace("\\", "/").strip("/")
+        params = {
+            "library_id": self.library_id,
+            "generation": int(generation),
+            "scope": normalized_scope,
+            "relative_path": normalized_path,
+            "subtree_start": f"{normalized_path}/",
+            "subtree_end": f"{normalized_path}0",
+        }
+        with get_resource_budget_service().acquire_sync(
+            "library_index_write",
+            reason="library_index.reconcile_stage_cutover",
+        ):
+            with self._conn.begin():
+                self._conn.execute(text(_REBUILD_STAGE_ANALYZE_SQL))
+                merged = self._conn.execute(
+                    text(_REBUILD_STAGE_MERGE_SUBTREE_SQL),
+                    params,
+                )
+                deleted = self._conn.execute(
+                    text(_REBUILD_STAGE_DELETE_SUBTREE_MISSING_SQL),
+                    params,
+                )
+                before_commit(self._conn)
+                result = {
+                    "staged": int(self.staged_rows or 0),
+                    "merged": max(0, int(merged.rowcount or 0)),
+                    "deleted": max(0, int(deleted.rowcount or 0)),
+                }
+        self._store._invalidate_children_total_cache(self.library_id)
+        return result
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        conn = self._conn
+        self._conn = None
+        if conn is None:
+            return
+        try:
+            with conn.begin():
+                conn.execute(text(f"DROP TABLE IF EXISTS {_REBUILD_STAGE_TABLE_NAME}"))
+        except Exception:
+            logger.debug("[索引] 清理重建临时表失败", exc_info=True)
+        finally:
+            conn.close()
+
+
+_default_store: Optional[SnapshotStore] = None
+
+
+def get_snapshot_store() -> SnapshotStore:
+    """进程内单例访问器。"""
+    global _default_store
+    if _default_store is None:
+        _default_store = SnapshotStore()
+    return _default_store

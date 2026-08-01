@@ -8,11 +8,25 @@ import re
 import aiohttp
 import asyncio
 import logging
-from typing import Optional, List, Dict, Callable, Tuple
+import time
+from typing import Any, Optional, List, Dict, Callable, Tuple
 from pathlib import Path
 from datetime import datetime
+from yarl import URL
+
+from ..config.settings import get_config
+from .log_sanitizer import mask_url_for_log, sanitize_for_log, sanitize_text_for_log
+from .resource_budget_service import get_resource_budget_service
+from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
+
+ASMR_DOWNLOAD_STREAM_CHUNK_BYTES = 256 * 1024
+ASMR_DOWNLOAD_MAX_SEGMENT_REQUESTS = 24
+ASMR_DOWNLOAD_SEGMENT_REQUEST_MULTIPLIER = 8
+ASMR_PROBE_STATUS_AVAILABLE = "available"
+ASMR_PROBE_STATUS_MISSING = "missing"
+ASMR_PROBE_STATUS_UNAVAILABLE = "unavailable"
 
 # 语言优先级定义（数字越小优先级越高）
 LANGUAGE_PRIORITY = {
@@ -48,6 +62,8 @@ class ASMRDownloadService:
         "https://api.asmr-200.com/api",
         "https://api.asmr-100.com/api",
     ]
+    CIRCUIT_FAILURE_THRESHOLD = 6
+    CIRCUIT_OPEN_SECONDS = 300
 
     # DLsite API
     DLSITE_API = "https://www.dlsite.com/maniax/api/=/product.json"
@@ -56,37 +72,12 @@ class ASMRDownloadService:
         self.config = config
         self._session: Optional[aiohttp.ClientSession] = None
         self._current_api_index = 0
-        self._cache: Dict = {}
-        self._cache_ttl = 300  # 5分钟缓存
-
-    def _get_api_urls(self) -> list:
-        """获取 API URL 列表：优先用自定义服务器，否则用默认列表"""
-        if self.config and hasattr(self.config, 'asmr_sync'):
-            cfg = self.config.asmr_sync
-            custom = getattr(cfg, 'custom_api_url', '') or ''
-            if custom.strip():
-                url = custom.strip().rstrip('/')
-                # 若用户已带 /api 后缀则直接用，否则补上
-                if not url.endswith('/api'):
-                    url = url + '/api'
-                return [url]
-        return self.API_BASE_URLS
-
-    def _get_meta_path(self, rjcode_num: str) -> str:
-        """获取 meta 请求路径：优先自定义模板，否则默认 /workInfo/{rjcode}"""
-        if self.config and hasattr(self.config, 'asmr_sync'):
-            tpl = getattr(self.config.asmr_sync, 'custom_meta_template', '') or ''
-            if tpl.strip():
-                return tpl.strip().format(rjcode=rjcode_num)
-        return f'/workInfo/{rjcode_num}'
-
-    def _get_track_path(self, rjcode_num: str) -> str:
-        """获取 track 请求路径：优先自定义模板，否则默认 /tracks/{rjcode}"""
-        if self.config and hasattr(self.config, 'asmr_sync'):
-            tpl = getattr(self.config.asmr_sync, 'custom_track_template', '') or ''
-            if tpl.strip():
-                return tpl.strip().format(rjcode=rjcode_num)
-        return f'/tracks/{rjcode_num}'
+        self._api_failure_count = 0
+        self._api_circuit_open_until = 0.0
+        self._api_circuit_reason = ""
+        # linked_* 关联作品信息缓存：key=f"linked_{workno}"；TTL+LRU 控上限
+        self._cache: TTLCache = TTLCache(max_size=1024, ttl_seconds=300, name="asmr_download.linked")
+        self._cache_ttl = 300  # 5分钟缓存（给现有内层 TTL 判定用，兼容）
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """获取或创建 HTTP 会话"""
@@ -108,6 +99,241 @@ class ASMRDownloadService:
         """切换到下一个 API 服务器"""
         self._current_api_index = (self._current_api_index + 1) % len(self.API_BASE_URLS)
         logger.info(f"切换 API 服务器到: {self._get_api_base()}")
+
+    def _asmr_api_circuit_remaining(self) -> int:
+        remaining = int(max(0.0, self._api_circuit_open_until - time.monotonic()))
+        return remaining
+
+    def _asmr_api_circuit_open(self) -> bool:
+        return self._asmr_api_circuit_remaining() > 0
+
+    def _record_asmr_api_success(self) -> None:
+        self._api_failure_count = 0
+        self._api_circuit_open_until = 0.0
+        self._api_circuit_reason = ""
+
+    def _record_asmr_api_failure(self, reason: str) -> None:
+        self._api_failure_count += 1
+        self._api_circuit_reason = str(reason or "request_failed")[:200]
+        if self._api_failure_count < self.CIRCUIT_FAILURE_THRESHOLD:
+            return
+        self._api_circuit_open_until = time.monotonic() + self.CIRCUIT_OPEN_SECONDS
+        logger.warning(
+            "[ASMR] API 连续失败 %s 次，熔断 %s 秒，期间跳过 asmr.one 请求: %s",
+            self._api_failure_count,
+            self.CIRCUIT_OPEN_SECONDS,
+            self._api_circuit_reason,
+        )
+
+    def _skip_asmr_api_when_circuit_open(self, action: str, rjcode: str) -> bool:
+        remaining = self._asmr_api_circuit_remaining()
+        if remaining <= 0:
+            return False
+        logger.warning(
+            "[ASMR] API 熔断中，跳过%s rj=%s remaining=%ss reason=%s",
+            action,
+            rjcode,
+            remaining,
+            self._api_circuit_reason or "连续失败",
+        )
+        return True
+
+    def _get_runtime_config(self):
+        """Return the latest ASMR sync config so proxy changes apply immediately."""
+        if self.config is not None:
+            return getattr(self.config, "asmr_sync", self.config)
+        try:
+            return get_config().asmr_sync
+        except Exception:
+            return None
+
+    def _get_proxy(self) -> Optional[str]:
+        config = self._get_runtime_config()
+        proxy = getattr(config, "http_proxy", None) if config else None
+        if not proxy:
+            return None
+
+        proxy = str(proxy).strip()
+        if not proxy:
+            return None
+
+        if "://" not in proxy:
+            proxy = f"http://{proxy}"
+        return proxy
+
+    def _mask_proxy(self, proxy: Optional[str]) -> str:
+        if not proxy:
+            return ""
+        return re.sub(r"//([^/@]+)@", "//***:***@", proxy)
+
+    def _proxy_request_kwargs(self) -> Dict:
+        proxy = self._get_proxy()
+        return {"proxy": proxy} if proxy else {}
+
+    def _browser_like_headers(self, referer: Optional[str] = None) -> Dict[str, str]:
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/134.0.0.0 Safari/537.36"
+            ),
+        }
+        if referer:
+            headers["Referer"] = referer
+        return headers
+
+    def _download_headers(self) -> Dict[str, str]:
+        headers = self._browser_like_headers()
+        headers["Accept"] = "*/*"
+        return headers
+
+    def _build_download_request_url(self, url: str):
+        raw_url = str(url or "").strip()
+        if not raw_url:
+            return raw_url
+        try:
+            # 保留源站返回的原始百分号编码，避免 yarl/aiohttp 二次规范化后把路径字节改坏。
+            return URL(raw_url, encoded=True)
+        except Exception:
+            return raw_url
+
+    async def _legacy_test_connectivity(self) -> Dict:
+        """测试 ASMR API 与 DLsite 的基本连通性。"""
+        session = await self._get_session()
+        request_kwargs = self._proxy_request_kwargs()
+        request_kwargs = self._proxy_request_kwargs()
+        request_kwargs = self._proxy_request_kwargs()
+        checks = []
+
+        async def run_check(name: str, url: str):
+            started_at = time.perf_counter()
+            try:
+                timeout = aiohttp.ClientTimeout(total=15, connect=5)
+                async with session.get(url, timeout=timeout) as response:
+                    latency_ms = int((time.perf_counter() - started_at) * 1000)
+                    reachable = response.status < 500
+                    checks.append({
+                        'name': name,
+                        'url': url,
+                        'ok': reachable,
+                        'status': 'ok' if reachable else 'error',
+                        'http_status': response.status,
+                        'latency_ms': latency_ms,
+                        'message': '可连接' if reachable else f'HTTP {response.status}',
+                    })
+            except asyncio.TimeoutError:
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
+                checks.append({
+                    'name': name,
+                    'url': url,
+                    'ok': False,
+                    'status': 'timeout',
+                    'http_status': None,
+                    'latency_ms': latency_ms,
+                    'message': '连接超时',
+                })
+            except Exception as exc:
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
+                checks.append({
+                    'name': name,
+                    'url': url,
+                    'ok': False,
+                    'status': 'error',
+                    'http_status': None,
+                    'latency_ms': latency_ms,
+                    'message': str(exc),
+                })
+
+        await run_check('ASMR.one 主节点', f'{self.API_BASE_URLS[0]}/workInfo/00000000')
+        if len(self.API_BASE_URLS) > 1:
+            await run_check('ASMR.one 备用节点', f'{self.API_BASE_URLS[1]}/workInfo/00000000')
+        await run_check('DLsite 关联接口', f'{self.DLSITE_API}?workno=RJ00000000')
+
+        ok_count = len([item for item in checks if item['ok']])
+        return {
+            'success': ok_count > 0,
+            'summary': {
+                'total': len(checks),
+                'ok': ok_count,
+                'failed': len(checks) - ok_count,
+            },
+            'checks': checks,
+            'current_api_base': self._get_api_base(),
+            'tested_at': datetime.now().isoformat(),
+        }
+
+    async def test_connectivity(self) -> Dict:
+        """Test ASMR.one primary and fallback API connectivity."""
+        session = await self._get_session()
+        checks = []
+        proxy = self._get_proxy()
+        request_kwargs = self._proxy_request_kwargs()
+
+        async def run_check(name: str, url: str):
+            started_at = time.perf_counter()
+            try:
+                timeout = aiohttp.ClientTimeout(total=15, connect=5)
+                async with session.get(url, timeout=timeout, **request_kwargs) as response:
+                    latency_ms = int((time.perf_counter() - started_at) * 1000)
+                    reachable = response.status < 500
+                    checks.append({
+                        'name': name,
+                        'url': url,
+                        'ok': reachable,
+                        'status': 'ok' if reachable else 'error',
+                        'http_status': response.status,
+                        'latency_ms': latency_ms,
+                        'message': (
+                            '节点可达（404 代表接口在线）'
+                            if reachable and response.status == 404
+                            else ('可连接' if reachable else f'HTTP {response.status}')
+                        ),
+                    })
+            except asyncio.TimeoutError:
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
+                checks.append({
+                    'name': name,
+                    'url': url,
+                    'ok': False,
+                    'status': 'timeout',
+                    'http_status': None,
+                    'latency_ms': latency_ms,
+                    'message': '连接超时',
+                })
+            except Exception as exc:
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
+                checks.append({
+                    'name': name,
+                    'url': url,
+                    'ok': False,
+                    'status': 'error',
+                    'http_status': None,
+                    'latency_ms': latency_ms,
+                    'message': str(exc),
+                })
+
+        await run_check('ASMR.one 主节点', f'{self.API_BASE_URLS[0]}/workInfo/00000000')
+        if len(self.API_BASE_URLS) > 1:
+            await run_check('ASMR.one 备用节点', f'{self.API_BASE_URLS[1]}/workInfo/00000000')
+
+        ok_count = len([item for item in checks if item['ok']])
+        return {
+            'success': ok_count > 0,
+            'summary': {
+                'total': len(checks),
+                'ok': ok_count,
+                'failed': len(checks) - ok_count,
+            },
+            'checks': checks,
+            'current_api_base': self._get_api_base(),
+            'proxy_enabled': bool(proxy),
+            'proxy_url': self._mask_proxy(proxy),
+            'tested_at': datetime.now().isoformat(),
+        }
 
     async def get_linked_works_from_dlsite(self, rjcode: str) -> List[LinkedWorkInfo]:
         """
@@ -132,87 +358,40 @@ class ASMRDownloadService:
             if (datetime.now() - cached['timestamp']).total_seconds() < self._cache_ttl:
                 return cached['data']
 
-        session = await self._get_session()
-        works = []
-
+        works: List[LinkedWorkInfo] = []
         try:
-            # 获取作品信息
-            url = f"{self.DLSITE_API}?workno=RJ{rjcode_num}"
-            logger.info(f"[DLsite] 获取关联作品: {url}")
+            from .dlsite_service import get_dlsite_service
 
-            async with session.get(url) as response:
-                if response.status != 200:
-                    logger.warning(f"[DLsite] 获取作品信息失败: HTTP {response.status}")
-                    works.append(LinkedWorkInfo(f"RJ{rjcode_num}", 'JPN', 'original'))
-                    return works
-
-                data = await response.json()
-                if not data or not isinstance(data, list) or len(data) == 0:
-                    works.append(LinkedWorkInfo(f"RJ{rjcode_num}", 'JPN', 'original'))
-                    return works
-
-                product = data[0]
-
-                # 获取翻译信息
-                trans_info = product.get('translation_info', {})
-                is_original = trans_info.get('is_original', True)
-                is_parent = trans_info.get('is_parent', False)
-                is_child = trans_info.get('is_child', False)
-                original_workno = trans_info.get('original_workno')
-                parent_workno = trans_info.get('parent_workno')
-                current_lang = trans_info.get('lang', 'JPN')
-
-                # 添加原作品
-                if is_original:
-                    works.append(LinkedWorkInfo(f"RJ{rjcode_num}", 'JPN', 'original'))
-                elif original_workno:
-                    works.append(LinkedWorkInfo(original_workno, 'JPN', 'original'))
-                    if parent_workno and parent_workno != original_workno:
-                        works.append(LinkedWorkInfo(parent_workno, current_lang, 'parent'))
-                    works.append(LinkedWorkInfo(f"RJ{rjcode_num}", current_lang, 'child'))
-                elif is_parent:
-                    if original_workno:
-                        works.append(LinkedWorkInfo(original_workno, 'JPN', 'original'))
-                    works.append(LinkedWorkInfo(f"RJ{rjcode_num}", current_lang, 'parent'))
-                else:
-                    works.append(LinkedWorkInfo(f"RJ{rjcode_num}", current_lang, 'original'))
-
-                # 获取语言版本
-                language_editions = product.get('language_editions', [])
-                if isinstance(language_editions, dict):
-                    language_editions = list(language_editions.values())
-
-                for edition in language_editions:
-                    workno = edition.get('workno')
-                    lang = edition.get('lang', 'JPN')
-                    if workno and workno not in [w.workno for w in works]:
-                        works.append(LinkedWorkInfo(workno, lang, 'translation'))
-
-                # 对于子版本，也需要从父版本或原版获取语言版本
-                if is_child and original_workno:
-                    try:
-                        parent_url = f"{self.DLSITE_API}?workno={original_workno}"
-                        async with session.get(parent_url) as parent_response:
-                            if parent_response.status == 200:
-                                parent_data = await parent_response.json()
-                                if parent_data and isinstance(parent_data, list) and len(parent_data) > 0:
-                                    parent_product = parent_data[0]
-                                    parent_editions = parent_product.get('language_editions', [])
-                                    if isinstance(parent_editions, dict):
-                                        parent_editions = list(parent_editions.values())
-
-                                    for edition in parent_editions:
-                                        workno = edition.get('workno')
-                                        lang = edition.get('lang', 'JPN')
-                                        if workno and workno not in [w.workno for w in works]:
-                                            works.append(LinkedWorkInfo(workno, lang, 'translation'))
-                    except Exception as e:
-                        logger.warning(f"[DLsite] 获取父版本语言版本失败: {e}")
-
+            linked_map = await get_dlsite_service().get_linked_works(f"RJ{rjcode_num}")
+            type_map = {
+                'original': 'original',
+                'translation': 'translation',
+                'parent': 'parent',
+                'child': 'child',
+                'child_translation': 'child',
+            }
+            for workno, linked_work in (linked_map or {}).items():
+                normalized_workno = str(workno or '').strip().upper()
+                if not normalized_workno:
+                    continue
+                works.append(LinkedWorkInfo(
+                    normalized_workno,
+                    str(getattr(linked_work, 'lang', 'JPN') or 'JPN').strip() or 'JPN',
+                    type_map.get(str(getattr(linked_work, 'work_type', '') or '').strip().lower(), 'translation'),
+                ))
         except Exception as e:
             logger.error(f"[DLsite] 获取关联作品失败: {e}")
             if not works:
                 works.append(LinkedWorkInfo(f"RJ{rjcode_num}", 'JPN', 'original'))
+
+        deduped: List[LinkedWorkInfo] = []
+        seen_worknos = set()
+        for work in works:
+            if work.workno in seen_worknos:
+                continue
+            seen_worknos.add(work.workno)
+            deduped.append(work)
+        works = deduped
 
         # 按语言优先级排序
         works.sort(key=lambda w: w.priority)
@@ -226,7 +405,7 @@ class ASMRDownloadService:
         logger.info(f"[DLsite] 找到 {len(works)} 个关联版本: {[(w.workno, w.lang) for w in works]}")
         return works
 
-    async def fetch_work_info(self, rjcode: str) -> Optional[Dict]:
+    async def fetch_work_info_with_status(self, rjcode: str) -> Tuple[Optional[Dict], str]:
         """
         从 asmr.one API 获取作品信息
 
@@ -236,6 +415,8 @@ class ASMRDownloadService:
         Returns:
             作品信息字典，包含标题、文件列表等
         """
+        if self._skip_asmr_api_when_circuit_open("作品信息请求", rjcode):
+            return None, ASMR_PROBE_STATUS_UNAVAILABLE
         # 标准化 RJ 号
         if rjcode.upper().startswith('RJ'):
             rjcode_num = rjcode[2:]
@@ -243,33 +424,45 @@ class ASMRDownloadService:
             rjcode_num = rjcode
 
         session = await self._get_session()
+        request_kwargs = self._proxy_request_kwargs()
 
         # 尝试所有 API 服务器
-        api_urls = self._get_api_urls()
-        for attempt in range(len(api_urls)):
-            api_base = api_urls[attempt % len(api_urls)]
-            meta_path = self._get_meta_path(rjcode_num)
-            url = f"{api_base}{meta_path}"
+        for attempt in range(len(self.API_BASE_URLS)):
+            api_base = self._get_api_base()
+            url = f"{api_base}/workInfo/{rjcode_num}"
 
             try:
                 logger.info(f"[ASMR] 获取作品信息: {url}")
-                async with session.get(url) as response:
+                async with session.get(url, **request_kwargs) as response:
                     if response.status == 200:
                         data = await response.json()
+                        self._record_asmr_api_success()
                         logger.info(f"[ASMR] 成功获取作品信息: {data.get('title', '未知标题')}")
-                        return data
+                        return data, ASMR_PROBE_STATUS_AVAILABLE if data else ASMR_PROBE_STATUS_MISSING
                     elif response.status == 404:
+                        self._record_asmr_api_success()
                         logger.warning(f"[ASMR] 作品不存在: {rjcode}")
-                        return None
+                        return None, ASMR_PROBE_STATUS_MISSING
                     else:
+                        self._record_asmr_api_failure(f"workInfo HTTP {response.status}")
                         logger.warning(f"[ASMR] 获取作品信息失败: HTTP {response.status}")
+                        if self._asmr_api_circuit_open():
+                            return None, ASMR_PROBE_STATUS_UNAVAILABLE
                         await self._switch_api()
-            except aiohttp.ClientError as e:
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                self._record_asmr_api_failure(e.__class__.__name__)
                 logger.error(f"[ASMR] 请求作品信息失败: {e}")
+                if self._asmr_api_circuit_open():
+                    return None, ASMR_PROBE_STATUS_UNAVAILABLE
                 await self._switch_api()
 
         logger.error(f"[ASMR] 所有 API 服务器都无法访问: {rjcode}")
-        return None
+        return None, ASMR_PROBE_STATUS_UNAVAILABLE
+
+    async def fetch_work_info(self, rjcode: str) -> Optional[Dict]:
+        """兼容旧调用方，只返回作品信息本身。"""
+        data, _status = await self.fetch_work_info_with_status(rjcode)
+        return data
 
     async def find_best_available_work(self, rjcode: str) -> Tuple[Optional[str], Optional[Dict]]:
         """
@@ -305,7 +498,7 @@ class ASMRDownloadService:
         logger.warning(f"[搜索] 未找到任何可用版本: {rjcode}")
         return None, None
 
-    async def fetch_track_list(self, rjcode: str) -> Optional[List[Dict]]:
+    async def fetch_track_list_with_status(self, rjcode: str) -> Tuple[Optional[List[Dict]], str]:
         """
         获取作品的音轨/文件列表
 
@@ -315,6 +508,8 @@ class ASMRDownloadService:
         Returns:
             文件列表
         """
+        if self._skip_asmr_api_when_circuit_open("文件列表请求", rjcode):
+            return None, ASMR_PROBE_STATUS_UNAVAILABLE
         # 标准化 RJ 号
         if rjcode.upper().startswith('RJ'):
             rjcode_num = rjcode[2:]
@@ -322,49 +517,97 @@ class ASMRDownloadService:
             rjcode_num = rjcode
 
         session = await self._get_session()
+        request_kwargs = self._proxy_request_kwargs()
 
-        api_urls = self._get_api_urls()
-        for attempt in range(len(api_urls)):
-            api_base = api_urls[attempt % len(api_urls)]
-            track_path = self._get_track_path(rjcode_num)
-            url = f"{api_base}{track_path}"
+        for attempt in range(len(self.API_BASE_URLS)):
+            api_base = self._get_api_base()
+            url = f"{api_base}/tracks/{rjcode_num}"
 
             try:
-                logger.info(f"[ASMR] 获取文件列表: {url}")
-                async with session.get(url) as response:
+                logger.debug("[ASMR] 获取文件列表: %s", mask_url_for_log(url))
+                async with session.get(url, **request_kwargs) as response:
                     if response.status == 200:
                         data = await response.json()
+                        self._record_asmr_api_success()
                         file_count = len(data) if isinstance(data, list) else 0
-                        logger.info(f"[ASMR] 成功获取文件列表，共 {file_count} 个文件")
+                        logger.debug("[ASMR] 成功获取文件列表: rj=%s count=%s", rjcode, file_count)
 
                         # 调试：打印第一个文件/文件夹的完整结构
                         if data and isinstance(data, list) and len(data) > 0:
                             first_item = data[0]
-                            logger.info(f"[ASMR] 第一个项目结构: {list(first_item.keys())}")
+                            logger.debug(f"[ASMR] 第一个项目结构: {list(first_item.keys())}")
                             if first_item.get('type') == 'folder' and first_item.get('children'):
-                                logger.info(f"[ASMR] 第一个文件夹名称: {first_item.get('title')}")
+                                logger.debug(f"[ASMR] 第一个文件夹名称: {first_item.get('title')}")
                                 children = first_item.get('children', [])
                                 if children:
-                                    logger.info(f"[ASMR] 第一个子项目结构: {list(children[0].keys())}")
-                                    logger.info(f"[ASMR] 第一个子项目详情: {children[0]}")
+                                    logger.debug(f"[ASMR] 第一个子项目结构: {list(children[0].keys())}")
+                                    logger.debug(
+                                        "[ASMR] 第一个子项目摘要: title=%s size=%s has_download=%s",
+                                        children[0].get("title"),
+                                        children[0].get("size"),
+                                        bool(children[0].get("mediaDownloadUrl") or children[0].get("media_download_url")),
+                                    )
                             else:
-                                logger.info(f"[ASMR] 第一个文件详情: {first_item}")
+                                logger.debug(
+                                    "[ASMR] 第一个文件摘要: title=%s size=%s has_download=%s",
+                                    first_item.get("title"),
+                                    first_item.get("size"),
+                                    bool(first_item.get("mediaDownloadUrl") or first_item.get("media_download_url")),
+                                )
 
-                        return data
+                        return data, ASMR_PROBE_STATUS_AVAILABLE if data else ASMR_PROBE_STATUS_MISSING
                     elif response.status == 404:
+                        self._record_asmr_api_success()
                         logger.warning(f"[ASMR] 文件列表不存在: {rjcode}")
-                        return []
+                        return [], ASMR_PROBE_STATUS_MISSING
                     else:
+                        self._record_asmr_api_failure(f"tracks HTTP {response.status}")
                         logger.warning(f"[ASMR] 获取文件列表失败: HTTP {response.status}")
+                        if self._asmr_api_circuit_open():
+                            return None, ASMR_PROBE_STATUS_UNAVAILABLE
                         await self._switch_api()
-            except aiohttp.ClientError as e:
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                self._record_asmr_api_failure(e.__class__.__name__)
                 logger.error(f"[ASMR] 请求文件列表失败: {e}")
+                if self._asmr_api_circuit_open():
+                    return None, ASMR_PROBE_STATUS_UNAVAILABLE
                 await self._switch_api()
 
         logger.error(f"[ASMR] 所有 API 服务器都无法获取文件列表: {rjcode}")
-        return None
+        return None, ASMR_PROBE_STATUS_UNAVAILABLE
 
-    def _flatten_tracks(self, tracks: List[Dict], parent_path: str = "") -> List[Dict]:
+    async def fetch_track_list(self, rjcode: str) -> Optional[List[Dict]]:
+        """兼容旧调用方，只返回文件列表本身。"""
+        data, _status = await self.fetch_track_list_with_status(rjcode)
+        return data
+
+    def _resolve_track_display_title(self, track: Dict) -> str:
+        """优先读取 asmr.one 可能返回的本地化标题，避免只拿原始日文 title。"""
+        direct_keys = (
+            'display_title', 'displayTitle', 'localized_title', 'localizedTitle',
+            'translated_title', 'translatedTitle', 'title_zh', 'titleZh',
+            'title_zh_cn', 'titleZhCn', 'title_zh_tw', 'titleZhTw',
+            'name_zh', 'nameZh', 'name_zh_cn', 'nameZhCn',
+        )
+        for key in direct_keys:
+            value = str(track.get(key) or '').strip()
+            if value:
+                return value
+
+        dict_keys = ('title_i18n', 'titleI18n', 'titles', 'name_i18n', 'nameI18n', 'names', 'i18n', 'translation')
+        lang_keys = ('zh-cn', 'zh_hans', 'zh-hans', 'chs', 'chi_hans', 'zh-tw', 'zh_hant', 'zh-hant', 'cht', 'chi_hant', 'zh')
+        for key in dict_keys:
+            value = track.get(key)
+            if not isinstance(value, dict):
+                continue
+            for lang_key in lang_keys:
+                candidate = str(value.get(lang_key) or value.get(lang_key.upper()) or '').strip()
+                if candidate:
+                    return candidate
+
+        return str(track.get('title') or track.get('name') or '').strip()
+
+    def _flatten_tracks(self, tracks: List[Dict], parent_path: str = "", parent_display_path: str = "") -> List[Dict]:
         """
         扁平化音轨列表，提取所有可下载的文件
 
@@ -379,12 +622,15 @@ class ASMRDownloadService:
 
         for track in tracks:
             # 构建当前路径
-            current_path = os.path.join(parent_path, track.get('title', '')) if parent_path else track.get('title', '')
+            raw_title = track.get('title', '') or track.get('name', '')
+            display_title = self._resolve_track_display_title(track)
+            current_path = os.path.join(parent_path, raw_title) if parent_path else raw_title
+            display_path = os.path.join(parent_display_path, display_title) if parent_display_path else display_title
 
             if track.get('type') == 'folder':
                 # 如果是文件夹，递归处理子项
                 children = track.get('children', [])
-                files.extend(self._flatten_tracks(children, current_path))
+                files.extend(self._flatten_tracks(children, current_path, display_path))
             else:
                 # 如果是文件，添加到列表
                 # 支持多种ID字段名：id, hash, media_id
@@ -398,8 +644,10 @@ class ASMRDownloadService:
 
                 file_info = {
                     'id': file_id,
-                    'title': track.get('title', ''),
+                    'title': raw_title,
+                    'display_title': display_title,
                     'path': current_path,
+                    'display_path': display_path,
                     'type': track.get('type'),
                     'media_download_url': download_url,
                     'size': track.get('size', 0),
@@ -409,7 +657,11 @@ class ASMRDownloadService:
 
                 # 调试：打印第一个文件的结构
                 if len(files) == 1:
-                    logger.info(f"[ASMR] 解析后第一个文件: title={file_info['title']}, download_url={download_url[:80] if download_url else 'None'}")
+                    logger.debug(
+                        "[ASMR] 解析后第一个文件: title=%s download_url=%s",
+                        file_info["title"],
+                        mask_url_for_log(download_url[:200] if download_url else "None"),
+                    )
 
         return files
 
@@ -418,8 +670,11 @@ class ASMRDownloadService:
         url: str,
         dest_path: str,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        log_callback: Optional[Callable[[str, str], None]] = None,
         max_retries: int = 10,
-        timeout: int = 60
+        timeout: int = 60,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        pause_wait: Optional[Callable[[], Any]] = None,
     ) -> bool:
         """
         下载单个文件（支持断点续传和重试）
@@ -428,119 +683,383 @@ class ASMRDownloadService:
             url: 下载 URL
             dest_path: 目标路径
             progress_callback: 进度回调函数 (downloaded_bytes, total_bytes)
+            log_callback: 日志回调函数 (message, level)
             max_retries: 最大重试次数（默认10次）
             timeout: 单次请求超时时间（秒，默认60秒）
+            cancel_check: 取消检查回调，返回 True 表示已取消
+            pause_wait: 暂停等待回调，调用后会阻塞直到恢复
 
         Returns:
             是否成功
         """
         session = await self._get_session()
+        request_kwargs = self._proxy_request_kwargs()
+        request_headers = self._download_headers()
+        request_url = self._build_download_request_url(url)
+        request_url_text = str(request_url)
+        max_failures = max(1, int(max_retries or 1))
+        max_request_attempts = min(
+            ASMR_DOWNLOAD_MAX_SEGMENT_REQUESTS,
+            max(max_failures, max_failures * ASMR_DOWNLOAD_SEGMENT_REQUEST_MULTIPLIER),
+        )
+        failed_attempts = 0
+        request_attempt = 0
+        known_total_size = 0
+        temp_path = dest_path + '.downloading'
 
-        for attempt in range(max_retries):
+        def push_log(message: str, level: str = "info") -> None:
+            if log_callback:
+                try:
+                    log_callback(str(message), str(level or "info"))
+                except Exception:
+                    logger.debug("[下载] 日志回调失败", exc_info=True)
+
+        def current_partial_size() -> int:
+            sizes = [
+                os.path.getsize(path)
+                for path in (temp_path, dest_path)
+                if os.path.exists(path)
+            ]
+            return max(sizes, default=0)
+
+        async def continue_productive_segment(start_offset: int, error: BaseException) -> bool:
+            nonlocal failed_attempts
+            partial_size = current_partial_size()
+            if partial_size <= max(0, int(start_offset or 0)):
+                return False
+            failed_attempts = 0
+            if progress_callback and known_total_size > 0:
+                progress_callback(partial_size, known_total_size)
+            added_bytes = partial_size - max(0, int(start_offset or 0))
+            logger.warning(
+                "[下载] 源站分段断流，已保留新增片段并继续续传: file=%s, added=%s, partial=%s, total=%s, request=%s/%s, error=%s",
+                os.path.basename(dest_path),
+                added_bytes,
+                partial_size,
+                known_total_size or "unknown",
+                request_attempt,
+                max_request_attempts,
+                error,
+            )
+            push_log(
+                f"{os.path.basename(dest_path)} 源站中途断流，但本段已新增 {added_bytes} 字节，"
+                f"已保留 {partial_size}/{known_total_size or '未知'} 并继续断点续传",
+                "warning",
+            )
+            await asyncio.sleep(1)
+            return True
+
+        while failed_attempts < max_failures and request_attempt < max_request_attempts:
+            request_attempt += 1
+            request_start_offset = 0
             try:
                 # 确保目标目录存在
                 os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
                 # 检查是否有未完成的下载（断点续传）
-                temp_path = dest_path + '.downloading'
                 resume_offset = 0
 
                 if os.path.exists(temp_path):
                     resume_offset = os.path.getsize(temp_path)
-                    logger.info(f"[下载] 发现未完成文件，从 {resume_offset} 字节处续传: {os.path.basename(dest_path)}")
+                    logger.debug(f"[下载] 发现未完成文件，从 {resume_offset} 字节处续传: {os.path.basename(dest_path)}")
+                    push_log(f"{os.path.basename(dest_path)} 发现未完成片段，准备从 {resume_offset} 字节续传")
                 elif os.path.exists(dest_path):
                     # 文件已存在，检查大小是否完整
                     existing_size = os.path.getsize(dest_path)
+                    request_start_offset = existing_size
                     # 先获取远程文件大小
-                    async with session.head(url, timeout=aiohttp.ClientTimeout(total=30)) as head_response:
+                    push_log(f"{os.path.basename(dest_path)} 检查已存在文件完整性")
+                    async with session.head(
+                        request_url,
+                        headers=request_headers,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                        **request_kwargs,
+                    ) as head_response:
                         if head_response.status == 200:
                             remote_size = int(head_response.headers.get('content-length', 0))
-                            if remote_size > 0 and existing_size >= remote_size:
-                                logger.info(f"[下载] 文件已存在且完整，跳过: {os.path.basename(dest_path)}")
+                            known_total_size = max(known_total_size, remote_size)
+                            if remote_size > 0 and existing_size == remote_size:
+                                logger.debug(f"[下载] 文件已存在且完整，跳过: {os.path.basename(dest_path)}")
+                                push_log(f"{os.path.basename(dest_path)} 已存在且完整，跳过下载", "success")
                                 return True
+                            elif remote_size > 0 and existing_size > remote_size:
+                                logger.warning(
+                                    "[下载] 已存在文件大小异常，清理后重下: file=%s, local=%s, remote=%s",
+                                    os.path.basename(dest_path),
+                                    existing_size,
+                                    remote_size,
+                                )
+                                push_log(
+                                    f"{os.path.basename(dest_path)} 已存在文件大小异常"
+                                    f"({existing_size}/{remote_size})，清理后从头重下",
+                                    "warning",
+                                )
+                                await asyncio.to_thread(os.remove, dest_path)
+                                if progress_callback:
+                                    progress_callback(0, remote_size)
                             elif existing_size > 0:
                                 # 文件存在但不完整，重命名并续传
-                                os.rename(dest_path, temp_path)
+                                await asyncio.to_thread(os.rename, dest_path, temp_path)
                                 resume_offset = existing_size
-                                logger.info(f"[下载] 文件不完整({existing_size}/{remote_size})，续传: {os.path.basename(dest_path)}")
+                                logger.debug(f"[下载] 文件不完整({existing_size}/{remote_size})，续传: {os.path.basename(dest_path)}")
+                                push_log(f"{os.path.basename(dest_path)} 文件不完整，准备续传 {existing_size}/{remote_size}")
 
                 # 构建请求头（支持断点续传）
-                headers = {}
+                headers = dict(request_headers)
                 if resume_offset > 0:
                     headers['Range'] = f'bytes={resume_offset}-'
+                request_start_offset = resume_offset
 
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+                push_log(
+                    f"{os.path.basename(dest_path)} 开始请求资源，"
+                    f"第 {request_attempt}/{max_request_attempts} 次分段请求"
+                )
+                push_log(f"{os.path.basename(dest_path)} 等待源站响应", "info")
+
+                async with get_resource_budget_service().acquire("network_download", reason="asmr.download_file"), session.get(
+                    request_url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=None, connect=10, sock_connect=10, sock_read=timeout),
+                    **request_kwargs,
+                ) as response:
                     # 处理响应状态
                     if resume_offset > 0 and response.status == 206:
-                        # 服务器支持断点续传
                         content_range = response.headers.get('content-range', '')
-                        total_size = int(content_range.split('/')[-1]) if '/' in content_range else 0
+                        # 严格校验 Content-Range，防止服务端返回错误分片导致追加污染文件尾部。
+                        range_match = re.match(r'^bytes\s+(\d+)-(\d+)/(\d+|\*)$', str(content_range).strip(), re.IGNORECASE)
+                        if not range_match:
+                            logger.warning(f"[下载] 续传响应缺少有效 Content-Range，回退全量重下: {os.path.basename(dest_path)}, content-range={content_range}")
+                            push_log(f"{os.path.basename(dest_path)} 续传响应无效，回退全量重下", "warning")
+                            if os.path.exists(temp_path):
+                                await asyncio.to_thread(os.remove, temp_path)
+                            await asyncio.sleep(1)
+                            continue
+
+                        range_start = int(range_match.group(1))
+                        total_size = int(range_match.group(3)) if range_match.group(3).isdigit() else 0
+                        known_total_size = max(known_total_size, total_size)
+
+                        if range_start != resume_offset:
+                            logger.warning(
+                                "[下载] 续传偏移不匹配，回退全量重下: file=%s, local_offset=%s, server_start=%s, content-range=%s",
+                                os.path.basename(dest_path),
+                                resume_offset,
+                                range_start,
+                                content_range,
+                            )
+                            push_log(
+                                f"{os.path.basename(dest_path)} 续传偏移不匹配(local={resume_offset}, remote={range_start})，回退全量重下",
+                                "warning",
+                            )
+                            if os.path.exists(temp_path):
+                                await asyncio.to_thread(os.remove, temp_path)
+                            await asyncio.sleep(1)
+                            continue
+
+                        if total_size > 0 and resume_offset >= total_size:
+                            logger.warning(
+                                "[下载] 本地续传片段大小异常，回退全量重下: file=%s, local_offset=%s, total=%s",
+                                os.path.basename(dest_path),
+                                resume_offset,
+                                total_size,
+                            )
+                            push_log(
+                                f"{os.path.basename(dest_path)} 本地续传片段异常(local={resume_offset}, total={total_size})，回退全量重下",
+                                "warning",
+                            )
+                            if os.path.exists(temp_path):
+                                await asyncio.to_thread(os.remove, temp_path)
+                            await asyncio.sleep(1)
+                            continue
+
                         downloaded = resume_offset
-                        logger.info(f"[下载] 服务器支持断点续传，从 {resume_offset}/{total_size} 继续")
+                        logger.debug(f"[下载] 服务器支持断点续传，从 {resume_offset}/{total_size} 继续")
+                        push_log(f"{os.path.basename(dest_path)} 源站已响应，支持断点续传 {resume_offset}/{total_size}")
                     elif resume_offset > 0 and response.status == 200:
                         # 服务器不支持断点续传，重新下载
                         resume_offset = 0
                         total_size = int(response.headers.get('content-length', 0))
+                        known_total_size = max(known_total_size, total_size)
                         downloaded = 0
+                        request_start_offset = 0
                         if os.path.exists(temp_path):
-                            os.remove(temp_path)
-                        logger.info(f"[下载] 服务器不支持断点续传，重新下载")
+                            await asyncio.to_thread(os.remove, temp_path)
+                        logger.debug("[下载] 服务器不支持断点续传，重新下载")
+                        push_log(f"{os.path.basename(dest_path)} 源站已响应，但不支持断点续传，准备重新下载")
+                    elif resume_offset > 0 and response.status == 416:
+                        content_range = str(response.headers.get('content-range') or '').strip()
+                        total_match = re.match(r'^bytes\s+\*/(\d+)$', content_range, re.IGNORECASE)
+                        remote_total = int(total_match.group(1)) if total_match else 0
+                        known_total_size = max(known_total_size, remote_total)
+                        if remote_total > 0 and resume_offset == remote_total and os.path.exists(temp_path):
+                            if os.path.exists(dest_path):
+                                await asyncio.to_thread(os.remove, dest_path)
+                            await asyncio.to_thread(os.rename, temp_path, dest_path)
+                            if progress_callback:
+                                progress_callback(remote_total, remote_total)
+                            push_log(f"{os.path.basename(dest_path)} 断点片段已完整，直接完成下载", "success")
+                            return True
+
+                        logger.warning(
+                            "[下载] 续传范围失效，清理异常片段后重下: file=%s, local=%s, remote=%s",
+                            os.path.basename(dest_path),
+                            resume_offset,
+                            remote_total or "unknown",
+                        )
+                        remote_label = str(remote_total) if remote_total > 0 else "未知"
+                        push_log(
+                            f"{os.path.basename(dest_path)} 本地断点已超出源站范围"
+                            f"(local={resume_offset}, remote={remote_label})，清理异常片段并从头重下",
+                            "warning",
+                        )
+                        if os.path.exists(temp_path):
+                            await asyncio.to_thread(os.remove, temp_path)
+                        if progress_callback and remote_total > 0:
+                            progress_callback(0, remote_total)
+                        await asyncio.sleep(1)
+                        continue
                     elif response.status != 200:
-                        logger.error(f"下载失败: HTTP {response.status}, URL: {url}")
-                        if attempt < max_retries - 1:
-                            wait_time = min(5 * (attempt + 1), 30)  # 递增等待时间，最多30秒
-                            logger.info(f"[下载] 等待 {wait_time} 秒后重试...")
+                        failed_attempts += 1
+                        logger.error(
+                            "[下载] 下载失败: HTTP %s, URL: %s, dest=%s, attempt=%s/%s",
+                            response.status,
+                            mask_url_for_log(request_url_text),
+                            os.path.basename(dest_path),
+                            failed_attempts,
+                            max_failures,
+                        )
+                        if failed_attempts < max_failures and request_attempt < max_request_attempts:
+                            wait_time = min(5 * failed_attempts, 30)
+                            logger.debug(f"[下载] 等待 {wait_time} 秒后重试...")
+                            push_log(f"{os.path.basename(dest_path)} 源站返回 HTTP {response.status}，{wait_time} 秒后重试", "warning")
                             await asyncio.sleep(wait_time)
                             continue
+                        push_log(f"{os.path.basename(dest_path)} 源站返回 HTTP {response.status}，重试已耗尽", "error")
                         return False
                     else:
                         total_size = int(response.headers.get('content-length', 0))
+                        known_total_size = max(known_total_size, total_size)
                         downloaded = 0
+                        push_log(f"{os.path.basename(dest_path)} 源站已响应，开始接收数据")
 
                     # 写入文件
                     write_path = temp_path if resume_offset == 0 or response.status == 206 else dest_path
                     mode = 'ab' if resume_offset > 0 and response.status == 206 else 'wb'
 
+                    last_progress_reported = downloaded
+                    last_progress_reported_at = time.monotonic()
+                    last_signal_check_at = last_progress_reported_at
                     with open(write_path, mode) as f:
-                        async for chunk in response.content.iter_chunked(8192):
+                        async for chunk in response.content.iter_chunked(ASMR_DOWNLOAD_STREAM_CHUNK_BYTES):
+                            # ── 暂停 / 取消信号检查 ──
+                            now_monotonic = time.monotonic()
+                            if now_monotonic - last_signal_check_at >= 0.25:
+                                last_signal_check_at = now_monotonic
+                                if cancel_check and cancel_check():
+                                    push_log(f"{os.path.basename(dest_path)} 下载已被用户取消", "warning")
+                                    return False
+                                if pause_wait:
+                                    await pause_wait()
+
                             f.write(chunk)
                             downloaded += len(chunk)
                             if progress_callback and total_size > 0:
-                                progress_callback(downloaded, total_size)
+                                now_monotonic = time.monotonic()
+                                should_report = (
+                                    downloaded >= total_size
+                                    or (downloaded - last_progress_reported) >= 256 * 1024
+                                    or (now_monotonic - last_progress_reported_at) >= 0.5
+                                )
+                                if should_report:
+                                    progress_callback(downloaded, total_size)
+                                    last_progress_reported = downloaded
+                                    last_progress_reported_at = now_monotonic
 
                     # 下载完成，重命名临时文件
                     if os.path.exists(temp_path):
-                        if os.path.exists(dest_path):
-                            os.remove(dest_path)
-                        os.rename(temp_path, dest_path)
+                        # 避免下载链路把错误内容静默当作成功。
+                        actual_size = os.path.getsize(temp_path)
+                        if total_size > 0 and actual_size != total_size:
+                            logger.warning(
+                                "[下载] 下载后大小校验失败，准备重试: file=%s, actual=%s, total=%s",
+                                os.path.basename(dest_path),
+                                actual_size,
+                                total_size,
+                            )
+                            push_log(
+                                f"{os.path.basename(dest_path)} 下载大小校验失败({actual_size}/{total_size})，准备重试",
+                                "warning",
+                            )
+                            if actual_size > total_size:
+                                push_log(
+                                    f"{os.path.basename(dest_path)} 本地片段超过源站文件大小，清理后从头重下",
+                                    "warning",
+                                )
+                                await asyncio.to_thread(os.remove, temp_path)
+                                if progress_callback:
+                                    progress_callback(0, total_size)
+                            await asyncio.sleep(1)
+                            continue
 
-                    logger.info(f"下载完成: {dest_path} ({downloaded} bytes)")
+                        if os.path.exists(dest_path):
+                            await asyncio.to_thread(os.remove, dest_path)
+                        await asyncio.to_thread(os.rename, temp_path, dest_path)
+
+                    logger.debug(f"下载完成: {dest_path} ({downloaded} bytes)")
+                    push_log(f"{os.path.basename(dest_path)} 下载完成", "success")
                     return True
 
-            except asyncio.TimeoutError:
-                logger.warning(f"[下载] 超时({timeout}秒)，第 {attempt + 1}/{max_retries} 次尝试: {os.path.basename(dest_path)}")
-                if attempt < max_retries - 1:
-                    wait_time = min(5 * (attempt + 1), 30)
-                    logger.info(f"[下载] 等待 {wait_time} 秒后重试...")
+            except asyncio.TimeoutError as e:
+                if await continue_productive_segment(request_start_offset, e):
+                    continue
+                failed_attempts += 1
+                logger.warning(f"[下载] 超时({timeout}秒)，第 {failed_attempts}/{max_failures} 次连续失败: {os.path.basename(dest_path)}")
+                if failed_attempts < max_failures and request_attempt < max_request_attempts:
+                    wait_time = min(5 * failed_attempts, 30)
+                    logger.debug(f"[下载] 等待 {wait_time} 秒后重试...")
+                    push_log(f"{os.path.basename(dest_path)} 等待源站响应超时，第 {failed_attempts}/{max_failures} 次连续失败，{wait_time} 秒后重试", "warning")
                     await asyncio.sleep(wait_time)
+                else:
+                    push_log(f"{os.path.basename(dest_path)} 等待源站响应超时，重试已耗尽", "error")
             except aiohttp.ClientError as e:
-                logger.warning(f"[下载] 连接错误 {e}，第 {attempt + 1}/{max_retries} 次尝试: {os.path.basename(dest_path)}")
-                if attempt < max_retries - 1:
-                    wait_time = min(5 * (attempt + 1), 30)
-                    logger.info(f"[下载] 等待 {wait_time} 秒后重试...")
+                if await continue_productive_segment(request_start_offset, e):
+                    continue
+                failed_attempts += 1
+                logger.warning(f"[下载] 连接错误 {e}，第 {failed_attempts}/{max_failures} 次连续失败: {os.path.basename(dest_path)}")
+                if failed_attempts < max_failures and request_attempt < max_request_attempts:
+                    wait_time = min(5 * failed_attempts, 30)
+                    logger.debug(f"[下载] 等待 {wait_time} 秒后重试...")
+                    push_log(f"{os.path.basename(dest_path)} 连接错误：{e}，第 {failed_attempts}/{max_failures} 次连续失败，{wait_time} 秒后重试", "warning")
                     await asyncio.sleep(wait_time)
+                else:
+                    push_log(f"{os.path.basename(dest_path)} 连接错误：{e}，重试已耗尽", "error")
             except Exception as e:
+                failed_attempts += 1
                 logger.error(f"下载文件失败: {e}")
-                if attempt < max_retries - 1:
+                if failed_attempts < max_failures and request_attempt < max_request_attempts:
+                    push_log(f"{os.path.basename(dest_path)} 下载异常：{e}，5 秒后重试", "warning")
                     await asyncio.sleep(5)
+                else:
+                    push_log(f"{os.path.basename(dest_path)} 下载异常：{e}，重试已耗尽", "error")
 
         # 返回失败，但保留临时文件以支持后续续传
-        logger.error(f"[下载] 文件下载失败，已尝试 {max_retries} 次: {os.path.basename(dest_path)}")
+        logger.error(
+            "[下载] 文件下载失败，连续失败=%s，请求次数=%s/%s: %s",
+            failed_attempts,
+            request_attempt,
+            max_request_attempts,
+            os.path.basename(dest_path),
+        )
+        push_log(
+            f"{os.path.basename(dest_path)} 下载失败，连续失败 {failed_attempts} 次，"
+            f"分段请求 {request_attempt}/{max_request_attempts} 次",
+            "error",
+        )
         return False
 
     def filter_files(self, files: List[Dict], filter_rules: List) -> List[Dict]:
         """
-        应用筛选规则过滤文件列表（两阶段：先文件夹规则，再文件规则）
+        应用筛选规则过滤文件列表
 
         Args:
             files: 文件列表
@@ -550,93 +1069,91 @@ class ASMRDownloadService:
             过滤后的文件列表
         """
         if not filter_rules:
-            logger.info("[筛选] 没有筛选规则，保留所有文件")
+            logger.debug("[筛选] 没有筛选规则，保留所有文件")
             return files
 
-        def _get_rule_prop(rule, prop, default=''):
-            if isinstance(rule, dict):
-                return rule.get(prop, default)
-            return getattr(rule, prop, default)
+        # 音频扩展名集合
+        audio_extensions = {'.wav', '.mp3', '.flac', '.m4a', '.ogg', '.wma', '.aac'}
 
-        # 打印所有筛选规则的状态
-        logger.info(f"[筛选] 共有 {len(filter_rules)} 条筛选规则:")
+        # 先打印所有筛选规则的状态
+        logger.debug(f"[筛选] 共有 {len(filter_rules)} 条筛选规则:")
         for i, rule in enumerate(filter_rules):
-            name = _get_rule_prop(rule, 'name', f'规则{i+1}')
-            enabled = _get_rule_prop(rule, 'enabled', True)
-            pattern = _get_rule_prop(rule, 'pattern', '')
-            target = _get_rule_prop(rule, 'target', 'file')
+            if isinstance(rule, dict):
+                name = rule.get('name', f'规则{i+1}')
+                enabled = rule.get('enabled', True)
+                pattern = rule.get('pattern', '')
+                target = rule.get('target', 'file')
+            else:
+                name = getattr(rule, 'name', f'规则{i+1}')
+                enabled = getattr(rule, 'enabled', True)
+                pattern = getattr(rule, 'pattern', '')
+                target = getattr(rule, 'target', 'file')
             status = "启用" if enabled else "禁用"
-            logger.info(f"[筛选]   - {name}: pattern='{pattern}', target='{target}', 状态={status}")
+            logger.debug(f"[筛选]   - {name}: pattern='{pattern}', target='{target}', 状态={status}")
+
+        filtered_files = []
+        excluded_count = 0
 
         # 调试：打印前几个文件名
         if files:
-            logger.info(f"[筛选] 前5个文件名示例:")
+            logger.debug(f"[筛选] 前5个文件名示例:")
             for i, f in enumerate(files[:5]):
-                logger.info(f"[筛选]   {i+1}. title='{f.get('title', '')}', path='{f.get('path', '')}'")
+                logger.debug(f"[筛选]   {i+1}. title='{f.get('title', '')}', path='{f.get('path', '')}'")
 
-        # 分离 folder 规则和 file/all 规则
-        folder_rules = []
-        file_rules = []
-        for rule in filter_rules:
-            if not _get_rule_prop(rule, 'enabled', True):
-                continue
-            target = _get_rule_prop(rule, 'target', 'file')
-            pattern = _get_rule_prop(rule, 'pattern', '')
-            name = _get_rule_prop(rule, 'name', '')
-            if not pattern:
-                continue
-            if target == 'folder':
-                folder_rules.append((pattern, name))
-            else:
-                file_rules.append((pattern, name, target))
-
-        excluded_count = 0
-
-        # 阶段1：文件夹规则过滤
-        # 如果文件的完整路径中包含匹配文件夹规则的部分，整个文件被排除
-        stage1_files = []
         for file_info in files:
-            file_path = file_info.get('path', file_info.get('title', ''))
-            should_exclude = False
-            for pattern, name in folder_rules:
-                try:
-                    if re.search(pattern, file_path, re.IGNORECASE):
-                        should_exclude = True
-                        excluded_count += 1
-                        logger.info(f"[筛选][文件夹] 文件被规则 [{name}] 过滤: {file_path} (匹配'{pattern}')")
-                        break
-                except re.error as e:
-                    logger.error(f"正则表达式错误: {pattern}, {e}")
-            if not should_exclude:
-                stage1_files.append(file_info)
-
-        logger.info(f"[筛选] 阶段1(文件夹): {len(files)} -> {len(stage1_files)}, 排除 {len(files) - len(stage1_files)}")
-
-        # 阶段2：文件规则过滤（在阶段1剩余文件上）
-        stage2_files = []
-        for file_info in stage1_files:
             file_name = file_info.get('title', '')
-            file_path = file_info.get('path', file_name)
+            file_path = file_info.get('path', file_name)  # 完整路径，包含文件夹名
+            ext = os.path.splitext(file_name)[1].lower()
+
+            # 只处理音频文件
+            if ext not in audio_extensions:
+                # 非音频文件（如图片、文本等）直接保留
+                filtered_files.append(file_info)
+                continue
+
+            # 应用筛选规则
             should_exclude = False
-            for pattern, name, target in file_rules:
+            for rule in filter_rules:
+                # 支持字典和对象两种访问方式
+                if isinstance(rule, dict):
+                    enabled = rule.get('enabled', True)
+                    target = rule.get('target', 'file')
+                    pattern = rule.get('pattern', '')
+                    name = rule.get('name', '')
+                else:
+                    enabled = getattr(rule, 'enabled', True)
+                    target = getattr(rule, 'target', 'file')
+                    pattern = getattr(rule, 'pattern', '')
+                    name = getattr(rule, 'name', '')
+
+                if not enabled:
+                    continue
+
                 try:
-                    if target == 'all':
+                    # 根据target决定检查什么内容
+                    if target == 'folder':
+                        # 文件夹规则：检查完整路径（包含文件夹名）
+                        check_content = file_path
+                    elif target == 'all':
+                        # 全部规则：检查路径和文件名
                         check_content = file_path
                     else:
+                        # file规则：只检查文件名
                         check_content = file_name
+
                     if re.search(pattern, check_content, re.IGNORECASE):
                         should_exclude = True
+                        logger.debug(f"[筛选] 文件被规则 [{name}] 过滤: {file_path} (匹配'{pattern}')")
                         excluded_count += 1
-                        logger.info(f"[筛选][文件] 文件被规则 [{name}] 过滤: {file_name} (匹配'{pattern}')")
                         break
                 except re.error as e:
                     logger.error(f"正则表达式错误: {pattern}, {e}")
-            if not should_exclude:
-                stage2_files.append(file_info)
 
-        logger.info(f"[筛选] 阶段2(文件): {len(stage1_files)} -> {len(stage2_files)}, 排除 {len(stage1_files) - len(stage2_files)}")
-        logger.info(f"[筛选] 总计: 原始 {len(files)}, 筛选后 {len(stage2_files)}, 排除 {excluded_count}")
-        return stage2_files
+            if not should_exclude:
+                filtered_files.append(file_info)
+
+        logger.info(f"[筛选] 原始文件数: {len(files)}, 筛选后: {len(filtered_files)}, 排除: {excluded_count}")
+        return filtered_files
 
     async def download_work(
         self,
@@ -645,8 +1162,7 @@ class ASMRDownloadService:
         filter_rules: List = None,
         progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
         file_progress_callback: Optional[Callable[[str, int, int, int, int], None]] = None,
-        check_pause: Optional[Callable[[], bool]] = None,
-        selected_files: Optional[List[str]] = None  # 只下载指定标题的文件，None 则全部
+        check_pause: Optional[Callable[[], bool]] = None
     ) -> Dict:
         """
         下载整个作品并应用筛选规则
@@ -690,6 +1206,12 @@ class ASMRDownloadService:
 
             result['actual_rjcode'] = actual_rjcode
             result['title'] = work_info.get('title', '未知标题')
+            logger.info(
+                "[ASMR] 下载开始: requested=%s actual=%s title=%s",
+                rjcode,
+                actual_rjcode,
+                result["title"],
+            )
 
             # 获取文件列表
             if progress_callback:
@@ -706,22 +1228,31 @@ class ASMRDownloadService:
 
             # 扁平化文件列表
             all_files = self._flatten_tracks(tracks)
-            logger.info(f"作品 {actual_rjcode} 共有 {len(all_files)} 个文件")
+            logger.debug(f"作品 {actual_rjcode} 共有 {len(all_files)} 个文件")
 
             # 应用筛选规则
             if filter_rules:
-                logger.info(f"[筛选] 收到 {len(filter_rules)} 条筛选规则")
+                logger.debug(f"[筛选] 收到 {len(filter_rules)} 条筛选规则")
                 # 详细打印每条规则
                 for i, rule in enumerate(filter_rules):
                     if isinstance(rule, dict):
-                        logger.info(f"[筛选] 规则{i+1}: {rule}")
+                        logger.debug("[筛选] 规则%s: %s", i + 1, sanitize_for_log(rule))
                     else:
-                        logger.info(f"[筛选] 规则{i+1}: {getattr(rule, 'name', 'unknown')}, enabled={getattr(rule, 'enabled', True)}, pattern={getattr(rule, 'pattern', '')}")
+                        logger.debug(
+                            f"[筛选] 规则{i+1}: {getattr(rule, 'name', 'unknown')}, enabled={getattr(rule, 'enabled', True)}, pattern={getattr(rule, 'pattern', '')}"
+                        )
 
                 filtered_files = self.filter_files(all_files, filter_rules)
                 result['filtered_files'] = [f for f in all_files if f not in filtered_files]
                 all_files = filtered_files
-                logger.info(f"筛选后剩余 {len(all_files)} 个文件")
+                logger.info(
+                    "[ASMR] 筛选摘要: rj=%s original=%s kept=%s excluded=%s rules=%s",
+                    actual_rjcode,
+                    len(result["filtered_files"]) + len(all_files),
+                    len(all_files),
+                    len(result["filtered_files"]),
+                    len(filter_rules),
+                )
             else:
                 logger.warning("[筛选] 没有收到筛选规则，将下载所有文件！")
 
@@ -737,9 +1268,6 @@ class ASMRDownloadService:
             failed_files = []  # 记录失败的文件
 
             for i, file_info in enumerate(all_files):
-                # 如果指定了 selected_files，只下载列表中的文件
-                if selected_files is not None and file_info.get('title', '') not in selected_files:
-                    continue
                 # 检查是否需要暂停
                 if check_pause and check_pause():
                     result['paused'] = True
@@ -760,7 +1288,7 @@ class ASMRDownloadService:
                     file_hash = file_info.get('hash')
                     if file_hash:
                         download_url = f"{api_base}/download/{file_hash}"
-                        logger.info(f"[ASMR] 构建下载链接: {download_url}")
+                        logger.debug("[ASMR] 构建下载链接: %s", mask_url_for_log(download_url))
 
                 if not download_url:
                     logger.warning(f"无法获取下载链接: {file_info['title']}")
@@ -774,7 +1302,7 @@ class ASMRDownloadService:
                 # 构建目标路径 - 使用完整路径（包含文件夹层级）
                 file_path = os.path.join(dest_dir, relative_path)
 
-                logger.info(f"[ASMR] 下载文件 ({i+1}/{total_files}): {relative_path}")
+                logger.debug(f"[ASMR] 下载文件 ({i+1}/{total_files}): {relative_path}")
 
                 # 文件进度回调包装
                 def make_file_callback(fname, findex, ftotal):
@@ -809,15 +1337,20 @@ class ASMRDownloadService:
 
             # 如果有失败文件，记录警告但不标记为完全失败（部分文件可能已下载）
             if failed_files:
-                logger.warning(f"[ASMR] 下载完成但有 {len(failed_files)} 个文件失败:")
+                logger.warning(
+                    "[ASMR] 下载部分失败: rj=%s success=%s failed=%s",
+                    actual_rjcode,
+                    len(result["downloaded_files"]),
+                    len(failed_files),
+                )
                 for f in failed_files[:5]:  # 只显示前5个
-                    logger.warning(f"  - {f['title']}: {f['reason']}")
+                    logger.debug(f"[ASMR] 失败文件: {f['title']}: {f['reason']}")
 
             result['success'] = len(result['downloaded_files']) > 0
             logger.info(f"作品 {actual_rjcode} 下载完成，成功 {len(result['downloaded_files'])} 个，失败 {len(failed_files)} 个")
 
         except Exception as e:
-            logger.error(f"下载作品失败: {e}", exc_info=True)
+            logger.error("下载作品失败: %s", sanitize_text_for_log(e))
             result['error'] = str(e)
 
         return result

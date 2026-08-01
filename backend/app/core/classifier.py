@@ -1,230 +1,661 @@
 import os
 import re
 import shutil
+import asyncio
+import uuid
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Optional, Dict
 import logging
 
 from ..config.settings import get_config, ClassificationRule
 from ..models.database import LibrarySnapshot, ConflictWork, get_db
 from ..core.task_engine import Task
+from ..core.library_manager import get_library_manager
+from ..core.folder_compare_service import get_folder_compare_service
+from ..core.json_safety import database_safe_text, safe_json_value
 
 logger = logging.getLogger(__name__)
 
-# 冲突类型常量
-CONFLICT_TYPE_DUPLICATE = 'DUPLICATE'
-CONFLICT_TYPE_KIKOERU_DUPLICATE = 'KIKOERU_DUPLICATE'  # Kikoeru 服务器查重
-CONFLICT_TYPE_LINKED_WORK_ORIGINAL = 'LINKED_WORK_ORIGINAL'
-CONFLICT_TYPE_LINKED_WORK_TRANSLATION = 'LINKED_WORK_TRANSLATION'
-CONFLICT_TYPE_LANGUAGE_VARIANT = 'LANGUAGE_VARIANT'
-CONFLICT_TYPE_MULTIPLE_VERSIONS = 'MULTIPLE_VERSIONS'
+
+class InventoryEmptyShellChangedError(RuntimeError):
+    def __init__(self, message: str, *, preserved_path: str = ""):
+        super().__init__(message)
+        self.preserved_path = str(preserved_path or "")
+
 
 class SmartClassifier:
     """智能分类器"""
 
     def __init__(self):
-        self.config = get_config()
-        self._kikoeru_service = None
+        # 不缓存配置，每次都获取最新配置
+        pass
 
-    def _get_kikoeru_service(self):
-        """懒加载 Kikoeru 查重服务"""
-        if self._kikoeru_service is None:
-            from .kikoeru_duplicate_service import KikoeruDuplicateService
-            self._kikoeru_service = KikoeruDuplicateService()
-        return self._kikoeru_service
-
-    async def close(self):
-        """关闭 Kikoeru 查重服务的 HTTP Session"""
-        if self._kikoeru_service is not None:
-            await self._kikoeru_service.close()
-            self._kikoeru_service = None
-
+    @property
+    def config(self):
+        """动态获取最新配置"""
+        return get_config()
+    
     async def check_duplicate_before_extract(self, rjcode: str, task: Task, engine=None) -> bool:
         """
         在解压前检查是否重复（包括检查是否有其他任务正在处理）
         返回True表示存在重复或正在处理中，应该停止处理
         """
-        logger.info(f"开始预检: 检查RJ号 {rjcode} 是否已存在或正在处理")
-
+        logger.info(f"[预检] 开始检查RJ号 {rjcode} 是否已存在或正在处理")
+        
         # 1. 检查是否已有其他任务正在处理这个RJ号
         if engine and engine.is_rjcode_processing(rjcode):
-            logger.warning(f"RJ号 {rjcode} 正在被其他任务处理中，当前任务将等待")
+            logger.warning(f"[预检] RJ号 {rjcode} 正在被其他任务处理中，当前任务将等待")
             # 添加到问题作品表，标记为等待状态
             self._add_to_conflict_works(
-                task.id,
-                rjcode,
-                CONFLICT_TYPE_DUPLICATE,
-                "正在处理中",
+                task.id, 
+                rjcode, 
+                'DUPLICATE', 
+                "正在处理中", 
                 task.source_path,
                 {},
                 status='PENDING'
             )
             return True
-
-        # 2. 检查本地库中是否已存在
-        existing = self._check_existing(rjcode)
-
-        if existing:
-            # 强制使用DUPLICATE类型（预检阶段无法判断语言差异）
-            conflict_type = CONFLICT_TYPE_DUPLICATE
-
-            logger.info(f"预检发现本地重复: RJ={rjcode}, 类型={conflict_type}, 已存在={existing['path']}")
-
-            # 添加到问题作品表（不解压，只记录压缩包路径）
-            self._add_to_conflict_works(
-                task.id,
-                rjcode,
-                conflict_type,
-                existing['path'],
-                task.source_path,  # 压缩包路径
-                {}  # 尚无元数据
-            )
-
-            logger.info(f"预检发现重复作品: {rjcode}, 已添加到问题列表等待手动处理")
+        
+        # 2. 只走 ready 库存索引。Kikoeru 只是播放这份库存的服务，不再作为拥有态
+        # 查重源；索引未 ready / 未命中时直接继续，不主动扫盘、不请求群晖。
+        local_result = await self._check_library_index_before_extract(rjcode, task)
+        if local_result:
             return True
-
-        # 3. 检查 Kikoeru 服务器是否已存在（如果启用）
-        kikoeru_config = getattr(self.config, 'kikoeru_server', None)
-        if kikoeru_config and kikoeru_config.enabled:
-            logger.info(f"预检: 检查 Kikoeru 服务器是否已存在 {rjcode}")
-            kikoeru_service = None
-            try:
-                kikoeru_service = self._get_kikoeru_service()
-                kikoeru_result = await kikoeru_service.check_duplicate(rjcode)
-
-                if kikoeru_result.is_found:
-                    logger.info(f"预检发现 Kikoeru 服务器重复: RJ={rjcode}, 标题={kikoeru_result.title}")
-
-                    # 保存 Kikoeru 查重结果信息
-                    kikoeru_info = {
-                        'title': kikoeru_result.title,
-                        'circle_name': kikoeru_result.circle_name,
-                        'work_id': kikoeru_result.work_id,
-                        'tags': kikoeru_result.tags,
-                        'source': 'kikoeru_server'
-                    }
-
-                    # 添加到问题作品表，使用 KIKOERU_DUPLICATE 类型
-                    self._add_to_conflict_works(
-                        task.id,
-                        rjcode,
-                        CONFLICT_TYPE_KIKOERU_DUPLICATE,
-                        "Kikoeru 服务器",  # 远程服务器无本地路径
-                        task.source_path,
-                        {'kikoeru_info': kikoeru_info},
-                        linked_works_info=kikoeru_info
-                    )
-
-                    logger.info(f"预检发现 Kikoeru 服务器重复作品: {rjcode}, 已添加到问题列表")
-                    return True
-                else:
-                    logger.info(f"Kikoeru 服务器未找到: {rjcode}")
-            except Exception as e:
-                logger.warning(f"Kikoeru 服务器查重失败，跳过远程查重: {e}")
-            finally:
-                # 关闭 aiohttp session 防止资源泄漏
-                if kikoeru_service and kikoeru_service._session and not kikoeru_service._session.closed:
-                    await kikoeru_service.close()
-                    self._kikoeru_service = None
-
-        # 4. 标记RJ号正在处理（防止其他任务同时处理）
+        
+        # 3. 标记RJ号正在处理（防止其他任务同时处理）
         if engine:
             engine.mark_rjcode_processing(rjcode)
             task.rjcode = rjcode  # 保存RJ号到任务，用于后续清理
+        
+        logger.info(f"[预检] 完成: RJ号 {rjcode} 未在 ready 库存索引发现重复，继续解压")
+        return False
 
-        logger.info(f"预检完成: RJ号 {rjcode} 未在本地库和 Kikoeru 服务器中发现，继续解压")
+    async def _check_library_index_before_extract(self, rjcode: str, task: Task) -> bool:
+        """预解压优先用库存索引查当前 RJ 和关联 RJ。"""
+        normalized_rj = str(rjcode or "").strip().upper()
+        if not normalized_rj:
+            return False
+
+        manager = get_library_manager()
+
+        try:
+            direct_hits = manager.find_rj_in_ready_index([normalized_rj])
+        except Exception:
+            logger.warning("[预检] ready 库存索引查重失败 rj=%s", normalized_rj, exc_info=True)
+            direct_hits = {}
+        direct_match = next(iter(direct_hits.get(normalized_rj) or []), None)
+        if direct_match:
+            existing_path = str(direct_match.get("path") or "").strip()
+            logger.info("[预检] 库存索引命中当前 RJ: %s -> %s", normalized_rj, existing_path)
+            self._add_to_conflict_works(
+                task.id,
+                normalized_rj,
+                "DUPLICATE",
+                existing_path,
+                task.source_path,
+                {
+                    "source": "library_index",
+                    "existing_library_id": direct_match.get("library_id"),
+                    "existing_library_name": direct_match.get("library_name"),
+                    "existing_library_type": direct_match.get("library_type"),
+                    "existing_size": direct_match.get("size"),
+                },
+                linked_works_info=[{
+                    "rjcode": normalized_rj,
+                    "path": existing_path,
+                    "size": direct_match.get("size"),
+                    "library_id": direct_match.get("library_id"),
+                    "library_name": direct_match.get("library_name"),
+                }],
+                related_rjcodes=[normalized_rj],
+            )
+            return True
+
+        linked_works = {}
+        try:
+            from .dlsite_service import get_dlsite_service
+            linked_works = await get_dlsite_service().get_linked_works(normalized_rj)
+        except Exception as exc:
+            logger.info("[预检] 获取 DLsite 关联链失败，仅查当前 RJ: %s error=%s", normalized_rj, exc)
+
+        related_rjcodes = [
+            str(candidate or "").strip().upper()
+            for candidate in (linked_works.keys() if linked_works else [])
+            if str(candidate or "").strip().upper() and str(candidate or "").strip().upper() != normalized_rj
+        ]
+
+        try:
+            linked_hits = manager.find_rj_in_ready_index(related_rjcodes)
+        except Exception:
+            logger.warning("[预检] ready 库存索引关联查重失败 rj=%s related=%s", normalized_rj, related_rjcodes, exc_info=True)
+            linked_hits = {}
+
+        for linked_rj in related_rjcodes:
+            linked_match = next(iter(linked_hits.get(linked_rj) or []), None)
+            if not linked_match:
+                continue
+            existing_path = str(linked_match.get("path") or "").strip()
+            linked_work = linked_works.get(linked_rj) if linked_works else None
+            work_type = str(getattr(linked_work, "work_type", "") or "")
+            lang = str(getattr(linked_work, "lang", "") or "")
+            if self._should_skip_linked_duplicate_for_subtitle_import(
+                normalized_rj,
+                linked_rj,
+                linked_works,
+                task,
+            ):
+                logger.info(
+                    "[预检] 关联 RJ 命中原作但当前翻译作应进入字幕补配，跳过普通重复: "
+                    "current=%s linked=%s path=%s",
+                    normalized_rj,
+                    linked_rj,
+                    existing_path,
+                )
+                continue
+            logger.info(
+                "[预检] 库存索引命中关联 RJ: current=%s linked=%s path=%s",
+                normalized_rj,
+                linked_rj,
+                existing_path,
+            )
+            self._add_to_conflict_works(
+                task.id,
+                normalized_rj,
+                "DUPLICATE",
+                existing_path,
+                task.source_path,
+                {
+                    "work_name": normalized_rj,
+                    "source": "library_index_linked",
+                    "matched_rjcode": linked_rj,
+                    "matched_work_type": work_type,
+                    "matched_lang": lang,
+                    "existing_library_id": linked_match.get("library_id"),
+                    "existing_library_name": linked_match.get("library_name"),
+                    "existing_library_type": linked_match.get("library_type"),
+                    "existing_size": linked_match.get("size"),
+                },
+                linked_works_info=[{
+                    "rjcode": linked_rj,
+                    "work_type": work_type,
+                    "lang": lang,
+                    "path": existing_path,
+                    "size": linked_match.get("size"),
+                    "library_id": linked_match.get("library_id"),
+                    "library_name": linked_match.get("library_name"),
+                }],
+                related_rjcodes=[normalized_rj, *related_rjcodes],
+            )
+            return True
+
+        logger.info("[预检] 库存索引未命中当前 RJ / 关联 RJ: %s", normalized_rj)
+        return False
+
+    def _should_skip_linked_duplicate_for_subtitle_import(
+        self,
+        current_rjcode: str,
+        linked_rjcode: str,
+        linked_works: Dict,
+        task: Task,
+    ) -> bool:
+        """翻译作补配原作字幕时，关联原作命中库存不算普通重复。"""
+        metadata = dict(getattr(task, "task_metadata", None) or {})
+        preview = dict(metadata.get("linked_subtitle_preview") or {})
+        if not preview:
+            return False
+        if not bool(preview.get("is_translation_work")):
+            return False
+        if not bool(preview.get("target_needs_subtitle", preview.get("kikoeru_needs_subtitle"))):
+            return False
+        if bool(preview.get("kikoeru_target_is_empty_shell")):
+            return False
+        if not bool(
+            preview.get("can_stage_pending")
+            or preview.get("should_queue_pending")
+            or preview.get("can_execute")
+        ):
+            return False
+
+        normalized_current = str(current_rjcode or "").strip().upper()
+        normalized_linked = str(linked_rjcode or "").strip().upper()
+        preview_source = str(preview.get("source_rjcode") or "").strip().upper()
+        preview_target = str(preview.get("target_rjcode") or "").strip().upper()
+        if preview_source and preview_source != normalized_current:
+            return False
+        if preview_target and preview_target != normalized_linked:
+            return False
+
+        current_work = linked_works.get(normalized_current) if linked_works else None
+        linked_work = linked_works.get(normalized_linked) if linked_works else None
+        current_type = str(getattr(current_work, "work_type", "") or "").strip().lower()
+        current_lang = str(getattr(current_work, "lang", "") or "").strip().upper()
+        linked_type = str(getattr(linked_work, "work_type", "") or "").strip().lower()
+        if current_type not in {"translation", "child_translation"}:
+            return False
+        if current_lang not in {"CHI_HANS", "CHI_HANT", "ENG"}:
+            return False
+        return linked_type == "original"
+    
+    async def _check_kikoeru_server(self, rjcode: str, task: Task) -> bool:
+        """
+        兼容旧入口：Kikoeru 不再作为拥有态查重源。
+        
+        Returns:
+            bool: 固定 False，不阻止处理。
+        """
+        logger.info("[预检] Kikoeru 仅负责播放库存，跳过远程拥有态查重: %s", rjcode)
         return False
     
+    def _notify_library_index_after_classify(
+        self,
+        manager,
+        target_library,
+        final_path: str,
+        *,
+        existing_path: Optional[str] = None,
+    ) -> None:
+        """落地完成后通知索引把新子树 upsert 进去。
+
+        - target_library 为 None 或 final_path 在 _conflicts 下时跳过
+        - KEEP_NEW / MERGE 替换原路径时，先 delete 旧子树再 upsert，避免孤儿条目
+        - 任意异常都吞掉，不影响主流程返回 final_path
+        """
+        try:
+            if not final_path or target_library is None:
+                return
+            normalized_final = str(final_path or "")
+            if not normalized_final:
+                return
+            if target_library.type == 'local':
+                conflict_root = os.path.abspath(
+                    os.path.join(self.config.storage.library_path, '_conflicts')
+                )
+                normalized_abs = os.path.abspath(normalized_final)
+                if (
+                    normalized_abs == conflict_root
+                    or normalized_abs.startswith(conflict_root + os.sep)
+                ):
+                    return  # _conflicts 不参与索引
+            if existing_path and os.path.abspath(existing_path) == os.path.abspath(normalized_final):
+                manager._enqueue_index_replace_subtree_many(target_library, [normalized_final])
+                return
+            if existing_path:
+                manager._enqueue_index_delete_many(target_library, [existing_path])
+            manager._enqueue_index_upsert_subtree_many(target_library, [normalized_final])
+        except Exception:
+            logger.debug(
+                "[索引] classify 后通知索引 upsert 失败 path=%s", final_path, exc_info=True,
+            )
+
+    @staticmethod
+    def _directory_has_files(path: str) -> bool:
+        for _root, _dirs, files in os.walk(path):
+            if files:
+                return True
+        return False
+
+    @staticmethod
+    def _path_is_within(root_path: str, candidate_path: str) -> bool:
+        try:
+            root = os.path.normcase(os.path.realpath(root_path))
+            candidate = os.path.normcase(os.path.realpath(candidate_path))
+            return os.path.commonpath([root, candidate]) == root
+        except (OSError, ValueError):
+            return False
+
+    def _find_inventory_empty_shell(
+        self,
+        manager,
+        rjcode: str,
+        source_path: str,
+        intended_final_path: str,
+    ) -> Optional[Dict]:
+        hits = manager.find_rj_in_ready_index(
+            [rjcode],
+            include_subtitle_state=False,
+        )
+        valid: list[Dict] = []
+        source_abs = os.path.normcase(os.path.abspath(source_path))
+        intended_abs = os.path.normcase(os.path.abspath(intended_final_path))
+        for hit in hits.get(rjcode) or []:
+            if str(hit.get("library_type") or "").strip().lower() != "local":
+                continue
+            library = manager.get_library_definition(str(hit.get("library_id") or ""))
+            path = str(hit.get("path") or "").strip()
+            if library is None or not path or not os.path.isdir(path):
+                continue
+            path_abs = os.path.normcase(os.path.abspath(path))
+            if not self._path_is_within(library.root_path, path):
+                continue
+            if not re.search(rf"(?<!\d){re.escape(rjcode)}(?!\d)", path, re.IGNORECASE):
+                continue
+            if path_abs == source_abs:
+                continue
+            if path_abs != intended_abs and (
+                self._path_is_within(path, intended_final_path)
+                or self._path_is_within(intended_final_path, path)
+            ):
+                continue
+            if self._directory_has_files(path):
+                raise InventoryEmptyShellChangedError(
+                    f"库存空壳目录已出现文件，禁止删除: {path}",
+                )
+            valid.append({**hit, "library": library, "path": path})
+
+        exact = [
+            item
+            for item in valid
+            if os.path.normcase(os.path.abspath(item["path"])) == intended_abs
+        ]
+        if exact:
+            return exact[0]
+        if len(valid) > 1:
+            raise InventoryEmptyShellChangedError(
+                f"发现多个可删除的库存空壳，需人工确认: {rjcode}",
+            )
+        return valid[0] if valid else None
+
+    async def _replace_inventory_empty_shell(
+        self,
+        *,
+        manager,
+        target_library,
+        source_path: str,
+        target_path: str,
+        rjcode: str,
+        task: Task,
+        progress_cb,
+    ) -> Optional[str]:
+        intended_final = os.path.join(target_path, os.path.basename(source_path))
+        empty_shell = self._find_inventory_empty_shell(
+            manager,
+            rjcode,
+            source_path,
+            intended_final,
+        )
+        if empty_shell is None:
+            task.task_metadata["inventory_empty_shell_status"] = "not_found"
+            return None
+
+        old_path = str(empty_shell["path"])
+        old_library = empty_shell["library"]
+        old_relative = manager._index_relative_path(old_library, old_path)
+        intended_relative = manager._index_relative_path(target_library, intended_final)
+        if old_relative is None or intended_relative is None:
+            raise InventoryEmptyShellChangedError("库存空壳路径无法建立安全索引 mutation")
+
+        effects_by_library: Dict[str, list[Dict]] = {
+            old_library.id: [{
+                "kind": "delete",
+                "relative_path": old_relative,
+                "scope": "subtree",
+            }],
+        }
+        effects_by_library.setdefault(target_library.id, []).append({
+            "kind": "reconcile",
+            "relative_path": intended_relative,
+            "scope": "subtree",
+        })
+
+        from .library_index import get_library_index_mutation_service
+
+        mutation_service = get_library_index_mutation_service()
+        prepared = mutation_service.prepare(
+            kind="replace_inventory_empty_shell",
+            effects_by_library=effects_by_library,
+            idempotency_key=f"replace-empty-shell:{task.id}:{uuid.uuid4()}",
+        )
+        mutation_service.mark_filesystem_started(prepared.operation_id)
+        final_path = ""
+        old_deleted = False
+        try:
+            final_path = await asyncio.to_thread(
+                self._move_with_rename,
+                source_path,
+                target_path,
+                progress_cb,
+            )
+            if not self._directory_has_files(final_path):
+                raise RuntimeError("新作入库产物没有文件，拒绝删除库存空壳")
+            if not os.path.isdir(old_path) or self._directory_has_files(old_path):
+                actual_relative = manager._index_relative_path(target_library, final_path)
+                actual_effects = {
+                    target_library.id: [{
+                        "kind": "reconcile",
+                        "relative_path": actual_relative or intended_relative,
+                        "scope": "subtree",
+                    }],
+                }
+                mutation_service.finalize(
+                    prepared.operation_id,
+                    actual_effects_by_library=actual_effects,
+                    actual_result={
+                        "source": "replace_inventory_empty_shell",
+                        "status": "waiting_manual",
+                        "old_path": old_path,
+                        "preserved_path": final_path,
+                    },
+                )
+                raise InventoryEmptyShellChangedError(
+                    f"库存空壳目录在入库期间出现文件，已保留新作等待人工处理: {old_path}",
+                    preserved_path=final_path,
+                )
+
+            os.rmdir(old_path)
+            old_deleted = True
+            if os.path.normcase(os.path.abspath(final_path)) != os.path.normcase(os.path.abspath(old_path)):
+                if os.path.normcase(os.path.abspath(intended_final)) == os.path.normcase(os.path.abspath(old_path)):
+                    os.replace(final_path, old_path)
+                    final_path = old_path
+
+            final_relative = manager._index_relative_path(target_library, final_path)
+            actual_effects: Dict[str, list[Dict]] = {
+                old_library.id: [{
+                    "kind": "delete",
+                    "relative_path": old_relative,
+                    "scope": "subtree",
+                }],
+            }
+            actual_effects.setdefault(target_library.id, []).append({
+                "kind": "reconcile",
+                "relative_path": final_relative or intended_relative,
+                "scope": "subtree",
+            })
+            mutation_service.finalize(
+                prepared.operation_id,
+                actual_effects_by_library=actual_effects,
+                actual_result={
+                    "source": "replace_inventory_empty_shell",
+                    "status": "completed",
+                    "old_path": old_path,
+                    "final_path": final_path,
+                },
+            )
+            task.task_metadata.update({
+                "inventory_empty_shell_status": "replaced",
+                "inventory_empty_shell_path": old_path,
+                "inventory_empty_shell_operation_id": prepared.operation_id,
+            })
+            return final_path
+        except InventoryEmptyShellChangedError:
+            raise
+        except Exception as exc:
+            mutation_service.mark_reconcile_required(prepared.operation_id, exc)
+            if old_deleted:
+                logger.error(
+                    "[空壳替换] 旧空目录已删除但新作归位失败: old=%s final=%s",
+                    old_path,
+                    final_path,
+                    exc_info=True,
+                )
+            raise
+
     async def classify_and_move(self, source_path: str, metadata: Dict, task: Task) -> str:
         """
         智能分类并移动到库存
         返回最终路径
         """
         rjcode = metadata.get('rjcode', '')
+        resolution = (task.task_metadata or {}).get('existing_folder_resolution') if getattr(task, 'task_metadata', None) else None
+        resolution_existing_path = (task.task_metadata or {}).get('existing_path') if getattr(task, 'task_metadata', None) else None
+        merge_decisions = (task.task_metadata or {}).get('merge_decisions') if getattr(task, 'task_metadata', None) else None
         
         # 1. 检查是否已存在
-        task.update_progress(82, "检查重复")
-        existing = self._check_existing(rjcode)
+        task.update_progress(82, "准备入库")
+        task_type = getattr(task, 'type', None)
+        task_type_value = getattr(task_type, 'value', task_type)
+        skip_local_duplicate_check = task_type_value == 'auto_process'
+        if skip_local_duplicate_check:
+            logger.info(f"解压入库跳过本地库重复扫描: {rjcode}")
+            existing = None
+        else:
+            task.update_progress(82, "检查重复")
+            existing = self._check_existing(rjcode)
+        manager = get_library_manager()
+        target_library_id = task.task_metadata.get('target_library_id') if getattr(task, 'task_metadata', None) else None
+        target_library = manager.get_library_definition(target_library_id)
+        task.task_metadata = {
+            **(task.task_metadata or {}),
+            "target_library_id": target_library.id,
+        }
         
-        if existing:
+        if existing and not (resolution in {"KEEP_NEW", "MERGE"} and resolution_existing_path and os.path.abspath(existing['path']) == os.path.abspath(str(resolution_existing_path))):
             # 使用DUPLICATE类型（解压后的重复检测，已有元数据但统一标记为重复）
-            conflict_type = CONFLICT_TYPE_DUPLICATE
+            conflict_type = 'DUPLICATE'
 
             logger.info(f"解压后发现重复: RJ={rjcode}, 类型={conflict_type}, 已存在={existing['path']}")
-            
-            # 添加到问题作品表
-            self._add_to_conflict_works(task.id, rjcode, conflict_type, existing['path'], source_path, metadata)
-            
-            # 等待用户处理（这里需要UI交互，简化处理）
-            logger.info(f"发现重复作品: {rjcode}, 已添加到问题列表")
-            # 临时移动到一个待处理目录
-            # 使用重命名后的文件夹名称，而不是RJ号
-            source_folder_name = os.path.basename(source_path)
+
+            # 关键顺序：必须先把临时解压目录搬到 _conflicts/，再写问题作品记录。
+            # 否则 conflict.new_path 会指向 /temp/RJxxx_subtask/...，
+            # 这个临时目录会在任务结束 / 容器重启时被清掉，
+            # 之后用户点"合并 / 保留新版"预览就会 404 New source does not exist。
             conflict_base_path = os.path.join(self.config.storage.library_path, '_conflicts')
             os.makedirs(conflict_base_path, exist_ok=True)
-            final_path = self._move_with_rename(source_path, conflict_base_path)
+            final_path = await asyncio.to_thread(self._move_with_rename, source_path, conflict_base_path)
+
+            # 用搬迁后的稳定路径写入 conflict 记录
+            self._add_to_conflict_works(task.id, rjcode, conflict_type, existing['path'], final_path, metadata)
+
+            logger.info(f"发现重复作品: {rjcode}, 已添加到问题列表，待处理路径: {final_path}")
             return final_path
         
-        # 2. 应用分类规则
+        # 2. 应用分类规则（传入源路径以提取文件夹名中的社团名）
         task.update_progress(85, "应用分类规则")
-        target_path = self._apply_classification_rules(metadata)
-        
+        target_path = self._apply_classification_rules(metadata, source_path, target_library)
+
         # 3. 移动文件
         task.update_progress(90, "移动到库存")
-        final_path = self._move_with_rename(source_path, target_path)
+        existing_subtree_to_clear: Optional[str] = None
+        if resolution == "KEEP_NEW" and resolution_existing_path:
+            task.update_progress(92, "替换现有目录")
+            final_path = await asyncio.to_thread(
+                get_folder_compare_service().safe_replace_directory,
+                source_path,
+                str(resolution_existing_path),
+            )
+            existing_subtree_to_clear = str(resolution_existing_path)
+        elif resolution == "MERGE" and resolution_existing_path:
+            task.update_progress(92, "生成并写入合并结果")
+            final_path = await asyncio.to_thread(
+                get_folder_compare_service().apply_merge,
+                source_path,
+                str(resolution_existing_path),
+                merge_decisions or {},
+                str(resolution_existing_path),
+            )
+            existing_subtree_to_clear = str(resolution_existing_path)
+        elif target_library.type == 'local':
+            # 跨卷复制时通过 progress 回调把"移动到库存"的真实进度映射到 90~94 区间。
+            # 默认 shutil.move 在 NAS 跨卷场景下没有任何进度回报，前端经常停留在
+            # 90%（"移动到库存"）十几分钟看不到任何变化；这里实时上报 MB 数。
+            def _classify_move_progress(copied: int, total: int) -> None:
+                try:
+                    if total <= 0:
+                        return
+                    ratio = min(1.0, max(0.0, copied / total))
+                    mb_done = copied / (1024 * 1024)
+                    mb_total = total / (1024 * 1024)
+                    task.update_progress(
+                        90 + int(ratio * 4),
+                        f"移动到库存 {mb_done:.0f}/{mb_total:.0f}MB",
+                    )
+                except Exception:
+                    logger.debug("classify 移动进度回调异常已忽略", exc_info=True)
+
+            final_path = None
+            if bool((task.task_metadata or {}).get("replace_inventory_empty_shell")):
+                empty_shell_rjcode = str(
+                    (task.task_metadata or {}).get("inventory_empty_shell_rjcode")
+                    or rjcode
+                    or ""
+                ).strip().upper()
+                final_path = await self._replace_inventory_empty_shell(
+                    manager=manager,
+                    target_library=target_library,
+                    source_path=source_path,
+                    target_path=target_path,
+                    rjcode=empty_shell_rjcode,
+                    task=task,
+                    progress_cb=_classify_move_progress,
+                )
+            if not final_path:
+                final_path = await asyncio.to_thread(
+                    self._move_with_rename,
+                    source_path,
+                    target_path,
+                    _classify_move_progress,
+                )
+        else:
+            relative_target_dir = os.path.relpath(target_path, target_library.root_path).replace("\\", "/")
+            if relative_target_dir == '.':
+                relative_target_dir = ''
+            final_path = await manager.upload_directory_to_library(
+                target_library.id,
+                source_path,
+                relative_target_dir,
+                delete_source_on_success=True,
+            )
         
         # 4. 更新库存快照
         self._update_library_snapshot(rjcode, final_path)
-        
+
+        # 5. 通知索引把新子树扫进去（解压入库 / KEEP_NEW / MERGE / 远程上传共用通路）
+        # 不在 classify_and_move 里 await：本地 upsert 同步即可（小子树 ms 级），
+        # 远程 upsert 由 LibraryManager 自己起后台 task；这里只触发一下。
+        if not bool((task.task_metadata or {}).get("inventory_empty_shell_operation_id")):
+            self._notify_library_index_after_classify(
+                manager,
+                target_library,
+                final_path,
+                existing_path=existing_subtree_to_clear,
+            )
+
         return final_path
     
     def _check_existing(self, rjcode: str) -> Optional[Dict]:
-        """检查作品是否已存在于库存"""
-        logger.info(f"检查RJ号 {rjcode} 是否已存在于库存")
-        
-        db = next(get_db())
+        """检查作品是否已存在于库存：只读 ready 库存索引，不扫盘。"""
+        normalized_rj = str(rjcode or "").strip().upper()
+        if not normalized_rj:
+            return None
         try:
-            # 从数据库查询
-            snapshot = db.query(LibrarySnapshot).filter(
-                LibrarySnapshot.rjcode == rjcode
-            ).first()
-
-            # 验证数据库中的路径是否真实存在
-            if snapshot:
-                folder_path = str(snapshot.folder_path)
-                logger.info(f"数据库中找到记录: {rjcode} -> {folder_path}")
-                if os.path.exists(folder_path):
-                    logger.info(f"确认路径存在: {folder_path}")
-                    return {
-                        'path': folder_path,
-                        'size': snapshot.folder_size
-                    }
-                else:
-                    # 路径不存在，清理过期的数据库记录
-                    logger.warning(f"数据库记录存在但路径已不存在，清理过期记录: {rjcode} -> {folder_path}")
-                    db.delete(snapshot)
-                    db.commit()
-
-            # 如果没有数据库记录，扫描库存目录
-            library_path = Path(self.config.storage.library_path)
-            logger.info(f"扫描库存目录: {library_path}")
-            found_count = 0
-            for folder in library_path.rglob('*'):
-                if folder.is_dir() and rjcode in folder.name:
-                    found_count += 1
-                    logger.info(f"目录扫描找到已存在的作品: {rjcode} -> {folder}")
-                    return {
-                        'path': str(folder),
-                        'size': self._get_folder_size(str(folder))
-                    }
-            
-            logger.info(f"扫描完成，找到 {found_count} 个匹配项")
-            return None
+            hits = get_library_manager().find_rj_in_ready_index([normalized_rj])
         except Exception as e:
-            logger.error(f"检查作品存在性时出错: {e}")
+            logger.warning("[分类] ready 库存索引检查失败 rj=%s error=%s", normalized_rj, e, exc_info=True)
             return None
-        finally:
-            db.close()
+        hit = next(iter(hits.get(normalized_rj) or []), None)
+        if not hit:
+            logger.info("[分类] ready 库存索引未命中: %s", normalized_rj)
+            return None
+        logger.info("[分类] ready 库存索引命中: %s -> %s", normalized_rj, hit.get("path"))
+        return {
+            "path": str(hit.get("path") or ""),
+            "size": int(hit.get("size") or 0),
+            "file_count": int(hit.get("file_count") or 0),
+            "library_id": str(hit.get("library_id") or ""),
+            "library_name": str(hit.get("library_name") or ""),
+        }
     
     def _determine_conflict_type(self, existing: Dict, new_metadata: Dict) -> str:
         """确定冲突类型"""
@@ -263,57 +694,87 @@ class SmartClassifier:
         
         db = next(get_db())
         try:
-            # 检查是否已存在相同的冲突记录（相同的RJ号）
-            # 无论新文件路径是否相同，只要是同一个RJ号且状态为PENDING，就不添加
-            existing_conflict = db.query(ConflictWork).filter(
-                ConflictWork.rjcode == rjcode,
-                ConflictWork.status == 'PENDING'
-            ).first()
+            active_query = db.query(ConflictWork).filter(
+                ConflictWork.status.in_(['PENDING', 'PROCESSING'])
+            )
+
+            # 失败问题项允许同一 RJ 下保留多条不同来源记录；
+            # 否则会把后来的失败直接吞掉，任务中心里看得到失败，但问题作品页里没有。
+            existing_conflict = None
+            if new_path:
+                existing_conflict = active_query.filter(
+                    ConflictWork.new_path == new_path
+                ).first()
+
+            if not existing_conflict and rjcode and conflict_type not in {'EXTRACT_FAILED', 'PROCESS_FAILED'}:
+                existing_conflict = active_query.filter(
+                    ConflictWork.rjcode == rjcode,
+                    ConflictWork.conflict_type == conflict_type,
+                ).first()
             
             if existing_conflict:
                 logger.info(f"冲突记录已存在，跳过重复添加: {rjcode}")
                 return
             
-            # 检查新文件是否还存在（如果用户已经手动删除了，就不需要再添加）
-            if not os.path.exists(new_path):
+            # 检查新文件是否还存在（如果用户已经手动删除了，就不需要再添加）。
+            # 解压/处理失败例外：临时输入可能已被上游清理，但失败事实仍要进问题作品页。
+            if not os.path.exists(new_path) and conflict_type not in {'EXTRACT_FAILED', 'PROCESS_FAILED'}:
                 logger.info(f"新文件已不存在，跳过添加冲突记录: {rjcode}, 路径: {new_path}")
                 return
-            
+            # 注：以前这里还会再做一次 os.path.exists(new_path) 然后写
+            # metadata['source_missing'] / 'source_missing_path' 字段。
+            # 经全局 grep 确认这两个 key 在前后端 0 处读取（死字段），删除以省掉
+            # EXTRACT_FAILED / PROCESS_FAILED 路径上的额外远程 stat 开销。
+            safe_metadata = safe_json_value(metadata or {})
+            safe_linked_works_info = safe_json_value(linked_works_info if linked_works_info is not None else [])
+            safe_analysis_info = safe_json_value(analysis_info if analysis_info is not None else {})
+            safe_related_rjcodes = safe_json_value(related_rjcodes if related_rjcodes is not None else [])
+            safe_rjcode = database_safe_text(rjcode) if rjcode is not None else None
+            safe_existing_path = database_safe_text(existing_path or "") or ""
+            safe_new_path = database_safe_text(new_path or "") or ""
+
             conflict = ConflictWork(
                 id=str(uuid.uuid4()),
                 task_id=task_id,
-                rjcode=rjcode,
+                rjcode=safe_rjcode,
                 conflict_type=conflict_type,
-                existing_path=existing_path,
-                new_path=new_path,
-                new_metadata=metadata,
+                existing_path=safe_existing_path,
+                new_path=safe_new_path,
+                new_metadata=safe_metadata if isinstance(safe_metadata, dict) else {},
                 status=status,
-                linked_works_info=linked_works_info if linked_works_info is not None else [],
-                analysis_info=analysis_info if analysis_info is not None else {},
-                related_rjcodes=related_rjcodes if related_rjcodes is not None else [],
-                created_at=datetime.utcnow()
+                linked_works_info=safe_linked_works_info if isinstance(safe_linked_works_info, list) else [],
+                analysis_info=safe_analysis_info if isinstance(safe_analysis_info, dict) else {},
+                related_rjcodes=safe_related_rjcodes if isinstance(safe_related_rjcodes, list) else [],
+                created_at=datetime.now()
             )
             db.add(conflict)
             db.commit()
             logger.info(f"添加问题作品记录: {rjcode}")
         except Exception as e:
-            logger.error(f"添加问题作品失败: {e}")
+            logger.error(f"添加问题作品失败: {e}", exc_info=True)
             db.rollback()
         finally:
             db.close()
     
-    def _apply_classification_rules(self, metadata: Dict) -> str:
-        """应用分类规则生成目标路径"""
-        library_base = self.config.storage.library_path
+    def _apply_classification_rules(self, metadata: Dict, source_path: str = None, target_library=None) -> str:
+        """应用分类规则生成目标路径
+        
+        Args:
+            metadata: 元数据字典
+            source_path: 源文件夹路径（用于提取文件夹名中的社团名）
+        """
+        library_base = target_library.root_path if target_library is not None else self.config.storage.library_path
         
         for rule in self.config.classification:
             if not rule.enabled:
                 continue
             
-            path = self._apply_single_rule(rule, metadata)
+            path = self._apply_single_rule(rule, metadata, source_path)
             if path is not None:
                 # path 可能是空字符串（表示无子目录）
                 if path:
+                    if target_library is not None and target_library.type != 'local':
+                        return str(PurePosixPath(library_base) / path.replace("\\", "/"))
                     return os.path.join(library_base, path)
                 else:
                     return library_base
@@ -321,15 +782,43 @@ class SmartClassifier:
         # 默认分类 - 直接放入库存根目录
         return library_base
     
-    def _apply_single_rule(self, rule: ClassificationRule, metadata: Dict) -> Optional[str]:
-        """应用单个分类规则，只返回分类目录（不包含作品文件夹名称）"""
+    def _apply_single_rule(self, rule: ClassificationRule, metadata: Dict, source_path: str = None) -> Optional[str]:
+        """应用单个分类规则，只返回分类目录（不包含作品文件夹名称）
+        
+        Args:
+            rule: 分类规则
+            metadata: 元数据字典
+            source_path: 源文件夹路径（用于提取文件夹名中的社团名）
+        """
         
         if rule.type == 'none':
             # 无子目录，直接返回空字符串表示根目录
             return ''
         
         elif rule.type == 'maker':
-            maker_name = metadata.get('maker_name', '')
+            maker_name = (
+                metadata.get('classification_maker_name')
+                or metadata.get('original_maker_name')
+                or metadata.get('maker_name', '')
+            )
+
+            extracted_maker = None
+            if source_path:
+                folder_name = os.path.basename(source_path)
+                extracted_maker = self._extract_maker_from_folder_name(folder_name)
+                # 文件夹名已经是最终重命名结果时，优先使用 RJ 号前面的社团名。
+                if extracted_maker and metadata.get('rjcode') and str(metadata.get('rjcode')).upper() in folder_name.upper():
+                    if extracted_maker != maker_name:
+                        logger.info(
+                            "[分类] 使用文件夹名中的 RJ 前社团名覆盖分类社团名: metadata=%s folder=%s",
+                            maker_name,
+                            extracted_maker,
+                        )
+                    maker_name = extracted_maker
+                elif not maker_name and extracted_maker:
+                    logger.info(f"[分类] 元数据缺少社团名，回退使用文件夹名提取结果: {extracted_maker}")
+                    maker_name = extracted_maker
+
             if not maker_name:
                 return None
             
@@ -347,7 +836,7 @@ class SmartClassifier:
                     # 找到fallback规则并应用
                     for fallback_rule in self.config.classification:
                         if fallback_rule.type == rule.fallback:
-                            return self._apply_single_rule(fallback_rule, metadata)
+                            return self._apply_single_rule(fallback_rule, metadata, source_path)
                 return None
             
             # 使用自定义模板或默认使用系列名
@@ -413,8 +902,49 @@ class SmartClassifier:
             path = path[:100]
         return path.strip()
     
-    def _move_with_rename(self, source: str, target_dir: str) -> str:
-        """移动文件/文件夹，处理重名"""
+    def _extract_maker_from_folder_name(self, folder_name: str) -> Optional[str]:
+        """从文件夹名提取社团名
+        
+        支持格式：
+        - [社团名][RJ123456]...
+        - [社团名] 作品名...
+        - 【社团名】作品名...
+        
+        Returns:
+            社团名字符串，如果无法提取则返回 None
+        """
+        # 匹配开头的方括号或中文方括号内容
+        # 格式：[社团名] 或 【社团名】
+        pattern = r'^[【\[]([^\】\]]+)[】\]]'
+        match = re.match(pattern, folder_name)
+        
+        if match:
+            maker_name = match.group(1)
+            # 排除 RJ 号（如果第一个方括号内是 RJ 号，则跳过）
+            if re.match(r'^[RVB]J\d+$', maker_name, re.IGNORECASE):
+                # 第一个方括号是 RJ 号，尝试匹配第二个方括号
+                remaining = folder_name[match.end():]
+                second_match = re.match(r'^[【\[]([^\】\]]+)[】\]]', remaining)
+                if second_match:
+                    potential_maker = second_match.group(1)
+                    # 再次检查是否是 RJ 号
+                    if not re.match(r'^[RVB]J\d+$', potential_maker, re.IGNORECASE):
+                        logger.debug(f"[分类] 从第二个方括号提取社团名: {potential_maker}")
+                        return potential_maker
+                return None
+            logger.debug(f"[分类] 从第一个方括号提取社团名: {maker_name}")
+            return maker_name
+        
+        return None
+    
+    def _move_with_rename(self, source: str, target_dir: str, progress_cb=None) -> str:
+        """移动文件/文件夹，处理重名
+
+        - 同卷直接 ``os.rename``，瞬间完成
+        - 跨卷场景下走 fs_utils.move_path_efficient（8 MB buffer 流式），并把
+          ``progress_cb(copied_bytes, total_bytes)`` 透传出去，方便上层把
+          "移动到库存"的真实进度上报到任务中心
+        """
         source_path = Path(source)
         target_path = Path(target_dir)
         
@@ -424,15 +954,38 @@ class SmartClassifier:
         # 最终目标
         final_target = target_path / source_path.name
         
-        # 处理重名
+        # 如果源和目标相同，直接返回
+        if final_target.exists() and final_target.resolve() == source_path.resolve():
+            logger.info(f"移动: 源和目标相同，跳过: {final_target}")
+            return str(final_target)
+        
+        # 处理重名 - 只有真正冲突时才添加后缀
         counter = 1
         original_target = final_target
-        while final_target.exists():
+        while final_target.exists() and final_target.resolve() != source_path.resolve():
             final_target = target_path / f"{original_target.stem}({counter}){original_target.suffix}"
             counter += 1
-        
-        # 执行移动
-        shutil.move(str(source_path), str(final_target))
+            if counter > 100:  # 防止无限循环
+                logger.error(f"无法找到可用的目标路径，使用原路径")
+                return source
+            logger.info(f"移动: 目标已存在，尝试新名称: {final_target.name}")
+
+        # 跨卷场景下走 efficient 流式 copy + 大 buffer。这里调用方 _move_with_rename
+        # 是 sync 的（被 asyncio.to_thread 包装），所以用 asyncio.run 跑一次协程。
+        from .fs_utils import move_path_efficient
+
+        try:
+            asyncio.run(
+                move_path_efficient(
+                    str(source_path),
+                    str(final_target),
+                    progress_cb=progress_cb,
+                )
+            )
+        except RuntimeError:
+            # asyncio.run 只能在没有运行 event loop 的线程里调用；
+            # 极少数同步路径如果已经在 event loop 内被调用，回退到 shutil.move 老路径。
+            shutil.move(str(source_path), str(final_target))
         logger.info(f"移动: {source_path} -> {final_target}")
         
         return str(final_target)
@@ -440,6 +993,7 @@ class SmartClassifier:
     def _update_library_snapshot(self, rjcode: str, folder_path: str):
         """更新库存快照"""
         from datetime import datetime
+        from .circle_completion_service import get_circle_completion_service
         
         db = next(get_db())
         try:
@@ -457,7 +1011,7 @@ class SmartClassifier:
                 folder_path=folder_path,
                 folder_size=folder_size,
                 file_count=file_count,
-                scanned_at=datetime.utcnow()
+                scanned_at=datetime.now()
             )
             db.add(snapshot)
             db.commit()
@@ -466,6 +1020,20 @@ class SmartClassifier:
             db.rollback()
         finally:
             db.close()
+
+        try:
+            loop = None
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            coroutine = get_circle_completion_service().sync_owned_for_rj(rjcode, folder_path=folder_path)
+            if loop and loop.is_running():
+                loop.create_task(coroutine)
+            else:
+                asyncio.run(coroutine)
+        except Exception:
+            logger.warning("更新社团补全拥有态索引失败: %s", rjcode, exc_info=True)
     
     def _get_folder_size(self, folder_path: str) -> int:
         """获取文件夹大小"""

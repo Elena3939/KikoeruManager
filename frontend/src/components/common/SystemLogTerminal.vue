@@ -1,0 +1,1107 @@
+<script setup>
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useVirtualizer } from '@tanstack/vue-virtual'
+import { ElMessage } from 'element-plus'
+import {
+  AlertTriangle,
+  Bug,
+  CheckCircle2,
+  CirclePause,
+  CirclePlay,
+  Copy,
+  Info,
+  RotateCcw,
+  Terminal,
+  Trash2,
+  Wifi,
+  WifiOff,
+} from 'lucide-vue-next'
+
+const props = defineProps({
+  title: { type: String, default: 'system.log' },
+  subtitle: { type: String, default: 'kikoerumanager - system stream' },
+  lines: { type: Array, default: () => [] },
+  highlightTerms: { type: Array, default: () => [] },
+  status: { type: String, default: 'idle' },
+  errorMessage: { type: String, default: '' },
+  taskStatus: { type: String, default: '' },
+  maxHeight: { type: Number, default: 380 },
+  autoScrollDefault: { type: Boolean, default: true },
+})
+
+const emit = defineEmits(['clear', 'reconnect'])
+
+const scrollRef = ref(null)
+const autoScroll = ref(props.autoScrollDefault)
+const userPinnedHistory = ref(false)
+const expandedLineKey = ref(null)
+
+let autoScrollRaf = 0
+let resizeObserver = null
+
+const safeLines = computed(() => Array.isArray(props.lines) ? props.lines : [])
+const lineCount = computed(() => safeLines.value.length)
+const terminalHeight = computed(() => `${Math.max(260, Number(props.maxHeight || 380))}px`)
+const connectionStatus = computed(() => String(props.status || 'idle').trim().toLowerCase())
+const isFinished = computed(() => ['completed', 'failed', 'cancelled', 'canceled'].includes(String(props.taskStatus || '').trim().toLowerCase()))
+const normalizedHighlightTerms = computed(() => Array.from(new Set(
+  (Array.isArray(props.highlightTerms) ? props.highlightTerms : [])
+    .map((term) => String(term || '').trim().toLowerCase())
+    .filter(Boolean),
+)).sort((left, right) => right.length - left.length))
+const highlightPattern = computed(() => {
+  if (!normalizedHighlightTerms.value.length) return null
+  const escaped = normalizedHighlightTerms.value.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  return new RegExp(`(${escaped.join('|')})`, 'giu')
+})
+
+const statusMeta = computed(() => {
+  const status = connectionStatus.value
+  if (status === 'connected') return { label: '已连接', className: 'is-connected', icon: Wifi }
+  if (status === 'connecting') return { label: '连接中', className: 'is-connecting', icon: RotateCcw }
+  if (status === 'error') return { label: '错误', className: 'is-error', icon: WifiOff }
+  if (status === 'disconnected') return { label: '已断开', className: 'is-disconnected', icon: WifiOff }
+  return { label: '未连接', className: 'is-idle', icon: WifiOff }
+})
+
+const rowVirtualizer = useVirtualizer(computed(() => ({
+  count: lineCount.value,
+  getScrollElement: () => scrollRef.value,
+  estimateSize: estimateLineSize,
+  measureElement: (element) => element?.getBoundingClientRect().height || 32,
+  overscan: 12,
+})))
+
+const virtualRows = computed(() => rowVirtualizer.value.getVirtualItems())
+const totalSize = computed(() => rowVirtualizer.value.getTotalSize())
+
+function clampProgress(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 0
+  return Math.max(0, Math.min(100, Math.round(numeric)))
+}
+
+function normalizeProgressTone(value) {
+  const tone = String(value || 'processing').trim().toLowerCase()
+  if (['success', 'error', 'waiting', 'paused'].includes(tone)) return tone
+  return 'processing'
+}
+
+function progressToneLabel(value) {
+  const tone = normalizeProgressTone(value)
+  if (tone === 'success') return '完成'
+  if (tone === 'error') return '异常'
+  if (tone === 'waiting') return '等待'
+  if (tone === 'paused') return '暂停'
+  return '进行中'
+}
+
+function isTaskProgressLine(line) {
+  return String(line?.kind || '') === 'task-progress' && hasProgress(line)
+}
+
+function formatTime(value) {
+  if (!value) return '--:--:--'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    const text = String(value)
+    return text.length > 8 ? text.slice(11, 19) || text.slice(0, 8) : text
+  }
+  return date.toLocaleTimeString('zh-CN', { hour12: false })
+}
+
+function normalizeLevel(value) {
+  const level = String(value || 'info').trim().toLowerCase()
+  if (level === 'warn') return 'warning'
+  if (level === 'err' || level === 'fatal') return 'error'
+  if (level === 'ok') return 'success'
+  return level || 'info'
+}
+
+function levelIcon(level) {
+  const normalized = normalizeLevel(level)
+  if (normalized === 'success') return CheckCircle2
+  if (normalized === 'warning') return AlertTriangle
+  if (normalized === 'error') return AlertTriangle
+  if (normalized === 'debug') return Bug
+  return Info
+}
+
+function levelLabel(level) {
+  const normalized = normalizeLevel(level)
+  if (normalized === 'warning') return 'warn'
+  return normalized
+}
+
+function hasProgress(line) {
+  return line?.progress !== null && line?.progress !== undefined && Number.isFinite(Number(line.progress))
+}
+
+function shellTokens(text) {
+  const value = String(text || '')
+  const parts = value.split(/(\s+)/)
+  let expectCommand = true
+  return parts.map((part) => {
+    if (/^\s+$/.test(part)) return { type: 'default', value: part }
+    if (part.startsWith('#')) return { type: 'comment', value: part }
+    if (part.startsWith('$')) return { type: 'variable', value: part }
+    if (part.startsWith('--') || part.startsWith('-')) return { type: 'flag', value: part }
+    if (/^["'].*["']$/.test(part)) return { type: 'string', value: part }
+    if (/^\d+%?$/.test(part)) return { type: 'number', value: part }
+    if (/^[|>&<]+$/.test(part)) {
+      expectCommand = true
+      return { type: 'operator', value: part }
+    }
+    if (part.includes('/') || part.includes('\\') || part.startsWith('.') || part.startsWith('~')) return { type: 'path', value: part }
+    if (expectCommand) {
+      expectCommand = false
+      return { type: 'command', value: part }
+    }
+    return { type: 'default', value: part }
+  })
+}
+
+function logMessage(line, preferFull = false) {
+  if (!line) return ''
+  if (preferFull) {
+    return String(line.fullMessage || line.rawLine || line.message || '')
+  }
+  return String(line.message || line.fullMessage || line.rawLine || '')
+}
+
+function originalLogMessage(line) {
+  if (!line) return ''
+  const message = String(line.message || '')
+  const fullMessage = String(line.fullMessage || '')
+  const rawLine = String(line.rawLine || '')
+  if (fullMessage && fullMessage !== message) return fullMessage
+  return rawLine || fullMessage || message
+}
+
+function hasHiddenOriginalDetail(line) {
+  if (!line) return false
+  return originalLogMessage(line) !== logMessage(line)
+}
+
+function isLineTruncated(line) {
+  return Boolean(line?.isTruncated)
+}
+
+function lineKey(line, index) {
+  if (line?.id !== null && line?.id !== undefined) return String(line.id)
+  return `${index}:${formatTime(line?.time)}:${levelLabel(line?.level)}:${logMessage(line, true).slice(0, 80)}`
+}
+
+function isLineExpanded(line, index) {
+  return Boolean(expandedLineKey.value && expandedLineKey.value === lineKey(line, index))
+}
+
+function estimateExpandedLineSize(line) {
+  const text = originalLogMessage(line)
+  const width = Number(scrollRef.value?.clientWidth || 920)
+  const detailWidth = width <= 720 ? Math.max(280, width - 28) : Math.max(360, width - 332)
+  const charsPerRow = Math.max(44, Math.floor(detailWidth / 7.4))
+  const visualLineCount = String(text || '')
+    .split(/\r\n|\n|\r/)
+    .reduce((sum, segment) => sum + Math.max(1, Math.ceil(segment.length / charsPerRow)), 0)
+  return Math.max(54, 18 + visualLineCount * 18)
+}
+
+function estimateLineSize(index) {
+  const line = safeLines.value[index]
+  if (isTaskProgressLine(line)) return 62
+  if (isLineExpanded(line, index)) return estimateExpandedLineSize(line)
+  return 32
+}
+
+function lineText(line, preferFull = false) {
+  const time = formatTime(line?.time)
+  const level = levelLabel(line?.level).toUpperCase()
+  const source = String(line?.source || 'system')
+  const progress = line?.progress !== null && line?.progress !== undefined && Number.isFinite(Number(line.progress))
+    ? ` ${Number(line.progress)}%`
+    : ''
+  return `[${time}] ${level} ${source}${progress} ${logMessage(line, preferFull)}`
+}
+
+function allText() {
+  return safeLines.value.map((line) => lineText(line, true)).join('\n')
+}
+
+async function copyLogs() {
+  const text = allText()
+  if (!text) {
+    ElMessage.info('当前没有可复制的日志')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success(`已复制 ${safeLines.value.length} 行日志`)
+  } catch {
+    ElMessage.error('复制失败，浏览器未授权剪贴板')
+  }
+}
+
+async function copyLine(line) {
+  const text = lineText(line, true)
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('已复制完整日志')
+  } catch {
+    ElMessage.error('复制失败，浏览器未授权剪贴板')
+  }
+}
+
+function handleLineCopy(event, line) {
+  if (!isLineTruncated(line) && !hasHiddenOriginalDetail(line)) return
+  event.clipboardData?.setData('text/plain', lineText(line, true))
+  event.preventDefault()
+}
+
+function toggleLineDetail(line, index, event) {
+  if (!line) return
+  if (isLineTruncated(line)) {
+    void copyLine(line)
+    return
+  }
+  const key = lineKey(line, index)
+  if (expandedLineKey.value === key) {
+    expandedLineKey.value = null
+    nextTick(() => rowVirtualizer.value.measure())
+    return
+  }
+  const row = event?.currentTarget
+  if (!isLineTruncated(line) && !hasHiddenOriginalDetail(line) && !isTerminalRowClipped(row)) return
+  expandedLineKey.value = key
+  nextTick(() => rowVirtualizer.value.measure())
+}
+
+function visibleLineMessage(line, index) {
+  if (isLineExpanded(line, index)) return originalLogMessage(line)
+  const message = logMessage(line)
+  return message
+}
+
+function measureTerminalLine(element) {
+  if (element) rowVirtualizer.value.measureElement(element)
+}
+
+function isTerminalRowClipped(row) {
+  if (!row || typeof row.querySelector !== 'function' || typeof document === 'undefined') return false
+  const message = row.querySelector('.terminal-message')
+  const messageText = row.querySelector('.terminal-message-text')
+  if (!message || !messageText) return false
+
+  const availableWidth = message.getBoundingClientRect().width
+  if (!availableWidth) return false
+
+  const sourceStyle = window.getComputedStyle(messageText)
+  const probe = document.createElement('span')
+  probe.textContent = messageText.textContent || ''
+  probe.style.position = 'fixed'
+  probe.style.left = '-9999px'
+  probe.style.bottom = '-9999px'
+  probe.style.visibility = 'hidden'
+  probe.style.pointerEvents = 'none'
+  probe.style.whiteSpace = 'pre'
+  probe.style.font = sourceStyle.font
+  probe.style.letterSpacing = sourceStyle.letterSpacing
+  document.body.appendChild(probe)
+  const naturalWidth = probe.getBoundingClientRect().width
+  probe.remove()
+
+  return naturalWidth > availableWidth + 1
+}
+
+function clearLogs() {
+  emit('clear')
+}
+
+function toggleAutoScroll() {
+  autoScroll.value = !autoScroll.value
+  if (autoScroll.value) {
+    userPinnedHistory.value = false
+    scrollToBottom()
+  }
+}
+
+function handleScroll() {
+  const el = scrollRef.value
+  if (!el) return
+  if (el.scrollHeight <= el.clientHeight + 2) {
+    userPinnedHistory.value = false
+    autoScroll.value = true
+    return
+  }
+  const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+  userPinnedHistory.value = distance > 72
+  if (userPinnedHistory.value) autoScroll.value = false
+}
+
+function highlightedTextParts(value) {
+  const text = String(value || '')
+  const pattern = highlightPattern.value
+  if (!text || !pattern) return [{ value: text, highlighted: false }]
+  const terms = normalizedHighlightTerms.value
+  return text
+    .split(pattern)
+    .filter((part) => part !== '')
+    .map((part) => ({
+      value: part,
+      highlighted: terms.includes(part.toLowerCase()),
+    }))
+}
+
+function syncScrollPinState() {
+  const el = scrollRef.value
+  if (!el) return
+  if (el.scrollHeight <= el.clientHeight + 2) {
+    userPinnedHistory.value = false
+    autoScroll.value = true
+  }
+}
+
+function scrollToBottom() {
+  if (typeof window === 'undefined') return
+  if (autoScrollRaf) return
+  autoScrollRaf = window.requestAnimationFrame(() => {
+    autoScrollRaf = 0
+    if (!lineCount.value) return
+    rowVirtualizer.value.scrollToIndex(lineCount.value - 1, { align: 'end' })
+  })
+}
+
+watch(lineCount, () => {
+  if (expandedLineKey.value && !safeLines.value.some((line, index) => lineKey(line, index) === expandedLineKey.value)) {
+    expandedLineKey.value = null
+  }
+  nextTick(() => {
+    rowVirtualizer.value.measure()
+    syncScrollPinState()
+  })
+  if (autoScroll.value && !userPinnedHistory.value) scrollToBottom()
+})
+
+watch(() => props.status, () => {
+  if (autoScroll.value && !userPinnedHistory.value) scrollToBottom()
+})
+
+watch(expandedLineKey, () => {
+  nextTick(() => {
+    rowVirtualizer.value.measure()
+    syncScrollPinState()
+  })
+})
+
+onMounted(() => {
+  if (typeof ResizeObserver === 'undefined' || !scrollRef.value) return
+  resizeObserver = new ResizeObserver(() => {
+    nextTick(() => {
+      rowVirtualizer.value.measure()
+      syncScrollPinState()
+    })
+  })
+  resizeObserver.observe(scrollRef.value)
+})
+
+onBeforeUnmount(() => {
+  if (autoScrollRaf) {
+    window.cancelAnimationFrame(autoScrollRaf)
+    autoScrollRaf = 0
+  }
+  resizeObserver?.disconnect()
+  resizeObserver = null
+})
+</script>
+
+<template>
+  <div class="system-log-terminal" :style="{ '--terminal-height': terminalHeight }">
+    <div class="terminal-window">
+      <div class="terminal-titlebar">
+        <div class="terminal-lights" aria-hidden="true">
+          <span class="is-red" />
+          <span class="is-yellow" />
+          <span class="is-green" />
+        </div>
+        <div class="terminal-title">
+          <Terminal :size="13" :stroke-width="2.3" />
+          <span class="terminal-title-text">{{ title }}</span>
+          <span v-if="isFinished" class="terminal-finished">finished</span>
+        </div>
+        <div class="terminal-actions">
+          <button
+            type="button"
+            class="terminal-icon-button"
+            :title="autoScroll ? '暂停自动滚动' : '恢复自动滚动'"
+            @click="toggleAutoScroll"
+          >
+            <component :is="autoScroll ? CirclePause : CirclePlay" :size="14" :stroke-width="2.35" />
+          </button>
+          <button type="button" class="terminal-icon-button" title="复制日志" @click="copyLogs">
+            <Copy :size="14" :stroke-width="2.35" />
+          </button>
+          <button type="button" class="terminal-icon-button" title="清空当前显示" @click="clearLogs">
+            <Trash2 :size="14" :stroke-width="2.35" />
+          </button>
+          <button type="button" class="terminal-icon-button" title="重新连接" @click="$emit('reconnect')">
+            <RotateCcw :size="14" :stroke-width="2.35" />
+          </button>
+        </div>
+      </div>
+
+      <div class="terminal-meta">
+        <span class="terminal-summary">{{ lineCount }} lines · {{ autoScroll ? 'auto-scroll' : 'history pinned' }}</span>
+        <span class="terminal-status" :class="statusMeta.className">
+          <component :is="statusMeta.icon" :size="12" :stroke-width="2.4" />
+          {{ statusMeta.label }}
+        </span>
+      </div>
+
+      <div ref="scrollRef" class="terminal-scroll" @scroll="handleScroll">
+        <div v-if="!lineCount" class="terminal-empty">
+          <span class="terminal-empty-text">暂无日志输出</span>
+          <span class="terminal-cursor" />
+        </div>
+
+        <div v-else class="terminal-virtual-canvas" :style="{ height: `${totalSize}px` }">
+          <div
+            v-for="virtualRow in virtualRows"
+            :key="virtualRow.key"
+            :ref="measureTerminalLine"
+            :data-index="virtualRow.index"
+            :data-line-key="lineKey(safeLines[virtualRow.index], virtualRow.index)"
+            class="terminal-line"
+            :class="[
+              `is-${normalizeLevel(safeLines[virtualRow.index]?.level)}`,
+              `is-progress-${normalizeProgressTone(safeLines[virtualRow.index]?.taskProgress?.tone)}`,
+              {
+                'has-progress': hasProgress(safeLines[virtualRow.index]),
+                'has-inline-progress': hasProgress(safeLines[virtualRow.index]) && !isTaskProgressLine(safeLines[virtualRow.index]),
+                'is-task-progress': isTaskProgressLine(safeLines[virtualRow.index]),
+                'is-truncated': isLineTruncated(safeLines[virtualRow.index]),
+                'can-toggle-detail': !isTaskProgressLine(safeLines[virtualRow.index]),
+                'is-expanded': isLineExpanded(safeLines[virtualRow.index], virtualRow.index),
+              },
+            ]"
+            :style="{ transform: `translate3d(0, ${virtualRow.start}px, 0)` }"
+            @click="!isTaskProgressLine(safeLines[virtualRow.index]) && toggleLineDetail(safeLines[virtualRow.index], virtualRow.index, $event)"
+          >
+            <span class="terminal-time">{{ formatTime(safeLines[virtualRow.index]?.time) }}</span>
+            <span class="terminal-level">
+              <component :is="levelIcon(safeLines[virtualRow.index]?.level)" :size="12" :stroke-width="2.5" />
+              {{ levelLabel(safeLines[virtualRow.index]?.level) }}
+            </span>
+            <span class="terminal-source">{{ safeLines[virtualRow.index]?.source || 'system' }}</span>
+            <span v-if="hasProgress(safeLines[virtualRow.index]) && !isTaskProgressLine(safeLines[virtualRow.index])" class="terminal-progress">{{ safeLines[virtualRow.index]?.progress }}%</span>
+            <span
+              v-if="isTaskProgressLine(safeLines[virtualRow.index])"
+              class="terminal-message terminal-inline-progress"
+              :title="logMessage(safeLines[virtualRow.index]) || '处理中'"
+            >
+              <span class="terminal-inline-progress-head">
+                <span class="terminal-inline-progress-title">
+                  <template v-for="(part, partIndex) in highlightedTextParts(safeLines[virtualRow.index]?.taskProgress?.title || '处理中')" :key="`progress-title-${virtualRow.key}-${partIndex}`">
+                    <mark v-if="part.highlighted" class="terminal-search-highlight">{{ part.value }}</mark>
+                    <template v-else>{{ part.value }}</template>
+                  </template>
+                </span>
+                <span class="terminal-inline-progress-state">
+                  {{ progressToneLabel(safeLines[virtualRow.index]?.taskProgress?.tone) }} · 持续 {{ safeLines[virtualRow.index]?.taskProgress?.durationLabel || '00:00:00' }} · {{ clampProgress(safeLines[virtualRow.index]?.progress) }}%
+                </span>
+              </span>
+              <span class="terminal-inline-progress-bar" :style="{ '--inline-progress': `${clampProgress(safeLines[virtualRow.index]?.progress)}%` }">
+                <span />
+              </span>
+              <span class="terminal-inline-progress-detail">
+                <template v-for="(part, partIndex) in highlightedTextParts(logMessage(safeLines[virtualRow.index]) || '处理中')" :key="`progress-detail-${virtualRow.key}-${partIndex}`">
+                  <mark v-if="part.highlighted" class="terminal-search-highlight">{{ part.value }}</mark>
+                  <template v-else>{{ part.value }}</template>
+                </template>
+              </span>
+            </span>
+            <span
+              v-else
+              class="terminal-message"
+              :title="isLineTruncated(safeLines[virtualRow.index]) ? '点击复制完整日志' : isLineExpanded(safeLines[virtualRow.index], virtualRow.index) ? '点击收起原始日志' : '点击查看原始日志'"
+              @copy="handleLineCopy($event, safeLines[virtualRow.index])"
+            >
+              <span class="terminal-message-text">
+                <template v-if="isLineExpanded(safeLines[virtualRow.index], virtualRow.index)">
+                  <template v-for="(token, tokenIndex) in shellTokens(visibleLineMessage(safeLines[virtualRow.index], virtualRow.index))" :key="`${virtualRow.key}-${tokenIndex}`">
+                    <span :class="`terminal-token is-${token.type}`">
+                      <template v-for="(part, partIndex) in highlightedTextParts(token.value)" :key="`${virtualRow.key}-${tokenIndex}-${partIndex}`">
+                        <mark v-if="part.highlighted" class="terminal-search-highlight">{{ part.value }}</mark>
+                        <template v-else>{{ part.value }}</template>
+                      </template>
+                    </span>
+                  </template>
+                </template>
+                <template v-else>
+                  <template v-for="(part, partIndex) in highlightedTextParts(visibleLineMessage(safeLines[virtualRow.index], virtualRow.index))" :key="`${virtualRow.key}-${partIndex}`">
+                    <mark v-if="part.highlighted" class="terminal-search-highlight">{{ part.value }}</mark>
+                    <template v-else>{{ part.value }}</template>
+                  </template>
+                </template>
+              </span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="terminal-footer">
+        <span>{{ subtitle }}</span>
+        <span v-if="errorMessage" class="terminal-error">{{ errorMessage }}</span>
+        <span v-else>{{ autoScroll ? '自动滚动' : '查看历史' }}</span>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.system-log-terminal {
+  width: 100%;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.terminal-window {
+  overflow: hidden;
+  border: 1px solid rgba(39, 39, 42, 0.96);
+  border-radius: 14px;
+  background: #09090b;
+  box-shadow:
+    0 24px 55px -28px rgba(15, 23, 42, 0.85),
+    0 12px 26px -18px rgba(0, 0, 0, 0.88);
+}
+
+.terminal-titlebar {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 0 12px;
+  border-bottom: 1px solid rgba(63, 63, 70, 0.85);
+  background: #18181b;
+}
+
+.terminal-lights {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.terminal-lights span {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+}
+
+.terminal-lights .is-red { background: #ff5f56; }
+.terminal-lights .is-yellow { background: #ffbd2e; }
+.terminal-lights .is-green { background: #27c93f; }
+
+.terminal-title {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: #a1a1aa;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.terminal-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-finished {
+  flex-shrink: 0;
+  border: 1px solid rgba(52, 211, 153, 0.22);
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: #86efac;
+  font-size: 10px;
+}
+
+.terminal-actions {
+  display: inline-flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.terminal-icon-button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(82, 82, 91, 0.7);
+  border-radius: 8px;
+  background: rgba(24, 24, 27, 0.72);
+  color: #d4d4d8;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.terminal-icon-button:hover {
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgba(161, 161, 170, 0.8);
+  background: rgba(39, 39, 42, 0.9);
+  color: #fff;
+}
+
+.terminal-icon-button:active {
+  transform: scale(0.96);
+}
+
+.terminal-icon-button:hover :deep(svg) {
+  transform: rotate(-8deg);
+}
+
+.terminal-icon-button :deep(svg) {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.terminal-meta,
+.terminal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 14px;
+  color: #71717a;
+  font-size: 11px;
+}
+
+.terminal-meta {
+  border-bottom: 1px solid rgba(39, 39, 42, 0.76);
+}
+
+.terminal-footer {
+  border-top: 1px solid rgba(39, 39, 42, 0.76);
+  background: #09090b;
+}
+
+.terminal-status {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(82, 82, 91, 0.8);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: #a1a1aa;
+}
+
+.terminal-status.is-connected {
+  border-color: rgba(16, 185, 129, 0.35);
+  color: #6ee7b7;
+}
+
+.terminal-status.is-connecting {
+  border-color: rgba(56, 189, 248, 0.35);
+  color: #7dd3fc;
+}
+
+.terminal-status.is-error {
+  border-color: rgba(251, 113, 133, 0.35);
+  color: #fda4af;
+}
+
+.terminal-scroll {
+  position: relative;
+  height: var(--terminal-height);
+  overflow: auto;
+  padding: 10px 0;
+  background: #09090b;
+  contain: strict;
+  scrollbar-color: rgba(113, 113, 122, 0.7) transparent;
+}
+
+.terminal-empty {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 14px;
+  color: #d4d4d8;
+  font-size: 12px;
+}
+
+.terminal-cursor {
+  width: 8px;
+  height: 16px;
+  background: #d4d4d8;
+  animation: terminal-cursor 1.05s steps(2, start) infinite;
+}
+
+.terminal-virtual-canvas {
+  position: relative;
+  width: 100%;
+  contain: layout style paint;
+}
+
+.terminal-line {
+  position: absolute;
+  right: 0;
+  left: 0;
+  display: grid;
+  grid-template-columns: 72px 76px 92px 46px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 5px 14px;
+  border-left: none;
+  color: #d4d4d8;
+  font-size: 11.5px;
+  line-height: 1.35;
+  contain: layout style paint;
+  transform: translateZ(0);
+  will-change: transform;
+}
+
+.terminal-line:hover {
+  background: rgba(39, 39, 42, 0.58);
+}
+
+.terminal-line.is-expanded {
+  align-items: flex-start;
+  padding-top: 7px;
+  padding-bottom: 9px;
+}
+
+.terminal-line.can-toggle-detail {
+  cursor: pointer;
+}
+
+.terminal-line.is-expanded .terminal-time,
+.terminal-line.is-expanded .terminal-level,
+.terminal-line.is-expanded .terminal-source,
+.terminal-line.is-expanded .terminal-progress {
+  padding-top: 2px;
+}
+
+.terminal-time {
+  color: #71717a;
+  font-variant-numeric: tabular-nums;
+}
+
+.terminal-level,
+.terminal-source,
+.terminal-progress {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-level {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.terminal-source {
+  color: #a1a1aa;
+}
+
+.terminal-progress {
+  color: #38bdf8;
+  font-weight: 900;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.terminal-message {
+  display: flex;
+  align-items: center;
+  grid-column: 4 / -1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-line.is-expanded .terminal-message {
+  display: block;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.terminal-message-text {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-line.is-expanded .terminal-message-text {
+  display: block;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.terminal-line.is-expanded .terminal-token {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.terminal-search-highlight {
+  margin: 0 1px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 3px;
+  background: #fde047;
+  color: #111827;
+  font: inherit;
+  font-weight: 900;
+  box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.28);
+}
+
+.terminal-line.has-inline-progress .terminal-message {
+  grid-column: auto;
+}
+
+.terminal-line.is-task-progress {
+  min-height: 62px;
+  background: rgba(14, 20, 25, 0.72);
+}
+
+.terminal-line.is-task-progress:hover {
+  background: rgba(20, 29, 36, 0.82);
+}
+
+.terminal-inline-progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.terminal-inline-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.terminal-inline-progress-title,
+.terminal-inline-progress-state,
+.terminal-inline-progress-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-inline-progress-title {
+  color: #e5e7eb;
+  font-size: 11.5px;
+  font-weight: 900;
+}
+
+.terminal-inline-progress-state {
+  color: #71717a;
+  font-size: 10.5px;
+  font-weight: 800;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.terminal-inline-progress-detail {
+  color: #a1a1aa;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.terminal-inline-progress-bar {
+  position: relative;
+  overflow: hidden;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(63, 63, 70, 0.72);
+}
+
+.terminal-inline-progress-bar span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--inline-progress, 0%);
+  min-width: 8px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #22d3ee, #34d399);
+  box-shadow: 0 0 16px rgba(34, 211, 238, 0.22);
+  transition: width 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.terminal-line.is-progress-processing .terminal-inline-progress-bar span::after,
+.terminal-line.is-progress-waiting .terminal-inline-progress-bar span::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
+  animation: terminal-progress-sheen 1.45s linear infinite;
+}
+
+.terminal-line.is-progress-success .terminal-progress,
+.terminal-line.is-progress-success .terminal-inline-progress-title {
+  color: #86efac;
+}
+
+.terminal-line.is-progress-success .terminal-inline-progress-bar span {
+  background: linear-gradient(90deg, #22c55e, #86efac);
+}
+
+.terminal-line.is-progress-error .terminal-progress,
+.terminal-line.is-progress-error .terminal-inline-progress-title {
+  color: #fda4af;
+}
+
+.terminal-line.is-progress-error .terminal-inline-progress-bar span {
+  background: linear-gradient(90deg, #fb7185, #fda4af);
+}
+
+.terminal-line.is-progress-waiting .terminal-progress,
+.terminal-line.is-progress-waiting .terminal-inline-progress-title {
+  color: #fde68a;
+}
+
+.terminal-line.is-progress-waiting .terminal-inline-progress-bar span {
+  background: linear-gradient(90deg, #f59e0b, #fde68a);
+}
+
+.terminal-line.is-progress-paused .terminal-progress,
+.terminal-line.is-progress-paused .terminal-inline-progress-title {
+  color: #c4b5fd;
+}
+
+.terminal-line.is-progress-paused .terminal-inline-progress-bar span {
+  background: linear-gradient(90deg, #8b5cf6, #c4b5fd);
+}
+
+.terminal-line.is-info .terminal-level { color: #93c5fd; }
+.terminal-line.is-success .terminal-level { color: #86efac; }
+.terminal-line.is-warning {
+  background: rgba(245, 158, 11, 0.18);
+}
+.terminal-line.is-warning .terminal-level {
+  color: #fbbf24;
+}
+.terminal-line.is-warning .terminal-time,
+.terminal-line.is-warning .terminal-source {
+  color: #d97706;
+}
+.terminal-line.is-warning .terminal-token.is-default,
+.terminal-line.is-warning .terminal-message {
+  color: #fde68a;
+}
+.terminal-line.is-error {
+  background: rgba(239, 68, 68, 0.16);
+}
+.terminal-line.is-error .terminal-level { color: #fb7185; }
+.terminal-line.is-error .terminal-time,
+.terminal-line.is-error .terminal-source {
+  color: #f87171;
+}
+.terminal-line.is-error .terminal-token.is-default,
+.terminal-line.is-error .terminal-message {
+  color: #fecdd3;
+}
+.terminal-line.is-debug .terminal-level { color: #c084fc; }
+
+.terminal-token.is-command { color: #34d399; }
+.terminal-token.is-flag { color: #38bdf8; }
+.terminal-token.is-string { color: #fbbf24; }
+.terminal-token.is-number { color: #c084fc; }
+.terminal-token.is-operator { color: #fb7185; }
+.terminal-token.is-path { color: #67e8f9; }
+.terminal-token.is-variable { color: #f472b6; }
+.terminal-token.is-comment { color: #71717a; }
+.terminal-token.is-default { color: #d4d4d8; }
+
+.terminal-error {
+  min-width: 0;
+  overflow: hidden;
+  color: #fda4af;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes terminal-cursor {
+  0%, 46% { opacity: 1; }
+  47%, 100% { opacity: 0; }
+}
+
+@keyframes terminal-progress-sheen {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+
+@media (max-width: 720px) {
+  .terminal-titlebar {
+    grid-template-columns: 62px minmax(0, 1fr) auto;
+    padding: 0 9px;
+  }
+
+  .terminal-actions {
+    gap: 2px;
+  }
+
+  .terminal-icon-button {
+    width: 26px;
+    height: 26px;
+  }
+
+  .terminal-meta,
+  .terminal-footer {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .terminal-line {
+    grid-template-columns: 62px 68px minmax(0, 1fr);
+    gap: 6px;
+    padding: 7px 10px;
+  }
+
+  .terminal-source,
+  .terminal-progress {
+    display: none;
+  }
+
+  .terminal-message {
+    grid-column: 1 / -1;
+  }
+
+  .terminal-inline-progress {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+  }
+
+  .terminal-inline-progress-head {
+    gap: 8px;
+  }
+
+  .terminal-inline-progress-detail {
+    display: block;
+  }
+}
+</style>

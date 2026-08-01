@@ -7,11 +7,36 @@ import webbrowser
 import time
 import signal
 import socket
+import shutil
 
 IS_FROZEN = getattr(sys, 'frozen', False)
 
 # 全局变量存储实际使用的端口
-ACTUAL_PORT = 8000
+ACTUAL_PORT = 5555
+
+def get_uvicorn_limit_concurrency() -> int | None:
+    """读取 uvicorn 并发硬限制；0/空值表示关闭，避免高并发读接口被直接 503。"""
+    raw_value = os.environ.get("KIKOERUMANAGER_UVICORN_LIMIT_CONCURRENCY", "").strip()
+    if not raw_value or raw_value in {"0", "none", "None", "false", "False"}:
+        return None
+    try:
+        value = int(raw_value)
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            "忽略无效 KIKOERUMANAGER_UVICORN_LIMIT_CONCURRENCY=%r", raw_value
+        )
+        return None
+    return value if value > 0 else None
+
+def configure_stdio():
+    """Force UTF-8 stdio on Windows so DLsite metadata logs render correctly."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
 
 def get_base_path():
     if IS_FROZEN:
@@ -38,34 +63,18 @@ def setup_paths():
         os.makedirs(os.path.join(data_dir, 'config'), exist_ok=True)
         
         os.environ['DATA_PATH'] = data_dir
-        os.environ['CONFIG_PATH'] = os.path.join(data_dir, 'config', 'config.yaml')
+        config_path = os.path.join(data_dir, 'config', 'config.yaml')
+        os.environ['CONFIG_PATH'] = config_path
+        bundled_config_path = os.path.join(base_path, 'config', 'config.yaml')
+        if not os.path.exists(config_path) and os.path.exists(bundled_config_path):
+            shutil.copy2(bundled_config_path, config_path)
 
 def setup_logging():
+    """使用带轮转的日志初始化（maxBytes=20MB * 5，防止 app.log 无限膨胀）。"""
+    from app.core.app_logging import configure_app_logging
+
     log_dir = os.environ.get('DATA_PATH', './data')
-    os.makedirs(log_dir, exist_ok=True)
-    
-    log_file = os.path.join(log_dir, 'app.log')
-    
-    formatter = logging.Formatter(
-        '%(asctime)s [%(levelname)s] %(name)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    file_handler.setFormatter(formatter)
-    
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-    root_logger.handlers = []
-    root_logger.addHandler(file_handler)
-    
-    if sys.stdout:
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(formatter)
-        root_logger.addHandler(console_handler)
-    
-    logging.getLogger('uvicorn').setLevel(logging.WARNING)
-    logging.getLogger('sqlalchemy').setLevel(logging.WARNING)
+    configure_app_logging(log_dir=log_dir, use_console=bool(sys.stdout))
 
 def init_database():
     from app.models.database import init_db, engine
@@ -92,7 +101,7 @@ def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
         # 绑定失败说明端口被占用
         return False
 
-def find_available_port(start_port: int = 8000, max_attempts: int = 100) -> int:
+def find_available_port(start_port: int = 5555, max_attempts: int = 100) -> int:
     """从指定端口开始查找可用端口"""
     global ACTUAL_PORT
     for port in range(start_port, start_port + max_attempts):
@@ -106,6 +115,10 @@ def get_server_url() -> str:
     return f"http://localhost:{ACTUAL_PORT}"
 
 def open_browser():
+    auto_open_browser = os.environ.get('KIKOERUMANAGER_AUTO_OPEN_BROWSER', '').strip().lower()
+    if auto_open_browser not in {'1', 'true', 'yes', 'on'}:
+        logging.getLogger(__name__).info("浏览器自动打开已禁用")
+        return
     time.sleep(1.5)
     webbrowser.open(get_server_url())
 
@@ -115,10 +128,15 @@ def create_tray_icon(stop_event):
         from PIL import Image, ImageDraw
         
         def create_icon_image():
+            # 创建与应用图标一致的设计
             img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
             draw = ImageDraw.Draw(img)
-            draw.ellipse([8, 8, 56, 56], fill=(66, 133, 244, 255))
-            draw.text((18, 22), "P", fill=(255, 255, 255, 255))
+            # 蓝色圆形背景
+            draw.ellipse([4, 4, 60, 60], fill=(66, 133, 244, 255))
+            # 白色字母 K
+            draw.rectangle([20, 15, 28, 49], fill=(255, 255, 255, 255))
+            draw.polygon([(28, 15), (28, 23), (40, 32), (40, 25), (28, 15)], fill=(255, 255, 255, 255))
+            draw.polygon([(28, 49), (28, 41), (42, 32), (42, 39), (28, 49)], fill=(255, 255, 255, 255))
             return img
         
         def on_exit(icon, item):
@@ -129,9 +147,9 @@ def create_tray_icon(stop_event):
             webbrowser.open(get_server_url())
         
         icon = pystray.Icon(
-            "prekikoeru",
+            "kikoerumanager",
             create_icon_image(),
-            "Prekikoeru",
+            "KikoeruManager - 后台运行中",
             menu=pystray.Menu(
                 pystray.MenuItem("打开 Web 界面", on_open, default=True),
                 pystray.Menu.SEPARATOR,
@@ -139,12 +157,20 @@ def create_tray_icon(stop_event):
             )
         )
         
+        logger = logging.getLogger(__name__)
+        logger.info("✅ 系统托盘图标已创建 - 程序在后台运行")
+        logger.info(f"🌐 服务地址：{get_server_url()}")
+        logger.info("💡 提示：可以通过系统托盘图标打开界面或退出程序")
+        
         icon.run()
     except Exception as e:
-        logging.getLogger(__name__).error(f"系统托盘初始化失败: {e}")
+        logging.getLogger(__name__).error(f"系统托盘初始化失败：{e}")
+        print(f"\n⚠️  系统托盘初始化失败，程序将在前台运行")
+        print(f"💡 服务地址：{get_server_url()}")
 
 def main():
     global ACTUAL_PORT
+    configure_stdio()
     setup_paths()
     setup_logging()
 
@@ -154,30 +180,48 @@ def main():
 
     logger = logging.getLogger(__name__)
     logger.info("="*50)
-    logger.info("Prekikoeru 启动中...")
-    logger.info(f"基础路径: {base_path}")
-    logger.info(f"前端路径: {frontend_path}")
-    logger.info(f"打包模式: {IS_FROZEN}")
+    logger.info("KikoeruManager 启动中...")
+    logger.info(f"基础路径：{base_path}")
+    logger.info(f"前端路径：{frontend_path}")
+    logger.info(f"打包模式：{IS_FROZEN}")
     if IS_FROZEN:
-        logger.info(f"EXE目录: {get_exe_dir()}")
-        logger.info(f"数据目录: {os.environ.get('DATA_PATH')}")
-        logger.info(f"配置文件: {os.environ.get('CONFIG_PATH')}")
+        logger.info(f"EXE 目录：{get_exe_dir()}")
+        logger.info(f"数据目录：{os.environ.get('DATA_PATH')}")
+        logger.info(f"配置文件：{os.environ.get('CONFIG_PATH')}")
     logger.info("="*50)
+    
+    # 打印友好的启动提示
+    print("\n" + "="*50)
+    print("🚀 KikoeruManager 启动中...")
+    print("="*50)
 
     # 查找可用端口
     try:
-        port = find_available_port(8000)
-        if port != 8000:
-            logger.warning(f"端口 8000 已被占用，自动切换到端口 {port}")
-            print(f"\n[提示] 端口 8000 已被占用，自动切换到端口 {port}")
-        logger.info(f"使用端口: {port}")
-        print(f"服务地址: {get_server_url()}")
+        port = find_available_port(5555)
+        if port != 5555:
+            logger.warning(f"端口 5555 已被占用，自动切换到端口 {port}")
+            print(f"\n⚠️  端口 5555 已被占用，自动切换到端口 {port}")
+        logger.info(f"使用端口：{port}")
+        server_url = get_server_url()
+        print(f"\n🌐 服务地址：{server_url}")
+        if IS_FROZEN:
+            print(f"\n💡 程序已在后台运行，请在系统托盘中找到图标")
+            print(f"   或者访问：{server_url}")
+        print("="*50 + "\n")
     except RuntimeError as e:
         logger.error(str(e))
-        print(f"错误: {e}")
+        print(f"错误：{e}")
         sys.exit(1)
 
     init_database()
+
+    # 启动配置文件监控器
+    try:
+        from app.config.settings import start_config_watcher
+        start_config_watcher()
+        logger.info("配置文件监控器已启动")
+    except Exception as e:
+        logger.warning(f"配置文件监控器启动失败：{e}")
 
     from app.api.routes import app
 
@@ -201,13 +245,27 @@ def main():
     if IS_FROZEN:
         threading.Thread(target=check_stop, daemon=True).start()
 
+    limit_concurrency = get_uvicorn_limit_concurrency()
+    logger.info(
+        "uvicorn 并发硬限制: %s",
+        limit_concurrency if limit_concurrency is not None else "disabled",
+    )
+
+    # uvicorn 调优（针对群晖 / NAS Docker 这种慢 IO 场景）：
+    #   - limit_concurrency 默认关闭，避免 SSE / 健康检查 / 页面并发读接口被 uvicorn 直接 503。
+    #     如确实需要硬限制，可设置 KIKOERUMANAGER_UVICORN_LIMIT_CONCURRENCY 为正整数。
+    #   - timeout_keep_alive=15：keep-alive 短一点，前面挂 nginx/反代时空闲连接更早释放。
+    #   - backlog=512：监听队列加深，瞬时连接洪峰不至于直接被 OS 拒掉。
     config = uvicorn.Config(
         app,
         host="0.0.0.0",
         port=ACTUAL_PORT,
         log_level="warning",
         access_log=False,
-        log_config=None
+        log_config=None,
+        limit_concurrency=limit_concurrency,
+        timeout_keep_alive=15,
+        backlog=512,
     )
     server = uvicorn.Server(config)
     server.run()

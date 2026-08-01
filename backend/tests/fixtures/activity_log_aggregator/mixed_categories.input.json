@@ -1,0 +1,62 @@
+[
+  {
+    "id": "mx-rename-01",
+    "category": "pipeline_rename",
+    "action": "rename_file",
+    "status": "success",
+    "summary": "重命名：old.mp3 → new.mp3",
+    "detail": {"old_name": "old.mp3", "new_name": "new.mp3", "duration_ms": 50},
+    "rjcode": "RJ998001",
+    "task_id": null,
+    "source_path": "D:/library/RJ998001/old.mp3",
+    "created_at": "2026-04-23T17:10:00",
+    "batch_id": null,
+    "session_key": null,
+    "parent_id": null
+  },
+  {
+    "id": "mx-delete-01",
+    "category": "pipeline_delete",
+    "action": "delete",
+    "status": "success",
+    "summary": "删除：tmp.log",
+    "detail": {"deleted_bytes": 1024},
+    "rjcode": "RJ998002",
+    "task_id": null,
+    "source_path": "D:/library/RJ998002/tmp.log",
+    "created_at": "2026-04-23T17:08:00",
+    "batch_id": null,
+    "session_key": null,
+    "parent_id": null
+  },
+  {
+    "id": "mx-meta-01",
+    "category": "pipeline_metadata",
+    "action": "refresh_metadata",
+    "status": "success",
+    "summary": "刷新元数据：RJ998003",
+    "detail": {"duration_ms": 200},
+    "rjcode": "RJ998003",
+    "task_id": null,
+    "source_path": "D:/library/RJ998003",
+    "created_at": "2026-04-23T17:05:00",
+    "batch_id": null,
+    "session_key": null,
+    "parent_id": null
+  },
+  {
+    "id": "mx-filter-01",
+    "category": "pipeline_filter",
+    "action": "filter_list",
+    "status": "success",
+    "summary": "列出过滤结果：命中 2 项",
+    "detail": {"matched_count": 2},
+    "rjcode": null,
+    "task_id": null,
+    "source_path": "D:/library/RJ998004",
+    "created_at": "2026-04-23T17:01:00",
+    "batch_id": null,
+    "session_key": null,
+    "parent_id": null
+  }
+]

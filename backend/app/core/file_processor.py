@@ -16,17 +16,20 @@ from typing import Optional, Set, List, Callable
 import logging
 
 from ..config.settings import get_config
+from ..core.archive_detection import has_embedded_zip_archive
 from ..core.task_engine import Task, TaskType, get_task_engine
+from .deferred_archive_service import get_deferred_archive_service
 
 logger = logging.getLogger(__name__)
 
 
 class VolumeSet:
     """分卷组信息"""
-    def __init__(self, base_name: str, volumes: List[str], volume_type: str):
+    def __init__(self, base_name: str, volumes: List[str], volume_type: str, entry_path: Optional[str] = None):
         self.base_name = base_name
         self.volumes = volumes  # 排序后的分卷路径列表
         self.type = volume_type
+        self.entry_path = entry_path or (volumes[0] if volumes else "")
         self.is_complete = False
 
 
@@ -48,6 +51,10 @@ class FileProcessor:
         """动态获取最新配置"""
         return get_config()
 
+    @staticmethod
+    def _has_active_aria2_sidecar(file_path: str) -> bool:
+        return os.path.isfile(f"{file_path}.aria2")
+
     # ========== 公共接口 ==========
 
     async def process_file(
@@ -59,7 +66,10 @@ class FileProcessor:
         is_processed: Optional[Callable[[str], bool]] = None,
         mark_processed: Optional[Callable[[str], None]] = None,
         pause_fn: Optional[Callable[[], None]] = None,
-        resume_fn: Optional[Callable[[], None]] = None
+        resume_fn: Optional[Callable[[], None]] = None,
+        task_metadata: Optional[dict] = None,
+        batch_context: Optional[dict] = None,
+        report: Optional[dict] = None,
     ) -> Optional[Task]:
         """统一的文件处理流程
 
@@ -76,25 +86,42 @@ class FileProcessor:
         Returns:
             创建的任务对象，如果未创建任务则返回 None
         """
-        logger.info(f"[FileProcessor] 开始处理文件: {file_path}")
+        logger.debug(f"[FileProcessor] 开始处理文件: {file_path}")
         original_path = file_path
 
         try:
+            if self._has_active_aria2_sidecar(file_path):
+                logger.info("[FileProcessor] 检测到 aria2 未完成标记，跳过处理: %s", file_path)
+                return None
+
             # 1. 检查文件是否已处理
+            # 先检查持久化归档声明，不能先走文件名规范化，否则可能改掉队列冻结的源路径。
+            if await get_deferred_archive_service().is_source_claimed(file_path):
+                logger.info("[FileProcessor] 文件已由空闲归档队列声明，跳过重复入库: %s", file_path)
+                if mark_processed:
+                    mark_processed(file_path)
+                if isinstance(report, dict):
+                    report["skipped_deferred_archive_count"] = int(report.get("skipped_deferred_archive_count") or 0) + 1
+                return None
             if is_processed and is_processed(file_path):
                 logger.debug(f"[FileProcessor] 文件已处理，跳过: {file_path}")
+                if isinstance(report, dict):
+                    report["skipped_processed_count"] = int(report.get("skipped_processed_count") or 0) + 1
                 return None
 
             # 2. 等待文件稳定
             if wait_stable:
-                logger.info(f"[FileProcessor] 等待文件稳定: {file_path}")
+                logger.debug(f"[FileProcessor] 等待文件稳定: {file_path}")
                 try:
                     await self.wait_file_stable(file_path, max_wait=max_wait)
-                    logger.info(f"[FileProcessor] 文件已稳定: {file_path}")
+                    logger.debug(f"[FileProcessor] 文件已稳定: {file_path}")
                 except TimeoutError:
                     logger.error(f"[FileProcessor] 等待文件稳定超时: {file_path}")
                     if mark_processed:
                         mark_processed(file_path)
+                    return None
+                if self._has_active_aria2_sidecar(file_path):
+                    logger.info("[FileProcessor] 文件稳定后仍存在 aria2 未完成标记，跳过处理: %s", file_path)
                     return None
 
             # 3. 检测分卷组
@@ -125,30 +152,65 @@ class FileProcessor:
                 resume_fn=resume_fn,
                 mark_processed=mark_processed
             )
-            logger.info(f"[FileProcessor] 规范化后路径: {file_path}")
+            logger.debug(f"[FileProcessor] 规范化后路径: {file_path}")
 
             # 5. 检查是否已在任务队列中
             engine = get_task_engine()
+            if await get_deferred_archive_service().is_source_claimed(file_path):
+                logger.info("[FileProcessor] 文件已由空闲归档队列声明，跳过重复入库: %s", file_path)
+                if mark_processed:
+                    mark_processed(file_path)
+                if isinstance(report, dict):
+                    report["skipped_deferred_archive_count"] = int(report.get("skipped_deferred_archive_count") or 0) + 1
+                return None
             existing = any(
                 t.source_path == file_path and t.status.value in ["pending", "processing"]
                 for t in engine.get_all_tasks()
             )
             if existing:
-                logger.info(f"[FileProcessor] 文件已在任务队列中: {file_path}")
+                logger.debug(f"[FileProcessor] 文件已在任务队列中: {file_path}")
                 if mark_processed:
                     mark_processed(file_path)
+                if isinstance(report, dict):
+                    report["skipped_duplicate_count"] = int(report.get("skipped_duplicate_count") or 0) + 1
                 return None
 
             # 6. 创建任务
-            logger.info(f"[FileProcessor] 创建任务: {file_path}")
+            logger.debug(f"[FileProcessor] 创建任务: {file_path}")
+            merged_metadata = dict(task_metadata or {})
+            if isinstance(batch_context, dict):
+                merged_metadata.update({
+                    "batch_id": str(batch_context.get("batch_id") or "").strip() or None,
+                    "session_id": str(batch_context.get("session_id") or batch_context.get("batch_id") or "").strip() or None,
+                    "batch_title": str(batch_context.get("batch_title") or "").strip() or None,
+                    "batch_label": str(batch_context.get("batch_label") or "").strip() or None,
+                    "batch_source_page": str(batch_context.get("source_page") or "").strip() or None,
+                    "batch_source_action": str(batch_context.get("source_action") or "").strip() or None,
+                    "batch_source_label": str(batch_context.get("source_label") or "").strip() or None,
+                    "batch_requested_count": int(batch_context.get("requested_count") or 0),
+                    "batch_log_parent": bool(batch_context.get("log_parent")),
+                })
+                if batch_context.get("source_page"):
+                    merged_metadata.setdefault("source_page", batch_context.get("source_page"))
+                if batch_context.get("source_action"):
+                    merged_metadata.setdefault("source_action", batch_context.get("source_action"))
+                if batch_context.get("source_label"):
+                    merged_metadata.setdefault("source_label", batch_context.get("source_label"))
             task = Task(
                 task_type=TaskType.AUTO_PROCESS,
                 source_path=file_path,
-                auto_classify=auto_classify
+                auto_classify=auto_classify,
+                metadata=merged_metadata,
             )
 
             await engine.submit(task)
-            logger.info(f"[FileProcessor] 任务已提交: {task.id}")
+            logger.info(
+                "[FileProcessor] 任务已提交: task_id=%s source=%s",
+                task.id,
+                os.path.basename(file_path),
+            )
+            if isinstance(report, dict):
+                report["created_count"] = int(report.get("created_count") or 0) + 1
 
             # 标记文件为已处理
             if mark_processed:
@@ -169,7 +231,10 @@ class FileProcessor:
         is_processed: Optional[Callable[[str], bool]] = None,
         mark_processed: Optional[Callable[[str], None]] = None,
         pause_fn: Optional[Callable[[], None]] = None,
-        resume_fn: Optional[Callable[[], None]] = None
+        resume_fn: Optional[Callable[[], None]] = None,
+        task_metadata: Optional[dict] = None,
+        batch_context: Optional[dict] = None,
+        report: Optional[dict] = None,
     ) -> List[Task]:
         """扫描目录并处理所有文件
 
@@ -201,6 +266,9 @@ class FileProcessor:
                 if is_processed and is_processed(file_path):
                     continue
 
+                if await get_deferred_archive_service().is_source_claimed(file_path):
+                    continue
+
                 # 检查是否是压缩包
                 if self.is_archive(file_path):
                     # 检查文件大小
@@ -215,6 +283,8 @@ class FileProcessor:
                     archive_files.append(file_path)
 
         logger.info(f"[FileProcessor] 找到 {len(archive_files)} 个待处理文件")
+        if isinstance(report, dict):
+            report["requested_count"] = len(archive_files)
 
         # 记录已处理的分卷文件，避免重复创建任务
         processed_volumes: Set[str] = set()
@@ -238,7 +308,12 @@ class FileProcessor:
                 auto_classify=auto_classify,
                 wait_stable=False,
                 is_processed=is_processed,
-                mark_processed=mark_processed
+                mark_processed=mark_processed,
+                pause_fn=pause_fn,
+                resume_fn=resume_fn,
+                task_metadata=task_metadata,
+                batch_context=batch_context,
+                report=report,
             )
             if task:
                 tasks.append(task)
@@ -257,19 +332,38 @@ class FileProcessor:
         Returns:
             是否是压缩包（True/False），如果是非首卷分卷文件返回 False
         """
+        if self._has_active_aria2_sidecar(file_path):
+            logger.debug("[FileProcessor] 跳过 aria2 下载中的文件: %s", file_path)
+            return False
+
         filename = Path(file_path).name.lower()
         ext = Path(file_path).suffix.lower()
 
-        # 先检查是否是分卷文件后缀，如果是非首卷则跳过
-        # ZIP 分卷: .z01, .z02, ... .z99 (z01是首卷)
+        # 先检查是否是分卷文件后缀，只有真正的主执行文件才创建任务
+        # ZIP 分卷: .z01, .z02, ... .z99，应该由 *.zip 主文件触发处理
         z_match = re.search(r'\.z(\d{2})$', filename)
         if z_match:
-            vol_num = int(z_match.group(1))
-            if vol_num > 1:  # z02, z03... 是非首卷
-                logger.debug(f"[FileProcessor] 跳过 ZIP 分卷非首卷文件: {filename}")
+            logger.debug(f"[FileProcessor] 跳过 ZIP 分卷文件，等待 *.zip 主文件: {filename}")
+            return False
+
+        # 旧式 RAR 分卷: .r00, .r01, ...，应该由 *.rar 主文件触发处理
+        rar_old_match = re.search(r'\.r(\d{2})$', filename)
+        if rar_old_match:
+            logger.debug(f"[FileProcessor] 跳过旧式 RAR 分卷文件，等待 *.rar 主文件: {filename}")
+            return False
+
+        # 自解压分卷（国产 SFX 工具）: .exe + .e01, .e02, ... 的 .eNN 部分
+        # 由 *.exe 主文件触发处理；仅当同目录下确有同名 *.exe 时才视为分卷，
+        # 避免误吞与压缩包无关的 .e01/.e02 杂项文件。
+        exe_e_match = re.fullmatch(r'(?P<base>.+)\.e\d{2}', filename, re.IGNORECASE)
+        if exe_e_match:
+            base_name = exe_e_match.group('base')
+            sibling_exe = os.path.join(os.path.dirname(file_path), f"{base_name}.exe")
+            if os.path.exists(sibling_exe):
+                logger.debug(
+                    f"[FileProcessor] 跳过自解压分卷非首卷文件，等待 *.exe 主文件: {filename}"
+                )
                 return False
-            # z01 是首卷，通过魔数检测
-            return self._detect_archive_by_magic(file_path)
 
         # 7z 分卷: .7z.001, .7z.002, ... (.7z.001 是首卷)
         sevenzip_match = re.search(r'\.7z\.(\d{3})$', filename)
@@ -314,10 +408,10 @@ class FileProcessor:
         if not ext or ext not in archive_extensions:
             if self._detect_archive_by_magic(file_path):
                 return True
-            # 检测是否包含嵌入的压缩包（polyglot 文件，如 MP4 内嵌 RAR/ZIP/7z）
-            return self._detect_embedded_archive(file_path) is not None
-
-        return False
+            if has_embedded_zip_archive(file_path):
+                logger.info(f"[FileProcessor] 检测到带前缀伪装的 ZIP 压缩包: {file_path}")
+                return True
+            return False
 
     def detect_volume_set(self, file_path: str) -> Optional[VolumeSet]:
         """检测分卷组
@@ -333,12 +427,41 @@ class FileProcessor:
         directory = os.path.dirname(file_path)
         filename = os.path.basename(file_path)
 
+        zip_main_match = re.search(r'^(?P<base>.+)\.zip$', filename, re.IGNORECASE)
+        zip_part_match = re.search(r'^(?P<base>.+)\.z\d{2}$', filename, re.IGNORECASE)
+        if zip_main_match or zip_part_match:
+            base_name = (zip_main_match or zip_part_match).group('base')
+            volume_set = self._build_zip_volume_set(directory, base_name)
+            if volume_set:
+                logger.info(f"[FileProcessor] 检测到 ZIP 分卷组: {base_name}")
+                return volume_set
+
+        rar_main_match = re.search(r'^(?P<base>.+)\.rar$', filename, re.IGNORECASE)
+        rar_part_match = re.search(r'^(?P<base>.+)\.r\d{2}$', filename, re.IGNORECASE)
+        if rar_main_match or rar_part_match:
+            base_name = (rar_main_match or rar_part_match).group('base')
+            volume_set = self._build_rar_old_volume_set(directory, base_name)
+            if volume_set:
+                logger.info(f"[FileProcessor] 检测到旧式 RAR 分卷组: {base_name}")
+                return volume_set
+
+        # 自解压 .exe + .eNN 国产 SFX 分卷组（如 新建压缩.exe + 新建压缩.e01 + .e02 ...）
+        exe_main_match = re.search(r'^(?P<base>.+)\.exe$', filename, re.IGNORECASE)
+        exe_part_match = re.search(r'^(?P<base>.+)\.e\d{2}$', filename, re.IGNORECASE)
+        if exe_main_match or exe_part_match:
+            base_name = (exe_main_match or exe_part_match).group('base')
+            volume_set = self._build_exe_e_volume_set(directory, base_name)
+            if volume_set:
+                logger.info(f"[FileProcessor] 检测到自解压分卷组(.exe + .eNN): {base_name}")
+                return volume_set
+
         # 分卷模式识别（按优先级排序，更具体的模式在前）
+        # WinRAR 自解压分卷首卷常用 .part1.exe，后续卷继续用 .partN.rar/.exe，
+        # 这里把 .exe 一并纳入 partN 模式，避免首卷被当成普通 SFX 单体解压。
         patterns = [
             (r'\.7z\.(\d{3})$', '7z_volume_with_ext'),  # .7z.001, .7z.002 (7z分卷，带.7z扩展名)
-            (r'\.part(\d+)\.(rar|zip|7z)$', 'part'),
+            (r'\.part(\d+)\.(rar|zip|7z|exe)$', 'part'),
             (r'\.part(\d+)$', 'part_no_ext'),  # 无扩展名的RAR分卷格式
-            (r'\.z(\d{2})$', 'zip_volume'),
             (r'\.(\d{3})$', '7z_volume'),  # 纯数字分卷（如 .001, .002）
             (r'\.(\d{2})$', 'generic'),
         ]
@@ -348,15 +471,15 @@ class FileProcessor:
             if match:
                 # 提取 base_name，只移除分卷后缀
                 base_name = re.sub(pattern, '', filename)
-                logger.info(f"[FileProcessor] 检测到分卷模式: {filename}, base_name={base_name}")
+                logger.debug(f"[FileProcessor] 检测到分卷模式: {filename}, base_name={base_name}")
 
                 # 查找所有分卷
                 volumes = self._find_all_volumes(directory, base_name, pattern)
-                logger.info(f"[FileProcessor] 找到 {len(volumes)} 个分卷: {[os.path.basename(v) for v in volumes]}")
+                logger.debug(f"[FileProcessor] 找到 {len(volumes)} 个分卷: {[os.path.basename(v) for v in volumes]}")
 
                 # 分卷组需要至少2个文件
                 if len(volumes) > 1:
-                    return VolumeSet(base_name, volumes, vtype)
+                    return VolumeSet(base_name, volumes, vtype, entry_path=volumes[0])
 
         return None
 
@@ -399,7 +522,7 @@ class FileProcessor:
                     logger.debug(f"[FileProcessor] 文件大小稳定 ({stable_count}/{required_stable}): {file_path}")
                 else:
                     if previous_size != -1:
-                        logger.info(f"[FileProcessor] 文件仍在复制中: {file_path} ({previous_size} -> {current_size} bytes)")
+                        logger.debug(f"[FileProcessor] 文件仍在复制中: {file_path} ({previous_size} -> {current_size} bytes)")
                     stable_count = 0
 
                 previous_size = current_size
@@ -451,7 +574,7 @@ class FileProcessor:
                     logger.error(f"[FileProcessor] 等待分卷稳定超时: {volume}")
                     return None
 
-        return file_path
+        return volume_set.entry_path or file_path
 
     async def _handle_potential_volume(
         self,
@@ -472,33 +595,62 @@ class FileProcessor:
             文件路径，如果不是分卷文件或已处理返回 None
         """
         part_patterns = [
-            r'\.part(\d+)\.(rar|zip|7z)$',  # 带扩展名的分卷
+            r'\.part(\d+)\.(rar|zip|7z|exe)$',  # 带扩展名的分卷（含 WinRAR SFX 首卷 .part1.exe）
             r'\.part(\d+)$',                  # 无扩展名的分卷
             r'\.z\d{2}$',                     # ZIP分卷
-            r'\.\d{3}$',                      # 7z分卷
+            r'\.r\d{2}$',                     # 旧式 RAR 分卷
+            r'\.7z\.\d{3}$',                  # 7z 分卷首尾格式
+        ]
+        basename = os.path.basename(file_path)
+        main_volume_patterns = [
+            r'^.+\.part1(?:\.(rar|zip|7z|exe))?$',
+            r'^.+\.7z\.001$',
         ]
 
         is_potential_volume = any(
-            re.search(p, os.path.basename(file_path), re.IGNORECASE)
+            re.search(p, basename, re.IGNORECASE)
             for p in part_patterns
+        ) or any(
+            re.search(p, basename, re.IGNORECASE)
+            for p in main_volume_patterns
         )
 
         if is_potential_volume:
-            logger.info(f"[FileProcessor] 检测到可能是分卷文件，等待其他分卷: {os.path.basename(file_path)}")
+            logger.debug(f"[FileProcessor] 检测到可能是分卷文件，等待其他分卷: {basename}")
             # 等待一段时间让其他分卷文件出现
             await asyncio.sleep(10)
 
             # 重新检测分卷组
             volume_set = self.detect_volume_set(file_path)
             if volume_set:
-                logger.info(f"[FileProcessor] 等待后检测到分卷组: {volume_set.base_name}")
+                logger.debug(f"[FileProcessor] 等待后检测到分卷组: {volume_set.base_name}")
                 return await self._process_volume_set(
                     file_path, volume_set,
                     is_processed=is_processed,
                     mark_processed=mark_processed
                 )
             else:
-                logger.info(f"[FileProcessor] 等待后仍未检测到分卷组，作为普通文件处理: {os.path.basename(file_path)}")
+                # 孤立非首卷分卷成员（首卷迟迟不出现）直接跳过，避免每个分卷各
+                # 产生一个独立任务、各写一条 ProcessedArchive 记录。包括：
+                # - .zXX / .rXX：明显非主卷
+                # - .7z.NNN 中 NNN != 001：非首卷 7z 分卷
+                # - .partN（N>=2）：非首卷 RAR 多卷成员
+                if re.search(r'\.(z\d{2}|r\d{2})$', basename, re.IGNORECASE):
+                    logger.warning(f"[FileProcessor] 分卷主文件尚未出现，暂不创建任务: {basename}")
+                    return None
+                seven_z_member = re.search(r'\.7z\.(\d{3})$', basename, re.IGNORECASE)
+                if seven_z_member and int(seven_z_member.group(1)) != 1:
+                    logger.warning(
+                        f"[FileProcessor] 7z 分卷首卷 (.7z.001) 尚未出现，暂不创建任务: {basename}"
+                    )
+                    return None
+                part_member = re.search(r'\.part(\d+)(?:\.(?:rar|zip|7z|exe))?$', basename, re.IGNORECASE)
+                if part_member and int(part_member.group(1)) >= 2:
+                    logger.warning(
+                        f"[FileProcessor] 分卷首卷 (.part1) 尚未出现，暂不创建任务: {basename}"
+                    )
+                    return None
+                logger.debug(f"[FileProcessor] 等待后仍未检测到分卷组，作为普通文件处理: {basename}")
                 return file_path
 
         return file_path
@@ -538,7 +690,7 @@ class FileProcessor:
             normalized_path = await extract_service.normalize_archive_filename(file_path)
 
             if normalized_path != file_path:
-                logger.info(f"[FileProcessor] 文件已规范化: {file_path} -> {normalized_path}")
+                logger.debug(f"[FileProcessor] 文件已规范化: {file_path} -> {normalized_path}")
                 # 标记新路径为已处理
                 if mark_processed:
                     mark_processed(normalized_path)
@@ -548,6 +700,136 @@ class FileProcessor:
             # 恢复监听
             if resume_fn:
                 resume_fn()
+
+    def _build_zip_volume_set(self, directory: str, base_name: str) -> Optional[VolumeSet]:
+        zip_path = os.path.join(directory, f"{base_name}.zip")
+        if not os.path.exists(zip_path):
+            return None
+
+        # 1. 标准 WinRAR ZIP 分卷 (.zXX)：X.zip + X.z01 + X.z02 + ...
+        z_volumes: List[str] = []
+        try:
+            for file in os.listdir(directory):
+                if re.fullmatch(rf'{re.escape(base_name)}\.z\d{{2}}', file, re.IGNORECASE):
+                    z_volumes.append(os.path.join(directory, file))
+        except Exception as exc:
+            logger.error(f"[FileProcessor] 查找 ZIP 分卷失败: {exc}")
+            return None
+
+        if z_volumes:
+            z_volumes.append(zip_path)
+            ordered = sorted(z_volumes, key=self._volume_sort_key)
+            return VolumeSet(base_name, ordered, 'zip_volume_main', entry_path=zip_path)
+
+        # 2. 非标准 .zip 主卷 + .NNN 纯数字分卷：X.zip + X.002 + X.003 + ...
+        #    7-Zip / 国内分卷工具创建多卷时首卷 .001 被改名为 .zip 留下的格式。
+        #    后续 remap 流程在 ExtractService 里完成，这里仅识别为分卷组。
+        numeric_volumes: List[str] = []
+        try:
+            for file in os.listdir(directory):
+                if re.fullmatch(rf'{re.escape(base_name)}\.\d{{3}}', file, re.IGNORECASE):
+                    numeric_volumes.append(os.path.join(directory, file))
+        except Exception as exc:
+            logger.error(f"[FileProcessor] 查找 ZIP 数字分卷失败: {exc}")
+            return None
+
+        if numeric_volumes:
+            def _numeric_key(path: str) -> int:
+                match = re.search(r'\.(\d{3})$', os.path.basename(path))
+                return int(match.group(1)) if match else 0
+
+            ordered = [zip_path] + sorted(numeric_volumes, key=_numeric_key)
+            logger.info(
+                f"[FileProcessor] 检测到 .zip + .NNN 非标准分卷组: {base_name}, "
+                f"volumes={[os.path.basename(p) for p in ordered]}"
+            )
+            return VolumeSet(base_name, ordered, 'zip_numeric_split', entry_path=zip_path)
+
+        return None
+
+    def _build_exe_e_volume_set(self, directory: str, base_name: str) -> Optional[VolumeSet]:
+        """构建自解压 .exe + .eNN 分卷组。
+
+        触发条件：同名 .exe 必须存在，且至少有一个 .eNN 伴随文件。
+        否则视为普通单体 SFX，由 7z 自行处理。
+        """
+        exe_path = os.path.join(directory, f"{base_name}.exe")
+        if not os.path.exists(exe_path):
+            return None
+
+        try:
+            siblings = os.listdir(directory)
+        except Exception as exc:
+            logger.error(f"[FileProcessor] 查找自解压分卷失败: {exc}")
+            return None
+
+        e_volumes: List[tuple] = []
+        e_pattern = re.compile(rf'^{re.escape(base_name)}\.e(\d{{2}})$', re.IGNORECASE)
+        for file in siblings:
+            match = e_pattern.fullmatch(file)
+            if match:
+                e_volumes.append((int(match.group(1)), os.path.join(directory, file)))
+
+        if not e_volumes:
+            return None
+
+        e_volumes.sort(key=lambda item: item[0])
+        ordered = [exe_path] + [path for _, path in e_volumes]
+        return VolumeSet(base_name, ordered, 'exe_e_sequence', entry_path=exe_path)
+
+    def _build_rar_old_volume_set(self, directory: str, base_name: str) -> Optional[VolumeSet]:
+        rar_path = os.path.join(directory, f"{base_name}.rar")
+        if not os.path.exists(rar_path):
+            return None
+
+        volumes = [rar_path]
+        try:
+            for file in os.listdir(directory):
+                if re.fullmatch(rf'{re.escape(base_name)}\.r\d{{2}}', file, re.IGNORECASE):
+                    volumes.append(os.path.join(directory, file))
+        except Exception as exc:
+            logger.error(f"[FileProcessor] 查找旧式 RAR 分卷失败: {exc}")
+            return None
+
+        if len(volumes) <= 1:
+            return None
+
+        ordered = sorted(volumes, key=self._volume_sort_key)
+        return VolumeSet(base_name, ordered, 'rar_volume_main', entry_path=rar_path)
+
+    def _volume_sort_key(self, path: str):
+        filename = os.path.basename(path).lower()
+
+        part_match = re.search(r'\.part(\d+)(?:\.(?:rar|zip|7z|exe))?$', filename, re.IGNORECASE)
+        if part_match:
+            return (0, int(part_match.group(1)), filename)
+
+        sevenzip_match = re.search(r'\.7z\.(\d{3})$', filename, re.IGNORECASE)
+        if sevenzip_match:
+            return (1, int(sevenzip_match.group(1)), filename)
+
+        pure_numeric_match = re.search(r'\.(\d{3})$', filename, re.IGNORECASE)
+        if pure_numeric_match:
+            return (2, int(pure_numeric_match.group(1)), filename)
+
+        zip_split_match = re.search(r'\.z(\d{2})$', filename, re.IGNORECASE)
+        if zip_split_match:
+            return (3, int(zip_split_match.group(1)), filename)
+
+        rar_old_match = re.search(r'\.r(\d{2})$', filename, re.IGNORECASE)
+        if rar_old_match:
+            return (4, int(rar_old_match.group(1)), filename)
+
+        if filename.endswith('.zip'):
+            return (5, 0, filename)
+        if filename.endswith('.rar'):
+            return (5, 1, filename)
+
+        two_digit_match = re.search(r'\.(\d{2})$', filename, re.IGNORECASE)
+        if two_digit_match:
+            return (6, int(two_digit_match.group(1)), filename)
+
+        return (9, 0, filename)
 
     def _find_all_volumes(self, directory: str, base_name: str, pattern: str) -> List[str]:
         """查找所有分卷文件
@@ -563,17 +845,17 @@ class FileProcessor:
         volumes = []
         try:
             files = os.listdir(directory)
-            logger.info(f"[FileProcessor] _find_all_volumes: directory={directory}, base_name={base_name}, pattern={pattern}")
-            logger.info(f"[FileProcessor] 目录中的文件: {files}")
+            logger.debug(f"[FileProcessor] _find_all_volumes: directory={directory}, base_name={base_name}, pattern={pattern}")
+            logger.debug(f"[FileProcessor] 目录中的文件: {files}")
             for file in files:
                 if file.startswith(base_name) and re.search(pattern, file, re.IGNORECASE):
                     volumes.append(os.path.join(directory, file))
-                    logger.info(f"[FileProcessor] 匹配到分卷: {file}")
+                    logger.debug(f"[FileProcessor] 匹配到分卷: {file}")
         except Exception as e:
             logger.error(f"[FileProcessor] 列出目录失败: {e}")
 
-        result = sorted(volumes)
-        logger.info(f"[FileProcessor] 最终分卷列表: {[os.path.basename(v) for v in result]}")
+        result = sorted(volumes, key=self._volume_sort_key)
+        logger.debug(f"[FileProcessor] 最终分卷列表: {[os.path.basename(v) for v in result]}")
         return result
 
     def _detect_archive_by_magic(self, path: str) -> bool:
@@ -610,7 +892,7 @@ class FileProcessor:
 
             for magic, file_type in magic_bytes.items():
                 if header.startswith(magic):
-                    logger.info(f"[FileProcessor] 通过魔数检测到压缩文件: {path} (类型: {file_type})")
+                    logger.debug(f"[FileProcessor] 通过魔数检测到压缩文件: {path} (类型: {file_type})")
                     return True
 
             return False
@@ -620,38 +902,6 @@ class FileProcessor:
         except Exception as e:
             logger.warning(f"[FileProcessor] 魔数检测失败: {path}, 错误: {e}")
             return False
-
-    def _detect_embedded_archive(self, path: str) -> Optional[str]:
-        """检测文件中是否嵌入了压缩包
-
-        用于检测 polyglot 文件（如 MP4 文件内嵌 RAR/ZIP/7z 压缩包）。
-        这类文件的文件头是媒体格式（如 ftyp），但压缩包的魔数在文件的后面部分。
-
-        ZIP 通过尾部 EOCD 精确定位；RAR/7z 流式顺序扫描整个文件。
-
-        Args:
-            path: 文件路径
-
-        Returns:
-            检测到的压缩包类型（'zip', 'rar', '7z'），未检测到返回 None
-        """
-        from ..core.polyglot_detector import find_embedded_archive
-
-        try:
-            if not os.path.exists(path) or not os.path.isfile(path):
-                logger.debug(f"[FileProcessor] 嵌入压缩包检测: 文件不存在或不是文件: {path}")
-                return None
-
-            result = find_embedded_archive(path)
-            if result:
-                logger.info(f"[FileProcessor] 检测到嵌入 {result[0].upper()} 压缩包: {path} (偏移: {result[1]})")
-                return result[0]
-        except (PermissionError, IOError) as e:
-            logger.debug(f"[FileProcessor] 嵌入压缩包检测文件访问失败: {path}, 错误: {e}")
-        except Exception as e:
-            logger.debug(f"[FileProcessor] 嵌入压缩包检测失败: {path}, 错误: {e}")
-
-        return None
 
 
 # 全局 FileProcessor 实例

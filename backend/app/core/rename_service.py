@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import shutil
@@ -8,15 +9,31 @@ import logging
 
 from ..config.settings import get_config
 from ..core.task_engine import Task
+from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
+
+_TEMPLATE_FIELD_SPACE_RE = re.compile(r"[\s\u00a0\u2000-\u200b\u202f\u205f\u3000\u2423]+")
+
+
+def normalize_template_maker_name(raw_value: str) -> str:
+    """只规整空白；社团名里的标点和方括号必须原样保留。"""
+    return _TEMPLATE_FIELD_SPACE_RE.sub(" ", str(raw_value or "")).strip()
+
 
 class RenameService:
     """重命名服务"""
 
     def __init__(self):
-        self.config = get_config()
-        self._japanese_metadata_cache = {}  # 缓存日语元数据，避免重复请求
+        # 不缓存配置，每次都获取最新配置
+        # 因为 save_config 会创建新的 AppConfig 对象
+        # 原裸 dict 每个 RJ 永久驻留；TTL+LRU 限制上限，避免长期运行下内存持续增长
+        self._japanese_metadata_cache: TTLCache = TTLCache(max_size=512, ttl_seconds=86400, name="rename.jp_metadata")
+
+    @property
+    def config(self):
+        """动态获取最新配置"""
+        return get_config()
 
     async def rename(self, path: str, task: Task):
         """
@@ -29,6 +46,15 @@ class RenameService:
         if not metadata:
             raise Exception("缺少元数据，无法重命名")
 
+        fallback_rjcode = str(
+            metadata.get('rjcode')
+            or metadata.get('inferred_rjcode')
+            or getattr(task, 'rjcode', '')
+            or ''
+        ).strip().upper()
+        if fallback_rjcode:
+            metadata['rjcode'] = fallback_rjcode
+
         if not metadata.get('rjcode'):
             raise Exception(f"元数据中缺少RJ号，无法重命名。可用字段: {list(metadata.keys())}")
 
@@ -39,6 +65,11 @@ class RenameService:
         if self.config.rename.use_japanese_metadata:
             task.update_progress(61, "获取日语元数据")
             japanese_metadata = await self._get_japanese_metadata(metadata.get('rjcode'))
+            if japanese_metadata:
+                japanese_maker_name = str(japanese_metadata.get('maker_name') or '').strip()
+                if japanese_maker_name:
+                    metadata['classification_maker_name'] = japanese_maker_name
+                    metadata['original_maker_name'] = japanese_maker_name
 
         # 生成新名称
         new_name = self._compile_name(metadata, japanese_metadata)
@@ -57,16 +88,28 @@ class RenameService:
             logger.info(f"重命名服务 - 名称相同，跳过重命名: {new_name}")
             return path
         
-        # 处理重名
-        counter = 1
-        original_new_path = new_path
-        while new_path.exists():
-            new_name = f"{original_new_path.name}({counter})"
-            new_path = parent / new_name
-            counter += 1
+        # 处理重名 - 只有当目标路径与当前路径不同时才添加后缀
+        if new_path.exists() and new_path != dir_path:
+            # 检查是否是同一个文件夹（大小写不同的情况）
+            if new_path.resolve() == dir_path.resolve():
+                # 只是大小写不同，直接重命名
+                pass
+            else:
+                # 真正的重名冲突，添加后缀
+                logger.warning(f"重命名服务 - 发现同名文件夹: {new_path}，这可能导致重复")
+                counter = 1
+                original_new_path = new_path
+                while new_path.exists() and new_path.resolve() != dir_path.resolve():
+                    new_name_with_suffix = f"{original_new_path.name}({counter})"
+                    new_path = parent / new_name_with_suffix
+                    counter += 1
+                    if counter > 100:  # 防止无限循环
+                        logger.error(f"重命名服务 - 无法找到可用的名称，跳过重命名")
+                        return path
+                logger.info(f"重命名服务 - 使用新名称避免冲突: {new_path.name}")
         
         # 执行重命名
-        shutil.move(str(dir_path), str(new_path))
+        await asyncio.to_thread(shutil.move, str(dir_path), str(new_path))
         logger.info(f"重命名: {dir_path} -> {new_path}")
 
         return str(new_path)
@@ -96,7 +139,11 @@ class RenameService:
 
         return japanese_metadata
 
-    def _flatten_single_subfolder(self, path: str) -> str:
+    def _flatten_single_subfolder(
+        self,
+        path: str,
+        operation_sink: Optional[list[dict[str, str]]] = None,
+    ) -> str:
         """
         扁平化单一层级文件夹
         递归检查所有子文件夹，如果某个文件夹只有一个子文件夹（没有文件或其他内容），
@@ -123,6 +170,15 @@ class RenameService:
                 # 如果只有一个项目且是文件夹，则扁平化
                 if len(items) == 1 and items[0].is_dir():
                     subfolder = items[0]
+                    if operation_sink is not None:
+                        try:
+                            parent_relative = current_path.relative_to(root_path).as_posix()
+                        except ValueError:
+                            parent_relative = ""
+                        operation_sink.append({
+                            "parent_relative_path": "" if parent_relative == "." else parent_relative,
+                            "removed_segment": subfolder.name,
+                        })
                     logger.info(f"扁平化 (层 {current_depth + 1}/{max_depth}): {current_path.name} 只有一个子文件夹 {subfolder.name}，正在合并...")
 
                     # 创建临时路径
@@ -240,11 +296,11 @@ class RenameService:
         # maker_id 和 maker_name：日语元数据优先
         if use_japanese:
             maker_id = japanese_metadata.get('maker_id', metadata.get('maker_id', ''))
-            maker_name = japanese_metadata.get('maker_name', metadata.get('maker_name', ''))
+            maker_name = normalize_template_maker_name(japanese_metadata.get('maker_name', metadata.get('maker_name', '')))
             logger.info(f"[RENAME] 使用日语元数据 - maker_name='{maker_name}'")
         else:
             maker_id = metadata.get('maker_id', '')
-            maker_name = metadata.get('maker_name', '')
+            maker_name = normalize_template_maker_name(metadata.get('maker_name', ''))
 
         name = name.replace('{maker_id}', maker_id)
         name = name.replace('{maker_name}', maker_name)

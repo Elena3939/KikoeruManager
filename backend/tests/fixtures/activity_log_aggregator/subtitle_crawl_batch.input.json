@@ -1,0 +1,61 @@
+[
+  {
+    "id": "sc-child-02",
+    "category": "subtitle_crawl",
+    "action": "download_subtitle",
+    "status": "success",
+    "summary": "字幕下载成功：RJ200002",
+    "detail": {
+      "batch_id": "batch-sub-001",
+      "source_provider": "srt-provider-a",
+      "duration_ms": 1500,
+      "downloaded_bytes": 48000
+    },
+    "rjcode": "RJ200002",
+    "task_id": "sub-task-2",
+    "source_path": "D:/library/RJ200002",
+    "created_at": "2026-04-23T11:00:12",
+    "batch_id": "batch-sub-001",
+    "session_key": null,
+    "parent_id": null
+  },
+  {
+    "id": "sc-child-01",
+    "category": "subtitle_crawl",
+    "action": "download_subtitle",
+    "status": "failed",
+    "summary": "字幕下载失败：RJ200001",
+    "detail": {
+      "batch_id": "batch-sub-001",
+      "source_provider": "srt-provider-a",
+      "duration_ms": 800,
+      "error": "no subtitle found"
+    },
+    "rjcode": "RJ200001",
+    "task_id": "sub-task-1",
+    "source_path": "D:/library/RJ200001",
+    "created_at": "2026-04-23T11:00:08",
+    "batch_id": "batch-sub-001",
+    "session_key": null,
+    "parent_id": null
+  },
+  {
+    "id": "sc-batch-start",
+    "category": "subtitle_crawl",
+    "action": "batch_start",
+    "status": "success",
+    "summary": "批量字幕抓取开始",
+    "detail": {
+      "batch_id": "batch-sub-001",
+      "requested_count": 2,
+      "scope": "current_page"
+    },
+    "rjcode": null,
+    "task_id": "batch-sub-001",
+    "source_path": null,
+    "created_at": "2026-04-23T11:00:00",
+    "batch_id": "batch-sub-001",
+    "session_key": null,
+    "parent_id": null
+  }
+]

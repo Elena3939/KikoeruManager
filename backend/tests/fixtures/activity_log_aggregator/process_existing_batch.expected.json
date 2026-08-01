@@ -1,0 +1,78 @@
+[
+  {
+    "action": "batch_start",
+    "batch_id": "batch-pe-001",
+    "category": "process_existing",
+    "category_label": "已有目录处理",
+    "created_at": "2026-04-23T13:10:00",
+    "detail": {
+      "aggregate_archive_size_bytes": 0,
+      "aggregate_extract_output_bytes": 0,
+      "archive_count": 0,
+      "batch_duration_ms": 5900,
+      "batch_id": "batch-pe-001",
+      "child_row_count": 2,
+      "child_rows": [
+        {
+          "action": "process_folder",
+          "category": "process_existing",
+          "category_label": "子处理任务",
+          "child_rows": [],
+          "created_at": "2026-04-23T13:10:05",
+          "detail": {
+            "batch_id": "batch-pe-001",
+            "duration_ms": 400,
+            "error": "missing metadata",
+            "recovered_by_success": false
+          },
+          "id": "pe-child-01",
+          "relation": "import_item",
+          "rjcode": "RJ700001",
+          "source_path": "D:/library/RJ700001",
+          "status": "failed",
+          "summary": "已有目录处理失败：RJ700001",
+          "task_id": "pe-task-1"
+        },
+        {
+          "action": "process_folder",
+          "category": "process_existing",
+          "category_label": "子处理任务",
+          "child_rows": [],
+          "created_at": "2026-04-23T13:10:10",
+          "detail": {
+            "batch_id": "batch-pe-001",
+            "duration_ms": 900,
+            "output_path": "D:/library/RJ700002",
+            "recovered_by_success": false
+          },
+          "id": "pe-child-02",
+          "relation": "import_item",
+          "rjcode": "RJ700002",
+          "source_path": "D:/library/RJ700002",
+          "status": "success",
+          "summary": "已有目录处理完成：RJ700002",
+          "task_id": "pe-task-2"
+        }
+      ],
+      "created_tasks": [
+        "pe-task-1",
+        "pe-task-2"
+      ],
+      "extract_completed_count": 1,
+      "failed_child_count": 1,
+      "latest_activity_at": "2026-04-23T13:10:10",
+      "partial_child_count": 0,
+      "requested_count": 2
+    },
+    "has_child_rows": true,
+    "id": "pe-batch-start",
+    "latest_activity_at": "2026-04-23T13:10:10",
+    "parent_id": null,
+    "rjcode": null,
+    "session_key": null,
+    "source_path": null,
+    "status": "partial_success",
+    "summary": "批量创建已有目录处理任务，候选 2 个，压缩包 2 个，已提交解压 1 个，失败 1 个，耗时 6 秒",
+    "task_id": "batch-pe-001"
+  }
+]

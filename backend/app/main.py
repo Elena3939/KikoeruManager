@@ -1,75 +1,87 @@
 import os
+import sys
 import logging
+
 import uvicorn
+
 from .api.routes import app
 
+
+def get_uvicorn_limit_concurrency() -> int | None:
+    """读取 uvicorn 并发硬限制；0/空值表示关闭，避免高并发读接口被直接 503。"""
+    raw_value = os.environ.get("KIKOERUMANAGER_UVICORN_LIMIT_CONCURRENCY", "").strip()
+    if not raw_value or raw_value in {"0", "none", "None", "false", "False"}:
+        return None
+    try:
+        value = int(raw_value)
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            "忽略无效 KIKOERUMANAGER_UVICORN_LIMIT_CONCURRENCY=%r", raw_value
+        )
+        return None
+    return value if value > 0 else None
+
+
+def configure_stdio():
+    """Force UTF-8 stdio on Windows so DLsite metadata logs render correctly."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def setup_logging():
-    """设置日志"""
-    # 创建日志目录
-    log_dir = os.environ.get('DATA_PATH', './data')
-    os.makedirs(log_dir, exist_ok=True)
-    
-    log_file = os.path.join(log_dir, 'app.log')
-    
-    # 配置日志格式 - 单行格式，便于解析
-    formatter = logging.Formatter(
-        '%(asctime)s [%(levelname)s] %(name)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    
-    # 文件处理器
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    file_handler.setFormatter(formatter)
-    
-    # 控制台处理器
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    
-    # 配置根日志记录器
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-    root_logger.handlers = []  # 清除现有处理器
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
-    
-    # 设置第三方库的日志级别
-    logging.getLogger('uvicorn').setLevel(logging.WARNING)
-    logging.getLogger('sqlalchemy').setLevel(logging.WARNING)
+    """Configure application logging (RotatingFileHandler, 20MB * 5)."""
+    from .core.app_logging import configure_app_logging
+
+    log_dir = os.environ.get("DATA_PATH", "./data")
+    configure_app_logging(log_dir=log_dir, use_console=True)
+
 
 def init_database():
-    """初始化数据库"""
-    from .models.database import init_db, engine
-    from sqlalchemy import text
-    
-    # 初始化数据库表
+    """Initialize PostgreSQL database tables and indexes."""
+    from .models.database import init_db
+
     init_db()
-    
-    # 确保SQLite使用UTF-8编码
-    with engine.connect() as conn:
-        conn.execute(text("PRAGMA encoding='UTF-8'"))
-        conn.commit()
-    
+
     logger = logging.getLogger(__name__)
-    logger.info("数据库初始化完成，使用UTF-8编码")
+    logger.info("PostgreSQL 数据库初始化完成")
+
 
 def main():
-    """主入口"""
+    """Backend entry point."""
+    configure_stdio()
     setup_logging()
-    
+
     logger = logging.getLogger(__name__)
-    logger.info("="*50)
-    logger.info("Prekikoeru 启动中...")
-    logger.info("="*50)
-    
-    # 初始化数据库
+    logger.info("=" * 50)
+    logger.info("KikoeruManager 启动中...")
+    logger.info("=" * 50)
+
     init_database()
-    
+
+    reload_mode = os.environ.get("DEV_MODE", "false").lower() == "true"
+    port = int(os.environ.get("PORT", "5555"))
+    limit_concurrency = get_uvicorn_limit_concurrency()
+    logger.info(
+        "uvicorn 并发硬限制: %s",
+        limit_concurrency if limit_concurrency is not None else "disabled",
+    )
+
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8000,
-        log_level="info"
+        port=port,
+        log_level="info",
+        reload=reload_mode,
+        limit_concurrency=limit_concurrency,
+        timeout_keep_alive=15,
+        backlog=512,
     )
+
 
 if __name__ == "__main__":
     main()

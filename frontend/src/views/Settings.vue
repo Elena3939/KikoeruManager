@@ -1,2631 +1,681 @@
 <template>
-  <div class="settings">
-    <h1 class="page-title">设置</h1>
-    
-    <el-form :model="config" label-position="top" v-loading="loading">
-      <!-- 存储路径设置 -->
-      <el-card class="setting-card">
-        <template #header>
-          <span>存储路径</span>
-        </template>
-        
-        <el-alert
-          title="提示：请输入完整的绝对路径，例如 D:\\MyFiles\\Input 或 /home/user/input"
-          type="info"
-          :closable="false"
-          style="margin-bottom: 20px;"
+  <div class="settings-page">
+    <AppPageHeader
+      :icon="IconSettings"
+      icon-color="var(--km-nav-settings-icon)"
+      title="设置工作台"
+      subtitle="集中管理连接、目录、规则、外部服务和通知模板"
+    >
+      <span class="set-chip" :class="hasChanges ? 'set-chip-warning' : 'set-chip-success'">
+        <component :is="hasChanges ? IconAlertCircle : IconCheckCircle2" :size="12" :stroke-width="2.4" />
+        {{ hasChanges ? '有未保存改动' : '已同步' }}
+      </span>
+      <span class="set-chip set-chip-info">
+        <IconClock :size="12" :stroke-width="2.4" />
+        {{ lastSavedLabel }}
+      </span>
+    </AppPageHeader>
+
+    <SettingsWorkbench
+      :sections="sections"
+      :active-section="activeSection"
+      :search-query="searchQuery"
+      :has-changes="hasChanges"
+      :saving="saving"
+      :reloading="reloading"
+      :dirty-map="dirtyMap"
+      :config-path="configPathDisplay"
+      @navigate="activeSection = $event"
+      @save="saveConfig"
+      @reload="reloadConfigFromServer"
+      @reset-all="resetAllConfig"
+      @update:searchQuery="searchQuery = $event"
+    >
+      <SettingsSectionPanel
+        v-if="activeSection === 'storage'"
+        kicker="Storage & Inventory"
+        title="存储与库存"
+        description="把本地路径、多库存和群晖模板都收进一个工作台。连接信息只维护一次，共享目录库存直接复用。"
+      >
+        <StorageSettingsPanel
+          :model-value="config"
+          :profiles="profiles"
+          :libraries="libraries"
+          :primary-profile="primaryProfile"
+          :profile-summaries="profileSummaries"
+          :library-view-models="libraryViewModels"
+          :get-profile-summary="getProfileSummary"
+          :get-library-view-model="getLibraryViewModel"
+          :selected-library-id="selectedLibraryId"
+          :testing-profile-id="testingProfileId"
+          :testing-library-id="testingLibraryId"
+          :build-synology-web-url="buildSynologyWebUrl"
+          @select-library="selectedLibraryId = $event"
+          @test-profile="testProfileConnection"
+          @create-library="handleCreateLibrary"
+          @remove-library="removeStorageLibrary"
+          @test-library="testStorageLibrary"
+          @extract-profile="extractSynologyProfileFromLibrary"
+          @update-profile-flag="updateProfileFlag"
+          @update-library-flag="updateLibraryFlag"
+          @profile-change="handleLibraryProfileChange"
+          @sync-path="syncRemoteLibraryPath"
         />
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="待处理文件夹">
-              <el-input 
-                v-model="config.storage.input_path" 
-                placeholder="例如: D:\\prekikoeru\\test_data\\input"
-              >
-                <template #prefix>
-                  <el-icon><Folder /></el-icon>
-                </template>
-              </el-input>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="临时文件夹">
-              <el-input 
-                v-model="config.storage.temp_path" 
-                placeholder="例如: D:\\prekikoeru\\test_data\\temp"
-              >
-                <template #prefix>
-                  <el-icon><Folder /></el-icon>
-                </template>
-              </el-input>
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="库存文件夹">
-              <el-input 
-                v-model="config.storage.library_path" 
-                placeholder="例如: D:\\prekikoeru\\test_data\\library"
-              >
-                <template #prefix>
-                  <el-icon><Folder /></el-icon>
-                </template>
-              </el-input>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="已处理压缩包存放文件夹">
-              <el-input 
-                v-model="config.storage.processed_archives_path" 
-                placeholder="例如: D:\\prekikoeru\\test_data\\processed"
-              >
-                <template #prefix>
-                  <el-icon><Folder /></el-icon>
-                </template>
-              </el-input>
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="已存在文件夹目录">
-              <el-input
-                v-model="config.storage.existing_folders_path"
-                placeholder="例如: D:\\prekikoeru\\test_data\\existing"
-              >
-                <template #prefix>
-                  <el-icon><Folder /></el-icon>
-                </template>
-              </el-input>
-              <div class="form-tip">
-                存放已解压的文件夹（非软件处理的压缩包），也以 {RJCode} {work_name} 格式命名
-              </div>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="真库存文件夹（移库目标）">
-              <el-input
-                v-model="config.storage.real_library_path"
-                placeholder="例如: E:\\正式库存（留空则禁用移库功能）"
-              >
-                <template #prefix>
-                  <el-icon><Folder /></el-icon>
-                </template>
-              </el-input>
-              <div class="form-tip">
-                一键移库功能的目标目录。库存文件夹中处理完成的文件夹可一键移入此处；仅移动，目标已存在时跳过，绝不覆盖或删除
-              </div>
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="ASMR字幕文件夹">
-              <el-input
-                v-model="config.storage.asmr_subtitle_path"
-                placeholder="例如: D:\\prekikoeru\\subtitles"
-              >
-                <template #prefix>
-                  <el-icon><Folder /></el-icon>
-                </template>
-              </el-input>
-              <div class="form-tip">
-                ASMR同步下载功能使用的字幕文件夹路径
-              </div>
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row>
-          <el-col :span="24">
-            <el-button type="primary" size="small" @click="createTestDirs">
-              <el-icon><Plus /></el-icon>
-              创建默认测试目录
-            </el-button>
-          </el-col>
-        </el-row>
-      </el-card>
-      
-      <!-- 监视器设置 -->
-      <el-card class="setting-card">
-        <template #header>
-          <span>文件夹监视器</span>
-        </template>
-        
-        <el-form-item label="启用监视器">
-          <el-switch v-model="config.watcher.enabled" />
-        </el-form-item>
-        
-        <el-form-item label="扫描间隔（秒）">
-          <el-slider v-model="config.watcher.scan_interval" :min="10" :max="300" :step="10" show-input />
-        </el-form-item>
-        
-        <el-form-item label="自动开始处理">
-          <el-switch v-model="config.watcher.auto_start" />
-        </el-form-item>
-        
-        <el-form-item label="自动分类">
-          <el-switch v-model="config.watcher.auto_classify" />
-        </el-form-item>
-        
-        <el-form-item label="处理后删除原文件">
-          <el-switch v-model="config.watcher.delete_after_process" />
-        </el-form-item>
-      </el-card>
-      
-      <!-- 处理设置 -->
-      <el-card class="setting-card">
-        <template #header>
-          <span>处理配置</span>
-        </template>
-        
-        <el-form-item label="最大并发数">
-          <el-slider v-model="config.processing.max_workers" :min="1" :max="10" show-input />
-        </el-form-item>
-        
-        <el-form-item label="自动修复后缀名">
-          <el-switch v-model="config.extract.auto_repair_extension" />
-        </el-form-item>
-        
-        <el-form-item label="解压后验证">
-          <el-switch v-model="config.extract.verify_after_extract" />
-        </el-form-item>
-        
-        <el-form-item label="自动解压嵌套压缩包">
-          <el-switch v-model="config.extract.extract_nested_archives" />
-          <div class="form-tip">
-            启用后，系统会自动检测并解压嵌套在压缩包内的其他压缩文件
-          </div>
-        </el-form-item>
-        
-        <el-form-item label="最大嵌套深度" v-if="config.extract.extract_nested_archives">
-          <el-slider 
-            v-model="config.extract.max_nested_depth" 
-            :min="1" 
-            :max="10" 
-            :step="1" 
-            show-input 
-          />
-          <div class="form-tip">
-            限制嵌套压缩包的解压深度，防止无限循环。建议设置为 3-5 层
-          </div>
-        </el-form-item>
-        
-        <el-form-item label="7-Zip路径">
-          <el-input 
-            v-model="config.extract.seven_zip_path" 
-            placeholder="例如: C:\\Program Files\\7-Zip\\7z.exe"
-          >
-            <template #prefix>
-              <el-icon><Tools /></el-icon>
-            </template>
-          </el-input>
-          <div class="form-tip">留空或填入"7z"将自动检测，Windows用户建议填写完整路径</div>
-        </el-form-item>
-        
-        <el-form-item label="默认密码列表">
-          <el-select
-            v-model="config.extract.password_list"
-            multiple
-            filterable
-            allow-create
-            default-first-option
-            placeholder="输入密码后按回车添加"
-            style="width: 100%"
-          />
-        </el-form-item>
-      </el-card>
-      
-      <!-- 过滤设置 -->
-      <el-card class="setting-card">
-        <template #header>
-          <div class="card-header">
-            <span>过滤配置</span>
-            <el-switch v-model="config.filter.enabled" active-text="启用过滤" />
-          </div>
-        </template>
-        
-        <el-form-item label="过滤文件夹">
-          <el-switch v-model="config.filter.filter_dir" />
-        </el-form-item>
-        
-        <el-divider>过滤规则</el-divider>
-        
-        <el-alert
-          title="过滤规则说明"
-          type="info"
-          :closable="false"
-          style="margin-bottom: 15px;"
-        >
-          <div style="font-size: 12px; line-height: 1.6;">
-            <p>• 匹配正则表达式的文件/文件夹将被<strong>删除</strong></p>
-            <p>• <strong>目标</strong>：决定删除范围（文件=删单个文件，文件夹=删整个文件夹及内容！）</p>
-            <p>• 处理流程：解压 → 重命名 → <strong>过滤</strong> → 扁平化 → 移动到库存</p>
-          </div>
-        </el-alert>
-        
-        <el-card shadow="never" style="margin-bottom: 15px; background-color: #f5f7fa;">
-          <template #header>
-            <span style="font-size: 13px; font-weight: 600;">正则示例</span>
-          </template>
-          <div style="font-size: 12px;">
-            <p style="margin: 5px 0;"><strong>文件示例：</strong></p>
-            <ul style="margin: 5px 0; padding-left: 20px;">
-              <li><code>\.mp3$</code> - 删除所有MP3文件</li>
-              <li><code>(?i)\.wav$</code> - 删除所有WAV文件（不区分大小写）</li>
-              <li><code>^\._</code> - 删除macOS隐藏文件（以._开头）</li>
-            </ul>
-            <p style="margin: 10px 0 5px;"><strong>文件夹示例：</strong></p>
-            <ul style="margin: 5px 0; padding-left: 20px;">
-              <li><code>^__MACOSX$</code> - 删除__MACOSX文件夹</li>
-              <li><code>^temp$</code> - 删除名为temp的文件夹</li>
-              <li><code>sample</code> - 删除名称包含sample的文件夹</li>
-            </ul>
-            <p style="margin: 10px 0 5px;"><strong>全部示例：</strong></p>
-            <ul style="margin: 5px 0; padding-left: 20px;">
-              <li><code>thumb</code> - 删除所有包含thumb的文件和文件夹</li>
-            </ul>
-          </div>
-        </el-card>
-        
-        <div v-for="(rule, index) in config.filter.rules" :key="index" class="rule-item">
-          <el-card shadow="never">
-            <el-row :gutter="10" align="middle">
-              <el-col :span="3">
-                <el-select v-model="rule.target" size="small" placeholder="目标">
-                  <el-option label="文件" value="file" />
-                  <el-option label="文件夹" value="folder" />
-                  <el-option label="全部" value="all" />
-                </el-select>
-              </el-col>
-              <el-col :span="5">
-                <el-input v-model="rule.name" placeholder="规则名称" size="small" />
-              </el-col>
-              <el-col :span="10">
-                <el-input v-model="rule.pattern" placeholder="正则表达式" size="small" />
-              </el-col>
-              <el-col :span="2">
-                <el-switch v-model="rule.enabled" size="small" />
-              </el-col>
-              <el-col :span="2" style="text-align: right;">
-                <el-button type="danger" link size="small" @click="removeFilterRule(index)">
-                  <el-icon><Delete /></el-icon>
-                </el-button>
-              </el-col>
-            </el-row>
-            <el-row v-if="rule.pattern" style="margin-top: 5px;">
-              <el-col :span="24">
-                <span class="form-tip">
-                  将删除{{ getTargetLabel(rule.target) }}名称匹配 "{{ rule.pattern }}" 的内容
-                  <span v-if="rule.target === 'folder'" style="color: #f56c6c; margin-left: 8px;">
-                    <el-icon><Warning /></el-icon> 注意：会删除整个文件夹及其所有内容！
-                  </span>
-                </span>
-              </el-col>
-            </el-row>
-          </el-card>
-        </div>
-        
-        <el-button type="primary" size="small" @click="addFilterRule" style="margin-top: 10px;">
-          <el-icon><Plus /></el-icon> 添加过滤规则
-        </el-button>
-        
-        <el-divider />
-        
-        <el-form-item label="自动扁平化单层文件夹">
-          <el-switch v-model="config.rename.flatten_single_subfolder" />
-          <div class="form-tip">
-            如果文件夹内只有一个子文件夹，自动将内容移出并删除外层空文件夹。<br>
-            <strong>注意：</strong>此功能在过滤完成后执行，可以处理因过滤而产生的单层文件夹结构
-          </div>
-        </el-form-item>
+      </SettingsSectionPanel>
 
-        <el-form-item label="扁平化深度" v-if="config.rename.flatten_single_subfolder">
-          <el-input-number v-model="config.rename.flatten_depth" :min="1" :max="10" />
-          <div class="form-tip">
-            最多处理多少层嵌套的单子文件夹。例如：如果设置为3，<br>
-            主文件夹 → 文件夹A → 文件夹B（B是唯一子文件夹）→ 内容，将被扁平化为主文件夹 → 内容
-          </div>
-        </el-form-item>
+      <SettingsSectionPanel
+        v-else-if="activeSection === 'processing'"
+        kicker="Pipeline"
+        title="处理流程"
+        description="把扫描、解压、自动处理和已有文件夹链路放在一组里看，避免到处来回找开关。"
+      >
+        <ProcessingSettingsPanel :config="config" />
+      </SettingsSectionPanel>
 
-        <el-form-item label="自动移除空文件夹">
-          <el-switch v-model="config.rename.remove_empty_folders" />
-          <div class="form-tip">
-            过滤完成后自动移除所有空文件夹（不包括根文件夹）<br>
-            <strong>注意：</strong>此功能在扁平化之后执行，可以清理因过滤而产生的空文件夹
-          </div>
-        </el-form-item>
-      </el-card>
-      
-      <!-- 元数据设置 -->
-      <el-card class="setting-card">
-        <template #header>
-          <span>元数据配置</span>
-        </template>
-        
-        <el-form-item label="语言区域">
-          <el-select v-model="config.metadata.locale" style="width: 200px">
-            <el-option label="简体中文" value="zh_cn" />
-            <el-option label="繁体中文" value="zh_tw" />
-            <el-option label="日本語" value="ja_jp" />
-            <el-option label="English" value="en_us" />
-          </el-select>
-        </el-form-item>
-        
-        <el-form-item label="启用缓存">
-          <el-switch v-model="config.metadata.cache_enabled" />
-        </el-form-item>
-        
-        <el-form-item label="下载封面">
-          <el-switch v-model="config.metadata.fetch_cover" />
-        </el-form-item>
-        
-        <el-form-item label="制作文件夹图标">
-          <el-switch v-model="config.metadata.make_folder_icon" />
-        </el-form-item>
-        
-        <el-form-item label="HTTP代理">
-          <el-input v-model="config.metadata.http_proxy" placeholder="127.0.0.1:7890" />
-        </el-form-item>
-      </el-card>
-      
-      <!-- 重命名设置 -->
-      <el-card class="setting-card">
-        <template #header>
-          <span>重命名配置</span>
-        </template>
-        
-        <el-form-item label="重命名模板">
-          <el-input v-model="config.rename.template" placeholder="{rjcode} {work_name}">
-            <template #append>
-              <el-tooltip content="可用变量: {rjcode}, {work_name}, {maker_name}, {cvs}, {release_date}, {tags}">
-                <el-icon><QuestionFilled /></el-icon>
-              </el-tooltip>
-            </template>
-          </el-input>
-        </el-form-item>
-        
-        <el-form-item label="日期格式">
-          <el-input v-model="config.rename.date_format" placeholder="%y%m%d" style="width: 200px" />
-        </el-form-item>
-        
-        <el-form-item label="移除方括号内容">
-          <el-switch v-model="config.rename.exclude_square_brackets" />
-        </el-form-item>
-        
-        <el-form-item label="非法字符转全角">
-          <el-switch v-model="config.rename.illegal_char_to_full_width" />
-        </el-form-item>
-        
-        <el-form-item label="API重命名遵循模板">
-          <el-switch v-model="config.rename.api_rename_follow_template" />
-          <div class="form-tip">
-            开启后，库存管理中的"API重命名"将使用上方的重命名模板；关闭则使用简单格式"RJ号 作品名"
-          </div>
-        </el-form-item>
+      <SettingsSectionPanel
+        v-else-if="activeSection === 'rules'"
+        kicker="Rules"
+        title="内容规则"
+        description="把过滤、重命名、分类和路径映射放到一组里，专注控制最终落盘形态。"
+      >
+        <RulesSettingsPanel :config="config" />
+      </SettingsSectionPanel>
 
-        <el-form-item label="使用日语元数据">
-          <el-switch v-model="config.rename.use_japanese_metadata" />
-          <div class="form-tip">
-            开启后，重命名模板中的 {maker_name}、{cvs}、{tags} 等字段将使用日语版本的元数据，而 {rjcode} 和 {work_name} 仍使用当前语言的元数据。适用于非日语版本元数据不准确的情况
-          </div>
-        </el-form-item>
-      </el-card>
-      
-      <!-- 密码库智能清理 -->
-      <el-card class="setting-card">
-        <template #header>
-          <div class="card-header">
-            <span>密码库智能清理</span>
-            <el-switch v-model="config.password_cleanup.enabled" active-text="启用清理" />
-          </div>
-        </template>
+      <SettingsSectionPanel
+        v-else-if="activeSection === 'services'"
+        kicker="External Services"
+        title="外部服务"
+        description="集中维护 Kikoeru、ASMR 下载、RJ 字幕抓取和邮件监听等远程链路。"
+      >
+        <ServicesSettingsPanel :config="config" />
+      </SettingsSectionPanel>
 
-        <el-alert
-          title="清理说明"
-          type="info"
-          :closable="false"
-          style="margin-bottom: 15px;"
-        >
-          <div style="font-size: 12px; line-height: 1.6;">
-            <p>• 系统会自动清理使用次数较少的密码，避免密码库无限膨胀</p>
-            <p>• <strong>使用次数阈值</strong>：使用次数 ≤ 此值的密码将被清理</p>
-            <p>• <strong>保留天数</strong>：密码创建超过此天数且使用次数 ≤ 阈值才删除</p>
-            <p>• 可以使用 Cron 表达式自定义执行时间</p>
-          </div>
-        </el-alert>
+      <SettingsSectionPanel
+        v-else-if="activeSection === 'aiSubtitle'"
+        kicker="AI Subtitle Matching"
+        title="AI 配对"
+        description="单独维护字幕配对模型、Key、代理、提示词和测试连接，任务执行仍由当前参数面板约束。"
+      >
+        <AISubtitleSettingsPanel :config="config" />
+      </SettingsSectionPanel>
 
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="使用次数阈值">
-              <el-slider
-                v-model="config.password_cleanup.max_use_count"
-                :min="0"
-                :max="10"
-                :step="1"
-                show-input
-                :disabled="!config.password_cleanup.enabled"
-              />
-              <div class="form-tip">
-                使用次数 ≤ {{ config.password_cleanup.max_use_count }} 的密码将被清理
-              </div>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="保留天数">
-              <el-slider
-                v-model="config.password_cleanup.preserve_days"
-                :min="1"
-                :max="90"
-                :step="1"
-                show-input
-                :disabled="!config.password_cleanup.enabled"
-              />
-              <div class="form-tip">
-                密码创建后超过 {{ config.password_cleanup.preserve_days }} 天且使用次数 ≤ 阈值才删除
-              </div>
-            </el-form-item>
-          </el-col>
-        </el-row>
+      <SettingsSectionPanel
+        v-else-if="activeSection === 'httpDownload'"
+        kicker="HTTP Downloader"
+        title="HTTP 下载"
+        description="配置 HTTP/HTTPS 外链、Gofile 分享和 PikPak 下载。"
+      >
+        <HttpDownloadSettingsPanel :config="config" />
+      </SettingsSectionPanel>
 
-        <el-form-item label="Cron 表达式">
-          <el-input
-            v-model="config.password_cleanup.cron_expression"
-            placeholder="例如: 0 0 * * 0"
-            :disabled="!config.password_cleanup.enabled"
-            style="width: 300px"
-          >
-            <template #append>
-              <el-tooltip content="Cron格式：分 时 日 月 周。默认 0 0 * * 0 表示每周日午夜">
-                <el-icon><QuestionFilled /></el-icon>
-              </el-tooltip>
-            </template>
-          </el-input>
-          <div class="form-tip">
-            示例：0 0 * * 0（每周日午夜）、0 2 * * *（每天凌晨2点）、0 0 1 * *（每月1号）
-          </div>
-        </el-form-item>
+      <SettingsSectionPanel
+        v-else-if="activeSection === 'baiduNetdisk'"
+        kicker="Baidu Netdisk"
+        title="百度网盘"
+        description="配置官方账号绑定、分享直下和百度网盘下载落盘规则。"
+      >
+        <BaiduNetdiskSettingsPanel :config="config" @persisted="handleBaiduNetdiskPersisted" />
+      </SettingsSectionPanel>
 
-        <el-form-item label="排除来源">
-          <el-select
-            v-model="config.password_cleanup.exclude_sources"
-            multiple
-            placeholder="选择要排除的密码来源"
-            :disabled="!config.password_cleanup.enabled"
-            style="width: 100%"
-          >
-            <el-option label="手动添加 (manual)" value="manual" />
-            <el-option label="批量导入 (batch)" value="batch" />
-            <el-option label="自动提取 (auto)" value="auto" />
-          </el-select>
-          <div class="form-tip">
-            选中的来源类型的密码不会被清理
-          </div>
-        </el-form-item>
+      <SettingsSectionPanel
+        v-else-if="activeSection === 'system'"
+        kicker="Runtime System"
+        title="系统运行"
+        description="集中配置 PostgreSQL、Redis、资源预算和数据库现场健康检查。"
+      >
+        <SystemSettingsPanel :config="config" />
+      </SettingsSectionPanel>
 
-        <el-divider />
+      <SettingsSectionPanel
+        v-else-if="activeSection === 'maintenance'"
+        kicker="Maintenance"
+        title="维护与清理"
+        description="自动清理、备份打包等维护项集中放在一起，避免日常配置区被危险操作打断。"
+      >
+        <MaintenanceSettingsPanel :config="config" />
+      </SettingsSectionPanel>
 
-        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-          <el-button
-            type="primary"
-            size="small"
-            @click="previewPasswordCleanup"
-            :disabled="!config.password_cleanup.enabled"
-          >
-            <el-icon><View /></el-icon>
-            预览清理
-          </el-button>
-          <el-button
-            type="danger"
-            size="small"
-            @click="runPasswordCleanup"
-            :disabled="!config.password_cleanup.enabled"
-          >
-            <el-icon><Delete /></el-icon>
-            立即清理
-          </el-button>
-        </div>
-      </el-card>
+      <SettingsSectionPanel
+        v-else-if="activeSection === 'fts'"
+        kicker="Full-Text Search"
+        title="全文搜索索引"
+        description="管理 PostgreSQL pg_trgm 搜索索引。支持中文任意片段搜索，重建期间功能不中断。"
+      >
+        <FtsSettingsPanel />
+      </SettingsSectionPanel>
 
-      <!-- 已处理压缩包智能清理 -->
-      <el-card class="setting-card">
-        <template #header>
-          <div class="card-header">
-            <span>已处理压缩包智能清理</span>
-            <el-switch v-model="config.processed_archive_cleanup.enabled" active-text="启用清理" />
-          </div>
-        </template>
+      <SettingsSectionPanel
+        v-else-if="activeSection === 'security'"
+        kicker="Security Gate"
+        title="安全门禁"
+        description="用 Google Authenticator 给系统入口加一层轻量保护，覆盖访问验证、黑名单和安全提醒。"
+      >
+        <SecurityGateSettingsPanel :config="config" />
+      </SettingsSectionPanel>
 
-        <el-alert
-          title="清理说明"
-          type="info"
-          :closable="false"
-          style="margin-bottom: 15px;"
-        >
-          <div style="font-size: 12px; line-height: 1.6;">
-            <p>• 系统会自动清理已处理的压缩包文件，避免磁盘空间无限占用</p>
-            <p>• 支持三种清理策略：<strong>按时间</strong>、<strong>按数量</strong>、<strong>按容量</strong></p>
-            <p>• 可以选择是否保留正在重新处理的压缩包</p>
-          </div>
-        </el-alert>
-
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="清理策略">
-              <el-select
-                v-model="config.processed_archive_cleanup.strategy"
-                :disabled="!config.processed_archive_cleanup.enabled"
-                style="width: 100%"
-              >
-                <el-option label="按时间清理" value="age" />
-                <el-option label="按数量清理" value="count" />
-                <el-option label="按容量清理" value="size" />
-              </el-select>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="Cron 表达式">
-              <el-input
-                v-model="config.processed_archive_cleanup.cron_expression"
-                placeholder="例如: 0 1 * * 0"
-                :disabled="!config.processed_archive_cleanup.enabled"
-              >
-                <template #append>
-                  <el-tooltip content="Cron格式：分 时 日 月 周。默认 0 1 * * 0 表示每周日凌晨1点">
-                    <el-icon><QuestionFilled /></el-icon>
-                  </el-tooltip>
-                </template>
-              </el-input>
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <!-- 按时间清理设置 -->
-        <el-form-item v-if="config.processed_archive_cleanup.strategy === 'age'" label="保留天数">
-          <el-slider
-            v-model="config.processed_archive_cleanup.preserve_days"
-            :min="1"
-            :max="365"
-            :step="1"
-            show-input
-            :disabled="!config.processed_archive_cleanup.enabled"
-          />
-          <div class="form-tip">
-            处理时间超过 {{ config.processed_archive_cleanup.preserve_days }} 天的压缩包将被删除
-          </div>
-        </el-form-item>
-
-        <!-- 按数量清理设置 -->
-        <el-form-item v-if="config.processed_archive_cleanup.strategy === 'count'" label="最大保留数量">
-          <el-slider
-            v-model="config.processed_archive_cleanup.max_count"
-            :min="10"
-            :max="10000"
-            :step="10"
-            show-input
-            :disabled="!config.processed_archive_cleanup.enabled"
-          />
-          <div class="form-tip">
-            最多保留 {{ config.processed_archive_cleanup.max_count }} 个压缩包，超出后删除最旧的
-          </div>
-        </el-form-item>
-
-        <!-- 按容量清理设置 -->
-        <el-form-item v-if="config.processed_archive_cleanup.strategy === 'size'" label="最大占用空间(GB)">
-          <el-slider
-            v-model="config.processed_archive_cleanup.max_size_gb"
-            :min="1"
-            :max="500"
-            :step="1"
-            show-input
-            :disabled="!config.processed_archive_cleanup.enabled"
-          />
-          <div class="form-tip">
-            压缩包总大小超过 {{ config.processed_archive_cleanup.max_size_gb }} GB 时，删除最旧的压缩包
-          </div>
-        </el-form-item>
-
-        <el-form-item label="排除重新处理的压缩包">
-          <el-switch
-            v-model="config.processed_archive_cleanup.exclude_reprocessing"
-            :disabled="!config.processed_archive_cleanup.enabled"
-          />
-          <div class="form-tip">
-            开启后，正在重新处理的压缩包不会被清理
-          </div>
-        </el-form-item>
-
-        <el-form-item label="启动时扫描压缩包目录">
-          <el-switch v-model="config.processed_archive_cleanup.scan_on_startup" />
-          <div class="form-tip">
-            开启后，程序启动时会扫描已处理压缩包目录并同步数据库记录
-          </div>
-        </el-form-item>
-
-        <el-divider />
-
-        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-          <el-button
-            type="primary"
-            size="small"
-            @click="previewArchiveCleanup"
-            :disabled="!config.processed_archive_cleanup.enabled"
-          >
-            <el-icon><View /></el-icon>
-            预览清理
-          </el-button>
-          <el-button
-            type="danger"
-            size="small"
-            @click="runArchiveCleanup"
-            :disabled="!config.processed_archive_cleanup.enabled"
-          >
-            <el-icon><Delete /></el-icon>
-            立即清理
-          </el-button>
-        </div>
-      </el-card>
-
-      <!-- 路径映射设置 -->
-      <el-card class="setting-card">
-        <template #header>
-          <div class="card-header">
-            <span>路径映射（跨设备访问）</span>
-            <el-switch v-model="config.path_mapping.enabled" active-text="启用映射" />
-          </div>
-        </template>
-        
-        <el-alert
-          title="路径映射说明"
-          type="info"
-          :closable="false"
-          style="margin-bottom: 15px;"
-        >
-          <div style="font-size: 12px; line-height: 1.6;">
-            <p>• 当您将应用部署在 Docker/远程服务器上，通过 SMB/NFS 访问文件时需要配置路径映射</p>
-            <p>• 例如：Docker 内路径 <code>/viocelink/library</code> 映射到 Windows <code>W:\Viocelink\library</code></p>
-            <p>• 配置后点击"打开位置"将显示映射后的本地路径，方便您复制并在资源管理器中打开</p>
-          </div>
-        </el-alert>
-        
-        <el-form-item label="打开模式">
-          <el-radio-group v-model="config.path_mapping.open_mode" :disabled="!config.path_mapping.enabled">
-            <el-radio label="auto">自动判断</el-radio>
-            <el-radio label="direct">直接打开（同设备部署）</el-radio>
-            <el-radio label="mapped">使用映射路径（跨设备部署）</el-radio>
-          </el-radio-group>
-          <div class="form-tip">
-            <strong>自动判断</strong>：后端尝试直接打开，失败时返回映射路径
-          </div>
-        </el-form-item>
-        
-        <el-divider />
-        
-        <div v-for="(rule, index) in config.path_mapping.rules" :key="index" class="mapping-rule-item">
-          <el-card shadow="never">
-            <el-row :gutter="10" align="middle">
-              <el-col :span="10">
-                <el-input 
-                  v-model="rule.remote_path" 
-                  placeholder="远程/Docker 路径，如 /viocelink" 
-                  size="small"
-                  :disabled="!config.path_mapping.enabled"
-                >
-                  <template #prefix>
-                    <el-icon><Folder /></el-icon>
-                  </template>
-                </el-input>
-              </el-col>
-              <el-col :span="1" style="text-align: center;">
-                <el-icon><ArrowRight /></el-icon>
-              </el-col>
-              <el-col :span="10">
-                <el-input 
-                  v-model="rule.local_path" 
-                  placeholder="本地映射路径，如 W:\\Viocelink" 
-                  size="small"
-                  :disabled="!config.path_mapping.enabled"
-                >
-                  <template #prefix>
-                    <el-icon><FolderOpened /></el-icon>
-                  </template>
-                </el-input>
-              </el-col>
-              <el-col :span="1" style="text-align: center;">
-                <el-switch v-model="rule.enabled" size="small" :disabled="!config.path_mapping.enabled" />
-              </el-col>
-              <el-col :span="2" style="text-align: right;">
-                <el-button 
-                  type="danger" 
-                  link 
-                  size="small" 
-                  @click="removePathMappingRule(index)"
-                  :disabled="!config.path_mapping.enabled"
-                >
-                  <el-icon><Delete /></el-icon>
-                </el-button>
-              </el-col>
-            </el-row>
-          </el-card>
-        </div>
-        
-        <el-button 
-          type="primary" 
-          size="small" 
-          @click="addPathMappingRule" 
-          style="margin-top: 10px;"
-          :disabled="!config.path_mapping.enabled"
-        >
-          <el-icon><Plus /></el-icon> 添加映射规则
-        </el-button>
-        
-        <el-divider />
-        
-        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-          <el-input
-            v-model="testMappingPath"
-            placeholder="输入测试路径，如 /viocelink/library/RJ12345"
-            style="width: 300px;"
-            :disabled="!config.path_mapping.enabled"
-          >
-            <template #prefix>
-              <el-icon><Document /></el-icon>
-            </template>
-          </el-input>
-          <el-button
-            type="primary"
-            size="small"
-            @click="testPathMapping"
-            :disabled="!config.path_mapping.enabled || !testMappingPath"
-          >
-            <el-icon><Check /></el-icon>
-            测试映射
-          </el-button>
-        </div>
-        
-        <el-dialog
-          v-model="testMappingDialogVisible"
-          title="路径映射测试结果"
-          width="500px"
-        >
-          <el-descriptions :column="1" border>
-            <el-descriptions-item label="原始路径">
-              <code>{{ testMappingResult.original_path }}</code>
-            </el-descriptions-item>
-            <el-descriptions-item label="映射后路径">
-              <code>{{ testMappingResult.mapped_path }}</code>
-            </el-descriptions-item>
-            <el-descriptions-item label="映射状态">
-              <el-tag :type="testMappingResult.is_mapped ? 'success' : 'warning'">
-                {{ testMappingResult.is_mapped ? '成功映射' : '未匹配到规则' }}
-              </el-tag>
-            </el-descriptions-item>
-          </el-descriptions>
-          <template #footer>
-            <el-button @click="testMappingDialogVisible = false">关闭</el-button>
-          </template>
-        </el-dialog>
-      </el-card>
-
-      <!-- Kikoeru 服务器查重配置 -->
-      <el-card class="setting-card">
-        <template #header>
-          <div class="card-header">
-            <span>Kikoeru 服务器查重</span>
-            <div class="header-actions">
-              <el-switch 
-                v-model="config.kikoeru_server.enabled" 
-                active-text="启用"
-              />
-              <el-button 
-                type="success" 
-                size="small" 
-                @click="saveKikoeruConfig"
-                :loading="savingKikoeru"
-              >
-                <el-icon><Check /></el-icon> 保存配置
-              </el-button>
-              <el-button 
-                type="primary" 
-                size="small" 
-                @click="testKikoeruConnection"
-                :loading="testingKikoeru"
-                :disabled="!config.kikoeru_server.enabled || !config.kikoeru_server.server_url"
-              >
-                <el-icon><Connection /></el-icon> 测试连接
-              </el-button>
-            </div>
-          </div>
-        </template>
-
-        <el-form 
-          :model="config.kikoeru_server" 
-          label-position="top"
-        >
-          <el-row :gutter="20">
-            <el-col :span="24">
-              <el-form-item label="服务器地址">
-                <el-input 
-                  v-model="config.kikoeru_server.server_url" 
-                  placeholder="例如: http://192.168.1.100:8088"
-                >
-                  <template #prefix>
-                    <el-icon><Link /></el-icon>
-                  </template>
-                </el-input>
-                <div class="form-tip">Kikoeru 服务器的完整 URL 地址</div>
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <el-row :gutter="20">
-            <el-col :span="12">
-              <el-form-item label="用户名">
-                <el-input 
-                  v-model="config.kikoeru_server.username" 
-                  placeholder="登录用户名"
-                >
-                  <template #prefix>
-                    <el-icon><User /></el-icon>
-                  </template>
-                </el-input>
-                <div class="form-tip">Kikoeru 登录用户名</div>
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="密码">
-                <el-input 
-                  v-model="config.kikoeru_server.password" 
-                  placeholder="登录密码"
-                  show-password
-                >
-                  <template #prefix>
-                    <el-icon><Key /></el-icon>
-                  </template>
-                </el-input>
-                <div class="form-tip">Kikoeru 登录密码，用于自动获取 Token</div>
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <el-row :gutter="20" style="margin-bottom: 20px;">
-            <el-col :span="24">
-              <el-button 
-                type="primary" 
-                @click="fetchKikoeruToken"
-                :loading="fetchingKikoeruToken"
-                :disabled="!config.kikoeru_server.server_url || !config.kikoeru_server.username || !config.kikoeru_server.password"
-              >
-                <el-icon><Key /></el-icon>
-                手动获取 Token
-              </el-button>
-              <span v-if="kikoeruTokenStatus" :style="{ marginLeft: '10px', color: kikoeruTokenStatus.success ? '#67c23a' : '#f56c6c' }">
-                {{ kikoeruTokenStatus.message }}
-              </span>
-              <div class="form-tip">点击按钮使用账号密码登录获取 Token，Token 过期后会自动重新获取</div>
-            </el-col>
-          </el-row>
-
-          <el-row :gutter="20">
-            <el-col :span="12">
-              <el-form-item label="请求超时（秒）">
-                <el-input-number 
-                  v-model="config.kikoeru_server.timeout" 
-                  :min="5" 
-                  :max="60"
-                  :step="5"
-                />
-                <div class="form-tip">查询请求的超时时间</div>
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="缓存时间（秒）">
-                <el-input-number 
-                  v-model="config.kikoeru_server.cache_ttl" 
-                  :min="60" 
-                  :max="3600"
-                  :step="60"
-                />
-                <div class="form-tip">查重结果的缓存时间</div>
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <!-- RJ号测试查询 -->
-          <el-row :gutter="20" style="margin-top: 20px;">
-            <el-col :span="24">
-              <el-form-item label="测试查重">
-                <div style="display: flex; gap: 10px;">
-                  <el-input 
-                    v-model="kikoeruTestRjcode" 
-                    placeholder="输入RJ号进行测试，例如: RJ123456"
-                    style="width: 300px;"
-                    :disabled="!config.kikoeru_server.enabled"
-                  >
-                    <template #prefix>
-                      <el-icon><Search /></el-icon>
-                    </template>
-                  </el-input>
-                  <el-button 
-                    type="primary" 
-                    @click="testKikoeruCheck"
-                    :loading="testingKikoeruCheck"
-                    :disabled="!config.kikoeru_server.enabled || !kikoeruTestRjcode"
-                  >
-                    <el-icon><Search /></el-icon>
-                    测试查重
-                  </el-button>
-                </div>
-                <div class="form-tip">输入RJ号测试Kikoeru服务器查重功能</div>
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <el-form-item>
-            <div class="kikoeru-info">
-              <el-alert
-                title="关于 Kikoeru 服务器查重"
-                type="info"
-                :closable="false"
-              >
-                <template #default>
-                  <p>启用后，系统在查重时会同时查询本地库和远程 Kikoeru 服务器。</p>
-                  <p>适用于多个设备/服务器共享同一个 Kikoeru 库的场景。</p>
-                  <p>配置用户名和密码后，系统会自动获取 Token，Token 过期后会自动重新获取。</p>
-                  <p>支持的 URL 格式: <code>http://ip:port</code> 或 <code>https://domain</code></p>
-                </template>
-              </el-alert>
-            </div>
-          </el-form-item>
-        </el-form>
-
-        <!-- 连接测试结果对话框 -->
-        <el-dialog
-          v-model="kikoeruTestDialogVisible"
-          title="连接测试结果"
-          width="400px"
-        >
-          <el-result
-            :icon="kikoeruTestResult.success ? 'success' : 'error'"
-            :title="kikoeruTestResult.success ? '连接成功' : '连接失败'"
-            :sub-title="kikoeruTestResult.message"
-          >
-            <template #extra v-if="kikoeruTestResult.latency > 0">
-              <el-tag :type="kikoeruTestResult.success ? 'success' : 'info'">
-                延迟: {{ kikoeruTestResult.latency.toFixed(0) }}ms
-              </el-tag>
-            </template>
-          </el-result>
-        </el-dialog>
-
-        <!-- 查重结果对话框 -->
-        <el-dialog
-          v-model="kikoeruCheckDialogVisible"
-          title="Kikoeru 查重结果"
-          width="600px"
-        >
-          <div v-if="kikoeruCheckResult" class="kikoeru-check-result">
-            <el-result
-              :icon="kikoeruCheckResult.is_found ? 'success' : 'info'"
-              :title="kikoeruCheckResult.is_found ? '作品已存在' : '作品未找到'"
-            >
-              <template #sub-title>
-                <div style="text-align: left;">
-                  <p><strong>查询 RJ 号:</strong> {{ kikoeruCheckResult.rjcode }}</p>
-                  <p v-if="kikoeruCheckResult.title">
-                    <strong>标题:</strong> {{ kikoeruCheckResult.title }}
-                  </p>
-                  
-                  <!-- 关联作品列表 -->
-                  <div v-if="kikoeruCheckResult.linked_works_found && kikoeruCheckResult.linked_works_found.length > 0" style="margin-top: 20px;">
-                    <el-divider content-position="left">
-                      在 Kikoeru 中找到 {{ kikoeruCheckResult.linked_works_found.length }} 个关联作品
-                    </el-divider>
-                    
-                    <el-table :data="kikoeruCheckResult.linked_works_found" size="small" style="width: 100%">
-                      <el-table-column prop="rjcode" label="RJ号" width="120" />
-                      <el-table-column prop="title" label="标题" min-width="150">
-                        <template #default="{ row }">
-                          {{ row.title || '未知标题' }}
-                        </template>
-                      </el-table-column>
-                      <el-table-column prop="circle_name" label="社团" width="150">
-                        <template #default="{ row }">
-                          {{ row.circle_name || '未知社团' }}
-                        </template>
-                      </el-table-column>
-                    </el-table>
-                  </div>
-                  
-                  <p v-else-if="!kikoeruCheckResult.is_found" style="color: #909399; margin-top: 20px;">
-                    未在 Kikoeru 服务器中找到该作品及其关联作品
-                  </p>
-                  
-                  <p style="color: #909399; font-size: 12px; margin-top: 15px;">
-                    共检查 {{ kikoeruCheckResult.total_checked }} 个作品
-                  </p>
-                  
-                  <p v-if="kikoeruCheckResult.message" style="color: #f56c6c; margin-top: 10px;">
-                    <strong>错误信息:</strong> {{ kikoeruCheckResult.message }}
-                  </p>
-                </div>
-              </template>
-            </el-result>
-          </div>
-        </el-dialog>
-      </el-card>
-
-      <!-- ASMR 同步配置 -->
-      <el-card class="setting-card">
-        <template #header>
-          <div class="card-header">
-            <span>ASMR 同步下载</span>
-          </div>
-        </template>
-
-        <el-form label-width="120px">
-          <el-row :gutter="20">
-            <el-col :span="12">
-              <el-form-item label="重试Cron">
-                <el-input
-                  v-model="config.asmr_sync.retry_cron"
-                  placeholder="0 */1 * * *"
-                />
-              </el-form-item>
-              <div class="form-tip">Cron表达式，默认每小时执行一次（0 */1 * * *）</div>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="最大重试次数">
-                <el-input-number
-                  v-model="config.asmr_sync.max_retry_count"
-                  :min="1"
-                  :max="100"
-                />
-                <span style="margin-left: 10px;">次</span>
-              </el-form-item>
-              <div class="form-tip">达到最大次数后任务将标记为失败</div>
-            </el-col>
-          </el-row>
-
-          <el-row :gutter="20">
-            <el-col :span="12">
-              <el-form-item label="并发下载数">
-                <el-input-number
-                  v-model="config.asmr_sync.max_concurrent_downloads"
-                  :min="1"
-                  :max="10"
-                />
-              </el-form-item>
-              <div class="form-tip">同时下载的文件数量</div>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="HTTP代理">
-                <el-input
-                  v-model="config.asmr_sync.http_proxy"
-                  placeholder="127.0.0.1:7890"
-                />
-              </el-form-item>
-              <div class="form-tip">可选，用于访问 asmr.one</div>
-
-          <el-divider content-position="left">自定义服务器配置</el-divider>
-
-          <el-row :gutter="20">
-            <el-col :span="24">
-              <el-form-item label="服务器地址">
-                <el-input
-                  v-model="config.asmr_sync.custom_api_url"
-                  placeholder="留空使用默认 (https://api.asmr-200.com)，如 https://api.asmr-300.com"
-                  style="width: 100%;"
-                />
-                <div class="form-tip">自定义 ASMR 服务器地址，末尾不要有斜杠。留空则使用默认服务器</div>
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <el-row :gutter="20">
-            <el-col :span="12">
-              <el-form-item label="Meta 请求模板">
-                <el-input
-                  v-model="config.asmr_sync.custom_meta_template"
-                  placeholder="留空使用默认 (/workInfo/{rjcode})"
-                />
-                <div class="form-tip">获取作品元数据的路径模板，如 /workInfo/{rjcode}</div>
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="Track 请求模板">
-                <el-input
-                  v-model="config.asmr_sync.custom_track_template"
-                  placeholder="留空使用默认 (/tracks/{rjcode})"
-                />
-                <div class="form-tip">获取音轨/文件列表的路径模板，如 /tracks/{rjcode}</div>
-              </el-form-item>
-            </el-col>
-          </el-row>
-            </el-col>
-          </el-row>
-
-          <!-- LRC广告清理配置 -->
-          <el-divider content-position="left">LRC广告清理</el-divider>
-
-          <el-form-item label="启用广告清理">
-            <el-switch v-model="config.asmr_sync.lrc_clean_enabled" />
-            <div class="form-tip">启用后将自动清理LRC字幕文件中的广告内容</div>
-          </el-form-item>
-
-          <el-form-item label="清理规则" v-if="config.asmr_sync.lrc_clean_enabled">
-            <div style="width: 100%;">
-              <div v-for="(pattern, index) in config.asmr_sync.lrc_clean_patterns" :key="index" style="display: flex; gap: 8px; margin-bottom: 8px;">
-                <el-input
-                  v-model="config.asmr_sync.lrc_clean_patterns[index]"
-                  placeholder="正则表达式，如 @[\w]{3,}"
-                  style="flex: 1;"
-                />
-                <el-button type="danger" link @click="config.asmr_sync.lrc_clean_patterns.splice(index, 1)">
-                  <el-icon><Delete /></el-icon>
-                </el-button>
-              </div>
-              <el-button type="primary" size="small" @click="config.asmr_sync.lrc_clean_patterns.push('')">
-                <el-icon><Plus /></el-icon> 添加规则
-              </el-button>
-            </div>
-            <div class="form-tip" style="margin-top: 8px;">
-              使用正则表达式匹配广告内容，匹配到的文本将被清除。常见规则：<br>
-              • <code>@[\w]{3,}</code> - 匹配@账号（如Telegram账号）<br>
-              • <code>Telegram</code> - 匹配Telegram关键词<br>
-              • <code>QQ群[：:]\s*\d+</code> - 匹配QQ群号
-            </div>
-          </el-form-item>
-
-          <el-form-item label="字幕繁体转简体">
-            <el-switch v-model="config.asmr_sync.simplify_chinese_enabled" />
-            <div class="form-tip">启用后将自动将繁体中文字幕转换为简体中文</div>
-          </el-form-item>
-
-          <el-form-item>
-            <el-alert
-              title="关于 ASMR 同步下载"
-              type="info"
-              :closable="false"
-            >
-              <template #default>
-                <p>ASMR 同步功能会根据字幕文件自动从 asmr.one 下载对应的音频文件。</p>
-                <p>当作品在 asmr.one 上找不到时，任务会进入"等待重试"状态，系统会根据Cron表达式定期重试。</p>
-              </template>
-            </el-alert>
-          </el-form-item>
-        </el-form>
-      </el-card>
-
-      <!-- 正常解压缩流程步骤开关 -->
-      <el-card class="setting-card">
-        <template #header>
-          <div class="card-header">
-            <span>正常解压缩流程步骤</span>
-          </div>
-        </template>
-
-        <el-alert
-          title="步骤开关说明"
-          type="info"
-          :closable="false"
-          style="margin-bottom: 15px;"
-        >
-          <div style="font-size: 12px; line-height: 1.6;">
-            <p>控制正常解压缩流程中各步骤的执行。关闭某步骤后，该步骤将被跳过。</p>
-            <p><strong>注意：</strong>关闭"解压"步骤可能导致任务失败，不建议关闭。</p>
-          </div>
-        </el-alert>
-
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item label="预检重复">
-              <el-switch v-model="config.auto_process.check_duplicate" />
-              <div class="form-tip">检查作品是否已存在于库存中</div>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="解压">
-              <el-switch v-model="config.auto_process.extract" />
-              <div class="form-tip" style="color: #f56c6c;">不建议关闭</div>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="获取元数据">
-              <el-switch v-model="config.auto_process.fetch_metadata" />
-              <div class="form-tip">从DLsite获取作品信息</div>
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item label="重命名">
-              <el-switch v-model="config.auto_process.rename" />
-              <div class="form-tip">按模板重命名文件夹</div>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="过滤">
-              <el-switch v-model="config.auto_process.filter" />
-              <div class="form-tip">应用过滤规则</div>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="智能分类">
-              <el-switch v-model="config.auto_process.classify" />
-              <div class="form-tip">按规则分类到子目录</div>
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item label="归档压缩包">
-              <el-switch v-model="config.auto_process.archive" />
-              <div class="form-tip">将压缩包移动到归档目录</div>
-            </el-form-item>
-          </el-col>
-        </el-row>
-      </el-card>
-
-      <!-- 已有文件夹处理流程步骤开关 -->
-      <el-card class="setting-card">
-        <template #header>
-          <div class="card-header">
-            <span>已有文件夹处理流程步骤</span>
-          </div>
-        </template>
-
-        <el-alert
-          title="步骤开关说明"
-          type="info"
-          :closable="false"
-          style="margin-bottom: 15px;"
-        >
-          <div style="font-size: 12px; line-height: 1.6;">
-            <p>控制已有文件夹处理流程中各步骤的执行。此流程用于处理已解压的文件夹（跳过解压步骤）。</p>
-          </div>
-        </el-alert>
-
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item label="预检重复">
-              <el-switch v-model="config.process_existing.check_duplicate" />
-              <div class="form-tip">检查作品是否已存在</div>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="获取元数据">
-              <el-switch v-model="config.process_existing.fetch_metadata" />
-              <div class="form-tip">从DLsite获取作品信息</div>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="重命名">
-              <el-switch v-model="config.process_existing.rename" />
-              <div class="form-tip">按模板重命名文件夹</div>
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item label="过滤">
-              <el-switch v-model="config.process_existing.filter" />
-              <div class="form-tip">应用过滤规则</div>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="LRC导入">
-              <el-switch v-model="config.process_existing.import_lrc" />
-              <div class="form-tip">从字幕文件夹导入LRC字幕</div>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="智能分类">
-              <el-switch v-model="config.process_existing.classify" />
-              <div class="form-tip">按规则分类到子目录</div>
-            </el-form-item>
-          </el-col>
-        </el-row>
-      </el-card>
-
-      <!-- ASMR同步下载流程步骤开关 -->
-      <el-card class="setting-card">
-        <template #header>
-          <div class="card-header">
-            <span>ASMR同步下载流程步骤</span>
-          </div>
-        </template>
-
-        <el-alert
-          title="步骤开关说明"
-          type="info"
-          :closable="false"
-          style="margin-bottom: 15px;"
-        >
-          <div style="font-size: 12px; line-height: 1.6;">
-            <p>控制ASMR同步下载流程中各步骤的执行。</p>
-            <p><strong>注意：</strong>LRC广告清理和繁简转换在"ASMR同步下载"配置中设置。</p>
-          </div>
-        </el-alert>
-
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item label="下载文件">
-              <el-switch v-model="config.asmr_sync_step.download" />
-              <div class="form-tip" style="color: #f56c6c;">不建议关闭</div>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="同步字幕">
-              <el-switch v-model="config.asmr_sync_step.sync_subtitle" />
-              <div class="form-tip">将字幕文件同步到下载目录</div>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="重命名">
-              <el-switch v-model="config.asmr_sync_step.rename" />
-              <div class="form-tip">按模板重命名文件夹</div>
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item label="智能分类">
-              <el-switch v-model="config.asmr_sync_step.classify" />
-              <div class="form-tip">按规则分类到子目录</div>
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="移动字幕文件夹">
-              <el-switch v-model="config.asmr_sync_step.move_subtitle_folder" />
-              <div class="form-tip">完成后移动字幕文件夹到Finished目录</div>
-            </el-form-item>
-          </el-col>
-        </el-row>
-      </el-card>
-
-      <!-- 分类规则 -->
-      <el-card class="setting-card">
-        <template #header>
-          <div class="card-header">
-            <span>分类规则</span>
-            <el-button type="primary" size="small" @click="addRule">
-              <el-icon><Plus /></el-icon> 添加规则
-            </el-button>
-          </div>
-        </template>
-        
-        <el-alert
-          title="分类规则说明"
-          type="info"
-          :closable="false"
-          style="margin-bottom: 20px;"
-        >
-          <div style="font-size: 12px; line-height: 1.6;">
-            <p>• <strong>无</strong>：作品直接存入库存根目录</p>
-            <p>• <strong>社团</strong>：按社团名称分类，可使用 {maker_name} 变量</p>
-            <p>• <strong>RJ号范围</strong>：按RJ号范围分类，需设置范围和目录名称</p>
-            <p>• <strong>系列</strong>：按系列名称分类，可使用 {series_name} 变量</p>
-          </div>
-        </el-alert>
-        
-        <div v-for="(rule, index) in config.classification" :key="index" class="rule-item">
-          <el-card shadow="never">
-            <!-- 基础路径显示 -->
-            <el-row :gutter="10" align="middle" style="margin-bottom: 10px;">
-              <el-col :span="24">
-                <div class="base-path-display">
-                  <span class="path-label">库存基础路径：</span>
-                  <span class="path-value">{{ config.storage.library_path }}\</span>
-                </div>
-              </el-col>
-            </el-row>
-            
-            <el-row :gutter="10" align="middle">
-              <el-col :span="5">
-                <el-select v-model="rule.type" placeholder="子目录类别" @change="onRuleTypeChange(rule)">
-                  <el-option label="无" value="none" />
-                  <el-option label="社团" value="maker" />
-                  <el-option label="RJ号范围" value="rjcode" />
-                  <el-option label="系列" value="series" />
-                </el-select>
-              </el-col>
-              
-              <!-- 不同分类类型的子目录输入 -->
-              <el-col :span="13" v-if="rule.type === 'none'">
-                <el-input disabled placeholder="无子目录" />
-                <div class="form-tip">作品将直接存入库存根目录</div>
-              </el-col>
-              
-              <el-col :span="13" v-else-if="rule.type === 'maker'">
-                <el-input v-model="rule.path_template" placeholder="子目录名称，留空使用社团名">
-                  <template #append>
-                    <el-tooltip content="使用 {maker_name} 自动替换为社团名称">
-                      <el-icon><QuestionFilled /></el-icon>
-                    </el-tooltip>
-                  </template>
-                </el-input>
-                <div class="form-tip">使用 {maker_name} 变量或自定义名称</div>
-              </el-col>
-              
-              <el-col :span="13" v-else-if="rule.type === 'rjcode'">
-                <el-input v-model="rule.custom_name" placeholder="目录名称，如：RJ011系列">
-                  <template #prepend>目录名</template>
-                </el-input>
-                <div class="form-tip">设置此RJ号范围的目录显示名称</div>
-              </el-col>
-              
-              <el-col :span="13" v-else-if="rule.type === 'series'">
-                <el-input v-model="rule.path_template" placeholder="子目录名称，留空使用系列名">
-                  <template #append>
-                    <el-tooltip content="使用 {series_name} 自动替换为系列名称">
-                      <el-icon><QuestionFilled /></el-icon>
-                    </el-tooltip>
-                  </template>
-                </el-input>
-                <div class="form-tip">使用 {series_name} 变量或自定义名称</div>
-              </el-col>
-              
-              <el-col :span="4">
-                <el-switch v-model="rule.enabled" active-text="启用" />
-              </el-col>
-              <el-col :span="2" style="text-align: right;">
-                <el-button type="danger" link @click="removeRule(index)">
-                  <el-icon><Delete /></el-icon>
-                </el-button>
-              </el-col>
-            </el-row>
-            
-            <!-- RJ号范围详细设置 -->
-            <el-row v-if="rule.type === 'rjcode'" :gutter="10" style="margin-top: 10px;">
-              <el-col :span="12" :offset="5">
-                <el-card shadow="never" size="small">
-                  <template #header>
-                    <span style="font-size: 12px;">RJ号范围配置</span>
-                  </template>
-                  <el-row :gutter="10">
-                    <el-col :span="24">
-                      <el-input 
-                        v-model="rule.rjcode_range" 
-                        placeholder="例如: RJ01100000-RJ01199999"
-                        size="small"
-                      >
-                        <template #prepend>RJ号范围</template>
-                      </el-input>
-                      <div class="form-tip">格式: RJ01100000-RJ01199999</div>
-                    </el-col>
-                  </el-row>
-                </el-card>
-              </el-col>
-            </el-row>
-            
-            <!-- 路径预览 -->
-            <el-row :gutter="10" style="margin-top: 10px;">
-              <el-col :span="24">
-                <div class="path-preview">
-                  <span class="preview-label">路径预览：</span>
-                  <span class="preview-value">{{ getPathPreview(rule) }}</span>
-                </div>
-              </el-col>
-            </el-row>
-          </el-card>
-        </div>
-      </el-card>
-      
-      <!-- 保存按钮 -->
-      <div class="actions">
-        <el-button type="primary" size="large" @click="saveConfig">
-          <el-icon><Check /></el-icon> 保存配置
-        </el-button>
-        <el-button size="large" @click="resetConfig">重置</el-button>
-      </div>
-    </el-form>
-
-    <!-- 关于与署名 -->
-    <el-card class="setting-card about-card">
-      <template #header>
-        <div class="card-header">
-          <span>关于</span>
-        </div>
-      </template>
-      <div class="about-content">
-        <p><strong>Prekikoeru</strong> v{{ appVersion }}</p>
-        <p class="about-desc">DLsite 音声作品智能整理工具（仅限个人非商业用途）</p>
-        <el-divider style="margin: 12px 0;" />
-        <p class="attrib-title">界面设计署名 / UI Design Attribution</p>
-        <p class="about-desc">
-          本项目的界面主题设计基于
-          <a href="https://github.com/guokaigdg/animal-island-ui" target="_blank" rel="noopener">animal-island-ui</a>
-          （作者: guokaigdg）的设计规范修改而来，原作品采用
-          <a href="https://creativecommons.org/licenses/by-nc/4.0/deed.zh-hans" target="_blank" rel="noopener">CC BY-NC 4.0</a>
-          协议授权。<strong>禁止商用</strong>。
-        </p>
-        <p class="about-desc">
-          The UI theme of this project is adapted from
-          <a href="https://github.com/guokaigdg/animal-island-ui" target="_blank" rel="noopener">animal-island-ui</a>
-          by guokaigdg, licensed under
-          <a href="https://creativecommons.org/licenses/by-nc/4.0/" target="_blank" rel="noopener">CC BY-NC 4.0</a>.
-          Commercial use is prohibited.
-        </p>
-      </div>
-    </el-card>
+      <SettingsSectionPanel
+        v-else
+        kicker="Notifications"
+        title="通知中心"
+        description="任务完成、失败或需要人工处理时，站内铃铛实时提醒；配置 SMTP 还可收到邮件推送。"
+      >
+        <NotificationSettingsPanel :config="config" />
+      </SettingsSectionPanel>
+    </SettingsWorkbench>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import pkg from '../../package.json'
-import { Folder, FolderOpened, Plus, Delete, Check, QuestionFilled, Tools, Warning, View, ArrowRight, Document, Connection, Key, Link, Search, User } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { useConfigStore } from '../stores'
-import { configApi, kikoeruApi, pathMappingApi, cleanupApi } from '../api'
+import { computed, onMounted, ref, watch } from 'vue'
+import { Bell, Bot, Boxes, DownloadCloud, HardDrive, LifeBuoy, ScanSearch, ServerCog, ShieldCheck, TextSearch, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
+import SettingsSectionPanel from '../components/settings/SettingsSectionPanel.vue'
+import SettingsWorkbench from '../components/settings/SettingsWorkbench.vue'
+import BaiduNetdiskNavIcon from '../components/settings/BaiduNetdiskNavIcon.vue'
+import StorageSettingsPanel from '../components/settings/StorageSettingsPanel.vue'
+import ProcessingSettingsPanel from '../components/settings/ProcessingSettingsPanel.vue'
+import RulesSettingsPanel from '../components/settings/RulesSettingsPanel.vue'
+import ServicesSettingsPanel from '../components/settings/ServicesSettingsPanel.vue'
+import AISubtitleSettingsPanel from '../components/settings/AISubtitleSettingsPanel.vue'
+import HttpDownloadSettingsPanel from '../components/settings/HttpDownloadSettingsPanel.vue'
+import BaiduNetdiskSettingsPanel from '../components/settings/BaiduNetdiskSettingsPanel.vue'
+import SystemSettingsPanel from '../components/settings/SystemSettingsPanel.vue'
+import MaintenanceSettingsPanel from '../components/settings/MaintenanceSettingsPanel.vue'
+import FtsSettingsPanel from '../components/settings/FtsSettingsPanel.vue'
+import NotificationSettingsPanel from '../components/settings/NotificationSettingsPanel.vue'
+import SecurityGateSettingsPanel from '../components/settings/SecurityGateSettingsPanel.vue'
+import AppPageHeader from '../components/common/AppPageHeader.vue'
+import { useSettingsDraft } from '../composables/useSettingsDraft'
+import { useSynologyProfiles } from '../composables/useSynologyProfiles'
+import { configApi } from '../api'
 
-const configStore = useConfigStore()
-const loading = ref(false)
-const appVersion = pkg.version
-
-const defaultConfig = {
-  storage: {
-    input_path: '/input',
-    temp_path: '/temp',
-    library_path: '/library',
-    real_library_path: '',
-    asmr_subtitle_path: ''
-  },
-  processing: {
-    max_workers: 4
-  },
-  watcher: {
-    enabled: true,
-    scan_interval: 30,
-    auto_start: true,
-    auto_classify: true,
-    delete_after_process: false
-  },
-  extract: {
-    auto_repair_extension: true,
-    verify_after_extract: true,
-    password_list: [],
-    extract_nested_archives: true,
-    max_nested_depth: 5
-  },
-  filter: {
-    enabled: true,
-    filter_dir: true,
-    rules: [
-      {
-        name: '过滤无SE的文件',
-        pattern: '(?:SE|音|音效)(?:[な無]し|CUT)|(?:無|なし)(?:SE|音|音效)',
-        target: 'file',
-        action: 'exclude',
-        enabled: true
-      },
-      {
-        name: '过滤无SE的文件夹',
-        pattern: '(?:SE|音|音效)(?:[な無]し|CUT)|(?:無|なし)(?:SE|音|音效)',
-        target: 'folder',
-        action: 'exclude',
-        enabled: true
-      },
-      {
-        name: '过滤MP3文件',
-        pattern: '\.mp3$',
-        target: 'file',
-        action: 'exclude',
-        enabled: false
-      }
-    ]
-  },
-  metadata: {
-    locale: 'zh_cn',
-    cache_enabled: true,
-    fetch_cover: true,
-    make_folder_icon: true,
-    http_proxy: ''
-  },
-  rename: {
-    template: '{rjcode} {work_name}',
-    date_format: '%y%m%d',
-    exclude_square_brackets: false,
-    illegal_char_to_full_width: false,
-    flatten_single_subfolder: true,
-    flatten_depth: 3,
-    remove_empty_folders: true,
-    api_rename_follow_template: false,
-    use_japanese_metadata: false
-  },
-  classification: [
-    { type: 'none', enabled: true, path_template: '', custom_name: '', fallback: null, max_tags: null, rjcode_range: null }
-  ],
-  password_cleanup: {
-    enabled: false,
-    max_use_count: 1,
-    cron_expression: '0 0 * * 0',
-    preserve_days: 30,
-    exclude_sources: []
-  },
-  processed_archive_cleanup: {
-    enabled: false,
-    strategy: 'age',
-    cron_expression: '0 1 * * 0',
-    preserve_days: 30,
-    max_count: 1000,
-    max_size_gb: 50,
-    exclude_reprocessing: true,
-    scan_on_startup: true
-  },
-  path_mapping: {
-    enabled: false,
-    open_mode: 'auto',
-    rules: []
-  },
-  kikoeru_server: {
-    enabled: false,
-    server_url: '',
-    username: '',
-    password: '',
-    api_token: '',
-    token_expires: 0,
-    timeout: 10,
-    cache_ttl: 300
-  },
-  asmr_sync: {
-    enabled: true,
-    api_base_url: 'https://api.asmr-200.com/api',
-    max_concurrent_downloads: 3,
-    http_proxy: null,
-    retry_interval_hours: 1.0,
-    max_retry_count: 10,
-    retry_cron: '0 */1 * * *',
-    retry_count: 3,
-    retry_delay: 5,
-    lrc_clean_enabled: true,
-    lrc_clean_patterns: [
-      '@[\\w]{3,}',
-      'Telegram',
-      'telegram',
-      '电报',
-      'tg群',
-      'TG群',
-      'QQ群[：:]\\s*\\d+',
-      '群号[：:]\\s*\\d+'
-    ],
-    simplify_chinese_enabled: true
-  },
-  auto_process: {
-    check_duplicate: true,
-    extract: true,
-    fetch_metadata: true,
-    rename: true,
-    filter: true,
-    classify: true,
-    archive: true
-  },
-  process_existing: {
-    check_duplicate: true,
-    fetch_metadata: true,
-    rename: true,
-    filter: true,
-    import_lrc: true,
-    classify: true
-  },
-  asmr_sync_step: {
-    download: true,
-    sync_subtitle: true,
-    rename: true,
-    classify: true,
-    move_subtitle_folder: true
-  }
+const sectionKeyMap = {
+  storage: ['storage'],
+  processing: ['watcher', 'processing', 'extract', 'auto_process', 'process_existing'],
+  rules: ['filter', 'rename', 'classification', 'path_mappings', 'path_mapping_enabled'],
+  services: ['kikoeru_server', 'asmr_sync', 'asmr_sync_step', 'rj_subtitle', 'email_watcher', 'bonus_probe', 'circle_external_search'],
+  aiSubtitle: ['ai_subtitle_matching'],
+  httpDownload: ['http_downloader'],
+  baiduNetdisk: ['baidu_netdisk'],
+  system: ['database', 'resource_budget'],
+  maintenance: ['password_cleanup', 'archive_cleanup', 'backup_zip'],
+  fts: [],
+  security: ['security_gate'],
+  notification: ['notification_email', 'notification_center']
 }
 
-const config = ref(JSON.parse(JSON.stringify(defaultConfig)))
+const {
+  config,
+  saving,
+  reloading,
+  lastSavedAt,
+  hasChanges,
+  dirtyMap,
+  loadConfig,
+  saveConfig,
+  reloadConfigFromServer,
+  resetAllConfig,
+  markFieldsPersisted
+} = useSettingsDraft({ sectionKeyMap })
 
-onMounted(async () => {
-  await loadConfig()
+const BAIDU_NETDISK_PERSISTED_FIELDS = [
+  'enabled',
+  'cookie',
+  'account_name',
+  'account_netdisk_name',
+  'account_avatar_url',
+  'account_uk',
+  'share_code_separator',
+  'vip_type',
+  'vip_label',
+  'vip_level',
+  'vip_expire_at',
+  'quota_bytes',
+  'used_bytes',
+  'account_cached_at'
+]
+
+const {
+  profiles,
+  libraries,
+  primaryProfile,
+  profileSummaries,
+  libraryViewModels,
+  testingProfileId,
+  testingLibraryId,
+  extractSynologyProfileFromLibrary,
+  handleLibraryProfileChange,
+  addStorageLibrary,
+  removeStorageLibrary,
+  buildSynologyWebUrl,
+  testProfileConnection,
+  testStorageLibrary,
+  getProfileSummary,
+  getLibraryViewModel,
+  updateProfileFlag,
+  updateLibraryFlag,
+  syncRemoteLibraryPath
+} = useSynologyProfiles(config)
+
+const activeSection = ref('storage')
+const searchQuery = ref('')
+const selectedLibraryId = ref('')
+
+const sections = [
+  { id: 'storage', title: '存储与库存', short: '路径、本地库存、群晖模板', icon: HardDrive, keywords: ['storage', 'library', 'synology', '群晖', '库存'] },
+  { id: 'processing', title: '处理流程', short: '监视、解压、自动处理', icon: Workflow, keywords: ['watcher', 'processing', 'extract', '自动处理'] },
+  { id: 'rules', title: '内容规则', short: '过滤、重命名、分类、路径映射', icon: Boxes, keywords: ['filter', 'rename', 'classification', 'path'] },
+  { id: 'services', title: '外部服务', short: 'Kikoeru、ASMR、RJ 字幕、特典补全', icon: ScanSearch, keywords: ['kikoeru', 'asmr', 'subtitle', 'email', 'bonus', 'probe', 'dlsite', '外部服务', '特典补全', '特典探测'] },
+  { id: 'aiSubtitle', title: 'AI 配对', short: '模型、Key、提示词、阈值', icon: Bot, keywords: ['ai', 'subtitle', 'match', 'model', 'prompt', '字幕配对', '模型', '提示词'] },
+  { id: 'httpDownload', title: 'HTTP 下载', short: 'HTTP、Gofile、PikPak', icon: DownloadCloud, keywords: ['http', 'download', 'aria2', 'gofile', 'pikpak', '外链下载'] },
+  { id: 'baiduNetdisk', title: '百度网盘', short: '官方登录、分享直下、SVIP', icon: BaiduNetdiskNavIcon, keywords: ['baidu', '百度网盘', '分享直下', 'SVIP', '百度'] },
+  { id: 'system', title: '系统运行', short: 'PostgreSQL、连接池、资源预算', icon: ServerCog, keywords: ['system', 'runtime', 'postgresql', 'pool', 'resource_budget', '系统', '连接池', '资源预算'] },
+  { id: 'maintenance', title: '维护与清理', short: '清理、备份、压缩包', icon: LifeBuoy, keywords: ['cleanup', 'backup', 'archive', '维护'] },
+  { id: 'fts', title: '全文搜索索引', short: 'pg_trgm 加速', icon: TextSearch, keywords: ['search', 'trigram', 'pg_trgm', '索引', '全文搜索', 'postgresql'] },
+  { id: 'security', title: '安全门禁', short: '验证器、黑名单', icon: ShieldCheck, keywords: ['security', 'google authenticator', '门禁', '黑名单'] },
+  { id: 'notification', title: '通知中心', short: 'SMTP 邮件、站内铃铛', icon: Bell, keywords: ['notification', 'smtp', 'email', '通知', '邮件', '铃铛'] }
+]
+
+const lastSavedLabel = computed(() => {
+  if (!lastSavedAt.value) return '尚未保存'
+  const date = new Date(lastSavedAt.value)
+  return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`
 })
 
-async function loadConfig() {
-  loading.value = true
+// 运行配置文件的真实路径，由 /api/config/state 返回。配置面板侧栏底部 + 顶栏 chip 都基于它显示。
+const configPathRuntime = ref('')
+const configPathDisplay = computed(() => configPathRuntime.value || '本地配置')
+
+async function refreshConfigRuntimeState() {
   try {
-    await configStore.fetchConfig()
-    console.log('从后端加载的配置:', configStore.config)
-    console.log('后端分类规则:', configStore.config?.classification)
-    
-    if (configStore.config) {
-      // 合并后端配置和默认配置，确保所有字段都存在
-      const mergedConfig = JSON.parse(JSON.stringify(defaultConfig))
-      
-      // 深拷贝配置，避免引用问题
-      Object.keys(configStore.config).forEach(key => {
-        if (configStore.config[key] !== null && configStore.config[key] !== undefined) {
-          mergedConfig[key] = JSON.parse(JSON.stringify(configStore.config[key]))
-        }
-      })
-      
-      console.log('合并后的配置:', mergedConfig)
-      console.log('合并后的分类规则:', mergedConfig.classification)
-      
-      // 确保 classification 数组存在且是数组
-      if (!mergedConfig.classification || !Array.isArray(mergedConfig.classification)) {
-        console.warn('分类规则为空或不是数组，使用默认值')
-        mergedConfig.classification = JSON.parse(JSON.stringify(defaultConfig.classification))
-      }
-      
-      // 确保每个规则都有所有必要字段
-      mergedConfig.classification = mergedConfig.classification.map(rule => ({
-        type: rule.type || 'none',
-        enabled: rule.enabled !== false,
-        path_template: rule.path_template || '',
-        custom_name: rule.custom_name || '',
-        fallback: rule.fallback || null,
-        max_tags: rule.max_tags || null,
-        rjcode_range: rule.rjcode_range || null
-      }))
-      
-      // 确保 filter.rules 存在
-      if (!mergedConfig.filter) {
-        mergedConfig.filter = { enabled: true, filter_dir: true, rules: [] }
-      }
-      if (!mergedConfig.filter.rules || !Array.isArray(mergedConfig.filter.rules)) {
-        mergedConfig.filter.rules = []
-      }
-      
-      // 确保每个过滤规则都有 target 字段
-      mergedConfig.filter.rules = mergedConfig.filter.rules.map(rule => ({
-        name: rule.name || '未命名规则',
-        pattern: rule.pattern || '',
-        target: rule.target || 'file',
-        action: rule.action || 'exclude',
-        enabled: rule.enabled !== false
-      }))
-      
-      // 确保 rename 配置完整
-      if (!mergedConfig.rename) {
-        mergedConfig.rename = {
-          template: '{rjcode} {work_name}',
-          date_format: '%y%m%d',
-          exclude_square_brackets: false,
-          illegal_char_to_full_width: false,
-          flatten_single_subfolder: true,
-          flatten_depth: 3,
-          remove_empty_folders: true,
-          api_rename_follow_template: false,
-          use_japanese_metadata: false
-        }
-      }
-      // 确保 flatten_single_subfolder 字段存在
-      if (mergedConfig.rename.flatten_single_subfolder === undefined) {
-        mergedConfig.rename.flatten_single_subfolder = true
-      }
-      // 确保 flatten_depth 字段存在
-      if (mergedConfig.rename.flatten_depth === undefined) {
-        mergedConfig.rename.flatten_depth = 3
-      }
-      // 确保 remove_empty_folders 字段存在
-      if (mergedConfig.rename.remove_empty_folders === undefined) {
-        mergedConfig.rename.remove_empty_folders = true
-      }
-      // 确保 api_rename_follow_template 字段存在
-      if (mergedConfig.rename.api_rename_follow_template === undefined) {
-        mergedConfig.rename.api_rename_follow_template = false
-      }
-      // 确保 use_japanese_metadata 字段存在
-      if (mergedConfig.rename.use_japanese_metadata === undefined) {
-        mergedConfig.rename.use_japanese_metadata = false
-      }
-
-      // 确保 extract 配置完整
-      if (!mergedConfig.extract) {
-        mergedConfig.extract = {
-          auto_repair_extension: true,
-          verify_after_extract: true,
-          password_list: [],
-          extract_nested_archives: true,
-          max_nested_depth: 5
-        }
-      }
-      // 确保 extract_nested_archives 字段存在
-      if (mergedConfig.extract.extract_nested_archives === undefined) {
-        mergedConfig.extract.extract_nested_archives = true
-      }
-      // 确保 max_nested_depth 字段存在
-      if (mergedConfig.extract.max_nested_depth === undefined) {
-        mergedConfig.extract.max_nested_depth = 5
-      }
-
-      // 确保 password_cleanup 配置完整
-      if (!mergedConfig.password_cleanup) {
-        mergedConfig.password_cleanup = {
-          enabled: false,
-          max_use_count: 1,
-          cron_expression: '0 0 * * 0',
-          preserve_days: 30,
-          exclude_sources: []
-        }
-      }
-      // 确保 password_cleanup 的字段都存在
-      if (mergedConfig.password_cleanup.enabled === undefined) {
-        mergedConfig.password_cleanup.enabled = false
-      }
-      if (mergedConfig.password_cleanup.max_use_count === undefined) {
-        mergedConfig.password_cleanup.max_use_count = 1
-      }
-      if (mergedConfig.password_cleanup.cron_expression === undefined) {
-        mergedConfig.password_cleanup.cron_expression = '0 0 * * 0'
-      }
-      if (mergedConfig.password_cleanup.preserve_days === undefined) {
-        mergedConfig.password_cleanup.preserve_days = 30
-      }
-      if (!mergedConfig.password_cleanup.exclude_sources) {
-        mergedConfig.password_cleanup.exclude_sources = []
-      }
-
-      // 确保 processed_archive_cleanup 配置完整
-      if (!mergedConfig.processed_archive_cleanup) {
-        mergedConfig.processed_archive_cleanup = {
-          enabled: false,
-          strategy: 'age',
-          cron_expression: '0 1 * * 0',
-          preserve_days: 30,
-          max_count: 1000,
-          max_size_gb: 50,
-          exclude_reprocessing: true,
-          scan_on_startup: true
-        }
-      }
-      // 确保 processed_archive_cleanup 的字段都存在
-      if (mergedConfig.processed_archive_cleanup.enabled === undefined) {
-        mergedConfig.processed_archive_cleanup.enabled = false
-      }
-      if (mergedConfig.processed_archive_cleanup.strategy === undefined) {
-        mergedConfig.processed_archive_cleanup.strategy = 'age'
-      }
-      if (mergedConfig.processed_archive_cleanup.cron_expression === undefined) {
-        mergedConfig.processed_archive_cleanup.cron_expression = '0 1 * * 0'
-      }
-      if (mergedConfig.processed_archive_cleanup.preserve_days === undefined) {
-        mergedConfig.processed_archive_cleanup.preserve_days = 30
-      }
-      if (mergedConfig.processed_archive_cleanup.max_count === undefined) {
-        mergedConfig.processed_archive_cleanup.max_count = 1000
-      }
-      if (mergedConfig.processed_archive_cleanup.max_size_gb === undefined) {
-        mergedConfig.processed_archive_cleanup.max_size_gb = 50
-      }
-      if (mergedConfig.processed_archive_cleanup.exclude_reprocessing === undefined) {
-        mergedConfig.processed_archive_cleanup.exclude_reprocessing = true
-      }
-      if (mergedConfig.processed_archive_cleanup.scan_on_startup === undefined) {
-        mergedConfig.processed_archive_cleanup.scan_on_startup = true
-      }
-
-      // 确保 path_mapping 配置完整
-      if (!mergedConfig.path_mapping) {
-        mergedConfig.path_mapping = {
-          enabled: false,
-          open_mode: 'auto',
-          rules: []
-        }
-      }
-      // 确保 path_mapping 的字段都存在
-      if (mergedConfig.path_mapping.enabled === undefined) {
-        mergedConfig.path_mapping.enabled = false
-      }
-      if (!mergedConfig.path_mapping.open_mode) {
-        mergedConfig.path_mapping.open_mode = 'auto'
-      }
-      if (!mergedConfig.path_mapping.rules || !Array.isArray(mergedConfig.path_mapping.rules)) {
-        mergedConfig.path_mapping.rules = []
-      }
-
-      // 确保 kikoeru_server 配置完整
-      if (!mergedConfig.kikoeru_server) {
-        mergedConfig.kikoeru_server = {
-          enabled: false,
-          server_url: '',
-          username: '',
-          password: '',
-          api_token: '',
-          token_expires: 0,
-          timeout: 10,
-          cache_ttl: 300
-        }
-      }
-      // 确保 kikoeru_server 的字段都存在
-      if (mergedConfig.kikoeru_server.enabled === undefined) {
-        mergedConfig.kikoeru_server.enabled = false
-      }
-      if (mergedConfig.kikoeru_server.server_url === undefined) {
-        mergedConfig.kikoeru_server.server_url = ''
-      }
-      if (mergedConfig.kikoeru_server.username === undefined) {
-        mergedConfig.kikoeru_server.username = ''
-      }
-      if (mergedConfig.kikoeru_server.password === undefined) {
-        mergedConfig.kikoeru_server.password = ''
-      }
-      if (mergedConfig.kikoeru_server.api_token === undefined) {
-        mergedConfig.kikoeru_server.api_token = ''
-      }
-      if (mergedConfig.kikoeru_server.token_expires === undefined) {
-        mergedConfig.kikoeru_server.token_expires = 0
-      }
-      if (mergedConfig.kikoeru_server.timeout === undefined) {
-        mergedConfig.kikoeru_server.timeout = 10
-      }
-      if (mergedConfig.kikoeru_server.cache_ttl === undefined) {
-        mergedConfig.kikoeru_server.cache_ttl = 300
-      }
-
-      // 确保 auto_process 配置完整
-      if (!mergedConfig.auto_process) {
-        mergedConfig.auto_process = {
-          check_duplicate: true,
-          extract: true,
-          fetch_metadata: true,
-          rename: true,
-          filter: true,
-          classify: true,
-          archive: true
-        }
-      }
-      // 确保 auto_process 的字段都存在
-      const autoProcessDefaults = {
-        check_duplicate: true,
-        extract: true,
-        fetch_metadata: true,
-        rename: true,
-        filter: true,
-        classify: true,
-        archive: true
-      }
-      for (const key in autoProcessDefaults) {
-        if (mergedConfig.auto_process[key] === undefined) {
-          mergedConfig.auto_process[key] = autoProcessDefaults[key]
-        }
-      }
-
-      // 确保 process_existing 配置完整
-      if (!mergedConfig.process_existing) {
-        mergedConfig.process_existing = {
-          check_duplicate: true,
-          fetch_metadata: true,
-          rename: true,
-          filter: true,
-          import_lrc: true,
-          classify: true
-        }
-      }
-      // 确保 process_existing 的字段都存在
-      const processExistingDefaults = {
-        check_duplicate: true,
-        fetch_metadata: true,
-        rename: true,
-        filter: true,
-        import_lrc: true,
-        classify: true
-      }
-      for (const key in processExistingDefaults) {
-        if (mergedConfig.process_existing[key] === undefined) {
-          mergedConfig.process_existing[key] = processExistingDefaults[key]
-        }
-      }
-
-      // 确保 asmr_sync_step 配置完整
-      if (!mergedConfig.asmr_sync_step) {
-        mergedConfig.asmr_sync_step = {
-          download: true,
-          sync_subtitle: true,
-          rename: true,
-          classify: true,
-          move_subtitle_folder: true
-        }
-      }
-      // 确保 asmr_sync_step 的字段都存在
-      const asmrSyncStepDefaults = {
-        download: true,
-        sync_subtitle: true,
-        rename: true,
-        classify: true,
-        move_subtitle_folder: true
-      }
-      for (const key in asmrSyncStepDefaults) {
-        if (mergedConfig.asmr_sync_step[key] === undefined) {
-          mergedConfig.asmr_sync_step[key] = asmrSyncStepDefaults[key]
-        }
-      }
-
-      config.value = mergedConfig
-      console.log('配置加载成功，分类规则:', config.value.classification)
-    }
+    const state = await configApi.state()
+    configPathRuntime.value = state?.path || ''
   } catch (error) {
-    console.error('加载配置失败:', error)
-    ElMessage.error('加载配置失败')
-  } finally {
-    loading.value = false
+    console.warn('[Settings] 获取配置运行态失败:', error)
   }
 }
 
-function addRule() {
-  if (!config.value.classification) {
-    config.value.classification = []
+function handleCreateLibrary(type) {
+  const created = addStorageLibrary(type)
+  selectedLibraryId.value = created.id
+}
+
+function handleBaiduNetdiskPersisted() {
+  markFieldsPersisted('baidu_netdisk', BAIDU_NETDISK_PERSISTED_FIELDS)
+  lastSavedAt.value = Date.now()
+}
+
+watch(libraryViewModels, (list) => {
+  if (!selectedLibraryId.value && list.length) selectedLibraryId.value = list[0].id
+  if (selectedLibraryId.value && !list.some(item => item.id === selectedLibraryId.value)) {
+    selectedLibraryId.value = list[0]?.id || ''
   }
-  config.value.classification.push({
-    type: 'none',
-    enabled: true,
-    path_template: '',
-    custom_name: '',
-    fallback: null,
-    max_tags: null,
-    rjcode_range: null
-  })
-  console.log('添加规则成功，当前规则数:', config.value.classification.length)
-}
+}, { immediate: true, deep: true })
 
-function removeRule(index) {
-  if (config.value.classification && index >= 0 && index < config.value.classification.length) {
-    config.value.classification.splice(index, 1)
-    console.log('删除规则成功，当前规则数:', config.value.classification.length)
-  } else {
-    console.error('删除规则失败，索引无效:', index)
-  }
-}
-
-function onRuleTypeChange(rule) {
-  // 根据类型设置默认值
-  switch (rule.type) {
-    case 'none':
-      rule.path_template = ''
-      rule.custom_name = ''
-      break
-    case 'maker':
-      rule.path_template = rule.path_template || '{maker_name}'
-      rule.custom_name = ''
-      break
-    case 'series':
-      rule.path_template = rule.path_template || '{series_name}'
-      rule.custom_name = ''
-      break
-    case 'rjcode':
-      rule.path_template = ''
-      rule.custom_name = rule.custom_name || ''
-      rule.rjcode_range = rule.rjcode_range || ''
-      break
-  }
-  console.log('规则类型变更为:', rule.type)
-}
-
-function getPathPreview(rule) {
-  const basePath = config.value.storage.library_path || 'E:\\库存'
-  let subPath = ''
-  
-  switch (rule.type) {
-    case 'none':
-      subPath = ''
-      break
-    case 'maker':
-      subPath = rule.path_template || '{maker_name}'
-      break
-    case 'rjcode':
-      subPath = rule.custom_name || 'RJ号分类'
-      break
-    case 'series':
-      subPath = rule.path_template || '{series_name}'
-      break
-    default:
-      subPath = ''
-  }
-  
-  if (subPath) {
-    return `${basePath}\\${subPath}\\{rjcode} {work_name}`
-  } else {
-    return `${basePath}\\{rjcode} {work_name}`
-  }
-}
-
-function addFilterRule() {
-  if (!config.value.filter.rules) {
-    config.value.filter.rules = []
-  }
-  config.value.filter.rules.push({
-    name: '新规则',
-    pattern: '',
-    target: 'file',
-    action: 'exclude',
-    enabled: true
-  })
-}
-
-function getTargetLabel(target) {
-  const labels = {
-    'file': '文件',
-    'folder': '文件夹',
-    'all': '文件和文件夹'
-  }
-  return labels[target] || '文件'
-}
-
-function removeFilterRule(index) {
-  if (config.value.filter.rules) {
-    config.value.filter.rules.splice(index, 1)
-  }
-}
-
-async function saveConfig() {
-  try {
-    loading.value = true
-    
-    // 调试：打印要保存的配置数据
-    console.log('准备保存的配置:', JSON.parse(JSON.stringify(config.value)))
-    console.log('分类规则:', config.value.classification)
-    
-    // 确保 classification 是数组
-    if (!Array.isArray(config.value.classification)) {
-      config.value.classification = []
-    }
-    
-    // 调试：打印要保存的过滤规则
-    console.log('准备保存的过滤规则:', JSON.parse(JSON.stringify(config.value.filter.rules)))
-    
-    const response = await configApi.save(config.value)
-    console.log('保存响应:', response)
-    
-    await loadConfig()
-    console.log('配置已刷新，过滤规则:', config.value.filter.rules)
-    
-    // 显示过滤规则详情
-    if (config.value.filter.rules && config.value.filter.rules.length > 0) {
-      const enabledRules = config.value.filter.rules.filter(r => r.enabled)
-      ElMessage.success(`配置已保存！启用的过滤规则: ${enabledRules.length} 条`)
-    } else {
-      ElMessage.success('配置已保存！')
-    }
-  } catch (error) {
-    console.error('保存配置失败:', error)
-    console.error('错误详情:', error.response?.data)
-    ElMessage.error('保存配置失败: ' + (error.response?.data?.detail || error.message))
-  } finally {
-    loading.value = false
-  }
-}
-
-function resetConfig() {
-  config.value = JSON.parse(JSON.stringify(defaultConfig))
-  ElMessage.info('配置已重置')
-}
-
-function createTestDirs() {
-  // 自动填充默认测试路径
-  config.value.storage.input_path = 'test_data/input'
-  config.value.storage.temp_path = 'test_data/temp'
-  config.value.storage.library_path = 'test_data/library'
-  config.value.storage.processed_archives_path = 'test_data/processed'
-  ElMessage.success('已填充默认测试路径，请点击保存配置')
-}
-
-// 路径映射相关
-const testMappingPath = ref('')
-const testMappingDialogVisible = ref(false)
-const testMappingResult = ref({
-  original_path: '',
-  mapped_path: '',
-  is_mapped: false
+onMounted(() => {
+  loadConfig()
+  refreshConfigRuntimeState()
 })
-
-// Kikoeru 服务器查重相关
-const testingKikoeru = ref(false)
-const savingKikoeru = ref(false)
-const fetchingKikoeruToken = ref(false)
-const kikoeruTokenStatus = ref(null)
-const kikoeruTestDialogVisible = ref(false)
-const kikoeruTestResult = ref({
-  success: false,
-  message: '',
-  latency: 0
-})
-
-// Kikoeru 查重测试相关
-const kikoeruTestRjcode = ref('')
-const testingKikoeruCheck = ref(false)
-const kikoeruCheckDialogVisible = ref(false)
-const kikoeruCheckResult = ref(null)
-
-async function saveKikoeruConfig() {
-  savingKikoeru.value = true
-  console.log('开始保存 Kikoeru 配置:', config.value.kikoeru_server)
-  
-  try {
-    const configToSave = {
-      kikoeru_server: {
-        enabled: config.value.kikoeru_server.enabled,
-        server_url: config.value.kikoeru_server.server_url,
-        username: config.value.kikoeru_server.username,
-        password: config.value.kikoeru_server.password,
-        api_token: config.value.kikoeru_server.api_token,
-        token_expires: config.value.kikoeru_server.token_expires,
-        timeout: config.value.kikoeru_server.timeout,
-        cache_ttl: config.value.kikoeru_server.cache_ttl
-      }
-    }
-    
-    console.log('发送配置数据:', configToSave)
-    const response = await configApi.save(configToSave)
-    console.log('保存响应:', response)
-    
-    ElMessage.success('Kikoeru 服务器配置已保存')
-  } catch (error) {
-    console.error('保存 Kikoeru 配置失败:', error)
-    console.error('错误详情:', error.response?.data)
-    ElMessage.error('保存配置失败: ' + (error.response?.data?.detail || error.message))
-  } finally {
-    savingKikoeru.value = false
-  }
-}
-
-async function fetchKikoeruToken() {
-  if (!config.value.kikoeru_server.server_url) {
-    ElMessage.warning('请先配置服务器地址')
-    return
-  }
-  if (!config.value.kikoeru_server.username || !config.value.kikoeru_server.password) {
-    ElMessage.warning('请先配置用户名和密码')
-    return
-  }
-  
-  fetchingKikoeruToken.value = true
-  kikoeruTokenStatus.value = null
-  
-  try {
-    const configToSave = {
-      kikoeru_server: {
-        enabled: true,
-        server_url: config.value.kikoeru_server.server_url,
-        username: config.value.kikoeru_server.username,
-        password: config.value.kikoeru_server.password,
-        api_token: '',
-        token_expires: 0,
-        timeout: config.value.kikoeru_server.timeout,
-        cache_ttl: config.value.kikoeru_server.cache_ttl
-      }
-    }
-    
-    const response = await configApi.save(configToSave)
-    config.value.kikoeru_server.enabled = true
-    
-    const data = await kikoeruApi.testConnection()
-    
-    if (data.success) {
-      kikoeruTokenStatus.value = { success: true, message: 'Token 获取成功！' }
-      ElMessage.success('Token 获取成功')
-      
-      await loadConfig()
-    } else {
-      kikoeruTokenStatus.value = { success: false, message: '获取失败: ' + data.message }
-      ElMessage.error('Token 获取失败: ' + data.message)
-    }
-  } catch (error) {
-    console.error('获取 Kikoeru Token 失败:', error)
-    kikoeruTokenStatus.value = { success: false, message: '获取失败: ' + (error.response?.data?.detail || error.message) }
-    ElMessage.error('获取 Token 失败')
-  } finally {
-    fetchingKikoeruToken.value = false
-  }
-}
-
-async function testKikoeruConnection() {
-  if (!config.value.kikoeru_server.server_url) {
-    ElMessage.warning('请先配置服务器地址')
-    return
-  }
-  
-  testingKikoeru.value = true
-  try {
-    const data = await kikoeruApi.testConnection()
-    kikoeruTestResult.value = data
-    kikoeruTestDialogVisible.value = true
-    
-    if (data.success) {
-      ElMessage.success('连接测试成功')
-    } else {
-      ElMessage.error('连接测试失败: ' + data.message)
-    }
-  } catch (error) {
-    console.error('测试 Kikoeru 连接失败:', error)
-    kikoeruTestResult.value = {
-      success: false,
-      message: error.response?.data?.detail || error.message,
-      latency: 0
-    }
-    kikoeruTestDialogVisible.value = true
-    ElMessage.error('测试连接失败')
-  } finally {
-    testingKikoeru.value = false
-  }
-}
-
-async function testKikoeruCheck() {
-  if (!kikoeruTestRjcode.value) {
-    ElMessage.warning('请输入RJ号')
-    return
-  }
-  
-  testingKikoeruCheck.value = true
-  kikoeruCheckResult.value = null
-  try {
-    const data = await kikoeruApi.check(kikoeruTestRjcode.value)
-    
-    kikoeruCheckResult.value = {
-      rjcode: data.rjcode || kikoeruTestRjcode.value,
-      is_found: data.is_found || false,
-      title: data.title || '',
-      circle_name: data.circle_name || '',
-      tags: data.tags || [],
-      linked_works_found: data.linked_works_found || [],
-      total_checked: data.total_checked || 1,
-      message: data.message || ''
-    }
-    kikoeruCheckDialogVisible.value = true
-    
-    if (data.is_found) {
-      ElMessage.success(`找到作品: ${data.title || data.rjcode}`)
-    } else {
-      ElMessage.info('未在 Kikoeru 服务器中找到该作品')
-    }
-  } catch (error) {
-    console.error('Kikoeru 查重测试失败:', error)
-    kikoeruCheckResult.value = {
-      rjcode: kikoeruTestRjcode.value,
-      is_found: false,
-      message: error.response?.data?.detail || error.message,
-      title: '',
-      circle_name: '',
-      tags: [],
-      linked_works_found: [],
-      total_checked: 0
-    }
-    kikoeruCheckDialogVisible.value = true
-    ElMessage.error('查重测试失败: ' + (error.response?.data?.detail || error.message))
-  } finally {
-    testingKikoeruCheck.value = false
-  }
-}
-
-function addPathMappingRule() {
-  if (!config.value.path_mapping.rules) {
-    config.value.path_mapping.rules = []
-  }
-  config.value.path_mapping.rules.push({
-    remote_path: '',
-    local_path: '',
-    enabled: true
-  })
-}
-
-function removePathMappingRule(index) {
-  if (config.value.path_mapping.rules) {
-    config.value.path_mapping.rules.splice(index, 1)
-  }
-}
-
-async function testPathMapping() {
-  try {
-    const data = await pathMappingApi.test(testMappingPath.value)
-    testMappingResult.value = data
-    testMappingDialogVisible.value = true
-  } catch (error) {
-    console.error('测试路径映射失败:', error)
-    ElMessage.error('测试失败: ' + (error.response?.data?.detail || error.message))
-  }
-}
-
-async function previewPasswordCleanup() {
-  try {
-    const data = await cleanupApi.password.preview()
-
-    if (data.deleted_count === 0) {
-      ElMessage.info('没有需要清理的密码')
-      return
-    }
-
-    const passwordList = data.deleted_passwords.map(p =>
-      `• ${p.rjcode || p.filename || '通用密码'} (${p.use_count}次使用, ${p.source})`
-    ).join('\n')
-
-    await ElMessageBox.confirm(
-      `将清理 ${data.deleted_count} 个密码：\n\n${passwordList}\n\n确定要立即清理吗？`,
-      '清理预览',
-      {
-        confirmButtonText: '立即清理',
-        cancelButtonText: '取消',
-        type: 'warning',
-        dangerouslyUseHTMLString: false
-      }
-    )
-
-    await runPasswordCleanup()
-  } catch (error) {
-    if (error !== 'cancel') {
-      console.error('预览清理失败:', error)
-      ElMessage.error('预览清理失败: ' + (error.response?.data?.detail || error.message))
-    }
-  }
-}
-
-async function runPasswordCleanup() {
-  try {
-    loading.value = true
-    const data = await cleanupApi.password.run()
-
-    if (data.deleted_count === 0) {
-      ElMessage.info('没有需要清理的密码')
-    } else {
-      ElMessage.success(`成功清理 ${data.deleted_count} 个密码`)
-    }
-  } catch (error) {
-    console.error('执行清理失败:', error)
-    ElMessage.error('执行清理失败: ' + (error.response?.data?.detail || error.message))
-  } finally {
-    loading.value = false
-  }
-}
-
-async function previewArchiveCleanup() {
-  try {
-    const data = await cleanupApi.archive.preview()
-
-    if (data.deleted_count === 0) {
-      ElMessage.info('没有需要清理的压缩包')
-      return
-    }
-
-    const archiveList = data.deleted_archives.map(a =>
-      `• ${a.filename} (${a.file_size_mb.toFixed(2)} MB)`
-    ).join('\n')
-
-    await ElMessageBox.confirm(
-      `将清理 ${data.deleted_count} 个压缩包，释放 ${data.freed_space_mb.toFixed(2)} MB 空间：\n\n${archiveList}\n\n确定要立即清理吗？`,
-      '清理预览',
-      {
-        confirmButtonText: '立即清理',
-        cancelButtonText: '取消',
-        type: 'warning',
-        dangerouslyUseHTMLString: false
-      }
-    )
-
-    await runArchiveCleanup()
-  } catch (error) {
-    if (error !== 'cancel') {
-      console.error('预览清理失败:', error)
-      ElMessage.error('预览清理失败: ' + (error.response?.data?.detail || error.message))
-    }
-  }
-}
-
-async function runArchiveCleanup() {
-  try {
-    loading.value = true
-    const data = await cleanupApi.archive.run()
-
-    if (data.deleted_count === 0) {
-      ElMessage.info('没有需要清理的压缩包')
-    } else {
-      ElMessage.success(`成功清理 ${data.deleted_count} 个压缩包，释放 ${data.freed_space_mb.toFixed(2)} MB 空间`)
-    }
-  } catch (error) {
-    console.error('执行清理失败:', error)
-    ElMessage.error('执行清理失败: ' + (error.response?.data?.detail || error.message))
-  } finally {
-    loading.value = false
-  }
-}
 </script>
 
 <style scoped>
-.settings {
-  max-width: 1200px;
+/* =============================================
+   Settings.vue — 仅保留 page 壳 + 顶栏 chip
+   各 section 的字段 / 开关 / 业务样式都迁移到对应 panel scoped 里。
+   ============================================= */
+
+.settings-page {
+  --set-page-bg: transparent;
+  --set-surface: #ffffff;
+  --set-surface-soft: #f8fafc;
+  --set-surface-muted: #f1f5f9;
+  --set-surface-hover: #f8fafc;
+  --set-field-bg: #ffffff;
+  --set-text: #334155;
+  --set-text-strong: #111827;
+  --set-text-muted: #64748b;
+  --set-text-subtle: #94a3b8;
+  --set-border: rgba(15, 23, 42, 0.12);
+  --set-border-soft: rgba(15, 23, 42, 0.08);
+  --set-border-strong: rgba(15, 23, 42, 0.2);
+  --set-accent: #111827;
+  --set-accent-hover: #1f2937;
+  --set-accent-soft: rgba(15, 23, 42, 0.06);
+  --set-primary-bg: #1f2937;
+  --set-primary-bg-hover: #111827;
+  --set-primary-border: rgba(15, 23, 42, 0.92);
+  --set-primary-text: #ffffff;
+  --set-chip-bg: #f8fafc;
+  --set-chip-bg-active: #e5e7eb;
+  --set-chip-text: #475569;
+  --set-chip-text-strong: #0f172a;
+  --set-focus-ring: rgba(15, 23, 42, 0.08);
+  --set-success-bg: #ecfdf5;
+  --set-success-border: rgba(110, 231, 183, 0.55);
+  --set-success-text: #047857;
+  --set-warning-bg: #fffbeb;
+  --set-warning-border: rgba(251, 191, 36, 0.55);
+  --set-warning-text: #b45309;
+  --set-danger-bg: #fff1f2;
+  --set-danger-border: rgba(252, 165, 165, 0.55);
+  --set-danger-text: #b91c1c;
+  --set-tag-local-bg: #fff7ed;
+  --set-tag-local-border: rgba(194, 120, 3, 0.24);
+  --set-tag-local-text: #9a3412;
+  --set-tag-remote-bg: #ecfeff;
+  --set-tag-remote-border: rgba(14, 116, 144, 0.24);
+  --set-tag-remote-text: #0e7490;
+  --set-tag-info-bg: #eef2ff;
+  --set-tag-info-border: rgba(79, 70, 229, 0.18);
+  --set-tag-info-text: #4338ca;
+  --set-nav-storage-icon: #0f766e;
+  --set-nav-processing-icon: #b45309;
+  --set-nav-rules-icon: #7c3aed;
+  --set-nav-services-icon: #0891b2;
+  --set-nav-ai-subtitle-icon: #0d9488;
+  --set-nav-http-download-icon: #0284c7;
+  --set-nav-baidu-netdisk-icon: #2563eb;
+  --set-nav-system-icon: #0f766e;
+  --set-nav-maintenance-icon: #c2410c;
+  --set-nav-fts-icon: #4f46e5;
+  --set-nav-security-icon: #15803d;
+  --set-nav-notification-icon: #be185d;
+  --set-shadow: 0 10px 26px rgba(15, 23, 42, 0.04);
+  --set-shadow-hover: 0 18px 36px rgba(15, 23, 42, 0.1);
+  max-width: 1480px;
   margin: 0 auto;
+  padding: 16px;
+  color: var(--set-text);
+  background: var(--set-page-bg);
+  font-family: "SF Pro Text", "SF Pro Display", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
 }
 
-.page-title {
-  font-size: 28px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 0 0 24px;
+:global(html.kikoerumanager-dark .settings-page),
+:global(body.kikoerumanager-dark .settings-page) {
+  --set-page-bg: transparent;
+  --set-surface: #151515;
+  --set-surface-soft: #1b1b1d;
+  --set-surface-muted: #242427;
+  --set-surface-hover: #202023;
+  --set-field-bg: #1b1b1d;
+  --set-text: #d4d4d8;
+  --set-text-strong: #f5f5f5;
+  --set-text-muted: #a1a1aa;
+  --set-text-subtle: #71717a;
+  --set-border: rgba(255, 255, 255, 0.11);
+  --set-border-soft: rgba(255, 255, 255, 0.08);
+  --set-border-strong: rgba(255, 255, 255, 0.18);
+  --set-accent: #e5e7eb;
+  --set-accent-hover: #ffffff;
+  --set-accent-soft: rgba(255, 255, 255, 0.08);
+  --set-primary-bg: #2b2c30;
+  --set-primary-bg-hover: #333438;
+  --set-primary-border: rgba(255, 255, 255, 0.14);
+  --set-primary-text: #f5f5f5;
+  --set-chip-bg: #202023;
+  --set-chip-bg-active: #2a2a2d;
+  --set-chip-text: #d4d4d8;
+  --set-chip-text-strong: #f5f5f5;
+  --set-focus-ring: rgba(255, 255, 255, 0.08);
+  --set-success-bg: rgba(52, 211, 153, 0.13);
+  --set-success-border: rgba(52, 211, 153, 0.28);
+  --set-success-text: #86efac;
+  --set-warning-bg: rgba(251, 191, 36, 0.13);
+  --set-warning-border: rgba(251, 191, 36, 0.28);
+  --set-warning-text: #fbbf24;
+  --set-danger-bg: rgba(251, 113, 133, 0.13);
+  --set-danger-border: rgba(251, 113, 133, 0.3);
+  --set-danger-text: #fda4af;
+  --set-tag-local-bg: rgba(251, 191, 36, 0.13);
+  --set-tag-local-border: rgba(251, 191, 36, 0.28);
+  --set-tag-local-text: #facc15;
+  --set-tag-remote-bg: rgba(45, 212, 191, 0.13);
+  --set-tag-remote-border: rgba(94, 234, 212, 0.26);
+  --set-tag-remote-text: #5eead4;
+  --set-tag-info-bg: rgba(129, 140, 248, 0.14);
+  --set-tag-info-border: rgba(165, 180, 252, 0.22);
+  --set-tag-info-text: #c7d2fe;
+  --set-nav-storage-icon: #5eead4;
+  --set-nav-processing-icon: #fbbf24;
+  --set-nav-rules-icon: #c4b5fd;
+  --set-nav-services-icon: #67e8f9;
+  --set-nav-ai-subtitle-icon: #5eead4;
+  --set-nav-http-download-icon: #8aaebe;
+  --set-nav-baidu-netdisk-icon: #93c5fd;
+  --set-nav-system-icon: #5eead4;
+  --set-nav-maintenance-icon: #fdba74;
+  --set-nav-fts-icon: #a5b4fc;
+  --set-nav-security-icon: #86efac;
+  --set-nav-notification-icon: #f9a8d4;
+  --set-shadow: 0 14px 36px rgba(0, 0, 0, 0.24);
+  --set-shadow-hover: 0 20px 42px rgba(0, 0, 0, 0.32);
 }
 
-.setting-card {
-  margin-bottom: 24px;
+:global(html.kikoerumanager-dark body #app .settings-page .settings-card.settings-card),
+:global(html.kikoerumanager-dark body #app .settings-page .settings-panel.settings-panel),
+:global(html.kikoerumanager-dark body #app .settings-page .config-section.config-section),
+:global(html.kikoerumanager-dark body #app .settings-page .notification-card.notification-card),
+:global(html.kikoerumanager-dark body #app .settings-page .template-card.template-card),
+:global(html.kikoerumanager-dark body #app .settings-page .rule-card.rule-card),
+:global(html.kikoerumanager-dark body #app .settings-page .rule-row.rule-row),
+:global(html.kikoerumanager-dark body #app .settings-page .filter-rule-row.filter-rule-row),
+:global(html.kikoerumanager-dark body #app .settings-page .mapping-row.mapping-row),
+:global(html.kikoerumanager-dark body #app .settings-page .step-card.step-card),
+:global(html.kikoerumanager-dark body #app .settings-page .cleanup-card.cleanup-card),
+:global(html.kikoerumanager-dark body #app .settings-page .stat-card.stat-card),
+:global(html.kikoerumanager-dark body #app .settings-page .profile-panel.profile-panel),
+:global(html.kikoerumanager-dark body #app .settings-page .profile-header.profile-header),
+:global(html.kikoerumanager-dark body #app .settings-page .profile-status-strip.profile-status-strip),
+:global(html.kikoerumanager-dark body #app .settings-page .toggle-card.toggle-card),
+:global(html.kikoerumanager-dark body #app .settings-page .settings-toggle-row.settings-toggle-row),
+:global(html.kikoerumanager-dark body #app .settings-page .library-card.library-card),
+:global(html.kikoerumanager-dark body #app .settings-page .inventory-list.inventory-list),
+:global(html.kikoerumanager-dark body #app .settings-page .inventory-editor.inventory-editor),
+:global(html.kikoerumanager-dark body #app .settings-page .db-shrink.db-shrink),
+:global(html.kikoerumanager-dark body #app .settings-page .notif-domain-block.notif-domain-block),
+:global(html.kikoerumanager-dark body #app .settings-page .tpl-card.tpl-card),
+:global(body.kikoerumanager-dark #app .settings-page .settings-card.settings-card),
+:global(body.kikoerumanager-dark #app .settings-page .settings-panel.settings-panel),
+:global(body.kikoerumanager-dark #app .settings-page .config-section.config-section),
+:global(body.kikoerumanager-dark #app .settings-page .notification-card.notification-card),
+:global(body.kikoerumanager-dark #app .settings-page .template-card.template-card),
+:global(body.kikoerumanager-dark #app .settings-page .rule-card.rule-card),
+:global(body.kikoerumanager-dark #app .settings-page .rule-row.rule-row),
+:global(body.kikoerumanager-dark #app .settings-page .filter-rule-row.filter-rule-row),
+:global(body.kikoerumanager-dark #app .settings-page .mapping-row.mapping-row),
+:global(body.kikoerumanager-dark #app .settings-page .step-card.step-card),
+:global(body.kikoerumanager-dark #app .settings-page .cleanup-card.cleanup-card),
+:global(body.kikoerumanager-dark #app .settings-page .stat-card.stat-card),
+:global(body.kikoerumanager-dark #app .settings-page .profile-panel.profile-panel),
+:global(body.kikoerumanager-dark #app .settings-page .profile-header.profile-header),
+:global(body.kikoerumanager-dark #app .settings-page .profile-status-strip.profile-status-strip),
+:global(body.kikoerumanager-dark #app .settings-page .toggle-card.toggle-card),
+:global(body.kikoerumanager-dark #app .settings-page .settings-toggle-row.settings-toggle-row),
+:global(body.kikoerumanager-dark #app .settings-page .library-card.library-card),
+:global(body.kikoerumanager-dark #app .settings-page .inventory-list.inventory-list),
+:global(body.kikoerumanager-dark #app .settings-page .inventory-editor.inventory-editor),
+:global(body.kikoerumanager-dark #app .settings-page .db-shrink.db-shrink),
+:global(body.kikoerumanager-dark #app .settings-page .notif-domain-block.notif-domain-block),
+:global(body.kikoerumanager-dark #app .settings-page .tpl-card.tpl-card) {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
 }
 
-.card-header {
-  display: flex;
-  justify-content: space-between;
+.settings-page :deep(.storage-field-input),
+.settings-page :deep(.field-input),
+.settings-page :deep(.lib-input),
+.settings-page :deep(.profile-input),
+.settings-page :deep(.baidu-cookie-input),
+.settings-page :deep(.bi-input),
+.settings-page :deep(.bi-stats-input),
+.settings-page :deep(.stepper-input),
+.settings-page :deep(.range-input) {
+  font-size: 12.5px !important;
+  line-height: 1.35 !important;
+}
+
+.settings-page :deep(.storage-field-input),
+.settings-page :deep(.field-input),
+.settings-page :deep(.lib-input),
+.settings-page :deep(.profile-input),
+.settings-page :deep(.baidu-cookie-input) {
+  min-height: 34px;
+  padding-right: 10px;
+  padding-left: 10px;
+  border-radius: 8px;
+}
+
+.settings-page :deep(.settings-field-dd .app-dd-trigger),
+.settings-page :deep(.app-dd-trigger),
+.settings-page :deep(.settings-number-stepper),
+.settings-page :deep(.settings-range-stepper),
+.settings-page :deep(.profile-actions .profile-action-btn),
+.settings-page :deep(.service-inline-row .field-input) {
+  min-height: 34px;
+  height: 34px;
+  border-radius: 8px;
+  font-size: 12.5px !important;
+}
+
+.settings-page :deep(.app-dd-trigger) {
+  padding-right: 9px;
+  padding-left: 10px;
+  gap: 5px;
+}
+
+.settings-page :deep(.settings-field-dd .app-dd-trigger-value),
+.settings-page :deep(.settings-field-dd .app-dd-trigger-label),
+.settings-page :deep(.settings-field-dd .app-dd-item-label),
+.settings-page :deep(.settings-field-dd .app-dd-item-description),
+.settings-page :deep(.app-dd-trigger-value),
+.settings-page :deep(.app-dd-trigger-label),
+.settings-page :deep(.app-dd-item-label),
+.settings-page :deep(.app-dd-item-description) {
+  font-size: 12.5px !important;
+  line-height: 1.25 !important;
+}
+
+.settings-page :deep(.settings-field-dd .app-dd-trigger-value),
+.settings-page :deep(.settings-field-dd .app-dd-item-label),
+.settings-page :deep(.app-dd-trigger-value),
+.settings-page :deep(.app-dd-item-label) {
+  font-weight: 500 !important;
+}
+
+.settings-page :deep(.settings-field-dd .app-dd-trigger-icon),
+.settings-page :deep(.settings-field-dd .app-dd-trigger-caret),
+.settings-page :deep(.app-dd-trigger-icon),
+.settings-page :deep(.app-dd-trigger-caret) {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+.settings-page :deep(.settings-number-stepper) {
+  grid-template-columns: 36px minmax(66px, 1fr) 36px;
+  max-width: 172px;
+}
+
+.settings-page :deep(.settings-range-stepper) {
+  max-width: min(100%, 360px);
+}
+
+.settings-page :deep(.sfc) {
+  gap: 5px;
+}
+
+.settings-page :deep(.sfc-label) {
+  font-size: 11.5px !important;
+}
+
+.settings-page :deep(.sfc-hint),
+.settings-page :deep(.storage-card-desc),
+.settings-page :deep(.settings-section-subtitle) {
+  font-size: 11px !important;
+  line-height: 1.45;
+}
+
+.settings-page :deep(.settings-card-title),
+.settings-page :deep(.storage-card-title),
+.settings-page :deep(.card-title) {
+  font-size: 13px !important;
+}
+
+/* 移动端紧凑边距 */
+@media (max-width: 640px) {
+  .settings-page {
+    width: 100%;
+    max-width: 100vw;
+    min-width: 0;
+    padding: 8px 10px 16px;
+    overflow-x: hidden;
+  }
+  .set-chip {
+    height: 22px;
+    padding: 0 8px;
+    font-size: 11px;
+  }
+}
+
+/* ---- 顶栏 chip（AppPageHeader 右侧槽位） ----
+   180deg 双段渐变 + inset 1px 顶高光 + 同色微 glow，跟库存页 lib-chip 同源 */
+.set-chip {
+  display: inline-flex;
   align-items: center;
-}
-
-.rule-item {
-  margin-bottom: 12px;
-}
-
-.actions {
-  display: flex;
-  gap: 12px;
-  justify-content: center;
-  padding: 24px 0;
-}
-
-.form-tip {
-  font-size: 12px;
-  color: #909399;
-  margin-top: 4px;
-}
-
-.about-card {
-  margin-top: 24px;
-}
-
-.about-content p {
-  margin: 6px 0;
-  font-size: 14px;
-  line-height: 1.7;
-}
-
-.attrib-title {
-  font-weight: 600;
-  color: var(--el-color-primary);
-}
-
-.about-desc {
-  color: #606266;
-}
-
-.about-content a {
-  color: var(--el-color-primary);
-  text-decoration: none;
-}
-
-.about-content a:hover {
-  text-decoration: underline;
-}
-
-.text-gray {
-  color: #909399;
-}
-
-.base-path-display {
-  background-color: #f5f7fa;
-  padding: 8px 12px;
-  border-radius: 4px;
-  border-left: 4px solid #409eff;
-}
-
-.base-path-display .path-label {
-  color: #606266;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
   font-weight: 500;
+  letter-spacing: 0.01em;
+  border: 1px solid transparent;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.base-path-display .path-value {
-  color: #409eff;
-  font-family: monospace;
-  font-weight: 600;
+.set-chip:hover { transform: translateY(-1px) scale(1.04); }
+
+.set-chip-success {
+  background: var(--set-success-bg);
+  color: var(--set-success-text);
+  border-color: var(--set-success-border);
+  box-shadow: none;
 }
 
-.path-preview {
-  background-color: #f0f9ff;
-  padding: 8px 12px;
-  border-radius: 4px;
-  border: 1px dashed #409eff;
+.set-chip-success:hover {
+  box-shadow: none;
 }
 
-.path-preview .preview-label {
-  color: #606266;
-  font-weight: 500;
+.set-chip-warning {
+  background: var(--set-warning-bg);
+  color: var(--set-warning-text);
+  border-color: var(--set-warning-border);
+  box-shadow: none;
 }
 
-.path-preview .preview-value {
-  color: #67c23a;
-  font-family: monospace;
-  font-weight: 600;
+.set-chip-warning:hover {
+  box-shadow: none;
+}
+
+.set-chip-info {
+  background: var(--set-tag-info-bg);
+  color: var(--set-tag-info-text);
+  border-color: var(--set-tag-info-border);
+  box-shadow: none;
+}
+
+.set-chip-info:hover {
+  box-shadow: none;
+}
+
+@media (max-width: 640px) {
+  .set-chip {
+    height: 22px;
+    padding: 0 8px;
+    font-size: 11px;
+  }
 }
 </style>
+
+
+
+

@@ -1,0 +1,87 @@
+[
+  {
+    "action": "filter_delete_preview",
+    "batch_id": null,
+    "category": "pipeline_filter",
+    "category_label": "筛选",
+    "created_at": "2026-04-23T12:29:45",
+    "detail": {
+      "child_row_count": 1,
+      "child_rows": [
+        {
+          "action": "filter_delete_apply",
+          "category": "pipeline_filter",
+          "category_label": "删除执行",
+          "child_rows": [],
+          "created_at": "2026-04-23T12:30:05",
+          "detail": {
+            "attempted_items": [],
+            "deleted_bytes": 125829120,
+            "deleted_folder_count": 0,
+            "duration_ms": 2000,
+            "execution_key": "fdexec-20260423-01",
+            "failed_count": 0,
+            "failed_items": [],
+            "folder_name": "RJ500001",
+            "folder_path": "D:/library/RJ500001",
+            "mode": "filter_delete_apply",
+            "scope_label": "当前目录",
+            "selected_count": 5,
+            "session_key": "fdsess-20260423-01",
+            "succeeded_items": [
+              {
+                "bytes": 50000000,
+                "name": "a.mp3"
+              },
+              {
+                "bytes": 30000000,
+                "name": "b.mp3"
+              }
+            ],
+            "success_count": 5
+          },
+          "id": "fd-apply-01",
+          "relation": "delete_apply",
+          "rjcode": "RJ500001",
+          "source_path": "D:/library/RJ500001",
+          "status": "success",
+          "summary": "按规则删除完成：命中 5 项，总计 120 MB，耗时 2s"
+        }
+      ],
+      "delete_action": "filter_delete_apply",
+      "delete_created_at": "2026-04-23T12:30:05",
+      "delete_deleted_bytes": 125829120,
+      "delete_failed_count": 0,
+      "delete_status": "success",
+      "delete_success_count": 5,
+      "estimated_bytes": 125829120,
+      "folder_name": "RJ500001",
+      "folder_path": "D:/library/RJ500001",
+      "latest_activity_at": "2026-04-23T12:30:05",
+      "matched_count": 5,
+      "mode": "filter_delete_preview",
+      "preview_action": "filter_delete_preview",
+      "preview_created_at": "2026-04-23T12:29:45",
+      "preview_linked": true,
+      "preview_status": "success",
+      "repair_completed_at": "",
+      "repair_status": "",
+      "repair_summary": "",
+      "retry_linked": false,
+      "scope_label": "当前目录",
+      "session_key": "fdsess-20260423-01"
+    },
+    "has_child_rows": true,
+    "id": "fd-preview-01",
+    "latest_activity_at": "2026-04-23T12:30:05",
+    "merged_filter_delete": true,
+    "merged_filter_delete_status": "success",
+    "parent_id": null,
+    "rjcode": "RJ500001",
+    "session_key": "fdsess-20260423-01",
+    "source_path": "D:/library/RJ500001",
+    "status": "success",
+    "summary": "按规则匹配 5 项，预计释放 120 MB",
+    "task_id": null
+  }
+]

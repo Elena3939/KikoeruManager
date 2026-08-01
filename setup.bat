@@ -1,12 +1,36 @@
 @echo off
-title Prekikoeru Setup
+setlocal
+title KikoeruManager Setup
+set "ROOT_DIR=%~dp0"
+pushd "%ROOT_DIR%"
+set "PYTHONHOME="
+set "PYTHONPATH="
+set "VIRTUAL_ENV="
+set "CONDA_PREFIX="
+set "CONDA_DEFAULT_ENV="
+set "NPM_CONFIG_PREFIX="
+set "npm_config_prefix="
 echo ========================================
-echo Prekikoeru Setup Wizard
+echo KikoeruManager Setup Wizard
 echo ========================================
 echo.
 
-python --version >nul 2>&1
-if errorlevel 1 (
+set "PYTHON_CMD="
+for %%V in (3.13 3.12 3.11 3.10) do (
+    if not defined PYTHON_CMD (
+        py -%%V --version >nul 2>&1
+        if not errorlevel 1 set "PYTHON_CMD=py -%%V"
+    )
+)
+if not defined PYTHON_CMD (
+    py -3 --version >nul 2>&1
+    if not errorlevel 1 set "PYTHON_CMD=py -3"
+)
+if not defined PYTHON_CMD (
+    python --version >nul 2>&1
+    if not errorlevel 1 set "PYTHON_CMD=python"
+)
+if not defined PYTHON_CMD (
     echo [ERROR] Python not found!
     echo Please install Python 3.11+ from https://python.org
     pause
@@ -23,6 +47,25 @@ if errorlevel 1 (
 )
 echo [OK] Node.js found
 
+set "NPM_CMD="
+for /f "delims=" %%P in ('where npm.cmd 2^>nul') do (
+    if not defined NPM_CMD set "NPM_CMD=%%~fP"
+)
+if not defined NPM_CMD if exist "C:\Program Files\nodejs\npm.cmd" set "NPM_CMD=C:\Program Files\nodejs\npm.cmd"
+if not defined NPM_CMD if exist "%APPDATA%\npm\npm.cmd" set "NPM_CMD=%APPDATA%\npm\npm.cmd"
+if not defined NPM_CMD (
+    echo [ERROR] npm.cmd not found!
+    echo Please reinstall Node.js and ensure npm is available.
+    pause
+    exit /b 1
+)
+call "%NPM_CMD%" --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] npm check failed: %NPM_CMD%
+    pause
+    exit /b 1
+)
+
 echo.
 echo [1/4] Creating directories...
 if not exist "test_data\input" mkdir test_data\input
@@ -34,27 +77,85 @@ echo [OK] Directories created
 echo.
 echo [2/4] Installing backend dependencies...
 cd backend
-if not exist "venv" (
-    echo Creating virtual environment...
-    python -m venv venv
+if exist "venv\Scripts\python.exe" (
+    venv\Scripts\python.exe --version >nul 2>&1
+    if errorlevel 1 (
+        echo Existing virtual environment is invalid, recreating...
+        rmdir /s /q venv
+    )
 )
-call venv\Scripts\activate.bat
+if not exist "venv\Scripts\python.exe" (
+    echo Creating virtual environment...
+    %PYTHON_CMD% -m venv venv
+    if errorlevel 1 (
+        echo [ERROR] Failed to create virtual environment
+        pause
+        exit /b 1
+    )
+)
+venv\Scripts\python.exe -m ensurepip --upgrade >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Failed to initialize pip in virtual environment
+    pause
+    exit /b 1
+)
 echo Installing Python packages...
-pip install -r requirements.txt
+venv\Scripts\python.exe -m pip install -r requirements.txt
 if errorlevel 1 (
     echo [ERROR] Backend install failed
     pause
     exit /b 1
 )
+if exist "requirements-test.txt" (
+    echo Installing Python test packages...
+    venv\Scripts\python.exe -m pip install -r requirements-test.txt
+    if errorlevel 1 (
+        echo [ERROR] Backend test dependency install failed
+        pause
+        exit /b 1
+    )
+)
+venv\Scripts\python.exe -c "import click,uvicorn,fastapi,orjson,qrcode,redis" >nul 2>&1
+if errorlevel 1 (
+    echo [INFO] Backend dependencies incomplete, retrying installation...
+    venv\Scripts\python.exe -m pip install -r requirements.txt
+    if errorlevel 1 (
+        echo [ERROR] Backend dependency repair failed
+        pause
+        exit /b 1
+    )
+)
+venv\Scripts\python.exe -c "import pytest" >nul 2>&1
+if errorlevel 1 (
+    echo [INFO] Pytest dependencies incomplete, repairing...
+    venv\Scripts\python.exe -m pip install -r requirements-test.txt
+    if errorlevel 1 (
+        echo [ERROR] Pytest dependency repair failed
+        pause
+        exit /b 1
+    )
+)
 cd ..
 echo [OK] Backend installed
 
 echo.
-echo [3/4] Installing frontend dependencies...
+echo.
+echo [3/6] Checking PostgreSQL...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%scripts\install-postgresql.ps1"
+if errorlevel 1 (
+    echo [ERROR] PostgreSQL initialization failed
+    echo Please check scripts\install-postgresql.ps1 output and retry setup.bat
+    pause
+    exit /b 1
+)
+echo [OK] PostgreSQL checked
+
+echo.
+echo [4/6] Installing frontend dependencies...
 cd frontend
 if not exist "node_modules" (
     echo Installing npm packages...
-    npm install
+    call "%NPM_CMD%" install
     if errorlevel 1 (
         echo [ERROR] Frontend install failed
         pause
@@ -65,7 +166,17 @@ cd ..
 echo [OK] Frontend installed
 
 echo.
-echo [4/4] Checking configuration...
+echo [5/6] Installing BaiduPCS-Go...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%scripts\install-baidupcs-go.ps1"
+if errorlevel 1 (
+    echo [WARNING] BaiduPCS-Go install failed. You can retry later:
+    echo   powershell -ExecutionPolicy Bypass -File scripts\install-baidupcs-go.ps1
+) else (
+    echo [OK] BaiduPCS-Go installed
+)
+
+echo.
+echo [6/6] Checking configuration...
 echo [OK] Configuration checked
 
 echo.
@@ -78,8 +189,9 @@ echo   1. Double-click start-all.bat (Recommended)
 echo   2. Or use backend\start.bat + frontend\start.bat
 echo.
 echo Access:
-echo   Frontend: http://localhost:5173
-echo   Backend:  http://localhost:8000
-echo   API Docs: http://localhost:8000/docs
+echo   Frontend: http://localhost:5556
+echo   Backend:  http://localhost:5555
+echo   API Docs: http://localhost:5555/docs
 echo.
+popd
 pause

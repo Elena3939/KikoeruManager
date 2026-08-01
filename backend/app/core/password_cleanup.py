@@ -116,7 +116,7 @@ class PasswordCleanupService:
         db = next(get_db())
         try:
             # 计算截止时间
-            cutoff_date = datetime.utcnow() - timedelta(days=config.preserve_days)
+            cutoff_date = datetime.now() - timedelta(days=config.preserve_days)
             
             # 构建查询条件
             query = db.query(PasswordEntry).filter(
