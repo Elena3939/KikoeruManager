@@ -9,6 +9,11 @@ from sqlalchemy import create_engine, inspect, text
 from app.models import database
 
 
+class _CompatProbeConnection:
+    def execute(self, *_args, **_kwargs):
+        return None
+
+
 @pytest.fixture
 def alembic_test_database(db_engine, monkeypatch):
     database_name = f"kikoerumanager_alembic_{uuid4().hex[:12]}_test"
@@ -68,15 +73,52 @@ def test_compat_schema_probe_includes_library_owned_works(monkeypatch):
     monkeypatch.setattr(database, "_migrate_library_index_status_schema", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_library_index_consistency_tables", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_library_owned_works_schema", fake_migrate_library_owned_works_schema)
+    monkeypatch.setattr(database, "_migrate_work_canonical_links_schema", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_activity_logs_projection", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_activity_log_daily_stats", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_dlsite_bonus_probe_cache_schema", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_notification_inbox_items_schema", lambda *_args, **_kwargs: None)
 
-    database._migrate_compat_schema(object())
+    database._migrate_compat_schema(_CompatProbeConnection())
 
     assert "library_owned_works" in probed["names"]
     assert "library_owned_works" in received["existing_tables"]
+
+
+def test_compat_schema_probe_includes_work_canonical_links(monkeypatch):
+    probed = {}
+    received = {}
+
+    def fake_existing_tables(_conn, table_names):
+        names = tuple(table_names)
+        probed["names"] = names
+        return set(names)
+
+    def fake_migrate_work_canonical_links_schema(_conn, existing_tables=None):
+        received["existing_tables"] = set(existing_tables or ())
+
+    monkeypatch.setattr(database, "_existing_tables", fake_existing_tables)
+    monkeypatch.setattr(database, "_load_index_definitions", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(database, "_ensure_indexes_exist", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(database, "_existing_columns", lambda *_args, **_kwargs: set(_args[2] or ()))
+    monkeypatch.setattr(database, "_migrate_library_index_entries_schema", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(database, "_migrate_library_index_status_schema", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(database, "_migrate_library_index_consistency_tables", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(database, "_migrate_library_owned_works_schema", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        database,
+        "_migrate_work_canonical_links_schema",
+        fake_migrate_work_canonical_links_schema,
+    )
+    monkeypatch.setattr(database, "_migrate_activity_logs_projection", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(database, "_migrate_activity_log_daily_stats", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(database, "_migrate_dlsite_bonus_probe_cache_schema", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(database, "_migrate_notification_inbox_items_schema", lambda *_args, **_kwargs: None)
+
+    database._migrate_compat_schema(_CompatProbeConnection())
+
+    assert "work_canonical_links" in probed["names"]
+    assert "work_canonical_links" in received["existing_tables"]
 
 
 def test_compat_schema_probe_includes_bonus_probe_cache(monkeypatch):
@@ -99,12 +141,13 @@ def test_compat_schema_probe_includes_bonus_probe_cache(monkeypatch):
     monkeypatch.setattr(database, "_migrate_library_index_status_schema", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_library_index_consistency_tables", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_library_owned_works_schema", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(database, "_migrate_work_canonical_links_schema", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_activity_logs_projection", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_activity_log_daily_stats", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_dlsite_bonus_probe_cache_schema", fake_migrate_bonus_probe_cache)
     monkeypatch.setattr(database, "_migrate_notification_inbox_items_schema", lambda *_args, **_kwargs: None)
 
-    database._migrate_compat_schema(object())
+    database._migrate_compat_schema(_CompatProbeConnection())
 
     assert "dlsite_bonus_probe_cache" in probed["names"]
     assert "dlsite_bonus_probe_cache" in received["existing_tables"]
@@ -318,12 +361,13 @@ def test_compat_schema_runs_library_index_consistency_upgrade(monkeypatch):
     monkeypatch.setattr(database, "_migrate_library_index_status_schema", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_library_index_consistency_tables", lambda *_args, **_kwargs: called.append(True))
     monkeypatch.setattr(database, "_migrate_library_owned_works_schema", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(database, "_migrate_work_canonical_links_schema", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_activity_logs_projection", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_activity_log_daily_stats", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_dlsite_bonus_probe_cache_schema", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_notification_inbox_items_schema", lambda *_args, **_kwargs: None)
 
-    database._migrate_compat_schema(object())
+    database._migrate_compat_schema(_CompatProbeConnection())
 
     assert called == [True]
 
