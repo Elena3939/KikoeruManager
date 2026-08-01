@@ -56,6 +56,7 @@ _EVENT_LOOP_WATCHDOG_TASK: Optional[asyncio.Task] = None
 _EVENT_LOOP_WATCHDOG_THREAD: Optional[threading.Thread] = None
 _EVENT_LOOP_WATCHDOG_STOP_EVENT: Optional[threading.Event] = None
 _EVENT_LOOP_WATCHDOG_LAST_BEAT = time.monotonic()
+_EVENT_LOOP_WATCHDOG_STARTED_AT = time.monotonic()
 _LOG_IO_EXECUTOR: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _LOG_SEARCH_EXECUTOR: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _LOG_IO_EXECUTOR_LOCK = threading.Lock()
@@ -102,6 +103,9 @@ async def _event_loop_watchdog_loop() -> None:
         expected = now + interval
         _EVENT_LOOP_WATCHDOG_LAST_BEAT = time.monotonic()
         warn_threshold = _env_float("KIKOERUMANAGER_EVENT_LOOP_LAG_WARN_SECONDS", 2.0, min_value=0.2, max_value=600.0)
+        warmup = _env_float("KIKOERUMANAGER_EVENT_LOOP_WATCHDOG_WARMUP_SECONDS", 30.0, min_value=0.0, max_value=3600.0)
+        if time.monotonic() - _EVENT_LOOP_WATCHDOG_STARTED_AT < warmup:
+            continue
         if lag >= warn_threshold:
             logger.warning("[事件循环] 主循环延迟 %.3fs，HTTP 请求和后台任务可能被同步阻塞拖慢", lag)
 
@@ -111,12 +115,15 @@ def _event_loop_watchdog_thread(stop_event: threading.Event) -> None:
     warn_threshold = _env_float("KIKOERUMANAGER_EVENT_LOOP_LAG_WARN_SECONDS", 2.0, min_value=0.2, max_value=600.0)
     stack_threshold = _env_float("KIKOERUMANAGER_EVENT_LOOP_STACK_SECONDS", 8.0, min_value=1.0, max_value=1800.0)
     stack_cooldown = _env_float("KIKOERUMANAGER_EVENT_LOOP_STACK_COOLDOWN_SECONDS", 60.0, min_value=5.0, max_value=3600.0)
+    warmup = _env_float("KIKOERUMANAGER_EVENT_LOOP_WATCHDOG_WARMUP_SECONDS", 30.0, min_value=0.0, max_value=3600.0)
     last_warn = 0.0
     last_stack_dump = 0.0
     while not stop_event.wait(interval):
         now = time.monotonic()
         lag = max(0.0, now - _EVENT_LOOP_WATCHDOG_LAST_BEAT)
         if lag < warn_threshold or now - last_warn < stack_cooldown:
+            continue
+        if now - _EVENT_LOOP_WATCHDOG_STARTED_AT < warmup:
             continue
         last_warn = now
         logger.warning("[事件循环] 心跳停顿 %.3fs，主循环可能被同步阻塞", lag)
@@ -126,13 +133,14 @@ def _event_loop_watchdog_thread(stop_event: threading.Event) -> None:
 
 
 def _start_event_loop_watchdog() -> None:
-    global _EVENT_LOOP_WATCHDOG_TASK, _EVENT_LOOP_WATCHDOG_THREAD, _EVENT_LOOP_WATCHDOG_STOP_EVENT, _EVENT_LOOP_WATCHDOG_LAST_BEAT
+    global _EVENT_LOOP_WATCHDOG_TASK, _EVENT_LOOP_WATCHDOG_THREAD, _EVENT_LOOP_WATCHDOG_STOP_EVENT, _EVENT_LOOP_WATCHDOG_LAST_BEAT, _EVENT_LOOP_WATCHDOG_STARTED_AT
     if os.environ.get("KIKOERUMANAGER_EVENT_LOOP_WATCHDOG", "1").strip().lower() in {"0", "false", "no", "off"}:
         logger.info("[事件循环] watchdog 已通过环境变量禁用")
         return
     if _EVENT_LOOP_WATCHDOG_TASK and not _EVENT_LOOP_WATCHDOG_TASK.done():
         return
     _EVENT_LOOP_WATCHDOG_LAST_BEAT = time.monotonic()
+    _EVENT_LOOP_WATCHDOG_STARTED_AT = time.monotonic()
     _EVENT_LOOP_WATCHDOG_STOP_EVENT = threading.Event()
     _EVENT_LOOP_WATCHDOG_THREAD = threading.Thread(
         target=_event_loop_watchdog_thread,
