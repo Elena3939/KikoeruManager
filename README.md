@@ -5,6 +5,19 @@
 [![GHCR](https://img.shields.io/badge/ghcr.io-kikoerumanager-2496ED?logo=docker)](https://github.com/Elena3939/KikoeruManager/pkgs/container/kikoerumanager)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
+## 项目来源与协作
+
+本项目与上游 [Elena3939/KikoeruManager](https://github.com/Elena3939/KikoeruManager) 是两个独立的 GitHub 仓库，本项目在保留上游代码来源的基础上持续合并更新并二次开发。
+
+本地通过 `upstream` remote 跟踪上游代码：
+
+```bash
+git remote add upstream https://github.com/Elena3939/KikoeruManager.git
+git fetch upstream
+```
+
+共同开发以 PR 为主：功能与修复先提交到本项目；需要回馈上游的改动可单独向上游仓库发起 PR。合并上游代码时按业务模块拆分提交，提交信息使用中文并说明业务影响。
+
 > **重要提示**：使用本软件即表示已阅读并同意 [免责声明与使用条款](DISCLAIMER.md)。本软件仅限 18 周岁及以上成年人使用。
 
 ### 界面与工作流
