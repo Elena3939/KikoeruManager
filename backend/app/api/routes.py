@@ -13554,8 +13554,41 @@ async def move_to_real_library(request: Request):
                 rel = os.path.relpath(src, library_path)
                 dst = os.path.join(real_path, rel)
 
-                # 3. 目标已存在 → 跳过，绝不覆盖
+                def _execute_move_item(source_path, target_path):
+                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    try:
+                        os.rename(source_path, target_path)  # 同设备：原子移动
+                    except OSError:
+                        shutil.move(source_path, target_path)  # 跨设备：完整复制后才移除源
+                    logger.info(f"[移库] {source_path} -> {target_path}")
+                    results["moved"].append({"path": source_path, "target": target_path})
+
+                # 3. 目标已存在时，分类组目录只在作品目录层做存在检查：
+                #    组目录已存在不跳过，改为逐个移动组内作品，避免整组被吞掉。
                 if os.path.exists(dst):
+                    if os.path.isdir(src) and os.path.isdir(dst):
+                        for child_name in sorted(os.listdir(src)):
+                            child_src = os.path.join(src, child_name)
+                            child_rel = os.path.relpath(child_src, library_path)
+                            child_dst = os.path.join(real_path, child_rel)
+                            if os.path.exists(child_dst):
+                                skip_reason = "目标已存在，跳过（不覆盖）"
+                                logger.info(f"[移库] 跳过 {child_src} -> {child_dst}: {skip_reason}")
+                                results["skipped"].append({
+                                    "path": child_src,
+                                    "target": child_dst,
+                                    "reason": skip_reason,
+                                })
+                                continue
+                            if dry_run:
+                                results["moved"].append({
+                                    "path": child_src,
+                                    "target": child_dst,
+                                    "planned": True,
+                                })
+                                continue
+                            _execute_move_item(child_src, child_dst)
+                        continue
                     skip_reason = "目标已存在，跳过（不覆盖）"
                     logger.info(f"[移库] 跳过 {src} -> {dst}: {skip_reason}")
                     results["skipped"].append({"path": src, "target": dst, "reason": skip_reason})
@@ -13566,13 +13599,7 @@ async def move_to_real_library(request: Request):
                     continue
 
                 # 4. 执行移动（不删除任何其他内容）
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                try:
-                    os.rename(src, dst)  # 同设备：原子移动
-                except OSError:
-                    shutil.move(src, dst)  # 跨设备：完整复制后才移除源
-                logger.info(f"[移库] {src} -> {dst}")
-                results["moved"].append({"path": src, "target": dst})
+                _execute_move_item(src, dst)
             except Exception as e:
                 logger.error(f"[移库] 移动失败 {src}: {e}", exc_info=True)
                 results["failed"].append({"path": src, "reason": str(e)})
