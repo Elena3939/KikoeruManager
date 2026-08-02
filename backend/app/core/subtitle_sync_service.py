@@ -382,9 +382,9 @@ class SubtitleSyncService:
         匹配音频文件和字幕文件
 
         匹配规则（按优先级）:
-        1. 序号匹配: 提取数字序号，数值相同则匹配（如 "01" 和 "1" 都等于1）
-        2. 文件顺序匹配: 当没有序号时，按文件列表顺序一一对应
-        3. 标题相似度匹配: 作为辅助验证
+        1. 轨道号匹配: 提取轨道号，数值相同则匹配（支持 Track/トラック 以及 s114_55_ 这类分段序号）
+        2. 标题相似度匹配: 剩余文件按相似度贪心配对，分数过低的标记为低置信度
+        3. 顺序匹配: 仅当两边确实都没有轨道号时才按顺序兜底，且同样校验相似度
 
         重要：将音频文件重命名为与字幕文件相同的名称（保留原音频扩展名）
 
@@ -398,10 +398,10 @@ class SubtitleSyncService:
         matches = []
         used_audio = set()  # 记录已匹配的音频文件
 
-        # 第一步：按序号匹配（最可靠）
+        # 第一步：按轨道号匹配（最可靠）
         logger.info(f"[字幕同步] 开始匹配 {len(audio_files)} 个音频文件和 {len(subtitle_files)} 个字幕文件")
 
-        # 提取所有音频文件的序号
+        # 提取所有音频文件的轨道号
         audio_with_number = []
         audio_without_number = []
         for audio_path in audio_files:
@@ -412,7 +412,7 @@ class SubtitleSyncService:
             else:
                 audio_without_number.append((audio_path, audio_name))
 
-        # 提取所有字幕文件的序号
+        # 提取所有字幕文件的轨道号
         subtitle_with_number = []
         subtitle_without_number = []
         for sub_info in subtitle_files:
@@ -426,7 +426,7 @@ class SubtitleSyncService:
         logger.info(f"[字幕同步] 有序号的音频: {len(audio_with_number)}, 无序号: {len(audio_without_number)}")
         logger.info(f"[字幕同步] 有序号的字幕: {len(subtitle_with_number)}, 无序号: {len(subtitle_without_number)}")
 
-        # 按序号匹配（使用数值比较，"01" 和 "1" 都是1，会匹配）
+        # 按轨道号匹配（使用数值比较，"01" 和 "1" 都是1，会匹配）
         audio_number_map = {}  # {数字序号: (路径, 名称)}
         for num, path, name in audio_with_number:
             if num not in audio_number_map:  # 避免重复序号覆盖
@@ -450,34 +450,58 @@ class SubtitleSyncService:
                     used_audio.add(audio_path)
                     logger.info(f"[字幕同步] 序号匹配({sub_number}): 音频'{audio_name}' -> 字幕'{sub_info['base_name']}'")
 
-        # 第二步：对于没有序号的文件，按文件列表顺序匹配
-        # 按原始序号排序剩余的音频文件
-        remaining_audio = [(path, name) for path, name in audio_without_number if path not in used_audio]
-        # 有序号但未匹配的也加入（按序号排序）
-        remaining_audio_from_numbered = [(path, name) for num, path, name in sorted(audio_with_number, key=lambda x: x[0]) if path not in used_audio]
-        remaining_audio.extend(remaining_audio_from_numbered)
+        # 第二步：剩余文件先按标题相似度贪心匹配，避免盲顺序错配
+        used_subtitle = {m['subtitle_path'] for m in matches}
+        remaining_audio = [
+            (path, name)
+            for path, name in audio_without_number + [
+                (path, name) for num, path, name in sorted(audio_with_number, key=lambda x: x[0])
+            ]
+            if path not in used_audio
+        ]
+        remaining_subtitle = [
+            sub_info
+            for sub_info in subtitle_without_number + [
+                sub_info for num, sub_info in sorted(subtitle_with_number, key=lambda x: x[0])
+            ]
+            if sub_info['path'] not in used_subtitle
+        ]
 
-        # 字幕也按原始序号排序
-        remaining_subtitle = list(subtitle_without_number)
-        remaining_subtitle.extend([s for num, s in sorted(subtitle_with_number, key=lambda x: x[0]) if s['path'] not in [m['subtitle_path'] for m in matches]])
+        # 相似度匹配：全部候选对按相似度降序，得分达标才建立一一对应
+        similarity_pairs = []
+        for audio_path, audio_name in remaining_audio:
+            for sub_info in remaining_subtitle:
+                similarity_pairs.append((
+                    self._calculate_similarity(audio_name, sub_info['base_name']),
+                    audio_path,
+                    audio_name,
+                    sub_info,
+                ))
+        similarity_pairs.sort(key=lambda item: item[0], reverse=True)
 
-        # 按顺序匹配剩余文件
-        for i, (audio_path, audio_name) in enumerate(remaining_audio):
-            if i < len(remaining_subtitle):
-                sub_info = remaining_subtitle[i]
-                audio_ext = os.path.splitext(audio_path)[1]
-                new_name = sub_info['base_name'] + audio_ext
-
-                matches.append({
-                    'audio_path': audio_path,
-                    'subtitle_path': sub_info['path'],
-                    'subtitle_name': sub_info['name'],
-                    'new_audio_name': new_name,
-                    'match_score': 70,
-                    'match_type': '顺序匹配'
-                })
-                used_audio.add(audio_path)
-                logger.info(f"[字幕同步] 顺序匹配: 音频'{audio_name}' -> 字幕'{sub_info['base_name']}'")
+        for score, audio_path, audio_name, sub_info in similarity_pairs:
+            if audio_path in used_audio or sub_info['path'] in used_subtitle:
+                continue
+            audio_ext = os.path.splitext(audio_path)[1]
+            new_name = sub_info['base_name'] + audio_ext
+            low_confidence = score < 0.30
+            matches.append({
+                'audio_path': audio_path,
+                'subtitle_path': sub_info['path'],
+                'subtitle_name': sub_info['name'],
+                'new_audio_name': new_name,
+                'match_score': round(score * 100),
+                'match_type': '相似度匹配' if not low_confidence else '低置信度匹配',
+                'low_confidence': low_confidence,
+            })
+            used_audio.add(audio_path)
+            used_subtitle.add(sub_info['path'])
+            if low_confidence:
+                logger.warning(
+                    f"[字幕同步] 低置信度匹配({score:.2f}): 音频'{audio_name}' -> 字幕'{sub_info['base_name']}'，跳过自动重命名"
+                )
+            else:
+                logger.info(f"[字幕同步] 相似度匹配({score:.2f}): 音频'{audio_name}' -> 字幕'{sub_info['base_name']}'")
 
         # 记录未匹配的文件
         unmatched_audio = [path for path in audio_files if path not in used_audio]
@@ -497,15 +521,44 @@ class SubtitleSyncService:
         - track_01, track_02
         - 01『标题』, 02『标题』
         - Tr1, Tr2, Tr01, Tr02
+        - トラック1, トラック11, トラック01
+        - s114_55_おまけトラック11／...（DLsite 下载目录常见格式）
 
         Returns:
             整数序号，如 1, 2, 3... 或 None
         """
-        # 移除开头的常见前缀
-        clean_name = re.sub(r'^(Track|track|TRK|trk|Tr)[_-]?', '', filename)
+        if not filename:
+            return None
+
+        name = filename.strip()
+        # 跳过纯 RJ 作品号，避免把 RJ01626948 这类目录名误识别为轨道号
+        if re.search(r'(?i)^(?:\[?[RVB]J\d{6,8}\]?)', name):
+            return None
+
+        # 1. DLsite 下载包全局轨道号：s114_55_おまけトラック11／...
+        #    字幕编号通常也是全局号（如 55 辅助自慰用...），必须优先于トラックN
+        match = re.search(r'(?i)\bs\d+_(\d{1,3})(?=_)', name)
+        if match:
+            return int(match.group(1))
+
+        # 2. 日文轨道标记：トラック11
+        match = re.search(r'トラック\s*(\d{1,3})', name)
+        if match:
+            return int(match.group(1))
+
+        # 3. 英文轨道标记：Track / TRK / Tr，可出现在文件名任意位置
+        match = re.search(r'(?i)(?:^|[^a-z])(?:track|trk|tr)[_\-]?\s*(\d{1,3})', name)
+        if match:
+            return int(match.group(1))
+
+        # 4. 文件名开头的数字（保留原逻辑）
+        clean_name = re.sub(r'^(Track|track|TRK|trk|Tr)[_-]?', '', name)
+        match = re.match(r'^(\d{1,3})', clean_name)
+        if match:
+            return int(match.group(1))
 
         # 匹配开头的数字
-        match = re.match(r'^(\d{1,3})', clean_name)
+        match = re.match(r'^(\d{1,3})', name)
         if match:
             return int(match.group(1))  # 返回整数值，"01" -> 1, "1" -> 1
 
@@ -631,6 +684,11 @@ class SubtitleSyncService:
 
             # 执行重命名和复制
             for match in matches:
+                if match.get('low_confidence'):
+                    result['errors'].append(
+                        f"低置信度匹配已跳过: {os.path.basename(match['audio_path'])} -> {match['new_audio_name']}"
+                    )
+                    continue
                 # 重命名音频文件
                 success, new_path_or_error = self.rename_audio_to_match_subtitle(
                     match['audio_path'],
@@ -821,7 +879,7 @@ class SubtitleSyncService:
         if root_hits:
             return root_hits
         candidates.sort(key=lambda path: len(Path(path).parts))
-        return [candidates[0]]
+        return candidates
 
     def _collect_subtitle_versions(self, root: str, content_first: bool = True) -> Tuple[Dict[str, List[Dict]], List[Dict]]:
         versions: Dict[str, List[Dict]] = {}
@@ -1067,60 +1125,69 @@ class SubtitleSyncService:
         result["version"] = selected_version
         result["version_count"] = len(versions)
 
-        audio_dir = audio_dirs[0]
-        audio_paths = [
-            os.path.join(audio_dir, name)
-            for name in os.listdir(audio_dir)
-            if os.path.splitext(name)[1].lower() in self.AUDIO_EXTENSIONS
-        ]
-        pairs = None
-        if use_ai_match:
-            try:
-                pairs = await self._ai_match_audio_subtitles(
-                    audio_paths,
-                    selected_files,
-                    task_id=task_id,
-                    rjcode=rjcode,
-                )
-                result["ai_used"] = pairs is not None
-            except Exception as exc:
-                logger.warning("[字幕同步] AI 辅助配对失败，回退规则匹配: %s", sanitize_text_for_log(exc))
-
-        if not pairs:
-            rule_matches = self.match_audio_subtitle(audio_paths, selected_files)
-            subtitle_by_path = {item["path"]: item for item in selected_files}
-            pairs = [
-                {
-                    "audio_path": match["audio_path"],
-                    "subtitle": subtitle_by_path.get(match["subtitle_path"]),
-                    "new_audio_name": match["new_audio_name"],
-                }
-                for match in rule_matches
-                if match.get("subtitle_path") in subtitle_by_path
+        # 音频可能分布在多个目录（如 本編/WAV、おまけトラック/WAV），逐个处理
+        for audio_dir in audio_dirs:
+            audio_paths = [
+                os.path.join(audio_dir, name)
+                for name in os.listdir(audio_dir)
+                if os.path.splitext(name)[1].lower() in self.AUDIO_EXTENSIONS
             ]
-
-        for pair in pairs:
-            subtitle = pair.get("subtitle")
-            if not subtitle:
+            if not audio_paths:
                 continue
-            success, new_path_or_error = self.rename_audio_to_match_subtitle(
-                pair["audio_path"],
-                pair["new_audio_name"],
-            )
-            if success:
-                result["renamed_files"].append({
-                    "original": os.path.basename(pair["audio_path"]),
-                    "new": pair["new_audio_name"],
-                    "subtitle": subtitle["name"],
-                })
-                subtitle_dest = os.path.join(os.path.dirname(pair["audio_path"]), subtitle["name"])
+            pairs = None
+            if use_ai_match:
                 try:
-                    shutil.copy2(subtitle["path"], subtitle_dest)
-                    result["copied_subtitles"].append(subtitle["name"])
+                    pairs = await self._ai_match_audio_subtitles(
+                        audio_paths,
+                        selected_files,
+                        task_id=task_id,
+                        rjcode=rjcode,
+                    )
+                    result["ai_used"] = result["ai_used"] or pairs is not None
                 except Exception as exc:
-                    result["errors"].append(f"复制字幕失败: {exc}")
-            else:
-                result["errors"].append(f"重命名失败: {new_path_or_error}")
+                    logger.warning("[字幕同步] AI 辅助配对失败，回退规则匹配: %s", sanitize_text_for_log(exc))
+
+            if not pairs:
+                rule_matches = self.match_audio_subtitle(audio_paths, selected_files)
+                subtitle_by_path = {item["path"]: item for item in selected_files}
+                pairs = [
+                    {
+                        "audio_path": match["audio_path"],
+                        "subtitle": subtitle_by_path.get(match["subtitle_path"]),
+                        "new_audio_name": match["new_audio_name"],
+                        "low_confidence": match.get("low_confidence", False),
+                    }
+                    for match in rule_matches
+                    if match.get("subtitle_path") in subtitle_by_path
+                ]
+
+            for pair in pairs:
+                if pair.get("low_confidence"):
+                    result["errors"].append(
+                        f"低置信度匹配已跳过: {os.path.basename(pair['audio_path'])} -> {pair['new_audio_name']}"
+                    )
+                    continue
+                subtitle = pair.get("subtitle")
+                if not subtitle:
+                    continue
+                success, new_path_or_error = self.rename_audio_to_match_subtitle(
+                    pair["audio_path"],
+                    pair["new_audio_name"],
+                )
+                if success:
+                    result["renamed_files"].append({
+                        "original": os.path.basename(pair["audio_path"]),
+                        "new": pair["new_audio_name"],
+                        "subtitle": subtitle["name"],
+                    })
+                    subtitle_dest = os.path.join(os.path.dirname(pair["audio_path"]), subtitle["name"])
+                    try:
+                        shutil.copy2(subtitle["path"], subtitle_dest)
+                        result["copied_subtitles"].append(subtitle["name"])
+                    except Exception as exc:
+                        result["errors"].append(f"复制字幕失败: {exc}")
+                else:
+                    result["errors"].append(f"重命名失败: {new_path_or_error}")
 
         result["success"] = len(result["renamed_files"]) > 0
         return result

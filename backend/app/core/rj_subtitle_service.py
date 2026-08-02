@@ -34,6 +34,8 @@ class RJSubtitleService:
     _AVAILABILITY_CACHE_SCHEMA_VERSION = "v1"
     _AVAILABILITY_CACHE_L1_MAX_SIZE = 512
     _AVAILABILITY_CACHE_L1_TTL_SECONDS = 30
+    # 剩余文件相似度兜底阈值：低于该值不再盲配，交给人工/AI 匹配
+    FALLBACK_SIMILARITY_THRESHOLD = 0.30
     # CJK 字符标记：子串匹配即可（几乎不会出现误命中）
     _CHINESE_MARKERS_CJK = frozenset([
         '中文', '汉化', '字幕', '中字', '简中', '简体', '繁中', '繁體', '繁体',
@@ -1593,13 +1595,32 @@ class RJSubtitleService:
 
             remaining_groups.append(group)
 
-        ordered_remaining_audio = [audio for audio in audio_index if audio['path'] not in used_audio]
-        for index, group in enumerate(remaining_groups):
-            if index >= len(ordered_remaining_audio):
-                break
-            audio = ordered_remaining_audio[index]
-            grouped_matches.append((group, audio, '顺序匹配', 70))
+        remaining_audio = [audio for audio in audio_index if audio['path'] not in used_audio]
+
+        # 剩余项按标题相似度贪心匹配：只接受达到阈值的配对，
+        # 低置信度保留在 unmatched 列表，交给人工确认或 AI 自动补全，避免按顺序盲配。
+        similarity_pairs = []
+        for audio in remaining_audio:
+            for group in remaining_groups:
+                similarity_pairs.append((
+                    self.subtitle_service._calculate_similarity(
+                        audio['base_name'],
+                        group['base_name'],
+                    ),
+                    audio,
+                    group,
+                ))
+        similarity_pairs.sort(key=lambda item: item[0], reverse=True)
+
+        matched_groups = set()
+        for score, audio, group in similarity_pairs:
+            if audio['path'] in used_audio or group['base_name'] in matched_groups:
+                continue
+            if score < self.FALLBACK_SIMILARITY_THRESHOLD:
+                continue
+            grouped_matches.append((group, audio, '相似度匹配', int(round(score * 100))))
             used_audio.add(audio['path'])
+            matched_groups.add(group['base_name'])
 
         matched_subtitles = []
         matched_group_names = set()
