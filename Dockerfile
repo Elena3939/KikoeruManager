@@ -157,6 +157,8 @@ ENV KIKOERUMANAGER_VERSION=${KIKOERUMANAGER_VERSION}
 ENV PGDATA=/app/postgres/data
 # 应用端口，可通过 docker run -e PORT=xxxx 覆盖
 ENV PORT=5555
+# Write version file so get_app_version() has a fallback
+RUN mkdir -p /app/app && printf '%s\n' "$KIKOERUMANAGER_VERSION" > /app/app/version.txt
 
 # 暴露端口（与 PORT 默认值一致）
 EXPOSE 5555

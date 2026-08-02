@@ -46,7 +46,10 @@ jobs:
         context: .
         push: true
         tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
+        labels: |
+          ${{ steps.meta.outputs.labels }}
+          org.opencontainers.image.version=${{ github.ref_name }}
+          org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
         build-args: |
           KIKOERUMANAGER_VERSION=${{ github.ref_name }}
         no-cache: true
