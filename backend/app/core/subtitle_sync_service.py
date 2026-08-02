@@ -1127,30 +1127,32 @@ class SubtitleSyncService:
 
         # 音频可能分布在多个目录（如 本編/WAV、おまけトラック/WAV），逐个处理
         for audio_dir in audio_dirs:
-            audio_paths = [
-                os.path.join(audio_dir, name)
-                for name in os.listdir(audio_dir)
-                if os.path.splitext(name)[1].lower() in self.AUDIO_EXTENSIONS
-            ]
-            if not audio_paths:
-                continue
-            pairs = None
-            if use_ai_match:
-                try:
-                    pairs = await self._ai_match_audio_subtitles(
-                        audio_paths,
-                        selected_files,
-                        task_id=task_id,
-                        rjcode=rjcode,
-                    )
-                    result["ai_used"] = result["ai_used"] or pairs is not None
-                except Exception as exc:
-                    logger.warning("[字幕同步] AI 辅助配对失败，回退规则匹配: %s", sanitize_text_for_log(exc))
+            try:
+                audio_paths = [
+                    os.path.join(audio_dir, name)
+                    for name in os.listdir(audio_dir)
+                    if os.path.splitext(name)[1].lower() in self.AUDIO_EXTENSIONS
+                ]
+                if not audio_paths:
+                    continue
+                pairs = None
+                if use_ai_match:
+                    try:
+                        pairs = await self._ai_match_audio_subtitles(
+                            audio_paths,
+                            selected_files,
+                            task_id=task_id,
+                            rjcode=rjcode,
+                        )
+                        result["ai_used"] = result["ai_used"] or pairs is not None
+                    except Exception as exc:
+                        pairs = None
+                        logger.warning("[字幕同步] AI 辅助配对失败，回退规则匹配: %s", sanitize_text_for_log(exc))
 
-            if not pairs:
+                # 规则匹配始终计算，AI 只负责补全，避免 AI 只返回部分配对时漏掉其余音频
                 rule_matches = self.match_audio_subtitle(audio_paths, selected_files)
                 subtitle_by_path = {item["path"]: item for item in selected_files}
-                pairs = [
+                rule_pairs = [
                     {
                         "audio_path": match["audio_path"],
                         "subtitle": subtitle_by_path.get(match["subtitle_path"]),
@@ -1160,34 +1162,42 @@ class SubtitleSyncService:
                     for match in rule_matches
                     if match.get("subtitle_path") in subtitle_by_path
                 ]
-
-            for pair in pairs:
-                if pair.get("low_confidence"):
-                    result["errors"].append(
-                        f"低置信度匹配已跳过: {os.path.basename(pair['audio_path'])} -> {pair['new_audio_name']}"
-                    )
-                    continue
-                subtitle = pair.get("subtitle")
-                if not subtitle:
-                    continue
-                success, new_path_or_error = self.rename_audio_to_match_subtitle(
-                    pair["audio_path"],
-                    pair["new_audio_name"],
-                )
-                if success:
-                    result["renamed_files"].append({
-                        "original": os.path.basename(pair["audio_path"]),
-                        "new": pair["new_audio_name"],
-                        "subtitle": subtitle["name"],
-                    })
-                    subtitle_dest = os.path.join(os.path.dirname(pair["audio_path"]), subtitle["name"])
-                    try:
-                        shutil.copy2(subtitle["path"], subtitle_dest)
-                        result["copied_subtitles"].append(subtitle["name"])
-                    except Exception as exc:
-                        result["errors"].append(f"复制字幕失败: {exc}")
+                if pairs:
+                    covered_audio = {p["audio_path"] for p in pairs if p.get("audio_path")}
+                    pairs = list(pairs) + [p for p in rule_pairs if p["audio_path"] not in covered_audio]
                 else:
-                    result["errors"].append(f"重命名失败: {new_path_or_error}")
+                    pairs = rule_pairs
+
+                for pair in pairs:
+                    if pair.get("low_confidence"):
+                        result["errors"].append(
+                            f"低置信度匹配已跳过: {os.path.basename(pair['audio_path'])} -> {pair['new_audio_name']}"
+                        )
+                        continue
+                    subtitle = pair.get("subtitle")
+                    if not subtitle:
+                        continue
+                    success, new_path_or_error = self.rename_audio_to_match_subtitle(
+                        pair["audio_path"],
+                        pair["new_audio_name"],
+                    )
+                    if success:
+                        result["renamed_files"].append({
+                            "original": os.path.basename(pair["audio_path"]),
+                            "new": pair["new_audio_name"],
+                            "subtitle": subtitle["name"],
+                        })
+                        subtitle_dest = os.path.join(os.path.dirname(pair["audio_path"]), subtitle["name"])
+                        try:
+                            shutil.copy2(subtitle["path"], subtitle_dest)
+                            result["copied_subtitles"].append(subtitle["name"])
+                        except Exception as exc:
+                            result["errors"].append(f"复制字幕失败: {exc}")
+                    else:
+                        result["errors"].append(f"重命名失败: {new_path_or_error}")
+            except Exception as exc:
+                result["errors"].append(f"音频目录处理失败: {audio_dir}: {exc}")
+                logger.warning("[字幕同步] 音频目录处理失败 %s: %s", audio_dir, sanitize_text_for_log(exc))
 
         result["success"] = len(result["renamed_files"]) > 0
         return result
