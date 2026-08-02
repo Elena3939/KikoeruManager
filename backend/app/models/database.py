@@ -2158,16 +2158,55 @@ def _postgres_on_connect(dbapi_connection, connection_record):
 _POSTGRES_FATAL_ERROR_MARKERS = (
     "terminating connection",
     "server closed the connection",
+    "connection is lost",
     "connection not open",
     "connection refused",
 )
+_POSTGRES_STARTUP_HEALTH_RETRY_ATTEMPTS = 4
+_POSTGRES_STARTUP_HEALTH_RETRY_DELAY_SECONDS = 1.0
+
+
+def _is_postgres_fatal_connection_error(error: Any) -> bool:
+    message = str(error or "").lower()
+    return any(marker in message for marker in _POSTGRES_FATAL_ERROR_MARKERS)
+
+
+def _check_startup_database_health() -> Dict[str, Any]:
+    """在 PostgreSQL 刚完成子进程重启时，等待连接池重新建连。"""
+    health: Dict[str, Any] = {}
+    for attempt in range(1, _POSTGRES_STARTUP_HEALTH_RETRY_ATTEMPTS + 1):
+        health = check_database_health(full=False)
+        if health.get("ok"):
+            return health
+
+        error = health.get("error") or "\n".join(health.get("messages") or [])
+        if (
+            attempt >= _POSTGRES_STARTUP_HEALTH_RETRY_ATTEMPTS
+            or not _is_postgres_fatal_connection_error(error)
+        ):
+            return health
+
+        _db_logger.warning(
+            "[数据库] 启动自检第 %s/%s 次遇到 PostgreSQL 连接中断，%ss 后重试: %s",
+            attempt,
+            _POSTGRES_STARTUP_HEALTH_RETRY_ATTEMPTS,
+            _POSTGRES_STARTUP_HEALTH_RETRY_DELAY_SECONDS,
+            error,
+        )
+        try:
+            engine.dispose()
+        except Exception:
+            _db_logger.debug("[数据库] 启动重试前释放连接池失败", exc_info=True)
+        time.sleep(_POSTGRES_STARTUP_HEALTH_RETRY_DELAY_SECONDS)
+
+    return health
 
 
 @event.listens_for(engine, "handle_error")
 def _postgres_handle_error(exception_context):
     original = getattr(exception_context, "original_exception", None)
     message = str(original or exception_context.sqlalchemy_exception or "").lower()
-    if not any(marker in message for marker in _POSTGRES_FATAL_ERROR_MARKERS):
+    if not _is_postgres_fatal_connection_error(message):
         return
     try:
         exception_context.is_disconnect = True
@@ -4206,7 +4245,7 @@ def init_db():
             _DB_RUNTIME_CONFIG["statement_timeout_ms"],
         )
         if _DB_RUNTIME_CONFIG.get("startup_health_check", True):
-            health = check_database_health(full=False)
+            health = _check_startup_database_health()
             if not health.get("ok"):
                 _db_logger.critical("[数据库] 启动自检失败: %s", health)
                 raise RuntimeError(f"数据库自检失败: {health}")
