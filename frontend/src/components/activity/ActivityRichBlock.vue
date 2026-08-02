@@ -403,7 +403,7 @@
       >
         <div
           class="tree-row"
-          :class="{ 'is-expandable': entry.expandable }"
+          :class="{ 'is-expandable': entry.expandable, 'has-error': Boolean(entry.error) }"
           :style="{ paddingLeft: `${12 + (entry.depth || 0) * 18}px` }"
         >
           <div class="tree-main">
@@ -2660,10 +2660,23 @@ function formatBytes(size) {
 
 .entry-error {
   flex: 0 0 100%;
+  min-width: 0;
   color: #475569;
   font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
   word-break: break-word;
   padding-left: 56px;
+}
+
+.tree-row.has-error {
+  flex-wrap: wrap;
+}
+
+.tree-row.has-error .entry-error {
+  flex-basis: calc(100% - 28px);
+  margin-left: 28px;
+  padding-left: 0;
 }
 
 @media (max-width: 640px) {

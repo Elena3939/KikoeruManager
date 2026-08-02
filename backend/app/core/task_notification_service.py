@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import parse_qsl, urlsplit
 
+from .failure_reason_formatter import format_problem_failure_message
+
 logger = logging.getLogger(__name__)
 
 # ────────────────────────────────────────────────────────
@@ -331,6 +333,16 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
         title, summary, rjcode = _build_refresh_selected_notification_text(meta, domain_label, label_map.get(event_type, event_type))
     elif task_kind == 'circle_completion_bonus_probe':
         title, summary, rjcode = _build_bonus_probe_notification_text(meta, domain_label, label_map.get(event_type, event_type))
+
+    if event_type in {'failed', 'waiting_manual'}:
+        failure_summary = format_problem_failure_message(
+            meta,
+            str(getattr(context_task, 'error_message', '') or getattr(context_task, 'current_step', '') or '').strip(),
+            stage=meta.get('failure_stage'),
+        )
+        if failure_summary and failure_summary not in {'需要人工处理'} and failure_summary not in summary:
+            summary = f'{summary}：{failure_summary}'
+
     return {
         'title': title,
         'summary': summary,

@@ -4,6 +4,8 @@ import re
 from datetime import datetime
 from typing import Any
 
+from .failure_reason_formatter import format_problem_failure_message
+
 
 _DLSITE_RJ_RE = re.compile(r'^RJ(\d{6}|\d{8})$', re.IGNORECASE)
 
@@ -522,11 +524,14 @@ def build_problem_work_notification_extra(task) -> dict[str, Any]:
             changes.append({"icon": "folder", "text": f"已存在：{_os.path.basename(existing_path)}"})
     else:
         card_status = "waiting_manual"
-        reason_text = str(getattr(task, "error_message", "") or current_step or "需要人工处理").strip()
+        reason_text = format_problem_failure_message(
+            meta,
+            str(getattr(task, "error_message", "") or current_step or "需要人工处理").strip(),
+            stage=meta.get("failure_stage"),
+        )
         changes = [
             {"icon": "alert-triangle", "text": reason_text or "需要人工处理"},
         ]
-
     card = {
         "rjcode": rjcode,
         "title": work_title or rjcode or "问题作品",
