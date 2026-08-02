@@ -2,6 +2,10 @@
 
 本文件记录 KikoeruManager 的版本变化、功能更新与问题修复。更早的历史版本可通过 GitHub Tags 与提交历史查看。
 
+## v2.3.19
+
+- 修复：Windows 桌面版首次启动时，pg_ctl 的输出管道被 postmaster 继承导致引导挂起；改为把 pg_ctl 输出重定向到日志文件，确保内置 PostgreSQL 初始化完成后继续启动 Redis 与后端。
+
 ## v2.3.18
 
 - 修复：Windows exe 发行版无法独立启动的问题。exe 首次运行会自动引导内置 PostgreSQL / Redis，优先使用发行包内携带的 `tools/postgres`、`tools/redis` 或系统已有安装，缺失时自动下载便携版并初始化到 `data/postgresql` / `data/redis`，启动前把连接信息写入 `data/config/config.yaml`。

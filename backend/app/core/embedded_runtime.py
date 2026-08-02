@@ -82,6 +82,9 @@ def _run(
     env: Optional[Dict[str, str]] = None,
     timeout: int = 120,
     hide_window: bool = True,
+    capture_output: bool = True,
+    stdout: Any = None,
+    stderr: Any = None,
 ) -> subprocess.CompletedProcess:
     creationflags = 0
     startupinfo = None
@@ -93,11 +96,22 @@ def _run(
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
+    if capture_output:
+        return subprocess.run(
+            list(args),
+            env=merged_env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            creationflags=creationflags,
+            startupinfo=startupinfo,
+            check=False,
+        )
     return subprocess.run(
         list(args),
         env=merged_env,
-        capture_output=True,
-        text=True,
+        stdout=stdout if stdout is not None else subprocess.DEVNULL,
+        stderr=stderr if stderr is not None else subprocess.DEVNULL,
         timeout=timeout,
         creationflags=creationflags,
         startupinfo=startupinfo,
@@ -308,17 +322,25 @@ def _ensure_postgres(
     log_file = pg_root / "postgresql.log"
     if not _tcp_connected(host, port, timeout=1.5):
         logger.info("[内置运行环境] 启动 PostgreSQL (port=%s)", port)
-        result = _run(
-            [
-                str(bin_dir / "pg_ctl.exe"),
-                "-D", str(pg_data),
-                "-l", str(log_file),
-                "-w", "start",
-            ],
-            timeout=180,
-        )
+        ctl_log = pg_root / "pg_ctl.start.log"
+        with open(ctl_log, "ab") as ctl_handle:
+            result = _run(
+                [
+                    str(bin_dir / "pg_ctl.exe"),
+                    "-D", str(pg_data),
+                    "-l", str(log_file),
+                    "-w", "start",
+                ],
+                timeout=180,
+                capture_output=False,
+                stdout=ctl_handle,
+                stderr=subprocess.STDOUT,
+            )
         if result.returncode != 0:
-            raise RuntimeError(f"PostgreSQL 启动失败: {result.stderr.strip()}")
+            detail = ctl_log.read_text(encoding="utf-8", errors="replace").strip()
+            raise RuntimeError(
+                "PostgreSQL 启动失败: " + (detail or "pg_ctl 返回非零")
+            )
 
     pg_env = {"PGPASSWORD": password or ""}
     psql = str(bin_dir / "psql.exe")
