@@ -23,6 +23,7 @@ _UNVERIFIED_EVIDENCE_SOURCES = {
 
 _RELATION_EVIDENCE_SOURCES = {
     "language_editions",
+    "page_embedded_original_match",
     "translation_info",
     "translation_page",
 }
