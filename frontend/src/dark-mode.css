@@ -5557,6 +5557,67 @@ html.kikoerumanager-dark body #app .library .lib-search-box :is(
   -webkit-backdrop-filter: none !important;
 }
 
+/* 操作记录详情：邮件监听卡片标签在暗色下保留清晰的语义层级。 */
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel .email-watch-stat {
+  background: rgba(148, 163, 184, 0.12) !important;
+  color: #dbe4f0 !important;
+  border-color: rgba(148, 163, 184, 0.3) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel .email-watch-stat.is-stat-success {
+  background: rgba(34, 197, 94, 0.14) !important;
+  color: #86efac !important;
+  border-color: rgba(74, 222, 128, 0.32) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel :is(
+  .email-watch-stat.is-stat-failed,
+  .email-watch-status.is-status-failed
+) {
+  background: rgba(244, 63, 94, 0.14) !important;
+  color: #fda4af !important;
+  border-color: rgba(251, 113, 133, 0.34) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel .email-watch-subject {
+  background: rgba(14, 165, 233, 0.14) !important;
+  color: #7dd3fc !important;
+  border-color: rgba(56, 189, 248, 0.32) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel :is(
+  .email-watch-status.is-status-success,
+  .email-watch-status.is-status-default,
+  .email-watch-chip.is-chip-backfill-off
+) {
+  background: rgba(148, 163, 184, 0.12) !important;
+  color: #cbd5e1 !important;
+  border-color: rgba(148, 163, 184, 0.3) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel .email-watch-chip.is-chip-price {
+  background: rgba(245, 158, 11, 0.14) !important;
+  color: #fcd34d !important;
+  border-color: rgba(251, 191, 36, 0.32) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel .email-watch-chip.is-chip-type {
+  background: rgba(6, 182, 212, 0.14) !important;
+  color: #67e8f9 !important;
+  border-color: rgba(34, 211, 238, 0.32) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel .email-watch-chip.is-chip-index {
+  background: rgba(59, 130, 246, 0.14) !important;
+  color: #93c5fd !important;
+  border-color: rgba(96, 165, 250, 0.32) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel .email-watch-chip.is-chip-backfill-on {
+  background: rgba(234, 179, 8, 0.14) !important;
+  color: #fde047 !important;
+  border-color: rgba(250, 204, 21, 0.32) !important;
+}
 /* 操作记录详情：特典探测结果必须跟暗色弹窗融合，不能使用浅灰/白色独立底。 */
 :is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel .bonus-probe-panel {
   background: #0b0c10 !important;

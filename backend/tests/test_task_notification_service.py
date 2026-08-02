@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.notification_helper import build_notification_extra_for_task
+from app.core.failure_reason_formatter import format_extract_failure_message
 from app.core import task_notification_service
 from app.core.task_engine import TaskStatus, TaskType
 from app.models.database import NotificationInboxItem, NotificationOutbox
@@ -210,3 +211,71 @@ def test_asmr_enhanced_partial_success_is_failed_event():
 
 def test_notification_business_key_column_allows_long_keys():
     assert isinstance(NotificationInboxItem.__table__.c.business_key.type, Text)
+
+
+def test_extract_failure_formatter_uses_specific_reason_codes():
+    assert "密码未命中" in format_extract_failure_message({"extract_failure_reason": "wrong_password"})
+    assert "磁盘空间不足" in format_extract_failure_message({"extract_failure_reason": "disk_full"})
+    assert "压缩包损坏" in format_extract_failure_message({"extract_failure_reason": "archive_corrupt"})
+    assert "不支持该压缩方法" in format_extract_failure_message({"extract_failure_reason": "unsupported_method"})
+    assert "文件名疑似乱码" in format_extract_failure_message({
+        "extract_failure_reason": "garbled_filename",
+        "garbled_filename_sample": "偭偪.wav",
+    })
+
+
+def test_problem_work_notification_extra_uses_specific_extract_reason():
+    task = SimpleNamespace(
+        id="task-extract-corrupt",
+        type=TaskType.AUTO_PROCESS,
+        status=TaskStatus.WAITING_MANUAL,
+        started_at=datetime.now(),
+        completed_at=datetime.now(),
+        current_step="解压失败，已加入问题作品列表",
+        error_message="解压失败：无正确密码",
+        rjcode="RJ09999999",
+        task_metadata={
+            "task_domain": "import",
+            "task_kind": TaskType.AUTO_PROCESS.value,
+            "failure_stage": "extract",
+            "extract_failure_reason": "archive_corrupt",
+            "rjcode": "RJ09999999",
+        },
+    )
+
+    payload = build_notification_extra_for_task(task)
+
+    assert payload["rj_work_cards"][0]["changes"][0]["text"] == "解压失败：压缩包损坏或下载不完整（Headers/Data Error）"
+
+
+def test_waiting_manual_notification_summary_appends_specific_reason():
+    task = SimpleNamespace(
+        id="task-extract-volume",
+        type=TaskType.AUTO_PROCESS,
+        status=TaskStatus.WAITING_MANUAL,
+        started_at=datetime.now(),
+        completed_at=datetime.now(),
+        current_step="解压失败，已加入问题作品列表",
+        error_message="解压失败：无正确密码",
+        rjcode="RJ08888888",
+        source_path="/down/RJ08888888.zip",
+        output_path="",
+        progress=100,
+        task_metadata={
+            "task_domain": "import",
+            "task_kind": TaskType.AUTO_PROCESS.value,
+            "failure_stage": "extract",
+            "extract_failure_reason": "volume_incomplete",
+            "rjcode": "RJ08888888",
+        },
+    )
+
+    info = task_notification_service._build_notification_info(
+        "waiting_manual",
+        "task-extract-volume",
+        "task",
+        task,
+    )
+
+    assert "等待处理" in info["summary"]
+    assert "分卷压缩包不完整" in info["summary"]

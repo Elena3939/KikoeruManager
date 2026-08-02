@@ -1205,8 +1205,18 @@ function baiduNetdiskEntrySections(row) {
   const d = row?.detail
   if (!d || typeof d !== 'object') return []
   if (String(row?.category || '').trim() !== 'baidu_netdisk') return []
-  const downloadFiles = mapBaiduDownloadFileItems(d.download_files)
+  const allDownloadFiles = mapBaiduDownloadFileItems(d.download_files)
   const failedFiles = mapBaiduDownloadFileItems(d.failed_files).map((item) => ({ ...item, variant: 'failed' }))
+  const failedFileKeys = new Set(failedFiles.map((item) => [
+    String(item.relative_path || item.path || item.name || '').trim().toLowerCase(),
+    String(item.sizeText || '').trim(),
+  ].join('\u0000')))
+  const downloadFiles = failedFileKeys.size
+    ? allDownloadFiles.filter((item) => !failedFileKeys.has([
+        String(item.relative_path || item.path || item.name || '').trim().toLowerCase(),
+        String(item.sizeText || '').trim(),
+      ].join('\u0000')))
+    : allDownloadFiles
   if (!downloadFiles.length && !failedFiles.length) return []
   const totalBytes = downloadFiles.reduce((sum, item) => {
     const raw = String(item.sizeText || '').trim()

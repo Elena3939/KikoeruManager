@@ -18,6 +18,7 @@ import logging
 from sqlalchemy import or_
 
 from .archive_volume_utils import get_archive_total_size, get_archive_volume_paths, sort_archive_volumes
+from .failure_reason_formatter import format_problem_failure_message
 
 logger = logging.getLogger(__name__)
 
@@ -1497,7 +1498,11 @@ class TaskEngine:
         metadata["error_message"] = reason
         metadata["available_actions"] = ["RETRY", "SKIP"]
         metadata = self._sanitize_failure_metadata(metadata, reason)
-
+        display_reason = format_problem_failure_message(metadata, reason, stage="extract")
+        if display_reason != reason:
+            metadata["raw_error_message"] = reason
+        metadata["error_message"] = display_reason
+        task.error_message = display_reason
         classifier = SmartClassifier()
         classifier._add_to_conflict_works(
             task.id,
@@ -1656,6 +1661,12 @@ class TaskEngine:
             "retry_source_path": problem_source_path,
         })
         metadata = self._sanitize_failure_metadata(metadata, reason)
+        display_reason = format_problem_failure_message(metadata, reason, stage=failure_stage)
+        if display_reason != reason:
+            metadata["raw_error_message"] = reason
+        metadata["error_message"] = display_reason
+        if failure_stage == "extract":
+            task.error_message = display_reason
         task.task_metadata = metadata
         task.touch_metadata("failure_stage")
 

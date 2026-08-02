@@ -49,6 +49,7 @@ from ..core.password_utils import (
 )
 from ..core.json_safety import database_safe_text, safe_json_value
 from ..core.resource_budget_service import get_resource_budget_service
+from .failure_reason_formatter import format_extract_failure_message
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +283,28 @@ class ExtractService:
             return False
         method = str(getattr(archive_info, "method", "") or "")
         return bool(re.search(r"\b(?:04)?F71101\b|ZSTD", method, re.IGNORECASE))
+
+    @staticmethod
+    def _archive_listed_size_matches_actual_size(
+        archive_path: str,
+        listed_size: int,
+        actual_size: int,
+    ) -> bool:
+        """判断压缩包清单里的大小是否等价于实际落盘大小。
+
+        7zz 对 gzip 包会从 trailer 的 ISIZE 读未压缩大小；gzip 规范里该字段
+        只有 32 bit，所以 4GB+ 的单流（常见 .tar.gz）会显示为实际大小对
+        2^32 取模后的值。这里仅做常数时间判断，不读文件内容，不影响大包性能。
+        """
+        if actual_size == listed_size:
+            return True
+
+        lower_path = str(archive_path or "").lower()
+        if not lower_path.endswith((".gz", ".tgz")):
+            return False
+        if listed_size < 0 or actual_size <= listed_size:
+            return False
+        return (actual_size - listed_size) % (1 << 32) == 0
 
     @classmethod
     def _utf8_len(cls, value: str) -> int:
@@ -2454,27 +2477,11 @@ class ExtractService:
                 await self._cleanup_extract_runtime_state(task)
                 return None
             # 更新任务状态为失败，并设置更准确的错误信息
-            if extract_failure_reason == "disk_full":
-                error_msg = "解压失败：临时目录磁盘空间不足"
-            elif extract_failure_reason == "volume_incomplete":
-                error_msg = "解压失败：分卷压缩包不完整或自解压分卷视图异常"
-            elif extract_failure_reason == "archive_corrupt":
-                error_msg = "解压失败：压缩包损坏或不完整（Headers/Data Error）"
-            elif extract_failure_reason == "wrong_password":
-                error_msg = "解压失败：无正确密码"
-            elif extract_failure_reason == "path_too_long":
-                error_msg = "解压失败：路径或文件名过长（Linux 单个文件名最多 255 字节）"
-            elif extract_failure_reason == "unsupported_method":
-                error_msg = "解压失败：当前 7z 不支持压缩包使用的压缩方法"
-            elif extract_failure_reason == "light_probe_unknown":
-                error_msg = "解压失败：大文件轻量探测无法定性，已停止全量解压试错"
-            elif extract_failure_reason == "garbled_filename":
-                error_msg = "解压失败：文件名乱码"
-            elif extract_failure_reason == "extract_incomplete":
-                error_msg = "解压失败：解压产物为空或不完整"
-            else:
-                error_msg = "解压失败：无法解压压缩包（原因未知）"
             self._set_extract_meta(task, extract_failure_reason=extract_failure_reason)
+            error_msg = format_extract_failure_message(
+                task.task_metadata,
+                "解压失败：无法解压压缩包（原因未知）",
+            )
             task.fail(error_msg)
             logger.error(f"任务 {task.id}: {error_msg}")
             # 清理已创建的解压目录（包括部分解压的残留文件）
@@ -8491,7 +8498,11 @@ class ExtractService:
                 missing_files.append(expected_name)
                 continue
 
-            if found_size != expected_size:
+            if not self._archive_listed_size_matches_actual_size(
+                archive_info.path,
+                int(expected_size or 0),
+                int(found_size or 0),
+            ):
                 size_mismatch_files.append({
                     'name': expected_name,
                     'expected': expected_size,
@@ -8503,6 +8514,15 @@ class ExtractService:
                         'name': expected_name,
                         'expected': expected_size,
                     })
+            elif found_size != expected_size:
+                logger.info(
+                    "压缩包清单大小与落盘大小存在格式级等价差异，按完整解压接受: "
+                    "%s (清单: %s, 落盘: %s, archive=%s)",
+                    expected_name,
+                    expected_size,
+                    found_size,
+                    archive_info.path,
+                )
 
         # 如果有文件缺失，记录警告；但缺失过多不能继续放行。
         # 之前会把“清单乱码导致找不到文件”全部当软警告，结果 0 字节落盘也能通过。

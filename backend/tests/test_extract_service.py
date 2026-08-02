@@ -1220,6 +1220,68 @@ class TestExtractService:
         assert await extract_service._verify_extraction(archive_info, root) is True
 
     @pytest.mark.asyncio
+    async def test_verify_extraction_accepts_archive_listed_size_equivalent_to_actual_size(
+        self, extract_service, temp_dir,
+    ):
+        """清单大小存在格式级等价差异时，不应误判为解压不完整。"""
+        root = os.path.join(temp_dir, "output")
+        os.makedirs(root, exist_ok=True)
+        actual_size = 5_869_256_704
+        listed_size = actual_size - (1 << 32)
+        tar_path = os.path.join(root, "large-stream.tar")
+        with open(tar_path, "wb") as fp:
+            fp.truncate(actual_size)
+
+        archive_info = ArchiveInfo(
+            path=os.path.join(temp_dir, "large-stream.tar.gz"),
+            file_list=[{
+                "name": "large-stream.tar",
+                "size": listed_size,
+                "is_dir": False,
+            }],
+            password="",
+        )
+
+        assert extract_service._archive_listed_size_matches_actual_size(
+            archive_info.path,
+            listed_size,
+            actual_size,
+        )
+        assert await extract_service._verify_extraction(archive_info, root) is True
+
+    @pytest.mark.parametrize(
+        "archive_name, listed_size, actual_size, expected",
+        [
+            ("large-stream.tar.gz", 1_574_289_408, 5_869_256_704, True),
+            ("large-stream.tgz", 1_574_289_408, 5_869_256_704, True),
+            ("large-stream.gz", 1_574_289_408, 5_869_256_704, True),
+            ("large-stream.zip", 1_574_289_408, 5_869_256_704, False),
+            ("large-stream.tar.gz", 1_574_289_409, 5_869_256_704, False),
+            ("large-stream.tar.gz", 5_869_256_704, 5_869_256_704, True),
+        ],
+    )
+    def test_archive_listed_size_matches_actual_size(
+        self,
+        extract_service,
+        temp_dir,
+        archive_name,
+        listed_size,
+        actual_size,
+        expected,
+    ):
+        """大小等价策略只接受已知格式规则，不放宽普通压缩包错配。"""
+        archive_path = os.path.join(temp_dir, archive_name)
+
+        assert (
+            extract_service._archive_listed_size_matches_actual_size(
+                archive_path,
+                listed_size,
+                actual_size,
+            )
+            is expected
+        )
+
+    @pytest.mark.asyncio
     async def test_verify_extraction_accepts_zstd_7z_name_mismatch_when_sizes_match(
         self, extract_service, temp_dir,
     ):
