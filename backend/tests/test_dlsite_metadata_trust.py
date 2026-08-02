@@ -78,6 +78,159 @@ def test_translation_placeholder_maker_never_passes_metadata_gate() -> None:
     assert "翻译占位名" in result["reason"]
 
 
+def test_embedded_translation_product_still_requires_original_maker() -> None:
+    result = assess_dlsite_metadata(
+        {
+            "rjcode": "RJ01670873",
+            "resolved_workno": "RJ01670873",
+            "maker_id": "RG60289",
+            "maker_name": "大家一起来翻译",
+            "metadata_evidence_source": "page_embedded_product",
+        },
+        "RJ01670873",
+    )
+
+    assert result["status"] == "unverified"
+    assert "翻译占位名" in result["reason"]
+
+
+@pytest.mark.asyncio
+async def test_rj01670873_resolves_verified_original_maker(monkeypatch) -> None:
+    service = DLsiteApiService()
+
+    async def missing_product(_rjcode, locale=None):
+        return None
+
+    async def no_translation_fallback(_rjcode, locale=None):
+        return {}
+
+    image_url = (
+        "https://img.dlsite.jp/modpub/images2/work/doujin/"
+        "RJ01564000/RJ01563471_img_main.jpg"
+    )
+
+    async def embedded_page_product(rjcode, locale=None):
+        if rjcode == "RJ01670873":
+            return {
+                "workno": rjcode,
+                "work_name": "【繁体中文版】怪异快乐",
+                "maker_id": "RG60289",
+                "maker_name": "大家一起来翻译",
+                "image_main": {"url": image_url},
+                "work_type": "SOU",
+                "lang_options": "CHI_HANT",
+                "page_original_workno": "RJ01563471",
+                "page_original_maker_id": "RG64225",
+                "metadata_evidence_source": "page_embedded_product",
+                "translation_info": {
+                    "is_original": False,
+                    "lang": "CHI_HANT",
+                    "source": "page_embedded_product",
+                },
+            }
+        if rjcode == "RJ01563471":
+            return {
+                "workno": rjcode,
+                "work_name": "怪异快乐",
+                "maker_id": "RG64225",
+                "maker_name": "生ハメ堕ち部★LACK",
+                "image_main": {"url": image_url},
+                "work_type": "SOU",
+                "metadata_evidence_source": "page_embedded_product",
+                "translation_info": {
+                    "is_original": True,
+                    "lang": "JPN",
+                    "source": "page_embedded_product",
+                },
+            }
+        return None
+
+    monkeypatch.setattr(service, "_fetch_product_payload", missing_product)
+    monkeypatch.setattr(
+        service,
+        "_resolve_translation_page_fallback",
+        no_translation_fallback,
+    )
+    monkeypatch.setattr(
+        service,
+        "_fetch_product_page_metadata",
+        embedded_page_product,
+    )
+
+    result = await service.get_product_info("RJ01670873")
+
+    assert result["metadata_verification_status"] == "verified"
+    assert result["metadata_evidence_source"] == "page_embedded_original_match"
+    assert result["parent_workno"] == "RJ01563471"
+    assert result["product"]["maker_id"] == "RG64225"
+    assert result["product"]["maker_name"] == "生ハメ堕ち部★LACK"
+    assert result["product"]["original_maker_name"] == "生ハメ堕ち部★LACK"
+    assert result["product"]["translator_name"] == "大家一起来翻译"
+    assert result["product"]["translation_info"]["original_workno"] == "RJ01563471"
+    assert service.cache["product_info:RJ01670873:"]["ttl_seconds"] == 86400
+
+
+@pytest.mark.asyncio
+async def test_embedded_translation_rejects_mismatched_parent_evidence(monkeypatch) -> None:
+    service = DLsiteApiService()
+
+    async def missing_product(_rjcode, locale=None):
+        return None
+
+    async def no_translation_fallback(_rjcode, locale=None):
+        return {}
+
+    image_url = (
+        "https://img.dlsite.jp/modpub/images2/work/doujin/"
+        "RJ01564000/RJ01563471_img_main.jpg"
+    )
+
+    async def mismatched_page_product(rjcode, locale=None):
+        if rjcode == "RJ01670873":
+            return {
+                "workno": rjcode,
+                "work_name": "【繁体中文版】怪异快乐",
+                "maker_id": "RG60289",
+                "maker_name": "大家一起来翻译",
+                "image_main": {"url": image_url},
+                "work_type": "SOU",
+                "lang_options": "CHI_HANT",
+                "page_original_workno": "RJ01563471",
+                "page_original_maker_id": "RG64225",
+                "metadata_evidence_source": "page_embedded_product",
+            }
+        if rjcode == "RJ01563471":
+            return {
+                "workno": rjcode,
+                "work_name": "完全不同的作品",
+                "maker_id": "RG64225",
+                "maker_name": "生ハメ堕ち部★LACK",
+                "image_main": {"url": image_url},
+                "work_type": "SOU",
+                "metadata_evidence_source": "page_embedded_product",
+            }
+        return None
+
+    monkeypatch.setattr(service, "_fetch_product_payload", missing_product)
+    monkeypatch.setattr(
+        service,
+        "_resolve_translation_page_fallback",
+        no_translation_fallback,
+    )
+    monkeypatch.setattr(
+        service,
+        "_fetch_product_page_metadata",
+        mismatched_page_product,
+    )
+
+    result = await service.get_product_info("RJ01670873")
+
+    assert result["metadata_verification_status"] == "unverified"
+    assert result["metadata_evidence_source"] == "page_embedded_product"
+    assert result["product"]["maker_name"] == "大家一起来翻译"
+    assert service.cache["product_info:RJ01670873:"]["ttl_seconds"] == 900
+
+
 @pytest.mark.asyncio
 async def test_product_info_cache_uses_result_specific_ttls(monkeypatch) -> None:
     service = DLsiteApiService()

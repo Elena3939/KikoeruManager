@@ -666,6 +666,63 @@ async def test_common_preview_uses_ready_linked_target_for_duplicate_when_subtit
 
 
 @pytest.mark.asyncio
+async def test_existing_subtitle_without_library_target_is_auto_skipped(monkeypatch):
+    service = object.__new__(LinkedSubtitleImportService)
+    service.EXISTING_SUBTITLE_REASON = LinkedSubtitleImportService.EXISTING_SUBTITLE_REASON
+    preview = {
+        "stage_reason": LinkedSubtitleImportService.EXISTING_SUBTITLE_REASON,
+        "source_rjcode": "RJ01303631",
+        "target_rjcode": "RJ01291089",
+        "selected_candidate": None,
+        "candidates": [],
+    }
+    monkeypatch.setattr(
+        linked_subtitle_module,
+        "get_db",
+        Mock(side_effect=AssertionError("没有实体库存目录时不应写入问题作品")),
+    )
+
+    result = await service.create_existing_subtitle_problem(
+        source_path="/down_asmr/RJ01303631.mp4",
+        preview=preview,
+        task_id="task-1",
+    )
+
+    assert result == {
+        "handled": True,
+        "auto_skipped": True,
+        "reason": LinkedSubtitleImportService.EXISTING_SUBTITLE_REASON,
+    }
+
+
+def test_existing_subtitle_conflict_includes_target_work_details():
+    service = object.__new__(LinkedSubtitleImportService)
+    service.subtitle_service = SimpleNamespace(
+        extract_rjcode=lambda value: str(value or "").strip().upper()
+    )
+
+    linked_works = service._build_target_linked_works_info(
+        {
+            "target_rjcode": "RJ01291089",
+            "kikoeru_title": "原作标题",
+        },
+        {
+            "folder_path": "/library/原作/[社团][RJ01291089]",
+            "folder_name": "[社团][RJ01291089]",
+        },
+    )
+
+    assert linked_works == [{
+        "rjcode": "RJ01291089",
+        "work_type": "original",
+        "lang": "JPN",
+        "path": "/library/原作/[社团][RJ01291089]",
+        "work_name": "原作标题",
+        "source": "linked_subtitle_preflight",
+    }]
+
+
+@pytest.mark.asyncio
 async def test_common_preview_marks_unverified_translation_page_as_uncertain():
     service = object.__new__(LinkedSubtitleImportService)
     service.EXISTING_SUBTITLE_REASON = LinkedSubtitleImportService.EXISTING_SUBTITLE_REASON
@@ -1102,6 +1159,14 @@ async def test_queue_pending_archive_import_preserves_timeout_as_pending(db_sess
     assert row.analysis_info["candidate_index_view_token"] == "index-unavailable"
     assert row.analysis_info["candidate_refreshed_at"]
     assert row.analysis_info["candidate_next_refresh_at"]
+    assert row.linked_works_info == [{
+        "rjcode": "RJ01608823",
+        "work_type": "original",
+        "lang": "JPN",
+        "path": "D:/library/RJ01608823",
+        "work_name": "RJ01608823",
+        "source": "linked_subtitle_preflight",
+    }]
 
 
 @pytest.mark.asyncio

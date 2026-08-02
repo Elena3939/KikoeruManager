@@ -13,6 +13,7 @@ import os
 import random
 import re
 import time
+import unicodedata
 from typing import Any, Dict, List, Optional, Set
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -861,6 +862,160 @@ class DLsiteApiService:
                 return self._decode_json_string(match.group(1))
         return ''
 
+    def _extract_assigned_json_object(self, text: str, variable_name: str) -> Optional[Dict]:
+        if not text or not variable_name:
+            return None
+        assignment = re.search(
+            rf'\b(?:var|let|const)\s+{re.escape(variable_name)}\s*=\s*',
+            text,
+            re.IGNORECASE,
+        )
+        if not assignment:
+            return None
+        payload_text = text[assignment.end():].lstrip()
+        try:
+            payload, _ = json.JSONDecoder().raw_decode(payload_text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _extract_json_ld_payloads(self, text: str) -> List[Dict]:
+        if not text:
+            return []
+        payloads: List[Dict] = []
+        script_pattern = re.compile(
+            r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+            re.IGNORECASE | re.DOTALL,
+        )
+        for match in script_pattern.finditer(text):
+            try:
+                payload = json.loads(html.unescape(match.group(1)).strip())
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                payloads.append(payload)
+            elif isinstance(payload, list):
+                payloads.extend(item for item in payload if isinstance(item, dict))
+        return payloads
+
+    def _extract_breadcrumb_maker(self, text: str, expected_maker_id: str) -> Dict[str, str]:
+        normalized_expected = str(expected_maker_id or '').strip().upper()
+        if not normalized_expected:
+            return {}
+        for payload in self._extract_json_ld_payloads(text):
+            if str(payload.get('@type') or '').strip() != 'BreadcrumbList':
+                continue
+            for element in payload.get('itemListElement') or []:
+                if not isinstance(element, dict):
+                    continue
+                item = element.get('item')
+                item_url = item if isinstance(item, str) else ''
+                if isinstance(item, dict):
+                    item_url = str(item.get('@id') or item.get('url') or '')
+                maker_match = re.search(
+                    r'/maker_id/([A-Z]{2}\d+)\.html',
+                    item_url,
+                    re.IGNORECASE,
+                )
+                if not maker_match or maker_match.group(1).upper() != normalized_expected:
+                    continue
+                maker_name = self._decode_html_value(str(element.get('name') or ''))
+                if maker_name:
+                    return {
+                        'maker_id': normalized_expected,
+                        'maker_name': maker_name,
+                    }
+        return {}
+
+    def _extract_recommend_reject_target(self, text: str) -> Dict[str, str]:
+        match = re.search(
+            r'/type/viewsales2/reject/(RG\d+)/product_id/([RVB]J(?:\d{8}|\d{6}))\.html',
+            str(text or ''),
+            re.IGNORECASE,
+        )
+        if not match:
+            return {}
+        return {
+            'maker_id': match.group(1).upper(),
+            'workno': self._normalize_workno(match.group(2)),
+        }
+
+    def _extract_image_workno(self, image_url: str) -> str:
+        match = re.search(
+            r'/([RVB]J(?:\d{8}|\d{6}))_img_main\.(?:jpg|jpeg|png|webp)(?:[?#]|$)',
+            str(image_url or ''),
+            re.IGNORECASE,
+        )
+        return self._normalize_workno(match.group(1)) if match else ''
+
+    def _normalize_translation_title_for_match(self, value: str) -> str:
+        title = unicodedata.normalize('NFKC', self._decode_html_value(value))
+        title = re.sub(
+            r'^\s*【(?:简体|簡体|簡體|繁体|繁體|英文|英語|英语|韩文|韓文|韓国語|한국어)'
+            r'(?:中文|中國語)?版】\s*',
+            '',
+            title,
+            flags=re.IGNORECASE,
+        )
+        return re.sub(r'\s+', ' ', title).strip()
+
+    def _extract_embedded_product(self, text: str, requested_workno: str) -> Optional[Dict]:
+        requested = self._normalize_workno(requested_workno)
+        contents = self._extract_assigned_json_object(text, 'contents')
+        details = contents.get('detail') if isinstance(contents, dict) else None
+        if not requested or not isinstance(details, list):
+            return None
+
+        detail = next(
+            (
+                item
+                for item in details
+                if isinstance(item, dict)
+                and self._normalize_workno(item.get('id') or item.get('product_id')) == requested
+            ),
+            None,
+        )
+        if not detail:
+            return None
+
+        maker_id = str(detail.get('brand') or detail.get('maker_id') or '').strip().upper()
+        if not re.fullmatch(r'RG\d+', maker_id):
+            return None
+        maker = self._extract_breadcrumb_maker(text, maker_id)
+        if not maker:
+            return None
+
+        work_name = self._decode_html_value(str(detail.get('name') or detail.get('work_name') or ''))
+        if not work_name:
+            return None
+
+        lang = str(detail.get('lang_options') or '').strip().upper()
+        is_translation = bool(lang and lang not in {'JPN', 'JA', 'JAPANESE'})
+        image_url = self._normalize_image_url(str(detail.get('image_main') or ''))
+        original_target = self._extract_recommend_reject_target(text)
+        return {
+            'workno': requested,
+            'work_name': work_name,
+            'maker_id': maker['maker_id'],
+            'maker_name': maker['maker_name'],
+            'regist_date': self._normalize_release_date(str(detail.get('regist_date') or '')),
+            'series_id': str(detail.get('series_id') or ''),
+            'series_name': self._decode_html_value(str(detail.get('series_name') or '')),
+            'image_main': {'url': image_url} if image_url else {},
+            'price': detail.get('price'),
+            'official_price': detail.get('official_price'),
+            'work_type': str(detail.get('work_type') or ''),
+            'lang_options': lang,
+            'metadata_evidence_source': 'page_embedded_product',
+            'page_original_workno': original_target.get('workno') or '',
+            'page_original_maker_id': original_target.get('maker_id') or '',
+            'translation_info': {
+                'is_original': not is_translation,
+                'lang': lang or 'JPN',
+                'source': 'page_embedded_product',
+            },
+        }
+
     def _extract_html_meta(self, text: str, key: str) -> str:
         if not text:
             return ''
@@ -1018,20 +1173,27 @@ class DLsiteApiService:
         if not page_html:
             return None
 
-        title = self._extract_json_string(page_html, 'work_name') or self._extract_html_meta(page_html, 'og:title')
+        embedded_product = self._extract_embedded_product(page_html, requested_workno) or {}
+        title = (
+            str(embedded_product.get('work_name') or '')
+            or self._extract_json_string(page_html, 'work_name')
+            or self._extract_html_meta(page_html, 'og:title')
+        )
         if title:
             title = re.sub(r'\s*\[[^\]]+\]\s*予告作品\s*\|\s*DLsite\s*$', '', title).strip()
-        maker_name = self._extract_json_string(page_html, 'maker_name')
-        maker_id = self._extract_json_string(page_html, 'maker_id')
-        series_name = self._extract_json_string(page_html, 'series_name')
-        series_id = self._extract_json_string(page_html, 'series_id')
+        maker_name = str(embedded_product.get('maker_name') or '') or self._extract_json_string(page_html, 'maker_name')
+        maker_id = str(embedded_product.get('maker_id') or '') or self._extract_json_string(page_html, 'maker_id')
+        series_name = str(embedded_product.get('series_name') or '') or self._extract_json_string(page_html, 'series_name')
+        series_id = str(embedded_product.get('series_id') or '') or self._extract_json_string(page_html, 'series_id')
         release_date = self._normalize_release_date(
-            self._extract_json_string(page_html, 'regist_date')
+            str(embedded_product.get('regist_date') or '')
+            or self._extract_json_string(page_html, 'regist_date')
             or self._extract_html_meta(page_html, 'article:published_time')
             or self._extract_html_meta(page_html, 'release_date')
         )
         image_url = self._normalize_image_url(
-            self._extract_image_main_url(page_html)
+            str((embedded_product.get('image_main') or {}).get('url') or '')
+            or self._extract_image_main_url(page_html)
         ) or self._normalize_image_url(self._extract_html_meta(page_html, 'og:image'))
 
         genres = self._extract_name_list(page_html, r'"genres"\s*:\s*\[(.*?)\]')
@@ -1067,7 +1229,8 @@ class DLsiteApiService:
 
         resolved_codes = self._extract_product_codes_from_url(final_url or page_url)
         resolved_workno = self._normalize_workno(
-            resolved_codes.get('product_workno')
+            embedded_product.get('workno')
+            or resolved_codes.get('product_workno')
             or self._extract_json_string(page_html, 'workno')
             or requested_workno
         )
@@ -1084,11 +1247,21 @@ class DLsiteApiService:
             'series_name': series_name,
             'series_id': series_id,
             'image_main': {'url': image_url} if image_url else {},
+            'price': embedded_product.get('price'),
+            'official_price': embedded_product.get('official_price'),
+            'work_type': embedded_product.get('work_type') or '',
             'work_category': category_name,
             'category_name': category_name,
             'genres': genres,
             'creaters': {'voice_by': voice_by} if voice_by else {},
-            'translation_info': {
+            'lang_options': embedded_product.get('lang_options') or '',
+            'page_original_workno': embedded_product.get('page_original_workno') or '',
+            'page_original_maker_id': embedded_product.get('page_original_maker_id') or '',
+            'metadata_evidence_source': (
+                embedded_product.get('metadata_evidence_source')
+                or 'page_metadata_unverified'
+            ),
+            'translation_info': embedded_product.get('translation_info') or {
                 'is_original': False,
                 'lang': '',
                 'source': 'page_metadata_unverified',
@@ -1208,6 +1381,122 @@ class DLsiteApiService:
         for url, _ in results:
             logger.info("[DLsite] 页面元数据未提取到有效字段: requested=%s url=%s", workno, url)
         return None
+
+    async def _resolve_embedded_translation_original(
+        self,
+        requested_workno: str,
+        page_product: Dict,
+        locale: Optional[str] = None,
+    ) -> Optional[Dict]:
+        from .dlsite_metadata_trust import is_translation_placeholder_maker
+
+        requested = self._normalize_workno(requested_workno)
+        if (
+            not requested
+            or str(page_product.get('metadata_evidence_source') or '').strip()
+            != 'page_embedded_product'
+            or not is_translation_placeholder_maker(page_product.get('maker_name'))
+        ):
+            return None
+
+        lang = str(
+            page_product.get('lang_options')
+            or (page_product.get('translation_info') or {}).get('lang')
+            or ''
+        ).strip().upper()
+        if not lang or lang in {'JPN', 'JA', 'JAPANESE'}:
+            return None
+
+        original_workno = self._normalize_workno(
+            page_product.get('page_original_workno') or ''
+        )
+        original_maker_id = str(
+            page_product.get('page_original_maker_id') or ''
+        ).strip().upper()
+        image_url = str((page_product.get('image_main') or {}).get('url') or '')
+        image_workno = self._extract_image_workno(image_url)
+        if (
+            not original_workno
+            or original_workno == requested
+            or original_workno != image_workno
+            or not re.fullmatch(r'RG\d+', original_maker_id)
+        ):
+            return None
+
+        original_product = await self._fetch_product_page_metadata(
+            original_workno,
+            locale=locale,
+        )
+        if (
+            not original_product
+            or str(original_product.get('metadata_evidence_source') or '').strip()
+            != 'page_embedded_product'
+            or self._normalize_workno(original_product.get('workno')) != original_workno
+            or str(original_product.get('maker_id') or '').strip().upper()
+            != original_maker_id
+            or is_translation_placeholder_maker(original_product.get('maker_name'))
+        ):
+            return None
+
+        original_image_url = str(
+            (original_product.get('image_main') or {}).get('url') or ''
+        )
+        if (
+            self._normalize_image_url(image_url).lower()
+            != self._normalize_image_url(original_image_url).lower()
+        ):
+            return None
+
+        translated_title = self._normalize_translation_title_for_match(
+            str(page_product.get('work_name') or '')
+        )
+        original_title = self._normalize_translation_title_for_match(
+            str(original_product.get('work_name') or '')
+        )
+        if not translated_title or translated_title != original_title:
+            return None
+
+        child_work_type = str(page_product.get('work_type') or '').strip().upper()
+        original_work_type = str(original_product.get('work_type') or '').strip().upper()
+        if child_work_type and original_work_type and child_work_type != original_work_type:
+            return None
+
+        effective_product = dict(page_product)
+        effective_product.update({
+            'maker_id': original_product.get('maker_id') or '',
+            'maker_name': original_product.get('maker_name') or '',
+            'original_maker_name': original_product.get('maker_name') or '',
+            'translator_name': page_product.get('maker_name') or '',
+            'series_id': (
+                page_product.get('series_id')
+                or original_product.get('series_id')
+                or ''
+            ),
+            'series_name': (
+                page_product.get('series_name')
+                or original_product.get('series_name')
+                or ''
+            ),
+            'metadata_evidence_source': 'page_embedded_original_match',
+            'verified_parent_workno': original_workno,
+            'verified_parent_child_relation': True,
+            'translation_info': {
+                **dict(page_product.get('translation_info') or {}),
+                'is_original': False,
+                'is_child': True,
+                'parent_workno': original_workno,
+                'original_workno': original_workno,
+                'lang': lang,
+                'source': 'page_embedded_original_match',
+            },
+        })
+        logger.info(
+            "[DLsite] 页面结构化证据确认翻译原作: requested=%s original=%s maker=%s",
+            requested,
+            original_workno,
+            effective_product.get('maker_name') or '',
+        )
+        return effective_product
 
     async def _fetch_product_page_html(self, rjcode: str, locale: Optional[str] = None) -> str:
         """兼容旧外部签名：只返回 HTML 文本。新代码请直接调 ``_fetch_page_html_with_url``。"""
@@ -1489,6 +1778,16 @@ class DLsiteApiService:
                 )
 
                 effective_product = dict(parent_product)
+                effective_product['original_maker_name'] = (
+                    parent_product.get('original_maker_name')
+                    or parent_product.get('maker_name')
+                    or ''
+                )
+                effective_product['translator_name'] = (
+                    (edition_info or {}).get('maker_name')
+                    or (edition_info or {}).get('translator_name')
+                    or ''
+                )
                 translation_info = dict(parent_product.get('translation_info') or {})
                 effective_product['translation_info'] = {
                     **translation_info,
@@ -1556,22 +1855,58 @@ class DLsiteApiService:
 
         page_product = await self._fetch_product_page_metadata(requested_workno, locale=locale)
         if page_product:
+            from .dlsite_metadata_trust import attach_dlsite_metadata_verification
+
+            resolved_page_product = await self._resolve_embedded_translation_original(
+                requested_workno,
+                page_product,
+                locale=locale,
+            )
+            if resolved_page_product:
+                page_product = resolved_page_product
+                parent_workno = self._normalize_workno(
+                    page_product.get('verified_parent_workno') or ''
+                )
+            resolved_workno = self._normalize_workno(
+                page_product.get('workno') or requested_workno
+            )
+            evidence_source = str(
+                page_product.get('metadata_evidence_source')
+                or 'page_metadata_unverified'
+            ).strip()
+            verification_input = {
+                **page_product,
+                'resolved_workno': resolved_workno,
+                'verified_parent_workno': (
+                    page_product.get('verified_parent_workno')
+                    or parent_workno
+                ),
+                'metadata_evidence_source': evidence_source,
+            }
+            verification = attach_dlsite_metadata_verification(
+                verification_input,
+                requested_workno,
+            )
             payload = {
                 'product': page_product,
                 'requested_workno': requested_workno,
-                'resolved_workno': self._normalize_workno(page_product.get('workno') or requested_workno),
+                'resolved_workno': resolved_workno,
                 'fallback_used': True,
-                'fallback_source': 'page_metadata',
+                'fallback_source': verification['metadata_evidence_source'],
                 'parent_workno': parent_workno,
                 'edition_info': None,
-                'metadata_verification_status': 'unverified',
-                'metadata_verification_reason': '页面 fallback 元数据未经结构化关联验证',
-                'metadata_evidence_source': 'page_metadata_unverified',
+                'metadata_verification_status': verification['metadata_verification_status'],
+                'metadata_verification_reason': verification['metadata_verification_reason'],
+                'metadata_evidence_source': verification['metadata_evidence_source'],
             }
             self.cache[cache_key] = {
                 'data': payload,
                 'timestamp': datetime.now(),
-                'ttl_seconds': 900,
+                'ttl_seconds': (
+                    86400
+                    if verification['metadata_verification_status'] == 'verified'
+                    else 900
+                ),
             }
             return payload
 
