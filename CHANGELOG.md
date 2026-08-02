@@ -2,6 +2,12 @@
 
 本文件记录 KikoeruManager 的版本变化、功能更新与问题修复。更早的历史版本可通过 GitHub Tags 与提交历史查看。
 
+## v2.3.18
+
+- 修复：Windows exe 发行版无法独立启动的问题。exe 首次运行会自动引导内置 PostgreSQL / Redis，优先使用发行包内携带的 `tools/postgres`、`tools/redis` 或系统已有安装，缺失时自动下载便携版并初始化到 `data/postgresql` / `data/redis`，启动前把连接信息写入 `data/config/config.yaml`。
+- 增强：发布流水线把 PostgreSQL 18 便携版与 Redis 一起打进发行 zip；`backend/build.py` 与 `build-release.bat` 会把 `tools/redis/redis-server.exe` 打包进 exe。
+- 修复：桌面版等待后端启动超时从 20 秒放宽到 120 秒，避免首次初始化数据库耗时较长时误报失败。
+
 ## v2.3.14
 
 - 发布源切换：本仓库更名为 `GinatWiki/KikoeruManager`，README 克隆、Releases、GHCR 镜像、Docker Compose 与 Unraid 模板统一指向 `ghcr.io/ginatwiki/kikoerumanager`。

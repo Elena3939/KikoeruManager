@@ -130,7 +130,9 @@ npm run dev
 
 ### Windows 桌面版
 
-打包好的 exe 见 [Releases](https://github.com/GinatWiki/KikoeruManager/releases)，下载解压后双击 `KikoeruManager.exe` 即可，自带托盘 + 自动打开 Web。
+打包好的 exe 见 [Releases](https://github.com/GinatWiki/KikoeruManager/releases)。发行 zip 已包含 `tools/postgres` 与 `tools/redis` 便携运行环境，下载解压后双击 `KikoeruManager.exe` 即可；首次启动会自动初始化内置 PostgreSQL / Redis 到 `data/postgresql` 与 `data/redis`，并把连接信息写入 `data/config/config.yaml`，无需单独安装数据库。
+
+如果发行包没有携带 runtime 或只拷贝了单个 exe，首次启动会自动联网下载便携版；也可以通过 `DATABASE_URL` / `KIKOERUMANAGER_REDIS_URL` 指向外部服务。
 
 也可在本地从源码打包：
 

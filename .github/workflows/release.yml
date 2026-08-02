@@ -45,6 +45,30 @@ jobs:
         pip install -r backend/requirements.txt
         pip install pyinstaller pystray pillow
 
+    - name: Download embedded PostgreSQL and Redis runtime
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        $pgZip = Join-Path $env:RUNNER_TEMP "postgresql.zip"
+        Invoke-WebRequest -Uri "https://get.enterprisedb.com/postgresql/postgresql-18.4-1-windows-x64-binaries.zip" -OutFile $pgZip -UseBasicParsing
+        $pgRoot = Join-Path $env:RUNNER_TEMP "pg"
+        Expand-Archive -LiteralPath $pgZip -DestinationPath $pgRoot -Force
+        New-Item -ItemType Directory -Force -Path "tools\postgres" | Out-Null
+        Copy-Item -LiteralPath (Join-Path $pgRoot "pgsql") -Destination "tools\postgres\pgsql" -Recurse -Force
+        foreach ($remove in @("doc", "include", "symbols", "installer", "pgAdmin 4", "StackBuilder")) {
+          $target = Join-Path "tools\postgres\pgsql" $remove
+          if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+        }
+        $redisZip = Join-Path $env:RUNNER_TEMP "redis.zip"
+        Invoke-WebRequest -Uri "https://github.com/redis-windows/redis-windows/releases/download/8.10.0/Redis-8.10.0-Windows-x64-msys2.zip" -OutFile $redisZip -UseBasicParsing
+        $redisRoot = Join-Path $env:RUNNER_TEMP "redis"
+        Expand-Archive -LiteralPath $redisZip -DestinationPath $redisRoot -Force
+        New-Item -ItemType Directory -Force -Path "tools\redis" | Out-Null
+        $redisExe = Get-ChildItem -LiteralPath $redisRoot -Filter redis-server.exe -Recurse | Select-Object -First 1
+        if (-not $redisExe) { throw "redis-server.exe not found in $redisRoot" }
+        Copy-Item -LiteralPath $redisExe.FullName -Destination "tools\redis\redis-server.exe" -Force
+        Get-ChildItem tools -Recurse -Filter *.exe | Select-Object -First 5 FullName, Length
+
     - name: Build EXE (console + noconsole)
       working-directory: backend
       env:
@@ -64,8 +88,8 @@ jobs:
       run: |
         $tag = "${{ github.event.inputs.tag || github.ref_name }}"
         if (-not $tag.StartsWith("v")) { $tag = "v" + $tag }
-        Compress-Archive -Path backend/dist/KikoeruManager.exe -DestinationPath "kikoerumanager-$tag-windows-console.zip" -Force
-        Compress-Archive -Path backend/dist/KikoeruManager-noconsole.exe -DestinationPath "kikoerumanager-$tag-windows-noconsole.zip" -Force
+        Compress-Archive -Path backend/dist/KikoeruManager.exe, tools -DestinationPath "kikoerumanager-$tag-windows-console.zip" -Force
+        Compress-Archive -Path backend/dist/KikoeruManager-noconsole.exe, tools -DestinationPath "kikoerumanager-$tag-windows-noconsole.zip" -Force
         Get-ChildItem *.zip
 
     - name: Create GitHub Release

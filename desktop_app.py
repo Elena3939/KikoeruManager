@@ -115,7 +115,7 @@ class DesktopApp:
             self.backend_error = str(e)
             logger.error(f"后端启动失败: {e}", exc_info=True)
 
-    def wait_for_backend(self, timeout_seconds=20):
+    def wait_for_backend(self, timeout_seconds=120):
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             if self.backend_thread and not self.backend_thread.is_alive():
@@ -236,6 +236,21 @@ class DesktopApp:
                 logger.info(f"已从包内复制默认配置到: {config_path}")
 
         # 3. 启动后端线程
+        try:
+            from backend.app.core.embedded_runtime import bootstrap_embedded_runtime
+            bootstrap_embedded_runtime(data_dir=data_dir, config_path=config_path)
+        except Exception as exc:
+            logger.error("内置运行环境引导失败: %s", exc, exc_info=True)
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror(
+                "启动失败",
+                "内置 PostgreSQL / Redis 引导失败，应用无法启动。\n\n" + str(exc),
+            )
+            sys.exit(1)
+
         self.backend_thread = threading.Thread(target=self.run_backend, daemon=True)
         self.backend_thread.start()
 

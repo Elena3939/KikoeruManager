@@ -61,6 +61,10 @@ def build(console_mode=True):
             path = os.path.join(unar_dir, filename)
             if os.path.exists(path):
                 binaries.append((path, "tools/unar"))
+
+    redis_server = os.path.join(ROOT_DIR, "tools", "redis", "redis-server.exe")
+    if os.path.exists(redis_server):
+        binaries.append((redis_server, "tools/redis"))
     
     spec_content = f'''# -*- mode: python ; coding: utf-8 -*-
 
