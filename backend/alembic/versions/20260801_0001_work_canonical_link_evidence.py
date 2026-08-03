@@ -1,7 +1,7 @@
 """Add canonical-link evidence fields.
 
 Revision ID: 20260801_0001_work_canonical_link_evidence
-Revises: 20260726_0001_circle_external_search_records
+Revises: 20260731_0002_work_metadata_maker_roles
 Create Date: 2026-08-01
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 
 revision = "20260801_0001_work_canonical_link_evidence"
-down_revision = "20260726_0001_circle_external_search_records"
+down_revision = "20260731_0002_work_metadata_maker_roles"
 branch_labels = None
 depends_on = None
 
