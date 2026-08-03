@@ -491,6 +491,17 @@ def _route_path_basename(value: Any) -> str:
     return text.replace("\\", "/").rsplit("/", 1)[-1]
 
 
+
+def _mask_ai_title_translation_config(config) -> Optional[dict]:
+    """返回 AI 标题汉化配置，API Key 脱敏。"""
+    if not hasattr(config, 'ai_title_translation'):
+        return None
+    data = config.ai_title_translation.model_dump()
+    if data.get('api_key'):
+        data['api_key'] = '********'
+    return data
+
+
 def _mask_http_downloader_config_for_log(value: dict) -> dict:
     data = dict(sanitize_for_log(value or {}))
     if "proxy_url" in data:
@@ -2794,6 +2805,7 @@ class ConfigResponse(BaseModel):
     asmr_sync_step: Optional[dict] = None
     rj_subtitle: Optional[dict] = None
     ai_subtitle_matching: Optional[dict] = None
+    ai_title_translation: Optional[dict] = None
     backup_zip: Optional[dict] = None
     email_watcher: Optional[dict] = None
     notification_email: Optional[dict] = None
@@ -2838,6 +2850,15 @@ class DatabaseSecretRevealRequest(BaseModel):
 class RedisSecretRevealRequest(BaseModel):
     key: str
 
+
+
+
+class AITitleTranslationSecretRevealRequest(BaseModel):
+    key: str
+
+
+class AITitleTranslationTestRequest(BaseModel):
+    config: Optional[dict] = None
 
 class AISubtitleMatchTestRequest(BaseModel):
     config: Optional[dict] = None
@@ -3551,6 +3572,23 @@ def _read_ai_subtitle_api_key_from_disk() -> str:
         logger.warning("[AI字幕] 读取磁盘 API Key 失败", exc_info=True)
         return ""
 
+def _read_ai_title_translation_api_key_from_disk() -> str:
+    """读取磁盘原始 AI 标题汉化 API Key，避免脱敏占位符覆盖真实配置。"""
+    try:
+        config_path = _runtime_config_path_from_settings()
+        if not os.path.exists(config_path):
+            return ""
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        value = data.get("ai_title_translation", {}).get("api_key", "")
+        return value if value != "********" else ""
+    except Exception:
+        logger.warning("[AI标题] 读取磁盘 API Key 失败", exc_info=True)
+        return ""
+
+
+
+
 
 def _read_http_downloader_secret_from_disk(key: str) -> str:
     """读取磁盘原始 HTTP 下载敏感配置，避免把脱敏占位符写回。"""
@@ -3699,6 +3737,7 @@ def get_configuration():
         subtitle_sync=config.subtitle_sync.model_dump() if hasattr(config, 'subtitle_sync') else None,
         rj_subtitle=config.rj_subtitle.model_dump() if hasattr(config, 'rj_subtitle') else None,
         ai_subtitle_matching=_mask_ai_subtitle_matching_config(config),
+        ai_title_translation=_mask_ai_title_translation_config(config),
         backup_zip=config.backup_zip.model_dump() if hasattr(config, 'backup_zip') else None,
         email_watcher=config.email_watcher.model_dump() if hasattr(config, 'email_watcher') else None,
         notification_email=_mask_notification_email_config(config),
@@ -4350,6 +4389,23 @@ async def update_configuration(request: Request):
                 logger.error(f"[AI字幕] 配置验证失败: {e}")
                 raise HTTPException(status_code=400, detail=f"AI 字幕配对配置无效: {e}")
 
+
+        if 'ai_title_translation' in config_data and config_data['ai_title_translation']:
+            try:
+                from ..config.settings import AITitleTranslationConfig
+                ai_data = dict(config_data['ai_title_translation'])
+                if 'api_key' not in ai_data or ai_data.get('api_key') == '********':
+                    current_cfg = get_config()
+                    current_key = getattr(current_cfg.ai_title_translation, 'api_key', '')
+                    ai_data['api_key'] = (
+                        _read_ai_title_translation_api_key_from_disk()
+                        or (current_key if current_key != '********' else '')
+                    )
+                ai_cfg = AITitleTranslationConfig(**ai_data)
+                config_data['ai_title_translation'] = ai_cfg.model_dump()
+            except Exception as e:
+                logger.error(f"[AI标题] 配置验证失败: {e}")
+                raise HTTPException(status_code=400, detail=f"AI 标题汉化配置无效: {e}")
         if 'notification_email' in config_data and config_data['notification_email']:
             try:
                 from ..config.settings import NotificationEmailConfig

@@ -1,4 +1,4 @@
-import os
+﻿import os
 import re
 import asyncio
 import time
@@ -12,6 +12,7 @@ from ..config.settings import get_config
 from ..models.database import WorkMetadata as WorkMetadataModel, get_db
 from ..core.task_engine import Task
 from ..core.dlsite_service import get_dlsite_service
+from ..core.ai_title_translation_service import get_ai_title_translation_service
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,8 @@ class WorkMetadata:
         # None 表示这次 metadata 没向 DLsite 实际确认过 bonus（落库后仍是 NULL，
         # build_circle_completion_view 会按 NULL 做一次性懒迁移）。
         self.bonus_info_checked_at: Optional[datetime] = None
+        self.ai_title: Optional[str] = None  # AI 翻译的中文标题
+        self.ai_title_checked_at: Optional[datetime] = None  # AI 翻译检查时间
     
     def to_dict(self) -> dict:
         return {
@@ -110,6 +113,8 @@ class WorkMetadata:
             'metadata_verification_reason': self.metadata_verification_reason,
             'metadata_evidence_source': self.metadata_evidence_source,
             'dlsite_circuit_open': self.dlsite_circuit_open,
+            'ai_title': self.ai_title,
+            'ai_title_checked_at': self.ai_title_checked_at.isoformat() if self.ai_title_checked_at else None,
         }
 
 class MetadataService:
@@ -501,7 +506,8 @@ class MetadataService:
                 # 仅在 _apply_dlsite_bonus_info 真的拉到 bonus 时才有值；
                 # 否则保持 NULL，让浏览路径走一次懒迁移。
                 bonus_info_checked_at=metadata.bonus_info_checked_at,
-                expires_at=datetime.now() + timedelta(days=30)
+                expires_at=datetime.now() + timedelta(days=30),
+                ai_title=metadata.ai_title,
             )
             db.add(cached)
             db.commit()
@@ -934,6 +940,26 @@ class MetadataService:
                 
                 if translated_name:
                     metadata.work_name = translated_name
+                # AI 标题汉化
+                if not translated_name and self._contains_japanese_kana(metadata.work_name):
+                    ai_cfg = self.config.ai_title_translation
+                    if ai_cfg and ai_cfg.enabled:
+                        try:
+                            ai_result = await get_ai_title_translation_service().translate_single(
+                                metadata.work_name,
+                                ai_cfg,
+                                saved_api_key=self.config.ai_title_translation.api_key,
+                            )
+                            if ai_result.get("success") and ai_result.get("translated_title"):
+                                metadata.ai_title = ai_result["translated_title"]
+                                metadata.ai_title_checked_at = datetime.now()
+                                logger.info(f"[AI标题] {metadata.rjcode} 翻译成功: {metadata.work_name[:30]} -> {metadata.ai_title[:30]}")
+                            else:
+                                logger.info(f"[AI标题] {metadata.rjcode} 翻译未成功: {ai_result.get('status', 'unknown')}")
+                        except Exception as e:
+                            logger.warning(f"[AI标题] {metadata.rjcode} 翻译异常: {e}")
+                else:
+                    metadata.ai_title_checked_at = datetime.now()
             
             return metadata
             

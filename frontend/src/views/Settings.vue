@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="settings-page">
     <AppPageHeader
       :icon="IconSettings"
@@ -98,6 +98,14 @@
       >
         <AISubtitleSettingsPanel :config="config" />
       </SettingsSectionPanel>
+      <SettingsSectionPanel
+        v-else-if="activeSection === 'aiTitleTranslation'"
+        kicker="AI Title Translation"
+        title="AI 标题汉化"
+        desc="元数据获取后自动检测日文作品名并调用 AI 翻译为中文"
+      >
+        <AITitleTranslationSettingsPanel :config="config" />
+      </SettingsSectionPanel>
 
       <SettingsSectionPanel
         v-else-if="activeSection === 'httpDownload'"
@@ -167,7 +175,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { Bell, Bot, Boxes, DownloadCloud, HardDrive, LifeBuoy, ScanSearch, ServerCog, ShieldCheck, TextSearch, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
+import { Bell, Bot, Languages, Boxes, DownloadCloud, HardDrive, LifeBuoy, ScanSearch, ServerCog, ShieldCheck, TextSearch, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
 import SettingsSectionPanel from '../components/settings/SettingsSectionPanel.vue'
 import SettingsWorkbench from '../components/settings/SettingsWorkbench.vue'
 import BaiduNetdiskNavIcon from '../components/settings/BaiduNetdiskNavIcon.vue'
@@ -176,6 +184,7 @@ import ProcessingSettingsPanel from '../components/settings/ProcessingSettingsPa
 import RulesSettingsPanel from '../components/settings/RulesSettingsPanel.vue'
 import ServicesSettingsPanel from '../components/settings/ServicesSettingsPanel.vue'
 import AISubtitleSettingsPanel from '../components/settings/AISubtitleSettingsPanel.vue'
+import AITitleTranslationSettingsPanel from '../components/settings/AITitleTranslationSettingsPanel.vue'
 import HttpDownloadSettingsPanel from '../components/settings/HttpDownloadSettingsPanel.vue'
 import BaiduNetdiskSettingsPanel from '../components/settings/BaiduNetdiskSettingsPanel.vue'
 import SystemSettingsPanel from '../components/settings/SystemSettingsPanel.vue'
@@ -194,6 +203,7 @@ const sectionKeyMap = {
   rules: ['filter', 'rename', 'classification', 'path_mappings', 'path_mapping_enabled'],
   services: ['kikoeru_server', 'asmr_sync', 'rj_subtitle', 'email_watcher', 'bonus_probe', 'circle_external_search'],
   aiSubtitle: ['ai_subtitle_matching'],
+  aiTitleTranslation: ['ai_title_translation'],
   httpDownload: ['http_downloader'],
   baiduNetdisk: ['baidu_netdisk'],
   system: ['database', 'resource_budget'],
@@ -266,6 +276,7 @@ const sections = [
   { id: 'rules', title: '内容规则', short: '过滤、重命名、分类、路径映射', icon: Boxes, keywords: ['filter', 'rename', 'classification', 'path'] },
   { id: 'services', title: '外部服务', short: 'Kikoeru、ASMR、RJ 字幕、特典补全', icon: ScanSearch, keywords: ['kikoeru', 'asmr', 'subtitle', 'email', 'bonus', 'probe', 'dlsite', '外部服务', '特典补全', '特典探测'] },
   { id: 'aiSubtitle', title: 'AI 配对', short: '模型、Key、提示词、阈值', icon: Bot, keywords: ['ai', 'subtitle', 'match', 'model', 'prompt', '字幕配对', '模型', '提示词'] },
+  { id: 'aiTitleTranslation', title: 'AI 标题汉化', short: '作品名自动翻译', icon: Languages, keywords: ['ai', 'title', 'translation', 'translate', 'work name', '标题', '翻译', '汉化', '作品名'] },
   { id: 'httpDownload', title: 'HTTP 下载', short: 'HTTP、Gofile、PikPak', icon: DownloadCloud, keywords: ['http', 'download', 'aria2', 'gofile', 'pikpak', '外链下载'] },
   { id: 'baiduNetdisk', title: '百度网盘', short: '官方登录、分享直下、SVIP', icon: BaiduNetdiskNavIcon, keywords: ['baidu', '百度网盘', '分享直下', 'SVIP', '百度'] },
   { id: 'system', title: '系统运行', short: 'PostgreSQL、连接池、资源预算', icon: ServerCog, keywords: ['system', 'runtime', 'postgresql', 'pool', 'resource_budget', '系统', '连接池', '资源预算'] },

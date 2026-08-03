@@ -1,4 +1,4 @@
-from contextlib import contextmanager
+﻿from contextlib import contextmanager
 
 from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, BigInteger, Index, text, Float, event, CheckConstraint, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
@@ -188,6 +188,8 @@ class WorkMetadata(Base):
     bonus_info_checked_at = Column(DateTime, nullable=True)
     cached_at = Column(DateTime, default=get_local_now)
     expires_at = Column(DateTime)
+    ai_title = Column(Text, nullable=True)  # AI 翻译的中文标题
+    ai_title_checked_at = Column(DateTime, nullable=True)  # AI 翻译检查时间
     
     def to_dict(self):
         """转换为字典"""
@@ -208,7 +210,9 @@ class WorkMetadata(Base):
             'has_bonus': bool(self.has_bonus),
             'bonus_info_checked_at': self.bonus_info_checked_at.isoformat() if self.bonus_info_checked_at else None,
             'cached_at': self.cached_at.isoformat() if self.cached_at else None,
-            'expires_at': self.expires_at.isoformat() if self.expires_at else None
+            'expires_at': self.expires_at.isoformat() if self.expires_at else None,
+            'ai_title': self.ai_title,
+            'ai_title_checked_at': self.ai_title_checked_at.isoformat() if self.ai_title_checked_at else None,
         }
 
 class LibrarySnapshot(Base):
@@ -286,6 +290,8 @@ class WorkLinkage(Base):
     lang = Column(String(20))       # 语言代码
     cached_at = Column(DateTime, default=get_local_now)
     expires_at = Column(DateTime)   # 缓存过期时间
+    ai_title = Column(Text, nullable=True)  # AI 翻译的中文标题
+    ai_title_checked_at = Column(DateTime, nullable=True)  # AI 翻译检查时间
     
     __table_args__ = (
         Index('idx_original_linked', 'original_rjcode', 'linked_rjcode'),

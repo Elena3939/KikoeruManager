@@ -1,4 +1,4 @@
-import os
+﻿import os
 import yaml
 import logging
 import threading
@@ -482,6 +482,33 @@ class AISubtitleMatchingConfig(BaseModel):
         "文件名完全对应、轨道号对应、标题规范化后对应时给高分；不确定就放入 unmatched。"
     )
 
+
+class AITitleTranslationConfig(BaseModel):
+    """AI 标题汉化配置。"""
+    enabled: bool = False
+    auto_translate: bool = True
+    model: str = ""
+    api_key: str = ""
+    api_base: str = ""
+    api_version: str = ""
+    organization: str = ""
+    proxy_url: str = ""
+    timeout_seconds: int = 30
+    max_retries: int = 2
+    temperature: float = 0.1
+    overwrite_manual: bool = False
+    batch_size: int = 5
+    prompt_template: str = (
+        "你是一名专业的日文作品标题翻译者。请将以下日文作品标题翻译成中文。\n"
+        "要求：\n"
+        "1. 保持原意，使用自然的中文表达\n"
+        "2. 保留作品名中的关键专有名词（角色名、品牌名、声优名等）原文或常用中文译名\n"
+        "3. 不要添加原文没有的解释或补充说明\n"
+        "4. 只输出翻译后的标题，不要输出任何其他文字\n"
+        "5. 如果标题已经是中文，直接原样返回\n"
+        "标题：{work_name}\n"
+        "翻译："
+    )
 class BackupZipConfig(BaseModel):
     enabled: bool = False
     source_path: str = ""
@@ -773,6 +800,7 @@ class AppConfig(BaseModel):
     subtitle_sync: SubtitleSyncConfig = SubtitleSyncConfig()
     rj_subtitle: RJSubtitleConfig = RJSubtitleConfig()
     ai_subtitle_matching: AISubtitleMatchingConfig = AISubtitleMatchingConfig()
+    ai_title_translation: AITitleTranslationConfig = AITitleTranslationConfig()
     backup_zip: BackupZipConfig = BackupZipConfig()
     email_watcher: EmailWatcherConfig = EmailWatcherConfig()
     notification_email: NotificationEmailConfig = NotificationEmailConfig()
