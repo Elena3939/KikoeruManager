@@ -13,7 +13,7 @@ param(
   [string]$Tag = ""
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $rootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $rootDir
 
@@ -68,7 +68,7 @@ if ($hasAnythingToCommit) {
   foreach ($file in $commitFiles) {
     $fullPath = Join-Path $rootDir $file
     if (Test-Path $fullPath) {
-      git add $file 2>$null
+      git add $file 2>&1 | Out-Null
     }
   }
   
@@ -83,7 +83,7 @@ if ($hasAnythingToCommit) {
 }
 
 Write-Host "[3/3] 打标签 $Tag 并推送到 GitHub..."
-git tag $Tag 2>$null
+git tag $Tag 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) {
   Write-Host "[错误] 创建标签失败（可能已存在）" -ForegroundColor Red
   exit 1
