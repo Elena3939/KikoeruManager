@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, UploadFile, File, Form
+﻿from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, FileResponse, Response
@@ -3799,6 +3799,14 @@ def reveal_ai_subtitle_match_secret(payload: AISubtitleSecretRevealRequest):
     if key != "api_key":
         raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
     return {"value": _read_ai_subtitle_api_key_from_disk()}
+
+@app.post("/api/config/ai-title-translation/reveal-secret")
+def reveal_ai_title_translation_secret(payload: AITitleTranslationSecretRevealRequest):
+    """从本地配置文件读取 AI 标题汉化敏感字段，只供设置页显隐使用。"""
+    key = str(payload.key or "").strip()
+    if key != "api_key":
+        raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
+    return {"value": _read_ai_title_translation_api_key_from_disk()}
 
 
 @app.post("/api/config/circle-external-search/reveal-secret")

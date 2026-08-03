@@ -497,6 +497,7 @@ class AITitleTranslationConfig(BaseModel):
     max_retries: int = 2
     temperature: float = 0.1
     overwrite_manual: bool = False
+    use_ai_subtitle_api: bool = False  # 复用 AI 字幕配对的 API 配置
     batch_size: int = 5
     prompt_template: str = (
         "你是一名专业的日文作品标题翻译者。请将以下日文作品标题翻译成中文。\n"

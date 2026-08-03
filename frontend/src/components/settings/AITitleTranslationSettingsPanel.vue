@@ -31,7 +31,14 @@
         </div>
       </div>
 
-      <div class="settings-card">
+      <SettingsToggleRow
+        v-model="useAiSubtitleApi"
+        title="复用 AI 配对 API 配置"
+        subtitle="使用 AI 字幕配对中的模型、API Key、Base URL 等连接设置"
+        class="reuse-toggle"
+      />
+
+      <div v-if="!useAiSubtitleApi" class="settings-card">
         <div class="card-title">连接配置</div>
         <div class="field-stack">
           <div class="mini-grid two">
@@ -134,7 +141,14 @@ import { Bot, Zap, Check, X } from 'lucide-vue-next'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsNumberStepper from './SettingsNumberStepper.vue'
+import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
+import StatefulButton from '../ui/stateful-button.vue'
 import { getAIModelPlatformMeta } from '../common/aiModelPlatformMeta'
+
+const useAiSubtitleApi = computed({
+  get: () => config.use_ai_subtitle_api === true,
+  set: (val) => { config.use_ai_subtitle_api = val },
+})
 
 const props = defineProps({
   config: { type: Object, required: true },
