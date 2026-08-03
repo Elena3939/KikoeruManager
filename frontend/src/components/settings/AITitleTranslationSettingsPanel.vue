@@ -145,13 +145,13 @@ import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
 import StatefulButton from '../ui/stateful-button.vue'
 import { getAIModelPlatformMeta } from '../common/aiModelPlatformMeta'
 
-const useAiSubtitleApi = computed({
-  get: () => config.use_ai_subtitle_api === true,
-  set: (val) => { config.use_ai_subtitle_api = val },
-})
-
 const props = defineProps({
   config: { type: Object, required: true },
+})
+
+const useAiSubtitleApi = computed({
+  get: () => props.config.use_ai_subtitle_api === true,
+  set: (val) => { props.config.use_ai_subtitle_api = val },
 })
 
 // API Key 显示/隐藏逻辑
