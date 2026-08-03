@@ -8,21 +8,7 @@
             <SettingsToggleRow
               v-model="cfg.enabled"
               title="启用 AI 标题汉化"
-              subtitle="元数据获取后，若作品名仍为日文则调用 AI 翻译"
-            />
-            <SettingsToggleRow
-              v-model="cfg.auto_translate"
-              title="自动翻译"
-              subtitle="元数据获取链路中自动触发翻译"
-              :disabled="!cfg.enabled"
-            />
-          </div>
-          <div class="mini-grid two">
-            <SettingsToggleRow
-              v-model="cfg.overwrite_manual"
-              title="覆盖手动设置"
-              subtitle="即使已有中文标题也重新翻译"
-              :disabled="!cfg.enabled"
+              subtitle="元数据获取后，若作品名仍为日文则调用 AI 翻译为中文，结果存入 ai_title 字段，不覆盖原始标题"
             />
             <SettingsFieldCard label="每批数量">
               <SettingsNumberStepper v-model="cfg.batch_size" :min="1" :max="20" />
