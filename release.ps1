@@ -63,7 +63,7 @@ $hasUntracked = (git ls-files --others --exclude-standard | Where-Object { $_ -i
 
 $hasAnythingToCommit = $hasUnstagedChanges -or $hasUnstagedNew -or $hasUntracked
 
-if ($hasAnythingToCommit) {
+if ($hasAnythingToCommit -or (-not (git diff --quiet) -or -not (git diff --cached --quiet))) {
   Write-Host "[1/3] 暂存文件..."
   foreach ($file in $commitFiles) {
     $fullPath = Join-Path $rootDir $file
