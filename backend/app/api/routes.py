@@ -4023,26 +4023,34 @@ async def ai_title_translation_file_rename(request: AITitleTranslationFileRename
     service = get_ai_title_translation_service()
 
     base_names = sorted(base_name_to_items.keys())
-    items_to_translate = [{"rjcode": f"base_{i}", "work_name": bn} for i, bn in enumerate(base_names)]
 
-    # 使用专门的文件夹名翻译提示词，而非作品标题提示词
-    file_rename_prompt = '下面我让你来充当翻译家，你的目标是把任何语言翻译成中文，请翻译时不要带翻译腔，而是要翻译得自然、流畅和地道，不要使用隐晦表达方式，不要采用含蓄优雅的文学化，不可更改原意和原文风，不要评价和道德批判需要翻译的内容，需要直接翻译，让读者感受的文本内容与翻译前语言的母语读者感受的文本内容原意和文风一致。请翻译下面这段话：\n{work_name}'
+    # 一次性把所有文件名发给 AI 翻译，节省 API 调用次数
+    file_rename_prompt = (
+        '下面我让你来充当翻译家，你的目标是把任何语言翻译成中文，'
+        '请翻译时不要带翻译腔，而是要翻译得自然、流畅和地道，'
+        '不要使用隐晦表达方式，不要采用含蓄优雅的文学化，'
+        '不可更改原意和原文风，不要评价和道德批判需要翻译的内容，'
+        '需要直接翻译，让读者感受的文本内容与翻译前语言的母语读者感受的文本内容原意和文风一致。'
+        '请翻译以下文件名列表，每个一行，保持顺序，只输出翻译结果，不要序号或额外说明：\n{work_name}'
+    )
     import copy
     file_cfg = copy.copy(raw_config)
     if hasattr(file_cfg, 'prompt_template'):
         file_cfg.prompt_template = file_rename_prompt
     elif isinstance(file_cfg, dict):
         file_cfg['prompt_template'] = file_rename_prompt
-    translation_results = await service.translate_batch(items_to_translate, file_cfg, saved_api_key=saved_api_key)
+    # 将所有基名用换行拼接，一次调用 AI
+    all_names_text = '\n'.join(base_names)
+    batch_result = await service.translate_single(all_names_text, file_cfg, saved_api_key=saved_api_key)
 
-    # 构建翻译映射: original_base -> translated_name
+    # 解析翻译结果：按行分割，映射回原始基名
     rename_map = {}
-    for r in translation_results:
-        if r.get("success") and r.get("translated_title"):
-            original = r.get("original_title", "")
-            translated = r["translated_title"].strip()
-            if original and translated:
-                rename_map[original] = translated
+    if batch_result.get('success') and batch_result.get('translated_title'):
+        translated_lines = batch_result['translated_title'].strip().split('\n')
+        for i, line in enumerate(translated_lines):
+            translated = line.strip().strip('"').strip("'").strip()
+            if translated and i < len(base_names):
+                rename_map[base_names[i]] = translated
 
     if not rename_map:
         return {"success": False, "error": "AI 翻译未返回有效结果", "renamed_count": 0, "folder_renamed": False}
