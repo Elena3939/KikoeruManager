@@ -191,8 +191,24 @@ class AITitleTranslationService:
                 content, usage = _extract_litellm_content(response)
                 if not content:
                     raise ValueError("模型返回为空")
-                # 清理输出：去除引号、多余空白
-                content = content.strip().strip('"').strip("'").strip("「").strip("」").strip()
+                # 清理输出：尝试提取 JSON，如果 AI 返回了 {key: value} 格式则解析
+                import json as _json
+                content = content.strip()
+                json_start = content.find('{')
+                json_end = content.rfind('}') + 1
+                if json_start >= 0 and json_end > json_start:
+                    try:
+                        parsed = _json.loads(content[json_start:json_end])
+                        if isinstance(parsed, dict):
+                            values = [v.strip() for v in parsed.values() if isinstance(v, str) and v.strip()]
+                            if len(values) == 1:
+                                content = values[0]
+                            elif len(values) > 1:
+                                content = _json.dumps(parsed, ensure_ascii=False)
+                    except _json.JSONDecodeError:
+                        content = content.strip().strip('"').strip("'").strip("「").strip("」").strip()
+                else:
+                    content = content.strip().strip('"').strip("'").strip("「").strip("」").strip()
                 logger.info(
                     "[AI标题] %s 翻译成功: work_name=%s -> %s tokens=%s",
                     request_label,

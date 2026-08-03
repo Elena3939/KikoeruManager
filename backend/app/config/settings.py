@@ -505,7 +505,7 @@ class AITitleTranslationConfig(BaseModel):
         "不要使用隐晦表达方式，不要采用含蓄优雅的文学化，"
         "不可更改原意和原文风，不要评价和道德批判需要翻译的内容，"
         "需要直接翻译，让读者感受的文本内容与翻译前语言的母语读者感受的文本内容原意和文风一致。"
-        "请翻译下面这段话：\n{work_name}"
+        "请翻译下面这段话，输出 JSON 格式，key 为原文，value 为翻译结果：\n{work_name}"
     )
 class BackupZipConfig(BaseModel):
     enabled: bool = False
