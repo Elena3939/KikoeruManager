@@ -4025,18 +4025,51 @@ async def ai_title_translation_file_rename(request: AITitleTranslationFileRename
     base_names = sorted(base_name_to_items.keys())
 
     # 一次性把所有文件名发给 AI 翻译，节省 API 调用次数
-    # 使用配置中的默认提示词（通用翻译），作品标题和文件名共用同一套
+    # 使用 JSON 格式输出，避免行序错位
+    json_rename_prompt = (
+        '下面我让你来充当翻译家，你的目标是把任何语言翻译成中文，'
+        '请翻译时不要带翻译腔，而是要翻译得自然、流畅和地道，'
+        '不要使用隐晦表达方式，不要采用含蓄优雅的文学化，'
+        '不可更改原意和原文风，不要评价和道德批判需要翻译的内容，'
+        '需要直接翻译，让读者感受的文本内容与翻译前语言的母语读者感受的文本内容原意和文风一致。'
+        '请将以下每个文件名翻译成中文，输出 JSON 格式，'
+        'key 为原始名称，value 为翻译结果，例如：'
+        '{"track01": "第一轨", "bgm": "背景音乐"}'
+        '只输出 JSON，不要任何其他文字：\n{work_name}'
+    )
+    import copy
+    file_cfg = copy.copy(raw_config)
+    if hasattr(file_cfg, 'prompt_template'):
+        file_cfg.prompt_template = json_rename_prompt
+    elif isinstance(file_cfg, dict):
+        file_cfg['prompt_template'] = json_rename_prompt
     all_names_text = '\n'.join(base_names)
-    batch_result = await service.translate_single(all_names_text, raw_config, saved_api_key=saved_api_key)
+    batch_result = await service.translate_single(all_names_text, file_cfg, saved_api_key=saved_api_key)
 
-    # 解析翻译结果：按行分割，映射回原始基名
+    # 解析翻译结果：JSON 映射回原始基名
     rename_map = {}
     if batch_result.get('success') and batch_result.get('translated_title'):
-        translated_lines = batch_result['translated_title'].strip().split('\n')
-        for i, line in enumerate(translated_lines):
-            translated = line.strip().strip('"').strip("'").strip()
-            if translated and i < len(base_names):
-                rename_map[base_names[i]] = translated
+        import json
+        text = batch_result['translated_title'].strip()
+        # 尝试从文本中提取 JSON 对象（AI 可能在前后加了说明）
+        json_start = text.find('{')
+        json_end = text.rfind('}') + 1
+        if json_start >= 0 and json_end > json_start:
+            try:
+                parsed = json.loads(text[json_start:json_end])
+                if isinstance(parsed, dict):
+                    for orig, trans in parsed.items():
+                        if isinstance(orig, str) and isinstance(trans, str) and trans.strip():
+                            rename_map[orig.strip()] = trans.strip()
+            except json.JSONDecodeError:
+                pass
+        # 如果 JSON 解析失败，回退到按行分割
+        if not rename_map:
+            translated_lines = text.split('\n')
+            for i, line in enumerate(translated_lines):
+                translated = line.strip().strip('"').strip("'").strip()
+                if translated and i < len(base_names):
+                    rename_map[base_names[i]] = translated
 
     if not rename_map:
         return {"success": False, "error": "AI 翻译未返回有效结果", "renamed_count": 0, "folder_renamed": False}
