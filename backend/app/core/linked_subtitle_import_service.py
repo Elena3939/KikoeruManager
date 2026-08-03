@@ -46,6 +46,14 @@ class LinkedSubtitleImportService:
     PENDING_SOURCE_MODE = "linked_translation_archive_pending"
     EXISTING_SUBTITLE_SOURCE_MODE = "linked_translation_archive_existing_subtitle_conflict"
     PENDING_EXECUTING_STATUS = "PROCESSING"
+    PENDING_EXECUTION_LEASE_SECONDS = max(
+        60,
+        int(os.getenv("KIKOERUMANAGER_LINKED_SUBTITLE_EXECUTION_LEASE_SECONDS", "600") or 600),
+    )
+    PENDING_EXECUTION_HEARTBEAT_SECONDS = max(
+        10,
+        min(60, PENDING_EXECUTION_LEASE_SECONDS // 3),
+    )
     WORKBENCH_RELATIVE_DIR = "_kikoerumanager_subtitle_workbench/linked"
     REMOTE_SEARCH_RETRY_DELAYS: tuple[float, ...] = ()
     REMOTE_PENDING_REASON = "远程库存暂未检出原作目录，请稍后重试"
@@ -93,6 +101,7 @@ class LinkedSubtitleImportService:
         self.kikoeru_service = get_kikoeru_service()
         self._archive_preview_inflight: Dict[str, asyncio.Task] = {}
         self._archive_preview_inflight_lock = asyncio.Lock()
+        self._pending_execution_owner_id = f"{os.getpid()}:{uuid.uuid4()}"
         self._target_folder_summary_cache = TTLCache(
             max_size=self._FOLDER_SUMMARY_CACHE_L1_MAX_SIZE,
             ttl_seconds=self._FOLDER_SUMMARY_CACHE_L1_TTL_SECONDS,
@@ -3487,6 +3496,7 @@ class LinkedSubtitleImportService:
         *,
         fallback_analysis_info: Optional[Dict[str, Any]] = None,
         reason: str = "",
+        execution_owner_id: Optional[str] = None,
     ) -> None:
         db = next(get_db())
         try:
@@ -3498,6 +3508,12 @@ class LinkedSubtitleImportService:
             if not row:
                 return
             analysis_info = dict(row.analysis_info or fallback_analysis_info or {})
+            if execution_owner_id and str(analysis_info.get("execution_owner_id") or "") != execution_owner_id:
+                logger.info(
+                    "[字幕补配] 跳过已被新执行接管的旧执行锁回滚: record_id=%s",
+                    record_id,
+                )
+                return
             preview = dict(analysis_info.get("preview") or {})
             reason_text = str(reason or "字幕补配导入失败，请重试").strip()
             if reason_text:
@@ -3510,6 +3526,9 @@ class LinkedSubtitleImportService:
                 "execution_status": "failed",
                 "execution_failed_at": datetime.now().isoformat(),
                 "execution_error": reason_text,
+                "execution_owner_id": "",
+                "execution_heartbeat_at": "",
+                "execution_lease_until": "",
             }
             db.commit()
         except Exception:
@@ -3517,6 +3536,125 @@ class LinkedSubtitleImportService:
             logger.warning("[字幕补配] 回滚执行中预检单状态失败: record_id=%s", record_id, exc_info=True)
         finally:
             db.close()
+
+    @staticmethod
+    def _parse_pending_execution_time(value: Any) -> Optional[datetime]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text)
+        except (TypeError, ValueError):
+            return None
+
+    def _pending_execution_lease_is_active(self, analysis_info: Optional[Dict[str, Any]]) -> bool:
+        info = dict(analysis_info or {})
+        now = datetime.now()
+        lease_until = self._parse_pending_execution_time(info.get("execution_lease_until"))
+        if lease_until is not None:
+            return lease_until > now
+
+        # 兼容上线前没有租约字段的旧执行：给刚启动的请求一个完整租约窗口，
+        # 防止滚动升级期间把真实仍在跑的旧请求误接管；超过窗口即视为僵尸锁。
+        started_at = self._parse_pending_execution_time(info.get("execution_started_at"))
+        if started_at is None:
+            return False
+        lease_seconds = max(60, int(getattr(
+            self, "PENDING_EXECUTION_LEASE_SECONDS", self.PENDING_EXECUTION_LEASE_SECONDS
+        ) or self.PENDING_EXECUTION_LEASE_SECONDS))
+        return started_at + timedelta(seconds=lease_seconds) > now
+
+    def _new_pending_execution_owner_id(self) -> str:
+        service_owner_id = getattr(self, "_pending_execution_owner_id", "")
+        if not service_owner_id:
+            service_owner_id = f"{os.getpid()}:{uuid.uuid4()}"
+            self._pending_execution_owner_id = service_owner_id
+        return f"{service_owner_id}:{uuid.uuid4()}"
+
+    def _claim_pending_execution(self, analysis_info: Dict[str, Any], owner_id: str) -> Dict[str, Any]:
+        now = datetime.now()
+        lease_seconds = max(60, int(getattr(
+            self, "PENDING_EXECUTION_LEASE_SECONDS", self.PENDING_EXECUTION_LEASE_SECONDS
+        ) or self.PENDING_EXECUTION_LEASE_SECONDS))
+        return {
+            **dict(analysis_info or {}),
+            "execution_status": "processing",
+            "execution_owner_id": owner_id,
+            "execution_started_at": now.isoformat(),
+            "execution_heartbeat_at": now.isoformat(),
+            "execution_lease_until": (now + timedelta(seconds=lease_seconds)).isoformat(),
+        }
+
+    def _recover_expired_pending_execution(
+        self,
+        analysis_info: Optional[Dict[str, Any]],
+        *,
+        reason: str = "上次字幕补配执行已中断，已自动释放执行锁",
+    ) -> Dict[str, Any]:
+        next_info = dict(analysis_info or {})
+        preview = dict(next_info.get("preview") or {})
+        preview["execute_reason"] = reason
+        preview["reason"] = reason
+        return {
+            **next_info,
+            "preview": preview,
+            "execution_status": "failed",
+            "execution_failed_at": datetime.now().isoformat(),
+            "execution_error": reason,
+            "execution_owner_id": "",
+            "execution_heartbeat_at": "",
+            "execution_lease_until": "",
+        }
+
+    def _renew_pending_execution_lease(self, record_id: str, owner_id: str) -> bool:
+        db = next(get_db())
+        try:
+            row = db.query(ConflictWork).filter(
+                ConflictWork.id == record_id,
+                ConflictWork.conflict_type == self.PENDING_CONFLICT_TYPE,
+                ConflictWork.status == self.PENDING_EXECUTING_STATUS,
+            ).first()
+            if not row:
+                return False
+            analysis_info = dict(row.analysis_info or {})
+            if str(analysis_info.get("execution_owner_id") or "") != owner_id:
+                return False
+            now = datetime.now()
+            lease_seconds = max(60, int(getattr(
+                self, "PENDING_EXECUTION_LEASE_SECONDS", self.PENDING_EXECUTION_LEASE_SECONDS
+            ) or self.PENDING_EXECUTION_LEASE_SECONDS))
+            row.analysis_info = {
+                **analysis_info,
+                "execution_heartbeat_at": now.isoformat(),
+                "execution_lease_until": (now + timedelta(seconds=lease_seconds)).isoformat(),
+            }
+            db.commit()
+            return True
+        except Exception:
+            db.rollback()
+            logger.warning(
+                "[字幕补配] 更新执行租约失败: record_id=%s",
+                record_id,
+                exc_info=True,
+            )
+            return True
+        finally:
+            db.close()
+
+    async def _heartbeat_pending_execution(self, record_id: str, owner_id: str) -> None:
+        interval = max(10, int(getattr(
+            self, "PENDING_EXECUTION_HEARTBEAT_SECONDS", self.PENDING_EXECUTION_HEARTBEAT_SECONDS
+        ) or self.PENDING_EXECUTION_HEARTBEAT_SECONDS))
+        while True:
+            await asyncio.sleep(interval)
+            # 租约续期会打开同步 SQLAlchemy session；放到线程里避免长 IO 导入时
+            # 把事件循环卡住，导致取消和实时状态无法及时处理。
+            if not await asyncio.to_thread(
+                self._renew_pending_execution_lease,
+                record_id,
+                owner_id,
+            ):
+                return
 
     def _is_imported_record_awaiting_manual_match(self, row: ConflictWork) -> bool:
         if str(row.status or "").upper() != "IMPORTED":
@@ -3796,6 +3934,17 @@ class LinkedSubtitleImportService:
                     items.append(self._serialize_pending_record(row))
                     continue
                 if status == self.PENDING_EXECUTING_STATUS:
+                    if not self._pending_execution_lease_is_active(row.analysis_info):
+                        recovered_analysis_info = self._recover_expired_pending_execution(
+                            row.analysis_info
+                        )
+                        row.status = "PENDING"
+                        row.analysis_info = recovered_analysis_info
+                        decisions.append({
+                            "record_id": str(row.id),
+                            "action": "recover_execution",
+                            "next_analysis_info": recovered_analysis_info,
+                        })
                     items.append(self._serialize_pending_record(row))
                     continue
                 if status != "PENDING":
@@ -3915,6 +4064,10 @@ class LinkedSubtitleImportService:
                     action = decision["action"]
                     if action == "refresh_preview":
                         fresh.analysis_info = decision["next_analysis_info"]
+                    elif action == "recover_execution":
+                        if str(fresh.status or "").upper() == self.PENDING_EXECUTING_STATUS:
+                            fresh.status = "PENDING"
+                            fresh.analysis_info = decision["next_analysis_info"]
                     elif action == "convert_existing_subtitle":
                         upserted = self._upsert_existing_subtitle_conflict(
                             write_db,
@@ -4100,6 +4253,7 @@ class LinkedSubtitleImportService:
         # 数 GB 文件，可能跑分钟级），把 connection pool 槽位长期占住，导致其他
         # 请求拿不到连接。改为：短读拿快照 → 无 session 跑长 IO → 短写落库。
         # Phase A: 短读
+        execution_owner_id = self._new_pending_execution_owner_id()
         db = next(get_db())
         try:
             record = db.query(ConflictWork).filter(
@@ -4112,22 +4266,31 @@ class LinkedSubtitleImportService:
             if current_status == "IMPORTED":
                 return self._build_imported_pending_execute_result(record)
             if current_status == self.PENDING_EXECUTING_STATUS:
-                raise LinkedSubtitleImportAlreadyRunning("这条字幕补配预检单正在导入，请等待当前任务完成")
+                if self._pending_execution_lease_is_active(record.analysis_info):
+                    raise LinkedSubtitleImportAlreadyRunning("这条字幕补配预检单正在导入，请等待当前任务完成")
+                logger.warning(
+                    "[字幕补配] 接管过期执行锁: record_id=%s previous_owner=%s",
+                    record_id,
+                    (record.analysis_info or {}).get("execution_owner_id") or "legacy",
+                )
+                record.analysis_info = self._recover_expired_pending_execution(record.analysis_info)
+                record.status = "PENDING"
+                current_status = "PENDING"
             if current_status != "PENDING":
                 raise ValueError("字幕补配预检单当前状态不可执行")
             cached_analysis_info = dict(record.analysis_info or {})
             record_new_path = str(record.new_path or "")
-            record.analysis_info = {
-                **cached_analysis_info,
-                "execution_status": "processing",
-                "execution_started_at": datetime.now().isoformat(),
-            }
+            record.analysis_info = self._claim_pending_execution(cached_analysis_info, execution_owner_id)
             record.status = self.PENDING_EXECUTING_STATUS
             db.commit()
         finally:
             db.close()
 
         # Phase B: 无 session 跑长 IO（候选刷新 + 解压导入）
+        heartbeat_task = asyncio.create_task(
+            self._heartbeat_pending_execution(record_id, execution_owner_id),
+            name=f"linked-subtitle-heartbeat:{record_id}",
+        )
         try:
             record_preview = await self._refresh_pending_preview_candidates(
                 await self._repair_cached_preview_rj_fields(
@@ -4151,13 +4314,26 @@ class LinkedSubtitleImportService:
                 import_reason="正常解压检测后的关联字幕补配导入",
                 source_mode="linked_translation_archive_import",
             )
+        except asyncio.CancelledError:
+            self._reset_pending_execute_status_after_failure(
+                record_id,
+                fallback_analysis_info=cached_analysis_info,
+                reason="字幕补配导入已取消，请重试",
+                execution_owner_id=execution_owner_id,
+            )
+            raise
         except Exception as exc:
             self._reset_pending_execute_status_after_failure(
                 record_id,
                 fallback_analysis_info=cached_analysis_info,
                 reason=str(exc),
+                execution_owner_id=execution_owner_id,
             )
             raise
+        finally:
+            heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat_task
 
         # Phase C: 短写 —— 重新打开 session，重新 fetch record 落库
         write_db = next(get_db())
@@ -4170,6 +4346,9 @@ class LinkedSubtitleImportService:
             if not fresh_record:
                 # 极端情况：执行期间 record 被并发删除。导入结果还是返回，但不再落库
                 return result
+            fresh_analysis_info = dict(fresh_record.analysis_info or {})
+            if str(fresh_analysis_info.get("execution_owner_id") or "") != execution_owner_id:
+                raise LinkedSubtitleImportAlreadyRunning("字幕补配执行锁已被新的请求接管，本次结果不再写入")
 
             if not result.get("success"):
                 fresh_record.status = "PENDING"
@@ -4178,6 +4357,9 @@ class LinkedSubtitleImportService:
                     "execution_status": "failed",
                     "execution_failed_at": datetime.now().isoformat(),
                     "execution_error": str((result.get("import_result") or {}).get("error") or "字幕补配导入失败"),
+                    "execution_owner_id": "",
+                    "execution_heartbeat_at": "",
+                    "execution_lease_until": "",
                 }
                 write_db.commit()
                 return result
@@ -4193,6 +4375,10 @@ class LinkedSubtitleImportService:
                 **next_analysis_info_after_refresh,
                 "preview": final_preview,
                 "executed_at": datetime.now().isoformat(),
+                "execution_status": "completed",
+                "execution_owner_id": "",
+                "execution_heartbeat_at": "",
+                "execution_lease_until": "",
                 "import_result_summary": {
                     "written_count": len((result.get("import_result") or {}).get("written_files") or []),
                     "write_error_count": len((result.get("import_result") or {}).get("write_errors") or []),
@@ -4210,6 +4396,7 @@ class LinkedSubtitleImportService:
                 record_id,
                 fallback_analysis_info=next_analysis_info_after_refresh,
                 reason=str(exc),
+                execution_owner_id=execution_owner_id,
             )
             raise
         finally:

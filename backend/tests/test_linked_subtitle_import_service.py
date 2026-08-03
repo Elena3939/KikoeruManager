@@ -1271,7 +1271,11 @@ async def test_execute_pending_import_rejects_running_record(db_session, monkeyp
         conflict_type=LinkedSubtitleImportService.PENDING_CONFLICT_TYPE,
         new_path="D:/input/RJ01620917.7z",
         status=LinkedSubtitleImportService.PENDING_EXECUTING_STATUS,
-        analysis_info={"preview": {"source_rjcode": "RJ01620917", "target_rjcode": "RJ01608823"}},
+        analysis_info={
+            "preview": {"source_rjcode": "RJ01620917", "target_rjcode": "RJ01608823"},
+            "execution_started_at": datetime.now().isoformat(),
+            "execution_lease_until": (datetime.now() + timedelta(minutes=5)).isoformat(),
+        },
         new_metadata={},
     )
     db_session.add(row)
@@ -1322,6 +1326,104 @@ async def test_execute_pending_import_resets_status_when_long_io_fails(db_sessio
     assert refreshed.status == "PENDING"
     assert refreshed.analysis_info["execution_status"] == "failed"
     assert "模拟解压失败" in refreshed.analysis_info["execution_error"]
+
+
+@pytest.mark.asyncio
+async def test_execute_pending_import_takes_over_expired_execution_lease(db_session, monkeypatch):
+    def fake_get_db():
+        yield db_session
+
+    monkeypatch.setattr(linked_subtitle_module, "get_db", fake_get_db)
+
+    service = object.__new__(LinkedSubtitleImportService)
+    service.PENDING_CONFLICT_TYPE = LinkedSubtitleImportService.PENDING_CONFLICT_TYPE
+    service.PENDING_EXECUTING_STATUS = LinkedSubtitleImportService.PENDING_EXECUTING_STATUS
+    service.PENDING_SOURCE_MODE = LinkedSubtitleImportService.PENDING_SOURCE_MODE
+    service._repair_cached_preview_rj_fields = AsyncMock(return_value={
+        "source_rjcode": "RJ01620917",
+        "target_rjcode": "RJ01608823",
+    })
+    service._refresh_pending_preview_candidates = AsyncMock(return_value={
+        "source_rjcode": "RJ01620917",
+        "target_rjcode": "RJ01608823",
+        "can_execute": True,
+    })
+    service.execute_archive_import = AsyncMock(return_value={
+        "success": False,
+        "import_result": {"error": "未找到可导入字幕"},
+    })
+
+    row = ConflictWork(
+        id="pending-expired-lease",
+        rjcode="RJ01608823",
+        conflict_type=LinkedSubtitleImportService.PENDING_CONFLICT_TYPE,
+        new_path="D:/input/RJ01620917.7z",
+        status=LinkedSubtitleImportService.PENDING_EXECUTING_STATUS,
+        analysis_info={
+            "preview": {"source_rjcode": "RJ01620917", "target_rjcode": "RJ01608823"},
+            "execution_owner_id": "dead-owner",
+            "execution_started_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+            "execution_lease_until": (datetime.now() - timedelta(minutes=1)).isoformat(),
+        },
+        new_metadata={},
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    result = await service.execute_pending_import("pending-expired-lease")
+
+    assert result["success"] is False
+    refreshed = db_session.query(ConflictWork).filter(
+        ConflictWork.id == "pending-expired-lease"
+    ).one()
+    assert refreshed.status == "PENDING"
+    assert refreshed.analysis_info["execution_status"] == "failed"
+    assert refreshed.analysis_info["execution_owner_id"] == ""
+    assert refreshed.analysis_info["execution_lease_until"] == ""
+
+
+@pytest.mark.asyncio
+async def test_execute_pending_import_cancellation_releases_execution_lease(db_session, monkeypatch):
+    def fake_get_db():
+        yield db_session
+
+    monkeypatch.setattr(linked_subtitle_module, "get_db", fake_get_db)
+
+    service = object.__new__(LinkedSubtitleImportService)
+    service.PENDING_CONFLICT_TYPE = LinkedSubtitleImportService.PENDING_CONFLICT_TYPE
+    service.PENDING_EXECUTING_STATUS = LinkedSubtitleImportService.PENDING_EXECUTING_STATUS
+    service.PENDING_SOURCE_MODE = LinkedSubtitleImportService.PENDING_SOURCE_MODE
+    service._repair_cached_preview_rj_fields = AsyncMock(return_value={
+        "source_rjcode": "RJ01620917",
+        "target_rjcode": "RJ01608823",
+    })
+    service._refresh_pending_preview_candidates = AsyncMock(return_value={
+        "source_rjcode": "RJ01620917",
+        "target_rjcode": "RJ01608823",
+        "can_execute": True,
+    })
+    service.execute_archive_import = AsyncMock(side_effect=asyncio.CancelledError())
+
+    row = ConflictWork(
+        id="pending-cancelled",
+        rjcode="RJ01608823",
+        conflict_type=LinkedSubtitleImportService.PENDING_CONFLICT_TYPE,
+        new_path="D:/input/RJ01620917.7z",
+        status="PENDING",
+        analysis_info={"preview": {"source_rjcode": "RJ01620917", "target_rjcode": "RJ01608823"}},
+        new_metadata={},
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.execute_pending_import("pending-cancelled")
+
+    refreshed = db_session.query(ConflictWork).filter(ConflictWork.id == "pending-cancelled").one()
+    assert refreshed.status == "PENDING"
+    assert refreshed.analysis_info["execution_status"] == "failed"
+    assert refreshed.analysis_info["execution_owner_id"] == ""
+    assert refreshed.analysis_info["execution_lease_until"] == ""
 
 
 @pytest.mark.asyncio
