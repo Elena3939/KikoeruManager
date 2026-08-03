@@ -4025,23 +4025,9 @@ async def ai_title_translation_file_rename(request: AITitleTranslationFileRename
     base_names = sorted(base_name_to_items.keys())
 
     # 一次性把所有文件名发给 AI 翻译，节省 API 调用次数
-    file_rename_prompt = (
-        '下面我让你来充当翻译家，你的目标是把任何语言翻译成中文，'
-        '请翻译时不要带翻译腔，而是要翻译得自然、流畅和地道，'
-        '不要使用隐晦表达方式，不要采用含蓄优雅的文学化，'
-        '不可更改原意和原文风，不要评价和道德批判需要翻译的内容，'
-        '需要直接翻译，让读者感受的文本内容与翻译前语言的母语读者感受的文本内容原意和文风一致。'
-        '请翻译以下文件名列表，每个一行，保持顺序，只输出翻译结果，不要序号或额外说明：\n{work_name}'
-    )
-    import copy
-    file_cfg = copy.copy(raw_config)
-    if hasattr(file_cfg, 'prompt_template'):
-        file_cfg.prompt_template = file_rename_prompt
-    elif isinstance(file_cfg, dict):
-        file_cfg['prompt_template'] = file_rename_prompt
-    # 将所有基名用换行拼接，一次调用 AI
+    # 使用配置中的默认提示词（通用翻译），作品标题和文件名共用同一套
     all_names_text = '\n'.join(base_names)
-    batch_result = await service.translate_single(all_names_text, file_cfg, saved_api_key=saved_api_key)
+    batch_result = await service.translate_single(all_names_text, raw_config, saved_api_key=saved_api_key)
 
     # 解析翻译结果：按行分割，映射回原始基名
     rename_map = {}
