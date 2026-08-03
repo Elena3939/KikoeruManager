@@ -1,4 +1,4 @@
-<template>
+﻿<template>
 
   <div class="library library-page-loading-shell">
 
@@ -586,6 +586,17 @@
 
           </button>
 
+
+          <button
+            type="button"
+            class="lib-btn lib-btn-icon-tinted lib-icon-ai-title"
+            :disabled="!canProcessCurrentFolder"
+            title="AI 标题汉化：对当前目录的作品执行 AI 翻译"
+            @click="startAITitleTranslation"
+          >
+            <IconLanguages :size="14" :stroke-width="2.2" />
+            <span>AI 标题汉化</span>
+          </button>
         </div>
 
       </div>
@@ -1948,6 +1959,8 @@ import {
 
   ArrowLeft as IconArrowLeft,
 
+
+  Languages as IconLanguages,
   FilterX as IconFilterX,
 
   Upload as IconUpload,
@@ -2771,6 +2784,7 @@ const selectedRowPaths = ref(new Set())
 const tableSelectionAnchorPath = ref('')
 
 const batchDeleting = ref(false)
+const aiTitleTranslating = ref(false)
 
 const batchComputingSize = ref(false)
 
@@ -25317,6 +25331,49 @@ function statsStatusTextDisplay (stats) {
 
 }
 
+
+// AI 标题汉化 - 对当前目录作品执行翻译
+async function startAITitleTranslation() {
+  if (aiTitleTranslating.value) return
+  aiTitleTranslating.value = true
+  try {
+    // 收集当前目录下的 RJ 作品
+    const rows = toolbarActionScope.value === "page"
+      ? currentPageDirectoryRows.value
+      : (circleVirtualCurrentPath.value
+        ? await resolveCircleActionRows(toolbarSubtitleScopeRows.value, { currentPathFallback: circleVirtualCurrentPath.value })
+        : toolbarSubtitleScopeRows.value)
+
+    const rjcodes = rows
+      .map(row => row.rjcode || extractRJCode(row.path || row.name || ""))
+      .filter(Boolean)
+      .map(rj => rj.toUpperCase())
+
+    if (!rjcodes.length) {
+      ElMessage.warning("当前作用域没有可翻译的作品")
+      return
+    }
+
+    // 去重
+    const unique = [...new Set(rjcodes)]
+    
+    const resp = await fetch("/api/ai-title-translation/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rjcodes: unique }),
+    })
+    const result = await resp.json()
+    if (result.success_count > 0) {
+      ElMessage.success(`AI 标题汉化完成：成功 ${result.success_count} / ${result.total} 项`)
+    } else {
+      ElMessage.info("没有需要翻译的作品或翻译失败")
+    }
+  } catch (e) {
+    ElMessage.error("AI 标题汉化失败：" + (e.response?.data?.detail || e.message))
+  } finally {
+    aiTitleTranslating.value = false
+  }
+}
 </script>
 
 
@@ -26864,6 +26921,7 @@ function statsStatusTextDisplay (stats) {
 .lib-btn-icon-tinted.lib-icon-subtitle-batch svg { color: #059669; }
 .lib-btn-icon-tinted.lib-icon-filter-delete svg { color: #d97706; }
 .lib-btn-icon-tinted.lib-icon-task-panel svg { color: #7c3aed; }
+.lib-btn-icon-tinted.lib-icon-ai-title svg { color: #0891b2; }  /* cyan-600 */
 .lib-btn-icon-tinted.lib-icon-upload svg { color: #0284c7; }
 .lib-btn-icon-tinted.lib-icon-compute-size svg { color: #0ea5e9; }
 .lib-btn-icon-tinted.lib-icon-batch-delete svg { color: #e11d48; }
