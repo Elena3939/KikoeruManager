@@ -3862,7 +3862,7 @@ async def ai_title_translation_batch(request: AITitleTranslationBatchRequest):
 
     # 从 work_metadata 表查找 work_name
     from sqlalchemy import text
-    from ..db.session import get_db
+    from ..models.database import get_db
 
     db = next(get_db())
     items = []
@@ -4145,7 +4145,7 @@ async def ai_title_translation_file_rename(request: AITitleTranslationFileRename
     rjcode = _extract_rjcode(path)
     if rjcode:
         from sqlalchemy import text
-        from ..db.session import get_db
+        from ..models.database import get_db
         db = next(get_db())
         row = db.execute(
             text("SELECT ai_title, work_name FROM work_metadata WHERE rjcode = :rjcode"),
