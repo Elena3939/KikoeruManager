@@ -1971,6 +1971,7 @@ import {
   Trash2 as IconTrash,
 
   Pencil as IconPencil,
+  FilePenLine as IconFileRename,
   FileText as IconFileText,
   Folder as IconFolderTree,
   Music as IconMusic,
@@ -25392,6 +25393,51 @@ async function startAITitleTranslation() {
     aiTitleTranslating.value = false
   }
 }
+// 文件级重命名 - 扫描文件夹中的音频/字幕文件，AI 翻译后执行文件+文件夹重命名
+async function startFileLevelRename() {
+  if (aiTitleTranslating.value) return
+  if (!currentPath.value) {
+    ElMessage.warning('请先进入一个文件夹')
+    return
+  }
+  aiTitleTranslating.value = true
+  try {
+    const resp = await fetch('/api/ai-title-translation/file-rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        library_id: currentLibraryId.value,
+        path: currentPath.value,
+      }),
+    })
+    const result = await resp.json()
+    if (result.success) {
+      let msg = '文件重命名完成：共重命名 ' + result.renamed_count + ' 个文件'
+      if (result.folder_renamed) {
+        msg += '，文件夹已重命名为 "' + result.folder_new_name + '"'
+      }
+      ElMessage.success(msg)
+      if (result.rename_map) {
+        const entries = Object.entries(result.rename_map).slice(0, 10)
+        const details = entries.map(([orig, trans]) => orig.slice(0, 15) + ' \u2192 ' + trans.slice(0, 25)).join('\n')
+        if (details) {
+          let info = '翻译映射：\n' + details
+          const total = Object.keys(result.rename_map).length
+          if (total > 10) info += '\n...还有 ' + (total - 10) + ' 项'
+          ElMessage.info(info)
+        }
+      }
+      // 刷新当前目录
+      await refreshDirectory()
+    } else {
+      ElMessage.warning(result.error || '文件重命名失败')
+    }
+  } catch (e) {
+    ElMessage.error('文件级重命名失败：' + (e.response?.data?.detail || e.message))
+  } finally {
+    aiTitleTranslating.value = false
+  }
+}
 </script>
 
 
@@ -26940,6 +26986,7 @@ async function startAITitleTranslation() {
 .lib-btn-icon-tinted.lib-icon-filter-delete svg { color: #d97706; }
 .lib-btn-icon-tinted.lib-icon-task-panel svg { color: #7c3aed; }
 .lib-btn-icon-tinted.lib-icon-ai-title svg { color: #0891b2; }  /* cyan-600 */
+.lib-btn-icon-tinted.lib-icon-file-rename svg { color: #8b5cf6; }  /* violet-500 */
 .lib-btn-icon-tinted.lib-icon-upload svg { color: #0284c7; }
 .lib-btn-icon-tinted.lib-icon-compute-size svg { color: #0ea5e9; }
 .lib-btn-icon-tinted.lib-icon-batch-delete svg { color: #e11d48; }

@@ -2860,6 +2860,36 @@ class AITitleTranslationSecretRevealRequest(BaseModel):
 class AITitleTranslationTestRequest(BaseModel):
     config: Optional[dict] = None
 
+
+class AITitleTranslationBatchRequest(BaseModel):
+    rjcodes: List[str] = []
+
+
+class AITitleTranslationFileRenameRequest(BaseModel):
+    library_id: str
+    path: str
+
+
+AUDIO_EXTENSIONS = {".mp3", ".flac", ".wav", ".ogg", ".wma", ".m4a", ".wv", ".tta", ".ape", ".aac", ".opus"}
+SUBTITLE_EXTENSIONS = {".ass", ".srt", ".ssa", ".vtt", ".lrc", ".sub", ".idx", ".sup", ".pgs"}
+
+
+def _is_audio_file(filename: str) -> bool:
+    ext = os.path.splitext(filename)[1].lower()
+    return ext in AUDIO_EXTENSIONS
+
+
+def _is_subtitle_file(filename: str) -> bool:
+    ext = os.path.splitext(filename)[1].lower()
+    return ext in SUBTITLE_EXTENSIONS
+
+
+def _extract_rjcode(path: str) -> Optional[str]:
+    """从路径中提取 RJ 编号。"""
+    import re
+    m = re.search(r'(RJ\d{6})', path, re.IGNORECASE)
+    return m.group(1).upper() if m else None
+
 class AISubtitleMatchTestRequest(BaseModel):
     config: Optional[dict] = None
 
@@ -3808,6 +3838,278 @@ def reveal_ai_title_translation_secret(payload: AITitleTranslationSecretRevealRe
         raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
     return {"value": _read_ai_title_translation_api_key_from_disk()}
 
+
+
+@app.post("/api/ai-title-translation/batch")
+async def ai_title_translation_batch(request: AITitleTranslationBatchRequest):
+    """批量翻译多个作品标题。"""
+    rjcodes = list(set([rc.upper() for rc in (request.rjcodes or []) if rc]))
+    if not rjcodes:
+        return {"total": 0, "success_count": 0, "results": []}
+
+    from ..core.ai_title_translation_service import get_ai_title_translation_service
+    from ..config.settings import get_config
+
+    cfg = get_config()
+    raw_config = cfg.ai_title_translation if hasattr(cfg, 'ai_title_translation') else None
+    if raw_config is None:
+        return {"total": len(rjcodes), "success_count": 0, "results": [
+            {"rjcode": rc, "success": False, "status": "disabled", "translated_title": None}
+            for rc in rjcodes
+        ]}
+
+    saved_api_key = _read_ai_title_translation_api_key_from_disk() or ""
+
+    # 从 work_metadata 表查找 work_name
+    from sqlalchemy import text
+    from ..db.session import get_db
+
+    db = next(get_db())
+    items = []
+    for rjcode in rjcodes:
+        row = db.execute(
+            text("SELECT work_name FROM work_metadata WHERE rjcode = :rjcode"),
+            {"rjcode": rjcode}
+        ).fetchone()
+        work_name = row[0] if row else rjcode
+        items.append({"rjcode": rjcode, "work_name": work_name})
+    db.close()
+
+    service = get_ai_title_translation_service()
+    results = await service.translate_batch(items, raw_config, saved_api_key=saved_api_key)
+
+    success_count = sum(1 for r in results if r.get("success"))
+
+    # 翻译成功的结果写回 work_metadata
+    if success_count > 0:
+        try:
+            for r in results:
+                if r.get("success") and r.get("translated_title"):
+                    translated = r["translated_title"].strip()
+                    if translated:
+                        db = next(get_db())
+                        db.execute(
+                            text("UPDATE work_metadata SET ai_title = :ai_title WHERE rjcode = :rjcode"),
+                            {"ai_title": translated, "rjcode": r.get("rjcode")}
+                        )
+                        db.commit()
+                        db.close()
+        except Exception as exc:
+            logger.warning("[AI标题] 写入 ai_title 失败: %s", exc)
+
+    return {
+        "total": len(results),
+        "success_count": success_count,
+        "results": results,
+    }
+
+
+@app.post("/api/ai-title-translation/scan-files")
+async def ai_title_translation_scan_files(request: AITitleTranslationFileRenameRequest):
+    """扫描文件夹中的音频和字幕文件。"""
+    library_id = request.library_id
+    path = request.path
+
+    from ..core.library_manager import get_library_manager
+
+    manager = get_library_manager()
+    library = manager.get_library_definition(library_id)
+    if not library:
+        raise HTTPException(status_code=404, detail="未找到库")
+
+    data = await manager.list_files(
+        library_id=library_id,
+        current_path=path,
+        page=1,
+        page_size=9999,
+        sort_by="name",
+        sort_order="asc",
+    )
+
+    items = data.get("items", [])
+    audio_files = []
+    subtitle_files = []
+    base_names = set()
+
+    for item in items:
+        if item.get("is_directory"):
+            continue
+        name = item.get("name", "")
+        file_path = item.get("path", "")
+        ext = os.path.splitext(name)[1].lower()
+        base = os.path.splitext(name)[0]
+
+        if _is_audio_file(name):
+            audio_files.append({"name": name, "path": file_path, "base": base, "ext": ext})
+            base_names.add(base)
+        elif _is_subtitle_file(name):
+            subtitle_files.append({"name": name, "path": file_path, "base": base, "ext": ext})
+            base_names.add(base)
+
+    rjcode = _extract_rjcode(path)
+
+    return {
+        "audio_files": sorted(audio_files, key=lambda x: x["name"]),
+        "subtitle_files": sorted(subtitle_files, key=lambda x: x["name"]),
+        "base_names": sorted(base_names),
+        "rjcode": rjcode,
+        "folder_name": os.path.basename(path),
+        "library_id": library_id,
+        "path": path,
+        "total_audio": len(audio_files),
+        "total_subtitle": len(subtitle_files),
+        "total_base_names": len(base_names),
+    }
+
+@app.post("/api/ai-title-translation/file-rename")
+async def ai_title_translation_file_rename(request: AITitleTranslationFileRenameRequest):
+    """文件级重命名：扫描文件夹中的音频/字幕文件，AI 翻译基名，执行文件+文件夹重命名。"""
+    library_id = request.library_id
+    path = request.path
+
+    from ..core.ai_title_translation_service import get_ai_title_translation_service
+    from ..core.library_manager import get_library_manager
+    from ..config.settings import get_config
+
+    manager = get_library_manager()
+    library = manager.get_library_definition(library_id)
+    if not library:
+        raise HTTPException(status_code=404, detail="未找到库")
+
+    # 1. 扫描文件
+    data = await manager.list_files(
+        library_id=library_id,
+        current_path=path,
+        page=1,
+        page_size=9999,
+        sort_by="name",
+        sort_order="asc",
+    )
+
+    items = data.get("items", [])
+    audio_files = []
+    subtitle_files = []
+    base_name_to_items = {}
+
+    for item in items:
+        if item.get("is_directory"):
+            continue
+        name = item.get("name", "")
+        file_path = item.get("path", "")
+        ext = os.path.splitext(name)[1].lower()
+        base = os.path.splitext(name)[0]
+
+        entry = {"name": name, "path": file_path, "base": base, "ext": ext}
+        if base not in base_name_to_items:
+            base_name_to_items[base] = {"audio": [], "subtitle": []}
+
+        if _is_audio_file(name):
+            base_name_to_items[base]["audio"].append(entry)
+            audio_files.append(entry)
+        elif _is_subtitle_file(name):
+            base_name_to_items[base]["subtitle"].append(entry)
+            subtitle_files.append(entry)
+
+    if not base_name_to_items:
+        return {"success": False, "error": "未找到可重命名的音频或字幕文件", "renamed_count": 0, "folder_renamed": False}
+
+    # 2. AI 翻译基名
+    cfg = get_config()
+    raw_config = cfg.ai_title_translation if hasattr(cfg, 'ai_title_translation') else None
+    if not raw_config or not getattr(raw_config, 'enabled', False):
+        return {"success": False, "error": "AI 标题汉化未启用", "renamed_count": 0, "folder_renamed": False}
+
+    saved_api_key = _read_ai_title_translation_api_key_from_disk() or ""
+    service = get_ai_title_translation_service()
+
+    base_names = sorted(base_name_to_items.keys())
+    items_to_translate = [{"rjcode": f"base_{i}", "work_name": bn} for i, bn in enumerate(base_names)]
+    translation_results = await service.translate_batch(items_to_translate, raw_config, saved_api_key=saved_api_key)
+
+    # 构建翻译映射: original_base -> translated_name
+    rename_map = {}
+    for r in translation_results:
+        if r.get("success") and r.get("translated_title"):
+            original = r.get("original_title", "")
+            translated = r["translated_title"].strip()
+            if original and translated:
+                rename_map[original] = translated
+
+    if not rename_map:
+        return {"success": False, "error": "AI 翻译未返回有效结果", "renamed_count": 0, "folder_renamed": False}
+
+    # 3. 执行文件重命名
+    renamed_count = 0
+    errors = []
+    renamed_files = []
+
+    for base, groups in base_name_to_items.items():
+        if base not in rename_map:
+            continue
+        new_base = rename_map[base]
+        # 清理不允许的文件名字符
+        new_base = re.sub(r'[<>:"/\\|?*]', '', new_base).strip()
+        if not new_base:
+            continue
+
+        # 重命名音频
+        for entry in groups["audio"]:
+            new_name = f"{new_base}{entry['ext']}"
+            try:
+                await manager.rename(library_id, entry["path"], new_name, skip_index_mutation=False, sync_index_mutation=False)
+                renamed_count += 1
+                renamed_files.append({"old": entry["name"], "new": new_name, "type": "audio"})
+            except Exception as exc:
+                errors.append(f"{entry['name']}: {exc}")
+
+        # 重命名字幕（与音频共用映射）
+        for entry in groups["subtitle"]:
+            new_name = f"{new_base}{entry['ext']}"
+            try:
+                await manager.rename(library_id, entry["path"], new_name, skip_index_mutation=False, sync_index_mutation=False)
+                renamed_count += 1
+                renamed_files.append({"old": entry["name"], "new": new_name, "type": "subtitle"})
+            except Exception as exc:
+                errors.append(f"{entry['name']}: {exc}")
+
+    # 4. 文件夹重命名：使用作品 ai_title
+    folder_renamed = False
+    folder_new_name = None
+    rjcode = _extract_rjcode(path)
+    if rjcode:
+        from sqlalchemy import text
+        from ..db.session import get_db
+        db = next(get_db())
+        row = db.execute(
+            text("SELECT ai_title, work_name FROM work_metadata WHERE rjcode = :rjcode"),
+            {"rjcode": rjcode}
+        ).fetchone()
+        db.close()
+        folder_title = None
+        if row:
+            folder_title = row[0] or row[1]  # ai_title > work_name
+        if folder_title:
+            folder_title_clean = re.sub(r'[<>:"/\\|?*]', '', folder_title).strip()
+            if folder_title_clean:
+                try:
+                    folder_path = os.path.dirname(path.rstrip("/\\"))
+                    folder_name = os.path.basename(path.rstrip("/\\"))
+                    await manager.rename(library_id, path.rstrip("/\\"), folder_title_clean, skip_index_mutation=False, sync_index_mutation=False)
+                    folder_renamed = True
+                    folder_new_name = folder_title_clean
+                except Exception as exc:
+                    errors.append(f"文件夹重命名失败: {exc}")
+
+    return {
+        "success": True,
+        "renamed_count": renamed_count,
+        "renamed_files": renamed_files,
+        "folder_renamed": folder_renamed,
+        "folder_new_name": folder_new_name,
+        "rename_map": rename_map,
+        "rjcode": rjcode,
+        "errors": errors[:10],
+    }
 
 @app.post("/api/config/circle-external-search/reveal-secret")
 def reveal_circle_external_search_secret(payload: CircleExternalSearchSecretRevealRequest):
