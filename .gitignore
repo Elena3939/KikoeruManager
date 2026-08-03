@@ -64,6 +64,7 @@ setup-run.log
 setup-run2.log
 config/config.yaml
 .claude/
+CLAUDE.md
 
 # Local AI skills / generated assets
 .agents/

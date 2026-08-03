@@ -515,6 +515,11 @@ class SmartClassifier:
             existing = self._check_existing(rjcode)
         manager = get_library_manager()
         target_library_id = task.task_metadata.get('target_library_id') if getattr(task, 'task_metadata', None) else None
+        if not target_library_id:
+            task_type_value = getattr(getattr(task, 'type', None), 'value', '')
+            if task_type_value in {'extract', 'auto_process'}:
+                # 解压入库默认落到「默认解压库存」，而不是主库存/一键移库目标
+                target_library_id = manager.default_extract_library_id()
         target_library = manager.get_library_definition(target_library_id)
         task.task_metadata = {
             **(task.task_metadata or {}),
