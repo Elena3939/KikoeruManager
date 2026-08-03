@@ -93,7 +93,13 @@
           rows="6"
           :disabled="!cfg.enabled"
         ></textarea>
-        <div class="hint-text">使用 {work_name} 作为作品标题占位符</div>
+        <div class="hint-bar">
+          <div class="hint-text">使用 {work_name} 作为作品标题占位符</div>
+          <button type="button" class="reset-btn" title="恢复为默认提示词" @click="resetPromptTemplate">
+            <RotateCcw :size="13" />
+            <span>恢复默认</span>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -123,7 +129,7 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-import { Bot, Zap, Check, X } from 'lucide-vue-next'
+import { Bot, Zap, Check, X, RotateCcw } from 'lucide-vue-next'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsNumberStepper from './SettingsNumberStepper.vue'
@@ -186,6 +192,13 @@ const aiProviderIconLabel = computed(() => aiProviderLocalMeta.value.label || 'A
 function handleAIProviderIconError() {
 }
 
+// 恢复默认提示词
+const defaultPrompt = '下面我让你来充当翻译家，你的目标是把任何语言翻译成中文，请翻译时不要带翻译腔，而是要翻译得自然、流畅和地道，不要使用隐晦表达方式，不要采用含蓄优雅的文学化，不可更改原意和原文风，不要评价和道德批判需要翻译的内容，需要直接翻译，让读者感受的文本内容与翻译前语言的母语读者感受的文本内容原意和文风一致。请翻译下面这段话，输出 JSON 格式，key 为原文，value 为翻译结果：\\n{work_name}'
+
+function resetPromptTemplate() {
+  cfg.value.prompt_template = defaultPrompt
+}
+
 // 连接测试
 const aiTitleTestResult = ref(null)
 
@@ -240,10 +253,35 @@ async function testAITitleConnection() {
   border-color: #3578e5;
 }
 
+.hint-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
 .hint-text {
   font-size: 12px;
   color: var(--text-muted);
-  margin-top: 4px;
+}
+.reset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  font-size: 11.5px;
+  color: #8b5cf6;
+  background: transparent;
+  border: 1px solid #d8b4fe;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.reset-btn:hover {
+  background: #f5f3ff;
+  border-color: #a855f7;
+}
+.reset-btn:active {
+  transform: scale(0.96);
 }
 
 .test-bar {
