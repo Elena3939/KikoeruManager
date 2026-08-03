@@ -67,6 +67,8 @@ class WorkMetadata:
         self.work_name: str = ""
         self.maker_id: str = ""
         self.maker_name: str = ""
+        self.original_maker_name: str = ""
+        self.translator_name: str = ""
         self.release_date: str = ""
         self.series_name: Optional[str] = None
         self.series_id: Optional[str] = None
@@ -81,6 +83,9 @@ class WorkMetadata:
         self.metadata_verification_status: str = "unverified"
         self.metadata_verification_reason: str = ""
         self.metadata_evidence_source: str = ""
+        self.resolved_workno: str = ""
+        self.verified_parent_workno: str = ""
+        self.verified_parent_child_relation: bool = False
         self.dlsite_circuit_open: bool = False
         self.rename_skipped_reason: str = ""
         # _apply_dlsite_bonus_info 成功时写入当前时间。
@@ -94,6 +99,8 @@ class WorkMetadata:
             'work_name': self.work_name,
             'maker_id': self.maker_id,
             'maker_name': self.maker_name,
+            'original_maker_name': self.original_maker_name or self.maker_name,
+            'translator_name': self.translator_name,
             'release_date': self.release_date,
             'series_name': self.series_name,
             'series_id': self.series_id,
@@ -109,6 +116,9 @@ class WorkMetadata:
             'metadata_verification_status': self.metadata_verification_status,
             'metadata_verification_reason': self.metadata_verification_reason,
             'metadata_evidence_source': self.metadata_evidence_source,
+            'resolved_workno': self.resolved_workno,
+            'verified_parent_workno': self.verified_parent_workno,
+            'verified_parent_child_relation': self.verified_parent_child_relation,
             'dlsite_circuit_open': self.dlsite_circuit_open,
         }
 
@@ -249,7 +259,6 @@ class MetadataService:
                 payload["dlsite_circuit_open"] = _dlsite_metadata_circuit_state()["open"]
                 from .dlsite_metadata_trust import attach_dlsite_metadata_verification
 
-                payload["metadata_evidence_source"] = "legacy_cache"
                 attach_dlsite_metadata_verification(payload, rjcode)
                 return payload
             if cached:
@@ -300,16 +309,34 @@ class MetadataService:
         else:
             _record_dlsite_metadata_success()
 
-        if self.config.metadata.cache_enabled and metadata.metadata_source != "minimal":
-            self._cache_metadata(metadata)
-
         payload = metadata.to_dict()
         from .dlsite_metadata_trust import attach_dlsite_metadata_verification
 
         attach_dlsite_metadata_verification(payload, rjcode)
+        metadata.metadata_verification_status = str(
+            payload.get("metadata_verification_status") or "unverified"
+        )
+        metadata.metadata_verification_reason = str(
+            payload.get("metadata_verification_reason") or ""
+        )
+        metadata.metadata_evidence_source = str(
+            payload.get("metadata_evidence_source") or ""
+        )
+        if (
+            self.config.metadata.cache_enabled
+            and metadata.metadata_source != "minimal"
+            and metadata.metadata_verification_status == "verified"
+        ):
+            self._cache_metadata(metadata)
         return payload
 
     def _should_refresh_cached_metadata(self, cached: WorkMetadataModel) -> bool:
+        from .dlsite_metadata_trust import assess_dlsite_metadata
+
+        verification = assess_dlsite_metadata(cached.to_dict(), cached.rjcode)
+        if verification["status"] != "verified":
+            return True
+
         maker_name = str(getattr(cached, "maker_name", "") or "").strip()
         work_name = str(getattr(cached, "work_name", "") or "").strip()
         release_date = str(getattr(cached, "release_date", "") or "").strip()
@@ -353,15 +380,28 @@ class MetadataService:
             or ''
         ).strip().upper()
         is_original = translation_info.get('is_original', True)
+        page_maker_name = str(product.get('maker_name') or '').strip()
+        translator_name = str(product.get('translator_name') or '').strip()
+        if (
+            not translator_name
+            and not is_original
+            and is_translation_placeholder_maker(page_maker_name)
+        ):
+            translator_name = page_maker_name
 
         maker_fields = {
             'maker_id': product.get('maker_id', '') or '',
-            'maker_name': product.get('maker_name', '') or '',
+            'maker_name': page_maker_name,
+            'original_maker_name': str(
+                product.get('original_maker_name') or page_maker_name
+            ).strip(),
+            'translator_name': translator_name,
             'original_workno': original_workno,
         }
         if is_translation_placeholder_maker(maker_fields["maker_name"]):
             maker_fields["maker_id"] = ""
             maker_fields["maker_name"] = ""
+            maker_fields["original_maker_name"] = ""
         if is_original or not original_workno:
             return maker_fields
 
@@ -385,6 +425,7 @@ class MetadataService:
             ):
                 maker_fields['maker_id'] = original_product.get('maker_id', '') or maker_fields['maker_id']
                 maker_fields['maker_name'] = original_maker_name or maker_fields['maker_name']
+                maker_fields['original_maker_name'] = original_maker_name or maker_fields['original_maker_name']
                 logger.info(
                     "[%s] 使用原作社团信息: original=%s maker_name=%s",
                     rjcode,
@@ -481,6 +522,8 @@ class MetadataService:
                 work_name=metadata.work_name,
                 maker_id=metadata.maker_id,
                 maker_name=metadata.maker_name,
+                original_maker_name=metadata.original_maker_name or metadata.maker_name,
+                translator_name=metadata.translator_name,
                 release_date=metadata.release_date,
                 series_name=metadata.series_name,
                 series_id=metadata.series_id,
@@ -491,6 +534,12 @@ class MetadataService:
                 price_text=metadata.price_text,
                 is_bonus_work=bool(metadata.is_bonus_work),
                 has_bonus=bool(metadata.has_bonus),
+                metadata_verification_status=metadata.metadata_verification_status,
+                metadata_verification_reason=metadata.metadata_verification_reason,
+                metadata_evidence_source=metadata.metadata_evidence_source,
+                resolved_workno=metadata.resolved_workno,
+                verified_parent_workno=metadata.verified_parent_workno,
+                verified_parent_child_relation=metadata.verified_parent_child_relation,
                 # 仅在 _apply_dlsite_bonus_info 真的拉到 bonus 时才有值；
                 # 否则保持 NULL，让浏览路径走一次懒迁移。
                 bonus_info_checked_at=metadata.bonus_info_checked_at,
@@ -669,10 +718,21 @@ class MetadataService:
         metadata = WorkMetadata()
         metadata.metadata_source = "dlsite"
         metadata.rjcode = product.get('workno', rjcode)
+        metadata.resolved_workno = str(product.get('workno') or rjcode).strip().upper()
+        metadata.verified_parent_workno = str(
+            product.get('verified_parent_workno')
+            or (product.get('translation_info') or {}).get('parent_workno')
+            or ''
+        ).strip().upper()
+        metadata.verified_parent_child_relation = bool(
+            product.get('verified_parent_child_relation')
+        )
         metadata.work_name = product.get('work_name', '')
         maker_fields = await self._resolve_original_maker_fields(product, rjcode)
         metadata.maker_id = maker_fields.get('maker_id', '')
         metadata.maker_name = maker_fields.get('maker_name', '')
+        metadata.original_maker_name = maker_fields.get('original_maker_name', '') or metadata.maker_name
+        metadata.translator_name = maker_fields.get('translator_name', '')
         metadata.release_date = self._normalize_release_date(product.get('regist_date'))
         metadata.series_name = product.get('series_name')
         metadata.series_id = product.get('series_id')
@@ -802,6 +862,29 @@ class MetadataService:
             metadata.metadata_verification_reason = str(
                 product_info.get("metadata_verification_reason") or ""
             )
+            metadata.resolved_workno = str(
+                product_info.get("resolved_workno")
+                or metadata.resolved_workno
+                or rjcode
+            ).strip().upper()
+            metadata.verified_parent_workno = str(
+                product_info.get("parent_workno")
+                or metadata.verified_parent_workno
+                or ""
+            ).strip().upper()
+            metadata.verified_parent_child_relation = bool(
+                metadata.verified_parent_child_relation
+                or (
+                    metadata.metadata_verification_status == "verified"
+                    and metadata.verified_parent_workno
+                    and metadata.metadata_evidence_source in {
+                        "language_editions",
+                        "page_embedded_original_match",
+                        "translation_info",
+                        "translation_page",
+                    }
+                )
+            )
             return metadata
         except Exception as e:
             logger.warning(f"[{rjcode}] DLsite product_info 链路失败，回退到直连 API: {e}")
@@ -836,6 +919,8 @@ class MetadataService:
             maker_fields = await self._resolve_original_maker_fields(product, rjcode)
             metadata.maker_id = maker_fields.get('maker_id', '')
             metadata.maker_name = maker_fields.get('maker_name', '')
+            metadata.original_maker_name = maker_fields.get('original_maker_name', '') or metadata.maker_name
+            metadata.translator_name = maker_fields.get('translator_name', '')
             metadata.release_date = self._normalize_release_date(product.get('regist_date'))
             metadata.series_name = product.get('series_name')
             metadata.series_id = product.get('series_id')

@@ -293,17 +293,30 @@ class RenameService:
         name = name.replace('{work_name}', work_name)
         logger.info(f"[RENAME] 替换work_name后: '{name}'")
 
-        # maker_id 和 maker_name：日语元数据优先
+        # maker_id、原社团：日语元数据优先。旧 maker_name 模板继续映射到原社团。
         if use_japanese:
             maker_id = japanese_metadata.get('maker_id', metadata.get('maker_id', ''))
-            maker_name = normalize_template_maker_name(japanese_metadata.get('maker_name', metadata.get('maker_name', '')))
-            logger.info(f"[RENAME] 使用日语元数据 - maker_name='{maker_name}'")
+            original_maker_name = normalize_template_maker_name(
+                japanese_metadata.get('original_maker_name')
+                or japanese_metadata.get('maker_name')
+                or metadata.get('original_maker_name')
+                or metadata.get('maker_name', '')
+            )
+            logger.info(f"[RENAME] 使用日语元数据 - original_maker_name='{original_maker_name}'")
         else:
             maker_id = metadata.get('maker_id', '')
-            maker_name = normalize_template_maker_name(metadata.get('maker_name', ''))
+            original_maker_name = normalize_template_maker_name(
+                metadata.get('original_maker_name')
+                or metadata.get('maker_name', '')
+            )
+        translator_name = normalize_template_maker_name(
+            metadata.get('translator_name', '')
+        )
 
         name = name.replace('{maker_id}', maker_id)
-        name = name.replace('{maker_name}', maker_name)
+        name = name.replace('{maker_name}', original_maker_name)
+        name = name.replace('{original_maker_name}', original_maker_name)
+        name = name.replace('{translator_name}', translator_name)
 
         # 日期：日语元数据优先
         if '{release_date}' in name:

@@ -2712,20 +2712,38 @@ class TaskEngine:
                                     queue_origin="auto_process",
                                 )
                                 if existing_subtitle_problem.get("handled"):
+                                    auto_skipped = bool(existing_subtitle_problem.get("auto_skipped"))
                                     task.task_metadata = {
                                         **(task.task_metadata or {}),
                                         "linked_subtitle_preview": preview,
                                         "linked_subtitle_problem": existing_subtitle_problem,
-                                        "source_mode": "linked_translation_archive_existing_subtitle_conflict",
+                                        "source_mode": (
+                                            "linked_translation_archive_existing_subtitle_skipped"
+                                            if auto_skipped
+                                            else "linked_translation_archive_existing_subtitle_conflict"
+                                        ),
                                     }
                                     task.output_path = ""
                                     task.status = TaskStatus.COMPLETED
-                                    task.update_progress(100, "原作目录已有字幕，已加入问题作品列表")
-                                    task.completed_at = datetime.now()
-                                    logger.info(
-                                        f"[{rjcode}] 原作目录已有字幕，已转入问题作品列表: "
-                                        f"target={preview.get('target_rjcode', '')} conflict={existing_subtitle_problem.get('conflict_id', '')}"
+                                    task.update_progress(
+                                        100,
+                                        (
+                                            "原作已在 Kikoeru 端有字幕，库存未命中可操作目录，已自动跳过"
+                                            if auto_skipped
+                                            else "原作目录已有字幕，已加入问题作品列表"
+                                        ),
                                     )
+                                    task.completed_at = datetime.now()
+                                    if auto_skipped:
+                                        logger.info(
+                                            f"[{rjcode}] 原作仅在 Kikoeru 端确认已有字幕，库存未命中目录，已自动跳过: "
+                                            f"target={preview.get('target_rjcode', '')}"
+                                        )
+                                    else:
+                                        logger.info(
+                                            f"[{rjcode}] 原作目录已有字幕，已转入问题作品列表: "
+                                            f"target={preview.get('target_rjcode', '')} conflict={existing_subtitle_problem.get('conflict_id', '')}"
+                                        )
                                     await self._abort_precheck(precheck_task)
                                     return
                             else:

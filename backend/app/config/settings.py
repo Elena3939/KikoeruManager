@@ -180,7 +180,10 @@ class MetadataConfig(BaseModel):
 
 class RenameConfig(BaseModel):
     """重命名配置"""
-    template: str = "{rjcode} {work_name}"
+    template: str = "[{original_maker_name}][{rjcode}][{work_name}]"
+    template_wrapper_enabled: bool = True
+    template_wrapper_left: str = "["
+    template_wrapper_right: str = "]"
     date_format: str = "%y%m%d"
     delimiter: str = " "
     cv_list_left: str = "(CV "
