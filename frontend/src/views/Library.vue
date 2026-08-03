@@ -597,6 +597,16 @@
             <IconLanguages :size="14" :stroke-width="2.2" />
             <span>AI 标题汉化</span>
           </button>
+          <button
+            type="button"
+            class="lib-btn lib-btn-icon-tinted lib-icon-file-rename"
+            :disabled="!canProcessCurrentFolder"
+            title="文件级重命名：扫描文件夹中的音频/字幕文件，AI 翻译后重命名"
+            @click="startFileLevelRename"
+          >
+            <FilePenLine :size="14" :stroke-width="2.2" />
+            <span>文件级重命名</span>
+          </button>
         </div>
 
       </div>
@@ -25333,66 +25343,6 @@ function statsStatusTextDisplay (stats) {
 }
 
 
-// AI 标题汉化 - 对当前目录作品执行翻译
-async function startAITitleTranslation() {
-  if (aiTitleTranslating.value) return
-  aiTitleTranslating.value = true
-  try {
-    // 优先使用已选中的行
-    let rows = selectedRows.value.length > 0 ? selectedRows.value : []
-
-    // 无选中时按作用域收集
-    if (!rows.length) {
-      if (toolbarActionScope.value === "page") {
-        rows = currentPageDirectoryRows.value
-      } else {
-        // "当前目录" 作用域
-        if (currentPath.value) {
-          rows = [{ path: currentPath.value, name: getFileName(currentPath.value), is_directory: true }]
-        }
-      }
-    }
-
-    // 解析 RJ 编号：从 path 中提取
-    const rjcodes = rows
-      .map(row => {
-        const rj = row.rjcode || extractRJCode(row.path || row.name || "")
-        return rj ? rj.toUpperCase() : null
-      })
-      .filter(Boolean)
-
-    if (!rjcodes.length) {
-      ElMessage.warning("当前作用域没有可翻译的作品（未识别到 RJ 编号）")
-      return
-    }
-
-    const unique = [...new Set(rjcodes)]
-
-    const resp = await fetch("/api/ai-title-translation/batch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rjcodes: unique }),
-    })
-    const result = await resp.json()
-    if (result.success_count > 0) {
-      ElMessage.success(`AI 标题汉化完成：成功 ${result.success_count} / ${result.total} 项`)
-      if (result.results) {
-        const details = result.results
-          .filter(r => r.success && r.translated_title)
-          .map(r => `${r.rjcode}: ${(r.original_title || "").slice(0, 20)} → ${(r.translated_title || "").slice(0, 30)}`)
-          .join("\n")
-        if (details) ElMessage.info(`翻译明细：\n${details}`)
-      }
-    } else {
-      const errors = (result.results || []).filter(r => !r.success).map(r => `${r.rjcode}: ${r.error || r.status || "未知"}`).join("; ")
-      ElMessage.info(errors ? `没有需要翻译的作品\n${errors}` : "没有需要翻译的作品")
-    }
-  } catch (e) {
-    ElMessage.error("AI 标题汉化失败：" + (e.response?.data?.detail || e.message))
-  } finally {
-    aiTitleTranslating.value = false
-  }
-}
 // 文件级重命名 - 扫描文件夹中的音频/字幕文件，AI 翻译后执行文件+文件夹重命名
 async function startFileLevelRename() {
   if (aiTitleTranslating.value) return
@@ -26986,6 +26936,7 @@ async function startFileLevelRename() {
 .lib-btn-icon-tinted.lib-icon-filter-delete svg { color: #d97706; }
 .lib-btn-icon-tinted.lib-icon-task-panel svg { color: #7c3aed; }
 .lib-btn-icon-tinted.lib-icon-ai-title svg { color: #0891b2; }  /* cyan-600 */
+.lib-btn-icon-tinted.lib-icon-file-rename svg { color: #8b5cf6; }  /* violet-500 */
 .lib-btn-icon-tinted.lib-icon-file-rename svg { color: #8b5cf6; }  /* violet-500 */
 .lib-btn-icon-tinted.lib-icon-upload svg { color: #0284c7; }
 .lib-btn-icon-tinted.lib-icon-compute-size svg { color: #0ea5e9; }
