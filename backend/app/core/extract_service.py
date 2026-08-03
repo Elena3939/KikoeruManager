@@ -142,6 +142,16 @@ class ExtractService:
     PROBE_BYTES: int = 2 * 1024 * 1024            # 流式探测读到 2MB 即认为解压流可信
     ZIP_PASSWORD_BYTE_PROBE_BYTES: int = 4 * 1024 * 1024
     PROBE_TIMEOUT_SECONDS: float = 30.0           # 单次流式探测最多等 30s，超时回退完整解压
+    # 无扩展名的嵌套包没有文件名/RJ 线索，密码库通常会回落到大量通用候选。
+    # 这类 RAR 不能允许逐个完整解压几十次，否则会长期占满解压槽位。
+    NESTED_OPAQUE_PASSWORD_CANDIDATE_LIMIT: int = max(
+        2,
+        int(os.getenv("KIKOERUMANAGER_NESTED_OPAQUE_PASSWORD_CANDIDATE_LIMIT", "4") or 4),
+    )
+    NESTED_PASSWORD_ATTEMPT_TIMEOUT_SECONDS: float = max(
+        15.0,
+        float(os.getenv("KIKOERUMANAGER_NESTED_PASSWORD_ATTEMPT_TIMEOUT_SECONDS", "45") or 45),
+    )
     UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES: int = int(
         os.getenv("KIKOERUMANAGER_UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES", str(1024 * 1024 * 1024)) or 1024 * 1024 * 1024
     )
@@ -1947,8 +1957,41 @@ class ExtractService:
 
     @staticmethod
     def _redact_command_args(cmd: List[str]) -> List[str]:
-        """日志输出用：保留 7z/unar 命令里的明文密码，便于现场排查密码命中。"""
-        return [str(arg) for arg in cmd]
+        """日志输出用：掩码 7z/unar 的密码参数，避免密码进入运行日志。"""
+        redacted: List[str] = []
+        redact_next = False
+        for raw_arg in cmd:
+            arg = str(raw_arg)
+            if redact_next:
+                redacted.append("********")
+                redact_next = False
+                continue
+            lowered = arg.lower()
+            if lowered in {"-p", "--password", "--passphrase"}:
+                redacted.append(arg)
+                redact_next = True
+                continue
+            if lowered.startswith("-p") and len(arg) > 2:
+                redacted.append(f"{arg[:2]}********")
+                continue
+            if lowered.startswith("--password=") or lowered.startswith("--passphrase="):
+                redacted.append(f"{arg.split('=', 1)[0]}=********")
+                continue
+            redacted.append(arg)
+        return redacted
+
+    @staticmethod
+    def _password_log_state(password: Optional[str]) -> str:
+        return "已提供" if password else "无密码"
+
+    @staticmethod
+    def _redact_sensitive_text(value: Any, *secrets: Optional[str]) -> str:
+        """避免子进程错误输出或异常文本把候选密码写进日志和任务元数据。"""
+        text = str(value or "")
+        for secret in secrets:
+            if secret:
+                text = text.replace(str(secret), "********")
+        return text
 
     @staticmethod
     def _format_command_for_log(cmd: List[str]) -> str:
@@ -3518,6 +3561,50 @@ class ExtractService:
         for pwd in self.config.extract.password_list:
             add(pwd)
 
+        archive_name = os.path.basename(archive_path)
+        is_opaque_nested_archive = not bool(os.path.splitext(archive_name)[1])
+        nested_candidate_limit = max(
+            2,
+            int(getattr(
+                self,
+                "NESTED_OPAQUE_PASSWORD_CANDIDATE_LIMIT",
+                self.NESTED_OPAQUE_PASSWORD_CANDIDATE_LIMIT,
+            ) or self.NESTED_OPAQUE_PASSWORD_CANDIDATE_LIMIT),
+        )
+        candidate_limit_reached = (
+            is_opaque_nested_archive
+            and len(password_list) > nested_candidate_limit
+        )
+        if candidate_limit_reached:
+            total_candidates = len(password_list)
+            password_list = password_list[:nested_candidate_limit]
+            if task is not None:
+                self._set_extract_meta(
+                    task,
+                    nested_password_candidate_limited=True,
+                    nested_password_candidate_limit=nested_candidate_limit,
+                    nested_password_candidate_total=total_candidates,
+                    nested_password_probe_reason="无扩展名嵌套包候选过多，已限制探测次数",
+                )
+            logger.warning(
+                "无扩展名嵌套压缩包候选密码过多，限制为 %d 次轻量尝试: %s",
+                nested_candidate_limit,
+                archive_name,
+            )
+
+        nested_attempt_timeout = (
+            max(
+                15.0,
+                float(getattr(
+                    self,
+                    "NESTED_PASSWORD_ATTEMPT_TIMEOUT_SECONDS",
+                    self.NESTED_PASSWORD_ATTEMPT_TIMEOUT_SECONDS,
+                ) or self.NESTED_PASSWORD_ATTEMPT_TIMEOUT_SECONDS),
+            )
+            if is_opaque_nested_archive
+            else None
+        )
+
         def clean_output() -> None:
             """清理上次失败尝试留下的残留文件"""
             for name in os.listdir(output_path):
@@ -3530,7 +3617,7 @@ class ExtractService:
                 except Exception:
                     pass
 
-        logger.info("嵌套解压密码候选共 %d 个: %s", len(password_list), archive_path)
+        logger.info("嵌套解压密码候选共 %d 个: %s", len(password_list), archive_name)
 
         # 嵌套 RAR fast-path：和外层主流程一样，优先用 unar 避开 7zz 24.08 RAR
         # 解析器无法配置文件名编码导致的日文 / 中文乱码（群晖看到 ��� 无法访问）。
@@ -3545,7 +3632,13 @@ class ExtractService:
                 if index > 0:
                     await asyncio.to_thread(clean_output)
                 try:
-                    result = await self._try_unar_extract(archive_path, output_path, password)
+                    result = await self._try_unar_extract(
+                        archive_path,
+                        output_path,
+                        password,
+                        task=task,
+                        command_timeout=nested_attempt_timeout,
+                    )
                     if result.returncode == 0:
                         # 乱码修复：Shift-JIS/GBK RAR 文件名自动编码探测失败时重试
                         await self._fix_unar_garbled_encoding(
@@ -3561,14 +3654,26 @@ class ExtractService:
                             )
                             return False, None
                         logger.info(
-                            "嵌套 RAR 用 unar 解压成功，密码: %s",
-                            password or "无密码",
+                            "嵌套 RAR 用 unar 解压成功，密码状态: %s",
+                            self._password_log_state(password),
                         )
                         return True, password or None
                     stderr_text = (result.stderr or b"").decode('utf-8', errors='ignore')
                     stderr_lower = stderr_text.lower()
                     if self._looks_like_disk_full_error(stderr_text):
                         unar_disk_full = True
+                        break
+                    if result.returncode == -9:
+                        if task is not None:
+                            self._set_extract_meta(
+                                task,
+                                nested_password_probe_timeout=True,
+                                nested_password_probe_reason="无扩展名嵌套 RAR 单个候选探测超时",
+                            )
+                        logger.warning(
+                            "无扩展名嵌套 RAR 单个候选探测超时，停止继续穷举: %s",
+                            archive_name,
+                        )
                         break
                     if any(m in stderr_lower for m in (
                         "not a supported archive format",
@@ -3580,8 +3685,8 @@ class ExtractService:
                         unar_unsupported = True
                         break
                     logger.debug(
-                        "嵌套 RAR unar 失败 (密码=%s, rc=%s): %s",
-                        password or "无密码",
+                        "嵌套 RAR unar 失败 (密码状态=%s, rc=%s): %s",
+                        self._password_log_state(password),
                         result.returncode,
                         stderr_lower[:200] if stderr_lower else "(无错误文本)",
                     )
@@ -3590,6 +3695,18 @@ class ExtractService:
 
             if unar_disk_full:
                 logger.error("嵌套 RAR unar 解压因磁盘空间不足终止: %s", archive_path)
+                return False, None
+            if is_opaque_nested_archive and not unar_unsupported:
+                if task is not None:
+                    self._set_extract_meta(
+                        task,
+                        nested_password_probe_failed=True,
+                        nested_password_probe_reason="无扩展名嵌套 RAR 未在受限候选中验证出可用密码",
+                    )
+                logger.warning(
+                    "无扩展名嵌套 RAR 未验证出可用密码，不再用 7zz 重复穷举: %s",
+                    archive_name,
+                )
                 return False, None
 
             # unar 没成 → 清空 output 让 7zz 接手
@@ -3604,7 +3721,12 @@ class ExtractService:
             cmd = [self.seven_zip, "x", "-y", f"-o{output_path}", *self._get_seven_zip_mmt_args(), *self._get_mcp_args(archive_path), archive_path]
             cmd.append(f"-p{password}" if password else "-p")
             try:
-                result = await self._run_7z_command(cmd, capture_stdout=False)
+                result = await self._run_7z_command(
+                    cmd,
+                    capture_stdout=False,
+                    task=task,
+                    command_timeout=nested_attempt_timeout,
+                )
                 if result.returncode == 0:
                     if await self._reject_if_garbled_after_extract(
                         archive_path,
@@ -3614,7 +3736,7 @@ class ExtractService:
                         task=None,
                     ):
                         return False, None
-                    logger.info("嵌套压缩包解压成功，密码: %s", password or "无密码")
+                    logger.info("嵌套压缩包解压成功，密码状态: %s", self._password_log_state(password))
                     return True, password or None
                 stderr_text = (result.stderr or b"").decode("utf-8", errors="ignore")
                 if self._looks_like_unsupported_method_error(stderr_text):
@@ -3633,7 +3755,14 @@ class ExtractService:
                         "archive_corrupt",
                     }:
                         return False, None
-                logger.debug("嵌套解压失败 (密码=%s, rc=%d)", password or "无密码", result.returncode)
+                if result.returncode == -9 and is_opaque_nested_archive:
+                    logger.warning("无扩展名嵌套压缩包候选探测超时，停止继续穷举: %s", archive_name)
+                    break
+                logger.debug(
+                    "嵌套解压失败 (密码状态=%s, rc=%d)",
+                    self._password_log_state(password),
+                    result.returncode,
+                )
             except Exception as e:
                 logger.warning("嵌套压缩包解压尝试异常: %s", e)
 
@@ -8175,9 +8304,9 @@ class ExtractService:
                             password_rjcode_map,
                         )
                         logger.info(
-                            "解压成功，使用%s密码并重映射超长根目录: %s",
+                            "解压成功，使用%s密码并重映射超长根目录，密码状态: %s",
                             password_source,
-                            password or '无密码',
+                            self._password_log_state(password),
                         )
                         return True, password, ""
                     self._set_extract_meta(
@@ -8206,6 +8335,8 @@ class ExtractService:
                     "passphrase",
                     "cannot open encrypted",
                     "is encrypted",
+                    "data error in encrypted",
+                    "crc failed in encrypted",
                 )
                 if any(marker in stderr_lower for marker in encryption_markers):
                     encountered_wrong_password = True
@@ -8221,7 +8352,11 @@ class ExtractService:
                             return False, None, "extract_incomplete"
                     if cache_key and not (manual_retry_password_only and password in manual_retry_password_set):
                         self._remember_negative_password(cache_key)
-                    logger.warning(f"密码 {password_source} ({password or '无密码'}) 解压失败: 密码错误")
+                    logger.warning(
+                        "密码来源 %s（状态: %s）解压失败: 密码错误",
+                        password_source,
+                        self._password_log_state(password),
+                    )
                     continue
 
                 archive_corrupt_markers = (
@@ -8261,12 +8396,20 @@ class ExtractService:
                                 task.task_metadata['inferred_rjcode_source'] = 'password_entry'
                                 if not getattr(task, 'rjcode', None) or str(task.rjcode).strip() in {'', '未知'}:
                                     task.rjcode = inferred_rjcode
-                            logger.info(f"RAR fallback 解压成功，使用{password_source}密码: {password or '无密码'}")
+                            logger.info(
+                                "RAR fallback 解压成功，密码来源: %s，密码状态: %s",
+                                password_source,
+                                self._password_log_state(password),
+                            )
                             return True, password, ""
                         unar_stderr = (unar_result.stderr or b"").decode('utf-8', errors='ignore').lower()
                         if "password" in unar_stderr or "passphrase" in unar_stderr:
                             encountered_wrong_password = True
-                            logger.warning(f"RAR fallback 密码 {password_source} ({password or '无密码'}) 解压失败: 密码错误")
+                            logger.warning(
+                                "RAR fallback 密码来源 %s（状态: %s）解压失败: 密码错误",
+                                password_source,
+                                self._password_log_state(password),
+                            )
                             continue
                     if listed_no_password:
                         logger.warning(
@@ -8290,14 +8433,17 @@ class ExtractService:
                         if compat_result == "extract_incomplete":
                             return False, None, "extract_incomplete"
                     logger.warning(
-                        "密码 %s (%s) 返回疑似损坏/头加密特征，继续尝试下一个密码: %s",
+                        "密码来源 %s（状态: %s）返回疑似损坏/头加密特征，继续尝试下一个密码: %s",
                         password_source,
-                        password or '无密码',
-                        (stderr_text or stderr_lower)[:300] if (stderr_text or stderr_lower) else "(无错误文本)",
+                        self._password_log_state(password),
+                        self._redact_sensitive_text(
+                            (stderr_text or stderr_lower)[:300] if (stderr_text or stderr_lower) else "(无错误文本)",
+                            password,
+                        ),
                     )
                     continue
 
-                if "data error" in stderr_lower:
+                if "data error" in stderr_lower or "crc failed" in stderr_lower:
                     last_corrupt_stderr = stderr_text or stderr_lower
                     if zip_password_compat_candidate:
                         compat_result = await handle_zip_compat_failure_path()
@@ -8310,9 +8456,12 @@ class ExtractService:
                         if compat_result == "extract_incomplete":
                             return False, None, "extract_incomplete"
                     logger.warning(
-                        "7z 返回 Data Error，按密码失败继续尝试，避免把加密包误判为损坏: source=%s stderr=%s",
+                        "7z 返回压缩包损坏特征，继续尝试剩余候选后再定性: source=%s stderr=%s",
                         password_source,
-                        stderr_text[:300] if stderr_text else "(无错误文本)",
+                        self._redact_sensitive_text(
+                            stderr_text[:300] if stderr_text else "(无错误文本)",
+                            password,
+                        ),
                     )
                     continue
 
@@ -8321,9 +8470,9 @@ class ExtractService:
                 continue
 
         # 所有密码都失败后的统一定性：
-        # 1) 预读目录成功 或 曾经命中明确的加密错误 → 视为密码错误（用户多半是密码库没录对）
-        # 2) 否则若曾遇到疑似损坏特征 → 判损坏
-        # 3) 其他兜底 → 密码错误
+        # 1) 曾命中明确的加密错误 → 判密码错误
+        # 2) 曾遇到损坏特征但未命中加密错误 → 判损坏
+        # 3) 没有任何可用错误特征时才回退密码错误
         if last_corrupt_stderr and self._looks_like_disk_full_error(last_corrupt_stderr):
             logger.error(
                 "所有密码尝试失败，最后一次错误命中磁盘空间不足，优先判定为 disk_full: %s",
@@ -8348,17 +8497,22 @@ class ExtractService:
             )
             return False, None, "volume_incomplete"
 
-        if listing_available or encountered_wrong_password:
+        if encountered_wrong_password:
             if last_corrupt_stderr:
                 logger.warning(
-                    "所有密码尝试失败，但压缩包结构看似可读/曾命中加密错误，判为密码错误而非损坏。最后一次疑似损坏 stderr: %s",
-                    last_corrupt_stderr[:300],
+                    "所有密码尝试失败，曾命中明确加密错误，判为密码错误。最后一次损坏特征 stderr: %s",
+                    self._redact_sensitive_text(last_corrupt_stderr[:300]),
                 )
             return False, None, "wrong_password"
         if last_corrupt_stderr:
             logger.error(
-                "所有密码尝试均失败，且全程未能读取压缩包目录，判定为损坏：%s",
-                last_corrupt_stderr[:300],
+                "所有密码尝试均失败，未命中明确加密错误，判定为压缩包损坏：%s",
+                self._redact_sensitive_text(last_corrupt_stderr[:300]),
+            )
+            self._set_extract_meta(
+                task,
+                extract_failure_reason="archive_corrupt",
+                extract_failure_stderr=self._redact_sensitive_text(last_corrupt_stderr[:1000]),
             )
             return False, None, "archive_corrupt"
         return False, None, "wrong_password"
@@ -9215,7 +9369,7 @@ class ExtractService:
         encryption_markers = (
             "wrong password", "password is incorrect", "password?",
             "passphrase", "cannot open encrypted", "is encrypted",
-            "data error in encrypted", "crc failed in encrypted", "crc failed",
+            "data error in encrypted", "crc failed in encrypted",
         )
         if any(m in stderr_text for m in encryption_markers):
             return 'wrong_password'
@@ -9325,8 +9479,6 @@ class ExtractService:
             "is encrypted",
             "data error in encrypted",
             "crc failed in encrypted",
-            "crc failed",          # store + AES 错密码的典型文案
-            "data error",          # 同上
         )
         if any(m in stderr_lower for m in encryption_markers):
             return 'wrong_password'
@@ -9425,8 +9577,6 @@ class ExtractService:
             "is encrypted",
             "data error in encrypted",
             "crc failed in encrypted",
-            "crc failed",
-            "data error",
         )
         if any(m in stderr_lower for m in encryption_markers):
             return 'wrong_password'
@@ -9724,6 +9874,7 @@ class ExtractService:
         cmd: List[str],
         task: Optional[Task] = None,
         running_step: str = "解压子进程已启动",
+        command_timeout: Optional[float] = None,
     ) -> subprocess.CompletedProcess:
         """跑非 7z 子进程（unar 等）。
         传入 task 时把子进程登记到 task 上，cancel / pause 能立刻 kill —— 修复
@@ -9779,7 +9930,23 @@ class ExtractService:
                             pass
 
                 try:
-                    stdout_data, stderr_data = await process.communicate()
+                    if command_timeout is None:
+                        stdout_data, stderr_data = await process.communicate()
+                    else:
+                        stdout_data, stderr_data = await asyncio.wait_for(
+                            process.communicate(),
+                            timeout=max(1.0, float(command_timeout)),
+                        )
+                except asyncio.TimeoutError:
+                    await terminate_process()
+                    return subprocess.CompletedProcess(
+                        args=cmd,
+                        returncode=-9,
+                        stdout=b"",
+                        stderr=(
+                            f"子进程执行超时（{float(command_timeout):.0f} 秒）"
+                        ).encode("utf-8"),
+                    )
                 except asyncio.CancelledError:
                     await terminate_process()
                     raise
@@ -11339,6 +11506,7 @@ class ExtractService:
         password: Optional[str],
         task: Optional[Task] = None,
         encoding: Optional[str] = None,
+        command_timeout: Optional[float] = None,
     ) -> subprocess.CompletedProcess:
         """调用 unar 解压。
         unar 默认会自动探测文件名编码（ICU），对日文 Shift-JIS / 中文 GBK 命名的
@@ -11368,7 +11536,12 @@ class ExtractService:
             cmd.extend(["-p", password])
         cmd.append(archive_path)
         logger.info("执行 unar 命令: %s", self._format_command_for_log(cmd))
-        return await self._run_subprocess_command(cmd, task=task, running_step="unar 解压中")
+        return await self._run_subprocess_command(
+            cmd,
+            task=task,
+            running_step="unar 解压中",
+            command_timeout=command_timeout,
+        )
 
 class VolumeSet:
     """分卷组"""
