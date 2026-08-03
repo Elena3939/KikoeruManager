@@ -1547,7 +1547,14 @@ class LibraryIndexMutationService:
         def validate_connection(conn) -> None:
             db = Session(bind=conn, join_transaction_mode="rollback_only")
             try:
-                validate_chunk_fence(db)
+                self._validate_chunk_fence(
+                    db,
+                    library_id,
+                    owner=owner,
+                    epoch=epoch,
+                    generation=generation,
+                    materialized_seq=materialized_seq,
+                )
                 db.flush()
             finally:
                 db.close()
