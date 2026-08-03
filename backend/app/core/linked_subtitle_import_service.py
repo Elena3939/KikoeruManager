@@ -3197,6 +3197,31 @@ class LinkedSubtitleImportService:
                 return candidate
         return {}
 
+    def _build_target_linked_works_info(
+        self,
+        preview: Dict[str, Any],
+        candidate: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        folder_path = str(candidate.get("folder_path") or "").strip()
+        target_rjcodes = self._extract_all_rjcodes(
+            preview.get("target_rjcode") or ""
+        )
+        if not folder_path or len(target_rjcodes) != 1:
+            return []
+        target_rjcode = target_rjcodes[0]
+        return [{
+            "rjcode": target_rjcode,
+            "work_type": "original",
+            "lang": "JPN",
+            "path": folder_path,
+            "work_name": str(
+                preview.get("kikoeru_title")
+                or candidate.get("folder_name")
+                or target_rjcode
+            ).strip(),
+            "source": "linked_subtitle_preflight",
+        }]
+
     def _upsert_existing_subtitle_conflict(
         self,
         db,
@@ -3205,7 +3230,7 @@ class LinkedSubtitleImportService:
         preview: Dict[str, Any],
         task_id: Optional[str] = None,
         queue_origin: str = "auto_process",
-    ) -> ConflictWork:
+    ) -> Optional[ConflictWork]:
         normalized_source_path = str(source_path or "").strip()
         if not normalized_source_path:
             raise ValueError("缺少来源路径，无法写入问题作品")
@@ -3214,6 +3239,8 @@ class LinkedSubtitleImportService:
 
         preview_data = dict(preview or {})
         candidate = self._pick_existing_subtitle_conflict_candidate(preview_data)
+        if not candidate:
+            return None
         target_rjcode = self._extract_rjcode(preview_data.get("target_rjcode") or "")
         source_rjcode = self._extract_rjcode(preview_data.get("source_rjcode") or "")
         source_label = str(preview_data.get("source_label") or os.path.basename(normalized_source_path) or "").strip()
@@ -3241,6 +3268,10 @@ class LinkedSubtitleImportService:
             "problem_kind": "existing_subtitles",
         }
         related_rjcodes = [code for code in [source_rjcode, target_rjcode] if code]
+        linked_works_info = self._build_target_linked_works_info(
+            preview_data,
+            candidate,
+        )
 
         conflict = db.query(ConflictWork).filter(
             ConflictWork.new_path == normalized_source_path,
@@ -3255,7 +3286,7 @@ class LinkedSubtitleImportService:
             conflict.new_metadata = metadata
             conflict.analysis_info = analysis_info
             conflict.related_rjcodes = related_rjcodes
-            conflict.linked_works_info = []
+            conflict.linked_works_info = linked_works_info
             return conflict
 
         conflict = ConflictWork(
@@ -3267,7 +3298,7 @@ class LinkedSubtitleImportService:
             new_path=normalized_source_path,
             new_metadata=metadata,
             status="PENDING",
-            linked_works_info=[],
+            linked_works_info=linked_works_info,
             analysis_info=analysis_info,
             related_rjcodes=related_rjcodes,
             created_at=datetime.now(),
@@ -3287,6 +3318,21 @@ class LinkedSubtitleImportService:
             return {
                 "handled": False,
                 "reason": "",
+            }
+
+        candidate = self._pick_existing_subtitle_conflict_candidate(dict(preview or {}))
+        if not candidate:
+            logger.info(
+                "[字幕补配] 原作仅在 Kikoeru 端确认已有字幕，未命中可操作库存目录，自动跳过: "
+                "source=%s source_rj=%s target_rj=%s",
+                source_path,
+                preview.get("source_rjcode"),
+                preview.get("target_rjcode"),
+            )
+            return {
+                "handled": True,
+                "auto_skipped": True,
+                "reason": self.EXISTING_SUBTITLE_REASON,
             }
 
         db = next(get_db())
@@ -3837,7 +3883,18 @@ class LinkedSubtitleImportService:
                     refresh_min_interval_seconds=self.PENDING_REFRESH_MIN_INTERVAL_SECONDS,
                 ),
             }
-            existing_path = (preview.get("selected_candidate") or {}).get("folder_path") or ""
+            selected_candidate = preview.get("selected_candidate") or {}
+            existing_path = selected_candidate.get("folder_path") or ""
+            linked_works_info = self._build_target_linked_works_info(
+                preview,
+                selected_candidate,
+            )
+            related_rjcodes = [
+                code for code in [
+                    preview.get("source_rjcode"),
+                    preview.get("target_rjcode"),
+                ] if code
+            ]
 
             if pending:
                 old_preview = dict((pending.analysis_info or {}).get("preview") or {})
@@ -3854,6 +3911,8 @@ class LinkedSubtitleImportService:
                 pending.existing_path = existing_path
                 pending.new_metadata = metadata
                 pending.analysis_info = analysis_info
+                pending.linked_works_info = linked_works_info
+                pending.related_rjcodes = related_rjcodes
             else:
                 pending = ConflictWork(
                     id=str(uuid.uuid4()),
@@ -3864,14 +3923,9 @@ class LinkedSubtitleImportService:
                     new_path=task.source_path,
                     new_metadata=metadata,
                     status="PENDING",
-                    linked_works_info=[],
+                    linked_works_info=linked_works_info,
                     analysis_info=analysis_info,
-                    related_rjcodes=[
-                        code for code in [
-                            preview.get("source_rjcode"),
-                            preview.get("target_rjcode"),
-                        ] if code
-                    ],
+                    related_rjcodes=related_rjcodes,
                     created_at=datetime.now(),
                 )
                 db.add(pending)
@@ -4013,6 +4067,10 @@ class LinkedSubtitleImportService:
                         "record_id": str(row.id),
                         "action": "refresh_preview",
                         "next_analysis_info": next_analysis_info,
+                        "linked_works_info": self._build_target_linked_works_info(
+                            refreshed_preview,
+                            refreshed_preview.get("selected_candidate") or {},
+                        ),
                     })
                 # 序列化用最新 preview（即使没落库也不影响这次返回值）
                 serialize_row = row
@@ -4064,6 +4122,7 @@ class LinkedSubtitleImportService:
                     action = decision["action"]
                     if action == "refresh_preview":
                         fresh.analysis_info = decision["next_analysis_info"]
+                        fresh.linked_works_info = decision["linked_works_info"]
                     elif action == "recover_execution":
                         if str(fresh.status or "").upper() == self.PENDING_EXECUTING_STATUS:
                             fresh.status = "PENDING"
@@ -4076,6 +4135,9 @@ class LinkedSubtitleImportService:
                             task_id=decision["task_id"],
                             queue_origin=decision["queue_origin"],
                         )
+                        if upserted is None:
+                            write_db.delete(fresh)
+                            continue
                         # upsert 内部按 path+PENDING 查询，正常情况下命中 fresh 本体
                         if upserted is not fresh and getattr(upserted, "id", None) != getattr(fresh, "id", None):
                             write_db.delete(fresh)

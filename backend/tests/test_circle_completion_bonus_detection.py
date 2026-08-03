@@ -148,3 +148,73 @@ def test_page_metadata_marks_translation_info_unverified() -> None:
     assert product is not None
     assert product["translation_info"]["is_original"] is False
     assert product["translation_info"]["source"] == "page_metadata_unverified"
+
+
+def test_rj01670873_uses_embedded_product_and_breadcrumb_maker() -> None:
+    service = DLsiteApiService()
+    product = service._parse_product_from_html(
+        "RJ01670873",
+        "https://www.dlsite.com/maniax/work/=/product_id/RJ01670873.html",
+        "https://www.dlsite.com/maniax/work/=/product_id/RJ01670873.html",
+        """
+        <html>
+          <head>
+            <meta property="og:title" content="错误的兜底标题 | DLsite">
+            <script type="application/ld+json">
+              {
+                "@context": "https://schema.org",
+                "@type": "BreadcrumbList",
+                "itemListElement": [
+                  {
+                    "@type": "ListItem",
+                    "position": 3,
+                    "name": "大家一起来翻译",
+                    "item": "https://www.dlsite.com/maniax/circle/profile/=/maker_id/RG60289.html"
+                  }
+                ]
+              }
+            </script>
+          </head>
+          <body>
+            <div
+              data-href="https://www.dlsite.com/maniax/load/recommend/v2/=/type/viewsales2/reject/RG64225/product_id/RJ01563471.html"
+            ></div>
+            <script>
+              var contents = {
+                "impression": [],
+                "detail": [
+                  {
+                    "id": "RJ01670873",
+                    "name": "【繁体中文版】怪异快乐",
+                    "brand": "RG60289",
+                    "price": 1700,
+                    "regist_date": "2026/07/25",
+                    "image_main": "//img.dlsite.jp/modpub/images2/work/doujin/RJ01564000/RJ01563471_img_main.jpg",
+                    "series_id": "",
+                    "series_name": "",
+                    "work_type": "SOU",
+                    "lang_options": "CHI_HANT"
+                  }
+                ],
+                "time": 0.001
+              };
+            </script>
+          </body>
+        </html>
+        """,
+    )
+
+    assert product is not None
+    assert product["workno"] == "RJ01670873"
+    assert product["work_name"] == "【繁体中文版】怪异快乐"
+    assert product["maker_id"] == "RG60289"
+    assert product["maker_name"] == "大家一起来翻译"
+    assert product["regist_date"] == "2026-07-25"
+    assert product["metadata_evidence_source"] == "page_embedded_product"
+    assert product["page_original_workno"] == "RJ01563471"
+    assert product["page_original_maker_id"] == "RG64225"
+    assert product["translation_info"] == {
+        "is_original": False,
+        "lang": "CHI_HANT",
+        "source": "page_embedded_product",
+    }

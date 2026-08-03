@@ -29,12 +29,16 @@
         <div class="card-title">重命名与落盘</div>
         <div class="field-stack">
           <SettingsFieldCard label="重命名模板">
-            <input v-model="config.rename.template" class="field-input" type="text" placeholder="{rjcode} {work_name}">
+            <RenameTemplateBuilder
+              v-model="config.rename.template"
+              v-model:wrapper-enabled="config.rename.template_wrapper_enabled"
+              v-model:wrapper-left="config.rename.template_wrapper_left"
+              v-model:wrapper-right="config.rename.template_wrapper_right"
+            />
           </SettingsFieldCard>
           <SettingsFieldCard label="日期格式">
             <input v-model="config.rename.date_format" class="field-input" type="text" placeholder="%y%m%d">
           </SettingsFieldCard>
-          <SettingsToggleRow v-model="config.rename.api_rename_follow_template" title="API 重命名遵循模板" subtitle="库存里的 API 重命名也统一走模板。" />
           <SettingsToggleRow v-model="config.rename.use_japanese_metadata" title="使用日语元数据" subtitle="让 maker、CV、tags 等优先取日语元数据。" />
           <SettingsToggleRow v-model="config.rename.exclude_square_brackets" title="移除方括号内容" subtitle="重命名前先剔除方括号片段。" />
           <SettingsToggleRow v-model="config.rename.illegal_char_to_full_width" title="非法字符转全角" subtitle="降低 Windows 文件名报错概率。" />
@@ -90,6 +94,7 @@
 import { Plus, Trash2 } from 'lucide-vue-next'
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsNumberStepper from './SettingsNumberStepper.vue'
+import RenameTemplateBuilder from './RenameTemplateBuilder.vue'
 import SettingsSwitch from './SettingsSwitch.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import AppDropdown from '../common/AppDropdown.vue'

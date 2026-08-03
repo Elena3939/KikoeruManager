@@ -391,11 +391,13 @@ def _circle_bonus_probe_business_key(
 def _api_rename_metadata_skip_reason(metadata: Dict[str, Any], rjcode: str) -> str:
     from ..core.dlsite_metadata_trust import attach_dlsite_metadata_verification
 
-    attach_dlsite_metadata_verification(metadata, rjcode)
     source = str(metadata.get("metadata_source") or "").strip().lower()
-    # 熔断时的 minimal 数据必然没有可信重命名证据，但先反馈可重试的运行态原因。
-    if source == "minimal" and bool(metadata.get("dlsite_circuit_open")):
-        return "DLsite 元数据短熔断中，已跳过重命名"
+    if source == "minimal":
+        if metadata.get("dlsite_circuit_open"):
+            return "DLsite 元数据短熔断中，已跳过重命名"
+        return "DLsite 元数据不可用，已跳过重命名"
+
+    attach_dlsite_metadata_verification(metadata, rjcode)
     verification_status = str(
         metadata.get("metadata_verification_status") or ""
     ).strip().lower()
@@ -417,8 +419,6 @@ def _api_rename_metadata_skip_reason(metadata: Dict[str, Any], rjcode: str) -> s
         ]
     )
 
-    if source == "minimal":
-        return "DLsite 元数据不可用，已跳过重命名"
     if not maker_name and work_name.upper() == normalized_rj and not has_any_detail:
         return "元数据不完整，已跳过重命名"
     return ""
@@ -12460,51 +12460,32 @@ async def api_rename_library_file(request: Request):
         
         config = get_config()
         logger.info(f"[API RENAME] 读取到的模板: '{config.rename.template}' (长度: {len(config.rename.template)})")
-        logger.info(f"[API RENAME] api_rename_follow_template: {config.rename.api_rename_follow_template}")
         logger.info(f"[API RENAME] use_japanese_metadata: {config.rename.use_japanese_metadata}")
 
-        # 根据配置决定是否遵循重命名模板
-        if config.rename.api_rename_follow_template:
-            # 使用重命名服务生成名称
-            from ..core.rename_service import RenameService
-            rename_service = RenameService()
+        from ..core.rename_service import RenameService
+        rename_service = RenameService()
 
-            # 创建临时任务对象用于重命名
-            from ..core.task_engine import Task, TaskType
-            temp_task = Task(
-                task_type=TaskType.RENAME,
-                source_path=file_path
-            )
-            temp_task.task_metadata = metadata
+        # 创建临时任务对象用于重命名
+        from ..core.task_engine import Task, TaskType
+        temp_task = Task(
+            task_type=TaskType.RENAME,
+            source_path=file_path
+        )
+        temp_task.task_metadata = metadata
 
-            # 如果启用了日语元数据，获取日语版本
-            japanese_metadata = None
-            if config.rename.use_japanese_metadata:
-                logger.info(f"[{rjcode}] 启用日语元数据，正在获取...")
-                japanese_metadata = await rename_service._get_japanese_metadata(rjcode)
-                if japanese_metadata:
-                    logger.info(f"[{rjcode}] 日语元数据获取成功: maker_name={japanese_metadata.get('maker_name')}")
-                else:
-                    logger.warning(f"[{rjcode}] 日语元数据获取失败，将使用当前语言元数据")
+        # 如果启用了日语元数据，获取日语版本
+        japanese_metadata = None
+        if config.rename.use_japanese_metadata:
+            logger.info(f"[{rjcode}] 启用日语元数据，正在获取...")
+            japanese_metadata = await rename_service._get_japanese_metadata(rjcode)
+            if japanese_metadata:
+                logger.info(f"[{rjcode}] 日语元数据获取成功: maker_name={japanese_metadata.get('maker_name')}")
+            else:
+                logger.warning(f"[{rjcode}] 日语元数据获取失败，将使用当前语言元数据")
 
-            # 编译名称
-            new_name = rename_service._compile_name(metadata, japanese_metadata)
-            new_name = rename_service._sanitize_filename(new_name)
-            logger.info(f"[{rjcode}] 使用重命名模板生成名称: {new_name}")
-        else:
-            # 简单格式：RJ号 + 作品名
-            import re
-            def sanitize_filename(name):
-                # 移除或替换Windows不允许的字符
-                name = re.sub(r'[<>:"/\\|?*]', '_', name)
-                # 移除控制字符
-                name = re.sub(r'[\x00-\x1f\x7f]', '', name)
-                # 移除末尾的空格和点
-                name = name.rstrip(' .')
-                return name
-            
-            new_name = f"{rjcode} {sanitize_filename(work_name)}"
-            logger.info(f"[{rjcode}] 使用简单格式生成名称: {new_name}")
+        new_name = rename_service._compile_name(metadata, japanese_metadata)
+        new_name = rename_service._sanitize_filename(new_name)
+        logger.info(f"[{rjcode}] 使用重命名模板生成名称: {new_name}")
         
         # 构建新路径
         if is_remote_library:
@@ -13077,22 +13058,11 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
 
                         # 生成新名称
                         config = get_config()
-                        if config.rename.api_rename_follow_template:
-                            japanese_metadata = None
-                            if config.rename.use_japanese_metadata:
-                                japanese_metadata = await rename_service._get_japanese_metadata(rjcode)
-                            new_name = rename_service._compile_name(metadata, japanese_metadata)
-                            new_name = rename_service._sanitize_filename(new_name)
-                        else:
-                            work_name = metadata.get('work_name', '')
-
-                            def sanitize_filename(name):
-                                name = re.sub(r'[<>:"/\\|?*]', '_', name)
-                                name = re.sub(r'[\x00-\x1f\x7f]', '', name)
-                                name = name.rstrip(' .')
-                                return name
-
-                            new_name = f"{rjcode} {sanitize_filename(work_name)}"
+                        japanese_metadata = None
+                        if config.rename.use_japanese_metadata:
+                            japanese_metadata = await rename_service._get_japanese_metadata(rjcode)
+                        new_name = rename_service._compile_name(metadata, japanese_metadata)
+                        new_name = rename_service._sanitize_filename(new_name)
 
                         # 只生成计划；真实重命名按 library 聚合后一次 manager.batch_rename()。
                         if item_is_remote:

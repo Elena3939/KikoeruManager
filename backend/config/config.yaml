@@ -107,7 +107,10 @@ metadata:
   make_folder_icon: false
   remove_jpg_file: true
 rename:
-  template: '[{maker_name}][{rjcode}]{cvs}'
+  template: '[{original_maker_name}][{rjcode}][{cvs}]'
+  template_wrapper_enabled: true
+  template_wrapper_left: '['
+  template_wrapper_right: ']'
   date_format: '%y%m%d'
   delimiter: ' '
   cv_list_left: '(CV '

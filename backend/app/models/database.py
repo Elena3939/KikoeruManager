@@ -171,6 +171,8 @@ class WorkMetadata(Base):
     work_name = Column(Text)
     maker_id = Column(String(20))
     maker_name = Column(Text)
+    original_maker_name = Column(Text)
+    translator_name = Column(Text)
     release_date = Column(String(20))
     series_name = Column(Text)
     series_id = Column(String(20))
@@ -181,6 +183,12 @@ class WorkMetadata(Base):
     price_text = Column(String(80))
     is_bonus_work = Column(Boolean, default=False, index=True)
     has_bonus = Column(Boolean, default=False, index=True)
+    metadata_verification_status = Column(String(20), nullable=False, default="unverified")
+    metadata_verification_reason = Column(Text, nullable=False, default="")
+    metadata_evidence_source = Column(String(80), nullable=False, default="")
+    resolved_workno = Column(String(20), nullable=False, default="")
+    verified_parent_workno = Column(String(20), nullable=False, default="")
+    verified_parent_child_relation = Column(Boolean, nullable=False, default=False)
     # 标记 bonus 字段是否已经向 DLsite 实际确认过。
     # NULL = 老 schema 留下来的存量，从未实际计算过 bonus；
     # 写入时间 = 已经走过 _apply_dlsite_bonus_info / lazy refresh，is_bonus_work / has_bonus 是真值。
@@ -196,6 +204,8 @@ class WorkMetadata(Base):
             'work_name': self.work_name,
             'maker_id': self.maker_id,
             'maker_name': self.maker_name,
+            'original_maker_name': self.original_maker_name or self.maker_name or '',
+            'translator_name': self.translator_name or '',
             'release_date': self.release_date,
             'series_name': self.series_name,
             'series_id': self.series_id,
@@ -206,6 +216,12 @@ class WorkMetadata(Base):
             'price_text': self.price_text or '',
             'is_bonus_work': bool(self.is_bonus_work),
             'has_bonus': bool(self.has_bonus),
+            'metadata_verification_status': self.metadata_verification_status or 'unverified',
+            'metadata_verification_reason': self.metadata_verification_reason or '',
+            'metadata_evidence_source': self.metadata_evidence_source or '',
+            'resolved_workno': self.resolved_workno or '',
+            'verified_parent_workno': self.verified_parent_workno or '',
+            'verified_parent_child_relation': bool(self.verified_parent_child_relation),
             'bonus_info_checked_at': self.bonus_info_checked_at.isoformat() if self.bonus_info_checked_at else None,
             'cached_at': self.cached_at.isoformat() if self.cached_at else None,
             'expires_at': self.expires_at.isoformat() if self.expires_at else None
@@ -4186,6 +4202,7 @@ def _migrate_compat_schema(conn) -> None:
         "activity_log_daily_stats",
         "dlsite_bonus_probe_cache",
         "notification_inbox_items",
+        "work_metadata",
     ))
     compat_index_specs = [
         spec
@@ -4208,6 +4225,39 @@ def _migrate_compat_schema(conn) -> None:
         existing_columns = _existing_columns(conn, "notification_templates", ("editor_mode", "blocks"))
         _add_column_if_missing(conn, "notification_templates", "editor_mode", "VARCHAR(20)", "'html'", existing_columns=existing_columns)
         _add_column_if_missing(conn, "notification_templates", "blocks", "JSONB", "'[]'::jsonb", existing_columns=existing_columns)
+    if "work_metadata" in existing_tables:
+        existing_columns = _existing_columns(
+            conn,
+            "work_metadata",
+            (
+                "metadata_verification_status",
+                "metadata_verification_reason",
+                "metadata_evidence_source",
+                "resolved_workno",
+                "verified_parent_workno",
+                "verified_parent_child_relation",
+                "original_maker_name",
+                "translator_name",
+            ),
+        )
+        for column_name, column_type, default_sql in (
+            ("metadata_verification_status", "VARCHAR(20)", "'unverified'"),
+            ("metadata_verification_reason", "TEXT", "''"),
+            ("metadata_evidence_source", "VARCHAR(80)", "''"),
+            ("resolved_workno", "VARCHAR(20)", "''"),
+            ("verified_parent_workno", "VARCHAR(20)", "''"),
+            ("verified_parent_child_relation", "BOOLEAN", "FALSE"),
+            ("original_maker_name", "TEXT", "''"),
+            ("translator_name", "TEXT", "''"),
+        ):
+            _add_column_if_missing(
+                conn,
+                "work_metadata",
+                column_name,
+                column_type,
+                default_sql,
+                existing_columns=existing_columns,
+            )
     if "activity_log_rollups" in existing_tables:
         _ensure_indexes_exist(
             conn,
