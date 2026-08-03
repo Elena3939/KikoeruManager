@@ -25337,26 +25337,36 @@ async function startAITitleTranslation() {
   if (aiTitleTranslating.value) return
   aiTitleTranslating.value = true
   try {
-    // 收集当前目录下的 RJ 作品
-    const rows = toolbarActionScope.value === "page"
-      ? currentPageDirectoryRows.value
-      : (circleVirtualCurrentPath.value
-        ? await resolveCircleActionRows(toolbarSubtitleScopeRows.value, { currentPathFallback: circleVirtualCurrentPath.value })
-        : toolbarSubtitleScopeRows.value)
+    // 优先使用已选中的行
+    let rows = selectedRows.value.length > 0 ? selectedRows.value : []
 
+    // 无选中时按作用域收集
+    if (!rows.length) {
+      if (toolbarActionScope.value === "page") {
+        rows = currentPageDirectoryRows.value
+      } else {
+        // "当前目录" 作用域
+        if (currentPath.value) {
+          rows = [{ path: currentPath.value, name: getFileName(currentPath.value), is_directory: true }]
+        }
+      }
+    }
+
+    // 解析 RJ 编号：从 path 中提取
     const rjcodes = rows
-      .map(row => row.rjcode || extractRJCode(row.path || row.name || ""))
+      .map(row => {
+        const rj = row.rjcode || extractRJCode(row.path || row.name || "")
+        return rj ? rj.toUpperCase() : null
+      })
       .filter(Boolean)
-      .map(rj => rj.toUpperCase())
 
     if (!rjcodes.length) {
-      ElMessage.warning("当前作用域没有可翻译的作品")
+      ElMessage.warning("当前作用域没有可翻译的作品（未识别到 RJ 编号）")
       return
     }
 
-    // 去重
     const unique = [...new Set(rjcodes)]
-    
+
     const resp = await fetch("/api/ai-title-translation/batch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -25365,8 +25375,16 @@ async function startAITitleTranslation() {
     const result = await resp.json()
     if (result.success_count > 0) {
       ElMessage.success(`AI 标题汉化完成：成功 ${result.success_count} / ${result.total} 项`)
+      if (result.results) {
+        const details = result.results
+          .filter(r => r.success && r.translated_title)
+          .map(r => `${r.rjcode}: ${(r.original_title || "").slice(0, 20)} → ${(r.translated_title || "").slice(0, 30)}`)
+          .join("\n")
+        if (details) ElMessage.info(`翻译明细：\n${details}`)
+      }
     } else {
-      ElMessage.info("没有需要翻译的作品或翻译失败")
+      const errors = (result.results || []).filter(r => !r.success).map(r => `${r.rjcode}: ${r.error || r.status || "未知"}`).join("; ")
+      ElMessage.info(errors ? `没有需要翻译的作品\n${errors}` : "没有需要翻译的作品")
     }
   } catch (e) {
     ElMessage.error("AI 标题汉化失败：" + (e.response?.data?.detail || e.message))
