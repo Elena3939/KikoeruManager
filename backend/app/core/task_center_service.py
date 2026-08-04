@@ -1659,6 +1659,15 @@ class TaskCenterService:
                 continue
             if not self._safe_text(candidate.get("id")).startswith("engine:"):
                 continue
+
+            candidate_details = dict(candidate.get("details") or {})
+            candidate_metadata = dict(candidate_details.get("metadata") or {})
+            retry_failed_task_id = self._safe_text(candidate_metadata.get("retry_failed_task_id"))
+            if retry_failed_task_id and retry_failed_task_id == item_id:
+                candidate_created_at = self._last_timestamp(candidate)
+                if not candidate_created_at or not completed_at or candidate_created_at >= completed_at:
+                    return True
+
             if self._safe_text(candidate.get("status")) != TaskStatus.COMPLETED.value:
                 continue
 
@@ -1666,8 +1675,6 @@ class TaskCenterService:
             if candidate_completed_at and completed_at and candidate_completed_at < completed_at:
                 continue
 
-            candidate_details = dict(candidate.get("details") or {})
-            candidate_metadata = dict(candidate_details.get("metadata") or {})
             recovered_failure_ids = candidate_metadata.get("recovered_failure_ids") or []
             if item_id and item_id in {str(value) for value in recovered_failure_ids}:
                 return True
@@ -2127,21 +2134,22 @@ class TaskCenterService:
 
         service = get_task_center_materialization_service()
         result = service.list_items(
-            domain=domain,
-            status=status,
-            search=search,
-            limit=500,
+            limit=5000,
             offset=0,
         )
-        filtered_items = self._sort_items(list(result.get("items") or []))
+        all_items = self._dedupe_items(list(result.get("items") or []))
+        all_items = [item for item in all_items if not self._is_superseded_failed_item(item)]
+        all_items = self._sort_items(all_items)
+        counts = self._build_overview_counts(all_items)
+        filtered_items = self._filter_items(all_items, domain=domain, status=status, search=search)
         safe_limit = max(1, min(int(limit or 200), 500))
         safe_offset = max(0, int(offset or 0))
         return {
             "items": filtered_items[safe_offset:safe_offset + safe_limit],
-            "total": int(result.get("total") or len(filtered_items)),
+            "total": len(filtered_items),
             "offset": safe_offset,
             "limit": safe_limit,
-            **service.build_counts(),
+            **counts,
             "mode": "materialized_summary",
             "generated_at": datetime.now().isoformat(),
         }
