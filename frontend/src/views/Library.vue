@@ -846,6 +846,7 @@
         :disable-compute-size="libraryRowContextMenuProps.disableComputeSize"
 
         :disable-filter-delete="libraryRowContextMenuProps.disableFilterDelete"
+        :disable-ai-title="libraryRowContextMenuProps.disableAiTitle"
 
         :computing-size-id="libraryRowContextMenuProps.computingSizeId"
 
@@ -22309,6 +22310,8 @@ async function handleLibraryRowContextMenuAction (action) {
 
   if (action === 'api_rename') return apiRenameItem(row)
 
+  if (action === 'ai_title') return aiTitleRenameItem(row)
+
   if (action === 'subtitle') return startSingleRJSubtitle(toRJSubtitleItem(row))
 
   if (action === 'manage') return openFolderContentsDialog(row)
@@ -23389,6 +23392,40 @@ async function renameItem (row) {
 
 }
 
+
+
+async function aiTitleRenameItem (row) {
+  if (!row?.path && !row?.name) {
+    ElMessage.warning('缺少路径，无法执行 AI 标题汉化')
+    return
+  }
+  const rjcode = row.rjcode || extractRJCode(row.path || row.name || '')
+  if (!rjcode) {
+    ElMessage.warning('未识别到 RJ 编号')
+    return
+  }
+  try {
+    const resp = await fetch('/api/ai-title-translation/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rjcodes: [rjcode] }),
+    })
+    const result = await resp.json()
+    if (result.success_count > 0) {
+      const details = (result.results || [])
+        .filter(function(r2) { return r2.success && r2.translated_title; })
+        .map(function(r2) { return r2.rjcode + ': ' + (r2.original_title || '').slice(0, 20) + ' \u2192 ' + (r2.translated_title || '').slice(0, 30); })
+        .join('\n')
+      ElMessage.success(details ? 'AI 标题汉化完成\n' + details : 'AI 标题汉化完成')
+      refreshCurrentLibraryAndStatsInBackground('AI 标题汉化已完成')
+    } else {
+      const errors = (result.results || []).filter(function(r) { return !r.success; }).map(function(r) { return r.rjcode + ': ' + (r.error || r.status || '未知'); }).join('; ')
+      ElMessage.info(errors || '没有需要翻译的作品')
+    }
+  } catch (e) {
+    ElMessage.error('AI 标题汉化失败：' + (e.response?.data?.detail || e.message))
+  }
+}
 
 
 async function apiRenameItem (row) {

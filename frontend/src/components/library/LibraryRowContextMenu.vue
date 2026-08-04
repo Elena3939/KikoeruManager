@@ -164,6 +164,16 @@
         <button
           type="button"
           class="menu-item"
+          :disabled="disableAiTitle"
+          @click="emit('action', 'ai_title')"
+        >
+          <Languages :size="14" :stroke-width="2.2" class="menu-item-icon text-cyan-600" />
+          <span>{{ batchMode ? '批量 AI 标题汉化' : 'AI 标题汉化' }}</span>
+        </button>
+
+        <button
+          type="button"
+          class="menu-item"
           :disabled="disableSubtitle"
           @click="emit('action', 'subtitle')"
         >
@@ -221,7 +231,7 @@
 
 <script setup>
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { Captions, Copy, ExternalLink, Eye, FolderCog, FolderInput, FolderOpen, FolderSync, HardDrive, MapPin, PackageOpen, Pencil, Sparkles, Tags, Trash2, UploadCloud } from 'lucide-vue-next'
+import { Captions, Copy, ExternalLink, Eye, FolderCog, FolderInput, FolderOpen, FolderSync, HardDrive, MapPin, PackageOpen, Pencil, Sparkles, Tags, Trash2, UploadCloud, Languages } from 'lucide-vue-next'
 import baiduNetdiskIcon from '../../assets/platforms/baidu-netdisk.ico'
 
 const props = defineProps({
@@ -259,6 +269,7 @@ const props = defineProps({
   showFolderCompletion: { type: Boolean, default: false },
   disableFolderCompletion: { type: Boolean, default: false },
   disableFilterDelete: { type: Boolean, default: false },
+  disableAiTitle: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['close', 'action'])
