@@ -3858,6 +3858,23 @@ async def ai_title_translation_batch(request: AITitleTranslationBatchRequest):
             for rc in rjcodes
         ]}
 
+    # 如果启用了复用 AI 配对 API 配置，使用配对配置中的模型和密钥
+    if getattr(raw_config, 'use_ai_subtitle_api', False):
+        sub_raw = cfg.ai_subtitle_matching if hasattr(cfg, 'ai_subtitle_matching') else None
+        if sub_raw:
+            import copy as _copy
+            merged = _copy.copy(raw_config)
+            merged.model = sub_raw.model
+            merged.api_key = sub_raw.api_key
+            merged.api_base = sub_raw.api_base
+            merged.api_version = sub_raw.api_version
+            merged.organization = sub_raw.organization
+            merged.proxy_url = sub_raw.proxy_url
+            merged.timeout_seconds = sub_raw.timeout_seconds
+            merged.max_retries = sub_raw.max_retries
+            merged.temperature = sub_raw.temperature
+            raw_config = merged
+
     saved_api_key = _read_ai_title_translation_api_key_from_disk() or ""
 
     # 从 work_metadata 表查找 work_name
@@ -4049,6 +4066,23 @@ async def ai_title_translation_file_rename(request: AITitleTranslationFileRename
     raw_config = cfg.ai_title_translation if hasattr(cfg, 'ai_title_translation') else None
     if not raw_config or not getattr(raw_config, 'enabled', False):
         return {"success": False, "error": "AI 标题汉化未启用", "renamed_count": 0, "folder_renamed": False}
+
+    # 如果启用了复用 AI 配对 API 配置，使用配对配置中的模型和密钥
+    if getattr(raw_config, 'use_ai_subtitle_api', False):
+        sub_raw = cfg.ai_subtitle_matching if hasattr(cfg, 'ai_subtitle_matching') else None
+        if sub_raw:
+            import copy as _copy
+            merged = _copy.copy(raw_config)
+            merged.model = sub_raw.model
+            merged.api_key = sub_raw.api_key
+            merged.api_base = sub_raw.api_base
+            merged.api_version = sub_raw.api_version
+            merged.organization = sub_raw.organization
+            merged.proxy_url = sub_raw.proxy_url
+            merged.timeout_seconds = sub_raw.timeout_seconds
+            merged.max_retries = sub_raw.max_retries
+            merged.temperature = sub_raw.temperature
+            raw_config = merged
 
     saved_api_key = _read_ai_title_translation_api_key_from_disk() or ""
     service = get_ai_title_translation_service()
