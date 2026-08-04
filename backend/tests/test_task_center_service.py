@@ -62,6 +62,78 @@ def test_task_engine_task_center_version_increments_on_task_event():
     assert engine.get_task_center_version() == before + 1
 
 
+def test_task_center_dedupes_waiting_manual_retry_chain():
+    service = TaskCenterService()
+    old_item = {
+        "id": "engine:old-task",
+        "entity_id": "old-task",
+        "engine_task_id": "old-task",
+        "status": TaskStatus.WAITING_MANUAL.value,
+        "source_path": "/input/RJ01652675.rar",
+        "created_at": "2026-08-04T00:33:11",
+        "updated_at": "2026-08-04T00:35:58",
+        "details": {"metadata": {}},
+    }
+    retry_item = {
+        "id": "engine:retry-task",
+        "entity_id": "retry-task",
+        "engine_task_id": "retry-task",
+        "status": TaskStatus.WAITING_MANUAL.value,
+        "source_path": "/input/RJ01652675.rar",
+        "created_at": "2026-08-04T00:41:44",
+        "updated_at": "2026-08-04T00:41:50",
+        "details": {"metadata": {"retry_failed_task_id": "old-task"}},
+    }
+
+    deduped = service._dedupe_items([old_item, retry_item])
+
+    assert [item["entity_id"] for item in deduped] == ["retry-task"]
+
+
+def test_task_center_materialized_summary_dedupes_retry_chain(monkeypatch):
+    import app.core.task_center_materialization_service as materialization_module
+
+    old_item = {
+        "id": "engine:old-task",
+        "entity_id": "old-task",
+        "engine_task_id": "old-task",
+        "domain": "system",
+        "status": TaskStatus.WAITING_MANUAL.value,
+        "source_path": "/input/RJ01652675.rar",
+        "created_at": "2026-08-04T00:33:11",
+        "updated_at": "2026-08-04T00:35:58",
+        "details": {"metadata": {}},
+    }
+    retry_item = {
+        "id": "engine:retry-task",
+        "entity_id": "retry-task",
+        "engine_task_id": "retry-task",
+        "domain": "system",
+        "status": TaskStatus.WAITING_MANUAL.value,
+        "source_path": "/input/RJ01652675.rar",
+        "created_at": "2026-08-04T00:41:44",
+        "updated_at": "2026-08-04T00:41:50",
+        "details": {"metadata": {"retry_failed_task_id": "old-task"}},
+    }
+    materialized_service = Mock()
+    materialized_service.list_items.return_value = {
+        "items": [old_item, retry_item],
+        "total": 2,
+    }
+    monkeypatch.setattr(
+        materialization_module,
+        "get_task_center_materialization_service",
+        lambda: materialized_service,
+    )
+
+    result = TaskCenterService().list_materialized_items(limit=10)
+
+    assert [item["entity_id"] for item in result["items"]] == ["retry-task"]
+    assert result["total"] == 1
+    assert result["counts_by_status"][TaskStatus.WAITING_MANUAL.value] == 1
+    assert result["highlight_counts"]["waiting_manual"] == 1
+
+
 def test_task_center_materialized_item_snapshot_skips_unchanged_payload():
     engine = TaskEngine()
     task = Task(TaskType.EXTRACT, "/tmp/work.zip", task_id="task-materialized-version")

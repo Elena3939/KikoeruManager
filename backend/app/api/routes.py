@@ -6612,6 +6612,23 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
         if conflict.rjcode:
             task.task_metadata["inferred_rjcode"] = conflict.rjcode
 
+        # 问题作品重试会创建新的引擎任务，但旧的 waiting_manual 任务仍然保留。
+        # 标记旧任务已被本次重试替代，任务中心据此隐藏旧行；状态保持原样，审计仍可追溯。
+        if failed_task_id:
+            failed_task = engine.get_task(failed_task_id)
+            if failed_task and failed_task.id != task.id:
+                failed_metadata = dict(failed_task.task_metadata or {})
+                failed_metadata["superseded_by_task_id"] = task.id
+                failed_metadata["superseded_at"] = datetime.now().isoformat()
+                failed_metadata["superseded_reason"] = "retry_replaced"
+                failed_metadata["hidden_in_task_lists"] = True
+                failed_task.task_metadata = failed_metadata
+                failed_task.touch_metadata("retry_superseded")
+                with contextlib.suppress(Exception):
+                    from ..core.task_center_materialization_service import get_task_center_materialization_service
+
+                    get_task_center_materialization_service().delete_engine_item(failed_task.id)
+
         conflict.status = "PROCESSING"
         next_metadata = dict(conflict.new_metadata or {})
         next_metadata["resolution_task_state"] = "queued"
