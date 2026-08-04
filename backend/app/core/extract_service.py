@@ -3539,7 +3539,7 @@ class ExtractService:
     ) -> tuple[bool, Optional[str]]:
         """直接尝试解压嵌套压缩包，一次性收集所有密码候选，跳过多余的 list 步骤。
 
-        密码优先级：父密码 > 无密码 > 配置密码列表 > 密码库查询结果（RJ/文件名/通用）
+        密码优先级：父密码 > 无密码 > 手动指定密码 > 密码库查询结果 > 配置密码列表
         返回 (是否成功, 成功使用的密码)
         """
         seen: set = set()
@@ -3554,12 +3554,24 @@ class ExtractService:
         if parent_password:
             add(parent_password)
         add("")  # 无密码
-        # 密码库查询只做一次，包含 RJ/文件名/通用条目
-        vault_candidates = await self._get_password_candidates_for_archive(archive_path)
-        for item in vault_candidates:
-            add(item.get("password"))
-        for pwd in self.config.extract.password_list:
+
+        # 问题作品手动重试时，指定密码必须继续传递到递归内层包。
+        # 外层包可能未加密，或内层包使用的密码与外层不同；只依赖 parent_password
+        # 会让用户指定的密码在内层根本没有尝试机会。
+        manual_retry_passwords = self._get_manual_retry_passwords(task)
+        for pwd in manual_retry_passwords:
             add(pwd)
+
+        # 密码库查询只做一次，包含 RJ/文件名/通用条目
+        manual_retry_password_only = bool(
+            (task.task_metadata or {}).get("manual_retry_password_only")
+        ) if task is not None else False
+        if not manual_retry_password_only:
+            vault_candidates = await self._get_password_candidates_for_archive(archive_path)
+            for item in vault_candidates:
+                add(item.get("password"))
+            for pwd in self.config.extract.password_list:
+                add(pwd)
 
         archive_name = os.path.basename(archive_path)
         is_opaque_nested_archive = not bool(os.path.splitext(archive_name)[1])

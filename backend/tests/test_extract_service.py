@@ -2302,6 +2302,45 @@ class TestExtractService:
             extract_service.config.extract.password_list = old_password_list
 
     @pytest.mark.asyncio
+    async def test_nested_extract_includes_manual_retry_password(self, extract_service, temp_dir):
+        """手动重试指定密码必须传递到外层解压发现的内层压缩包。"""
+        archive_path = os.path.join(temp_dir, "密码：3个多月了还是0进展.rrar")
+        output_path = os.path.join(temp_dir, "out")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(
+            TaskType.EXTRACT,
+            os.path.join(temp_dir, "RJ01652675.rar"),
+            task_id="manual-nested-password",
+            metadata={
+                "manual_retry_passwords": ["3个多月了还是0进展"],
+                "manual_retry_password_only": True,
+            },
+        )
+
+        extract_service._get_password_candidates_for_archive = AsyncMock(return_value=[
+            {"password": "vault-password"},
+        ])
+        extract_service._is_rar_archive = Mock(return_value=False)
+        extract_service._run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+            args=[],
+            returncode=2,
+            stdout=b"",
+            stderr=b"Wrong password",
+        ))
+
+        await extract_service._try_extract_nested_direct(
+            archive_path,
+            output_path,
+            task=task,
+        )
+
+        tried_passwords = [
+            next((arg[2:] for arg in call.args[0] if str(arg).startswith("-p")), "")
+            for call in extract_service._run_7z_command.await_args_list
+        ]
+        assert tried_passwords == ["", "3个多月了还是0进展"]
+
+    @pytest.mark.asyncio
     async def test_nested_extract_retries_unsupported_method_with_zstd_backend(
         self, extract_service, temp_dir,
     ):
