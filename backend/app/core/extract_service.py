@@ -8110,12 +8110,20 @@ class ExtractService:
                     elif probe_result == 'unknown':
                         if not password:
                             has_password_candidates = any(bool(pwd) for pwd in unique_passwords)
-                            if manual_retry_password_only or has_password_candidates:
+                            if (
+                                not subtitle_probe_mode
+                                and (manual_retry_password_only or has_password_candidates)
+                            ):
                                 logger.info(
                                     "无密码轻量探测无法定性，跳过无密码完整解压，继续尝试密码候选: %s",
                                     os.path.basename(archive_info.path),
                                 )
                                 continue
+                            if subtitle_probe_mode and has_password_candidates:
+                                logger.info(
+                                    "字幕补配预检优先对无密码候选做完整解压，避免错误密码候选阻断无密码作品: %s",
+                                    os.path.basename(archive_info.path),
+                                )
                             logger.info(
                                 "无密码轻量探测无法定性且没有其他密码候选，进入完整解压兜底: %s",
                                 os.path.basename(archive_info.path),

@@ -3345,6 +3345,56 @@ Encrypted = +
         assert reason == ""
         extract_service._run_7z_command.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_try_extract_subtitle_probe_prefers_no_password_before_candidates(
+        self, extract_service, temp_dir,
+    ):
+        """字幕预检遇到 unknown 时，不能因密码库候选跳过无密码完整解压。"""
+        archive_path = os.path.join(temp_dir, "RJ01656747-no-password.7z")
+        with open(archive_path, "wb") as fp:
+            fp.write(b"placeholder")
+        output_path = os.path.join(temp_dir, "subtitle-probe-no-password-output")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(
+            task_type=TaskType.EXTRACT,
+            source_path=archive_path,
+            metadata={"subtitle_probe_mode": True},
+        )
+
+        extract_service._probe_7z_no_password_status = AsyncMock(return_value=None)
+        extract_service._probe_password = AsyncMock(return_value="unknown")
+        extract_service._run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+            args=["7zz"],
+            returncode=0,
+            stdout=b"",
+            stderr=b"",
+        ))
+        extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+        extract_service._verify_extraction = AsyncMock(return_value=True)
+        extract_service._cleanup_extract_attempt = AsyncMock()
+
+        success, password, reason = await extract_service._try_extract(
+            ArchiveInfo(
+                archive_path,
+                [{"name": "subtitle.srt", "size": 10, "is_dir": False}],
+            ),
+            output_path,
+            task,
+            password_candidates=[{
+                "password": "RJ01656747",
+                "source": "RJ号",
+                "entry_id": None,
+                "rjcode": "RJ01656747",
+            }],
+        )
+
+        assert success is True
+        assert password == ""
+        assert reason == ""
+        extract_service._run_7z_command.assert_awaited_once()
+        command = extract_service._run_7z_command.await_args.args[0]
+        assert not any(str(arg).startswith("-p") for arg in command)
+
     def test_probe_zip_password_bytes_ignores_plain_entries(self, extract_service, temp_dir):
         """ZIP 密码字节探测必须用加密条目，不能被未加密小文件误导。"""
         archive_path = os.path.join(temp_dir, "mixed-zipcrypto.zip")
