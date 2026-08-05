@@ -3201,6 +3201,52 @@ Encrypted = +
         extract_service._try_extract_zip_with_python.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_try_extract_large_zip_with_listed_password_uses_python_compat_path(
+        self, extract_service, temp_dir,
+    ):
+        """清单已确认的中文密码不能因大包 unar 策略跳过 Python 兼容解压。"""
+        archive_path = os.path.join(temp_dir, "large-cn-password-listed.zip")
+        self.create_test_zip(archive_path)
+        output_path = os.path.join(temp_dir, "large-cn-password-listed-output")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        password_value = "我觉得我是"
+
+        extract_service.ZIP_COMPAT_UNAR_FIRST_MIN_BYTES = 1
+        extract_service._find_unar_executable = Mock(return_value="/usr/bin/unar")
+        extract_service._probe_password = AsyncMock(return_value="wrong_password")
+        extract_service._try_unar_extract = AsyncMock(
+            side_effect=AssertionError("已确认密码时不应先走 unar")
+        )
+        extract_service._try_extract_zip_with_python = AsyncMock(return_value=(True, "utf-8"))
+        extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+        extract_service._verify_extraction = AsyncMock(return_value=True)
+        extract_service._cleanup_extract_attempt = AsyncMock()
+        extract_service._run_7z_command = AsyncMock(side_effect=AssertionError("不应进入完整 7zz 解压"))
+
+        success, password, reason = await extract_service._try_extract(
+            ArchiveInfo(
+                archive_path,
+                [{"name": "20260604161913.zip", "size": 10, "is_dir": False}],
+                password_value,
+            ),
+            output_path,
+            task,
+            password_candidates=[{
+                "password": password_value,
+                "source": "指定密码",
+                "entry_id": None,
+                "rjcode": None,
+            }],
+        )
+
+        assert success is True
+        assert password == password_value
+        assert reason == ""
+        extract_service._try_extract_zip_with_python.assert_awaited_once()
+        extract_service._try_unar_extract.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_try_extract_manual_large_zip_prefers_python_password_probe(
         self, extract_service, temp_dir,
     ):

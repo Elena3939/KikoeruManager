@@ -7567,10 +7567,15 @@ class ExtractService:
                 archive_size = os.path.getsize(archive_info.path)
             except OSError:
                 archive_size = 0
+            known_archive_password = bool(
+                current_password
+                and current_password == str(getattr(archive_info, "password", "") or "")
+            )
             unar_first = (
                 archive_size >= self.ZIP_COMPAT_UNAR_FIRST_MIN_BYTES
                 and bool(self._find_unar_executable())
                 and not manual_retry_password_only
+                and not known_archive_password
             )
             if unar_first:
                 unar_success, unar_reason = await try_unar_zip_compat_backend()
@@ -7584,7 +7589,8 @@ class ExtractService:
                     archive_size,
                     unar_reason,
                 )
-                return False, unar_reason
+                if not known_archive_password:
+                    return False, unar_reason
 
             await self._cleanup_extract_attempt(output_path)
             task.update_progress(39, "尝试 Python ZIP 中文密码兼容解压")
