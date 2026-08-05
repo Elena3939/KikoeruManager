@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api import routes
 from app.api.routes import MediaAwareGZipMiddleware, PrecompressedStaticFiles
 
 
@@ -63,6 +64,30 @@ def test_non_assets_keep_gzip_compression():
 
     assert headers["content-encoding"] == "gzip"
     assert int(headers["content-length"]) == len(body)
+
+
+def test_media_gzip_responder_supports_new_starlette_thread_threshold(monkeypatch):
+    captured = {}
+
+    def fake_init(self, app, minimum_size, compresslevel=9, *, thread_minimum_size):
+        captured.update(
+            app=app,
+            minimum_size=minimum_size,
+            compresslevel=compresslevel,
+            thread_minimum_size=thread_minimum_size,
+        )
+
+    monkeypatch.setattr(routes.GZipResponder, "__init__", fake_init)
+
+    responder = routes._create_media_gzip_responder(_sample_static_app, 1024, 6)
+
+    assert isinstance(responder, routes.MediaAwareGZipResponder)
+    assert captured == {
+        "app": _sample_static_app,
+        "minimum_size": 1024,
+        "compresslevel": 6,
+        "thread_minimum_size": 0,
+    }
 
 
 def test_precompressed_static_files_serve_gzip_with_fixed_content_length(tmp_path):
