@@ -539,8 +539,8 @@ class TestExtractService:
 
         assert FileProcessor().is_archive(disguised_path) is True
 
-    def test_format_command_for_log_keeps_passwords_visible(self, extract_service):
-        """日志里的 7z / unar 命令保留明文密码，方便现场排查密码命中。"""
+    def test_format_command_for_log_redacts_text_and_bytes_passwords(self, extract_service):
+        """str / bytes argv 都不能把密码写入日志。"""
         cmd = [
             "7zz",
             "x",
@@ -549,14 +549,53 @@ class TestExtractService:
             "archive.zip",
             "-p",
             "another_secret",
+            b"-p\xce\xd2\xbe\xf5\xb5\xc3\xce\xd2\xca\xc7",
         ]
 
         redacted = extract_service._format_command_for_log(cmd)
 
-        assert "super_secret" in redacted
-        assert "another_secret" in redacted
-        assert "-psuper_secret" in redacted
-        assert "-p another_secret" in redacted
+        assert "super_secret" not in redacted
+        assert "another_secret" not in redacted
+        assert "\\xce\\xd2" not in redacted
+        assert redacted.count("********") == 3
+
+    def test_winzip_aes_detection_accepts_method_99(self, extract_service, temp_dir):
+        archive_path = os.path.join(temp_dir, "aes-method.zip")
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("payload.bin", b"payload")
+
+        raw = bytearray(open(archive_path, "rb").read())
+        local_offset = raw.index(b"PK\x03\x04")
+        central_offset = raw.index(b"PK\x01\x02")
+        raw[local_offset + 8:local_offset + 10] = (99).to_bytes(2, "little")
+        raw[central_offset + 10:central_offset + 12] = (99).to_bytes(2, "little")
+        with open(archive_path, "wb") as fp:
+            fp.write(raw)
+
+        assert extract_service._zip_uses_winzip_aes(archive_path) is True
+
+    @pytest.mark.asyncio
+    async def test_python_zip_backend_reports_winzip_aes_as_unsupported_encryption(
+        self, extract_service, temp_dir,
+    ):
+        archive_path = os.path.join(temp_dir, "aes.zip")
+        output_path = os.path.join(temp_dir, "output")
+        os.makedirs(output_path)
+        with open(archive_path, "wb") as fp:
+            fp.write(b"placeholder")
+        extract_service._zip_uses_winzip_aes = Mock(return_value=True)
+        extract_service._probe_zip_password_bytes = Mock(
+            side_effect=AssertionError("WinZip AES 不应交给 Python zipfile 密码探测")
+        )
+
+        success, reason = await extract_service._try_extract_zip_with_python(
+            ArchiveInfo(archive_path, []),
+            output_path,
+            "我觉得我是",
+        )
+
+        assert success is False
+        assert reason == "unsupported_encryption"
 
     @pytest.mark.asyncio
     async def test_get_archive_info_plain_zip_uses_zipfile_fast_path(self, extract_service, temp_dir):
