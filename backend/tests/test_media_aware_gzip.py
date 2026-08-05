@@ -90,6 +90,20 @@ def test_media_gzip_responder_supports_new_starlette_thread_threshold(monkeypatc
     }
 
 
+def test_media_gzip_responder_awaits_new_starlette_async_compression(monkeypatch):
+    original_apply = routes.MediaAwareGZipResponder.apply_compression
+
+    async def async_apply(self, body, *, more_body):
+        return original_apply(self, body, more_body=more_body)
+
+    monkeypatch.setattr(routes.MediaAwareGZipResponder, "apply_compression", async_apply)
+
+    headers, body = asyncio.run(_call_middleware("/api/example"))
+
+    assert headers["content-encoding"] == "gzip"
+    assert int(headers["content-length"]) == len(body)
+
+
 def test_precompressed_static_files_serve_gzip_with_fixed_content_length(tmp_path):
     assets_dir = tmp_path / "assets"
     assets_dir.mkdir()
