@@ -2727,6 +2727,9 @@ class ExtractService:
         archive_path: str,
         entry_names: List[str],
         output_path: Optional[str] = None,
+        *,
+        task: Optional[Task] = None,
+        preferred_passwords: Optional[List[str]] = None,
     ) -> str:
         """
         Extract only the selected archive entries into a temporary directory.
@@ -2749,7 +2752,7 @@ class ExtractService:
         if not normalized_entries:
             raise ValueError("没有可提取的压缩包条目")
 
-        archive_info = await self._get_archive_info(archive_path)
+        archive_info = await self._get_archive_info(archive_path, task=task)
         if not archive_info:
             archive_info = ArchiveInfo(archive_path, [], None)
 
@@ -2787,6 +2790,8 @@ class ExtractService:
         vault_passwords = [item["password"] for item in password_candidates]
         rj_passwords = self._get_rj_passwords(archive_info.path)
         password_list = []
+        password_list.extend(preferred_passwords or [])
+        password_list.extend(self._get_manual_retry_passwords(task))
         password_list.extend(rj_passwords)
         password_list.extend(vault_passwords)
         if archive_info.password and archive_info.password not in password_list:
@@ -2814,10 +2819,15 @@ class ExtractService:
                 *self._get_mcp_args(archive_info.path, archive_info),  # ZIP 文件名编码（仅 .zip 生效，避免 7zz 24.08 对 RAR 报 E_INVALIDARG）
                 *password_args,
                 archive_info.path,
+                "-scsUTF-8",
                 f"@{list_file_path}",
             ]
 
-            result = await self._run_7z_command(cmd, capture_stdout=False)
+            result = await self._run_7z_command(
+                cmd,
+                capture_stdout=False,
+                task=task,
+            )
             if result.returncode == 0:
                 archive_info.password = password
                 return output_path
@@ -3012,6 +3022,7 @@ class ExtractService:
         extracted_count = 0
         scanned_files = 0
         scanned_dirs = 0
+        subtitle_probe_mode = bool((task.task_metadata or {}).get("subtitle_probe_mode"))
         archive_extensions = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'}
 
         # 阶段 0：残缺后缀修复 pass
@@ -3110,10 +3121,58 @@ class ExtractService:
                         nested_archive_size = os.path.getsize(file_path)
                     except OSError:
                         nested_archive_size = 0
+
+                    probe_subtitle_entries: Optional[List[str]] = None
+                    if subtitle_probe_mode:
+                        probe_archive_info = await self._get_archive_info(
+                            file_path,
+                            task=task,
+                            update_task_progress=False,
+                        )
+                        if probe_archive_info is None:
+                            logger.warning(
+                                "[字幕预检] 嵌套压缩包清单读取失败，禁止回退完整解压: %s",
+                                filename,
+                            )
+                        else:
+                            subtitle_exts = {
+                                ext.lower() for ext in self.SUBTITLE_FILE_EXTENSIONS
+                            }
+                            probe_subtitle_entries = [
+                                str(entry.get("name") or "").strip()
+                                for entry in (probe_archive_info.file_list or [])
+                                if isinstance(entry, dict)
+                                and not entry.get("is_dir")
+                                and Path(str(entry.get("name") or "")).suffix.lower()
+                                in subtitle_exts
+                            ]
+                            probe_subtitle_entries = [
+                                name for name in probe_subtitle_entries if name
+                            ]
+                            if not probe_subtitle_entries:
+                                logger.info(
+                                    "[字幕预检] 嵌套压缩包清单确认无字幕，跳过且不记失败: %s",
+                                    filename,
+                                )
+                                if task.task_metadata is None:
+                                    task.task_metadata = {}
+                                no_subtitle_archives = task.task_metadata.setdefault(
+                                    "nested_archives_without_subtitles",
+                                    [],
+                                )
+                                if filename not in no_subtitle_archives:
+                                    no_subtitle_archives.append(filename)
+                                processed_paths.add(file_real_path)
+                                continue
+                            logger.info(
+                                "[字幕预检] 嵌套压缩包仅选择性提取 %d 个字幕条目: %s",
+                                len(probe_subtitle_entries),
+                                filename,
+                            )
+
                     if 0 < nested_archive_size < self.NESTED_SUBTITLE_SIZE_THRESHOLD:
                         # subtitle_probe_mode：专门用于字幕补配预检的临时解包，直接展开小包
-                        _is_probe = bool((task.task_metadata or {}).get("subtitle_probe_mode"))
-                        if not _is_probe:
+                        if not subtitle_probe_mode:
                             classification = await self._classify_nested_small_archive(
                                 file_path,
                                 filename,
@@ -3172,6 +3231,11 @@ class ExtractService:
                         "root": root,
                         "nested_output_dir": nested_output_dir,
                         "archive_type": detected_archive_type,
+                        **(
+                            {"probe_subtitle_entries": probe_subtitle_entries}
+                            if subtitle_probe_mode
+                            else {}
+                        ),
                     })
 
                 if stop_scan:
@@ -3207,6 +3271,26 @@ class ExtractService:
                     95,
                     f"解压嵌套压缩包 {filename} (层{current_depth + 1})",
                 )
+                if "probe_subtitle_entries" in item:
+                    subtitle_entries = item.get("probe_subtitle_entries")
+                    if not isinstance(subtitle_entries, list) or not subtitle_entries:
+                        raise RuntimeError(
+                            f"嵌套压缩包清单读取失败，未执行完整解压: {filename}"
+                        )
+                    await self.extract_selected_entries(
+                        file_path,
+                        [str(name) for name in subtitle_entries],
+                        nested_output_dir,
+                        task=task,
+                        preferred_passwords=[parent_password] if parent_password else None,
+                    )
+                    logger.info(
+                        "[字幕预检] 嵌套压缩包字幕条目选择性提取完成: %s entries=%d",
+                        filename,
+                        len(subtitle_entries),
+                    )
+                    return 1
+
                 # 嵌套 ZIP 预填编码缓存：让 _try_extract_nested_direct → _get_mcp_args
                 # 能取到父级检测到的编码（如 shift_jis→-mcp=932），避免日文嵌套 ZIP 乱码。
                 # 继承优先级：

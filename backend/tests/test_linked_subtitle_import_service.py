@@ -1148,6 +1148,36 @@ async def test_archive_subtitle_probe_reports_nested_extract_failure(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_archive_subtitle_probe_accepts_nested_archive_without_subtitles(tmp_path):
+    """嵌套包清单确认无字幕时应返回 no_subtitles，不能误报嵌套解压失败。"""
+    extracted_dir = tmp_path / "probe-output"
+    extracted_dir.mkdir()
+
+    service = object.__new__(LinkedSubtitleImportService)
+    service.subtitle_service = SimpleNamespace(
+        SUBTITLE_EXTENSIONS={".vtt", ".lrc", ".srt", ".ass", ".ssa"}
+    )
+
+    async def fake_extract(probe_task):
+        probe_task.task_metadata["nested_archives_without_subtitles"] = ["RJ01656747"]
+        return str(extracted_dir)
+
+    service.extract_service = SimpleNamespace(
+        config=SimpleNamespace(storage=SimpleNamespace(temp_path=str(tmp_path))),
+        extract=AsyncMock(side_effect=fake_extract),
+    )
+
+    stage_dir, subtitles, probe_result = await service._collect_archive_subtitles_to_stage(
+        "D:/input/RJ01656747.7z",
+    )
+
+    assert stage_dir == ""
+    assert subtitles == []
+    assert probe_result == {"status": "no_subtitles", "reason": ""}
+    assert not extracted_dir.exists()
+
+
+@pytest.mark.asyncio
 async def test_queue_pending_archive_import_preserves_timeout_as_pending(db_session, monkeypatch):
     def fake_get_db():
         yield db_session
