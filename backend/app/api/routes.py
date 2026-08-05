@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 import mimetypes
+import inspect
 import os
 import secrets
 import sys
@@ -270,6 +271,17 @@ class MediaAwareGZipResponder(GZipResponder):
             await self.send(message)
 
 
+def _create_media_gzip_responder(app, minimum_size: int, compresslevel: int):
+    kwargs = {"compresslevel": compresslevel}
+    try:
+        parameters = inspect.signature(GZipResponder.__init__).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "thread_minimum_size" in parameters:
+        kwargs["thread_minimum_size"] = 0
+    return MediaAwareGZipResponder(app, minimum_size, **kwargs)
+
+
 class MediaAwareGZipMiddleware(GZipMiddleware):
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":  # pragma: no cover
@@ -283,7 +295,11 @@ class MediaAwareGZipMiddleware(GZipMiddleware):
             return
 
         headers = Headers(scope=scope)
-        responder = MediaAwareGZipResponder(self.app, self.minimum_size, compresslevel=self.compresslevel) if "gzip" in headers.get("Accept-Encoding", "") else IdentityResponder(self.app, self.minimum_size)
+        responder = (
+            _create_media_gzip_responder(self.app, self.minimum_size, self.compresslevel)
+            if "gzip" in headers.get("Accept-Encoding", "")
+            else IdentityResponder(self.app, self.minimum_size)
+        )
         await responder(scope, receive, send)
 
 
