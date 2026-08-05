@@ -475,6 +475,9 @@ class ExtractService:
 
     # #3 负缓存：按 "压缩包指纹 × 密码哈希" 记忆失败组合，进程内重试任务时直接跳过。
     _password_negative_cache: Dict[Tuple[str, str], float] = {}
+    # Linux 直接把 str 密码按 UTF-8 编成 argv。部分 WinZip AES 压缩包保存的却是
+    # GBK / Shift-JIS 等原始密码字节；轻量探测命中后缓存编码，后续完整解压直接复用。
+    _zip_password_argv_encoding_cache: Dict[Tuple[str, str], str] = {}
     _password_probe_locks: Dict[Tuple[str, str], asyncio.Lock] = {}
     _password_probe_locks_guard = threading.Lock()
     PASSWORD_NEGATIVE_CACHE_MAX: int = 4096       # 简单兜底，避免长跑任务无限增长
@@ -1932,22 +1935,30 @@ class ExtractService:
             yield acquired
 
     @staticmethod
-    def _is_extract_subprocess_command(cmd: List[str]) -> bool:
+    def _command_arg_text(arg: Any) -> str:
+        if isinstance(arg, bytes):
+            return os.fsdecode(arg)
+        return str(arg)
+
+    @classmethod
+    def _is_extract_subprocess_command(cls, cmd: List[Any]) -> bool:
         if len(cmd) < 2:
             return False
-        action = str(cmd[1] or "").strip().lower()
+        action = cls._command_arg_text(cmd[1] or "").strip().lower()
         if action not in {"x", "e"}:
             return False
-        return "-so" not in {str(arg).strip().lower() for arg in cmd[2:]}
+        return "-so" not in {cls._command_arg_text(arg).strip().lower() for arg in cmd[2:]}
 
-    @staticmethod
-    def _is_inspect_subprocess_command(cmd: List[str]) -> bool:
+    @classmethod
+    def _is_inspect_subprocess_command(cls, cmd: List[Any]) -> bool:
         if len(cmd) < 2:
             return False
-        action = str(cmd[1] or "").strip().lower()
+        action = cls._command_arg_text(cmd[1] or "").strip().lower()
         if action in {"l", "t"}:
             return True
-        return action in {"x", "e"} and "-so" in {str(arg).strip().lower() for arg in cmd[2:]}
+        return action in {"x", "e"} and "-so" in {
+            cls._command_arg_text(arg).strip().lower() for arg in cmd[2:]
+        }
 
     def _set_extract_meta(self, task: Task, **values):
         if task.task_metadata is None:
@@ -1955,17 +1966,27 @@ class ExtractService:
         for key, value in values.items():
             task.task_metadata[key] = value
 
-    @staticmethod
-    def _redact_command_args(cmd: List[str]) -> List[str]:
+    @classmethod
+    def _redact_command_args(cls, cmd: List[Any]) -> List[str]:
         """日志输出用：掩码 7z/unar 的密码参数，避免密码进入运行日志。"""
         redacted: List[str] = []
         redact_next = False
         for raw_arg in cmd:
-            arg = str(raw_arg)
             if redact_next:
                 redacted.append("********")
                 redact_next = False
                 continue
+            if isinstance(raw_arg, bytes):
+                lowered_bytes = raw_arg.lower()
+                if lowered_bytes.startswith(b"-p") and len(raw_arg) > 2:
+                    redacted.append("-p********")
+                    continue
+                if lowered_bytes.startswith((b"--password=", b"--passphrase=")):
+                    redacted.append(
+                        f"{os.fsdecode(raw_arg.split(b'=', 1)[0])}=********"
+                    )
+                    continue
+            arg = cls._command_arg_text(raw_arg)
             lowered = arg.lower()
             if lowered in {"-p", "--password", "--passphrase"}:
                 redacted.append(arg)
@@ -1993,9 +2014,9 @@ class ExtractService:
                 text = text.replace(str(secret), "********")
         return text
 
-    @staticmethod
-    def _format_command_for_log(cmd: List[str]) -> str:
-        return " ".join(ExtractService._redact_command_args(cmd))
+    @classmethod
+    def _format_command_for_log(cls, cmd: List[Any]) -> str:
+        return " ".join(cls._redact_command_args(cmd))
 
     @staticmethod
     def _shorten_progress_text(value: str, max_chars: int = 60) -> str:
@@ -6777,7 +6798,7 @@ class ExtractService:
     def _zip_password_byte_candidates(password: str) -> List[Tuple[str, bytes]]:
         candidates: List[Tuple[str, bytes]] = []
         seen: set[bytes] = set()
-        for encoding in ("utf-8", "cp932", "shift_jis", "gbk", "cp936", "big5"):
+        for encoding in ("utf-8", "gbk", "gb18030", "cp932", "shift_jis", "big5"):
             try:
                 value = password.encode(encoding)
             except UnicodeEncodeError:
@@ -6787,6 +6808,88 @@ class ExtractService:
             seen.add(value)
             candidates.append((encoding, value))
         return candidates
+
+    @staticmethod
+    def _zip_extra_has_winzip_aes(extra: bytes) -> bool:
+        offset = 0
+        raw = bytes(extra or b"")
+        while offset + 4 <= len(raw):
+            field_id = int.from_bytes(raw[offset:offset + 2], "little")
+            field_size = int.from_bytes(raw[offset + 2:offset + 4], "little")
+            offset += 4
+            if offset + field_size > len(raw):
+                break
+            if field_id == 0x9901:
+                return True
+            offset += field_size
+        return False
+
+    @classmethod
+    def _zip_uses_winzip_aes(cls, archive_path: str) -> bool:
+        try:
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                return any(
+                    int(info.compress_type or 0) == 99
+                    or cls._zip_extra_has_winzip_aes(info.extra)
+                    for info in zf.infolist()
+                    if not info.is_dir()
+                )
+        except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile):
+            return False
+
+    @classmethod
+    def _find_archive_path_in_command(cls, cmd: List[Any]) -> Optional[str]:
+        for raw_arg in reversed(cmd):
+            arg = cls._command_arg_text(raw_arg).strip()
+            if not arg or arg.startswith("-") or arg.startswith("@"):
+                continue
+            if os.path.isfile(arg):
+                return arg
+        return None
+
+    @classmethod
+    def _password_arg_from_command(cls, cmd: List[Any]) -> Optional[Tuple[int, str]]:
+        for index, raw_arg in enumerate(cmd):
+            if not isinstance(raw_arg, str):
+                continue
+            if raw_arg.startswith("-p") and len(raw_arg) > 2:
+                return index, raw_arg[2:]
+        return None
+
+    def _zip_password_encoding_cache_key(
+        self,
+        archive_path: str,
+        password: str,
+    ) -> Optional[Tuple[str, str]]:
+        fingerprint = self._archive_fingerprint(archive_path)
+        if not fingerprint:
+            return None
+        return self._password_cache_key(fingerprint, password)
+
+    def _apply_cached_zip_password_argv_encoding(self, cmd: List[Any]) -> List[Any]:
+        if sys.platform == "win32":
+            return cmd
+        password_arg = self._password_arg_from_command(cmd)
+        archive_path = self._find_archive_path_in_command(cmd)
+        if password_arg is None or not archive_path:
+            return cmd
+        index, password = password_arg
+        cache_key = self._zip_password_encoding_cache_key(archive_path, password)
+        encoding = (
+            self.__class__._zip_password_argv_encoding_cache.get(cache_key)
+            if cache_key
+            else None
+        )
+        if not encoding:
+            return cmd
+        try:
+            encoded_arg = f"-p{password}".encode(encoding)
+        except UnicodeEncodeError:
+            self.__class__._zip_password_argv_encoding_cache.pop(cache_key, None)
+            return cmd
+        encoded_cmd = list(cmd)
+        encoded_cmd[index] = encoded_arg
+        return encoded_cmd
 
     @staticmethod
     def _safe_zip_member_target(output_path: str, member_name: str) -> Optional[str]:
@@ -6882,6 +6985,12 @@ class ExtractService:
         task: Optional[Task] = None,
     ) -> Tuple[bool, str]:
         """用 Python zipfile 兜底解 ZIP 中文密码字节不兼容场景。"""
+        if self._zip_uses_winzip_aes(archive_info.path):
+            logger.info(
+                "Python zipfile 不支持 WinZip AES，跳过该兼容后端: archive=%s",
+                archive_info.path,
+            )
+            return False, "unsupported_encryption"
         password_probe = self._probe_zip_password_bytes(archive_info.path, password)
         if password_probe is None:
             return False, "wrong_password"
@@ -8823,7 +8932,7 @@ class ExtractService:
 
     async def _run_7z_command(
         self,
-        cmd: List[str],
+        cmd: List[Any],
         progress_callback: Optional[Callable[[str], None]] = None,
         capture_stdout: bool = True,
         max_captured_bytes: int = 4 * 1024 * 1024,
@@ -8833,6 +8942,7 @@ class ExtractService:
         update_task_progress: bool = True,
     ) -> subprocess.CompletedProcess:
         """运行7z命令。传入 task 后会把子进程登记到 task 上，cancel/pause 能立刻 kill。"""
+        cmd = self._apply_cached_zip_password_argv_encoding(cmd)
         formatted_cmd = self._format_command_for_log(cmd)
         logger.info("准备执行7z命令: %s", formatted_cmd)
 
@@ -8861,7 +8971,7 @@ class ExtractService:
                 semaphore=semaphore,
                 budget_resource=budget_resource,
                 reason=budget_reason,
-                archive_path=str(cmd[-1] if cmd else ""),
+                archive_path=self._find_archive_path_in_command(cmd) or "",
                 slot_label=slot_label,
                 slot_limit=slot_limit,
                 wait_timeout=effective_slot_wait_timeout,
@@ -9033,7 +9143,7 @@ class ExtractService:
                         logger.warning(
                             "[7z] 检测到 -mcp 参数不被该 7zz 版本接受 (E_INVALIDARG)，"
                             "标记 _seven_zip_mcp_unsupported 并剥掉 -mcp 重试: %s",
-                            ' '.join(cleaned_cmd),
+                            self._format_command_for_log(cleaned_cmd),
                         )
                         return await self._run_7z_command(
                             cleaned_cmd,
@@ -9213,6 +9323,125 @@ class ExtractService:
                 if len(entries) >= self.PROBE_MAGIC_ENTRY_LIMIT:
                     break
         return entries
+
+    async def _probe_winzip_aes_password_argv_encoding(
+        self,
+        archive_path: str,
+        password: str,
+        file_list: Optional[List[Dict]],
+        *,
+        timeout: float,
+        task: Optional[Task] = None,
+        seven_zip_executable: Optional[str] = None,
+    ) -> str:
+        """Linux 下只读一个输出字节，确认 WinZip AES 密码使用的 argv 编码。"""
+        if (
+            sys.platform == "win32"
+            or not password
+            or not self._password_has_non_ascii(password)
+            or not self._zip_uses_winzip_aes(archive_path)
+        ):
+            return "not_applicable"
+
+        entries = [
+            item
+            for item in (file_list or [])
+            if isinstance(item, dict)
+            and not item.get("is_dir")
+            and str(item.get("name") or "").strip()
+        ]
+        if not entries:
+            return "unknown"
+        entry = min(entries, key=lambda item: int(item.get("size") or 0))
+        entry_name = str(entry.get("name") or "").strip()
+        executable = seven_zip_executable or self.seven_zip
+        cache_key = self._zip_password_encoding_cache_key(archive_path, password)
+        saw_wrong_password = False
+
+        for encoding, password_bytes in self._zip_password_byte_candidates(password):
+            if encoding == "utf-8":
+                continue
+            cmd: List[Any] = [
+                executable,
+                "x",
+                "-so",
+                "-y",
+                "-bso0",
+                "-bsp0",
+                *self._get_mcp_args(archive_path),
+                b"-p" + password_bytes,
+                archive_path,
+                entry_name,
+            ]
+            async with self._acquire_probe_inspect_slot(
+                "extract.probe_winzip_aes_password_encoding",
+                archive_path,
+                task,
+            ) as acquired:
+                if not acquired:
+                    return "unknown"
+                logger.info(
+                    "WinZip AES 密码 argv 编码一字节探测: archive=%s encoding=%s",
+                    os.path.basename(archive_path),
+                    encoding,
+                )
+                kwargs = {
+                    "stdout": subprocess.PIPE,
+                    "stderr": subprocess.PIPE,
+                    "stdin": subprocess.DEVNULL,
+                }
+                if sys.platform == "win32":
+                    kwargs["creationflags"] = CREATE_NO_WINDOW
+                try:
+                    process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+                except Exception:
+                    logger.warning(
+                        "WinZip AES 密码 argv 编码探测无法启动: archive=%s encoding=%s",
+                        archive_path,
+                        encoding,
+                        exc_info=True,
+                    )
+                    return "unknown"
+                if task is not None:
+                    task.register_process(process)
+                try:
+                    first_byte = await asyncio.wait_for(
+                        process.stdout.read(1),
+                        timeout=max(1.0, float(timeout)),
+                    )
+                    if first_byte:
+                        if process.returncode is None:
+                            process.kill()
+                            with contextlib.suppress(Exception):
+                                await asyncio.wait_for(process.communicate(), timeout=2.0)
+                        if cache_key:
+                            self.__class__._zip_password_argv_encoding_cache[cache_key] = encoding
+                        logger.info(
+                            "WinZip AES 密码 argv 编码一字节验证成功: archive=%s encoding=%s",
+                            os.path.basename(archive_path),
+                            encoding,
+                        )
+                        return "ok"
+                    stderr = await process.stderr.read(32 * 1024)
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(process.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    if process.returncode is None:
+                        process.kill()
+                        with contextlib.suppress(Exception):
+                            await asyncio.wait_for(process.communicate(), timeout=2.0)
+                    return "unknown"
+                finally:
+                    if task is not None:
+                        task.unregister_process(process)
+
+            stderr_text = stderr.decode("utf-8", errors="ignore")
+            if self._looks_like_wrong_password_error(stderr_text):
+                saw_wrong_password = True
+                continue
+            return "unknown"
+
+        return "wrong_password" if saw_wrong_password else "unknown"
 
     async def _probe_by_magic(
         self,
@@ -9674,6 +9903,19 @@ class ExtractService:
           3. 流式探测（没 file_list 的头加密包兜底）：注意对 store+AES 可能漏判。
         """
         executable = seven_zip_executable or self.seven_zip
+
+        aes_argv_probe = await self._probe_winzip_aes_password_argv_encoding(
+            archive_path,
+            password,
+            file_list,
+            timeout=min(max(1.0, float(timeout)), self.PROBE_MAGIC_TIMEOUT),
+            task=task,
+            seven_zip_executable=executable,
+        )
+        if aes_argv_probe == "ok":
+            return "ok"
+        if aes_argv_probe == "wrong_password":
+            return "wrong_password"
 
         if not password and executable == self.seven_zip:
             zip_status = self._probe_zip_no_password_status(archive_path)
