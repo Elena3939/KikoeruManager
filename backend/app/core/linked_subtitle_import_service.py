@@ -19,6 +19,7 @@ from .dlsite_service import get_dlsite_service
 from .extract_service import ExtractService
 from .kikoeru_duplicate_service import get_kikoeru_service
 from .library_manager import SynologyFileStationClient, get_library_manager
+from .password_utils import normalize_password_value
 from .rj_subtitle_service import get_rj_subtitle_service
 from .task_engine import Task, TaskStatus, TaskType, get_task_engine
 from .ttl_cache import TTLCache
@@ -330,9 +331,37 @@ class LinkedSubtitleImportService:
                         logger.debug("[字幕补配预检] 传播父任务取消失败", exc_info=True)
 
                 cancel_watcher = asyncio.create_task(_cancel_probe_when_parent_cancelled())
-            if hint_password:
+            inherited_passwords: List[str] = []
+            seen_passwords: set[str] = set()
+
+            def add_password(raw_password: Any) -> None:
+                password = normalize_password_value(raw_password)
+                if password and password not in seen_passwords:
+                    seen_passwords.add(password)
+                    inherited_passwords.append(password)
+
+            add_password(hint_password)
+            if task is not None:
+                parent_metadata = dict(getattr(task, "task_metadata", None) or {})
+                for key in ("manual_retry_passwords", "manual_retry_password"):
+                    raw_value = parent_metadata.get(key)
+                    if isinstance(raw_value, (list, tuple)):
+                        for value in raw_value:
+                            add_password(value)
+                    else:
+                        add_password(raw_value)
+                for key in ("selected_items", "preview_items", "download_files"):
+                    items = parent_metadata.get(key)
+                    if not isinstance(items, list):
+                        continue
+                    for item in items:
+                        if isinstance(item, dict):
+                            add_password(item.get("custom_extract_password"))
+
+            if inherited_passwords:
                 probe_task.task_metadata = dict(probe_task.task_metadata or {})
-                probe_task.task_metadata["manual_retry_password"] = hint_password
+                probe_task.task_metadata["manual_retry_passwords"] = inherited_passwords
+                probe_task.task_metadata["manual_retry_password"] = inherited_passwords[0]
                 probe_task.task_metadata["manual_retry_password_only"] = True
             extract_future = asyncio.create_task(self.extract_service.extract(probe_task))
             try:
@@ -355,7 +384,15 @@ class LinkedSubtitleImportService:
                 return "", [], {"status": "cancelled", "reason": "任务已取消"}
             if not extracted_dir or not os.path.isdir(extracted_dir):
                 probe_reason = str(getattr(probe_task, "error_message", "") or "").strip()
-                probe_status = "missing_password" if ("无正确密码" in probe_reason or "密码" in probe_reason) else "extract_failed"
+                extract_failure_reason = str(
+                    (probe_task.task_metadata or {}).get("extract_failure_reason") or ""
+                ).strip().lower()
+                probe_status = (
+                    "missing_password"
+                    if extract_failure_reason in {"wrong_password", "missing_password"}
+                    or probe_reason in {"解压失败：无正确密码", "解压失败：密码未命中"}
+                    else "extract_failed"
+                )
                 if not probe_reason:
                     probe_reason = "解压失败：无正确密码" if probe_status == "missing_password" else "压缩包预检临时解包未生成有效目录"
                 logger.info(

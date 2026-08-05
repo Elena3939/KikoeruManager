@@ -3982,7 +3982,22 @@ class ExtractService:
         # 先匹配标准RJ号格式，8位优先于6位
         rj_match = re.search(r'[RVB]J(\d{8}|\d{6})(?!\d)', filename, re.IGNORECASE)
         if rj_match:
-            return rj_match.group(0).upper()
+            normalized_rj = rj_match.group(0).upper()
+            # 下载工作台会按“作品名(密码)”模板把用户指定的解压密码写进文件名。
+            # 这里如果只保留 RJ 号，会在监听器建任务前把密码直接丢掉，后续只能走
+            # 密码库候选，最终表现为“明明指定过密码却一直解压失败”。
+            stem = os.path.splitext(str(filename or ""))[0]
+            suffix = stem[rj_match.end():]
+            if suffix:
+                extract_config = getattr(self.config, "extract", None)
+                for template in list(getattr(extract_config, "filename_password_sniff_templates", None) or []):
+                    compiled = self._compile_filename_password_template(template)
+                    if compiled is None:
+                        continue
+                    match = compiled.match(stem)
+                    if match and normalize_password_value(match.groupdict().get("password")):
+                        return f"{normalized_rj}{suffix}"
+            return normalized_rj
 
         # 匹配纯数字，8位优先于6位
         num_match = re.search(r'(\d{8}|\d{6})(?!\d)', filename)
@@ -7358,6 +7373,7 @@ class ExtractService:
 
         manual_retry_passwords = self._get_manual_retry_passwords(task)
         manual_retry_password_only = bool((task.task_metadata or {}).get("manual_retry_password_only"))
+        subtitle_probe_mode = bool((task.task_metadata or {}).get("subtitle_probe_mode"))
         # 兼容字段：保留首个候选给老下游 (password_source 判断 / 日志)，新路径走整张 list。
         manual_retry_password = manual_retry_passwords[0] if manual_retry_passwords else ""
         manual_retry_password_set = set(manual_retry_passwords)
@@ -7554,6 +7570,7 @@ class ExtractService:
             unar_first = (
                 archive_size >= self.ZIP_COMPAT_UNAR_FIRST_MIN_BYTES
                 and bool(self._find_unar_executable())
+                and not manual_retry_password_only
             )
             if unar_first:
                 unar_success, unar_reason = await try_unar_zip_compat_backend()
@@ -8016,7 +8033,7 @@ class ExtractService:
                             )
                             return False, None, "archive_corrupt"
                         else:
-                            if listed_no_password_large_archive:
+                            if listed_no_password_large_archive and not subtitle_probe_mode:
                                 self._set_extract_meta(
                                     task,
                                     extract_failure_reason="light_probe_unknown",
@@ -8027,6 +8044,12 @@ class ExtractService:
                                     archive_size_bytes,
                                 )
                                 return False, None, "light_probe_unknown"
+                            if listed_no_password_large_archive and subtitle_probe_mode:
+                                logger.info(
+                                    "字幕补配预检允许未加密大包在轻量探测不确定时继续完整解压: %s size=%s",
+                                    os.path.basename(archive_info.path),
+                                    archive_size_bytes,
+                                )
                             logger.info(
                                 "7z/SFX 未加密小包轻量验证无法定性，保留完整解压兜底: %s size=%s",
                                 os.path.basename(archive_info.path),

@@ -983,6 +983,71 @@ async def test_collect_archive_subtitles_cancel_marks_probe_task_cancelled():
     assert probe_cancelled.is_set()
 
 
+@pytest.mark.asyncio
+async def test_collect_archive_subtitles_inherits_parent_password_metadata(tmp_path):
+    """字幕补配临时解压必须继承父任务/下载条目里的指定密码。"""
+    extracted_dir = tmp_path / "probe-output"
+    extracted_dir.mkdir()
+    (extracted_dir / "track.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\n字幕\n", encoding="utf-8")
+    service = object.__new__(LinkedSubtitleImportService)
+    service.subtitle_service = SimpleNamespace(SUBTITLE_EXTENSIONS={".srt"})
+    captured = {}
+
+    async def fake_extract(probe_task):
+        captured.update(probe_task.task_metadata)
+        return str(extracted_dir)
+
+    service.extract_service = SimpleNamespace(
+        config=SimpleNamespace(storage=SimpleNamespace(temp_path=str(tmp_path))),
+        extract=AsyncMock(side_effect=fake_extract),
+    )
+    parent_task = Task(
+        task_type=TaskType.EXTRACT,
+        source_path="D:/input/RJ01672831.zip",
+        metadata={
+            "manual_retry_passwords": [" 我觉得我是 "],
+            "selected_items": [{"custom_extract_password": "备用密码"}],
+        },
+    )
+
+    stage_dir, subtitles, result = await service._collect_archive_subtitles_to_stage(
+        "D:/input/RJ01672831.zip",
+        task=parent_task,
+    )
+
+    assert result["status"] == "ok"
+    assert subtitles and subtitles[0]["name"] == "track.srt"
+    assert captured["manual_retry_passwords"] == ["我觉得我是", "备用密码"]
+    assert captured["manual_retry_password"] == "我觉得我是"
+    assert captured["manual_retry_password_only"] is True
+    assert stage_dir
+
+
+@pytest.mark.asyncio
+async def test_collect_archive_subtitles_does_not_classify_generic_password_text_as_missing_password(tmp_path):
+    """错误文本提到密码但结构化原因不是密码错时，必须保留 extract_failed。"""
+    extracted_dir = tmp_path / "probe-output"
+    extracted_dir.mkdir()
+    service = object.__new__(LinkedSubtitleImportService)
+    service.subtitle_service = SimpleNamespace(SUBTITLE_EXTENSIONS={".srt"})
+
+    async def fake_extract(probe_task):
+        probe_task.task_metadata["extract_failure_reason"] = "light_probe_unknown"
+        probe_task.error_message = "解压失败：密码探测阶段无法定性"
+        return ""
+
+    service.extract_service = SimpleNamespace(extract=AsyncMock(side_effect=fake_extract))
+
+    stage_dir, subtitles, result = await service._collect_archive_subtitles_to_stage(
+        "D:/input/RJ01656747.7z",
+    )
+
+    assert stage_dir == ""
+    assert subtitles == []
+    assert result["status"] == "extract_failed"
+    assert result["reason"] == "解压失败：密码探测阶段无法定性"
+
+
 def test_refresh_preview_execution_state_keeps_timeout_archive_executable(tmp_path):
     archive_path = tmp_path / "RJ01620917.7z.001"
     archive_path.write_bytes(b"placeholder")
