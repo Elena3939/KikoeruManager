@@ -84,7 +84,7 @@ class ConflictResolutionService:
             return "SKIP"
         if normalized in {"KEEP_BOTH", "MERGE_LANG"}:
             return "MERGE"
-        if normalized not in {"KEEP_NEW", "MERGE", "SKIP", "RETRY", "RENAME_VOLUMES"}:
+        if normalized not in {"KEEP_NEW", "MERGE", "SKIP", "RETRY", "RENAME_VOLUMES", "CANCEL"}:
             raise ValueError("Unsupported conflict action")
         return normalized
 
@@ -720,6 +720,9 @@ class ConflictResolutionService:
 
     def get_available_actions(self, conflict) -> list[str]:
         metadata = dict(conflict.new_metadata or {})
+        if str(conflict.status or "").strip().upper() == "PROCESSING":
+            if str(metadata.get("resolution_task_id") or "").strip():
+                return ["CANCEL"]
         conflict_type_upper = str(conflict.conflict_type or "").upper()
         if conflict_type_upper in {"EXTRACT_FAILED", "PROCESS_FAILED"}:
             source_path = str(conflict.new_path or "").strip()

@@ -6173,13 +6173,20 @@ async def get_conflicts(include_stats: bool = False):
                         str(_nm.get("resolution_action") or "").upper() == "RETRY"
                         and linked_task_status == "waiting_manual"
                     )
-                    if linked_task_status not in active_task_statuses or _is_stale_keep_new or _is_retry_waiting_manual_done:
+                    _is_keep_new_waiting_manual_done = (
+                        str(_nm.get("resolution_action") or "").upper() == "KEEP_NEW"
+                        and linked_task_status == "waiting_manual"
+                    )
+                    if linked_task_status not in active_task_statuses or _is_stale_keep_new or _is_retry_waiting_manual_done or _is_keep_new_waiting_manual_done:
                         conflict.status = "PENDING"
                         next_metadata = _normalize_conflict_metadata(conflict.new_metadata)
-                        if _is_retry_waiting_manual_done:
+                        if _is_retry_waiting_manual_done or _is_keep_new_waiting_manual_done:
                             next_metadata["retry_result"] = "failed"
                             next_metadata["resolution_task_state"] = "failed"
-                            next_metadata.setdefault("resolution_error", "重试失败，仍需人工处理")
+                            next_metadata.setdefault(
+                                "resolution_error",
+                                "保留新版解压失败，仍需人工处理" if _is_keep_new_waiting_manual_done else "重试失败，仍需人工处理",
+                            )
                         else:
                             next_metadata["resolution_task_state"] = "stale_processing_recovered"
                             next_metadata["resolution_recovered_at"] = datetime.now().isoformat()
@@ -6956,6 +6963,36 @@ async def resolve_conflict(conflict_id: str, action: dict):
         resolution_diff_items = []
 
         try:
+            if action_type == "CANCEL":
+                linked_task_id = str(
+                    (conflict.new_metadata or {}).get("resolution_task_id") or conflict.task_id or ""
+                ).strip()
+                linked_task = engine.get_task(linked_task_id) if linked_task_id else None
+                if linked_task and linked_task.status in {
+                    TaskStatus.PENDING,
+                    TaskStatus.PROCESSING,
+                    TaskStatus.PAUSED,
+                    TaskStatus.WAITING_MANUAL,
+                    TaskStatus.WAITING_RETRY,
+                }:
+                    engine.cancel_task(linked_task.id)
+                conflict.status = "PENDING"
+                next_metadata = dict(conflict.new_metadata or {})
+                next_metadata.update({
+                    "resolution_task_id": linked_task_id,
+                    "resolution_task_state": "cancelled",
+                    "resolution_error": "用户已终止后台处理",
+                    "resolution_cancelled_at": datetime.now().isoformat(),
+                })
+                conflict.new_metadata = next_metadata
+                db.commit()
+                return {
+                    "success": True,
+                    "conflict_id": conflict.id,
+                    "action": action_type,
+                    "task_id": linked_task_id,
+                    "message": "已终止保留新版后台处理，可重新选择重试或其它操作",
+                }
             if action_type == "KEEP_NEW":
                 if not confirmed:
                     raise HTTPException(status_code=400, detail="保留新版前必须先完成删除审查确认")
@@ -7059,6 +7096,25 @@ async def resolve_conflict(conflict_id: str, action: dict):
                     },
                     rjcode=conflict.rjcode or None,
                 )
+                # 下载工作台指定的密码会随 selected_items / preview_items 落在原失败任务元数据中。
+                # KEEP_NEW 新建任务时显式转成 extract_service 的手动密码候选，避免依赖文件名嗅探。
+                specified_passwords: list[str] = []
+                seen_passwords: set[str] = set()
+                for source_key in ("selected_items", "preview_items", "download_files"):
+                    for item in list(next_metadata.get(source_key) or []):
+                        if not isinstance(item, dict):
+                            continue
+                        password = normalize_password_value(
+                            item.get("custom_extract_password") or item.get("extract_password")
+                        )
+                        if password and password not in seen_passwords:
+                            seen_passwords.add(password)
+                            specified_passwords.append(password)
+                if specified_passwords:
+                    task.task_metadata["manual_retry_passwords"] = specified_passwords
+                    task.task_metadata["manual_retry_password"] = specified_passwords[0]
+                    task.task_metadata["manual_retry_password_only"] = True
+                    task.task_metadata["manual_retry_password_requested"] = True
                 if conflict.task_id:
                     task.task_metadata["parent_conflict_task_id"] = str(conflict.task_id)
                 await engine.submit(task)
