@@ -220,6 +220,12 @@ def _is_media_response_for_gzip(headers: Headers, status_code: int) -> bool:
 
 
 class MediaAwareGZipResponder(GZipResponder):
+    async def _apply_compression_compat(self, body: bytes, *, more_body: bool) -> bytes:
+        compressed = self.apply_compression(body, more_body=more_body)
+        if inspect.isawaitable(compressed):
+            compressed = await compressed
+        return compressed
+
     async def send_with_compression(self, message):
         message_type = message["type"]
         if message_type == "http.response.start":
@@ -243,7 +249,7 @@ class MediaAwareGZipResponder(GZipResponder):
                 await self.send(self.initial_message)
                 await self.send(message)
             elif not more_body:
-                body = self.apply_compression(body, more_body=False)
+                body = await self._apply_compression_compat(body, more_body=False)
 
                 headers = MutableHeaders(raw=self.initial_message["headers"])
                 headers.add_vary_header("Accept-Encoding")
@@ -255,7 +261,7 @@ class MediaAwareGZipResponder(GZipResponder):
                 await self.send(self.initial_message)
                 await self.send(message)
             else:
-                body = self.apply_compression(body, more_body=True)
+                body = await self._apply_compression_compat(body, more_body=True)
 
                 headers = MutableHeaders(raw=self.initial_message["headers"])
                 headers.add_vary_header("Accept-Encoding")
@@ -266,6 +272,11 @@ class MediaAwareGZipResponder(GZipResponder):
 
                 await self.send(self.initial_message)
                 await self.send(message)
+        elif message_type == "http.response.body":
+            body = message.get("body", b"")
+            more_body = message.get("more_body", False)
+            message["body"] = await self._apply_compression_compat(body, more_body=more_body)
+            await self.send(message)
         elif message_type == "http.response.pathsend":  # pragma: no branch
             await self.send(self.initial_message)
             await self.send(message)
