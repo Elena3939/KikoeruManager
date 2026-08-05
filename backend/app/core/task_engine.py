@@ -822,9 +822,10 @@ class TaskEngine:
             return
 
         state = str(state or "").strip()
-        if action == "RETRY" and state == TaskStatus.WAITING_MANUAL.value:
-            # 问题作品里触发的重试再次失败时，AUTO_PROCESS 会收口到 waiting_manual。
-            # 对原 conflict 来说这已经是本次重试终态，不能继续展示为“重试中”。
+        if action in {"RETRY", "KEEP_NEW"} and state == TaskStatus.WAITING_MANUAL.value:
+            # 问题作品里触发的重试 / 保留新版任务再次解压失败时，AUTO_PROCESS
+            # 会收口到 waiting_manual。对原 conflict 来说这已经是本次处理终态，
+            # 不能继续展示为“处理中”。
             state = "failed"
             if not error:
                 error = str(getattr(task, "error_message", "") or getattr(task, "current_step", "") or "重试失败，仍需人工处理").strip()
@@ -1986,7 +1987,7 @@ class TaskEngine:
                         )
                     except Exception:
                         logger.warning("写入保留新版操作记录失败: task_id=%s conflict_id=%s", task.id, conflict_id, exc_info=True)
-            elif task.status == TaskStatus.FAILED:
+            elif task.status in {TaskStatus.FAILED, TaskStatus.WAITING_MANUAL}:
                 conflict.status = "PENDING"
                 next_metadata["resolution_task_state"] = "failed"
                 next_metadata["resolution_progress"] = int(getattr(task, "progress", 0) or 0)

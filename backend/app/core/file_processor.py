@@ -18,6 +18,7 @@ import logging
 from ..config.settings import get_config
 from ..core.archive_detection import has_embedded_zip_archive
 from ..core.task_engine import Task, TaskType, get_task_engine
+from ..core.password_utils import normalize_password_value
 from .deferred_archive_service import get_deferred_archive_service
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,62 @@ class FileProcessor:
     @staticmethod
     def _has_active_aria2_sidecar(file_path: str) -> bool:
         return os.path.isfile(f"{file_path}.aria2")
+
+    @staticmethod
+    def _inherit_download_password_metadata(file_path: str, engine) -> dict:
+        """把下载工作台绑定到具体本地文件的解压密码传给监听器任务。
+
+        HTTP / 百度下载任务和监听器导入任务是两条独立队列；仅靠文件名嗅探会在
+        重命名、无后缀压缩包或服务重启后丢失用户指定密码。这里只复制密码候选，
+        不把下载 URL、Cookie 等下载元数据带入导入任务。
+        """
+        target = os.path.normcase(os.path.abspath(str(file_path or "")))
+        if not target:
+            return {}
+        passwords: list[str] = []
+        seen: set[str] = set()
+
+        def add(raw) -> None:
+            value = normalize_password_value(raw)
+            if value and value not in seen:
+                seen.add(value)
+                passwords.append(value)
+
+        def matches(item: dict, metadata: dict) -> bool:
+            paths = [item.get("local_path"), item.get("final_path")]
+            relative_path = str(item.get("relative_path") or "").strip()
+            download_root = str(
+                item.get("download_root") or metadata.get("download_root") or metadata.get("final_output_path") or ""
+            ).strip()
+            if relative_path and download_root:
+                paths.append(os.path.join(download_root, relative_path.replace("/", os.sep)))
+            return any(
+                path and os.path.normcase(os.path.abspath(str(path))) == target
+                for path in paths
+            )
+
+        for download_task in engine.get_all_tasks(include_hidden=True):
+            if download_task.type not in {TaskType.HTTP_DOWNLOAD, TaskType.BAIDU_NETDISK_DOWNLOAD}:
+                continue
+            metadata = dict(download_task.task_metadata or {})
+            candidates = list(metadata.get("download_files") or []) + list(metadata.get("selected_items") or [])
+            for item in candidates:
+                if not isinstance(item, dict):
+                    continue
+                if matches(item, metadata):
+                    add(item.get("custom_extract_password") or item.get("extract_password"))
+                    if not passwords:
+                        for selected in list(metadata.get("selected_items") or []):
+                            if isinstance(selected, dict) and matches(selected, metadata):
+                                add(selected.get("custom_extract_password") or selected.get("extract_password"))
+                    if passwords:
+                        return {
+                            "manual_retry_passwords": passwords,
+                            "manual_retry_password": passwords[0],
+                            "manual_retry_password_only": True,
+                            "manual_retry_password_requested": True,
+                        }
+        return {}
 
     # ========== 公共接口 ==========
 
@@ -178,6 +235,9 @@ class FileProcessor:
             # 6. 创建任务
             logger.debug(f"[FileProcessor] 创建任务: {file_path}")
             merged_metadata = dict(task_metadata or {})
+            inherited_password_metadata = self._inherit_download_password_metadata(file_path, engine)
+            if inherited_password_metadata:
+                merged_metadata.update(inherited_password_metadata)
             if isinstance(batch_context, dict):
                 merged_metadata.update({
                     "batch_id": str(batch_context.get("batch_id") or "").strip() or None,

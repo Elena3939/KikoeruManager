@@ -266,6 +266,17 @@
                   {{ keepNewDispatchLabel(activeConflict) }}
                 </button>
                 <button
+                  v-if="canUseAction(activeConflict, 'CANCEL')"
+                  type="button"
+                  class="conflicts-action-btn is-amber"
+                  :disabled="batchRunning || isActionLoading(activeConflict.id, 'CANCEL')"
+                  @click="handleCancelResolution(activeConflict)"
+                >
+                  <Loader2 v-if="isActionLoading(activeConflict.id, 'CANCEL')" class="conflicts-action-spinner" />
+                  <XSquare v-else class="w-4 h-4" />
+                  终止处理
+                </button>
+                <button
                   v-if="canPreviewFilenames(activeConflict)"
                   type="button"
                   class="conflicts-action-btn is-slate is-preview"
@@ -2233,6 +2244,31 @@ async function handleKeepNew(conflict) {
     }
   } finally {
     markAction(conflict.id, 'KEEP_NEW', false)
+  }
+}
+
+async function handleCancelResolution(conflict) {
+  if (!conflict?.id) return
+  markAction(conflict.id, 'CANCEL', true)
+  try {
+    await showSystemConfirm({
+      title: '终止后台处理',
+      description: formatConflictLabel(conflict),
+      message: '将终止当前保留新版 / 重试后台任务，并恢复为可重新操作的问题项。',
+      tone: 'warning',
+      confirmText: '确认终止',
+      cancelText: '继续处理'
+    })
+    await conflictApi.resolve(conflict.id, { action: 'CANCEL' })
+    await fetchConflicts()
+    ElMessage.success('后台处理已终止，可重新选择重试或其它操作')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      console.error('终止问题作品后台处理失败:', error)
+      ElMessage.error(resolveErrorMessage(error, '终止处理失败'))
+    }
+  } finally {
+    markAction(conflict.id, 'CANCEL', false)
   }
 }
 
