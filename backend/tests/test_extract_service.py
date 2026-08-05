@@ -4288,6 +4288,108 @@ Encrypted = +
     # 嵌套解压软失败：覆盖合集包内单个嵌套 zip 失败导致整任务被毙的回归
     # ------------------------------------------------------------------
 
+    @pytest.mark.asyncio
+    async def test_subtitle_probe_skips_large_opaque_rar_without_subtitles(
+        self, extract_service, temp_dir,
+    ):
+        output_path = os.path.join(temp_dir, "probe-output")
+        os.makedirs(output_path)
+        nested_rar = os.path.join(output_path, "RJ01656747")
+        with open(nested_rar, "wb") as fp:
+            fp.write(b"Rar!\x1a\x07\x01\x00")
+            fp.write(b"placeholder")
+        task = Task(
+            task_type=TaskType.EXTRACT,
+            source_path=os.path.join(temp_dir, "RJ01656747.7z"),
+            metadata={"subtitle_probe_mode": True},
+        )
+        archive_info = ArchiveInfo(
+            nested_rar,
+            [{"name": "说明.txt", "size": 128, "is_dir": False}],
+            "",
+        )
+
+        with patch.object(
+            extract_service,
+            "_get_archive_info",
+            new=AsyncMock(return_value=archive_info),
+        ), patch.object(
+            extract_service,
+            "extract_selected_entries",
+            new=AsyncMock(side_effect=AssertionError("无字幕时不应提取任何条目")),
+        ), patch.object(
+            extract_service,
+            "_try_extract_nested_direct",
+            new=AsyncMock(side_effect=AssertionError("字幕预检禁止完整解压嵌套 RAR")),
+        ):
+            result = await extract_service._extract_nested_archives(
+                output_path,
+                task,
+                max_depth=1,
+            )
+
+        assert result == 0
+        assert task.task_metadata.get("nested_archive_failures") is None
+        assert task.task_metadata["nested_archives_without_subtitles"] == ["RJ01656747"]
+        assert os.path.exists(nested_rar)
+
+    @pytest.mark.asyncio
+    async def test_subtitle_probe_selectively_extracts_entries_from_large_opaque_rar(
+        self, extract_service, temp_dir,
+    ):
+        output_path = os.path.join(temp_dir, "probe-output")
+        os.makedirs(output_path)
+        nested_rar = os.path.join(output_path, "RJ01656747")
+        with open(nested_rar, "wb") as fp:
+            fp.write(b"Rar!\x1a\x07\x01\x00")
+            fp.write(b"placeholder")
+        task = Task(
+            task_type=TaskType.EXTRACT,
+            source_path=os.path.join(temp_dir, "RJ01656747.7z"),
+            metadata={"subtitle_probe_mode": True},
+        )
+        archive_info = ArchiveInfo(
+            nested_rar,
+            [
+                {"name": "track/voice.lrc", "size": 128, "is_dir": False},
+                {"name": "说明.txt", "size": 64, "is_dir": False},
+            ],
+            "",
+        )
+
+        async def fake_extract_selected(_archive, entries, selected_output, **_kwargs):
+            assert entries == ["track/voice.lrc"]
+            target = os.path.join(selected_output, "track")
+            os.makedirs(target, exist_ok=True)
+            with open(os.path.join(target, "voice.lrc"), "wb") as fp:
+                fp.write(b"[00:00.00]subtitle")
+            return selected_output
+
+        with patch.object(
+            extract_service,
+            "_get_archive_info",
+            new=AsyncMock(return_value=archive_info),
+        ), patch.object(
+            extract_service,
+            "extract_selected_entries",
+            new=AsyncMock(side_effect=fake_extract_selected),
+        ) as selected_mock, patch.object(
+            extract_service,
+            "_try_extract_nested_direct",
+            new=AsyncMock(side_effect=AssertionError("字幕预检禁止完整解压嵌套 RAR")),
+        ):
+            result = await extract_service._extract_nested_archives(
+                output_path,
+                task,
+                max_depth=1,
+            )
+
+        assert result == 1
+        assert task.task_metadata.get("nested_archive_failures") is None
+        selected_mock.assert_awaited_once()
+        assert os.path.exists(os.path.join(output_path, "RJ01656747_1", "track", "voice.lrc"))
+        assert os.path.exists(nested_rar)
+
     def test_extract_nested_archives_part_failure_does_not_raise(
         self, extract_service, temp_dir
     ):
