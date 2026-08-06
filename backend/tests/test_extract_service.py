@@ -4437,6 +4437,53 @@ Encrypted = +
         # 失败的源 zip 应仍留在原位，方便后续按 RJ 子任务重试或人工处理
         assert os.path.exists(nested_zip)
 
+    @pytest.mark.asyncio
+    async def test_extract_nested_archives_repairs_disguised_sfx_rar_volumes(
+        self, extract_service, temp_dir
+    ):
+        """`.part1.exe + .partN.ra删除r` 应作为一组嵌套 RAR 解压。"""
+        output_path = os.path.join(temp_dir, "extract_out")
+        os.makedirs(output_path)
+
+        first_volume = os.path.join(output_path, "RJ353111.part1.exe")
+        with open(first_volume, "wb") as fp:
+            fp.write(b"MZ" + (b"\\0" * 64) + b"Rar!\\x1a\\x07\\x01\\x00")
+        for index in (2, 3, 4):
+            with open(
+                os.path.join(output_path, f"RJ353111.part{index}.ra删除r"),
+                "wb",
+            ) as fp:
+                fp.write(b"Rar!\\x1a\\x07\\x01\\x00payload")
+
+        task = Task(
+            task_type=TaskType.EXTRACT,
+            source_path=os.path.join(temp_dir, "outer.7z"),
+        )
+
+        with patch.object(
+            ExtractService,
+            "_classify_nested_small_archive",
+            new=AsyncMock(return_value="non_subtitle"),
+        ), patch.object(
+            ExtractService,
+            "_try_extract_nested_direct",
+            new=AsyncMock(return_value=(True, None)),
+        ) as extract_mock:
+            result = await extract_service._extract_nested_archives(
+                output_path,
+                task,
+                max_depth=1,
+            )
+
+        assert result == 1
+        assert extract_mock.await_count == 1
+        assert extract_mock.await_args.args[0].endswith("RJ353111.part1.rar")
+        assert not os.path.exists(first_volume)
+        assert not any(
+            name.startswith("RJ353111.part")
+            for name in os.listdir(output_path)
+        )
+
     def test_extract_nested_archives_failure_metadata_dedupes(
         self, extract_service, temp_dir
     ):

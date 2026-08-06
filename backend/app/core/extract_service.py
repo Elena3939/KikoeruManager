@@ -4421,7 +4421,7 @@ class ExtractService:
         rename_map: Dict[str, str] = {}
         # `.partN.X` 中合法的 X：现有 `_detect_volume_set` 已支持的 SFX 分卷后缀
         valid_part_exts = {'exe', 'rar', 'zip', '7z'}
-        truncated_pattern = re.compile(r'^(?P<base>.+\.part\d+)\.(?P<ext>[a-z0-9]{1,3})$', re.IGNORECASE)
+        truncated_pattern = re.compile(r'^(?P<base>.+\.part\d+)\.(?P<ext>[^.]+)$', re.IGNORECASE)
         try:
             walk_iter = os.walk(directory)
         except Exception as exc:
@@ -4440,6 +4440,12 @@ class ExtractService:
                 ext = m.group('ext').lower()
                 if ext in valid_part_exts:
                     continue  # 已是合法 .partN.X 后缀
+                # 正常截断后缀维持旧范围（.ra / .ex），额外允许含中文等伪装特征的
+                # 后缀（.ra删除r）。不能对任意超长 ASCII 后缀探测并改名，避免把
+                # 合法业务文件误认成压缩包。
+                is_short_truncation = ext.isascii() and ext.isalnum() and len(ext) <= 3
+                if not is_short_truncation and not self._is_disguised_volume_suffix(ext):
+                    continue
                 file_path = os.path.join(root, filename)
                 try:
                     real_ext = await self._detect_truncated_archive_real_ext(file_path)
@@ -4463,6 +4469,107 @@ class ExtractService:
                     )
                 except OSError as exc:
                     logger.warning(f"[残缺后缀修复] 改名失败: {filename}, {exc}")
+
+        # `.part1.exe + .partN.ra删除r` 是 WinRAR SFX 多卷的常见伪装组合。
+        # 上面的 pass 会先把后续卷变成 `.partN.rar`，但首卷保留 `.exe` 时，
+        # 嵌套扫描只看普通压缩包魔数，无法识别 MZ 头的 SFX，整组仍会被当作普通
+        # payload 入库。确认首卷内嵌 RAR 且兄弟卷连续后，把首卷改成 `.part1.rar`，
+        # 让现有分卷检测、7zz 和 unar fallback 复用同一条 RAR 解压链路。
+        try:
+            for root, dirs, _ in os.walk(directory):
+                dirs[:] = [
+                    d for d in dirs
+                    if d.lower() not in self.NESTED_SKIP_DIRS
+                    and not d.lower().startswith((".git", "__pycache__"))
+                ]
+                rename_map.update(
+                    await self._remap_nested_sfx_rar_part_first_volumes(root)
+                )
+        except Exception as exc:
+            logger.warning("[嵌套 SFX 分卷修复] 扫描失败（忽略，继续扫描）: %s", exc)
+        return rename_map
+
+    async def _remap_nested_sfx_rar_part_first_volumes(self, directory: str) -> Dict[str, str]:
+        """把已确认的嵌套 WinRAR SFX 首卷 `.part1.exe` 规范为 `.part1.rar`。
+
+        只处理同目录中同时存在连续 `.part2.rar...` 兄弟卷、且 SFX 内嵌格式确为
+        RAR 的组。这个严格条件避免把普通 EXE 或不完整分卷误改名。
+        """
+        rename_map: Dict[str, str] = {}
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            return rename_map
+
+        first_pattern = re.compile(r'^(?P<base>.+)\.part1\.exe$', re.IGNORECASE)
+        for filename in entries:
+            match = first_pattern.match(filename)
+            if not match:
+                continue
+
+            base_name = match.group('base')
+            sibling_pattern = re.compile(
+                rf'^{re.escape(base_name)}\.part(?P<index>\d+)\.rar$',
+                re.IGNORECASE,
+            )
+            sibling_indices = sorted(
+                int(sibling_match.group('index'))
+                for entry in entries
+                if (sibling_match := sibling_pattern.match(entry))
+                and int(sibling_match.group('index')) >= 2
+            )
+            if not sibling_indices:
+                continue
+            expected_indices = list(range(2, sibling_indices[-1] + 1))
+            if sibling_indices != expected_indices:
+                logger.warning(
+                    "[嵌套 SFX 分卷修复] 分卷不连续，保留原名: %s",
+                    filename,
+                )
+                continue
+
+            source_path = os.path.join(directory, filename)
+            try:
+                inner_format = await asyncio.to_thread(
+                    self._probe_sfx_inner_format,
+                    source_path,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "[嵌套 SFX 分卷修复] 探测首卷失败，保留原名: %s, %s",
+                    filename,
+                    exc,
+                )
+                continue
+            if inner_format != 'rar':
+                continue
+
+            target_name = f"{base_name}.part1.rar"
+            target_path = os.path.join(directory, target_name)
+            if os.path.exists(target_path):
+                logger.warning(
+                    "[嵌套 SFX 分卷修复] 目标已存在，保留原名: %s -> %s",
+                    filename,
+                    target_name,
+                )
+                continue
+            try:
+                await asyncio.to_thread(os.rename, source_path, target_path)
+                rename_map[source_path] = target_path
+                logger.info(
+                    "[嵌套 SFX 分卷修复] %s -> %s（RAR 分卷，共 %d 卷）",
+                    filename,
+                    target_name,
+                    len(sibling_indices) + 1,
+                )
+            except OSError as exc:
+                logger.warning(
+                    "[嵌套 SFX 分卷修复] 改名失败: %s -> %s, %s",
+                    filename,
+                    target_name,
+                    exc,
+                )
+
         return rename_map
 
     async def _detect_truncated_archive_real_ext(self, file_path: str) -> Optional[str]:
