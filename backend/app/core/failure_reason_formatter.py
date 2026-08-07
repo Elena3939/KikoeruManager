@@ -15,6 +15,7 @@ _EXTRACT_REASON_MESSAGES = {
     "light_probe_unknown": "解压失败：大文件轻量探测无法定性，已停止全量试错",
     "garbled_filename": "解压失败：文件名疑似乱码，需要确认编码",
     "extract_incomplete": "解压失败：解压结果未通过完整性校验",
+    "nested_archive_failed": "解压失败：存在未成功展开的嵌套压缩包，已阻止半成品入库",
 }
 
 
@@ -27,6 +28,7 @@ _TEXT_REASON_MARKERS = (
     ("path_too_long", ("file name too long", "path too long", "路径或文件名过长", "文件名过长")),
     ("unsupported_method", ("unsupported method", "unsupported compression method", "不支持", "e_invalidarg")),
     ("garbled_filename", ("文件名乱码", "乱码")),
+    ("nested_archive_failed", ("嵌套压缩包解压失败", "未完整解压的产物入库")),
     ("extract_incomplete", ("解压产物为空", "不完整", "完整性校验")),
 )
 
@@ -82,6 +84,10 @@ def format_extract_failure_message(metadata: Mapping[str, Any] | None = None, fa
         total_bytes = meta.get("extract_payload_total_bytes")
         if file_count is not None or total_bytes is not None:
             return f"{message}（文件数：{file_count or 0}，字节数：{total_bytes or 0}）"
+    if reason == "nested_archive_failed":
+        failure_count = int(meta.get("nested_archive_failure_count") or 0)
+        if failure_count > 0:
+            return f"{message}（失败数：{failure_count}）"
     return message
 
 

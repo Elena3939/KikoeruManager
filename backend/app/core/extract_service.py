@@ -453,6 +453,16 @@ class ExtractService:
         return False
 
     @staticmethod
+    def _zip_has_encrypted_entries(archive_path: str) -> Optional[bool]:
+        """只读 ZIP 中央目录，判断是否存在加密条目；无法确认时返回 None。"""
+        try:
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                return any(bool(info.flag_bits & 0x1) for info in archive.infolist())
+        except (OSError, RuntimeError, UnicodeError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
+            logger.debug("读取嵌套 ZIP 加密标志失败，保留受限密码探测: %s (%s)", archive_path, exc)
+            return None
+
+    @staticmethod
     def _looks_like_zip_local_header(buffer: bytes, offset: int) -> bool:
         """粗校验 ZIP local header，避免在大 SFX stub/随机数据里误命中 PK。"""
         if offset < 0 or offset + 30 > len(buffer):
@@ -2597,6 +2607,10 @@ class ExtractService:
 
             # 8. 检查并解压嵌套压缩包
             if self.config.extract.extract_nested_archives:
+                if task.task_metadata is None:
+                    task.task_metadata = {}
+                task.task_metadata.pop("nested_archive_failures", None)
+                task.task_metadata.pop("nested_archive_failure_count", None)
                 self._set_extract_meta(task, extract_stage="nested_scan")
                 task.update_progress(95, "检查嵌套压缩包")
                 nested_count = await self._extract_nested_archives(
@@ -2609,6 +2623,20 @@ class ExtractService:
                 if nested_count > 0:
                     logger.info(f"解压了 {nested_count} 个嵌套压缩包")
                 self._set_extract_meta(task, nested_archive_count=nested_count)
+                nested_failures = (task.task_metadata or {}).get("nested_archive_failures") or []
+                if not isinstance(nested_failures, list):
+                    nested_failures = [str(nested_failures)]
+                if nested_failures:
+                    self._set_extract_meta(
+                        task,
+                        extract_failure_reason="nested_archive_failed",
+                        nested_archive_failure_count=len(nested_failures),
+                    )
+                    failure_sample = str(nested_failures[0])
+                    raise RuntimeError(
+                        f"嵌套压缩包解压失败（{len(nested_failures)} 个），"
+                        f"拒绝将未完整解压的产物入库: {failure_sample}"
+                    )
             else:
                 logger.debug("嵌套压缩包解压已禁用")
 
@@ -3385,14 +3413,8 @@ class ExtractService:
         if failed_nested_archives:
             if task.task_metadata is None:
                 task.task_metadata = {}
-            # 失败列表合并写入 metadata（同一任务多层递归都能累积），不再 raise 中断主任务。
-            # 旧行为：单个嵌套包失败 → raise → 上游 except 调 _cleanup_extract_path 把整个
-            # output_path 全删 → 已成功解压的几十个兄弟 RJ 全军覆没。
-            # 用户痛点：117 GB 合集包内 38 个 RJ 解压成功、1 个嵌套奖励 zip 密码错，整任务被毙。
-            # 新行为：嵌套部分失败视为软失败——把失败明细记到 task_metadata，
-            # 让外层 extract() 继续走完整性校验、最终兜底、返回 output_path，
-            # 后续多 RJ 拆分流程会基于已解压目录树各自查重 / 入库；
-            # 失败的嵌套包源文件已被 _process_one 留在原位，对应 RJ 后续可手工处理。
+            # 同一任务多层递归会并发收尾并汇总所有失败；本函数不在首个失败处打断，
+            # 顶层 extract() 会在本轮递归全部结束后统一执行完整性门禁并清理产物。
             existing_failures = task.task_metadata.get("nested_archive_failures") or []
             if not isinstance(existing_failures, list):
                 existing_failures = []
@@ -3401,7 +3423,7 @@ class ExtractService:
             ]
             task.task_metadata["nested_archive_failures"] = merged_failures
             logger.warning(
-                "嵌套解压部分失败（共 %d 个），不阻断主任务，已记入 task_metadata: %s%s",
+                "嵌套解压失败（共 %d 个），已记入 task_metadata，等待顶层完整性门禁: %s%s",
                 len(failed_nested_archives),
                 failed_nested_archives[:5],
                 "..." if len(failed_nested_archives) > 5 else "",
@@ -3647,6 +3669,16 @@ class ExtractService:
         密码优先级：父密码 > 无密码 > 手动指定密码 > 密码库查询结果 > 配置密码列表
         返回 (是否成功, 成功使用的密码)
         """
+        archive_name = os.path.basename(archive_path)
+        is_opaque_nested_archive = not bool(os.path.splitext(archive_name)[1])
+        opaque_zip_has_encrypted_entries: Optional[bool] = None
+        if is_opaque_nested_archive and self._is_zip_like_archive(archive_path):
+            opaque_zip_has_encrypted_entries = await asyncio.to_thread(
+                self._zip_has_encrypted_entries,
+                archive_path,
+            )
+        is_unencrypted_opaque_zip = opaque_zip_has_encrypted_entries is False
+
         seen: set = set()
         password_list: List[str] = []
 
@@ -3656,30 +3688,35 @@ class ExtractService:
                 seen.add(v)
                 password_list.append(v)
 
-        if parent_password:
-            add(parent_password)
-        add("")  # 无密码
+        if is_unencrypted_opaque_zip:
+            # ZIP 中央目录已明确所有条目都未加密，不再查询密码库或做多次完整解压。
+            # 大型内层 ZIP 的这次正确解压不能套用“候选密码轻量探测”的 45 秒限制。
+            add("")
+            if task is not None:
+                self._set_extract_meta(task, nested_opaque_zip_encryption="unencrypted")
+        else:
+            if parent_password:
+                add(parent_password)
+            add("")  # 无密码
 
-        # 问题作品手动重试时，指定密码必须继续传递到递归内层包。
-        # 外层包可能未加密，或内层包使用的密码与外层不同；只依赖 parent_password
-        # 会让用户指定的密码在内层根本没有尝试机会。
-        manual_retry_passwords = self._get_manual_retry_passwords(task)
-        for pwd in manual_retry_passwords:
-            add(pwd)
-
-        # 密码库查询只做一次，包含 RJ/文件名/通用条目
-        manual_retry_password_only = bool(
-            (task.task_metadata or {}).get("manual_retry_password_only")
-        ) if task is not None else False
-        if not manual_retry_password_only:
-            vault_candidates = await self._get_password_candidates_for_archive(archive_path)
-            for item in vault_candidates:
-                add(item.get("password"))
-            for pwd in self.config.extract.password_list:
+            # 问题作品手动重试时，指定密码必须继续传递到递归内层包。
+            # 外层包可能未加密，或内层包使用的密码与外层不同；只依赖 parent_password
+            # 会让用户指定的密码在内层根本没有尝试机会。
+            manual_retry_passwords = self._get_manual_retry_passwords(task)
+            for pwd in manual_retry_passwords:
                 add(pwd)
 
-        archive_name = os.path.basename(archive_path)
-        is_opaque_nested_archive = not bool(os.path.splitext(archive_name)[1])
+            # 密码库查询只做一次，包含 RJ/文件名/通用条目
+            manual_retry_password_only = bool(
+                (task.task_metadata or {}).get("manual_retry_password_only")
+            ) if task is not None else False
+            if not manual_retry_password_only:
+                vault_candidates = await self._get_password_candidates_for_archive(archive_path)
+                for item in vault_candidates:
+                    add(item.get("password"))
+                for pwd in self.config.extract.password_list:
+                    add(pwd)
+
         nested_candidate_limit = max(
             2,
             int(getattr(
@@ -3718,7 +3755,7 @@ class ExtractService:
                     self.NESTED_PASSWORD_ATTEMPT_TIMEOUT_SECONDS,
                 ) or self.NESTED_PASSWORD_ATTEMPT_TIMEOUT_SECONDS),
             )
-            if is_opaque_nested_archive
+            if is_opaque_nested_archive and not is_unencrypted_opaque_zip
             else None
         )
 
