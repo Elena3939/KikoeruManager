@@ -218,6 +218,10 @@ def test_extract_failure_formatter_uses_specific_reason_codes():
     assert "磁盘空间不足" in format_extract_failure_message({"extract_failure_reason": "disk_full"})
     assert "压缩包损坏" in format_extract_failure_message({"extract_failure_reason": "archive_corrupt"})
     assert "不支持该压缩方法" in format_extract_failure_message({"extract_failure_reason": "unsupported_method"})
+    assert "已阻止半成品入库" in format_extract_failure_message({
+        "extract_failure_reason": "nested_archive_failed",
+        "nested_archive_failure_count": 2,
+    })
     assert "文件名疑似乱码" in format_extract_failure_message({
         "extract_failure_reason": "garbled_filename",
         "garbled_filename_sample": "偭偪.wav",

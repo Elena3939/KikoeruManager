@@ -2389,6 +2389,59 @@ class TestExtractService:
         assert tried_passwords == ["", "3个多月了还是0进展"]
 
     @pytest.mark.asyncio
+    async def test_unencrypted_opaque_zip_extracts_once_without_timeout(
+        self, extract_service, temp_dir,
+    ):
+        """无后缀未加密 ZIP 必须只用空密码完整解压，不能被 45 秒候选探测超时杀掉。"""
+        archive_path = os.path.join(temp_dir, "RJ01668465")
+        output_path = os.path.join(temp_dir, "out")
+        os.makedirs(output_path, exist_ok=True)
+        self.create_test_zip(archive_path)
+        task = Task(
+            TaskType.EXTRACT,
+            os.path.join(temp_dir, "RJ01668465.zip"),
+            task_id="opaque-unencrypted-zip",
+        )
+
+        old_password_list = extract_service.config.extract.password_list
+        try:
+            extract_service.config.extract.password_list = [f"config-{index}" for index in range(10)]
+            extract_service._get_password_candidates_for_archive = AsyncMock(return_value=[
+                {"password": f"vault-{index}"}
+                for index in range(50)
+            ])
+            extract_service._is_rar_archive = Mock(return_value=False)
+            extract_service._run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=b"",
+                stderr=b"",
+            ))
+
+            with patch.object(
+                extract_service,
+                "_reject_if_garbled_after_extract",
+                new=AsyncMock(return_value=False),
+            ):
+                success, password = await extract_service._try_extract_nested_direct(
+                    archive_path,
+                    output_path,
+                    parent_password="outer-password",
+                    task=task,
+                )
+
+            assert success is True
+            assert password is None
+            extract_service._get_password_candidates_for_archive.assert_not_awaited()
+            extract_service._run_7z_command.assert_awaited_once()
+            call = extract_service._run_7z_command.await_args
+            assert "-p" in call.args[0]
+            assert call.kwargs["command_timeout"] is None
+            assert task.task_metadata["nested_opaque_zip_encryption"] == "unencrypted"
+        finally:
+            extract_service.config.extract.password_list = old_password_list
+
+    @pytest.mark.asyncio
     async def test_nested_extract_retries_unsupported_method_with_zstd_backend(
         self, extract_service, temp_dir,
     ):
@@ -4393,13 +4446,7 @@ Encrypted = +
     def test_extract_nested_archives_part_failure_does_not_raise(
         self, extract_service, temp_dir
     ):
-        """嵌套解压部分失败时不应抛 RuntimeError 中断主任务。
-
-        回归用户痛点：117 GB 合集包内 38 个 RJ 解压成功、1 个嵌套奖励 zip 密码错，
-        旧实现 raise 后上游 except 调 ``_cleanup_extract_path`` 清空整个 output_path
-        导致全军覆没。新实现把失败明细写入 ``task.task_metadata['nested_archive_failures']``，
-        不抛异常，让 ``extract()`` 继续走完整性校验、最终兜底、返回 output_path。
-        """
+        """私有递归函数应等待并发项收尾并汇总失败，由 extract() 顶层统一拦截。"""
         import asyncio
 
         output_path = os.path.join(temp_dir, 'extract_out')
@@ -4436,6 +4483,66 @@ Encrypted = +
 
         # 失败的源 zip 应仍留在原位，方便后续按 RJ 子任务重试或人工处理
         assert os.path.exists(nested_zip)
+
+    @pytest.mark.asyncio
+    async def test_extract_rejects_and_cleans_nested_archive_failures(
+        self, extract_service, temp_dir,
+    ):
+        """任何嵌套解压失败都必须让整次解压失败，不能返回半成品目录供后续入库。"""
+        archive_path = os.path.join(temp_dir, "RJ01660566.zip")
+        self.create_test_zip(archive_path)
+        task = Task(
+            TaskType.EXTRACT,
+            archive_path,
+            task_id="nested-hard-gate",
+            metadata={"nested_archive_failures": ["上次失败残留"]},
+        )
+        created_output_paths = []
+
+        async def fake_try_extract(archive_info, output_path, task_arg, **kwargs):
+            created_output_paths.append(output_path)
+            with open(os.path.join(output_path, "outer-payload.bin"), "wb") as fp:
+                fp.write(b"payload")
+            return True, None, None
+
+        async def fake_nested_extract(output_path, task_arg, **kwargs):
+            assert "nested_archive_failures" not in task_arg.task_metadata
+            task_arg.task_metadata["nested_archive_failures"] = [
+                "嵌套压缩包解压失败: RJ01660566",
+            ]
+            return 0
+
+        old_temp_path = extract_service.config.storage.temp_path
+        old_nested_enabled = extract_service.config.extract.extract_nested_archives
+        extract_service.config.storage.temp_path = temp_dir
+        extract_service.config.extract.extract_nested_archives = True
+        try:
+            with patch.object(extract_service, "_ensure_7z_available", new=AsyncMock(return_value=True)), \
+                    patch.object(extract_service, "_wait_file_stable", new=AsyncMock()), \
+                    patch.object(extract_service, "_prepare_embedded_zip_archive", new=AsyncMock(return_value=None)), \
+                    patch.object(extract_service, "_repair_extension", new=AsyncMock(return_value=archive_path)), \
+                    patch.object(extract_service, "_detect_volume_set", return_value=None), \
+                    patch.object(extract_service, "_maybe_raise_disguised_volume_set"), \
+                    patch.object(extract_service, "_get_password_candidates_for_archive_paths", new=AsyncMock(return_value=[])), \
+                    patch.object(extract_service, "_get_archive_info", new=AsyncMock(return_value=ArchiveInfo(
+                        archive_path,
+                        [{"name": "outer-payload.bin", "size": 7, "is_dir": False}],
+                    ))), \
+                    patch.object(extract_service, "_try_extract", new=AsyncMock(side_effect=fake_try_extract)), \
+                    patch.object(extract_service, "_verify_extraction", new=AsyncMock(return_value=True)), \
+                    patch.object(extract_service, "_extract_nested_archives", new=AsyncMock(side_effect=fake_nested_extract)), \
+                    patch.object(extract_service, "_reject_if_garbled_after_extract", new=AsyncMock(return_value=False)):
+                with pytest.raises(RuntimeError, match="拒绝将未完整解压的产物入库"):
+                    await extract_service.extract(task)
+
+            assert task.task_metadata["extract_failure_reason"] == "nested_archive_failed"
+            assert task.task_metadata["nested_archive_failure_count"] == 1
+            assert task.task_metadata["nested_archive_count"] == 0
+            assert created_output_paths
+            assert not os.path.exists(created_output_paths[0])
+        finally:
+            extract_service.config.storage.temp_path = old_temp_path
+            extract_service.config.extract.extract_nested_archives = old_nested_enabled
 
     @pytest.mark.asyncio
     async def test_extract_nested_archives_repairs_disguised_sfx_rar_volumes(
