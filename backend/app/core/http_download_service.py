@@ -3018,7 +3018,9 @@ class HttpDownloadService:
                 if isinstance(last_error, asyncio.TimeoutError):
                     raise HttpDownloadError("Transfer.it 解析超时，请稍后重试或确认分享链接仍有效") from last_error
                 if last_error and self._is_transferit_transient_error(last_error):
-                    raise HttpDownloadError("Transfer.it 服务器忙，请稍后重试") from last_error
+                    raise HttpDownloadError(
+                        f"Transfer.it 解析重试 3 次仍失败: {self._sanitize_error(last_error)}"
+                    ) from last_error
                 if last_error:
                     raise last_error
                 files = []
@@ -4785,6 +4787,7 @@ class HttpDownloadService:
                 "--input-file", session_file,
                 "--save-session", session_file,
                 "--save-session-interval=30",
+                "--auto-save-interval=1",
             ]
             popen_kwargs = {
                 "stdin": subprocess.DEVNULL,
@@ -4894,6 +4897,56 @@ class HttpDownloadService:
         cfg = self._config()
         value = getattr(cfg, "gofile_max_concurrent_downloads", _GOFILE_DEFAULT_ARIA2_MAX_ACTIVE_FILES)
         return min(16, max(1, int(value or _GOFILE_DEFAULT_ARIA2_MAX_ACTIVE_FILES)))
+
+    def _prepare_existing_gofile_target(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if str(item.get("source") or "").strip().lower() != "gofile":
+            return None
+        final_path = str(item.get("final_path") or "").strip()
+        expected_size = int(item.get("size_bytes") or 0)
+        if not final_path or expected_size <= 0 or not os.path.isfile(final_path):
+            return None
+        control_path = final_path + ".aria2"
+        if os.path.exists(control_path):
+            return None
+        try:
+            actual_size = int(os.path.getsize(final_path))
+        except OSError:
+            return None
+        if actual_size == expected_size:
+            return {
+                "gid": f"existing:gofile:{item.get('file_id') or item.get('filename') or actual_size}",
+                "name": item.get("filename") or os.path.basename(final_path),
+                "relative_path": item.get("relative_path") or "",
+                "local_path": final_path,
+                "url": item.get("masked_url") or self._mask_url(str(item.get("url") or "")),
+                "original_url": item.get("url") or "",
+                "source": "gofile",
+                "status": "completed",
+                "progress": 100,
+                "downloaded": actual_size,
+                "total": expected_size,
+                "size": expected_size,
+                "expected_size_bytes": expected_size,
+                "speed_bytes_per_sec": 0,
+                "file_id": item.get("file_id", ""),
+                "download_file_id": item.get("download_file_id", ""),
+                "existing_file_reused": True,
+            }
+
+        try:
+            os.remove(final_path)
+        except OSError as exc:
+            raise HttpDownloadError(
+                f"Gofile 检测到无法续传的残缺文件，但清理失败: {self._sanitize_error(exc)}"
+            ) from exc
+        item["gofile_reset_partial_bytes"] = actual_size
+        logger.warning(
+            "Gofile 检测到无 aria2 控制文件的残片，已删除后重新下载: path=%s actual=%s expected=%s",
+            final_path,
+            actual_size,
+            expected_size,
+        )
+        return None
 
     async def _download_google_drive_item(self, item: Dict[str, Any], task=None, progress_callback=None) -> Dict[str, Any]:
         async with get_resource_budget_service().acquire("network_download", reason="http.google_drive"):
@@ -5228,7 +5281,7 @@ class HttpDownloadService:
             except RuntimeError:
                 pass
 
-        def run_download_once() -> str:
+        def run_download_once(download_proxy: Optional[str]) -> str:
             client = self._transferit_api_client()
             if not hasattr(client, "api") or not hasattr(getattr(client, "api", None), "fetch_transfer") or not hasattr(getattr(client, "api", None), "get_download_url"):
                 password = self._transferit_password(raw_url)
@@ -5360,7 +5413,7 @@ class HttpDownloadService:
                     download_url,
                     headers=request_headers,
                     timeout=httpx.Timeout(None, connect=connect_timeout, read=read_timeout),
-                    proxy=proxy,
+                    proxy=download_proxy,
                     follow_redirects=True,
                 ) as response:
                     stream_state["response"] = response
@@ -5466,7 +5519,8 @@ class HttpDownloadService:
                 if task.is_cancelled():
                     raise asyncio.CancelledError()
             try:
-                worker = asyncio.create_task(asyncio.to_thread(run_download_once))
+                download_proxy = proxy if not proxy or attempt % 2 == 0 else None
+                worker = asyncio.create_task(asyncio.to_thread(run_download_once, download_proxy))
                 watcher = asyncio.create_task(drain_progress(worker))
                 try:
                     downloaded_path = await worker
@@ -5484,6 +5538,13 @@ class HttpDownloadService:
                 last_error = exc
             except Exception as exc:
                 last_error = exc
+                logger.warning(
+                    "Transfer.it 下载第 %d/%d 次失败 route=%s error=%s",
+                    attempt + 1,
+                    retry_count,
+                    "proxy" if download_proxy else "direct",
+                    self._sanitize_error(exc),
+                )
                 if not self._is_transferit_transient_error(exc):
                     raise
             if attempt < retry_count - 1:
@@ -5492,7 +5553,10 @@ class HttpDownloadService:
                 else:
                     await asyncio.sleep(1.5 * (attempt + 1))
         else:
-            raise HttpDownloadError("Transfer.it 服务器忙，请稍后重试") from last_error
+            last_reason = self._sanitize_error(last_error) if last_error else "未知错误"
+            raise HttpDownloadError(
+                f"Transfer.it 下载重试 {retry_count} 次仍失败: {last_reason}"
+            ) from last_error
 
         if item.get("metadata_fallback") and downloaded_path and os.path.isfile(downloaded_path):
             final_path = downloaded_path
@@ -5634,6 +5698,7 @@ class HttpDownloadService:
         gofile_submitted_count = 0
         download_files = []
         total_bytes = 0
+        existing_gofile_count = 0
         for item in google_drive_items:
             total_bytes += int(item.get("size_bytes") or 0)
             gid = f"google_drive:{item.get('file_id') or item.get('filename')}"
@@ -5657,6 +5722,12 @@ class HttpDownloadService:
             })
         for item in aria2_items:
             os.makedirs(item["target_dir"], exist_ok=True)
+            existing_row = self._prepare_existing_gofile_target(item)
+            if existing_row is not None:
+                existing_gofile_count += 1
+                total_bytes += int(existing_row.get("size") or 0)
+                download_files.append(existing_row)
+                continue
             options = self._aria2_options(item, item["target_dir"])
             if str(item.get("source") or "").strip().lower() == "gofile":
                 if gofile_submitted_count >= gofile_max_active_files:
@@ -5689,6 +5760,7 @@ class HttpDownloadService:
                 "pikpak_account_id": item.get("pikpak_account_id", ""),
                 "pikpak_account_label": item.get("pikpak_account_label", ""),
                 "pikpak_transfer_dir": item.get("pikpak_transfer_dir", ""),
+                "gofile_reset_partial_bytes": int(item.get("gofile_reset_partial_bytes") or 0),
             })
         for item in transferit_items:
             total_bytes += int(item.get("size_bytes") or 0)
@@ -5746,6 +5818,8 @@ class HttpDownloadService:
             submit_parts.append(f"{len(google_drive_items)} 个 Google Drive 下载")
         if gids:
             submit_parts.append(f"{len(gids)} 个 aria2 下载")
+        if existing_gofile_count:
+            submit_parts.append(f"{existing_gofile_count} 个已存在完整文件")
         if transferit_items:
             submit_parts.append(f"{len(transferit_items)} 个专用下载")
         task.update_progress(1, f"已提交 {'，'.join(submit_parts) if submit_parts else '0 个下载'}")
@@ -6241,17 +6315,27 @@ class HttpDownloadService:
             elif aria_status in {"error", "removed"}:
                 row["status"] = "failed"
                 failure_reason = str(status.get("errorMessage") or aria_status)
-                if (
-                    str(row.get("source") or "").strip().lower() == "gofile"
-                    and any(marker in failure_reason.lower() for marker in ("timeout", "timed out"))
-                ):
+                if str(row.get("source") or "").strip().lower() == "gofile":
                     host = urlparse(str(row.get("original_url") or row.get("url") or "")).hostname or "gofile.io"
-                    if done > 0:
+                    failure_lower = failure_reason.lower()
+                    if "429" in failure_lower or "too many requests" in failure_lower:
+                        account_hint = (
+                            "当前未配置 Gofile token，访客账号或出口 IP 已被限流"
+                            if not self._gofile_token()
+                            else "当前 Gofile 账号或出口 IP 已被限流"
+                        )
+                        failure_reason = f"Gofile CDN {host} 返回 HTTP 429：{account_hint}"
+                    elif "control file" in failure_lower and ".aria2" in failure_lower:
+                        failure_reason = (
+                            f"Gofile 残片缺少 aria2 控制文件，无法安全续传；"
+                            "再次重试时将校验文件大小并重新开始"
+                        )
+                    elif any(marker in failure_lower for marker in ("timeout", "timed out")) and done > 0:
                         failure_reason = (
                             f"Gofile CDN {host} 传输 {done} bytes 后超时，断点已保留；"
                             "自动重试将降低分片并延长等待时间"
                         )
-                    else:
+                    elif any(marker in failure_lower for marker in ("timeout", "timed out")):
                         failure_reason = (
                             f"Gofile CDN {host} 连接超时且未收到数据；"
                             "自动重试将降低分片并延长等待时间"

@@ -1953,6 +1953,37 @@ async def test_poll_task_reports_actionable_gofile_timeout(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_poll_task_reports_gofile_rate_limit_without_configured_token(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path, gofile_token="")
+    service = HttpDownloadService()
+    row = {
+        "gid": "gid-429",
+        "source": "gofile",
+        "original_url": "https://file-na-phx-1.gofile.io/download/file.zip",
+        "status": "pending",
+    }
+
+    async def fake_tell_status(gid):
+        return {
+            "gid": gid,
+            "status": "error",
+            "totalLength": "0",
+            "completedLength": "0",
+            "downloadSpeed": "0",
+            "errorMessage": "The response status is not successful. status=429",
+        }
+
+    monkeypatch.setattr(service, "_tell_status", fake_tell_status)
+
+    rows, _runtime, done, failed_count = await service._poll_task(["gid-429"], [row])
+
+    assert done is True
+    assert failed_count == 1
+    assert "HTTP 429" in rows[0]["failure_reason"]
+    assert "未配置 Gofile token" in rows[0]["failure_reason"]
+
+
+@pytest.mark.asyncio
 async def test_preview_urls_shows_transferit_as_materialized_item(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
     service = HttpDownloadService()
@@ -3631,6 +3662,67 @@ def test_gofile_aria2_options_reduce_connections_and_extend_timeout_on_retry(mon
     assert final_retry["connect-timeout"] == "45"
 
 
+def test_prepare_existing_gofile_target_reuses_complete_file(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    final_path = tmp_path / "downloads" / "RJ01677458.zip"
+    final_path.parent.mkdir(parents=True)
+    final_path.write_bytes(b"complete")
+    item = {
+        "source": "gofile",
+        "filename": final_path.name,
+        "relative_path": final_path.name,
+        "final_path": str(final_path),
+        "size_bytes": len(b"complete"),
+    }
+
+    row = service._prepare_existing_gofile_target(item)
+
+    assert row is not None
+    assert row["status"] == "completed"
+    assert row["existing_file_reused"] is True
+    assert row["downloaded"] == len(b"complete")
+    assert final_path.read_bytes() == b"complete"
+
+
+def test_prepare_existing_gofile_target_removes_orphan_partial(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    final_path = tmp_path / "downloads" / "RJ01677458.zip"
+    final_path.parent.mkdir(parents=True)
+    final_path.write_bytes(b"partial")
+    item = {
+        "source": "gofile",
+        "filename": final_path.name,
+        "relative_path": final_path.name,
+        "final_path": str(final_path),
+        "size_bytes": 64,
+    }
+
+    assert service._prepare_existing_gofile_target(item) is None
+    assert not final_path.exists()
+    assert item["gofile_reset_partial_bytes"] == len(b"partial")
+
+
+def test_prepare_existing_gofile_target_preserves_aria2_resume_pair(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    final_path = tmp_path / "downloads" / "RJ01677458.zip"
+    final_path.parent.mkdir(parents=True)
+    final_path.write_bytes(b"partial")
+    Path(str(final_path) + ".aria2").write_bytes(b"control")
+    item = {
+        "source": "gofile",
+        "filename": final_path.name,
+        "final_path": str(final_path),
+        "size_bytes": 64,
+    }
+
+    assert service._prepare_existing_gofile_target(item) is None
+    assert final_path.read_bytes() == b"partial"
+    assert "gofile_reset_partial_bytes" not in item
+
+
 @pytest.mark.asyncio
 async def test_download_transferit_item_uses_library_download(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
@@ -3836,11 +3928,18 @@ async def test_download_transferit_item_retries_busy_response(monkeypatch, tmp_p
 
 @pytest.mark.asyncio
 async def test_download_transferit_item_resumes_part_file_after_disconnect(monkeypatch, tmp_path):
-    bind_config(monkeypatch, tmp_path, retry_count=2, retry_wait_seconds=0)
+    bind_config(
+        monkeypatch,
+        tmp_path,
+        retry_count=2,
+        retry_wait_seconds=0,
+        proxy_url="http://proxy.test:7890",
+    )
     service = HttpDownloadService()
     target_dir = tmp_path / "downloads"
     target_dir.mkdir()
     captured_headers = []
+    captured_proxies = []
 
     class FakeApi:
         def fetch_transfer(self, _xh, password=None):
@@ -3930,6 +4029,7 @@ async def test_download_transferit_item_resumes_part_file_after_disconnect(monke
         assert url == "https://mega.example/download"
         headers = kwargs.get("headers") or {}
         captured_headers.append(headers)
+        captured_proxies.append(kwargs.get("proxy"))
         if len(captured_headers) == 1:
             return FakeResponse(200, {"content-length": "24"}, [b"abcdefghijklmnop"], fail_after=True)
         return FakeResponse(206, {"content-range": "bytes 16-23/24", "content-length": "8"}, [b"qrstuvwx"])
@@ -3982,10 +4082,40 @@ async def test_download_transferit_item_resumes_part_file_after_disconnect(monke
 
     assert captured_headers[0] == {}
     assert captured_headers[1]["Range"] == "bytes=16-"
+    assert captured_proxies == ["http://proxy.test:7890", None]
     assert (target_dir / "pack.zip").read_bytes() == b"abcdefghijklmnopqrstuvwx"
     assert not (target_dir / "pack.zip.part").exists()
     assert row["status"] == "completed"
     assert row["downloaded"] == 24
+
+
+@pytest.mark.asyncio
+async def test_download_transferit_item_preserves_last_retry_error(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path, retry_count=2, retry_wait_seconds=0)
+    service = HttpDownloadService()
+
+    class FakeTransferit:
+        def download(self, _link, _output_dir):
+            raise RuntimeError("server is busy: upstream disconnected")
+
+    async def fake_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transferit",
+        type("Module", (), {"Transferit": FakeTransferit}),
+    )
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(HttpDownloadError, match="重试 2 次仍失败: server is busy: upstream disconnected"):
+        await service._download_transferit_item({
+            "original_url": "https://transfer.it/t/iVqeTDhlyRbA",
+            "filename": "pack.zip",
+            "target_dir": str(tmp_path),
+            "final_path": str(tmp_path / "pack.zip"),
+            "relative_path": "pack.zip",
+        })
 
 
 @pytest.mark.asyncio
