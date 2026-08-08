@@ -2442,6 +2442,130 @@ class TestExtractService:
             extract_service.config.extract.password_list = old_password_list
 
     @pytest.mark.asyncio
+    async def test_encrypted_opaque_archive_probes_all_candidates_before_unlimited_extract(
+        self, extract_service, temp_dir,
+    ):
+        """无后缀加密包应轻量验证完整候选，命中后不限时解压，不能只取前四个。"""
+        archive_path = os.path.join(temp_dir, "RJ01555018")
+        output_path = os.path.join(temp_dir, "out")
+        os.makedirs(output_path, exist_ok=True)
+        with open(archive_path, "wb") as fp:
+            fp.write(b"7z\xbc\xaf'\x1c" + (b"\0" * 64))
+        task = Task(
+            TaskType.EXTRACT,
+            os.path.join(temp_dir, "RJ01555018.7z"),
+            task_id="opaque-encrypted-archive",
+        )
+        correct_password = "candidate-7"
+        vault_candidates = [
+            {"password": f"candidate-{index}"}
+            for index in range(12)
+        ]
+
+        old_password_list = extract_service.config.extract.password_list
+        try:
+            extract_service.config.extract.password_list = []
+            extract_service._get_password_candidates_for_archive = AsyncMock(
+                return_value=vault_candidates,
+            )
+            extract_service._list_archive_contents = AsyncMock(return_value=[
+                {"name": "small.txt", "size": 128, "is_dir": False},
+                {"name": "large.wav", "size": 6 * 1024 * 1024 * 1024, "is_dir": False},
+            ])
+            extract_service._probe_password = AsyncMock(
+                side_effect=lambda _path, password, **_kwargs: (
+                    "ok" if password == correct_password else "wrong_password"
+                ),
+            )
+            extract_service._is_rar_archive = Mock(return_value=False)
+            extract_service._run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=b"",
+                stderr=b"",
+            ))
+
+            with patch.object(
+                extract_service,
+                "_reject_if_garbled_after_extract",
+                new=AsyncMock(return_value=False),
+            ):
+                success, password = await extract_service._try_extract_nested_direct(
+                    archive_path,
+                    output_path,
+                    parent_password="outer-password",
+                    task=task,
+                )
+
+            assert success is True
+            assert password == correct_password
+            probed_passwords = [
+                call.args[1]
+                for call in extract_service._probe_password.await_args_list
+            ]
+            assert probed_passwords == [
+                "outer-password",
+                "",
+                *[f"candidate-{index}" for index in range(8)],
+            ]
+            extract_service._run_7z_command.assert_awaited_once()
+            extract_call = extract_service._run_7z_command.await_args
+            assert f"-p{correct_password}" in extract_call.args[0]
+            assert extract_call.kwargs["command_timeout"] is None
+            assert task.task_metadata["nested_password_candidate_limited"] is False
+            assert task.task_metadata["nested_password_candidate_total"] == 14
+            assert task.task_metadata["nested_password_probe_mode"] == "small_entry"
+            assert task.task_metadata["nested_password_prevalidated"] is True
+        finally:
+            extract_service.config.extract.password_list = old_password_list
+
+    @pytest.mark.asyncio
+    async def test_encrypted_opaque_archive_rejects_without_full_extract_when_all_passwords_fail(
+        self, extract_service, temp_dir,
+    ):
+        """小文件已明确拒绝全部密码时，不得启动昂贵且会留下残片的整包解压。"""
+        archive_path = os.path.join(temp_dir, "RJ01555018")
+        output_path = os.path.join(temp_dir, "out")
+        os.makedirs(output_path, exist_ok=True)
+        with open(archive_path, "wb") as fp:
+            fp.write(b"7z\xbc\xaf'\x1c" + (b"\0" * 64))
+        task = Task(
+            TaskType.EXTRACT,
+            os.path.join(temp_dir, "RJ01555018.7z"),
+            task_id="opaque-encrypted-all-passwords-fail",
+        )
+
+        old_password_list = extract_service.config.extract.password_list
+        try:
+            extract_service.config.extract.password_list = []
+            extract_service._get_password_candidates_for_archive = AsyncMock(return_value=[
+                {"password": f"candidate-{index}"}
+                for index in range(12)
+            ])
+            extract_service._list_archive_contents = AsyncMock(return_value=[
+                {"name": "small.txt", "size": 128, "is_dir": False},
+            ])
+            extract_service._probe_password = AsyncMock(return_value="wrong_password")
+            extract_service._run_7z_command = AsyncMock()
+
+            success, password = await extract_service._try_extract_nested_direct(
+                archive_path,
+                output_path,
+                parent_password="outer-password",
+                task=task,
+            )
+
+            assert success is False
+            assert password is None
+            assert extract_service._probe_password.await_count == 14
+            extract_service._run_7z_command.assert_not_awaited()
+            assert task.task_metadata["nested_password_candidate_limited"] is False
+            assert task.task_metadata["nested_password_candidate_total"] == 14
+            assert task.task_metadata["nested_password_probe_failed"] is True
+        finally:
+            extract_service.config.extract.password_list = old_password_list
+
+    @pytest.mark.asyncio
     async def test_nested_extract_retries_unsupported_method_with_zstd_backend(
         self, extract_service, temp_dir,
     ):

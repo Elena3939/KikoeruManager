@@ -3717,6 +3717,96 @@ class ExtractService:
                 for pwd in self.config.extract.password_list:
                     add(pwd)
 
+        opaque_password_prevalidated = False
+        if is_opaque_nested_archive and not is_unencrypted_opaque_zip:
+            opaque_file_list: Optional[List[Dict]] = None
+            try:
+                opaque_file_list = await self._list_archive_contents(
+                    archive_path,
+                    password="",
+                    task=task,
+                    command_timeout=self.PRECHECK_LIST_TIMEOUT_SECONDS,
+                    update_task_progress=False,
+                )
+            except asyncio.CancelledError:
+                raise
+            except ArchiveInspectSlotTimeout as exc:
+                logger.warning(
+                    "无扩展名嵌套包轻量清单等待超时，保留受限完整解压兜底: %s (%s)",
+                    archive_name,
+                    exc,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "无扩展名嵌套包轻量清单读取失败，保留受限完整解压兜底: %s (%s)",
+                    archive_name,
+                    exc,
+                )
+
+            if opaque_file_list:
+                selected_password: Optional[str] = None
+                probe_attempted = 0
+                probe_had_unknown = False
+                for password in password_list:
+                    if task is not None:
+                        if task.is_cancelled():
+                            return False, None
+                        await task.wait_if_paused()
+                    probe_attempted += 1
+                    probe_result = await self._probe_password(
+                        archive_path,
+                        password,
+                        timeout=self.PROBE_TIMEOUT_SECONDS,
+                        file_list=opaque_file_list,
+                        task=task,
+                        allow_full_test=False,
+                    )
+                    if probe_result == "ok":
+                        selected_password = password
+                        break
+                    if probe_result != "wrong_password":
+                        probe_had_unknown = True
+                        logger.warning(
+                            "无扩展名嵌套包候选轻量校验无法定性: archive=%s result=%s",
+                            archive_name,
+                            probe_result,
+                        )
+
+                if selected_password is not None:
+                    password_list = [selected_password]
+                    opaque_password_prevalidated = True
+                    if task is not None:
+                        self._set_extract_meta(
+                            task,
+                            nested_password_candidate_limited=False,
+                            nested_password_candidate_total=len(seen),
+                            nested_password_probe_attempted_count=probe_attempted,
+                            nested_password_probe_mode="small_entry",
+                            nested_password_probe_reason="无扩展名嵌套包已通过小文件密码校验",
+                            nested_password_prevalidated=True,
+                        )
+                    logger.info(
+                        "无扩展名嵌套包已通过小文件密码校验，将执行一次不限时完整解压: %s",
+                        archive_name,
+                    )
+                elif not probe_had_unknown:
+                    if task is not None:
+                        self._set_extract_meta(
+                            task,
+                            nested_password_candidate_limited=False,
+                            nested_password_candidate_total=len(password_list),
+                            nested_password_probe_attempted_count=probe_attempted,
+                            nested_password_probe_mode="small_entry",
+                            nested_password_probe_reason="无扩展名嵌套包所有候选均未通过小文件密码校验",
+                            nested_password_probe_failed=True,
+                        )
+                    logger.warning(
+                        "无扩展名嵌套包所有 %d 个候选均未通过小文件密码校验: %s",
+                        probe_attempted,
+                        archive_name,
+                    )
+                    return False, None
+
         nested_candidate_limit = max(
             2,
             int(getattr(
@@ -3727,6 +3817,7 @@ class ExtractService:
         )
         candidate_limit_reached = (
             is_opaque_nested_archive
+            and not opaque_password_prevalidated
             and len(password_list) > nested_candidate_limit
         )
         if candidate_limit_reached:
@@ -3755,7 +3846,11 @@ class ExtractService:
                     self.NESTED_PASSWORD_ATTEMPT_TIMEOUT_SECONDS,
                 ) or self.NESTED_PASSWORD_ATTEMPT_TIMEOUT_SECONDS),
             )
-            if is_opaque_nested_archive and not is_unencrypted_opaque_zip
+            if (
+                is_opaque_nested_archive
+                and not is_unencrypted_opaque_zip
+                and not opaque_password_prevalidated
+            )
             else None
         )
 
