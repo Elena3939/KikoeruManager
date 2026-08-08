@@ -14,6 +14,17 @@
 - 发布 tag 只能用标准 semver：`v1.2.3`，不要用 `1.2.3` 或 `v1.02`。
 - 重启项目只用仓库根目录的 `start-all.bat`；不要手写分散的 uvicorn / Vite 重启命令替代整项目重启。
 
+### 0.1 线上生产连接
+
+- 生产服务器只允许使用项目 SSH 别名 `kikoerumanager-production`，目标主机登录后 `hostname` 必须严格等于 `Elena`；不满足时立即停止，禁止继续查库、看日志或操作容器。
+- SSH 配置固定在 `.codex/ssh/config`，连接入口固定为 PowerShell：`& .\.codex\ssh\connect-production.ps1 "hostname"`。不要绕开项目配置手写 IP，也不要连接其它同名/相似服务器。
+- 认证默认使用 `C:/Users/Elena/.ssh/kikoerumanager_server_ed25519`，RSA 密钥 `C:/Users/Elena/.ssh/kikoerumanager_server_rsa` 仅作备用；两者都已通过 `BatchMode + publickey` 验证。不要再向用户询问 SSH 密码。
+- `.codex/ssh/connect-production.ps1` 只在公钥失败时才使用 `.codex/ssh/production-password.txt` 的本机密码回退；该文件和数据库环境文件均为敏感本地产物，禁止提交、打印或写入 `AGENTS.md`。
+- 生产容器名固定为 `elena39-kikoerumanager`，Docker CLI 固定为 `/var/packages/Docker/target/usr/bin/docker`；群晖 sudo 环境不要依赖 `PATH` 里的 `docker`。
+- 生产应用端口为 `5555`，宿主 PostgreSQL 映射端口为 `15432`。数据库连接信息只读 `.codex/ssh/production-db.env`，不得把账号密码写入命令输出、日志或提交。
+- 线上排查顺序：先验证 `hostname`，再查看容器镜像/运行态/健康状态，然后查 `docker logs` 和 PostgreSQL；未经用户明确要求，不停止、删除、重建容器，不改线上数据。
+- 群晖 Docker 导入 JSON 使用 `/docker`、`/ASMR` 等 DSM 虚拟共享路径；Docker CLI inspect 显示的是 `/volume1`、`/volume4`、`/volume5` 真实 bind path。禁止把导入 JSON 的虚拟路径直接拼成 `docker run -v`。
+
 ## 1. 项目基线
 
 - 产品名统一为 `KikoeruManager`；技术命名统一小写 `kikoerumanager`。
