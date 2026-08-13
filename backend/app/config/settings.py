@@ -344,6 +344,11 @@ class HttpDownloaderConfig(BaseModel):
     pikpak_device_id: str = ""
     pikpak_transfer_dir: str = "/KikoeruManager"
     pikpak_auto_save_share: bool = True
+    # PikPak API 与 CDN 下载分开控制：大陆网络通常需要代理访问 API，
+    # 但短效 CDN 直链经代理更容易变慢或发生 TLS/URI 失效。
+    pikpak_api_use_proxy: bool = True
+    pikpak_download_use_proxy: bool = False
+    pikpak_max_concurrent_downloads: int = 6
     pikpak_accounts: List[PikPakAccountConfig] = Field(default_factory=list)
 
 
