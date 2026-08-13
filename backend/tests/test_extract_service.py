@@ -396,6 +396,22 @@ class TestExtractService:
         assert detect_embedded_zip_offset(disguised_path) == offset
 
     @pytest.mark.asyncio
+    async def test_repair_extension_keeps_pure_numeric_volume_set(self, extract_service, temp_dir):
+        first_volume = os.path.join(temp_dir, 'RJ01650460.001')
+        second_volume = os.path.join(temp_dir, 'RJ01650460.002')
+        Path(first_volume).write_bytes(b'7z-volume-1')
+        Path(second_volume).write_bytes(b'7z-volume-2')
+        extract_service._detect_real_type = AsyncMock(
+            side_effect=AssertionError('纯数字分卷不应进入单文件后缀修复')
+        )
+
+        result = await extract_service._repair_extension(first_volume)
+
+        assert result == first_volume
+        assert os.path.exists(first_volume)
+        assert os.path.exists(second_volume)
+
+    @pytest.mark.asyncio
     async def test_prepare_embedded_zip_archive_materializes_clean_zip(self, extract_service, temp_dir):
         """给 7zz 用的临时视图必须从 PK 头开始，原始 source_path 不动。"""
         disguised_path = os.path.join(temp_dir, 'movie.mp4')
