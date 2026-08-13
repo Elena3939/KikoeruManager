@@ -413,6 +413,26 @@ def test_task_engine_blocks_linked_translation_archive_without_subtitles():
     assert engine._should_block_linked_translation_without_subtitles(preview) is False
 
 
+def test_task_engine_does_not_treat_extract_failure_as_missing_subtitles():
+    engine = object.__new__(TaskEngine)
+    preview = {
+        "source_rjcode": "RJ01650460",
+        "target_rjcode": "RJ01642769",
+        "is_translation_work": True,
+        "kikoeru_has_work": True,
+        "kikoeru_needs_subtitle": True,
+        "subtitle_count": 0,
+        "source_has_subtitles": False,
+        "can_stage_pending": False,
+        "should_queue_pending": False,
+        "can_execute": False,
+        "source_subtitle_probe_status": "extract_failed",
+        "source_subtitle_probe_reason": "解压失败：压缩包损坏或下载不完整（Headers/Data Error）",
+    }
+
+    assert engine._should_block_linked_translation_without_subtitles(preview) is False
+
+
 def test_task_engine_blocks_uncertain_dlsite_linkage():
     engine = object.__new__(TaskEngine)
     preview = {

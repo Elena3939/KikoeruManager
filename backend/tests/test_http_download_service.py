@@ -3538,6 +3538,80 @@ def test_build_retry_selection_for_task_keeps_only_failed_or_incomplete_rows(tmp
     assert all(key.startswith("pikpak:") for key in retry_keys)
 
 
+def test_build_retry_selection_for_task_rebuilds_pikpak_share_source_items():
+    service = HttpDownloadService()
+    task = Task(
+        task_type=TaskType.HTTP_DOWNLOAD,
+        source_path="pikpak",
+        metadata={
+            "source_items": [
+                {
+                    "source": "pikpak",
+                    "share_id": "share-a",
+                    "file_id": "part-1",
+                    "name": "pack.7z.001",
+                    "download_file_id": "old-copy-1",
+                    "pikpak_cleanup_file_id": "old-copy-1",
+                    "original_url": "https://expired.test/part-1",
+                },
+                {
+                    "source": "pikpak",
+                    "share_id": "share-a",
+                    "file_id": "part-2",
+                    "name": "pack.7z.002",
+                },
+            ],
+            "download_files": [],
+            "failed_files": [
+                {
+                    "source": "pikpak",
+                    "share_id": "share-a",
+                    "file_id": "part-1",
+                    "name": "pack.7z.001",
+                    "status": "failed",
+                    "failure_reason": "HTTP 403",
+                    "download_file_id": "old-copy-1",
+                    "pikpak_cleanup_file_id": "old-copy-1",
+                },
+            ],
+        },
+    )
+
+    retry_items, retry_keys = service.build_retry_selection_for_task(task)
+
+    assert [item["file_id"] for item in retry_items] == ["part-1", "part-2"]
+    assert len(retry_keys) == 2
+    assert all("download_file_id" not in item for item in retry_items)
+    assert all("pikpak_cleanup_file_id" not in item for item in retry_items)
+    assert all("original_url" not in item for item in retry_items)
+
+
+def test_build_retry_selection_for_file_retries_all_pikpak_share_parts():
+    service = HttpDownloadService()
+    task = Task(
+        task_type=TaskType.HTTP_DOWNLOAD,
+        source_path="pikpak",
+        metadata={
+            "selected_items": [
+                {"source": "pikpak", "share_id": "share-a", "file_id": "part-1", "name": "pack.7z.001"},
+                {"source": "pikpak", "share_id": "share-a", "file_id": "part-2", "name": "pack.7z.002"},
+                {"source": "pikpak", "share_id": "share-a", "file_id": "part-3", "name": "pack.7z.003"},
+            ],
+            "download_files": [
+                {"source": "pikpak", "share_id": "share-a", "file_id": "part-1", "name": "pack.7z.001", "status": "failed"},
+                {"source": "pikpak", "share_id": "share-a", "file_id": "part-2", "name": "pack.7z.002", "status": "completed"},
+            ],
+            "failed_files": [
+                {"source": "pikpak", "share_id": "share-a", "file_id": "part-1", "name": "pack.7z.001", "status": "failed"},
+            ],
+        },
+    )
+
+    items, _keys = service.build_retry_selection_for_file(task, task.task_metadata["download_files"][0])
+
+    assert {item["file_id"] for item in items} == {"part-1", "part-2", "part-3"}
+
+
 def test_build_retry_selection_for_task_falls_back_to_initial_selected_items():
     service = HttpDownloadService()
     task = Task(
@@ -4119,7 +4193,7 @@ async def test_download_transferit_item_preserves_last_retry_error(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_cleanup_completed_pikpak_transfer_items_only_deletes_success_rows(monkeypatch, tmp_path):
+async def test_cleanup_completed_pikpak_transfer_items_deletes_failed_materialized_rows(monkeypatch, tmp_path):
     bind_config(
         monkeypatch,
         tmp_path,
@@ -4173,9 +4247,68 @@ async def test_cleanup_completed_pikpak_transfer_items_only_deletes_success_rows
     ])
 
     assert result["success"] is True
-    assert result["requested_count"] == 2
-    assert result["deleted_count"] == 2
+    assert result["requested_count"] == 3
+    assert result["deleted_count"] == 3
     assert calls == [
-        ("acc-a", ["copied-a"], True),
+        ("acc-a", ["copied-a", "failed-copy"], True),
         ("acc-b", ["copied-b"], True),
     ]
+
+
+@pytest.mark.asyncio
+async def test_remove_existing_gids_for_target_removes_active_and_stopped(monkeypatch, tmp_path):
+    service = HttpDownloadService()
+    target = str(tmp_path / "pack.7z.001")
+    calls = []
+
+    async def fake_rpc(method, params):
+        calls.append((method, params))
+        if method == "aria2.tellActive":
+            return [{"gid": "active-gid", "status": "active", "files": [{"path": target}]}]
+        if method == "aria2.tellWaiting":
+            return []
+        if method == "aria2.tellStopped":
+            return [{"gid": "stopped-gid", "status": "error", "files": [{"path": target}]}]
+        return "OK"
+
+    monkeypatch.setattr(service, "_rpc_call", fake_rpc)
+
+    await service._remove_existing_gids_for_target(target)
+
+    assert ("aria2.remove", ["active-gid"]) in calls
+    assert ("aria2.removeDownloadResult", ["stopped-gid"]) in calls
+
+
+@pytest.mark.asyncio
+async def test_poll_task_fails_stalled_pikpak_download(monkeypatch):
+    service = HttpDownloadService()
+    service._PIKPAK_STALL_TIMEOUT_SECONDS = 10
+    service._aria2_progress_state["gid-1"] = (0, 1.0)
+    calls = []
+
+    async def fake_rpc(method, params):
+        calls.append((method, params))
+        if method == "aria2.tellStatus":
+            return {
+                "gid": "gid-1",
+                "status": "active",
+                "totalLength": "1024",
+                "completedLength": "0",
+                "downloadSpeed": "0",
+                "files": [],
+            }
+        return "OK"
+
+    monkeypatch.setattr(service, "_rpc_call", fake_rpc)
+    monkeypatch.setattr("app.core.http_download_service.time.monotonic", lambda: 20.0)
+
+    rows, _runtime, done, failed_count = await service._poll_task(
+        ["gid-1"],
+        [{"gid": "gid-1", "source": "pikpak", "name": "pack.7z.001", "status": "pending"}],
+    )
+
+    assert done is True
+    assert failed_count == 1
+    assert rows[0]["status"] == "failed"
+    assert "重新转存" in rows[0]["failure_reason"]
+    assert ("aria2.remove", ["gid-1"]) in calls
