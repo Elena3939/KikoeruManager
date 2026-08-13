@@ -1773,7 +1773,9 @@ class TaskEngine:
         if int(preview.get("subtitle_count") or 0) > 0 or bool(preview.get("source_has_subtitles")):
             return False
         probe_status = str(preview.get("source_subtitle_probe_status") or "").strip().lower()
-        if probe_status == "timeout":
+        # 只有预检完成且扫描结果为空，才能定性为“没有字幕”。解压失败、
+        # 缺密码、嵌套包失败和超时都只是无法确认，不能冒充无字幕。
+        if probe_status not in {"", "ok", "no_subtitles"}:
             return False
         return True
 
@@ -6027,8 +6029,42 @@ class TaskEngine:
                 task.task_metadata["baidu_netdisk_final_status"] = "skipped"
                 task.complete()
                 return
-            failed_files = list(result.get("failed_files") or task.task_metadata.get("failed_files") or [])
-            downloaded_files = list(result.get("downloaded_files") or [])
+            current_download_files = [
+                row for row in list(task.task_metadata.get("download_files") or [])
+                if isinstance(row, dict)
+            ]
+            attempt_history = [
+                row for row in list(task.task_metadata.get("download_attempt_history") or [])
+                if isinstance(row, dict)
+            ]
+            merged_download_files = service.merge_download_attempt_rows(
+                attempt_history,
+                current_download_files,
+            )
+            failed_files = [
+                row for row in merged_download_files
+                if str(row.get("status") or "").strip().lower() == "failed"
+            ]
+            downloaded_files = [
+                row for row in merged_download_files
+                if str(row.get("status") or "").strip().lower() == "completed"
+            ]
+            task.task_metadata["download_files"] = merged_download_files
+            task.task_metadata["failed_files"] = failed_files
+            runtime = dict(task.task_metadata.get("download_runtime") or {})
+            runtime.update({
+                "total_files": len(merged_download_files),
+                "completed_files": len(downloaded_files),
+                "failed_files": len(failed_files),
+                "status": "partial_failed" if downloaded_files and failed_files else ("completed" if downloaded_files else "failed"),
+            })
+            task.task_metadata["download_runtime"] = runtime
+            metrics = dict(task.task_metadata.get("performance_metrics") or {})
+            metrics.update({
+                "success_count": len(downloaded_files),
+                "failed_count": len(failed_files),
+            })
+            task.task_metadata["performance_metrics"] = metrics
             if downloaded_files and failed_files:
                 message = f"百度网盘下载部分成功，成功 {len(downloaded_files)} 个，失败 {len(failed_files)} 个"
                 task.task_metadata["partial_success"] = True

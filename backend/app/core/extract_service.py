@@ -4179,6 +4179,23 @@ class ExtractService:
             logger.info(f"跳过 7z 分卷压缩文件后缀名修复: {file_path}")
             return file_path
 
+        # 纯数字分卷（X.001 / X.002 / ...）也必须保留原名。首卷一旦被
+        # 修成 X.7z，就会和后续卷断开，7zz 只能看到残缺单卷。
+        numeric_volume_match = re.search(r'^(?P<base>.+)\.(?P<index>\d{3})$', filename)
+        if numeric_volume_match:
+            base_name = numeric_volume_match.group('base')
+            try:
+                has_numeric_sibling = any(
+                    sibling != filename
+                    and re.fullmatch(rf'{re.escape(base_name)}\.\d{{3}}', sibling, re.IGNORECASE)
+                    for sibling in os.listdir(os.path.dirname(file_path) or '.')
+                )
+            except OSError:
+                has_numeric_sibling = False
+            if has_numeric_sibling:
+                logger.info(f"跳过纯数字分卷文件后缀名修复: {file_path}")
+                return file_path
+
         # 常见压缩后缀名
         common_archive_extensions = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.z01', '.z'}
 

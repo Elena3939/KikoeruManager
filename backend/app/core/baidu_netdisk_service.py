@@ -542,12 +542,36 @@ class BaiduNetdiskService:
         downloaded = _safe_int(row.get("downloaded"))
         return bool(progress >= 100 or (total > 0 and downloaded >= total))
 
+    def merge_download_attempt_rows(self, *groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """按稳定文件身份合并多轮下载结果，后面的尝试覆盖前面的状态。"""
+        merged: Dict[str, Dict[str, Any]] = {}
+        order: List[str] = []
+        for group in groups:
+            for row in group or []:
+                if not isinstance(row, dict):
+                    continue
+                key = self._download_row_identity(row)
+                if not key:
+                    continue
+                if key not in merged:
+                    order.append(key)
+                merged[key] = {**merged.get(key, {}), **dict(row)}
+        return [merged[key] for key in order if key in merged]
+
     def _retry_failed_rows_from_metadata(self, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         seen: set[str] = set()
+        download_rows = [
+            row
+            for row in [
+                *list((metadata or {}).get("download_attempt_history") or []),
+                *list((metadata or {}).get("download_files") or []),
+            ]
+            if isinstance(row, dict)
+        ]
         completed_keys = {
             self._download_row_identity(row)
-            for row in list((metadata or {}).get("download_files") or [])
+            for row in download_rows
             if isinstance(row, dict) and self._download_row_completed(row)
         }
 
@@ -565,7 +589,7 @@ class BaiduNetdiskService:
 
         for row in list((metadata or {}).get("failed_files") or []):
             add_row(row)
-        for row in list((metadata or {}).get("download_files") or []):
+        for row in download_rows:
             if not isinstance(row, dict) or self._download_row_completed(row):
                 continue
             add_row(row)
@@ -5902,6 +5926,25 @@ class BaiduNetdiskService:
             retry_items, retry_keys = self.build_retry_selection_for_task(task)
         if not retry_items:
             raise BaiduNetdiskError("没有找到可重试的百度网盘失败项")
+
+        attempt_history = self.merge_download_attempt_rows(
+            [
+                item for item in list(task.task_metadata.get("download_attempt_history") or [])
+                if isinstance(item, dict)
+            ],
+            [
+                item for item in list(task.task_metadata.get("download_files") or [])
+                if isinstance(item, dict)
+            ],
+            [
+                item for item in list(task.task_metadata.get("failed_files") or [])
+                if isinstance(item, dict)
+            ],
+        )
+        if attempt_history:
+            task.task_metadata["download_attempt_history"] = [
+                sanitize_baidu_netdisk_item(item) for item in attempt_history
+            ]
 
         task.task_metadata["raw_selected_items"] = [dict(item) for item in retry_items if isinstance(item, dict)]
         task.task_metadata["selected_items"] = [
