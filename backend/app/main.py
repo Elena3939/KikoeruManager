@@ -61,9 +61,10 @@ def main():
     logger.info("KikoeruManager 启动中...")
     logger.info("=" * 50)
 
-    init_database()
-
     reload_mode = os.environ.get("DEV_MODE", "false").lower() == "true"
+    # reload 模式会再起一个子进程，数据库初始化交给 FastAPI startup，避免父子进程并发迁移。
+    if not reload_mode:
+        init_database()
     port = int(os.environ.get("PORT", "5555"))
     limit_concurrency = get_uvicorn_limit_concurrency()
     logger.info(
@@ -71,8 +72,10 @@ def main():
         limit_concurrency if limit_concurrency is not None else "disabled",
     )
 
+    # reload 模式必须传 import string，否则 Uvicorn 会提示无法启用 reload 后直接退出。
+    uvicorn_app = "app.api.routes:app" if reload_mode else app
     uvicorn.run(
-        app,
+        uvicorn_app,
         host="0.0.0.0",
         port=port,
         log_level="info",

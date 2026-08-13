@@ -361,10 +361,13 @@ class PikPakAccount:
 class HttpDownloadService:
     """通用 HTTP/HTTPS 外链下载服务，底层通过 aria2 RPC 驱动。"""
 
+    _PIKPAK_STALL_TIMEOUT_SECONDS = 300
+
     def __init__(self):
         self._daemon: Optional[Aria2Daemon] = None
         self._daemon_lock = asyncio.Lock()
         self._task_gids: Dict[str, List[str]] = {}
+        self._aria2_progress_state: Dict[str, tuple[int, float]] = {}
         self._active_download_tasks: Dict[str, asyncio.Task] = {}
         self._rpc_id = 0
         self._gofile_guest_token_cache: tuple[str, float] = ("", 0.0)
@@ -1118,8 +1121,11 @@ class HttpDownloadService:
             "password": password or None,
             "device_id": account.device_id or None,
             "httpx_client_args": httpx_args,
-            "request_max_retries": max(1, int(getattr(cfg, "retry_count", 5) or 5)),
-            "request_initial_backoff": max(0.5, float(getattr(cfg, "retry_wait_seconds", 5) or 5)),
+            # PikPak SDK 的请求重试不是文件下载重试。复用下载重试配置会让
+            # 分享读取/转存接口在失败时退避近一分钟，任务表现成“卡死”。
+            # API 层最多重试 3 次，短退避后把明确阶段错误交给任务重试层。
+            "request_max_retries": max(1, min(3, int(getattr(cfg, "retry_count", 3) or 3))),
+            "request_initial_backoff": max(0.5, min(2.0, float(getattr(cfg, "retry_wait_seconds", 1) or 1))),
             "token_refresh_callback": lambda callback_client, **kwargs: self._save_pikpak_token_callback(callback_client, account=account, **kwargs),
         }
         client = PikPakApi(**kwargs)
@@ -1648,8 +1654,6 @@ class HttpDownloadService:
                 continue
             if str(row.get("source") or "").strip().lower() != "pikpak":
                 continue
-            if str(row.get("status") or "").strip().lower() != "completed":
-                continue
             cleanup_id = str(row.get("pikpak_cleanup_file_id") or "").strip()
             if not cleanup_id and bool(row.get("pikpak_materialized")):
                 cleanup_id = str(row.get("download_file_id") or "").strip()
@@ -1661,7 +1665,22 @@ class HttpDownloadService:
                 bucket.append(cleanup_id)
         return targets
 
-    async def cleanup_completed_pikpak_transfer_items(self, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _pikpak_rows_from_task(self, task) -> List[Dict[str, Any]]:
+        metadata = dict(getattr(task, "task_metadata", None) or {})
+        rows: List[Dict[str, Any]] = []
+        for key in ("download_files", "failed_files", "source_items", "selected_items"):
+            rows.extend(item for item in list(metadata.get(key) or []) if isinstance(item, dict))
+        return rows
+
+    async def _cleanup_task_pikpak_transfers(self, task) -> Dict[str, Any]:
+        rows = self._pikpak_rows_from_task(task)
+        if not rows:
+            return {"success": True, "status": "skipped", "requested_count": 0, "deleted_count": 0, "errors": []}
+        result = await self.cleanup_pikpak_transfer_items_from_rows(rows)
+        task.task_metadata["pikpak_cleanup_result"] = result
+        return result
+
+    async def cleanup_pikpak_transfer_items_from_rows(self, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         targets = self._pikpak_cleanup_targets_from_rows(rows)
         if not targets:
             return {
@@ -1703,6 +1722,10 @@ class HttpDownloadService:
             "accounts": results,
             "errors": errors,
         }
+
+    async def cleanup_completed_pikpak_transfer_items(self, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """兼容旧调用名；现在统一清理本轮所有已转存文件，包括失败项。"""
+        return await self.cleanup_pikpak_transfer_items_from_rows(rows)
 
     def _direct_link_preview_provider(self, raw_url: str) -> str:
         source = self._provider_source(raw_url)
@@ -3629,6 +3652,7 @@ class HttpDownloadService:
         clients: Dict[str, Any] = {}
         quotas: Dict[str, Dict[str, Any]] = {}
         failures: Dict[str, str] = {}
+        copied_by_account: Dict[str, List[str]] = {}
         collector_account_id = getattr(getattr(collector_client, "_kikoeru_pikpak_account", None), "id", None)
         try:
             for account in accounts:
@@ -3705,9 +3729,35 @@ class HttpDownloadService:
                     pass_code_token=account_token,
                 )
                 source_id_map.update(id_map)
+                copied_by_account[account.id] = [
+                    str(id_map[file_id])
+                    for file_id in ids_for_account
+                    if str(id_map.get(file_id) or "").strip()
+                    and str(id_map.get(file_id)) != str(file_id)
+                ]
                 for file_id in ids_for_account:
                     account_by_source[file_id] = account
             return source_id_map, account_by_source
+        except Exception:
+            # 多账号分配可能在前一个账号已转存后于下一个账号失败；
+            # 这些临时副本没有机会进入任务元数据，必须在此处立即回收。
+            for account_id, copied_ids in copied_by_account.items():
+                if not copied_ids:
+                    continue
+                client = clients.get(account_id)
+                if client is None:
+                    continue
+                try:
+                    delete_ids = await self._collect_pikpak_delete_ids(client, copied_ids)
+                    await self._delete_pikpak_ids_forever(client, delete_ids)
+                except Exception as cleanup_exc:
+                    logger.error(
+                        "[PikPak] 多账号转存部分失败后的临时副本清理失败 account=%s ids=%s error=%s",
+                        account_id,
+                        copied_ids,
+                        self._sanitize_error(cleanup_exc),
+                    )
+            raise
         finally:
             for account_id, client in list(clients.items()):
                 if account_id != collector_account_id:
@@ -3798,9 +3848,18 @@ class HttpDownloadService:
     def _retry_selection_items_from_task_metadata(self, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         seen: set[str] = set()
+        retry_share_ids: set[str] = set()
+        download_rows = [
+            row
+            for row in [
+                *list(metadata.get("download_attempt_history") or []),
+                *list(metadata.get("download_files") or []),
+            ]
+            if isinstance(row, dict)
+        ]
         completed_keys = {
             self._download_attempt_row_key(row)
-            for row in list(metadata.get("download_files") or [])
+            for row in download_rows
             if (
                 isinstance(row, dict)
                 and str(row.get("status") or "").strip().lower() == "completed"
@@ -3834,7 +3893,11 @@ class HttpDownloadService:
         for row in list(metadata.get("failed_files") or []):
             if isinstance(row, dict):
                 add_row(row)
-        for row in list(metadata.get("download_files") or []):
+                if str(row.get("source") or "").strip().lower() in _SHARE_PREVIEW_ONLY_SOURCES:
+                    share_id = str(row.get("share_id") or "").strip()
+                    if share_id:
+                        retry_share_ids.add(share_id)
+        for row in download_rows:
             if not isinstance(row, dict):
                 continue
             status = str(row.get("status") or "").strip().lower()
@@ -3844,6 +3907,22 @@ class HttpDownloadService:
             if status == "completed" or progress >= 100 or (total > 0 and downloaded >= total):
                 continue
             add_row(row)
+            if status not in {"completed"} and str(row.get("source") or "").strip().lower() in _SHARE_PREVIEW_ONLY_SOURCES:
+                share_id = str(row.get("share_id") or "").strip()
+                if share_id:
+                    retry_share_ids.add(share_id)
+
+        # PikPak / Transfer.it 分卷不能拆开重试：同一分享的所有文件必须
+        # 重新解析并重新转存，否则清理旧空间后会出现 .001 和 .002 分散在
+        # 不同账号、不同转存目录，最终下载到残缺分卷。
+        if retry_share_ids:
+            for row in list(metadata.get("source_items") or []) + list(metadata.get("selected_items") or []):
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("source") or "").strip().lower() not in _SHARE_PREVIEW_ONLY_SOURCES:
+                    continue
+                if str(row.get("share_id") or "").strip() in retry_share_ids:
+                    add_row(row)
         if not rows and not metadata.get("download_files") and not metadata.get("failed_files"):
             for row in list(metadata.get("selected_items") or []):
                 if isinstance(row, dict):
@@ -3879,8 +3958,26 @@ class HttpDownloadService:
             return bool(wanted_name and row_name == wanted_name)
 
         retry_items = [dict(row) for row in candidates if isinstance(row, dict) and matches(row)]
+        # PikPak 分卷是一个不可拆分的下载单元。单独点击 .001 重试时，
+        # 必须把同一分享的其它分卷一起重新转存，否则任务会留下残缺压缩包。
+        if str(file_row.get("source") or "").strip().lower() == "pikpak":
+            share_id = str(file_row.get("share_id") or "").strip()
+            if share_id:
+                all_rows = [
+                    row for row in [
+                        *list(metadata.get("selected_items") or []),
+                        *list(metadata.get("source_items") or []),
+                    ]
+                    if isinstance(row, dict)
+                    and str(row.get("source") or "").strip().lower() == "pikpak"
+                    and str(row.get("share_id") or "").strip() == share_id
+                ]
+                by_key = {self._download_attempt_row_key(row): dict(row) for row in all_rows}
+                by_key.update({self._download_attempt_row_key(row): row for row in retry_items})
+                retry_items = list(by_key.values())
         if not retry_items:
             retry_items = [dict(file_row)]
+        retry_items = [self._normalize_retry_source_item(item) for item in retry_items]
         retry_keys = [
             self._preview_item_selection_key(item)
             for item in retry_items
@@ -3962,12 +4059,37 @@ class HttpDownloadService:
     def build_retry_selection_for_task(self, task) -> tuple[List[Dict[str, Any]], List[str]]:
         metadata = dict(getattr(task, "task_metadata", None) or {})
         retry_items = self._retry_selection_items_from_task_metadata(metadata)
+        retry_items = [self._normalize_retry_source_item(item) for item in retry_items]
         retry_keys = [
             self._preview_item_selection_key(item)
             for item in retry_items
             if self._preview_item_selection_key(item)
         ]
         return retry_items, retry_keys
+
+    def _normalize_retry_source_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = dict(item or {})
+        if str(normalized.get("source") or "").strip().lower() != "pikpak":
+            return normalized
+        # 转存 ID 和下载直链都属于单轮临时资源。重试必须保留分享源文件 ID，
+        # 再从原分享重新转存；不能继续引用用户已手动清理掉的旧转存文件。
+        for key in (
+            "download_file_id",
+            "pikpak_cleanup_file_id",
+            "pikpak_materialized",
+            "pikpak_account_id",
+            "pikpak_account_label",
+            "pikpak_transfer_dir",
+            "original_url",
+            "gid",
+            "failure_reason",
+            "error_message",
+        ):
+            normalized.pop(key, None)
+        normalized["status"] = "pending"
+        normalized["downloaded"] = 0
+        normalized["progress"] = 0
+        return normalized
 
     async def resolve_source_urls(
         self,
@@ -4146,7 +4268,23 @@ class HttpDownloadService:
                                 detail = await self._pikpak_download_link(detail_client, download_file_id, allow_missing=not materialize)
                             except Exception as item_exc:
                                 # 单个分卷解析失败不再跳出整批，记录后继续，避免静默丢掉后续分卷
-                                failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": f"{item_name}: {self._sanitize_error(item_exc)}", "source": "pikpak", "name": item_name, "filename": item_name, "file_id": file_id})
+                                failed.append({
+                                    "ok": False,
+                                    "url": raw_url,
+                                    "masked_url": self._mask_url(raw_url),
+                                    "reason": f"{item_name}: {self._sanitize_error(item_exc)}",
+                                    "source": "pikpak",
+                                    "name": item_name,
+                                    "filename": item_name,
+                                    "file_id": file_id,
+                                    "download_file_id": download_file_id,
+                                    "pikpak_cleanup_file_id": download_file_id if download_file_id != file_id else "",
+                                    "pikpak_materialized": bool(download_file_id and download_file_id != file_id),
+                                    "share_id": share_id,
+                                    "pikpak_account_id": item_account.id,
+                                    "pikpak_account_label": item_account.label,
+                                    "pikpak_transfer_dir": item_account.transfer_dir,
+                                })
                                 continue
                             download_url = str(detail.get("_download_url") or "")
                             name = self._sanitize_filename(detail.get("name") or item.get("name") or "pikpak-file")
@@ -4844,6 +4982,49 @@ class HttpDownloadService:
     async def _rpc_call(self, method: str, params: List[Any]) -> Any:
         daemon = await self._ensure_daemon()
         return await self._rpc_call_raw(daemon, method, params)
+
+    async def _remove_aria2_gid(self, gid: str, *, stopped: bool = False) -> None:
+        normalized_gid = str(gid or "").strip()
+        if not normalized_gid:
+            return
+        method = "aria2.removeDownloadResult" if stopped else "aria2.remove"
+        try:
+            await self._rpc_call(method, [normalized_gid])
+        except Exception:
+            fallback = "aria2.remove" if stopped else "aria2.removeDownloadResult"
+            with contextlib.suppress(Exception):
+                await self._rpc_call(fallback, [normalized_gid])
+        self._aria2_progress_state.pop(normalized_gid, None)
+
+    async def _remove_existing_gids_for_target(self, target_path: str) -> None:
+        target = os.path.abspath(str(target_path or "").strip())
+        if not target:
+            return
+        keys = ["gid", "status", "files"]
+        rows: List[Dict[str, Any]] = []
+        for method, params in (
+            ("aria2.tellActive", [keys]),
+            ("aria2.tellWaiting", [0, 1000, keys]),
+            ("aria2.tellStopped", [0, 1000, keys]),
+        ):
+            with contextlib.suppress(Exception):
+                rows.extend(await self._rpc_call(method, params) or [])
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            paths = [
+                os.path.abspath(str(item.get("path") or ""))
+                for item in list(row.get("files") or [])
+                if isinstance(item, dict) and item.get("path")
+            ]
+            if target not in paths:
+                continue
+            gid = str(row.get("gid") or "").strip()
+            if gid:
+                await self._remove_aria2_gid(
+                    gid,
+                    stopped=str(row.get("status") or "").strip().lower() in {"complete", "error", "removed"},
+                )
 
     def _aria2_options(self, item: Dict[str, Any], target_dir: str) -> Dict[str, Any]:
         cfg = self._config()
@@ -5592,8 +5773,23 @@ class HttpDownloadService:
         try:
             return await self._start_download_task_inner(task)
         finally:
+            # 任务异常、取消或预览阶段失败时也必须回收已转存的 PikPak 文件，
+            # 否则只要下载失败一次就会永久占用账号空间。
+            metadata = dict(getattr(task, "task_metadata", None) or {})
+            cleanup_result = metadata.get("pikpak_cleanup_result") or {}
+            if not cleanup_result or str(cleanup_result.get("status") or "") not in {"completed", "skipped"}:
+                with contextlib.suppress(Exception):
+                    await self._cleanup_task_pikpak_transfers(task)
+            if task_id:
+                with contextlib.suppress(Exception):
+                    await self._remove_task_gids(task_id)
             if task_id and self._active_download_tasks.get(task_id) is current_task:
                 self._active_download_tasks.pop(task_id, None)
+
+    async def _remove_task_gids(self, task_id: str) -> None:
+        gids = list(self._task_gids.pop(task_id, []) or [])
+        for gid in gids:
+            await self._remove_aria2_gid(gid)
 
     async def _start_download_task_inner(self, task) -> Dict[str, Any]:
         metadata = dict(task.task_metadata or {})
@@ -5608,10 +5804,17 @@ class HttpDownloadService:
 
         target_subdir = str(metadata.get("target_subdir") or "").strip()
         conflict_policy = str(metadata.get("conflict_policy") or getattr(cfg, "conflict_policy", "resume") or "resume")
+        task.task_metadata.pop("pikpak_cleanup_result", None)
         selected_items = [
             item for item in list(metadata.get("selected_items") or [])
             if isinstance(item, dict)
         ]
+        # PikPak 分享重试必须重新收集整份分享。旧任务可能只持久化了已成功
+        # 解析的分卷，继续带 selected_keys 会把分享里的其它分卷静默过滤掉。
+        retry_rebuild_share = bool(metadata.get("pikpak_retry_rebuild_share"))
+        if retry_rebuild_share and any(self._is_pikpak_url(url) for url in raw_urls):
+            selected_items = []
+            task.task_metadata["selected_keys"] = []
         preview = await self.preview_urls(
             raw_urls,
             target_subdir=target_subdir,
@@ -5624,6 +5827,13 @@ class HttpDownloadService:
             selected_keys=list(metadata.get("selected_keys") or []),
             selected_items=selected_items,
         )
+        # 预览阶段可能已经完成 PikPak 转存；无论后续校验是否通过，都把
+        # source_items 保存到任务元数据，异常收口时才能找到并清理这些文件。
+        task.task_metadata["source_items"] = [
+            sanitize_http_download_item(item)
+            for item in list(preview.get("source_items") or [])
+            if isinstance(item, dict)
+        ]
         items = [
             self._apply_custom_download_name_to_item(item, conflict_policy=conflict_policy)
             for item in (preview.get("items") or [])
@@ -5663,6 +5873,19 @@ class HttpDownloadService:
             if str(item.get("source") or "") in _SHARE_PREVIEW_ONLY_SOURCES
         ]
         if share_failed:
+            # 直链解析可能在转存成功后失败；把这些失败行写入任务元数据，
+            # start_download_task 的 finally 才能按临时文件 ID 回收空间。
+            task.task_metadata["download_files"] = []
+            task.task_metadata["failed_files"] = [
+                sanitize_http_download_item(item)
+                for item in failed_items
+                if isinstance(item, dict)
+            ]
+            task.task_metadata["failure_reason"] = "；".join(
+                str(item.get("reason") or item.get("failure_reason") or "")
+                for item in share_failed
+                if str(item.get("reason") or item.get("failure_reason") or "").strip()
+            )
             reasons = []
             for item in share_failed[:8]:
                 reason = str(item.get("reason") or item.get("failure_reason") or "").strip()
@@ -5722,6 +5945,8 @@ class HttpDownloadService:
             })
         for item in aria2_items:
             os.makedirs(item["target_dir"], exist_ok=True)
+            if str(item.get("source") or "").strip().lower() == "pikpak":
+                await self._remove_existing_gids_for_target(item["final_path"])
             existing_row = self._prepare_existing_gofile_target(item)
             if existing_row is not None:
                 existing_gofile_count += 1
@@ -6096,7 +6321,9 @@ class HttpDownloadService:
             detail = "；".join(reason for reason in reasons if reason)
             raise HttpDownloadError(f"没有任何文件下载成功：{detail}" if detail else "没有任何文件下载成功")
         try:
-            pikpak_cleanup_result = await self.cleanup_completed_pikpak_transfer_items(success_files)
+            pikpak_cleanup_result = await self.cleanup_pikpak_transfer_items_from_rows(
+                [*download_files, *failed_items]
+            )
         except Exception as exc:
             pikpak_cleanup_result = {
                 "success": False,
@@ -6152,6 +6379,11 @@ class HttpDownloadService:
             retry_items, retry_keys = self.build_retry_selection_for_task(task)
         from .task_engine import TaskStatus
 
+        with contextlib.suppress(Exception):
+            await self._cleanup_task_pikpak_transfers(task)
+        with contextlib.suppress(Exception):
+            await self._remove_task_gids(str(getattr(task, "id", "") or ""))
+
         attempt_history = self.merge_download_attempt_rows(
             [
                 item for item in list(metadata.get("download_attempt_history") or [])
@@ -6179,8 +6411,14 @@ class HttpDownloadService:
             ]
             task.task_metadata["selected_keys"] = retry_keys
             task.task_metadata["retry_target_count"] = len(retry_items)
+            task.task_metadata["pikpak_retry_rebuild_share"] = any(
+                str(item.get("source") or "").strip().lower() == "pikpak"
+                for item in retry_items
+                if isinstance(item, dict)
+            )
         else:
             task.task_metadata["retry_target_count"] = 0
+            task.task_metadata.pop("pikpak_retry_rebuild_share", None)
         task.task_metadata["resolved_urls"] = []
         task.task_metadata["download_files"] = []
         task.task_metadata["download_runtime"] = {}
@@ -6290,6 +6528,7 @@ class HttpDownloadService:
             row["speed_bytes_per_sec"] = row_speed
             row["progress"] = 100 if aria_status == "complete" else (int(done / total * 100) if total else 0)
             if aria_status == "complete":
+                self._aria2_progress_state.pop(str(gid), None)
                 expected_size = int(row.get("expected_size_bytes") or 0)
                 if (
                     str(row.get("source") or "").strip().lower() == "gofile"
@@ -6313,6 +6552,7 @@ class HttpDownloadService:
                     row["status"] = "completed"
                     completed += 1
             elif aria_status in {"error", "removed"}:
+                self._aria2_progress_state.pop(str(gid), None)
                 row["status"] = "failed"
                 failure_reason = str(status.get("errorMessage") or aria_status)
                 if str(row.get("source") or "").strip().lower() == "gofile":
@@ -6346,6 +6586,21 @@ class HttpDownloadService:
                 row["status"] = "paused"
             else:
                 row["status"] = "downloading"
+                if str(row.get("source") or "").strip().lower() == "pikpak" and aria_status == "active":
+                    now = time.monotonic()
+                    previous_done, last_progress_at = self._aria2_progress_state.get(str(gid), (done, now))
+                    if done > previous_done:
+                        last_progress_at = now
+                    self._aria2_progress_state[str(gid)] = (done, last_progress_at)
+                    if now - last_progress_at >= self._PIKPAK_STALL_TIMEOUT_SECONDS:
+                        row["status"] = "failed"
+                        row["failure_reason"] = (
+                            f"PikPak 下载连续 {self._PIKPAK_STALL_TIMEOUT_SECONDS} 秒无进度，已停止本次任务；"
+                            "重试时会从原分享重新转存并刷新下载直链"
+                        )
+                        failed_count += 1
+                        await self._remove_aria2_gid(str(gid))
+                        continue
                 active_count += 1
                 if not active_name:
                     active_name = str(row.get("name") or "")
@@ -6379,10 +6634,7 @@ class HttpDownloadService:
         active_task = self._active_download_tasks.pop(task_id, None)
         if active_task and not active_task.done():
             active_task.cancel()
-        for gid in self._task_gids.get(task_id, []):
-            with contextlib.suppress(Exception):
-                await self._rpc_call("aria2.remove", [gid])
-        self._task_gids.pop(task_id, None)
+        await self._remove_task_gids(task_id)
 
     async def health(self) -> Dict[str, Any]:
         cfg = self._config()

@@ -17165,19 +17165,54 @@ class LocalUploadStartRequest(BaseModel):
 
 
 def _serialize_http_download_task(task) -> dict:
-    from ..core.baidu_netdisk_service import build_baidu_netdisk_batch_title, sanitize_baidu_netdisk_item
+    from ..core.baidu_netdisk_service import (
+        build_baidu_netdisk_batch_title,
+        get_baidu_netdisk_service,
+        sanitize_baidu_netdisk_item,
+    )
     from ..core.http_download_service import build_http_download_batch_title, sanitize_http_download_item
 
     metadata = _task_metadata_with_redis_runtime(task)
     download_mode = str(metadata.get("download_mode") or "http")
     is_baidu_netdisk = download_mode == "baidu_netdisk" or metadata.get("task_domain") == "baidu_netdisk"
-    failed_files = list(metadata.get("failed_files") or [])
+    failed_files = [
+        item for item in list(metadata.get("failed_files") or [])
+        if isinstance(item, dict)
+    ]
     status_value, progress, current_step = _task_runtime_response_values(task)
     sanitize_download_item = sanitize_baidu_netdisk_item if is_baidu_netdisk else sanitize_http_download_item
+    current_download_files = [
+        item for item in list(metadata.get("download_files") or [])
+        if isinstance(item, dict)
+    ]
+    attempt_history = [
+        item for item in list(metadata.get("download_attempt_history") or [])
+        if isinstance(item, dict)
+    ]
+    if attempt_history:
+        if is_baidu_netdisk:
+            download_files = get_baidu_netdisk_service().merge_download_attempt_rows(
+                attempt_history,
+                current_download_files,
+            )
+        else:
+            from ..core.http_download_service import get_http_download_service
+            download_files = get_http_download_service().merge_download_attempt_rows(
+                attempt_history,
+                current_download_files,
+            )
+    else:
+        download_files = current_download_files
     download_files = [
         sanitize_download_item(item)
-        for item in list(metadata.get("download_files") or [])
+        for item in download_files
     ]
+    merged_failed_files = [
+        item for item in download_files
+        if str((item or {}).get("status") or "").strip().lower() == "failed"
+    ]
+    if merged_failed_files:
+        failed_files = merged_failed_files
     performance_metrics = metadata.get("performance_metrics") if isinstance(metadata.get("performance_metrics"), dict) else {}
     success_count = int(performance_metrics.get("success_count") or 0)
     if not success_count:
