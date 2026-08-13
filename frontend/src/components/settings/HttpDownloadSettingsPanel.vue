@@ -172,6 +172,11 @@
         <div class="field-stack">
           <SettingsToggleRow v-model="config.http_downloader.pikpak_enabled" title="启用 PikPak 链接解析" subtitle="分享链接先解析为临时直链，再交给 aria2 下载；不处理验证码绕过。" />
           <SettingsToggleRow v-if="config.http_downloader.pikpak_enabled" v-model="config.http_downloader.pikpak_auto_save_share" title="自动转存分享文件" subtitle="开启后预览/开始下载 PikPak 分享时自动保存到转存目录。" />
+          <SettingsToggleRow v-if="config.http_downloader.pikpak_enabled" v-model="config.http_downloader.pikpak_api_use_proxy" title="API 与转存使用代理" subtitle="大陆网络建议开启，登录、分享解析、容量查询和转存请求使用上方 PikPak 代理。" />
+          <SettingsToggleRow v-if="config.http_downloader.pikpak_enabled" v-model="config.http_downloader.pikpak_download_use_proxy" title="文件下载使用代理" subtitle="默认直连 PikPak CDN；只有服务器无法直连文件地址时再开启。" />
+          <SettingsFieldCard v-if="config.http_downloader.pikpak_enabled" label="PikPak 同时下载数">
+            <SettingsNumberStepper v-model="config.http_downloader.pikpak_max_concurrent_downloads" :min="1" :max="16" />
+          </SettingsFieldCard>
         </div>
       </div>
     </div>

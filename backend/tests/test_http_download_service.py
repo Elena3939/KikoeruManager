@@ -57,6 +57,9 @@ class DummyHttpDownloader:
     pikpak_device_id = ""
     pikpak_transfer_dir = "/KikoeruManager"
     pikpak_auto_save_share = True
+    pikpak_api_use_proxy = True
+    pikpak_download_use_proxy = False
+    pikpak_max_concurrent_downloads = 6
     pikpak_accounts = []
 
 
@@ -195,6 +198,28 @@ def test_proxy_url_defaults_to_all_http_download_platforms(monkeypatch, tmp_path
     assert service._proxy_url("onedrive") == "http://127.0.0.1:7890"
     assert service._proxy_url("google_drive") == "http://127.0.0.1:7890"
     assert service._proxy_url("pikpak") == "http://127.0.0.1:7890"
+    assert service._pikpak_api_proxy_url() == "http://127.0.0.1:7890"
+    assert service._pikpak_download_proxy_url() == ""
+
+    service._config().pikpak_api_use_proxy = False
+    service._config().pikpak_download_use_proxy = True
+    assert service._pikpak_api_proxy_url() == ""
+    assert service._pikpak_download_proxy_url() == "http://127.0.0.1:7890"
+
+
+def test_aria2_daemon_uses_pikpak_concurrency_as_global_upper_bound(monkeypatch, tmp_path):
+    bind_config(
+        monkeypatch,
+        tmp_path,
+        max_concurrent_downloads=3,
+        pikpak_max_concurrent_downloads=6,
+    )
+    service = HttpDownloadService()
+
+    assert service._aria2_max_concurrent_downloads() == 6
+
+    service._config().max_concurrent_downloads = 10
+    assert service._aria2_max_concurrent_downloads() == 10
 
 
 def test_proxy_url_only_applies_to_selected_platforms(monkeypatch, tmp_path):
@@ -726,7 +751,7 @@ async def test_copy_pikpak_share_files_multi_splits_by_remaining_space(monkeypat
     monkeypatch.setattr(service, "_pikpak_client", fake_client)
     monkeypatch.setattr(service, "_close_pikpak_client", lambda _client: asyncio.sleep(0))
 
-    id_map, account_by_source = await service._copy_pikpak_share_files_multi(
+    id_map, account_by_source, reusable_clients = await service._copy_pikpak_share_files_multi(
         clients["small"],
         ["big", "mid"],
         [{"id": "big", "size": 90}, {"id": "mid", "size": 50}],
@@ -741,6 +766,7 @@ async def test_copy_pikpak_share_files_multi_splits_by_remaining_space(monkeypat
     assert id_map["mid"] == "small-mid"
     assert account_by_source["big"].id == "large"
     assert account_by_source["mid"].id == "small"
+    assert reusable_clients == clients
 
 
 @pytest.mark.asyncio
@@ -2624,6 +2650,7 @@ async def test_resolve_pikpak_materialize_filters_selected_failed_item(monkeypat
         return (
             {file_id: f"copy-{file_id}" for file_id in file_ids},
             {file_id: service._select_pikpak_account("acc-a") for file_id in file_ids},
+            {},
         )
 
     async def fake_download_link(_client, file_id, allow_missing=False):
@@ -3795,6 +3822,72 @@ def test_prepare_existing_gofile_target_preserves_aria2_resume_pair(monkeypatch,
     assert service._prepare_existing_gofile_target(item) is None
     assert final_path.read_bytes() == b"partial"
     assert "gofile_reset_partial_bytes" not in item
+
+
+def test_prepare_existing_pikpak_target_reuses_complete_file(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    final_path = tmp_path / "downloads" / "RJ01677458.7z.001"
+    final_path.parent.mkdir(parents=True)
+    final_path.write_bytes(b"complete")
+    item = {
+        "source": "pikpak",
+        "filename": final_path.name,
+        "relative_path": final_path.name,
+        "final_path": str(final_path),
+        "size_bytes": len(b"complete"),
+        "file_id": "share-file",
+        "download_file_id": "saved-file",
+        "pikpak_cleanup_file_id": "saved-file",
+        "pikpak_materialized": True,
+    }
+
+    row = service._prepare_existing_aria2_target(item)
+
+    assert row is not None
+    assert row["status"] == "completed"
+    assert row["source"] == "pikpak"
+    assert row["download_file_id"] == "saved-file"
+    assert row["pikpak_cleanup_file_id"] == "saved-file"
+    assert final_path.read_bytes() == b"complete"
+
+
+def test_prepare_existing_pikpak_target_removes_orphan_partial(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    final_path = tmp_path / "downloads" / "RJ01677458.7z.001"
+    final_path.parent.mkdir(parents=True)
+    final_path.write_bytes(b"partial")
+    item = {
+        "source": "pikpak",
+        "filename": final_path.name,
+        "relative_path": final_path.name,
+        "final_path": str(final_path),
+        "size_bytes": 64,
+    }
+
+    assert service._prepare_existing_aria2_target(item) is None
+    assert not final_path.exists()
+    assert item["pikpak_reset_partial_bytes"] == len(b"partial")
+
+
+def test_prepare_existing_pikpak_target_preserves_aria2_resume_pair(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    final_path = tmp_path / "downloads" / "RJ01677458.7z.001"
+    final_path.parent.mkdir(parents=True)
+    final_path.write_bytes(b"partial")
+    Path(str(final_path) + ".aria2").write_bytes(b"control")
+    item = {
+        "source": "pikpak",
+        "filename": final_path.name,
+        "final_path": str(final_path),
+        "size_bytes": 64,
+    }
+
+    assert service._prepare_existing_aria2_target(item) is None
+    assert final_path.read_bytes() == b"partial"
+    assert "pikpak_reset_partial_bytes" not in item
 
 
 @pytest.mark.asyncio
