@@ -6561,9 +6561,34 @@ class CircleCompletionService:
             self.normalize_rjcode(item.get("asmr_available_rjcode")),
             *[self.normalize_rjcode(code) for code in list(item.get("linked_rjcodes") or [])],
             *[self.normalize_rjcode(code) for code in list(item.get("kikoeru_found_rjcodes") or [])],
+            *[self.normalize_rjcode(code) for code in list(item.get("owned_lookup_rjcodes") or [])],
         }
         candidates.discard("")
         return candidates - bonus_rjcodes
+
+    def _inventory_owned_link_candidates(self, linked_map: Dict[str, Any]) -> List[str]:
+        """提取只用于库存精确命中的关联 RJ，不提升为 canonical 已验证关系。"""
+        candidates: List[str] = []
+        for raw_rjcode, linked_work in dict(linked_map or {}).items():
+            normalized = self.normalize_rjcode(raw_rjcode)
+            if not normalized:
+                continue
+            evidence_status = str(
+                getattr(linked_work, "evidence_status", "") or ""
+            ).strip().lower()
+            evidence_source = str(
+                getattr(linked_work, "evidence_source", "") or ""
+            ).strip().lower()
+            work_type = str(
+                getattr(linked_work, "work_type", "") or ""
+            ).strip().lower()
+            is_inventory_candidate = evidence_status == "verified" or (
+                evidence_source == "translation_info"
+                and work_type in {"translation", "child_translation"}
+            )
+            if is_inventory_candidate and normalized not in candidates:
+                candidates.append(normalized)
+        return candidates
 
     def _owned_sync_row_target_canonical(
         self,
@@ -6607,6 +6632,7 @@ class CircleCompletionService:
                 self.normalize_rjcode(item.get("asmr_available_rjcode")),
                 *[self.normalize_rjcode(code) for code in list(item.get("linked_rjcodes") or [])],
                 *[self.normalize_rjcode(code) for code in list(item.get("kikoeru_found_rjcodes") or [])],
+                *[self.normalize_rjcode(code) for code in list(item.get("owned_lookup_rjcodes") or [])],
             })
         raw_lookup_codes.discard("")
         bonus_rjcodes = self._load_bonus_rjcodes_for_owned_state(raw_lookup_codes)
@@ -8939,6 +8965,8 @@ class CircleCompletionService:
         finally:
             db.close()
 
+        verified_bonus_rjcodes = self._load_bonus_rjcodes_for_owned_state(set(normalized_codes))
+
         try:
             refreshed_items = []
             refreshed_count = 0
@@ -9147,18 +9175,42 @@ class CircleCompletionService:
                     else actual_norm
                 )
 
+                is_bonus_work = (
+                    canonical in verified_bonus_rjcodes
+                    or bool(row.is_bonus_work)
+                    or bool((metadata_map.get(canonical) or {}).get("is_bonus_work"))
+                    or bool((metadata_map.get(self.normalize_rjcode(preferred_variant.get("rjcode"))) or {}).get("is_bonus_work"))
+                )
+                owned_lookup_rjcodes = _normalize_code_list(row.kikoeru_found_rjcodes or [])
+                if not is_bonus_work:
+                    try:
+                        raw_linked_map = await self.dlsite_service.get_linked_works(
+                            canonical,
+                            refresh=False,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "[社团补全] 读取库存关联候选失败 rj=%s",
+                            canonical,
+                            exc_info=True,
+                        )
+                        raw_linked_map = {}
+                    owned_lookup_rjcodes = _normalize_code_list([
+                        *owned_lookup_rjcodes,
+                        *self._inventory_owned_link_candidates(raw_linked_map),
+                    ])
+
                 local_state_item = {
                     "canonical_rjcode": canonical,
                     "display_rjcode": self.normalize_rjcode(preferred_variant.get("rjcode")) or canonical or row.display_rjcode,
                     "asmr_available_rjcode": resolved_asmr_norm,
                     "linked_rjcodes": linked_rjcodes or [row.display_rjcode or canonical],
-                    "kikoeru_found_rjcodes": [],
+                    # 旧 Kikoeru 命中可能位于 DLsite 已验证语言版本链之外。完整
+                    # 刷新仍要把旧值交给 ready 库存索引重新验证，不能先清空候选。
+                    "kikoeru_found_rjcodes": list(row.kikoeru_found_rjcodes or []),
+                    "owned_lookup_rjcodes": owned_lookup_rjcodes,
                     "source_flags": set(),
-                    "is_bonus_work": (
-                        bool(row.is_bonus_work)
-                        or bool((metadata_map.get(canonical) or {}).get("is_bonus_work"))
-                        or bool((metadata_map.get(self.normalize_rjcode(preferred_variant.get("rjcode"))) or {}).get("is_bonus_work"))
-                    ),
+                    "is_bonus_work": is_bonus_work,
                 }
                 local_owned_stats = self._apply_library_index_owned_state_to_items({canonical: local_state_item})
                 if local_owned_stats.get("ready_index_available"):
@@ -9205,12 +9257,14 @@ class CircleCompletionService:
                 release_date = str(display_metadata.get("release_date") or metadata.get("release_date") or "").strip()
                 row.price_text = str(display_metadata.get("price_text") or metadata.get("price_text") or row.price_text or "").strip() or None
                 row.is_bonus_work = (
-                    bool(canonical_metadata_for_row.get("is_bonus_work"))
+                    bool(is_bonus_work)
+                    or bool(canonical_metadata_for_row.get("is_bonus_work"))
                     or bool(display_metadata.get("is_bonus_work"))
                     or bool(metadata.get("is_bonus_work"))
                 )
                 row.has_bonus = (
-                    bool(canonical_metadata_for_row.get("has_bonus"))
+                    bool(row.has_bonus)
+                    or bool(canonical_metadata_for_row.get("has_bonus"))
                     or bool(display_metadata.get("has_bonus"))
                     or bool(metadata.get("has_bonus"))
                 )
@@ -9233,7 +9287,13 @@ class CircleCompletionService:
                     row.display_rjcode or canonical,
                     is_unreleased=self._is_future_release_date(release_date),
                 )
-                row.linked_rjcodes = linked_rjcodes or [row.display_rjcode or canonical]
+                refreshed_linked_rjcodes = linked_rjcodes or [row.display_rjcode or canonical]
+                if row.is_bonus_work:
+                    refreshed_linked_rjcodes = _normalize_code_list([
+                        *list(row.linked_rjcodes or []),
+                        *refreshed_linked_rjcodes,
+                    ])
+                row.linked_rjcodes = refreshed_linked_rjcodes
                 if row.is_bonus_work and row.display_rjcode not in row.linked_rjcodes:
                     row.linked_rjcodes.append(row.display_rjcode)
                 row.has_kikoeru = bool(found_rjcodes)

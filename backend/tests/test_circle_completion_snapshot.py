@@ -271,7 +271,7 @@ async def test_find_public_downloadable_work_bypass_cache_for_manual_refresh(
 
 
 @pytest.mark.asyncio
-async def test_refresh_circle_works_preserves_existing_asmr_state_when_probe_unavailable(
+async def test_refresh_circle_works_preserves_existing_runtime_state_when_sources_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = CircleCompletionService()
@@ -290,11 +290,11 @@ async def test_refresh_circle_works_preserves_existing_asmr_state_when_probe_una
         title="原作",
         maker_id="RG64225",
         maker_name="测试社团",
-        source_mask="asmr_one,dlsite",
+        source_mask="asmr_one,dlsite,kikoeru",
         linked_rjcodes=["RJ01506869", "RJ01506870", "RJ01413891"],
         has_dlsite=True,
-        has_kikoeru=False,
-        kikoeru_found_rjcodes=[],
+        has_kikoeru=True,
+        kikoeru_found_rjcodes=["RJ01999999"],
         kikoeru_subtitle_rjcodes=[],
         has_asmr_one=True,
         asmr_available_rjcode="RJ01506870",
@@ -369,7 +369,7 @@ async def test_refresh_circle_works_preserves_existing_asmr_state_when_probe_una
             "maker_name": "测试社团",
             "release_date": "2025-07-26",
             "is_bonus_work": False,
-            "has_bonus": True,
+            "has_bonus": False,
         }
 
     async def fake_pick(*_args, **_kwargs):
@@ -385,17 +385,33 @@ async def test_refresh_circle_works_preserves_existing_asmr_state_when_probe_una
     async def fake_bonus_refresh(*_args, **_kwargs):
         return {}
 
+    async def fake_linked_works(*_args, **_kwargs):
+        return {
+            "RJ01999998": SimpleNamespace(
+                work_type="child_translation",
+                evidence_source="translation_info",
+                evidence_status="unverified",
+            ),
+        }
+
     monkeypatch.setattr(service, "resolve_canonical_rj", fake_resolve)
     monkeypatch.setattr(service, "_fetch_metadata_dict", fake_metadata)
     monkeypatch.setattr(service, "_pick_public_display_variant_and_title", fake_pick)
     monkeypatch.setattr(service, "_build_public_download_probe_candidates", fake_candidates)
     monkeypatch.setattr(service, "_find_public_downloadable_work_with_status", fake_find)
     monkeypatch.setattr(service, "_refresh_circle_bonus_fields", fake_bonus_refresh)
-    monkeypatch.setattr(
-        service,
-        "_apply_library_index_owned_state_to_items",
-        lambda _items: {"ready_index_available": False, "owned_count": 0, "subtitle_count": 0, "hit_count": 0},
-    )
+    monkeypatch.setattr(service, "_load_bonus_rjcodes_for_owned_state", lambda _rjcodes: set())
+    monkeypatch.setattr(service.dlsite_service, "get_linked_works", fake_linked_works)
+    owned_candidates = []
+
+    def fake_apply_owned_state(items):
+        owned_candidates.append({
+            "found": list(items["RJ01413891"]["kikoeru_found_rjcodes"]),
+            "lookup": list(items["RJ01413891"]["owned_lookup_rjcodes"]),
+        })
+        return {"ready_index_available": False, "owned_count": 0, "subtitle_count": 0, "hit_count": 0}
+
+    monkeypatch.setattr(service, "_apply_library_index_owned_state_to_items", fake_apply_owned_state)
     monkeypatch.setattr(service, "_upsert_library_owned_rows_from_items", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(service, "_build_source_compare", lambda *_args, **_kwargs: {})
 
@@ -405,7 +421,15 @@ async def test_refresh_circle_works_preserves_existing_asmr_state_when_probe_una
     assert row.has_asmr_one is True
     assert row.asmr_available_rjcode == "RJ01506870"
     assert row.asmr_one_cached_at == previous_checked_at
+    assert owned_candidates == [{
+        "found": ["RJ01999999"],
+        "lookup": ["RJ01999999", "RJ01999998"],
+    }]
+    assert row.has_kikoeru is True
+    assert row.kikoeru_found_rjcodes == ["RJ01999999"]
+    assert row.has_bonus is True
     assert "asmr_one" in row.source_mask.split(",")
+    assert "kikoeru" in row.source_mask.split(",")
     assert write_session.committed is True
 
 

@@ -1168,14 +1168,16 @@ class DLsiteBonusProbeService:
         return features, len(normalized) - len(missing), request_count
 
     def _hidden_bonus_matches(self, feature: DLsiteProductProbeFeature, *, maker_id: str, release_date: str) -> bool:
+        # 调用方已经把范围收紧到当前发售日的隐藏候选区间；这里不能再依赖
+        # 全局缓存分类的 is_hidden_bonus_audio / is_oly，否则 DLsite 返回
+        # is_oly=false 的真实特典会被二次漏掉。
         return bool(
             feature.exists
-            and feature.is_hidden_bonus_audio
+            and str(feature.probe_status or "").strip() == "ok"
             and feature.maker_id == maker_id
             and int(feature.price or 0) == 0
             and not bool(feature.is_sale)
             and bool(feature.is_free)
-            and bool(feature.is_oly)
             and int(feature.wishlist_count or 0) == 0
         )
 

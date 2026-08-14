@@ -257,6 +257,81 @@ def test_apply_library_index_owned_state_skips_when_ready_index_unavailable(monk
     assert "local_owned" not in item
 
 
+def test_apply_library_index_owned_state_revalidates_related_translation_candidate(monkeypatch):
+    service = CircleCompletionService()
+    original_code = "RJ01576107"
+    related_translation_code = "RJ01582791"
+    item = {
+        "display_rjcode": "RJ01582790",
+        "linked_rjcodes": [original_code, "RJ01582790", "RJ01582792"],
+        "kikoeru_found_rjcodes": [],
+        "owned_lookup_rjcodes": [related_translation_code],
+        "source_flags": set(),
+        "is_bonus_work": False,
+    }
+
+    class LibraryManager:
+        def has_ready_index(self):
+            return True
+
+        def find_rj_in_ready_index(self, rjcodes):
+            assert related_translation_code in set(rjcodes)
+            return {
+                related_translation_code: [{
+                    "matched_rjcode": related_translation_code,
+                    "rjcode": related_translation_code,
+                    "path": f"/library/ホロクサミドリ/[ホロクサミドリ][{related_translation_code}]",
+                    "library_id": "default-local",
+                    "size": 1024,
+                    "file_count": 84,
+                    "local_subtitle_present": True,
+                    "subtitle_file_count": 12,
+                    "subtitle_dir": "/library/subtitles",
+                }]
+            }
+
+    monkeypatch.setattr(library_manager_module, "get_library_manager", lambda: LibraryManager())
+    monkeypatch.setattr(service, "_load_bonus_rjcodes_for_owned_state", lambda _rjcodes: set())
+
+    result = service._apply_library_index_owned_state_to_items({original_code: item})
+
+    assert result == {
+        "owned_count": 1,
+        "subtitle_count": 1,
+        "hit_count": 1,
+        "ready_index_available": True,
+    }
+    assert item["local_owned"] is True
+    assert item["kikoeru_found_rjcodes"] == [related_translation_code]
+    assert item["owned_paths"] == [
+        f"/library/ホロクサミドリ/[ホロクサミドリ][{related_translation_code}]"
+    ]
+
+
+def test_inventory_owned_link_candidates_accepts_translation_info_without_promoting_unknowns():
+    service = CircleCompletionService()
+
+    candidates = service._inventory_owned_link_candidates({
+        "RJ01576107": SimpleNamespace(
+            work_type="translation",
+            evidence_source="language_editions",
+            evidence_status="verified",
+        ),
+        "RJ01582791": SimpleNamespace(
+            work_type="child_translation",
+            evidence_source="translation_info",
+            evidence_status="unverified",
+        ),
+        "RJ09999999": SimpleNamespace(
+            work_type="unknown",
+            evidence_source="page_metadata_unverified",
+            evidence_status="unverified",
+        ),
+    })
+
+    assert candidates == ["RJ01576107", "RJ01582791"]
+
+
 def test_apply_library_index_owned_state_does_not_inherit_bonus_from_translation(monkeypatch):
     service = CircleCompletionService()
     parent_code = "RJ01569979"
@@ -275,6 +350,7 @@ def test_apply_library_index_owned_state_does_not_inherit_bonus_from_translation
         "asmr_available_rjcode": translated_code,
         "linked_rjcodes": linked_codes,
         "kikoeru_found_rjcodes": [],
+        "owned_lookup_rjcodes": [translated_code],
         "source_flags": set(),
         "is_bonus_work": True,
     }
