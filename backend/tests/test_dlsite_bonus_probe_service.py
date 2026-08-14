@@ -240,6 +240,7 @@ def test_hidden_bonus_match_allows_bonus_registered_before_original_date() -> No
     feature = DLsiteProductProbeFeature(
         workno="RJ01569983",
         exists=True,
+        probe_status="ok",
         maker_id="RG62878",
         release_date="2026-02-23",
         work_type="SOU",
@@ -268,6 +269,7 @@ def test_hidden_bonus_match_allows_non_audio_bonus_payload() -> None:
     feature = DLsiteProductProbeFeature(
         workno="RJ01234567",
         exists=True,
+        probe_status="ok",
         maker_id="RG62878",
         release_date="2025-06-28",
         work_type="ICG",
@@ -286,11 +288,58 @@ def test_hidden_bonus_match_allows_non_audio_bonus_payload() -> None:
     )
 
 
+def test_hidden_bonus_match_uses_probe_context_without_is_oly() -> None:
+    service = _service()
+    feature = DLsiteProductProbeFeature(
+        workno="RJ01579902",
+        exists=True,
+        probe_status="ok",
+        maker_id="RG57278",
+        release_date="2026-03-07",
+        work_type="SOU",
+        price=0,
+        is_sale=False,
+        is_free=True,
+        is_oly=False,
+        wishlist_count=0,
+        is_hidden_bonus_audio=False,
+    )
+
+    assert service._hidden_bonus_matches(
+        feature,
+        maker_id="RG57278",
+        release_date="2026-03-07",
+    ) is True
+
+
+def test_hidden_bonus_match_rejects_unstable_probe_without_cached_flag() -> None:
+    service = _service()
+    feature = DLsiteProductProbeFeature(
+        workno="RJ01579902",
+        exists=True,
+        probe_status="error",
+        maker_id="RG57278",
+        price=0,
+        is_sale=False,
+        is_free=True,
+        is_oly=False,
+        wishlist_count=0,
+        is_hidden_bonus_audio=True,
+    )
+
+    assert service._hidden_bonus_matches(
+        feature,
+        maker_id="RG57278",
+        release_date="2026-03-07",
+    ) is False
+
+
 def test_hidden_bonus_match_allows_missing_bonus_release_date() -> None:
     service = _service()
     feature = DLsiteProductProbeFeature(
         workno="RJ01201745",
         exists=True,
+        probe_status="ok",
         maker_id="RG68316",
         release_date="",
         work_type="SOU",
