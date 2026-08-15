@@ -117,8 +117,12 @@ const totalEntriesText = computed(() => {
     return `· ${total.toLocaleString()} 项`
   }
   if (name === 'catching_up') {
-    const pending = Math.max(0, Number(status.value?.pending_events ?? Number(status.value?.accepted_seq || 0) - Number(status.value?.materialized_seq || 0)))
-    return pending > 0 ? `· ${pending.toLocaleString()} 项` : ''
+    const pendingEffects = Math.max(0, Number(status.value?.pending_effects || 0))
+    const pendingBatches = Math.max(0, Number(status.value?.pending_batches || 0))
+    if (pendingEffects > 0 && pendingBatches > 0) {
+      return `· ${pendingEffects.toLocaleString()} 路径 / ${pendingBatches.toLocaleString()} 批`
+    }
+    return pendingBatches > 0 ? `· ${pendingBatches.toLocaleString()} 批` : ''
   }
   return ''
 })

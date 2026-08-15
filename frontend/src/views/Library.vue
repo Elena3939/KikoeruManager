@@ -24940,10 +24940,13 @@ function statsStatusCardText (stats) {
 
   if (status === 'catching_up') {
 
-    const pending = Math.max(0, Number(stats?.accepted_seq || 0) - Number(stats?.materialized_seq || 0))
+    const pendingEffects = Math.max(0, Number(stats?.pending_effects || 0))
+    const pendingBatches = Math.max(0, Number(stats?.pending_batches || 0))
 
-    return pending > 0
-      ? `后台追赶 ${pending.toLocaleString()} 项，当前快照截至 #${Number(stats?.materialized_seq || 0).toLocaleString()}`
+    return pendingEffects > 0 && pendingBatches > 0
+      ? `后台追赶 ${pendingEffects.toLocaleString()} 路径 / ${pendingBatches.toLocaleString()} 批，当前快照截至 #${Number(stats?.materialized_seq || 0).toLocaleString()}`
+      : pendingBatches > 0
+        ? `后台追赶 ${pendingBatches.toLocaleString()} 批，当前快照截至 #${Number(stats?.materialized_seq || 0).toLocaleString()}`
       : '后台追赶中，当前快照仍可用'
 
   }

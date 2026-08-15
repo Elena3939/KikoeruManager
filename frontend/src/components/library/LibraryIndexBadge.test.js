@@ -30,6 +30,8 @@ describe('LibraryIndexBadge', () => {
       status: 'ready',
       accepted_seq: 8,
       materialized_seq: 5,
+      pending_effects: 20,
+      pending_batches: 1,
       total_entries: 12,
     }, 'sse')
 
@@ -45,7 +47,7 @@ describe('LibraryIndexBadge', () => {
     })
 
     expect(wrapper.text()).toContain('后台追赶')
-    expect(wrapper.text()).toContain('3 项')
+    expect(wrapper.text()).toContain('20 路径 / 1 批')
     expect(wrapper.text()).not.toContain('索引就绪')
   })
 })
