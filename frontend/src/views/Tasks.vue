@@ -47,6 +47,7 @@
         v-if="!isMobile || selectedItem"
         :item="selectedItem"
         :detail-loading="detailLoading"
+        :loading-more-files="loadingMoreFiles"
         :file-tree-sections="selectedItemFileTreeSections"
         :circle-meta="getCircleIndexMetaEntries(selectedItem)"
         :circle-log="getCircleIndexProgressLog(selectedItem)"
@@ -63,6 +64,7 @@
         @update:tree-filter-mode="(v) => (treeFilterMode = v)"
         @expand-section="setTreeSectionExpanded"
         @toggle-node="toggleTreeNode"
+        @load-more-files="loadMoreTaskFiles"
         @restore-filtered="handleRestoreFilteredItem"
       />
     </section>
@@ -115,6 +117,7 @@ const pageDirection = ref('next')
 const selectedItemId = ref('')
 const selectedItemDetail = ref(null)
 const detailLoading = ref(false)
+const loadingMoreFiles = ref(false)
 const restoringRecoveryId = ref('')
 const shouldAutoSelectVisibleTask = ref(true)
 const currentDomain = ref('all')
@@ -607,6 +610,45 @@ async function fetchSelectedItemDetail(itemId, options = {}) {
     console.error('获取任务详情失败:', error)
   } finally {
     if (!silent) detailLoading.value = false
+  }
+}
+
+async function loadMoreTaskFiles() {
+  const detail = selectedItemDetail.value
+  const itemId = String(detail?.id || selectedItemId.value || '').trim()
+  if (!itemId || loadingMoreFiles.value) return
+  const metadata = detail?.details?.metadata
+  const currentRows = Array.isArray(metadata?.download_files) ? metadata.download_files : []
+  const total = Number(metadata?.download_files_total || currentRows.length) || currentRows.length
+  if (currentRows.length >= total) return
+  loadingMoreFiles.value = true
+  try {
+    const result = await taskCenterApi.getItemFiles({
+      item_id: itemId,
+      offset: currentRows.length,
+      limit: 120,
+      _t: Date.now(),
+    })
+    const nextRows = Array.isArray(result?.items) ? result.items : []
+    if (!nextRows.length) return
+    const nextDetail = {
+      ...detail,
+      details: {
+        ...(detail.details || {}),
+        metadata: {
+          ...metadata,
+          download_files: [...currentRows, ...nextRows],
+          download_files_total: Number(result.total || total),
+          download_files_truncated: Boolean(result.has_more),
+        },
+      },
+    }
+    if (selectedItemId.value === itemId) selectedItemDetail.value = nextDetail
+  } catch (error) {
+    console.error('加载任务文件明细失败:', error)
+    ElMessage.error('加载文件明细失败')
+  } finally {
+    loadingMoreFiles.value = false
   }
 }
 
@@ -1194,7 +1236,14 @@ let fileTreeCacheResult = []
 function buildFileTreeArraySignature(rows) {
   if (!Array.isArray(rows) || !rows.length) return '0'
   let checksum = 0
-  for (let index = 0; index < rows.length; index += 1) {
+  const indexes = rows.length <= 300
+    ? Array.from({ length: rows.length }, (_, index) => index)
+    : Array.from(new Set([
+      ...Array.from({ length: 80 }, (_, index) => index),
+      ...Array.from({ length: 80 }, (_, index) => rows.length - 80 + index),
+      ...Array.from({ length: Math.ceil(rows.length / 64) }, (_, index) => index * 64),
+    ])).filter(index => index >= 0 && index < rows.length)
+  for (const index of indexes) {
     const row = rows[index] || {}
     const text = [
       row.relative_path,
@@ -1251,6 +1300,8 @@ function buildFileTreeCacheSignature(item) {
     buildFileTreeArraySignature(metadata.upload_files),
     buildFileTreeArraySignature(metadata.uploaded_files),
     buildFileTreeArraySignature(metadata.download_files),
+    metadata.download_files_total || '',
+    metadata.download_files_truncated ? 'truncated' : '',
     buildFileTreeArraySignature(metadata.filtered_items),
     buildFileTreeArraySignature(metadata.filtered_files),
     buildFileTreeArraySignature(metadata.filtered_dirs),
@@ -1366,7 +1417,9 @@ function buildTaskFileTreeSections(item) {
     label: snapshot.label,
     snapshotKind: snapshot.kind,
     rows: buildTreeRows(filtered),
-    totalCount: mergedItems.length,
+    totalCount: Number(metadata.download_files_total || mergedItems.length) || mergedItems.length,
+    visibleCount: mergedItems.length,
+    truncated: Boolean(metadata.download_files_truncated),
     removedCount,
     directRemovedCount,
     directoryKeys: directoryKeyList,

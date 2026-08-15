@@ -251,14 +251,28 @@
           </div>
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="flex flex-wrap gap-1.5">
-              <span v-if="section.totalCount" class="inline-flex h-6 items-center rounded-md border border-slate-200 bg-white px-2 text-[10.5px] font-bold tabular-nums text-slate-700">文件 {{ section.totalCount }}</span>
+              <span v-if="section.totalCount" class="inline-flex h-6 items-center rounded-md border border-slate-200 bg-white px-2 text-[10.5px] font-bold tabular-nums text-slate-700">
+                <template v-if="section.truncated">已加载 {{ section.visibleCount }} / {{ section.totalCount }} 项</template>
+                <template v-else>文件 {{ section.totalCount }}</template>
+              </span>
               <span v-if="section.removedCount" class="inline-flex h-6 items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 text-[10.5px] font-bold tabular-nums text-rose-700">
                 <span class="h-1.5 w-1.5 rounded-full bg-rose-500" />
                 已删除 {{ section.directRemovedCount || section.removedCount }}
                 <span v-if="section.removedCount > (section.directRemovedCount || section.removedCount)" class="text-rose-500/75">影响 {{ section.removedCount }}</span>
               </span>
             </div>
-            <button type="button" class="task-tree-toggle" @click="$emit('expand-section', section, !section.allExpanded)">
+            <div class="flex flex-wrap items-center gap-1.5">
+              <button
+                v-if="section.truncated"
+                type="button"
+                class="task-tree-toggle"
+                :disabled="loadingMoreFiles"
+                @click="$emit('load-more-files')"
+              >
+                <RefreshCw v-if="loadingMoreFiles" :size="12" class="animate-spin" />
+                <span>{{ loadingMoreFiles ? '加载中...' : `加载更多（剩余 ${section.totalCount - section.visibleCount}）` }}</span>
+              </button>
+              <button type="button" class="task-tree-toggle" @click="$emit('expand-section', section, !section.allExpanded)">
               <component
                 :is="section.allExpanded ? ChevronRight : ChevronDown"
                 :size="12"
@@ -266,21 +280,23 @@
                 class="task-tree-toggle__icon"
               />
               <span>{{ section.allExpanded ? '收起文件树' : '展开文件树' }}</span>
-            </button>
+              </button>
+            </div>
           </div>
         </div>
 
         <div class="task-file-tree-card">
-          <div class="task-file-tree detail-scroll">
-            <div
-              v-for="entry in section.rows"
+            <div ref="treeScrollRef" class="task-file-tree detail-scroll">
+              <div class="task-file-tree-virtual-canvas" :style="treeVirtualCanvasStyle">
+              <div
+              v-for="{ virtualRow, entry } in virtualTreeRows"
               :key="`${item.id}-${section.key}-${entry.key}`"
               class="task-file-tree-row tree-row"
               :class="{
                 'tree-row-filtered': entry.status === 'removed',
                 'tree-row-restored': entry.status === 'restored',
               }"
-              :style="{ paddingLeft: `${entry.depth * 16 + 8}px` }"
+              :style="{ height: `${virtualRow.size}px`, transform: `translateY(${virtualRow.start}px)`, paddingLeft: `${entry.depth * 16 + 8}px` }"
               @contextmenu.prevent.stop="openRestoreMenu($event, entry)"
             >
               <div class="tree-main">
@@ -313,8 +329,9 @@
                 </span>
               </div>
               <span v-if="entry.sizeText" class="tree-size">{{ entry.sizeText }}</span>
+              </div>
+              </div>
             </div>
-          </div>
         </div>
       </section>
 
@@ -388,7 +405,7 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   AlertTriangle,
   ArrowRight,
@@ -411,10 +428,12 @@ import { getTaskDomainMeta } from '../common/taskDomainMeta.js'
 import { getHttpDownloadDisplayMeta } from '../common/httpDownloadPlatformMeta.js'
 import { classifyLibraryEntryKind, libraryEntryIconFor } from '../library/_libraryFileKind.js'
 import { getFilterRestoreAvailability } from './_filterRecovery.js'
+import { useVirtualizer } from '@tanstack/vue-virtual'
 
 const props = defineProps({
   item: { type: Object, default: null },
   detailLoading: { type: Boolean, default: false },
+  loadingMoreFiles: { type: Boolean, default: false },
   fileTreeSections: { type: Array, default: () => [] },
   circleMeta: { type: Array, default: () => [] },
   circleLog: { type: Array, default: () => [] },
@@ -434,10 +453,31 @@ const emit = defineEmits([
   'update:treeFilterMode',
   'expand-section',
   'toggle-node',
+  'load-more-files',
   'restore-filtered',
 ])
 
 const restoreMenu = ref(null)
+const treeScrollRef = ref(null)
+const TREE_ROW_HEIGHT = 34
+const TREE_ROW_OVERSCAN = 18
+const treeRows = computed(() => props.fileTreeSections?.[0]?.rows || [])
+const treeRowVirtualizer = useVirtualizer(computed(() => ({
+  count: treeRows.value.length,
+  getScrollElement: () => treeScrollRef.value,
+  estimateSize: () => TREE_ROW_HEIGHT,
+  overscan: TREE_ROW_OVERSCAN,
+})))
+const virtualTreeRows = computed(() => treeRowVirtualizer.value.getVirtualItems()
+  .map(virtualRow => ({ virtualRow, entry: treeRows.value[virtualRow.index] }))
+  .filter(item => item.entry))
+const treeVirtualCanvasStyle = computed(() => ({
+  height: `${treeRowVirtualizer.value.getTotalSize()}px`,
+}))
+
+watch(() => treeRows.value.length, () => {
+  nextTick(() => treeRowVirtualizer.value.measure())
+})
 
 function openRestoreMenu(event, entry) {
   if (!['removed', 'restored'].includes(entry?.status)) {
@@ -787,10 +827,25 @@ function actionToneClass(action) {
 }
 
 .task-file-tree {
-  overflow: visible;
+  position: relative;
+  max-height: 560px;
+  overflow: auto;
   padding: 10px 12px;
   scrollbar-width: thin;
   scrollbar-color: rgba(148, 163, 184, 0.65) transparent;
+}
+
+.task-file-tree-virtual-canvas {
+  position: relative;
+  width: 100%;
+}
+
+.task-file-tree-virtual-canvas > .tree-row {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  margin-bottom: 0;
 }
 
 .tree-row {

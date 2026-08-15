@@ -184,6 +184,11 @@ export const taskCenterApi = {
     return response.data
   },
 
+  getItemFiles: async (params = {}) => {
+    const response = await apiClient.get('/task-center/item-files', { params })
+    return response.data
+  },
+
   action: async (itemId, action) => {
     const response = await apiClient.post(`/task-center/${encodeURIComponent(itemId)}/action`, { action })
     return response.data
@@ -1780,12 +1785,15 @@ export const asmrSyncApi = {
     return response.data
   },
 
-  status: async (taskIds = []) => {
+  status: async (taskIds = [], options = {}) => {
     const normalizedTaskIds = (Array.isArray(taskIds) ? taskIds : [taskIds])
       .map(item => String(item || '').trim())
       .filter(Boolean)
     const response = await apiClient.get('/asmr-sync/status', {
-      params: normalizedTaskIds.length ? { task_ids: normalizedTaskIds.join(',') } : undefined
+      params: {
+        ...(normalizedTaskIds.length ? { task_ids: normalizedTaskIds.join(',') } : {}),
+        ...(options.compact ? { compact: true } : {}),
+      }
     })
     return response.data
   },
@@ -1853,8 +1861,8 @@ export const httpDownloadApi = {
     return response.data
   },
 
-  status: async () => {
-    const response = await apiClient.get('/http-download/status')
+  status: async (options = {}) => {
+    const response = await apiClient.get('/http-download/status', { params: options.compact ? { compact: true } : undefined })
     return response.data
   },
 
@@ -2017,8 +2025,8 @@ export const baiduNetdiskApi = {
     return response.data
   },
 
-  status: async () => {
-    const response = await apiClient.get('/baidu-netdisk/status')
+  status: async (options = {}) => {
+    const response = await apiClient.get('/baidu-netdisk/status', { params: options.compact ? { compact: true } : undefined })
     return response.data
   },
 

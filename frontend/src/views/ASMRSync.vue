@@ -148,6 +148,7 @@
       @pause-task="pauseHttpDownloadTask"
       @resume-task="resumeHttpDownloadTask"
       @cancel-task="cancelHttpDownloadTask"
+      @load-files="task => loadFullWorkbenchTaskFiles(task, httpDownloadWorkbenchTasks)"
     />
 
     <DownloadTaskWorkbenchDialog
@@ -169,6 +170,7 @@
       @pause-task="pauseBaiduNetdiskTask"
       @resume-task="resumeBaiduNetdiskTask"
       @cancel-task="cancelBaiduNetdiskTask"
+      @load-files="task => loadFullWorkbenchTaskFiles(task, baiduNetdiskWorkbenchTasks)"
     />
 
     <Transition name="floating-card">
@@ -232,6 +234,7 @@
       @pause-task="handlePauseEnhancedDownloadTask"
       @resume-task="handleResumeEnhancedDownloadTask"
       @cancel-task="handleCancelEnhancedDownloadTask"
+      @load-files="task => loadFullWorkbenchTaskFiles(task, enhancedDownloadWorkbenchTasks)"
     />
 
     <!-- Enhanced Download Preview Dialog -->
@@ -629,7 +632,7 @@ import {
   ChevronLeft,
   ChevronRight,
 } from 'lucide-vue-next'
-import { asmrSyncApi, baiduNetdiskApi, configApi, httpDownloadApi, libraryApi, taskApi } from '../api'
+import { asmrSyncApi, baiduNetdiskApi, configApi, httpDownloadApi, libraryApi, taskApi, taskCenterApi } from '../api'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { useViewport } from '../composables/useViewport'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
@@ -1458,13 +1461,13 @@ async function refreshEnhancedDownloadWorkbench(options = {}) {
   }
   if (!silent) enhancedDownloadWorkbenchRefreshing.value = true
   try {
-    const result = await asmrSyncApi.status()
+    const result = await asmrSyncApi.status([], { compact: true })
     if (!enhancedDownloadWorkbenchRequestGuard.isLatest(requestSeq)) return
     const allTasks = Array.isArray(result.tasks) ? result.tasks : []
-    enhancedDownloadWorkbenchTasks.value = selectTrackedDownloadTasks(
+    enhancedDownloadWorkbenchTasks.value = mergeWorkbenchTaskRows(enhancedDownloadWorkbenchTasks.value, selectTrackedDownloadTasks(
       enhancedDownloadWorkbenchTaskIds.value,
       allTasks,
-    )
+    ))
     const stillActive = enhancedDownloadWorkbenchTasks.value.some(t => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(t.status || '')))
     if (stillActive || enhancedDownloadWorkbenchVisible.value || enhancedDownloadWorkbenchBackgroundActive.value) startEnhancedDownloadWorkbenchPolling()
     else stopEnhancedDownloadWorkbenchPolling()
@@ -1475,6 +1478,55 @@ async function refreshEnhancedDownloadWorkbench(options = {}) {
   } finally {
     if (!silent && enhancedDownloadWorkbenchRequestGuard.isLatest(requestSeq)) enhancedDownloadWorkbenchRefreshing.value = false
   }
+}
+
+async function loadFullWorkbenchTaskFiles(task, targetRef) {
+  const taskId = String(task?.active_task_id || task?.id || '').trim()
+  if (!taskId || !task?.download_files_truncated || !targetRef) return
+  const rows = Array.isArray(task.download_files) ? task.download_files : []
+  const total = Number(task.download_files_total || rows.length) || rows.length
+  if (rows.length >= total) return
+  try {
+    let offset = rows.length
+    const mergedRows = [...rows]
+    let result = null
+    while (offset < total) {
+      result = await taskCenterApi.getItemFiles({ engine_task_id: taskId, offset, limit: 500 })
+      const nextRows = Array.isArray(result?.items) ? result.items : []
+      if (!nextRows.length) break
+      mergedRows.push(...nextRows)
+      offset += nextRows.length
+      if (!result?.has_more) break
+    }
+    if (mergedRows.length <= rows.length) return
+    const merged = {
+      ...task,
+      download_files: mergedRows,
+      download_files_total: Number(result?.total || total),
+      download_files_truncated: Boolean(result?.has_more && offset < total),
+    }
+    targetRef.value = targetRef.value.map(item => (
+      item.id === task.id || item.active_task_id === taskId ? merged : item
+    ))
+  } catch (error) {
+    console.error('加载下载文件明细失败:', error)
+  }
+}
+
+function mergeWorkbenchTaskRows(previousRows = [], nextRows = []) {
+  const previousMap = new Map((previousRows || []).map(task => [String(task?.id || ''), task]))
+  return (nextRows || []).map(next => {
+    const previous = previousMap.get(String(next?.id || ''))
+    if (previous && previous.download_files_truncated === false && next?.download_files_truncated) {
+      return {
+        ...next,
+        download_files: previous.download_files,
+        download_files_total: previous.download_files_total,
+        download_files_truncated: false,
+      }
+    }
+    return next
+  })
 }
 
 function hideEnhancedDownloadWorkbenchToBackground() {
@@ -1561,13 +1613,13 @@ async function refreshHttpDownloadWorkbench(options = {}) {
   }
   if (!silent) httpDownloadWorkbenchRefreshing.value = true
   try {
-    const result = await httpDownloadApi.status()
+    const result = await httpDownloadApi.status({ compact: true })
     if (!httpDownloadWorkbenchRequestGuard.isLatest(requestSeq)) return
     const allTasks = Array.isArray(result.tasks) ? result.tasks : []
-    httpDownloadWorkbenchTasks.value = selectTrackedDownloadTasks(
+    httpDownloadWorkbenchTasks.value = mergeWorkbenchTaskRows(httpDownloadWorkbenchTasks.value, selectTrackedDownloadTasks(
       httpDownloadWorkbenchTaskIds.value,
       allTasks,
-    )
+    ))
     const stillActive = httpDownloadWorkbenchTasks.value.some(t => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(t.status || '')))
     if (stillActive || httpDownloadWorkbenchVisible.value || httpDownloadWorkbenchBackgroundActive.value) startHttpDownloadWorkbenchPolling()
     else stopHttpDownloadWorkbenchPolling()
@@ -1771,13 +1823,13 @@ async function refreshBaiduNetdiskWorkbench(options = {}) {
   }
   if (!silent) baiduNetdiskWorkbenchRefreshing.value = true
   try {
-    const result = await baiduNetdiskApi.status()
+    const result = await baiduNetdiskApi.status({ compact: true })
     if (!baiduNetdiskWorkbenchRequestGuard.isLatest(requestSeq)) return
     const allTasks = Array.isArray(result.tasks) ? result.tasks : []
-    baiduNetdiskWorkbenchTasks.value = selectTrackedDownloadTasks(
+    baiduNetdiskWorkbenchTasks.value = mergeWorkbenchTaskRows(baiduNetdiskWorkbenchTasks.value, selectTrackedDownloadTasks(
       baiduNetdiskWorkbenchTaskIds.value,
       allTasks,
-    )
+    ))
     const stillActive = baiduNetdiskWorkbenchTasks.value.some(t => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(t.status || '')))
     if (stillActive || baiduNetdiskWorkbenchVisible.value || baiduNetdiskWorkbenchBackgroundActive.value) startBaiduNetdiskWorkbenchPolling()
     else stopBaiduNetdiskWorkbenchPolling()

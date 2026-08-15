@@ -1017,6 +1017,7 @@
       @pause-task="handlePauseDownloadTask"
       @resume-task="handleResumeDownloadTask"
       @cancel-task="handleCancelDownloadTask"
+      @load-files="loadFullDownloadTaskFiles"
     />
 
     <UploadTaskWorkbenchDialog
@@ -1111,7 +1112,7 @@ import celebrateImg from '../assets/celebrate.png'
 import confettiAnimation from '../assets/anime/Confetti.lottie'
 import { Check, CheckCircle2, ChevronDown, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown, Mail, Calendar, Gift, RefreshCw, ImageDown, BarChart3, Timer, Upload, ExternalLink } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
-import api, { asmrSyncApi, circleCompletionApi, emailWatcherApi, libraryApi, localUploadApi, taskApi } from '../api'
+import api, { asmrSyncApi, circleCompletionApi, emailWatcherApi, libraryApi, localUploadApi, taskApi, taskCenterApi } from '../api'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
 import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
 import ServerUploadPreviewDialog from '../components/common/ServerUploadPreviewDialog.vue'
@@ -3823,13 +3824,26 @@ async function refreshDownloadWorkbench(options = {}) {
   }
   if (!silent) downloadWorkbenchRefreshing.value = true
   try {
-    const result = await asmrSyncApi.status(trackedDownloadTaskIds.value)
+    const result = await asmrSyncApi.status(trackedDownloadTaskIds.value, { compact: true })
     if (!downloadWorkbenchRequestGuard.isLatest(requestSequence)) return
     const allTasks = Array.isArray(result.tasks) ? result.tasks : []
-    trackedDownloadTasks.value = selectTrackedDownloadTasks(
+    const nextTrackedTasks = selectTrackedDownloadTasks(
       trackedDownloadTaskIds.value,
       allTasks,
     )
+    const previousTaskMap = new Map(trackedDownloadTasks.value.map(task => [String(task?.id || ''), task]))
+    trackedDownloadTasks.value = nextTrackedTasks.map(next => {
+      const previous = previousTaskMap.get(String(next?.id || ''))
+      if (previous && previous.download_files_truncated === false && next?.download_files_truncated) {
+        return {
+          ...next,
+          download_files: previous.download_files,
+          download_files_total: previous.download_files_total,
+          download_files_truncated: false,
+        }
+      }
+      return next
+    })
     const stillActive = trackedDownloadTasks.value.some(task => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(task.status || '')))
     if (stillActive || downloadWorkbenchVisible.value || downloadWorkbenchBackgroundActive.value) startDownloadWorkbenchPolling()
     else stopDownloadWorkbenchPolling()
@@ -3839,6 +3853,39 @@ async function refreshDownloadWorkbench(options = {}) {
     startDownloadWorkbenchPolling()
   } finally {
     if (downloadWorkbenchRequestGuard.isLatest(requestSequence)) downloadWorkbenchRefreshing.value = false
+  }
+}
+
+async function loadFullDownloadTaskFiles(task) {
+  const taskId = String(task?.active_task_id || task?.id || '').trim()
+  if (!taskId || !task?.download_files_truncated) return
+  const rows = Array.isArray(task.download_files) ? task.download_files : []
+  const total = Number(task.download_files_total || rows.length) || rows.length
+  if (rows.length >= total) return
+  try {
+    let offset = rows.length
+    const mergedRows = [...rows]
+    let result = null
+    while (offset < total) {
+      result = await taskCenterApi.getItemFiles({ engine_task_id: taskId, offset, limit: 500 })
+      const nextRows = Array.isArray(result?.items) ? result.items : []
+      if (!nextRows.length) break
+      mergedRows.push(...nextRows)
+      offset += nextRows.length
+      if (!result?.has_more) break
+    }
+    if (mergedRows.length <= rows.length) return
+    const merged = {
+      ...task,
+      download_files: mergedRows,
+      download_files_total: Number(result?.total || total),
+      download_files_truncated: Boolean(result?.has_more && offset < total),
+    }
+    trackedDownloadTasks.value = trackedDownloadTasks.value.map(item => (
+      item.id === task.id || item.active_task_id === taskId ? merged : item
+    ))
+  } catch (error) {
+    console.error('加载下载文件明细失败:', error)
   }
 }
 
