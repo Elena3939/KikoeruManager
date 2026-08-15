@@ -1907,6 +1907,7 @@ class LibraryIndexService:
         *,
         entry_type: Optional[str] = 'dir',
         limit: int = 100,
+        repair_missing: bool = True,
     ) -> list[IndexEntry]:
         """按 RJ 号精确查。
 
@@ -1916,7 +1917,11 @@ class LibraryIndexService:
         - Sequence[str] → 多库存（IN 查询）
         """
         return self._store.find_by_rjcode(
-            library_id, rjcode, entry_type=entry_type, limit=limit,
+            library_id,
+            rjcode,
+            entry_type=entry_type,
+            limit=limit,
+            repair_missing=repair_missing,
         )
 
     def find_by_rjcodes(

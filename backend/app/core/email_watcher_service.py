@@ -933,7 +933,12 @@ class EmailWatcherService:
         actual_norm = circle_service.normalize_rjcode(actual_rjcode)
         from .library_manager import get_library_manager
 
-        local_index_hits = get_library_manager().find_rj_in_ready_index(probe_candidates)
+        # 库存索引查询内部包含同步 SQL 和资源预算等待，不能在邮件监听器的
+        # asyncio 主循环里直接调用，否则一个卡住的写预算会拖死全站 HTTP。
+        local_index_hits = await asyncio.to_thread(
+            get_library_manager().find_rj_in_ready_index,
+            probe_candidates,
+        )
         flat_local_hits = [hit for hits in local_index_hits.values() for hit in hits]
         found_rjcodes = []
         subtitle_rjcodes = []

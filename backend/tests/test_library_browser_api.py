@@ -93,6 +93,9 @@ def test_find_rj_in_ready_index_uses_usable_snapshot_while_catching_up(monkeypat
     )
 
     class _IndexService:
+        def __init__(self):
+            self.find_calls = []
+
         def is_ready(self, _library_id):
             return False
 
@@ -100,14 +103,16 @@ def test_find_rj_in_ready_index_uses_usable_snapshot_while_catching_up(monkeypat
             return True
 
         def find_by_rjcode(self, *_args, **_kwargs):
+            self.find_calls.append((_args, _kwargs))
             return [entry]
 
     manager = object.__new__(library_manager_module.LibraryManager)
     manager._active_libraries = lambda: [library]
+    index_service = _IndexService()
     monkeypatch.setattr(
         library_index_module,
         "get_library_index_service",
-        lambda: _IndexService(),
+        lambda: index_service,
     )
 
     result = manager.find_rj_in_ready_index(
@@ -117,6 +122,7 @@ def test_find_rj_in_ready_index_uses_usable_snapshot_while_catching_up(monkeypat
 
     assert result["RJ01618558"][0]["path"] == entry.absolute_path
     assert result["RJ01618558"][0]["file_count"] == 30
+    assert index_service.find_calls[0][1]["repair_missing"] is False
     assert manager.has_ready_index() is True
 
 
