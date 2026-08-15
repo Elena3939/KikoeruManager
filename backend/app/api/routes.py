@@ -3209,8 +3209,9 @@ async def get_task_center_item_files(
     engine_task_id: Optional[str] = None,
     offset: int = 0,
     limit: int = 200,
+    field: str = "download_files",
 ):
-    """按页读取下载明细，完整信息保留但不阻塞任务详情首屏。"""
+    """按字段分页读取下载明细或文件树，不阻塞任务详情首屏。"""
     from ..core.task_center_service import get_task_center_service
 
     try:
@@ -3219,6 +3220,7 @@ async def get_task_center_item_files(
             engine_task_id=engine_task_id,
             offset=offset,
             limit=limit,
+            field=field,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -19053,6 +19055,13 @@ async def asmr_sync_start(request: ASMRSyncStartRequest):
             raise HTTPException(status_code=400, detail="没有要下载的作品")
 
         engine = get_task_engine()
+        config = get_config()
+        engine.set_max_concurrent(
+            max(
+                int(getattr(config.asmr_sync, "enhanced_max_parallel_sessions", 5) or 5),
+                int(getattr(config.asmr_sync, "max_concurrent_downloads", 3) or 3),
+            )
+        )
         created_tasks = []
 
         for item in items:
@@ -19154,7 +19163,12 @@ async def asmr_sync_enhanced_start(request: ASMRSyncEnhancedStartRequest):
         raise HTTPException(status_code=400, detail="没有可启动的增强下载任务")
 
     engine = get_task_engine()
-    engine.set_max_concurrent(int(getattr(config.asmr_sync, "enhanced_max_parallel_sessions", 5) or 5))
+    engine.set_max_concurrent(
+        max(
+            int(getattr(config.asmr_sync, "enhanced_max_parallel_sessions", 5) or 5),
+            int(getattr(config.asmr_sync, "max_concurrent_downloads", 3) or 3),
+        )
+    )
     service = get_asmr_resource_service()
     created_tasks = []
     for item in request.items:
@@ -20510,7 +20524,12 @@ async def circle_completion_download_start(request: CircleCompletionDownloadStar
     config = get_config()
     batch_id = str(uuid.uuid4())
     engine = get_task_engine()
-    engine.set_max_concurrent(int(getattr(config.asmr_sync, "enhanced_max_parallel_sessions", 5) or 5))
+    engine.set_max_concurrent(
+        max(
+            int(getattr(config.asmr_sync, "enhanced_max_parallel_sessions", 5) or 5),
+            int(getattr(config.asmr_sync, "max_concurrent_downloads", 3) or 3),
+        )
+    )
     session_service = get_asmr_resource_service()
     created_tasks = []
     child_rows = []
