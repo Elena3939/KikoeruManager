@@ -2341,6 +2341,55 @@ def _task_phase_metric_cleanup_config() -> dict:
     }
 
 
+def _library_index_maintenance_config() -> dict:
+    """库存索引低频维护参数；每轮都有写入和时间预算。"""
+    return {
+        "initial_delay_seconds": max(
+            30,
+            int(os.getenv("KIKOERUMANAGER_LIBRARY_INDEX_MAINTENANCE_INITIAL_DELAY_SECONDS", "300") or 300),
+        ),
+        "interval_seconds": max(
+            300,
+            int(os.getenv("KIKOERUMANAGER_LIBRARY_INDEX_MAINTENANCE_INTERVAL_SECONDS", "3600") or 3600),
+        ),
+        "generation_chunk_size": max(
+            100,
+            min(
+                5000,
+                int(os.getenv("KIKOERUMANAGER_LIBRARY_INDEX_GENERATION_CLEANUP_CHUNK_SIZE", "1000") or 1000),
+            ),
+        ),
+        "generation_max_chunks": max(
+            1,
+            min(
+                50,
+                int(os.getenv("KIKOERUMANAGER_LIBRARY_INDEX_GENERATION_CLEANUP_MAX_CHUNKS", "10") or 10),
+            ),
+        ),
+        "generation_time_budget_seconds": max(
+            1.0,
+            min(
+                60.0,
+                float(os.getenv("KIKOERUMANAGER_LIBRARY_INDEX_GENERATION_CLEANUP_SECONDS", "15") or 15),
+            ),
+        ),
+        "rjcode_limit": max(
+            100,
+            min(
+                5000,
+                int(os.getenv("KIKOERUMANAGER_LIBRARY_INDEX_RJCODE_BACKFILL_LIMIT", "1000") or 1000),
+            ),
+        ),
+        "rjcode_max_batches": max(
+            1,
+            min(
+                50,
+                int(os.getenv("KIKOERUMANAGER_LIBRARY_INDEX_RJCODE_BACKFILL_MAX_BATCHES", "10") or 10),
+            ),
+        ),
+    }
+
+
 # 通知定期清理协程（每24h按 notification_center.retain_days / max_items 清理已读通知）
 async def _periodic_notification_cleanup():
     while True:
@@ -2405,6 +2454,29 @@ async def _periodic_task_phase_metric_cleanup():
         except Exception as e:
             logger.warning(f"[任务阶段指标] 自动清理异常: {e}")
         await asyncio.sleep(24 * 3600)
+
+
+async def _periodic_library_index_maintenance():
+    config = _library_index_maintenance_config()
+    await asyncio.sleep(config.pop("initial_delay_seconds"))
+    interval_seconds = config.pop("interval_seconds")
+    while True:
+        try:
+            result = await asyncio.to_thread(
+                get_library_index_service().run_periodic_maintenance,
+                **config,
+            )
+            if (
+                int(result.get("generation_rows_removed") or 0) > 0
+                or int((result.get("rjcodes") or {}).get("repaired") or 0) > 0
+                or int((result.get("status_stats") or {}).get("repaired") or 0) > 0
+            ):
+                logger.info("[索引维护] 周期维护完成: %s", result)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.warning("[索引维护] 周期维护异常", exc_info=True)
+        await asyncio.sleep(interval_seconds)
 
 
 # 启动事件
@@ -2522,6 +2594,9 @@ async def startup_event():
 
     # 启动任务阶段指标清理任务（性能观测表只保留近期样本）
     asyncio.create_task(_periodic_task_phase_metric_cleanup())
+
+    # 启动库存索引低频维护：过期 generation、旧 RJ 字段和状态统计漂移。
+    asyncio.create_task(_periodic_library_index_maintenance())
 
 # 关闭事件
 @app.on_event("shutdown")
@@ -8358,7 +8433,13 @@ def _stored_mutation_replay_response(
     }
 
 
-def _index_status_to_dict(status, fallback_library_id: Optional[str] = None) -> Dict[str, Any]:
+def _index_status_to_dict(
+    status,
+    fallback_library_id: Optional[str] = None,
+    *,
+    pending_effects: int = 0,
+    pending_batches: int = 0,
+) -> Dict[str, Any]:
     if status is None:
         return {
             "library_id": fallback_library_id or "",
@@ -8374,6 +8455,8 @@ def _index_status_to_dict(status, fallback_library_id: Optional[str] = None) -> 
             "accepted_seq": 0,
             "materialized_seq": 0,
             "pending_events": 0,
+            "pending_effects": 0,
+            "pending_batches": 0,
             "state_revision": 0,
             "view_revision": 0,
             "active_generation": 1,
@@ -8394,6 +8477,8 @@ def _index_status_to_dict(status, fallback_library_id: Optional[str] = None) -> 
         "accepted_seq": int(getattr(status, "accepted_seq", 0) or 0),
         "materialized_seq": int(getattr(status, "materialized_seq", 0) or 0),
         "pending_events": int(getattr(status, "pending_events", 0) or 0),
+        "pending_effects": int(pending_effects or 0),
+        "pending_batches": int(pending_batches or 0),
         "state_revision": int(getattr(status, "state_revision", 0) or 0),
         "view_revision": int(getattr(status, "view_revision", 0) or 0),
         "active_generation": int(getattr(status, "active_generation", 1) or 1),
@@ -8548,7 +8633,17 @@ async def get_library_index_status(library_id: Optional[str] = None):
             library = None
         if library is not None and library.type == "synology_filestation":
             return _disabled_remote_index_status(library)
-        return _index_status_to_dict(service.get_status(normalized), fallback_library_id=normalized)
+        status = service.get_status(normalized)
+        pending = service.pending_effect_summary(
+            normalized,
+            getattr(status, "materialized_seq", 0) if status is not None else 0,
+            getattr(status, "accepted_seq", 0) if status is not None else 0,
+        )
+        return _index_status_to_dict(
+            status,
+            fallback_library_id=normalized,
+            **pending,
+        )
 
     manager = get_library_manager()
     remote_library_ids = {
@@ -8560,8 +8655,16 @@ async def get_library_index_status(library_id: Optional[str] = None):
         item for item in service.list_all_status()
         if item.library_id not in remote_library_ids
     ]
+    items = []
+    for item in statuses:
+        pending = service.pending_effect_summary(
+            item.library_id,
+            item.materialized_seq,
+            item.accepted_seq,
+        )
+        items.append(_index_status_to_dict(item, **pending))
     return {
-        "items": [_index_status_to_dict(item) for item in statuses],
+        "items": items,
         "count": len(statuses),
     }
 

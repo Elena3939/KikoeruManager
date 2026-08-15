@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Optional, Sequence, Union
 
-from sqlalchemy import func, text
+from sqlalchemy import and_, func, or_, text
 
 from .local_scanner import LocalScanner
 from .remote_scanner import RemoteScanner
@@ -676,42 +676,284 @@ class LibraryIndexService:
         finally:
             lock.release()
 
-    @staticmethod
     def cleanup_retired_generations(
+        self,
         *,
         chunk_size: int = GENERATION_CLEANUP_CHUNK_SIZE,
+        max_chunks: int = 20,
+        time_budget_seconds: float = 20.0,
     ) -> int:
+        """分批清理过期 generation，且绝不删除 status 仍引用的代。
+
+        旧实现没有调用点，并且一旦被调用会无限清到结束，容易长时间占满索引写预算。
+        这里增加批次和时间预算，交给周期维护多轮完成。
+        """
         removed = 0
-        while True:
-            db = SessionLocal()
-            try:
-                candidate = db.query(LibraryIndexGeneration).filter(
-                    LibraryIndexGeneration.state.in_(("retired", "failed")),
-                    LibraryIndexGeneration.delete_after.isnot(None),
-                    LibraryIndexGeneration.delete_after <= get_local_now(),
-                ).order_by(LibraryIndexGeneration.delete_after.asc()).first()
-                if candidate is None:
-                    return removed
-                ids = [
-                    row[0]
-                    for row in db.query(LibraryIndexEntry.id).filter(
-                        LibraryIndexEntry.library_id == candidate.library_id,
-                        LibraryIndexEntry.generation == candidate.generation,
-                    ).order_by(LibraryIndexEntry.id.asc()).limit(chunk_size).all()
-                ]
-                if ids:
-                    db.query(LibraryIndexEntry).filter(
-                        LibraryIndexEntry.id.in_(ids)
-                    ).delete(synchronize_session=False)
-                    removed += len(ids)
-                else:
-                    db.delete(candidate)
-                db.commit()
-            except Exception:
-                db.rollback()
-                raise
-            finally:
-                db.close()
+        completed_generations = 0
+        chunk_size = max(1, min(int(chunk_size or GENERATION_CLEANUP_CHUNK_SIZE), 10000))
+        max_chunks = max(1, int(max_chunks or 1))
+        deadline = time.monotonic() + max(1.0, float(time_budget_seconds or 20.0))
+        chunks = 0
+        while chunks < max_chunks and time.monotonic() < deadline:
+            with get_resource_budget_service().acquire_sync(
+                "library_index_write",
+                reason="library_index.generation_cleanup",
+            ):
+                db = SessionLocal()
+                try:
+                    candidate = (
+                        db.query(LibraryIndexGeneration)
+                        .outerjoin(
+                            LibraryIndexStatus,
+                            LibraryIndexStatus.library_id == LibraryIndexGeneration.library_id,
+                        )
+                        .filter(
+                            LibraryIndexGeneration.state.in_(("retired", "failed")),
+                            LibraryIndexGeneration.delete_after.isnot(None),
+                            LibraryIndexGeneration.delete_after <= get_local_now(),
+                            or_(
+                                LibraryIndexStatus.library_id.is_(None),
+                                and_(
+                                    LibraryIndexStatus.active_generation
+                                    != LibraryIndexGeneration.generation,
+                                    or_(
+                                        LibraryIndexStatus.building_generation.is_(None),
+                                        LibraryIndexStatus.building_generation
+                                        != LibraryIndexGeneration.generation,
+                                    ),
+                                ),
+                            ),
+                        )
+                        .order_by(
+                            LibraryIndexGeneration.delete_after.asc(),
+                            LibraryIndexGeneration.id.asc(),
+                        )
+                        .with_for_update(skip_locked=True, of=LibraryIndexGeneration)
+                        .first()
+                    )
+                    if candidate is None:
+                        db.rollback()
+                        break
+                    ids = [
+                        row[0]
+                        for row in db.query(LibraryIndexEntry.id).filter(
+                            LibraryIndexEntry.library_id == candidate.library_id,
+                            LibraryIndexEntry.generation == candidate.generation,
+                        ).order_by(LibraryIndexEntry.id.asc()).limit(chunk_size).all()
+                    ]
+                    if ids:
+                        db.query(LibraryIndexEntry).filter(
+                            LibraryIndexEntry.id.in_(ids)
+                        ).delete(synchronize_session=False)
+                        removed += len(ids)
+                    else:
+                        logger.info(
+                            "[索引维护] 过期 generation 清理完成 library=%s generation=%s",
+                            candidate.library_id,
+                            candidate.generation,
+                        )
+                        db.delete(candidate)
+                        completed_generations += 1
+                    db.commit()
+                    chunks += 1
+                except Exception:
+                    db.rollback()
+                    raise
+                finally:
+                    db.close()
+        if removed or completed_generations:
+            logger.info(
+                "[索引维护] generation 清理批次完成 rows=%s generations=%s chunks=%s",
+                removed,
+                completed_generations,
+                chunks,
+            )
+        return removed
+
+    @staticmethod
+    def pending_effect_count(library_id: str, after_seq: int, through_seq: int) -> int:
+        return int(
+            LibraryIndexService.pending_effect_summary(
+                library_id,
+                after_seq,
+                through_seq,
+            )["pending_effects"]
+        )
+
+    @staticmethod
+    def pending_effect_summary(library_id: str, after_seq: int, through_seq: int) -> dict[str, int]:
+        if not library_id or int(through_seq or 0) <= int(after_seq or 0):
+            return {"pending_effects": 0, "pending_batches": 0}
+        db = SessionLocal()
+        try:
+            pending_effects, pending_batches = db.query(
+                func.count(LibraryIndexMutationEffect.id),
+                func.count(func.distinct(LibraryIndexMutationEffect.seq)),
+            ).filter(
+                LibraryIndexMutationEffect.library_id == library_id,
+                LibraryIndexMutationEffect.seq > int(after_seq or 0),
+                LibraryIndexMutationEffect.seq <= int(through_seq or 0),
+            ).one()
+            return {
+                "pending_effects": int(pending_effects or 0),
+                "pending_batches": int(pending_batches or 0),
+            }
+        finally:
+            db.close()
+
+    def repair_status_statistics(self) -> dict[str, object]:
+        """修正 ready 且无待追赶库存的状态汇总漂移。"""
+        db = SessionLocal()
+        try:
+            candidate_ids = [
+                row[0]
+                for row in db.query(LibraryIndexStatus.library_id).filter(
+                    LibraryIndexStatus.status == "ready",
+                    LibraryIndexStatus.building_generation.is_(None),
+                    LibraryIndexStatus.accepted_seq == LibraryIndexStatus.materialized_seq,
+                ).order_by(LibraryIndexStatus.library_id.asc()).all()
+            ]
+        finally:
+            db.close()
+
+        repaired: dict[str, dict[str, int]] = {}
+        for library_id in candidate_ids:
+            with get_resource_budget_service().acquire_sync(
+                "library_index_write",
+                reason="library_index.status_stats_repair",
+            ):
+                db = SessionLocal()
+                snapshot = None
+                try:
+                    initial = db.query(LibraryIndexStatus).filter(
+                        LibraryIndexStatus.library_id == library_id
+                    ).first()
+                    if (
+                        initial is None
+                        or initial.status != "ready"
+                        or initial.building_generation is not None
+                        or int(initial.accepted_seq or 0) != int(initial.materialized_seq or 0)
+                    ):
+                        db.rollback()
+                        continue
+                    generation = int(initial.active_generation or 1)
+                    materialized_seq = int(initial.materialized_seq or 0)
+                    active_entries = self._store.apply_active_view(
+                        db,
+                        db.query(LibraryIndexEntry),
+                        library_ids=[library_id],
+                    ).filter(
+                        LibraryIndexEntry.generation == generation,
+                        LibraryIndexEntry.materialized_seq <= materialized_seq,
+                    )
+                    total_entries, total_size_bytes, folder_count = active_entries.with_entities(
+                        func.count(LibraryIndexEntry.id),
+                        func.coalesce(
+                            func.sum(
+                                func.greatest(
+                                    func.coalesce(LibraryIndexEntry.size, 0),
+                                    0,
+                                )
+                            ).filter(LibraryIndexEntry.entry_type == "file"),
+                            0,
+                        ),
+                        func.count(LibraryIndexEntry.id).filter(
+                            LibraryIndexEntry.entry_type == "dir",
+                            LibraryIndexEntry.relative_path != "",
+                            func.coalesce(LibraryIndexEntry.parent_path, "") == "",
+                        ),
+                    ).one()
+                    status = db.query(LibraryIndexStatus).filter(
+                        LibraryIndexStatus.library_id == library_id
+                    ).with_for_update().one()
+                    if (
+                        status.status != "ready"
+                        or status.building_generation is not None
+                        or int(status.active_generation or 1) != generation
+                        or int(status.materialized_seq or 0) != materialized_seq
+                        or int(status.accepted_seq or 0) != materialized_seq
+                    ):
+                        db.rollback()
+                        continue
+                    actual = {
+                        "total_entries": int(total_entries or 0),
+                        "total_size_bytes": int(total_size_bytes or 0),
+                        "folder_count": int(folder_count or 0),
+                    }
+                    previous = {
+                        "total_entries": int(status.total_entries or 0),
+                        "total_size_bytes": int(status.total_size_bytes or 0),
+                        "folder_count": int(status.folder_count or 0),
+                    }
+                    if actual == previous:
+                        db.rollback()
+                        continue
+                    status.total_entries = actual["total_entries"]
+                    status.total_size_bytes = actual["total_size_bytes"]
+                    status.folder_count = actual["folder_count"]
+                    status.state_revision = int(status.state_revision or 0) + 1
+                    status.updated_at = int(time.time() * 1000)
+                    snapshot = self._store._row_to_status(status)
+                    db.commit()
+                    repaired[library_id] = {
+                        "previous_entries": previous["total_entries"],
+                        "actual_entries": actual["total_entries"],
+                    }
+                except Exception:
+                    db.rollback()
+                    raise
+                finally:
+                    db.close()
+                if snapshot is not None:
+                    self._store._broadcast_status_change(
+                        snapshot,
+                        reason="library_index_status_stats_repaired",
+                    )
+        if repaired:
+            logger.info("[索引维护] 状态统计漂移已修正: %s", repaired)
+        return {"repaired": len(repaired), "libraries": repaired}
+
+    def run_periodic_maintenance(
+        self,
+        *,
+        generation_chunk_size: int = 1000,
+        generation_max_chunks: int = 10,
+        generation_time_budget_seconds: float = 15.0,
+        rjcode_limit: int = 1000,
+        rjcode_max_batches: int = 10,
+    ) -> dict[str, object]:
+        generation_rows = self.cleanup_retired_generations(
+            chunk_size=generation_chunk_size,
+            max_chunks=generation_max_chunks,
+            time_budget_seconds=generation_time_budget_seconds,
+        )
+        rjcode_max_batches = max(1, min(int(rjcode_max_batches or 1), 50))
+        rjcodes = {
+            "scanned": 0,
+            "repaired": 0,
+            "repaired_by_library": {},
+            "batches": 0,
+        }
+        for _ in range(rjcode_max_batches):
+            with get_resource_budget_service().acquire_sync(
+                "library_index_write",
+                reason="library_index.rjcode_backfill",
+            ):
+                batch = self._store.backfill_missing_rjcodes(limit=rjcode_limit)
+            rjcodes["scanned"] += int(batch.get("scanned") or 0)
+            rjcodes["repaired"] += int(batch.get("repaired") or 0)
+            rjcodes["batches"] += 1
+            for library_id, count in (batch.get("repaired_by_library") or {}).items():
+                repaired_by_library = rjcodes["repaired_by_library"]
+                repaired_by_library[library_id] = repaired_by_library.get(library_id, 0) + int(count or 0)
+            if not int(batch.get("repaired") or 0):
+                break
+        status_stats = self.repair_status_statistics()
+        return {
+            "generation_rows_removed": generation_rows,
+            "rjcodes": rjcodes,
+            "status_stats": status_stats,
+        }
 
     def rebuild_local(
         self,
