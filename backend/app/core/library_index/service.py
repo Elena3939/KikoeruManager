@@ -935,11 +935,8 @@ class LibraryIndexService:
             "batches": 0,
         }
         for _ in range(rjcode_max_batches):
-            with get_resource_budget_service().acquire_sync(
-                "library_index_write",
-                reason="library_index.rjcode_backfill",
-            ):
-                batch = self._store.backfill_missing_rjcodes(limit=rjcode_limit)
+            # backfill 内部的 _write_session 已获取写预算，外层重复获取会在并发上限 1 时自锁。
+            batch = self._store.backfill_missing_rjcodes(limit=rjcode_limit)
             rjcodes["scanned"] += int(batch.get("scanned") or 0)
             rjcodes["repaired"] += int(batch.get("repaired") or 0)
             rjcodes["batches"] += 1
@@ -1128,7 +1125,8 @@ class LibraryIndexService:
         root_path: str,
     ) -> IndexStatus:
         """异步后台触发：立即把状态置为 syncing 并返回，扫描在 thread 里跑。"""
-        status = self._store.upsert_status(
+        status = await asyncio.to_thread(
+            self._store.upsert_status,
             library_id,
             status='syncing',
             watcher_mode='disabled',
