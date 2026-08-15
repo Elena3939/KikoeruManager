@@ -9,7 +9,7 @@ import uuid
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import asdict, is_dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,6 +20,94 @@ from .resource_budget_service import get_resource_budget_service
 from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
+
+
+class ASMRFileDownloadScheduler:
+    """全局文件下载槽位，按 RJ 会话创建顺序优先分配。"""
+
+    def __init__(self):
+        self._condition = asyncio.Condition()
+        self._limit = 1
+        self._active_total = 0
+        self._sessions: Dict[str, Dict[str, int]] = {}
+
+    async def register(self, session_key: str, total_files: int, limit: int) -> None:
+        normalized_key = str(session_key or "").strip()
+        normalized_total = max(0, int(total_files or 0))
+        if not normalized_key or normalized_total <= 0:
+            return
+        async with self._condition:
+            self._limit = max(1, int(limit or 1))
+            self._sessions[normalized_key] = {
+                "remaining": normalized_total,
+                "active": 0,
+            }
+            self._condition.notify_all()
+
+    def _session_quota(self, session_key: str) -> int:
+        remaining_capacity = self._limit
+        for key, state in self._sessions.items():
+            remaining = max(0, int(state.get("remaining") or 0))
+            if remaining <= 0:
+                continue
+            quota = min(remaining, remaining_capacity)
+            if key == session_key:
+                return quota
+            remaining_capacity -= quota
+            if remaining_capacity <= 0:
+                return 0
+        return 0
+
+    async def acquire(self, session_key: str) -> bool:
+        normalized_key = str(session_key or "").strip()
+        waited = False
+        async with self._condition:
+            while True:
+                state = self._sessions.get(normalized_key)
+                if state is None:
+                    raise RuntimeError("ASMR 文件下载会话未注册")
+                quota = self._session_quota(normalized_key)
+                if self._active_total < self._limit and int(state.get("active") or 0) < quota:
+                    state["active"] = int(state.get("active") or 0) + 1
+                    self._active_total += 1
+                    return waited
+                waited = True
+                await self._condition.wait()
+
+    async def release(self, session_key: str) -> None:
+        normalized_key = str(session_key or "").strip()
+        async with self._condition:
+            state = self._sessions.get(normalized_key)
+            if state is None:
+                return
+            if int(state.get("active") or 0) > 0:
+                state["active"] = int(state.get("active") or 0) - 1
+                self._active_total = max(0, self._active_total - 1)
+            state["remaining"] = max(0, int(state.get("remaining") or 0) - 1)
+            if int(state.get("remaining") or 0) <= 0 and int(state.get("active") or 0) <= 0:
+                self._sessions.pop(normalized_key, None)
+            self._condition.notify_all()
+
+    async def unregister(self, session_key: str) -> None:
+        normalized_key = str(session_key or "").strip()
+        async with self._condition:
+            state = self._sessions.get(normalized_key)
+            if state is None:
+                return
+            active = max(0, int(state.get("active") or 0))
+            if active:
+                state["remaining"] = active
+            else:
+                self._sessions.pop(normalized_key, None)
+            self._condition.notify_all()
+
+    async def snapshot(self) -> Dict[str, Any]:
+        async with self._condition:
+            return {
+                "limit": self._limit,
+                "active_total": self._active_total,
+                "sessions": {key: dict(value) for key, value in self._sessions.items()},
+            }
 
 
 class ASMRResourceService:
@@ -46,6 +134,7 @@ class ASMRResourceService:
             asmr_service = get_asmr_download_service()
         self.asmr_service = asmr_service
         self._global_upload_lock = asyncio.Lock()
+        self._file_download_scheduler = ASMRFileDownloadScheduler()
         self._retry_locks: Dict[str, asyncio.Lock] = {}
         self._synology_clients: Dict[str, Any] = {}
         self._remote_source_cache: TTLCache = TTLCache(max_size=512, ttl_seconds=1800, name="asmr.remote_source")
@@ -188,6 +277,101 @@ class ASMRResourceService:
             "message": str(message),
         })
         task.task_metadata["progress_log"] = logs[-80:]
+
+    async def _schedule_failed_resource_retry(
+        self,
+        task,
+        *,
+        rjcode: str,
+        metadata: Dict[str, Any],
+        selected_resources: List[Dict[str, Any]],
+        failed_files: List[Dict[str, Any]],
+        download_root: str,
+    ) -> None:
+        """保留已下载文件，把失败资源交给任务引擎自动断点重试。"""
+        from .task_engine import get_task_engine
+
+        failed_resources = [
+            dict(item.get("resource") or {})
+            for item in failed_files
+            if isinstance(item, dict) and isinstance(item.get("resource"), dict) and item.get("resource")
+        ]
+        if not failed_resources:
+            failed_paths = {
+                str(item.get("relative_path") or "").strip()
+                for item in failed_files
+                if isinstance(item, dict) and str(item.get("relative_path") or "").strip()
+            }
+            failed_resources = [
+                resource
+                for resource in selected_resources
+                if str(resource.get("relative_path") or resource.get("file_name") or "").strip() in failed_paths
+            ]
+        retry_resources = failed_resources or list(selected_resources)
+        task.task_metadata.update(
+            {
+                "selected_resources": retry_resources,
+                "selected_resource_count": len(retry_resources),
+                "session_selected_resource_count": max(
+                    len(selected_resources),
+                    int(metadata.get("session_selected_resource_count") or 0),
+                ),
+                "download_root": download_root,
+                "download_mode": "enhanced",
+                "source_action": "auto_retry_failed_resources",
+                "auto_retry_failed_count": len(failed_files),
+                "last_failed_files": failed_files,
+            }
+        )
+
+        retry_count = max(0, int(task.task_metadata.get("retry_count") or 0))
+        max_retry_count = max(
+            1,
+            int(getattr(get_config().asmr_sync, "max_retry_count", 10) or 10),
+        )
+        reason = f"{rjcode} 有 {len(failed_files)} 个文件失败，已保留下载内容，等待自动重试"
+        if retry_count >= max_retry_count:
+            task.task_metadata["retry_exhausted"] = True
+            task.task_metadata["available_actions"] = ["RETRY"]
+            task.task_metadata["retry_reason"] = f"自动重试已达到上限（{max_retry_count} 次）"
+            task.fail(f"{rjcode} 自动重试已达到上限，已保留下载缓存")
+            self._append_task_log(task, task.task_metadata["retry_reason"], "warning")
+            get_task_engine()._remove_waiting_retry_task(rjcode)
+            return
+
+        delay_seconds = min(3600, 300 * (2 ** min(retry_count, 4)))
+        retry_after = datetime.now() + timedelta(seconds=delay_seconds)
+        task.set_waiting_retry(reason, retry_after)
+        task.task_metadata["subtitle_folder"] = str(metadata.get("folder_path") or "")
+        task.task_metadata["work_title"] = str(metadata.get("work_title") or metadata.get("title") or rjcode)
+        session_id = str(metadata.get("session_id") or "").strip()
+        if session_id:
+            self._update_session(
+                session_id,
+                task_id=task.id,
+                status="queued",
+                statistics={
+                    "retry_after": retry_after.isoformat(),
+                    "retry_count": task.task_metadata.get("retry_count"),
+                    "download_root": download_root,
+                },
+                failure_summary={"failed_resources": failed_files},
+                local_download_ready=False,
+                local_download_root=download_root,
+            )
+        self._append_task_log(
+            task,
+            f"{reason}，将在 {int(delay_seconds / 60)} 分钟后重试",
+            "warning",
+        )
+        engine = get_task_engine()
+        engine._save_waiting_retry_task(
+            task,
+            str(metadata.get("folder_path") or ""),
+            str(metadata.get("work_title") or metadata.get("title") or rjcode),
+            reason,
+            retry_after,
+        )
 
     def _update_download_runtime(
         self,
@@ -2491,6 +2675,22 @@ class ASMRResourceService:
         except Exception:
             logger.warning("[社团补全] 回写库存拥有态失败 rj=%s path=%s", rjcode, folder_path, exc_info=True)
 
+    @staticmethod
+    def _should_sync_owned_state_after_finalize(
+        *,
+        final_status: str,
+        postprocess_options: Dict[str, Any],
+        final_output_path: str,
+        all_files_uploaded: bool,
+    ) -> bool:
+        """本地后处理完成后统一回写拥有态，来源页面不应影响库存事实。"""
+        return bool(
+            final_status == "completed"
+            and postprocess_options.get("enabled")
+            and final_output_path
+            and not all_files_uploaded
+        )
+
     async def _refresh_library_after_full_upload(self, rjcode: str, folder_path: str, library_id: str = "") -> None:
         if not rjcode or not folder_path:
             return
@@ -2555,7 +2755,15 @@ class ASMRResourceService:
                 metadata.update(dict(prepared_remote_upload.get("final_metadata") or {}))
                 metadata["final_output_path"] = str(prepared_remote_upload.get("final_output_path") or "")
                 immediate_synology_upload = bool(prepared_remote_upload.get("immediate_synology_upload"))
-        per_session_concurrency = max(1, int(getattr(config.asmr_sync, "enhanced_per_session_concurrency", 3) or 3))
+        global_download_concurrency = max(
+            1,
+            int(getattr(config.asmr_sync, "max_concurrent_downloads", 3) or 3),
+        )
+        configured_session_concurrency = max(
+            1,
+            int(getattr(config.asmr_sync, "enhanced_per_session_concurrency", global_download_concurrency) or global_download_concurrency),
+        )
+        per_session_concurrency = max(global_download_concurrency, configured_session_concurrency)
 
         task.task_metadata["download_files"] = []
         task.task_metadata["download_runtime"] = {}
@@ -2577,7 +2785,11 @@ class ASMRResourceService:
         os.makedirs(temp_root, exist_ok=True)
         download_base_path = str(metadata.get("download_base_path") or "").strip()
         download_root = str(metadata.get("download_root") or "").strip()
-        is_retry_download = source_action in {"retry_failed_resources", "retry_failed_resource_item"}
+        is_retry_download = source_action in {
+            "retry_failed_resources",
+            "retry_failed_resource_item",
+            "auto_retry_failed_resources",
+        }
         if is_retry_download and (not download_root or not os.path.isdir(download_root)):
             raise ValueError("原下载缓存目录不存在，无法断点续传；请重新创建增强下载任务")
         if not download_root:
@@ -2600,6 +2812,7 @@ class ASMRResourceService:
         session_result_persisted = False
         completed_count = 0
         total_files = max(len(selected_resources), 1)
+        network_download_indices: set[int] = set()
         expected_download_total_bytes = sum(
             max(0, int(resource.get("size_bytes") or resource.get("size") or 0))
             for resource in selected_resources
@@ -2623,6 +2836,19 @@ class ASMRResourceService:
                 "speed_bytes_per_sec": 0,
                 "eta_seconds": 0,
             }
+            destination = os.path.join(download_root, self._sanitize_relative_path(resource_path))
+            file_exists = os.path.exists(destination) and os.path.getsize(destination) > 0
+            existing_size = os.path.getsize(destination) if file_exists else 0
+            reuse_existing = bool(
+                file_exists
+                and (
+                    source_action in {"reimport_local_download_root", "reimport_downloaded_session"}
+                    or resource_total <= 0
+                    or existing_size == resource_total
+                )
+            )
+            if not reuse_existing and str(resource.get("remote_url") or "").strip():
+                network_download_indices.add(resource_index)
         task.task_metadata["download_files"] = sorted(
             progress_state.values(),
             key=lambda item: item.get("index") or 0,
@@ -2750,16 +2976,34 @@ class ASMRResourceService:
                             ):
                                 last_download_error = text
 
-                        ok = await self.asmr_service.download_file(
-                            remote_url,
-                            destination,
-                            progress_callback=file_progress_callback,
-                            log_callback=download_log_callback,
-                            max_retries=max_retries,
-                            timeout=timeout,
-                            cancel_check=task.is_cancelled,
-                            pause_wait=task.wait_if_paused,
+                        self._update_download_runtime(
+                            task,
+                            progress_state,
+                            file_key=relative_path or display_name,
+                            file_name=display_name,
+                            relative_path=relative_path,
+                            downloaded_bytes=existing_size,
+                            total_bytes=expected_size or existing_size,
+                            index=index,
+                            total_files=total_files,
+                            stage="queued",
                         )
+                        waited_for_slot = await self._file_download_scheduler.acquire(task.id)
+                        try:
+                            if waited_for_slot:
+                                self._append_task_log(task, f"{display_name} 已获得全局下载槽位")
+                            ok = await self.asmr_service.download_file(
+                                remote_url,
+                                destination,
+                                progress_callback=file_progress_callback,
+                                log_callback=download_log_callback,
+                                max_retries=max_retries,
+                                timeout=timeout,
+                                cancel_check=task.is_cancelled,
+                                pause_wait=task.wait_if_paused,
+                            )
+                        finally:
+                            await self._file_download_scheduler.release(task.id)
                         if not ok:
                             if task.is_cancelled():
                                 raise RuntimeError("用户取消")
@@ -2948,6 +3192,11 @@ class ASMRResourceService:
                 return result
 
         try:
+            await self._file_download_scheduler.register(
+                task.id,
+                len(network_download_indices),
+                global_download_concurrency,
+            )
             results = await asyncio.gather(
                 *[handle_resource(index, resource) for index, resource in enumerate(selected_resources, start=1)],
                 return_exceptions=True,
@@ -3135,7 +3384,23 @@ class ASMRResourceService:
                             "remaining_failed_count": merged_failed_count,
                         },
                     )
-                raise ValueError("本轮没有任何文件下载成功" if has_previous_success else "没有任何文件下载成功")
+                await self._schedule_failed_resource_retry(
+                    task,
+                    rjcode=rjcode,
+                    metadata=metadata,
+                    selected_resources=selected_resources,
+                    failed_files=failed_files,
+                    download_root=download_root,
+                )
+                task.task_metadata["failure_reason"] = " / ".join(
+                    [str(item.get("reason") or item.get("exception_type") or "未知原因") for item in failed_files[:5]]
+                )
+                return {
+                    "success": False,
+                    "waiting_retry": str(getattr(task.status, "value", task.status)) == "waiting_retry",
+                    "download_root": download_root,
+                    "failed_files": failed_files,
+                }
 
             if failed_files:
                 self._append_task_log(
@@ -3196,15 +3461,11 @@ class ASMRResourceService:
                     final_output_path,
                     library_id=target_owned_library_id,
                 )
-            if (
-                final_status == "completed"
-                and postprocess_options.get("enabled")
-                and final_output_path
-                and not all_files_uploaded
-                and (
-                    str(metadata.get("source_page") or "").strip() == "circle-completion"
-                    or str(metadata.get("task_domain") or "").strip() == "circle_completion"
-                )
+            if self._should_sync_owned_state_after_finalize(
+                final_status=final_status,
+                postprocess_options=postprocess_options,
+                final_output_path=final_output_path,
+                all_files_uploaded=all_files_uploaded,
             ):
                 await self._sync_circle_completion_owned_state(
                     rjcode,
@@ -3246,10 +3507,16 @@ class ASMRResourceService:
                 updated_statistics = dict(updated_session.get("statistics") or {})
                 updated_success_count = int(updated_statistics.get("success_count") or session_success_count)
                 updated_status = str(updated_session.get("status") or final_status)
+                session_event = "session_partial_failed" if updated_failed_count else "session_completed"
+                session_summary = (
+                    f"{rjcode} 本轮下载完成，累计成功 {updated_success_count} 个，失败 {updated_failed_count} 个，已保留缓存并进入自动重试"
+                    if updated_failed_count
+                    else f"{rjcode} 增强下载完成，累计成功 {updated_success_count} 个，失败 0 个"
+                )
                 log_asmr_sync_event(
-                    "session_partial_failed" if updated_failed_count else "session_completed",
+                    session_event,
                     status="partial_success" if updated_failed_count else "success",
-                    summary=f"{rjcode} 增强下载完成，累计成功 {updated_success_count} 个，失败 {updated_failed_count} 个",
+                    summary=session_summary,
                     session_id=session_id,
                     rjcode=rjcode,
                     task_id=task.id,
@@ -3273,6 +3540,53 @@ class ASMRResourceService:
                     },
                 )
 
+            if failed_files or verification_failures:
+                retry_failed_files = list(failed_files)
+                for verification_failure in verification_failures:
+                    relative_path = str(verification_failure.get("relative_path") or "").strip()
+                    resource = next(
+                        (
+                            item
+                            for item in selected_resources
+                            if str(item.get("relative_path") or item.get("file_name") or "").strip() == relative_path
+                        ),
+                        None,
+                    )
+                    retry_failed_files.append(
+                        {
+                            "name": verification_failure.get("name") or relative_path,
+                            "relative_path": relative_path,
+                            "reason": "MD5 校验失败",
+                            "resource": dict(resource or {}),
+                            "stage": "verify",
+                        }
+                    )
+                await self._schedule_failed_resource_retry(
+                    task,
+                    rjcode=rjcode,
+                    metadata=metadata,
+                    selected_resources=selected_resources,
+                    failed_files=retry_failed_files,
+                    download_root=download_root,
+                )
+                task.task_metadata["failure_reason"] = " / ".join(
+                    [str(item.get("reason") or item.get("exception_type") or "未知原因") for item in retry_failed_files[:5]]
+                )
+                self._append_task_log(
+                    task,
+                    f"本轮成功 {len(success_files)} 个，失败 {len(retry_failed_files)} 个；已保留缓存并进入自动重试",
+                    "warning",
+                )
+                return {
+                    "success": False,
+                    "waiting_retry": str(getattr(task.status, "value", task.status)) == "waiting_retry",
+                    "download_root": download_root,
+                    "downloaded_resources": success_files,
+                    "failed_files": retry_failed_files,
+                }
+
+            from .task_engine import get_task_engine
+            get_task_engine()._remove_waiting_retry_task(rjcode)
             task.update_progress(100, f"完成，成功 {len(success_files)} 个文件")
             if failed_files:
                 task.task_metadata["failure_reason"] = " / ".join(
@@ -3341,6 +3655,8 @@ class ASMRResourceService:
             if os.path.isdir(download_root):
                 self._append_task_log(task, "已保留未完成下载片段，后续重试将优先尝试断点续传")
             raise
+        finally:
+            await self._file_download_scheduler.unregister(task.id)
 
     def get_dashboard_summary(self) -> Dict[str, Any]:
         from .task_engine import TaskType, get_task_engine

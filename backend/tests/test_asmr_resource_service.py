@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from app.core.asmr_resource_service import ASMRResourceService
+from app.core.asmr_resource_service import ASMRFileDownloadScheduler, ASMRResourceService
 from app.core.task_engine import Task, TaskStatus, TaskType
 
 
@@ -57,6 +57,44 @@ def create_service():
     return ASMRResourceService(asmr_service=FakeASMRService())
 
 
+@pytest.mark.anyio
+async def test_file_download_scheduler_prioritizes_same_rj_and_spills_free_slots():
+    scheduler = ASMRFileDownloadScheduler()
+    await scheduler.register("RJ-A", total_files=3, limit=5)
+    await scheduler.register("RJ-B", total_files=10, limit=5)
+
+    await asyncio.gather(*(scheduler.acquire("RJ-A") for _ in range(3)))
+    b_acquires = [asyncio.create_task(scheduler.acquire("RJ-B")) for _ in range(2)]
+    await asyncio.gather(*b_acquires)
+
+    snapshot = await scheduler.snapshot()
+    assert snapshot["active_total"] == 5
+    assert snapshot["sessions"]["RJ-A"]["active"] == 3
+    assert snapshot["sessions"]["RJ-B"]["active"] == 2
+
+
+@pytest.mark.anyio
+async def test_file_download_scheduler_does_not_switch_rj_while_priority_rj_has_files():
+    scheduler = ASMRFileDownloadScheduler()
+    await scheduler.register("RJ-A", total_files=10, limit=5)
+    await scheduler.register("RJ-B", total_files=10, limit=5)
+
+    await asyncio.gather(*(scheduler.acquire("RJ-A") for _ in range(5)))
+    next_b = asyncio.create_task(scheduler.acquire("RJ-B"))
+    await asyncio.sleep(0)
+    assert not next_b.done()
+
+    await scheduler.release("RJ-A")
+    next_a = asyncio.create_task(scheduler.acquire("RJ-A"))
+    await asyncio.wait_for(next_a, timeout=1)
+    assert not next_b.done()
+    await scheduler.release("RJ-A")
+
+    next_b.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await next_b
+
+
 def test_classify_resource_and_language_detection():
     service = create_service()
 
@@ -65,6 +103,29 @@ def test_classify_resource_and_language_detection():
     assert service.classify_resource_type("cover.webp") == "cover"
     assert service.detect_language("RJ123456 简中字幕") == "zh"
     assert service.detect_language("RJ123456 Japanese subtitle") == "ja"
+
+
+@pytest.mark.parametrize(
+    ("source_page", "all_files_uploaded", "expected"),
+    [
+        ("asmr-sync", False, True),
+        ("circle-completion", False, True),
+        ("asmr-sync", True, False),
+    ],
+)
+def test_local_finalize_syncs_owned_state_regardless_of_source_page(
+    source_page,
+    all_files_uploaded,
+    expected,
+):
+    service = create_service()
+
+    assert service._should_sync_owned_state_after_finalize(
+        final_status="completed",
+        postprocess_options={"enabled": True},
+        final_output_path="/library/RJ123456",
+        all_files_uploaded=all_files_uploaded,
+    ) is expected
 
 
 def test_detect_local_pair_issues_uses_name_and_track_number():
@@ -217,6 +278,71 @@ def test_active_session_download_task_only_reuses_overlapping_file():
         "session-1",
         {"audio/02.wav"},
     ) is None
+
+
+@pytest.mark.anyio
+async def test_failed_resources_enter_persistent_auto_retry_and_keep_cache(monkeypatch, tmp_path):
+    service = create_service()
+    task = Task(
+        task_type=TaskType.ASMR_SYNC_DOWNLOAD,
+        source_path="RJ123456",
+        metadata={
+            "rjcode": "RJ123456",
+            "folder_path": str(tmp_path),
+            "work_title": "测试作品",
+        },
+        rjcode="RJ123456",
+    )
+    task.start()
+
+    class Engine:
+        def __init__(self):
+            self.saved = None
+
+        def _save_waiting_retry_task(self, *args):
+            self.saved = args
+
+        def _remove_waiting_retry_task(self, _rjcode):
+            return None
+
+    engine = Engine()
+    monkeypatch.setattr("app.core.task_engine.get_task_engine", lambda: engine)
+
+    selected = [
+        {
+            "relative_path": "audio/ok.wav",
+            "file_name": "ok.wav",
+            "remote_url": "https://example.com/ok.wav",
+        },
+        {
+            "relative_path": "audio/fail.wav",
+            "file_name": "fail.wav",
+            "remote_url": "https://example.com/fail.wav",
+        },
+    ]
+    failed = [
+        {
+            "name": "fail.wav",
+            "relative_path": "audio/fail.wav",
+            "reason": "连接超时",
+            "resource": selected[1],
+        }
+    ]
+
+    await service._schedule_failed_resource_retry(
+        task,
+        rjcode="RJ123456",
+        metadata=task.task_metadata,
+        selected_resources=selected,
+        failed_files=failed,
+        download_root=str(tmp_path / "download"),
+    )
+
+    assert task.status == TaskStatus.WAITING_RETRY
+    assert task.task_metadata["selected_resources"] == [selected[1]]
+    assert task.task_metadata["source_action"] == "auto_retry_failed_resources"
+    assert task.task_metadata["download_root"] == str(tmp_path / "download")
+    assert engine.saved is not None
 
 
 @pytest.mark.anyio
