@@ -2772,6 +2772,7 @@ class LibraryManager:
                         library.id,
                         entry_type="dir",
                         limit=per_rj_limit,
+                        repair_missing=False,
                     )
                 except Exception:
                     logger.debug("[索引] 批量 RJ 查询失败 rj=%s library=%s", code, library.id, exc_info=True)
@@ -12923,6 +12924,5 @@ def shutdown_library_manager_background_workers() -> None:
     if _library_manager is None:
         return
     _library_manager.shutdown_background_workers()
-
 
 

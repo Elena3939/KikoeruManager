@@ -2586,6 +2586,7 @@ class SnapshotStore:
         *,
         entry_type: Optional[str] = 'dir',
         limit: int = 100,
+        repair_missing: bool = True,
     ) -> list[IndexEntry]:
         """按 RJ 号精确查。
 
@@ -2627,7 +2628,7 @@ class SnapshotStore:
 
         with self._read_session() as db:
             rows = _query_rows(db)
-        if not rows and self._repair_missing_rjcode_rows(
+        if repair_missing and not rows and self._repair_missing_rjcode_rows(
             normalized_rjcode,
             scope_ids=scope_ids,
             entry_type=entry_type,
