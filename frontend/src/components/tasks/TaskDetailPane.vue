@@ -468,14 +468,35 @@ const treeRowVirtualizer = useVirtualizer(computed(() => ({
   estimateSize: () => TREE_ROW_HEIGHT,
   overscan: TREE_ROW_OVERSCAN,
 })))
-const virtualTreeRows = computed(() => treeRowVirtualizer.value.getVirtualItems()
-  .map(virtualRow => ({ virtualRow, entry: treeRows.value[virtualRow.index] }))
-  .filter(item => item.entry))
+const virtualTreeRows = computed(() => {
+  const rows = treeRowVirtualizer.value.getVirtualItems()
+    .map(virtualRow => ({ virtualRow, entry: treeRows.value[virtualRow.index] }))
+    .filter(item => item.entry)
+  if (rows.length || !treeRows.value.length) return rows
+
+  // 首屏数据先于滚动容器测量完成时，虚拟器可能暂时返回空集合；先画少量行，测量完成后自动切回虚拟列表。
+  return treeRows.value.slice(0, 40).map((entry, index) => ({
+    entry,
+    virtualRow: {
+      index,
+      key: entry.key || index,
+      start: index * TREE_ROW_HEIGHT,
+      size: TREE_ROW_HEIGHT,
+    },
+  }))
+})
 const treeVirtualCanvasStyle = computed(() => ({
-  height: `${treeRowVirtualizer.value.getTotalSize()}px`,
+  height: `${Math.max(
+    treeRowVirtualizer.value.getTotalSize(),
+    treeRows.value.length ? treeRows.value.length * TREE_ROW_HEIGHT : 0,
+  )}px`,
 }))
 
 watch(() => treeRows.value.length, () => {
+  nextTick(() => treeRowVirtualizer.value.measure())
+}, { flush: 'post' })
+
+onMounted(() => {
   nextTick(() => treeRowVirtualizer.value.measure())
 })
 

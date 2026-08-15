@@ -618,15 +618,17 @@ async function loadMoreTaskFiles() {
   const itemId = String(detail?.id || selectedItemId.value || '').trim()
   if (!itemId || loadingMoreFiles.value) return
   const metadata = detail?.details?.metadata
-  const currentRows = Array.isArray(metadata?.download_files) ? metadata.download_files : []
-  const total = Number(metadata?.download_files_total || currentRows.length) || currentRows.length
+  const field = getTaskFileTreeSourceField(detail)
+  const currentRows = Array.isArray(metadata?.[field]) ? metadata[field] : []
+  const total = Number(metadata?.[`${field}_total`] || currentRows.length) || currentRows.length
   if (currentRows.length >= total) return
   loadingMoreFiles.value = true
   try {
     const result = await taskCenterApi.getItemFiles({
       item_id: itemId,
+      field,
       offset: currentRows.length,
-      limit: 120,
+      limit: 500,
       _t: Date.now(),
     })
     const nextRows = Array.isArray(result?.items) ? result.items : []
@@ -637,9 +639,9 @@ async function loadMoreTaskFiles() {
         ...(detail.details || {}),
         metadata: {
           ...metadata,
-          download_files: [...currentRows, ...nextRows],
-          download_files_total: Number(result.total || total),
-          download_files_truncated: Boolean(result.has_more),
+          [field]: [...currentRows, ...nextRows],
+          [`${field}_total`]: Number(result.total || total),
+          [`${field}_truncated`]: Boolean(result.has_more),
         },
       },
     }
@@ -1230,6 +1232,27 @@ function resolveFileTreeSnapshot(item) {
   return { items: [], kind: '', label: '文件列表', rootLabel: '' }
 }
 
+function getTaskFileTreeSourceField(item) {
+  const metadata = item?.details?.metadata || {}
+  const finalItems = Array.isArray(metadata.final_file_tree_items) ? metadata.final_file_tree_items : []
+  const extractedItems = Array.isArray(metadata.extracted_file_tree_items)
+    ? metadata.extracted_file_tree_items
+    : (Array.isArray(metadata.file_tree_items) ? metadata.file_tree_items : [])
+  const hasFinal = finalItems.length > 0 || Number(metadata.final_file_tree_items_total || 0) > 0
+  const hasExtracted = extractedItems.length > 0
+    || Number(metadata.extracted_file_tree_items_total || metadata.file_tree_items_total || 0) > 0
+  if (item?.status === 'completed' && hasFinal) return 'final_file_tree_items'
+  if (hasExtracted) {
+    return Array.isArray(metadata.extracted_file_tree_items) || metadata.extracted_file_tree_items_total
+      ? 'extracted_file_tree_items'
+      : 'file_tree_items'
+  }
+  if (hasFinal) return 'final_file_tree_items'
+  if (Array.isArray(metadata.upload_files) && metadata.upload_files.length) return 'upload_files'
+  if (Array.isArray(metadata.uploaded_files) && metadata.uploaded_files.length) return 'uploaded_files'
+  return 'download_files'
+}
+
 let fileTreeCacheSignature = ''
 let fileTreeCacheResult = []
 
@@ -1302,6 +1325,17 @@ function buildFileTreeCacheSignature(item) {
     buildFileTreeArraySignature(metadata.download_files),
     metadata.download_files_total || '',
     metadata.download_files_truncated ? 'truncated' : '',
+    ...[
+      'upload_files',
+      'uploaded_files',
+      'final_file_tree_items',
+      'extracted_file_tree_items',
+      'file_tree_items',
+    ].flatMap((field) => [
+      buildFileTreeArraySignature(metadata[field]),
+      metadata[`${field}_total`] || '',
+      metadata[`${field}_truncated`] ? 'truncated' : '',
+    ]),
     buildFileTreeArraySignature(metadata.filtered_items),
     buildFileTreeArraySignature(metadata.filtered_files),
     buildFileTreeArraySignature(metadata.filtered_dirs),
@@ -1417,9 +1451,13 @@ function buildTaskFileTreeSections(item) {
     label: snapshot.label,
     snapshotKind: snapshot.kind,
     rows: buildTreeRows(filtered),
-    totalCount: Number(metadata.download_files_total || mergedItems.length) || mergedItems.length,
+    totalCount: Number(
+      metadata[`${getTaskFileTreeSourceField(item)}_total`]
+      || metadata.download_files_total
+      || mergedItems.length
+    ) || mergedItems.length,
     visibleCount: mergedItems.length,
-    truncated: Boolean(metadata.download_files_truncated),
+    truncated: Boolean(metadata[`${getTaskFileTreeSourceField(item)}_truncated`] || metadata.download_files_truncated),
     removedCount,
     directRemovedCount,
     directoryKeys: directoryKeyList,

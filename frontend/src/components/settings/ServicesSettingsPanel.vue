@@ -105,7 +105,7 @@
         <div class="field-stack">
           <SettingsToggleRow v-model="config.asmr_sync.enabled" title="启用 ASMR 同步" subtitle="允许从 asmr.one 拉音频与字幕。" />
           <div class="mini-grid two">
-            <SettingsFieldCard label="最大并发下载数">
+            <SettingsFieldCard label="全局文件并发下载数" hint="所有 RJ 合计最多同时下载这些文件，优先填满较早进入队列的 RJ。">
               <SettingsNumberStepper v-model="config.asmr_sync.max_concurrent_downloads" :min="1" :max="10" />
             </SettingsFieldCard>
             <SettingsFieldCard label="最大重试次数">
@@ -113,10 +113,10 @@
             </SettingsFieldCard>
           </div>
           <div class="mini-grid two">
-            <SettingsFieldCard label="增强会话并发">
+            <SettingsFieldCard label="增强会话并发" hint="任务启动数至少覆盖全局文件槽位，避免空槽。">
               <SettingsNumberStepper v-model="config.asmr_sync.enhanced_max_parallel_sessions" :min="1" :max="10" />
             </SettingsFieldCard>
-            <SettingsFieldCard label="单会话并发">
+            <SettingsFieldCard label="单会话处理并发" hint="文件下载仍受全局文件并发上限约束。">
               <SettingsNumberStepper v-model="config.asmr_sync.enhanced_per_session_concurrency" :min="1" :max="10" />
             </SettingsFieldCard>
           </div>
