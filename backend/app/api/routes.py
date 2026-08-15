@@ -3203,6 +3203,30 @@ async def get_task_center_item(item_id: Optional[str] = None, engine_task_id: Op
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@app.get("/api/task-center/item-files")
+async def get_task_center_item_files(
+    item_id: Optional[str] = None,
+    engine_task_id: Optional[str] = None,
+    offset: int = 0,
+    limit: int = 200,
+):
+    """按页读取下载明细，完整信息保留但不阻塞任务详情首屏。"""
+    from ..core.task_center_service import get_task_center_service
+
+    try:
+        result = await get_task_center_service().get_item_files(
+            item_id=item_id,
+            engine_task_id=engine_task_id,
+            offset=offset,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if result is None:
+        raise HTTPException(status_code=404, detail="任务未找到")
+    return result
+
+
 @app.get("/api/task-center/stream")
 async def stream_task_center_events(request: Request):
     """任务中心实时变更事件流。"""
@@ -17267,7 +17291,7 @@ class LocalUploadStartRequest(BaseModel):
     circle_name: str = ""
 
 
-def _serialize_http_download_task(task) -> dict:
+def _serialize_http_download_task(task, *, compact: bool = False) -> dict:
     from ..core.baidu_netdisk_service import (
         build_baidu_netdisk_batch_title,
         get_baidu_netdisk_service,
@@ -17310,6 +17334,8 @@ def _serialize_http_download_task(task) -> dict:
         sanitize_download_item(item)
         for item in download_files
     ]
+    download_files_total = len(download_files)
+    download_files_truncated = download_files_total > _TRANSFER_STATUS_PREVIEW_LIMIT
     merged_failed_files = [
         item for item in download_files
         if str((item or {}).get("status") or "").strip().lower() == "failed"
@@ -17320,14 +17346,16 @@ def _serialize_http_download_task(task) -> dict:
     success_count = int(performance_metrics.get("success_count") or 0)
     if not success_count:
         success_count = len([item for item in download_files if str((item or {}).get("status") or "") == "completed"])
+    if compact and download_files_truncated:
+        download_files = download_files[:_TRANSFER_STATUS_PREVIEW_LIMIT]
     display_status = "partial_failed" if failed_files and success_count > 0 else status_value
     work_title = (
         metadata.get("batch_name")
         or metadata.get("source_label")
         or (
-            build_baidu_netdisk_batch_title(metadata, item_count=len(download_files))
+            build_baidu_netdisk_batch_title(metadata, item_count=download_files_total)
             if is_baidu_netdisk
-            else build_http_download_batch_title(metadata, item_count=len(download_files))
+            else build_http_download_batch_title(metadata, item_count=download_files_total)
         )
         or ("百度网盘下载" if is_baidu_netdisk else "HTTP 下载")
     )
@@ -17346,6 +17374,8 @@ def _serialize_http_download_task(task) -> dict:
         "completed_at": task.completed_at.isoformat() if getattr(task, "completed_at", None) else None,
         "output_path": getattr(task, "output_path", ""),
         "download_files": download_files,
+        "download_files_total": download_files_total,
+        "download_files_truncated": download_files_truncated,
         "download_runtime": metadata.get("download_runtime", {}),
         "failed_files": [sanitize_download_item(item) for item in failed_files if isinstance(item, dict)],
         "progress_log": metadata.get("progress_log", []),
@@ -17427,11 +17457,28 @@ def _serialize_local_upload_task_status(task) -> dict:
     }
 
 
-def _serialize_asmr_sync_task_status(task, session_map: Dict[str, dict]) -> dict:
+_TRANSFER_STATUS_PREVIEW_LIMIT = 120
+
+
+def _compact_transfer_rows(rows: Any, limit: int = _TRANSFER_STATUS_PREVIEW_LIMIT) -> tuple[list, int, bool]:
+    """状态轮询只返回有限明细，避免大批量下载每 2 秒重复传输整棵文件树。"""
+    if not isinstance(rows, list):
+        return [], 0, False
+    total = len(rows)
+    return rows[:limit], total, total > limit
+
+
+def _serialize_asmr_sync_task_status(task, session_map: Dict[str, dict], *, compact: bool = False) -> dict:
     metadata = _task_metadata_with_redis_runtime(task)
     status_value, progress, current_step = _task_runtime_response_values(task)
     session_id = str(metadata.get("session_id") or "").strip()
     session_state = session_map.get(session_id, {})
+    raw_download_files = metadata.get("download_files") if isinstance(metadata.get("download_files"), list) else []
+    if compact:
+        download_files, download_files_total, download_files_truncated = _compact_transfer_rows(raw_download_files)
+    else:
+        download_files, download_files_total, download_files_truncated = raw_download_files, len(raw_download_files), False
+    failed_files = metadata.get("failed_files") if isinstance(metadata.get("failed_files"), list) else []
     return {
         "session_state": session_state,
         "id": task.id,
@@ -17448,11 +17495,13 @@ def _serialize_asmr_sync_task_status(task, session_map: Dict[str, dict]) -> dict
         "started_at": task.started_at.isoformat() if getattr(task, "started_at", None) else None,
         "completed_at": task.completed_at.isoformat() if getattr(task, "completed_at", None) else None,
         "output_path": getattr(task, "output_path", ""),
-        "download_files": metadata.get("download_files", []),
+        "download_files": download_files,
+        "download_files_total": download_files_total,
+        "download_files_truncated": download_files_truncated,
         "download_runtime": metadata.get("download_runtime", {}),
         "upload_files": metadata.get("upload_files", []),
         "upload_runtime": metadata.get("upload_runtime", {}),
-        "failed_files": metadata.get("failed_files", []),
+        "failed_files": failed_files,
         "uploaded_files": metadata.get("uploaded_files", []),
         "verification_failures": metadata.get("verification_failures", []),
         "progress_log": metadata.get("progress_log", []),
@@ -17481,6 +17530,8 @@ def _serialize_asmr_sync_task_status(task, session_map: Dict[str, dict]) -> dict
             "local_download_ready": session_state.get("local_download_ready", False),
             "local_download_root": session_state.get("local_download_root", ""),
             "local_downloaded_count": session_state.get("local_downloaded_count", 0),
+            "download_files_total": download_files_total,
+            "download_files_truncated": download_files_truncated,
         }
     }
 
@@ -18181,7 +18232,7 @@ async def http_download_google_drive_oauth_token(request: GoogleDriveOAuthTokenR
 
 
 @app.get("/api/http-download/status")
-async def http_download_status():
+async def http_download_status(compact: bool = False):
     from ..core.task_engine import TaskType, get_task_engine
 
     try:
@@ -18199,7 +18250,7 @@ async def http_download_status():
             "pending": len([t for t in tasks if t.status.value == "pending"]),
             "completed": len([t for t in tasks if t.status.value == "completed"]),
             "failed": len([t for t in tasks if t.status.value == "failed"]),
-            "tasks": [_serialize_http_download_task(t) for t in tasks[:50]],
+            "tasks": [_serialize_http_download_task(t, compact=compact) for t in tasks[:50]],
         }
         return _download_status_cache_set("http_download", version, payload)
     except Exception as exc:
@@ -18219,7 +18270,7 @@ async def baidu_netdisk_backend_health():
 
 
 @app.get("/api/baidu-netdisk/status")
-async def baidu_netdisk_status():
+async def baidu_netdisk_status(compact: bool = False):
     from ..core.baidu_netdisk_service import get_baidu_netdisk_service
     from ..core.task_engine import TaskType, get_task_engine
 
@@ -18242,7 +18293,7 @@ async def baidu_netdisk_status():
             "pending": len([t for t in tasks if t.status.value == "pending"]),
             "completed": len([t for t in tasks if t.status.value == "completed"]),
             "failed": len([t for t in tasks if t.status.value == "failed"]),
-            "tasks": [_serialize_http_download_task(t) for t in tasks[:50]],
+            "tasks": [_serialize_http_download_task(t, compact=compact) for t in tasks[:50]],
         }
         return _download_status_cache_set("baidu_netdisk", version, payload)
     except Exception as exc:
@@ -20748,7 +20799,7 @@ async def local_upload_status(task_ids: str = "", include_hidden: bool = True):
 
 
 @app.get("/api/asmr-sync/status")
-async def asmr_sync_status(task_ids: str = ""):
+async def asmr_sync_status(task_ids: str = "", compact: bool = False):
     """获取当前同步任务状态"""
     from ..core.task_engine import TaskType, get_task_engine
 
@@ -20822,7 +20873,7 @@ async def asmr_sync_status(task_ids: str = ""):
             "completed": len([t for t in asmr_tasks if t.status.value == "completed"]),
             "failed": len([t for t in asmr_tasks if t.status.value == "failed"]),
             "waiting_retry": len([t for t in asmr_tasks if t.status.value == "waiting_retry"]),
-            "tasks": [_serialize_asmr_sync_task_status(t, session_map) for t in (asmr_tasks if requested_ids else asmr_tasks[:20])]
+            "tasks": [_serialize_asmr_sync_task_status(t, session_map, compact=compact) for t in (asmr_tasks if requested_ids else asmr_tasks[:20])]
         }
 
     except Exception as e:

@@ -228,6 +228,39 @@ def test_summary_engine_item_cache_reuses_unchanged_task(monkeypatch):
     assert serialize.call_count == 2
 
 
+def test_task_center_detail_keeps_large_download_rows_without_mutating_task():
+    service = TaskCenterService()
+    rows = [{"name": f"file-{index}.wav", "relative_path": f"dir/file-{index}.wav"} for index in range(3478)]
+    task = Task(
+        TaskType.ASMR_SYNC_DOWNLOAD,
+        "/tmp/source",
+        task_id="task-large-download-detail",
+        metadata={"download_files": rows, "rjcode": "RJ01571862"},
+    )
+
+    item = service._serialize_engine_task(task, mode="detail")
+    metadata = item["details"]["metadata"]
+
+    assert len(metadata["download_files"]) == 3478
+    assert len(task.task_metadata["download_files"]) == 3478
+
+
+@pytest.mark.asyncio
+async def test_task_center_get_item_reads_single_engine_task(monkeypatch):
+    service = TaskCenterService()
+    task = Task(TaskType.ASMR_SYNC_DOWNLOAD, "/tmp/source", task_id="task-direct-detail")
+    engine = Mock()
+    engine.get_task.return_value = task
+    monkeypatch.setattr("app.core.task_center_service.get_task_engine", lambda: engine)
+    build_all = AsyncMock(side_effect=AssertionError("不应重建所有任务详情"))
+    monkeypatch.setattr(service, "_build_all_items", build_all)
+
+    result = await service.get_item(item_id="engine:task-direct-detail")
+
+    assert result["engine_task_id"] == "task-direct-detail"
+    build_all.assert_not_awaited()
+
+
 def test_completed_task_detail_prefers_final_file_tree(monkeypatch, tmp_path):
     extracted = tmp_path / "RJ01645332_1"
     final = tmp_path / "巨乳大好き屋" / "[巨乳大好き屋][RJ01645332]"

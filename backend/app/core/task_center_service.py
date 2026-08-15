@@ -378,7 +378,8 @@ class TaskCenterService:
         return out
 
     def _should_skip_directory_file_tree_snapshot(self, metadata: Dict[str, Any], domain: str) -> bool:
-        return domain == "http_download"
+        # 下载任务自身已经维护 download_files，详情读取不应再对目标目录做一次 os.walk。
+        return domain in {"http_download", "asmr_sync", "baidu_netdisk"}
 
     def _ensure_file_tree_metadata(
         self,
@@ -2292,7 +2293,16 @@ class TaskCenterService:
         if not normalized_item_id and not normalized_engine_task_id:
             raise ValueError("item_id 和 engine_task_id 不能同时为空")
 
-        # get_item 需要完整 metadata + 文件树，走 detail 模式
+        # engine 任务可以直接按 ID 序列化，不要为了一个详情把所有任务都做一次 detail。
+        if normalized_item_id.startswith("engine:"):
+            engine_task_id = normalized_item_id.split(":", 1)[1].strip()
+            task = get_task_engine().get_task(engine_task_id)
+            return self._safe_serialize_engine_task(task, mode="detail") if task else None
+        if normalized_engine_task_id:
+            task = get_task_engine().get_task(normalized_engine_task_id)
+            return self._safe_serialize_engine_task(task, mode="detail") if task else None
+
+        # 非 engine 项（例如待处理字幕项）仍走聚合路径。
         items = await self._build_all_items(mode="detail")
         for item in items:
             if normalized_item_id and self._safe_text(item.get("id")) == normalized_item_id:
@@ -2300,6 +2310,46 @@ class TaskCenterService:
             if normalized_engine_task_id and self._safe_text(item.get("engine_task_id")) == normalized_engine_task_id:
                 return item
         return None
+
+    async def get_item_files(
+        self,
+        *,
+        item_id: Optional[str] = None,
+        engine_task_id: Optional[str] = None,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> Optional[Dict[str, Any]]:
+        """按页读取传输明细；任务详情首屏不再一次性序列化数千行。"""
+        normalized_item_id = self._safe_text(item_id)
+        normalized_engine_task_id = self._safe_text(engine_task_id)
+        task_id = normalized_engine_task_id
+        if normalized_item_id.startswith("engine:"):
+            task_id = normalized_item_id.split(":", 1)[1].strip()
+        if not task_id:
+            return None
+        task = get_task_engine().get_task(task_id)
+        if not task:
+            return None
+        metadata = dict(task.task_metadata or {})
+        domain = self._infer_domain(task)
+        if domain == "http_download":
+            metadata = sanitize_http_download_metadata(metadata)
+        elif domain == "baidu_netdisk":
+            metadata = sanitize_baidu_netdisk_metadata(metadata)
+        rows = metadata.get("download_files")
+        if not isinstance(rows, list):
+            rows = []
+        safe_offset = max(0, int(offset or 0))
+        safe_limit = max(1, min(int(limit or 200), 500))
+        return {
+            "item_id": normalized_item_id or f"engine:{task.id}",
+            "engine_task_id": task.id,
+            "items": self._json_safe(rows[safe_offset:safe_offset + safe_limit]),
+            "total": len(rows),
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "has_more": safe_offset + safe_limit < len(rows),
+        }
 
     async def get_overview(self) -> Dict[str, Any]:
         now = time.monotonic()
