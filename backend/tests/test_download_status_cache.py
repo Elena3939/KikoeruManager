@@ -32,3 +32,14 @@ def test_download_status_cache_expires_same_version(monkeypatch):
     now[0] += routes._DOWNLOAD_STATUS_CACHE_TTL_SECONDS + 0.01
 
     assert routes._download_status_cache_get("http_download", 3) is None
+
+
+def test_transfer_status_preview_caps_rows_and_keeps_total():
+    rows = [{"name": str(index)} for index in range(3478)]
+
+    preview, total, truncated = routes._compact_transfer_rows(rows)
+
+    assert len(preview) == routes._TRANSFER_STATUS_PREVIEW_LIMIT
+    assert total == 3478
+    assert truncated is True
+    assert preview[0] == rows[0]
