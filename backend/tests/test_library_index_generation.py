@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import timedelta
 
 import pytest
 from sqlalchemy.orm import sessionmaker
@@ -20,6 +21,7 @@ from app.models.database import (
     LibraryIndexMutationOperation,
     LibraryIndexPendingMask,
     LibraryIndexStatus,
+    get_local_now,
 )
 from tests.postgres_test_utils import truncate_all_tables
 
@@ -37,6 +39,7 @@ def generation_env(db_engine, monkeypatch, tmp_path):
     session_factory = sessionmaker(autocommit=False, autoflush=False, bind=db_engine)
     store = SnapshotStore(session_factory=session_factory)
     monkeypatch.setattr(service_module, "SessionLocal", session_factory)
+    monkeypatch.setattr(service_module, "get_resource_budget_service", lambda: _NoopBudget())
     monkeypatch.setattr(snapshot_store_module, "get_resource_budget_service", lambda: _NoopBudget())
     monkeypatch.setenv("KIKOERUMANAGER_LIBRARY_INDEX_GENERATION_CONTRACT", "1")
     monkeypatch.setattr(
@@ -294,3 +297,216 @@ def test_cutover_rejects_prepared_scope_for_same_library(generation_env):
     with pytest.raises(RuntimeError, match="prepared mutation"):
         env.service._cutover_building_generation(library_id, generation, base_seq, stats)
     assert env.store.get_status(library_id).active_generation == 1
+
+
+def _add_index_entry(
+    env,
+    *,
+    library_id: str,
+    generation: int,
+    relative_path: str,
+    rjcode: str | None = None,
+    materialized_seq: int = 0,
+    entry_type: str = "dir",
+) -> None:
+    now = int(time.time() * 1000)
+    db = env.Session()
+    try:
+        db.add(LibraryIndexEntry(
+            library_id=library_id,
+            generation=generation,
+            materialized_seq=materialized_seq,
+            entry_type=entry_type,
+            relative_path=relative_path,
+            absolute_path=str(env.root / relative_path),
+            name=relative_path.rsplit("/", 1)[-1],
+            name_sort_key=relative_path.casefold(),
+            rjcode=rjcode,
+            parent_path=relative_path.rsplit("/", 1)[0] if "/" in relative_path else "",
+            size=0,
+            file_count=0,
+            mtime=1,
+            depth=relative_path.count("/") + 1,
+            indexed_at=now,
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_find_by_rjcode_repairs_legacy_row_and_bumps_view_revision(generation_env):
+    env = generation_env
+    library_id = "legacy-rjcode-library"
+    _seed_active(env, library_id)
+    _add_index_entry(
+        env,
+        library_id=library_id,
+        generation=1,
+        relative_path="circle/[title][RJ01234567]",
+    )
+
+    hits = env.service.find_by_rjcode("RJ01234567", library_id)
+
+    assert [item.relative_path for item in hits] == ["circle/[title][RJ01234567]"]
+    status = env.store.get_status(library_id)
+    assert status.state_revision == 1
+    assert status.view_revision == 1
+
+
+def test_backfill_missing_rjcodes_only_updates_active_visible_rows(generation_env):
+    env = generation_env
+    library_id = "rjcode-backfill-library"
+    _seed_active(env, library_id)
+    _add_index_entry(
+        env,
+        library_id=library_id,
+        generation=1,
+        relative_path="visible/RJ00000011",
+    )
+    _add_index_entry(
+        env,
+        library_id=library_id,
+        generation=1,
+        relative_path="future/RJ00000012",
+        materialized_seq=1,
+    )
+    db = env.Session()
+    try:
+        db.add(LibraryIndexGeneration(
+            library_id=library_id,
+            generation=2,
+            state="retired",
+            build_base_seq=0,
+            reconciled_seq=0,
+        ))
+        db.commit()
+    finally:
+        db.close()
+    _add_index_entry(
+        env,
+        library_id=library_id,
+        generation=2,
+        relative_path="inactive/RJ00000013",
+    )
+
+    result = env.store.backfill_missing_rjcodes(limit=100)
+
+    assert result["repaired"] == 1
+    db = env.Session()
+    try:
+        rows = {
+            (row.generation, row.relative_path): row.rjcode
+            for row in db.query(LibraryIndexEntry).filter(
+                LibraryIndexEntry.library_id == library_id,
+                LibraryIndexEntry.relative_path.like("%RJ%"),
+            )
+        }
+    finally:
+        db.close()
+    assert rows[(1, "visible/RJ00000011")] == "RJ00000011"
+    assert rows[(1, "future/RJ00000012")] is None
+    assert rows[(2, "inactive/RJ00000013")] is None
+
+
+def test_cleanup_retired_generations_preserves_active_and_building(generation_env):
+    env = generation_env
+    library_id = "generation-cleanup-library"
+    _seed_active(env, library_id)
+    expired_at = get_local_now() - timedelta(hours=1)
+    db = env.Session()
+    try:
+        status = db.query(LibraryIndexStatus).filter_by(library_id=library_id).one()
+        status.building_generation = 3
+        active = db.query(LibraryIndexGeneration).filter_by(
+            library_id=library_id,
+            generation=1,
+        ).one()
+        active.state = "retired"
+        active.delete_after = expired_at
+        db.add_all([
+            LibraryIndexGeneration(
+                library_id=library_id,
+                generation=2,
+                state="retired",
+                build_base_seq=0,
+                reconciled_seq=0,
+                delete_after=expired_at,
+            ),
+            LibraryIndexGeneration(
+                library_id=library_id,
+                generation=3,
+                state="failed",
+                build_base_seq=0,
+                reconciled_seq=0,
+                delete_after=expired_at,
+            ),
+        ])
+        db.commit()
+    finally:
+        db.close()
+    _add_index_entry(
+        env,
+        library_id=library_id,
+        generation=2,
+        relative_path="retired.txt",
+        entry_type="file",
+    )
+    _add_index_entry(
+        env,
+        library_id=library_id,
+        generation=3,
+        relative_path="building.txt",
+        entry_type="file",
+    )
+
+    removed = env.service.cleanup_retired_generations(
+        chunk_size=1,
+        max_chunks=4,
+        time_budget_seconds=10,
+    )
+
+    assert removed == 1
+    db = env.Session()
+    try:
+        generations = {
+            row.generation
+            for row in db.query(LibraryIndexGeneration).filter_by(library_id=library_id)
+        }
+        entries = {
+            row.generation
+            for row in db.query(LibraryIndexEntry).filter_by(library_id=library_id)
+        }
+    finally:
+        db.close()
+    assert generations == {1, 3}
+    assert 1 in entries
+    assert 2 not in entries
+    assert 3 in entries
+
+
+def test_repair_status_statistics_recounts_only_stable_active_view(generation_env):
+    env = generation_env
+    library_id = "status-stats-library"
+    _seed_active(env, library_id)
+
+    result = env.service.repair_status_statistics()
+
+    assert result["repaired"] == 1
+    status = env.store.get_status(library_id)
+    assert status.total_entries == 1
+    assert status.total_size_bytes == 3
+    assert status.folder_count == 0
+    assert status.state_revision == 1
+
+    db = env.Session()
+    try:
+        row = db.query(LibraryIndexStatus).filter_by(library_id=library_id).one()
+        row.total_entries = 0
+        row.accepted_seq = 1
+        db.commit()
+    finally:
+        db.close()
+
+    skipped = env.service.repair_status_statistics()
+    assert skipped["repaired"] == 0
+    assert env.store.get_status(library_id).total_entries == 0

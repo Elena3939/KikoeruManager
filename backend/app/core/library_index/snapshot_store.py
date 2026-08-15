@@ -2701,13 +2701,20 @@ class SnapshotStore:
         if not re.fullmatch(r"[RVB]J\d{6}(?:\d{2})?", rjcode or "", re.IGNORECASE):
             return 0
         boundary = re.compile(rf"(?<![A-Z0-9]){re.escape(rjcode)}(?![A-Z0-9])", re.IGNORECASE)
+        pattern = f"%{rjcode}%"
         filters = [
             or_(LibraryIndexEntry.rjcode.is_(None), LibraryIndexEntry.rjcode == ""),
-            or_(
-                LibraryIndexEntry.name.ilike(f"%{rjcode}%"),
-                LibraryIndexEntry.relative_path.ilike(f"%{rjcode}%"),
-                LibraryIndexEntry.absolute_path.ilike(f"%{rjcode}%"),
-            ),
+            # 必须和 idx_library_index_search_text_trgm 的表达式完全一致。
+            # 原来的 name/path/absolute_path 三列 OR ILIKE 无法命中表达式 GIN，
+            # 每个不存在的新 RJ 都会扫描整个库存的 active generation。
+            text(
+                """
+                (COALESCE(name, '') || ' ' ||
+                 COALESCE(relative_path, '') || ' ' ||
+                 COALESCE(rjcode, '') || ' ' ||
+                 COALESCE(parent_path, '')) ILIKE :legacy_rjcode_pattern
+                """
+            ).bindparams(legacy_rjcode_pattern=pattern),
         ]
         if scope_ids:
             if len(scope_ids) == 1:
@@ -2728,6 +2735,7 @@ class SnapshotStore:
                 .all()
             )
             repaired = 0
+            affected_library_ids: set[str] = set()
             for row in rows:
                 haystack = " ".join([
                     str(row.name or ""),
@@ -2738,11 +2746,118 @@ class SnapshotStore:
                     continue
                 row.rjcode = rjcode.upper()
                 repaired += 1
+                affected_library_ids.add(str(row.library_id or ""))
             if repaired:
+                for library_id in sorted(affected_library_ids):
+                    status = db.query(LibraryIndexStatus).filter(
+                        LibraryIndexStatus.library_id == library_id
+                    ).with_for_update().first()
+                    if status is None:
+                        continue
+                    status.state_revision = int(status.state_revision or 0) + 1
+                    status.view_revision = int(status.view_revision or 0) + 1
+                    status.updated_at = _now_ms()
+                    self._queue_status_broadcast(
+                        db,
+                        self._row_to_status(status),
+                        reason="library_index_rjcode_repaired",
+                    )
                 db.flush()
         if repaired:
             logger.info("[索引] 修复缺失 RJ 字段 rjcode=%s rows=%s", rjcode.upper(), repaired)
         return repaired
+
+    def backfill_missing_rjcodes(
+        self,
+        *,
+        limit: int = 1000,
+        library_ids: Optional[Sequence[str]] = None,
+    ) -> dict[str, object]:
+        """分批修复 active view 中旧索引遗漏的目录 RJ 字段。
+
+        只挑路径文本里真实含 RJ 的缺失目录，避免每轮反复取到无法修复的普通目录。
+        每次提交一个有上限的小批次，交给周期维护继续追赶，不在请求线程里扫完整库。
+        """
+        capped_limit = max(1, min(int(limit or 1000), 5000))
+        normalized_ids = [
+            str(item or "").strip()
+            for item in (library_ids or [])
+            if str(item or "").strip()
+        ]
+        repaired_by_library: dict[str, int] = {}
+        scanned = 0
+        with self._write_session(invalidate_children_total_cache=False) as db:
+            query = self._active_view_query(
+                db,
+                db.query(LibraryIndexEntry),
+                library_ids=normalized_ids or None,
+            ).filter(
+                LibraryIndexEntry.entry_type == "dir",
+                or_(LibraryIndexEntry.rjcode.is_(None), LibraryIndexEntry.rjcode == ""),
+                text(
+                    """
+                    (COALESCE(name, '') || ' ' ||
+                     COALESCE(relative_path, '') || ' ' ||
+                     COALESCE(rjcode, '') || ' ' ||
+                     COALESCE(parent_path, '')) ~*
+                    :missing_rjcode_regex
+                    """
+                ).bindparams(
+                    missing_rjcode_regex=r"(^|[^A-Z0-9])[RVB]J([0-9]{8}|[0-9]{6})([^0-9]|$)"
+                ),
+            )
+            if normalized_ids:
+                query = query.filter(LibraryIndexEntry.library_id.in_(normalized_ids))
+            rows = (
+                query
+                .order_by(LibraryIndexEntry.id.asc())
+                .limit(capped_limit)
+                .with_for_update(skip_locked=True, of=LibraryIndexEntry)
+                .all()
+            )
+            scanned = len(rows)
+            for row in rows:
+                detected = _extract_rjcode(" ".join([
+                    str(row.name or ""),
+                    str(row.relative_path or ""),
+                    str(row.absolute_path or ""),
+                ]))
+                if not detected:
+                    continue
+                row.rjcode = detected.upper()
+                library_id = str(row.library_id or "")
+                repaired_by_library[library_id] = repaired_by_library.get(library_id, 0) + 1
+
+            for library_id in sorted(repaired_by_library):
+                status = db.query(LibraryIndexStatus).filter(
+                    LibraryIndexStatus.library_id == library_id
+                ).with_for_update().first()
+                if status is None:
+                    continue
+                status.state_revision = int(status.state_revision or 0) + 1
+                status.view_revision = int(status.view_revision or 0) + 1
+                status.updated_at = _now_ms()
+                self._queue_status_broadcast(
+                    db,
+                    self._row_to_status(status),
+                    reason="library_index_rjcode_backfill",
+                )
+            if repaired_by_library:
+                db.flush()
+
+        repaired = sum(repaired_by_library.values())
+        if repaired:
+            logger.info(
+                "[索引维护] 缺失 RJ 字段回填完成 scanned=%s repaired=%s libraries=%s",
+                scanned,
+                repaired,
+                repaired_by_library,
+            )
+        return {
+            "scanned": scanned,
+            "repaired": repaired,
+            "repaired_by_library": repaired_by_library,
+        }
 
     def find_by_name(
         self,
