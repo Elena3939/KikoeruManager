@@ -202,7 +202,10 @@
                               <span v-if="getFailureCount(task) > 0"> · 失败 {{ getFailureCount(task) }} 个</span>
                             </div>
                           </div>
-                          <div class="v1-detail-section-count">{{ getUnifiedFileRows(task).length }} 项</div>
+                          <div class="v1-detail-section-count">
+                            <template v-if="task?.download_files_truncated">预览 {{ getUnifiedFileRows(task).length }} / {{ task.download_files_total }} 项</template>
+                            <template v-else>{{ getUnifiedFileRows(task).length }} 项</template>
+                          </div>
                         </div>
                         <div class="v1-file-list">
                           <div
@@ -343,6 +346,7 @@ const emit = defineEmits([
   'pause-task',
   'resume-task',
   'cancel-task',
+  'load-files',
 ])
 
 const activeFilter = ref('all')
@@ -469,9 +473,13 @@ watch(() => mergedTasks.value.map(task => task.id).join(':'), () => {
 }, { immediate: true })
 
 function toggleExpanded(taskId) {
+  const task = mergedTasks.value.find(item => item.id === taskId)
   const next = new Set(expandedTaskIds.value)
   if (next.has(taskId)) next.delete(taskId)
-  else next.add(taskId)
+  else {
+    next.add(taskId)
+    if (task?.download_files_truncated) emit('load-files', task)
+  }
   expandedTaskIds.value = next
 }
 
@@ -1602,7 +1610,14 @@ function getUnifiedFileRows(task) {
 .v1-detail-section-subtitle { margin-top: 3px; color: #64748b; font-size: 11px; font-weight: 650; }
 .v1-detail-section-count { flex-shrink: 0; border-radius: 999px; border: 1px solid rgba(148, 163, 184, 0.28); background: rgba(255, 255, 255, 0.86); color: #475569; font-size: 10.5px; font-weight: 800; line-height: 20px; padding: 0 8px; }
 .v1-file-list,.v1-log-list { margin-top: 8px; }
-.v1-file-list { display: grid; gap: 0; }
+.v1-file-list {
+  display: grid;
+  gap: 0;
+  max-height: 520px;
+  overflow: auto;
+  content-visibility: auto;
+  contain-intrinsic-size: 520px;
+}
 .v1-file-row { padding: 6px 0 8px; border: 0; border-radius: 0; background: transparent; }
 .v1-file-row + .v1-file-row { border-top: 1px solid rgba(226, 232, 240, 0.78); padding-top: 8px; }
 .v1-file-row-top { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; align-items: flex-end; }
