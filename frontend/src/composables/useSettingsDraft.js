@@ -202,8 +202,6 @@ export const defaultConfig = {
     enabled: true,
     api_base_url: 'https://api.asmr-200.com/api',
     max_concurrent_downloads: 3,
-    enhanced_max_parallel_sessions: 5,
-    enhanced_per_session_concurrency: 3,
     http_proxy: '',
     retry_interval_hours: 1.0,
     max_retry_count: 10,

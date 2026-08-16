@@ -207,38 +207,50 @@
                             <template v-else>{{ getUnifiedFileRows(task).length }} 项</template>
                           </div>
                         </div>
-                        <div class="v1-file-list">
+                        <div
+                          class="v1-file-list"
+                          :class="{ 'is-virtualized': isVirtualizedFileTask(task) }"
+                          :ref="isVirtualizedFileTask(task) ? setVirtualFileListRef : undefined"
+                        >
                           <div
-                            v-for="file in getUnifiedFileRows(task)"
-                            :key="`${task.id}-${file.relative_path || file.name}-detail`"
-                            class="v1-file-row"
+                            :class="{ 'v1-file-virtual-canvas': isVirtualizedFileTask(task) }"
+                            :style="isVirtualizedFileTask(task) ? { height: `${virtualFileTotalSize}px` } : undefined"
                           >
+                            <div
+                              v-for="entry in getRenderedFileEntries(task)"
+                              :key="`${task.id}-${entry.file.relative_path || entry.file.name}-detail`"
+                              class="v1-file-row"
+                              :ref="entry.virtualRow ? measureVirtualFileRow : undefined"
+                              :data-index="entry.virtualRow?.index"
+                              :style="entry.virtualRow ? { transform: `translate3d(0, ${entry.virtualRow.start}px, 0)` } : undefined"
+                            >
                             <div class="v1-file-row-top">
                               <div class="v1-file-row-main">
-                                <span class="v1-file-row-name">{{ file.name }}</span>
-                                <span v-if="['success', 'upload-success'].includes(file.tone)" class="v1-file-chip success">{{ file.statusText }}</span>
-                                <span v-else-if="file.tone === 'danger'" class="v1-file-chip danger">{{ file.statusText }}</span>
+                                <span class="v1-file-row-name">{{ entry.file.name }}</span>
+                                <span v-if="['success', 'upload-success'].includes(entry.file.tone)" class="v1-file-chip success">{{ entry.file.statusText }}</span>
+                                <span v-else-if="entry.file.tone === 'danger'" class="v1-file-chip danger">{{ entry.file.statusText }}</span>
                               </div>
                               <div class="v1-file-row-side">
-                                <span>{{ file.progress }}% • {{ file.sizeText }}</span>
-                                <span v-if="showDownloadMetrics && file.downloadSpeedVisible">下载 {{ formatSpeed(file.downloadSpeed) }}</span>
-                                <span v-if="file.uploadSpeedVisible">上传 {{ formatSpeed(file.uploadSpeed) }}</span>
+                                <span>{{ entry.file.progress }}% • {{ entry.file.sizeText }}</span>
+                                <span v-if="showDownloadMetrics && entry.file.downloadSpeedVisible">下载 {{ formatSpeed(entry.file.downloadSpeed) }}</span>
+                                <span v-if="entry.file.uploadSpeedVisible">上传 {{ formatSpeed(entry.file.uploadSpeed) }}</span>
                                 <button
-                                  v-if="file.retryable"
+                                  v-if="entry.file.retryable"
                                   type="button"
                                   class="v1-file-retry"
-                                  :disabled="isFileRetrying(task, file)"
-                                  @click.stop="emit('retry-file', { task, file })"
+                                  :disabled="isFileRetrying(task, entry.file)"
+                                  @click.stop="emit('retry-file', { task, file: entry.file })"
                                 >
-                                  <RefreshCw :size="11" :class="{ spinning: isFileRetrying(task, file) }" />
-                                  {{ isFileRetrying(task, file) ? '重试中' : '重试' }}
+                                  <RefreshCw :size="11" :class="{ spinning: isFileRetrying(task, entry.file) }" />
+                                  {{ isFileRetrying(task, entry.file) ? '重试中' : '重试' }}
                                 </button>
                               </div>
                             </div>
                             <div class="v1-strip-track">
-                              <div class="v1-strip-fill" :class="fileToneClass(file)" :style="{ width: `${file.progress}%` }"></div>
+                              <div class="v1-strip-fill" :class="fileToneClass(entry.file)" :style="{ width: `${entry.file.progress}%` }"></div>
                             </div>
-                            <div v-if="file.reason" class="v1-file-reason">{{ file.reason }}</div>
+                            <div v-if="entry.file.reason" class="v1-file-reason">{{ entry.file.reason }}</div>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -308,7 +320,8 @@
 <script setup>
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import { Archive, AlertCircle, ArrowUpToLine, CheckCircle2, Clock3, Cloud, CloudDownload, Download, HardDriveUpload, Minimize2, Pause, Play, RefreshCw, Search, TriangleAlert, X, XCircle, Zap } from 'lucide-vue-next'
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import { useVirtualizer } from '@tanstack/vue-virtual'
 import downloadIconAnimation from '../../assets/anime/download-icon-clean.json?url'
 import uploadToCloudAnimation from '../../assets/anime/Uploading to cloud.lottie'
 import successConfettiAnimation from '../../assets/anime/success confetti.lottie'
@@ -353,6 +366,8 @@ const activeFilter = ref('all')
 const searchQuery = ref('')
 const expandedTaskIds = ref(new Set())
 const localSpinning = ref(false)
+const virtualFileListRef = ref(null)
+const unifiedRowsCache = new WeakMap()
 const isUploadMode = computed(() => props.transferMode === 'upload')
 
 function handleRefresh() {
@@ -396,6 +411,59 @@ const filteredTasks = computed(() => {
     return haystack.includes(keyword)
   })
 })
+
+const virtualFileTask = computed(() => {
+  let candidate = null
+  let candidateLength = 0
+  for (const task of mergedTasks.value) {
+    if (!expandedTaskIds.value.has(task.id)) continue
+    const length = getUnifiedFileRows(task).length
+    if (length > candidateLength) {
+      candidate = task
+      candidateLength = length
+    }
+  }
+  return candidateLength >= 80 ? candidate : null
+})
+const virtualFileRows = computed(() => {
+  const task = virtualFileTask.value
+  return task ? getUnifiedFileRows(task) : []
+})
+const fileRowVirtualizer = useVirtualizer(computed(() => ({
+  count: virtualFileRows.value.length,
+  getScrollElement: () => virtualFileListRef.value,
+  estimateSize: () => 36,
+  measureElement: element => element?.getBoundingClientRect().height || 36,
+  overscan: 12,
+})))
+const virtualFileItems = computed(() => fileRowVirtualizer.value.getVirtualItems())
+const virtualFileTotalSize = computed(() => fileRowVirtualizer.value.getTotalSize())
+
+function isVirtualizedFileTask(task) {
+  return Boolean(task?.id && virtualFileTask.value?.id === task.id)
+}
+
+function setVirtualFileListRef(element) {
+  virtualFileListRef.value = element || null
+}
+
+function measureVirtualFileRow(element) {
+  if (element) fileRowVirtualizer.value.measureElement(element)
+}
+
+function getRenderedFileEntries(task) {
+  const rows = getUnifiedFileRows(task)
+  if (!isVirtualizedFileTask(task)) {
+    return rows.map((file, index) => ({ file, index, virtualRow: null }))
+  }
+  return virtualFileItems.value
+    .map(virtualRow => ({
+      file: rows[virtualRow.index],
+      index: virtualRow.index,
+      virtualRow,
+    }))
+    .filter(entry => entry.file)
+}
 
 function getFileRetryKey(task, file) {
   const taskId = String(task?.id || task?.active_task_id || '').trim()
@@ -482,6 +550,14 @@ function toggleExpanded(taskId) {
   }
   expandedTaskIds.value = next
 }
+
+watch(
+  () => [virtualFileTask.value?.id || '', virtualFileRows.value.length].join(':'),
+  () => {
+    nextTick(() => fileRowVirtualizer.value.measure())
+  },
+  { immediate: true },
+)
 
 function iconToneClass(task) {
   const tone = getTaskTone(task)
@@ -1258,6 +1334,42 @@ function canRetryDownloadTask(task) {
 }
 
 function getUnifiedFileRows(task) {
+  if (!task || typeof task !== 'object') return []
+
+  const selectedResources = Array.isArray(task?.task_metadata?.selected_resources) ? task.task_metadata.selected_resources : []
+  const downloadFiles = Array.isArray(task?.download_files) ? task.download_files : []
+  const uploadFiles = Array.isArray(task?.upload_files) ? task.upload_files : []
+  const uploadedFiles = Array.isArray(task?.uploaded_files) ? task.uploaded_files : []
+  const failedFiles = Array.isArray(task?.failed_files) ? task.failed_files : []
+  const downloadRuntime = getDownloadRuntime(task)
+  const uploadRuntime = getUploadRuntime(task)
+  const signature = [
+    isUploadMode.value ? 'upload' : 'download',
+    task?.status,
+    task?.display_status,
+    task?.progress,
+    task?.updated_at,
+    selectedResources.length,
+    downloadFiles.length,
+    uploadFiles.length,
+    uploadedFiles.length,
+    failedFiles.length,
+    downloadRuntime?.transferred_bytes,
+    downloadRuntime?.speed_bytes_per_sec,
+    downloadRuntime?.current_relative_path,
+    uploadRuntime?.transferred_bytes,
+    uploadRuntime?.speed_bytes_per_sec,
+    uploadRuntime?.current_relative_path,
+  ].map(item => String(item ?? '')).join('|')
+  const cached = unifiedRowsCache.get(task)
+  if (cached?.signature === signature) return cached.rows
+
+  const rows = buildUnifiedFileRows(task)
+  unifiedRowsCache.set(task, { signature, rows })
+  return rows
+}
+
+function buildUnifiedFileRows(task) {
   const uploadRuntime = getUploadRuntime(task)
   const uploadCurrentRelativePath = String(uploadRuntime?.current_relative_path || '').trim()
   const uploadWaitingTurn = Boolean(uploadRuntime?.is_waiting_turn)
@@ -1617,8 +1729,32 @@ function getUnifiedFileRows(task) {
   overflow: auto;
   content-visibility: auto;
   contain-intrinsic-size: 520px;
+  overscroll-behavior: contain;
 }
-.v1-file-row { padding: 6px 0 8px; border: 0; border-radius: 0; background: transparent; }
+.v1-file-list.is-virtualized {
+  display: block;
+  contain: strict;
+}
+.v1-file-virtual-canvas {
+  position: relative;
+  width: 100%;
+  contain: layout style paint;
+}
+.v1-file-row {
+  padding: 6px 0 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  content-visibility: auto;
+  contain: layout style paint;
+  contain-intrinsic-size: 36px;
+}
+.v1-file-list.is-virtualized .v1-file-row {
+  position: absolute;
+  right: 0;
+  left: 0;
+  width: 100%;
+}
 .v1-file-row + .v1-file-row { border-top: 1px solid rgba(226, 232, 240, 0.78); padding-top: 8px; }
 .v1-file-row-top { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; align-items: flex-end; }
 .v1-file-row-main,.v1-file-row-side { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
