@@ -112,14 +112,6 @@
               <SettingsNumberStepper v-model="config.asmr_sync.max_retry_count" :min="1" :max="100" />
             </SettingsFieldCard>
           </div>
-          <div class="mini-grid two">
-            <SettingsFieldCard label="增强会话并发" hint="任务启动数至少覆盖全局文件槽位，避免空槽。">
-              <SettingsNumberStepper v-model="config.asmr_sync.enhanced_max_parallel_sessions" :min="1" :max="10" />
-            </SettingsFieldCard>
-            <SettingsFieldCard label="单会话处理并发" hint="文件下载仍受全局文件并发上限约束。">
-              <SettingsNumberStepper v-model="config.asmr_sync.enhanced_per_session_concurrency" :min="1" :max="10" />
-            </SettingsFieldCard>
-          </div>
           <SettingsFieldCard label="重试 Cron">
             <input v-model="config.asmr_sync.retry_cron" class="field-input" type="text" placeholder="0 */1 * * *">
           </SettingsFieldCard>
