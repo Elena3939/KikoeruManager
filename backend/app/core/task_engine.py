@@ -7325,7 +7325,12 @@ def get_task_engine() -> TaskEngine:
     """获取任务引擎实例"""
     global _task_engine
     from ..config.settings import get_config
-    configured_max_workers = max(1, int(get_config().processing.max_workers))
+    config = get_config()
+    configured_max_workers = max(
+        1,
+        int(config.processing.max_workers),
+        int(config.asmr_sync.max_concurrent_downloads),
+    )
     if _task_engine is None:
         _task_engine = TaskEngine(max_concurrent=configured_max_workers)
         # 启动时清理上次服务重启前残留的"正在处理中"临时冲突记录

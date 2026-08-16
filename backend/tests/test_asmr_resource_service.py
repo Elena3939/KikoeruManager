@@ -105,6 +105,69 @@ def test_classify_resource_and_language_detection():
     assert service.detect_language("RJ123456 Japanese subtitle") == "ja"
 
 
+@pytest.mark.anyio
+async def test_retry_refreshes_expired_download_link_and_preserves_selection(monkeypatch):
+    service = create_service()
+    calls = []
+
+    async def fake_fetch_remote_resources(rjcode, *, refresh=False):
+        calls.append((rjcode, refresh))
+        return {}, [
+            {
+                "id": "fresh-id",
+                "relative_path": "Audio/01 Main Track.mp3",
+                "file_name": "01 Main Track.mp3",
+                "remote_url": "https://example.com/fresh.mp3",
+                "size_bytes": 2048,
+                "checksum_md5": "fedcba9876543210fedcba9876543210",
+            }
+        ]
+
+    monkeypatch.setattr(service, "fetch_remote_resources", fake_fetch_remote_resources)
+    refreshed = await service._refresh_retry_resource_links(
+        "RJ123456",
+        [
+            {
+                "id": "original-id",
+                "relative_path": "Audio/01 Main Track.mp3",
+                "file_name": "01 Main Track.mp3",
+                "remote_url": "https://example.com/expired.mp3",
+                "selected": True,
+            }
+        ],
+    )
+
+    assert calls == [("RJ123456", True)]
+    assert refreshed[0]["id"] == "original-id"
+    assert refreshed[0]["relative_path"] == "Audio/01 Main Track.mp3"
+    assert refreshed[0]["remote_url"] == "https://example.com/fresh.mp3"
+    assert refreshed[0]["size_bytes"] == 2048
+    assert refreshed[0]["selected"] is True
+
+
+@pytest.mark.anyio
+async def test_retry_does_not_reuse_expired_url_when_resource_is_missing(monkeypatch):
+    service = create_service()
+
+    async def fake_fetch_remote_resources(_rjcode, *, refresh=False):
+        assert refresh is True
+        return {}, []
+
+    monkeypatch.setattr(service, "fetch_remote_resources", fake_fetch_remote_resources)
+    refreshed = await service._refresh_retry_resource_links(
+        "RJ123456",
+        [
+            {
+                "relative_path": "Audio/missing.mp3",
+                "file_name": "missing.mp3",
+                "remote_url": "https://example.com/expired.mp3",
+            }
+        ],
+    )
+
+    assert refreshed[0]["remote_url"] == ""
+
+
 @pytest.mark.parametrize(
     ("source_page", "all_files_uploaded", "expected"),
     [

@@ -19055,13 +19055,6 @@ async def asmr_sync_start(request: ASMRSyncStartRequest):
             raise HTTPException(status_code=400, detail="没有要下载的作品")
 
         engine = get_task_engine()
-        config = get_config()
-        engine.set_max_concurrent(
-            max(
-                int(getattr(config.asmr_sync, "enhanced_max_parallel_sessions", 5) or 5),
-                int(getattr(config.asmr_sync, "max_concurrent_downloads", 3) or 3),
-            )
-        )
         created_tasks = []
 
         for item in items:
@@ -19157,18 +19150,10 @@ async def asmr_sync_enhanced_start(request: ASMRSyncEnhancedStartRequest):
     from ..core.asmr_resource_service import get_asmr_resource_service
     from ..core.task_engine import Task, TaskType, get_task_engine
 
-    config = get_config()
-
     if not request.items:
         raise HTTPException(status_code=400, detail="没有可启动的增强下载任务")
 
     engine = get_task_engine()
-    engine.set_max_concurrent(
-        max(
-            int(getattr(config.asmr_sync, "enhanced_max_parallel_sessions", 5) or 5),
-            int(getattr(config.asmr_sync, "max_concurrent_downloads", 3) or 3),
-        )
-    )
     service = get_asmr_resource_service()
     created_tasks = []
     for item in request.items:
@@ -20521,15 +20506,8 @@ async def circle_completion_download_start(request: CircleCompletionDownloadStar
     if not request.items:
         raise HTTPException(status_code=400, detail="没有可创建的下载项")
 
-    config = get_config()
     batch_id = str(uuid.uuid4())
     engine = get_task_engine()
-    engine.set_max_concurrent(
-        max(
-            int(getattr(config.asmr_sync, "enhanced_max_parallel_sessions", 5) or 5),
-            int(getattr(config.asmr_sync, "max_concurrent_downloads", 3) or 3),
-        )
-    )
     session_service = get_asmr_resource_service()
     created_tasks = []
     child_rows = []

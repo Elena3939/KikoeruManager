@@ -857,6 +857,55 @@ class ASMRResourceService:
         resources.sort(key=lambda item: (item["resource_type"], item["relative_path"]))
         return work_info, resources
 
+    async def _refresh_retry_resource_links(
+        self,
+        rjcode: str,
+        selected_resources: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Refresh expiring download URLs while preserving the original retry selection."""
+        _, remote_resources = await self.fetch_remote_resources(rjcode, refresh=True)
+        remote_by_path = {
+            str(item.get("relative_path") or item.get("file_name") or "").strip(): dict(item)
+            for item in remote_resources
+            if str(item.get("relative_path") or item.get("file_name") or "").strip()
+        }
+        remote_by_name = {
+            str(item.get("file_name") or "").strip(): dict(item)
+            for item in remote_resources
+            if str(item.get("file_name") or "").strip()
+        }
+
+        refreshed_resources: List[Dict[str, Any]] = []
+        missing_paths: List[str] = []
+        for original in selected_resources:
+            original_resource = dict(original or {})
+            relative_path = str(
+                original_resource.get("relative_path")
+                or original_resource.get("file_name")
+                or ""
+            ).strip()
+            file_name = str(original_resource.get("file_name") or os.path.basename(relative_path)).strip()
+            fresh_resource = remote_by_path.get(relative_path) or remote_by_name.get(file_name)
+            if not fresh_resource:
+                missing_paths.append(relative_path or file_name)
+                refreshed_resources.append({**original_resource, "remote_url": ""})
+                continue
+
+            merged = {**original_resource, **fresh_resource}
+            merged["id"] = original_resource.get("id") or fresh_resource.get("id")
+            merged["relative_path"] = relative_path or fresh_resource.get("relative_path") or file_name
+            merged["file_name"] = file_name or fresh_resource.get("file_name")
+            merged["selected"] = original_resource.get("selected", True)
+            refreshed_resources.append(merged)
+
+        if missing_paths:
+            logger.warning(
+                "[ASMR增强] 重试资源未获取到最新下载地址: rj=%s paths=%s",
+                rjcode,
+                missing_paths[:20],
+            )
+        return refreshed_resources
+
     def _match_score(self, local_item: Dict[str, Any], remote_item: Dict[str, Any]) -> Tuple[int, List[str]]:
         if local_item.get("resource_type") != remote_item.get("resource_type"):
             return 0, []
@@ -1813,11 +1862,22 @@ class ASMRResourceService:
             raise ValueError("原下载缓存目录不存在，无法断点续传；请重新创建增强下载任务")
 
         failure_summary = dict(session.get("failure_summary") or {})
-        remaining_failed_resources = [
-            dict(item)
-            for item in failure_summary.get("failed_resources") or []
-            if str(item.get("relative_path") or "").strip() not in retry_paths
-        ]
+        selected_by_path = {
+            str(item.get("relative_path") or item.get("file_name") or "").strip(): dict(item)
+            for item in session.get("selected_resources") or []
+            if str(item.get("relative_path") or item.get("file_name") or "").strip()
+        }
+        remaining_failed_resources = []
+        for item in failure_summary.get("failed_resources") or []:
+            relative_path = str(item.get("relative_path") or item.get("name") or "").strip()
+            if relative_path in retry_paths:
+                continue
+            failure = dict(item)
+            if not isinstance(failure.get("resource"), dict):
+                resource = selected_by_path.get(relative_path)
+                if resource:
+                    failure["resource"] = resource
+            remaining_failed_resources.append(failure)
         return {
             "download_root": download_root,
             "remaining_failed_resources": remaining_failed_resources,
@@ -2720,6 +2780,16 @@ class ASMRResourceService:
         if not selected_resources:
             raise ValueError("没有可下载的资源")
 
+        is_retry_download = source_action in {
+            "retry_failed_resources",
+            "retry_failed_resource_item",
+            "auto_retry_failed_resources",
+        }
+        if is_retry_download:
+            self._append_task_log(task, "重试前重新获取失败资源下载链接")
+            selected_resources = await self._refresh_retry_resource_links(rjcode, selected_resources)
+            task.task_metadata["selected_resources"] = selected_resources
+
         timeout = int(metadata.get("download_timeout_seconds") or getattr(config.asmr_sync, "download_timeout_seconds", 60) or 60)
         max_retries = int(metadata.get("retry_count") or getattr(config.asmr_sync, "retry_count", 3) or 3)
         verify_md5 = bool(
@@ -2759,11 +2829,7 @@ class ASMRResourceService:
             1,
             int(getattr(config.asmr_sync, "max_concurrent_downloads", 3) or 3),
         )
-        configured_session_concurrency = max(
-            1,
-            int(getattr(config.asmr_sync, "enhanced_per_session_concurrency", global_download_concurrency) or global_download_concurrency),
-        )
-        per_session_concurrency = max(global_download_concurrency, configured_session_concurrency)
+        file_processing_concurrency = global_download_concurrency
 
         task.task_metadata["download_files"] = []
         task.task_metadata["download_runtime"] = {}
@@ -2785,11 +2851,6 @@ class ASMRResourceService:
         os.makedirs(temp_root, exist_ok=True)
         download_base_path = str(metadata.get("download_base_path") or "").strip()
         download_root = str(metadata.get("download_root") or "").strip()
-        is_retry_download = source_action in {
-            "retry_failed_resources",
-            "retry_failed_resource_item",
-            "auto_retry_failed_resources",
-        }
         if is_retry_download and (not download_root or not os.path.isdir(download_root)):
             raise ValueError("原下载缓存目录不存在，无法断点续传；请重新创建增强下载任务")
         if not download_root:
@@ -2807,7 +2868,7 @@ class ASMRResourceService:
         verification_failures: List[Dict[str, Any]] = []
         progress_state: Dict[str, Dict[str, Any]] = {}
         upload_progress_state: Dict[str, Dict[str, Any]] = {}
-        semaphore = asyncio.Semaphore(per_session_concurrency)
+        semaphore = asyncio.Semaphore(file_processing_concurrency)
         state_lock = asyncio.Lock()
         session_result_persisted = False
         completed_count = 0
@@ -3216,6 +3277,24 @@ class ASMRResourceService:
                 success_files.append(result)
                 if result.get("upload_path"):
                     uploaded_files.append({"name": result.get("name"), "upload_path": result.get("upload_path"), "relative_path": result.get("relative_path")})
+
+            if is_retry_download:
+                attempted_paths = {
+                    str(item.get("relative_path") or item.get("file_name") or "").strip()
+                    for item in selected_resources
+                    if str(item.get("relative_path") or item.get("file_name") or "").strip()
+                }
+                current_failed_paths = {
+                    str(item.get("relative_path") or item.get("name") or "").strip()
+                    for item in failed_files
+                    if str(item.get("relative_path") or item.get("name") or "").strip()
+                }
+                for item in metadata.get("remaining_failed_resources") or []:
+                    relative_path = str(item.get("relative_path") or item.get("name") or "").strip()
+                    if not relative_path or relative_path in attempted_paths or relative_path in current_failed_paths:
+                        continue
+                    failed_files.append(dict(item))
+                    current_failed_paths.add(relative_path)
 
             duration_ms = int((datetime.now() - started_at).total_seconds() * 1000)
             total_bytes = sum(int(item.get("size_bytes") or 0) for item in success_files)

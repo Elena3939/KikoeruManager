@@ -440,14 +440,7 @@ class LibraryFolderCompletionService:
         if not raw_items:
             raise ValueError("没有可启动的补全任务")
 
-        config = get_config()
         engine = get_task_engine()
-        engine.set_max_concurrent(
-            max(
-                int(getattr(config.asmr_sync, "enhanced_max_parallel_sessions", 5) or 5),
-                int(getattr(config.asmr_sync, "max_concurrent_downloads", 3) or 3),
-            )
-        )
         created_tasks: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         for raw_item in raw_items:
