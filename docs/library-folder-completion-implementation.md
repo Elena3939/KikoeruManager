@@ -209,8 +209,8 @@ class LibraryFolderCompletionStartRequest(BaseModel):
 
 5. 任务创建瓶颈：
    - 一个 RJ 一个下载任务，复用现有任务并发控制。
-   - `enhanced_max_parallel_sessions` 控制整体并发。
-   - 单任务内部仍由 `enhanced_per_session_concurrency` 控制文件下载并发。
+   - `asmr_sync.max_concurrent_downloads` 统一控制所有 RJ 合计的文件下载并发。
+   - 调度器优先填满较早进入队列的 RJ；当前 RJ 文件数不足时，空余槽位才分配给后续 RJ。
    - 批量创建后不等待下载完成，前端只提示任务已进入队列。
 
 6. 磁盘与覆盖风险：
