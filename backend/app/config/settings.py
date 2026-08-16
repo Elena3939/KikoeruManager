@@ -258,9 +258,6 @@ class ASMRSyncConfig(BaseModel):
     enabled: bool = True
     api_base_url: str = "https://api.asmr-200.com/api"
     max_concurrent_downloads: int = 3
-    enhanced_max_parallel_sessions: int = 5
-    enhanced_per_session_concurrency: int = 5
-    queue_worker_limit: int = 5
     http_proxy: Optional[str] = None
     retry_interval_hours: float = 1.0# 重试间隔（小时）
     max_retry_count: int = 10  # 最大重试次数
@@ -1153,6 +1150,15 @@ def save_config(config_data: dict, config_path: str = None) -> AppConfig:
                     logger.debug(f"读取现有配置: {len(existing_config)} 个顶层键")
 
             merged_config = deep_merge(existing_config, config_data)
+            asmr_config_data = merged_config.get("asmr_sync")
+            if isinstance(asmr_config_data, dict):
+                # 文件级全局并发已取代旧的会话并发模型，保存配置时顺手清理历史键。
+                for obsolete_key in (
+                    "enhanced_max_parallel_sessions",
+                    "enhanced_per_session_concurrency",
+                    "queue_worker_limit",
+                ):
+                    asmr_config_data.pop(obsolete_key, None)
             logger.debug(f"合并后配置: {len(merged_config)} 个顶层键")
 
             try:
