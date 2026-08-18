@@ -704,6 +704,54 @@ class LibraryIndexMutationService:
         finally:
             db.close()
 
+    def wait_until_materialized(
+        self,
+        fences: Iterable[dict[str, Any]],
+        *,
+        timeout_seconds: float = 120.0,
+        poll_interval_seconds: float = 0.2,
+    ) -> None:
+        """等待指定 mutation fence 已被物化。"""
+        required_seq_by_library: dict[str, int] = {}
+        for fence in fences or []:
+            library_id = str((fence or {}).get("library_id") or "").strip()
+            accepted_seq = int((fence or {}).get("accepted_seq") or 0)
+            if library_id and accepted_seq > 0:
+                required_seq_by_library[library_id] = max(
+                    required_seq_by_library.get(library_id, 0),
+                    accepted_seq,
+                )
+        if not required_seq_by_library:
+            return
+
+        deadline = time.monotonic() + max(0.1, float(timeout_seconds or 0))
+        while True:
+            db = SessionLocal()
+            try:
+                rows = db.query(LibraryIndexStatus).filter(
+                    LibraryIndexStatus.library_id.in_(required_seq_by_library)
+                ).all()
+                status_by_library = {str(row.library_id): row for row in rows}
+                pending: list[str] = []
+                for library_id, required_seq in required_seq_by_library.items():
+                    status = status_by_library.get(library_id)
+                    materialized_seq = int(getattr(status, "materialized_seq", 0) or 0)
+                    blocked_seq = getattr(status, "blocked_seq", None)
+                    if blocked_seq is not None and int(blocked_seq) <= required_seq:
+                        raise RuntimeError(
+                            f"库存索引追赶阻塞: library={library_id} seq={int(blocked_seq)}"
+                        )
+                    if materialized_seq < required_seq:
+                        pending.append(f"{library_id}:{materialized_seq}/{required_seq}")
+            finally:
+                db.close()
+
+            if not pending:
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError("等待库存索引物化超时: " + ", ".join(pending))
+            time.sleep(max(0.05, float(poll_interval_seconds or 0.2)))
+
     @staticmethod
     def _path_filter(column, relative_path: str, scope: str):
         if scope == "subtree":
