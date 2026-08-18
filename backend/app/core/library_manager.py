@@ -21,6 +21,7 @@ from urllib.parse import quote, unquote
 import aiohttp
 
 from ..config.settings import get_config, get_config_file_path
+from .library_index._helpers import should_skip_name
 from .log_sanitizer import sanitize_text_for_log
 from .resource_budget_service import get_resource_budget_service
 from .ttl_cache import TTLCache
@@ -3617,18 +3618,18 @@ class LibraryManager:
         self,
         library: LibraryDefinition,
         absolute_path: str,
-    ) -> None:
+    ) -> Optional[dict[str, Any]]:
         """业务自身写操作创建/落地新子树后调用，后台批量 upsert 索引。
 
         - 索引未就绪 / 模块异常时静默跳过
         - 路径不在库存根下 / 越界：静默跳过
         """
         if not absolute_path:
-            return
+            return None
         if not self._library_uses_inventory_index(library):
-            return
+            return None
         try:
-            self._record_index_reconcile_by_path(
+            return self._record_index_reconcile_by_path(
                 library,
                 absolute_path,
                 source="self_mutation_upsert",
@@ -3638,6 +3639,7 @@ class LibraryManager:
                 "通知索引 upsert 子树失败 library=%s path=%s",
                 library.id, absolute_path, exc_info=True,
             )
+            return None
 
     def _dispatch_local_upsert_subtree(
         self,
@@ -3866,7 +3868,7 @@ class LibraryManager:
                 best_root_len = root_len
         return best
 
-    def notify_index_upsert_by_path(self, absolute_path: str) -> None:
+    def notify_index_upsert_by_path(self, absolute_path: str) -> Optional[dict[str, Any]]:
         """无 library 上下文时的便捷入口：按路径反查 library 后 upsert 子树。
 
         路径不在任何已知 local 库存根下时静默忽略。
@@ -3874,13 +3876,18 @@ class LibraryManager:
         try:
             library = self.find_local_library_for_path(absolute_path)
             if library is None:
-                return
-            self._record_index_reconcile_by_path(library, absolute_path, source="self_mutation")
+                return None
+            return self._record_index_reconcile_by_path(
+                library,
+                absolute_path,
+                source="self_mutation",
+            )
         except Exception:
             logger.debug(
                 "[索引] 按路径反查 library 后 upsert 失败 path=%s",
                 absolute_path, exc_info=True,
             )
+            return None
 
     # ========== 第一梯队接入 1：库存浏览搜索走索引 ==========
     # 本地库存搜索优先使用索引。命中时绕过 os.walk；
@@ -8740,7 +8747,7 @@ class LibraryManager:
         )
 
     def _should_skip_entry(self, name: str) -> bool:
-        return name.startswith("_") or name.startswith(".") or name.lower() in {"#recycle", "@eadir"}
+        return should_skip_name(name)
 
     def _normalize_remote_path(self, path: str) -> str:
         if not path:
@@ -12924,5 +12931,3 @@ def shutdown_library_manager_background_workers() -> None:
     if _library_manager is None:
         return
     _library_manager.shutdown_background_workers()
-
-

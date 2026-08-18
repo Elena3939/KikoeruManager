@@ -5,6 +5,23 @@ import pytest
 from app.core.library_index.remote_scanner import RemoteScanner
 
 
+def test_remote_scanner_keeps_underscore_resources_visible():
+    entry = RemoteScanner()._raw_to_entry(
+        "remote-library-2",
+        {
+            "name": "_096.png",
+            "path": "/AMSR/RJ01476998/_096.png",
+            "isdir": False,
+            "additional": {"time": {"mtime": 100}, "size": 24892207},
+        },
+        "/AMSR",
+    )
+
+    assert entry is not None
+    assert entry.relative_path == "RJ01476998/_096.png"
+    assert entry.size == 24892207
+
+
 class EmptySearchListClient:
     def __init__(self):
         self.started = False
