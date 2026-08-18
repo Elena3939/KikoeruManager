@@ -6,6 +6,17 @@ export function mergeTrackedDownloadTaskIds(currentTaskIds = [], newTaskIds = []
   return [...new Set(merged)]
 }
 
+export function replaceTrackedDownloadTaskId(currentTaskIds = [], previousTaskId = '', nextTaskId = '') {
+  const previous = String(previousTaskId || '').trim()
+  const next = String(nextTaskId || '').trim()
+  if (!next) return mergeTrackedDownloadTaskIds(currentTaskIds)
+
+  return mergeTrackedDownloadTaskIds(
+    currentTaskIds.filter(id => String(id || '').trim() !== previous),
+    [next],
+  )
+}
+
 export function selectTrackedDownloadTasks(taskIds = [], tasks = []) {
   const tasksById = new Map(
     tasks

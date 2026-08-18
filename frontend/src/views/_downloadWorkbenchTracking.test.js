@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   createLatestRequestGuard,
   mergeTrackedDownloadTaskIds,
+  replaceTrackedDownloadTaskId,
   selectTrackedDownloadTasks,
 } from './_downloadWorkbenchTracking.js'
 
@@ -10,6 +11,14 @@ describe('下载工作台任务跟踪', () => {
   it('追加任务时把新任务置顶并去重', () => {
     expect(mergeTrackedDownloadTaskIds(['old-1', 'old-2'], ['new-1', 'old-1']))
       .toEqual(['new-1', 'old-1', 'old-2'])
+  })
+
+  it('legacy 等待重试创建新任务后替换旧跟踪 ID', () => {
+    expect(replaceTrackedDownloadTaskId(
+      ['legacy-waiting', 'other-task'],
+      'legacy-waiting',
+      'retry-task',
+    )).toEqual(['retry-task', 'other-task'])
   })
 
   it('旧状态快照缺少新任务时不修改跟踪 ID', () => {

@@ -1131,6 +1131,7 @@ import { reconcileCircleCompletionOwnedState } from '../utils/circleCompletionOw
 import {
   createLatestRequestGuard,
   mergeTrackedDownloadTaskIds,
+  replaceTrackedDownloadTaskId,
   selectTrackedDownloadTasks,
 } from './_downloadWorkbenchTracking.js'
 
@@ -3952,7 +3953,14 @@ async function retryWaitingDownloadTask(task) {
   next.add(`${taskId}:waiting`)
   retryingTaskIds.value = next
   try {
-    await asmrSyncApi.retryWaiting(taskId)
+    const response = await asmrSyncApi.retryWaiting(taskId)
+    const nextTaskId = String(response?.task_id || taskId).trim()
+    const supersededTaskId = String(response?.superseded_task_id || taskId).trim()
+    trackedDownloadTaskIds.value = replaceTrackedDownloadTaskId(
+      trackedDownloadTaskIds.value,
+      supersededTaskId,
+      nextTaskId,
+    )
     ElMessage.success('已立即重试')
     await refreshDownloadWorkbench({ silent: true })
   } catch (error) {

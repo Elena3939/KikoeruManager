@@ -649,6 +649,7 @@ import AsmrSubtitleScanPanel from '../components/asmr/AsmrSubtitleScanPanel.vue'
 import {
   createLatestRequestGuard,
   mergeTrackedDownloadTaskIds,
+  replaceTrackedDownloadTaskId,
   selectTrackedDownloadTasks,
 } from './_downloadWorkbenchTracking.js'
 
@@ -2110,12 +2111,13 @@ async function retryEnhancedDownloadFile(payload) {
   }
 }
 
-function focusEnhancedRetryWorkbench(nextTaskId) {
+function focusEnhancedRetryWorkbench(nextTaskId, previousTaskId = '') {
   const normalizedTaskId = String(nextTaskId || '').trim()
   if (!normalizedTaskId) return
-  enhancedDownloadWorkbenchTaskIds.value = mergeTrackedDownloadTaskIds(
+  enhancedDownloadWorkbenchTaskIds.value = replaceTrackedDownloadTaskId(
     enhancedDownloadWorkbenchTaskIds.value,
-    [normalizedTaskId],
+    previousTaskId,
+    normalizedTaskId,
   )
   enhancedDownloadWorkbenchVisible.value = true
   enhancedDownloadWorkbenchBackgroundActive.value = false
@@ -2316,6 +2318,10 @@ const retryFailed = async (taskId) => {
 const retryWaitingTask = async (taskId) => {
   try {
     const result = await asmrSyncApi.retryWaiting(taskId)
+    focusEnhancedRetryWorkbench(
+      result?.task_id || taskId,
+      result?.superseded_task_id || taskId,
+    )
     ElMessage.success(result.message)
     await refreshStatus()
   } catch (error) {
