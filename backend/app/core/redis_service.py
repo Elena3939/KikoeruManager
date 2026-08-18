@@ -39,6 +39,7 @@ _TASK_RUNTIME_METADATA_KEYS = (
     'ai_unmatched_audio_count',
     'ai_unmatched_subtitle_count',
 )
+_TASK_RUNTIME_TRANSFER_ROW_LIMIT = 120
 
 _BONUS_PROBE_CACHE_STREAM = 'bonus-probe:cache:stream'
 _BONUS_PROBE_CACHE_GROUP = 'bonus-probe-cache-writers'
@@ -135,6 +136,8 @@ class RedisService:
         self._client = None
         self._client_signature: Optional[tuple[Any, ...]] = None
         self._client_lock = threading.Lock()
+        self._consumer_group_lock = threading.Lock()
+        self._ensured_consumer_groups: set[tuple[str, str]] = set()
         self._last_error = ''
         self._last_ping_latency_ms: Optional[float] = None
         self._memory_lock = threading.Lock()
@@ -345,6 +348,8 @@ class RedisService:
                 health_check_interval=30,
             )
             self._client_signature = signature
+            with self._consumer_group_lock:
+                self._ensured_consumer_groups.clear()
             return self._client
 
     def ping(self) -> bool:
@@ -442,8 +447,12 @@ class RedisService:
             if key not in metadata:
                 continue
             value = metadata.get(key)
-            if key == 'progress_log':
-                runtime_metadata[key] = list(value or [])[-80:]
+            if key in {'download_files', 'failed_files'}:
+                rows = list(value or []) if isinstance(value, list) else []
+                total = len(rows)
+                runtime_metadata[key] = rows[:_TASK_RUNTIME_TRANSFER_ROW_LIMIT]
+                runtime_metadata[f'{key}_total'] = total
+                runtime_metadata[f'{key}_truncated'] = total > _TASK_RUNTIME_TRANSFER_ROW_LIMIT
             else:
                 runtime_metadata[key] = value
         payload = {
@@ -564,16 +573,27 @@ class RedisService:
         *,
         start_id: str,
     ) -> None:
-        try:
-            client.xgroup_create(
-                self.stream_key(stream_name),
-                group_name,
-                id=start_id,
-                mkstream=True,
-            )
-        except Exception as exc:
-            if 'BUSYGROUP' not in str(exc):
-                raise
+        stream_key = self.stream_key(stream_name)
+        cache_key = (stream_key, str(group_name or '').strip())
+        with self._consumer_group_lock:
+            if cache_key in self._ensured_consumer_groups:
+                return
+            try:
+                client.xgroup_create(
+                    stream_key,
+                    group_name,
+                    id=start_id,
+                    mkstream=True,
+                )
+            except Exception as exc:
+                if 'BUSYGROUP' not in str(exc):
+                    raise
+            self._ensured_consumer_groups.add(cache_key)
+
+    def _forget_consumer_group(self, stream_name: str, group_name: str) -> None:
+        cache_key = (self.stream_key(stream_name), str(group_name or '').strip())
+        with self._consumer_group_lock:
+            self._ensured_consumer_groups.discard(cache_key)
 
     def ensure_consumer_group_sync(
         self,
@@ -603,6 +623,8 @@ class RedisService:
             return True
         except Exception as exc:
             self._last_error = str(exc)
+            if 'NOGROUP' in str(exc).upper():
+                self._forget_consumer_group(normalized_stream, normalized_group)
             logger.debug(
                 '[Redis] 创建 consumer group 失败 stream=%s group=%s',
                 normalized_stream,
@@ -676,6 +698,8 @@ class RedisService:
             return current_cursor, result
         except Exception as exc:
             self._last_error = str(exc)
+            if 'NOGROUP' in str(exc).upper():
+                self._forget_consumer_group(normalized_stream, normalized_group)
             logger.debug(
                 '[Redis] 读取 consumer group 失败 stream=%s group=%s',
                 normalized_stream,
@@ -1274,18 +1298,6 @@ class RedisService:
     def get_bonus_probe_cache_sync(self, rjcodes: Iterable[str]) -> dict[str, dict[str, Any]]:
         return self.read_bonus_probe_cache_rows_sync(rjcodes)
 
-    def _ensure_bonus_probe_cache_group_sync(self, client: Any) -> None:
-        try:
-            client.xgroup_create(
-                self.stream_key(_BONUS_PROBE_CACHE_STREAM),
-                _BONUS_PROBE_CACHE_GROUP,
-                id='0',
-                mkstream=True,
-            )
-        except Exception as exc:
-            if 'BUSYGROUP' not in str(exc):
-                raise
-
     def read_bonus_probe_cache_dirty_sync(
         self,
         *,
@@ -1314,7 +1326,12 @@ class RedisService:
                     target.append((str(message_id), data))
 
         try:
-            self._ensure_bonus_probe_cache_group_sync(client)
+            self._ensure_consumer_group_with_client_sync(
+                client,
+                _BONUS_PROBE_CACHE_STREAM,
+                _BONUS_PROBE_CACHE_GROUP,
+                start_id='0',
+            )
             result: list[tuple[str, dict[str, Any]]] = []
             if reclaim_idle_ms > 0 and hasattr(client, 'xautoclaim'):
                 claimed = client.xautoclaim(
@@ -1341,6 +1358,11 @@ class RedisService:
             return result
         except Exception as exc:
             self._last_error = str(exc)
+            if 'NOGROUP' in str(exc).upper():
+                self._forget_consumer_group(
+                    _BONUS_PROBE_CACHE_STREAM,
+                    _BONUS_PROBE_CACHE_GROUP,
+                )
             logger.debug('[Redis] 读取 DLsite 特典缓存 dirty buffer 失败', exc_info=True)
             return []
 

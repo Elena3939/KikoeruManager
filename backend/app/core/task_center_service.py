@@ -2538,8 +2538,19 @@ class TaskCenterService:
         if normalized_item_id.startswith("waiting-retry:"):
             waiting_task_id = normalized_item_id.split(":", 1)[1]
             if normalized_action == "retry_waiting":
-                if engine.retry_task(waiting_task_id):
-                    return {"success": True, "message": "任务已加入重试队列"}
+                retry_result = engine.retry_task(waiting_task_id)
+                if retry_result:
+                    retry_details = retry_result if isinstance(retry_result, dict) else {}
+                    return {
+                        "success": True,
+                        "message": "任务已加入重试队列",
+                        "task_id": str(
+                            retry_details.get("task_id") or waiting_task_id
+                        ),
+                        "superseded_task_id": str(
+                            retry_details.get("superseded_task_id") or ""
+                        ),
+                    }
                 raise ValueError("任务不在等待重试状态")
             if normalized_action == "delete_waiting_retry":
                 if waiting_task_id in engine.tasks:

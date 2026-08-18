@@ -629,6 +629,11 @@ class TaskEngine:
         return cls._status_value(task) in cls._TERMINAL_OR_WAITING_STATUSES
 
     def _emit_task_center_event(self, task: Task, reason: str = "progress") -> None:
+        # 全局 hook 也会收到仅供内部服务传递进度的临时 Task。只有已经正式
+        # 注册进任务引擎的任务才允许写 Redis / 任务中心，否则临时元数据、
+        # 解压和过滤任务会被永久物化成 pending/system 孤儿记录。
+        if self.tasks.get(str(getattr(task, "id", "") or "")) is not task:
+            return
         try:
             from .task_center_event_service import broadcast_task_center_changed
 
@@ -4076,8 +4081,8 @@ class TaskEngine:
         logger.info(f"[重试] 尝试重试任务: {task_id}")
         logger.info(f"[重试] 当前内存中的任务: {list(self.tasks.keys())}")
 
-        if task_id in self.tasks:
-            task = self.tasks[task_id]
+        task = self.tasks.get(task_id)
+        if task:
             logger.info(f"[重试] 找到任务 {task_id}, 状态: {task.status}, RJ号: {task.rjcode}")
             if task.status == TaskStatus.WAITING_RETRY:
                 # 重入保护：若任务已在处理中则不重复入队
@@ -4090,44 +4095,96 @@ class TaskEngine:
                 asyncio.create_task(self.queue.put(task))
                 task.mark_changed("submitted")
                 logger.info(f"[重试] 任务 {task_id} ({task.rjcode}) 已加入重试队列")
-                return True
-            else:
-                logger.warning(f"[重试] 任务 {task_id} 状态不是 WAITING_RETRY: {task.status}")
+                return {
+                    "task_id": task.id,
+                    "superseded_task_id": "",
+                }
+            if task.status in {
+                TaskStatus.PENDING,
+                TaskStatus.PROCESSING,
+                TaskStatus.PAUSED,
+            }:
+                logger.warning(f"[重试] 任务 {task_id} 已在活动状态，跳过: {task.status}")
+                return False
+            logger.warning(
+                f"[重试] 任务 {task_id} 内存状态为 {task.status}，继续检查数据库等待记录"
+            )
         else:
             logger.warning(f"[重试] 任务 {task_id} 不在内存中")
-            # 尝试从数据库加载
-            from ..models.database import WaitingRetryTask, SessionLocal
-            db = SessionLocal()
-            try:
-                wt = db.query(WaitingRetryTask).filter(WaitingRetryTask.id == task_id).first()
-                if wt:
-                    logger.info(f"[重试] 从数据库找到任务: {wt.rjcode}")
-                    # 创建任务并加入队列
-                    task = Task(
-                        task_type=TaskType.ASMR_SYNC_DOWNLOAD,
-                        source_path=wt.subtitle_folder,
-                        task_id=wt.id,
-                        status=TaskStatus.PENDING,
-                        rjcode=wt.rjcode
-                    )
-                    task.task_metadata = wt.task_metadata or {}
-                    task.task_metadata['subtitle_folder'] = wt.subtitle_folder
-                    task.task_metadata['work_title'] = wt.work_title
-                    with task._set_state_silent():
-                        task.current_step = "手动重试"
-                    self._ensure_task_context(task)
-                    self.tasks[task.id] = task
-                    asyncio.create_task(self.queue.put(task))
-                    task.mark_changed("submitted")
-                    # 从等待重试表删除
-                    db.delete(wt)
-                    db.commit()
-                    logger.info(f"[重试] 任务 {task_id} ({wt.rjcode}) 从数据库加载并加入队列")
-                    return True
-            except Exception as e:
-                logger.error(f"[重试] 从数据库加载任务失败: {e}")
-            finally:
-                db.close()
+
+        # 内存中不存在，或内存任务已失败但数据库仍保留等待记录时，从数据库恢复。
+        from ..models.database import ASMRDownloadSession, WaitingRetryTask, SessionLocal
+        db = SessionLocal()
+        try:
+            wt = db.query(WaitingRetryTask).filter(WaitingRetryTask.id == task_id).first()
+            if wt:
+                logger.info(f"[重试] 从数据库找到任务: {wt.rjcode}")
+                task_metadata = dict(wt.task_metadata or {})
+                origin_task_id = str(
+                    task_metadata.get("origin_task_id")
+                    or task_metadata.get("retry_failed_task_id")
+                    or ""
+                ).strip()
+                session_id = str(task_metadata.get("session_id") or "").strip()
+                if not origin_task_id and session_id:
+                    session = db.query(ASMRDownloadSession).filter(
+                        ASMRDownloadSession.id == session_id
+                    ).first()
+                    origin_task_id = str(getattr(session, "task_id", "") or "").strip()
+
+                task = Task(
+                    task_type=TaskType.ASMR_SYNC_DOWNLOAD,
+                    source_path=wt.subtitle_folder,
+                    task_id=wt.id,
+                    status=TaskStatus.PENDING,
+                    rjcode=wt.rjcode
+                )
+                task.task_metadata = task_metadata
+                task.task_metadata['waiting_retry_record_id'] = wt.id
+                task.task_metadata['subtitle_folder'] = wt.subtitle_folder
+                task.task_metadata['work_title'] = wt.work_title
+                superseded_task_id = ""
+                if origin_task_id and origin_task_id != task.id:
+                    superseded_task_id = origin_task_id
+                    task.task_metadata['origin_task_id'] = origin_task_id
+                    task.task_metadata['retry_failed_task_id'] = origin_task_id
+                    task.task_metadata['retry_from_task_id'] = origin_task_id
+
+                    origin_task = self.tasks.get(origin_task_id)
+                    if origin_task:
+                        origin_metadata = dict(origin_task.task_metadata or {})
+                        origin_metadata['superseded_by_task_id'] = task.id
+                        origin_metadata['superseded_at'] = datetime.now().isoformat()
+                        origin_metadata['superseded_reason'] = 'retry_replaced'
+                        origin_metadata['hidden_in_task_lists'] = True
+                        origin_task.task_metadata = origin_metadata
+                        origin_task.touch_metadata('retry_superseded')
+                    with contextlib.suppress(Exception):
+                        from .task_center_materialization_service import (
+                            get_task_center_materialization_service,
+                        )
+
+                        get_task_center_materialization_service().delete_engine_item(
+                            origin_task_id
+                        )
+                wt.task_metadata = dict(task.task_metadata)
+                wt.updated_at = datetime.now()
+                db.commit()
+                with task._set_state_silent():
+                    task.current_step = "手动重试"
+                self._ensure_task_context(task)
+                self.tasks[task.id] = task
+                asyncio.create_task(self.queue.put(task))
+                task.mark_changed("submitted")
+                logger.info(f"[重试] 任务 {task_id} ({wt.rjcode}) 从数据库加载并加入队列")
+                return {
+                    "task_id": task.id,
+                    "superseded_task_id": superseded_task_id,
+                }
+        except Exception as e:
+            logger.error(f"[重试] 从数据库加载任务失败: {e}")
+        finally:
+            db.close()
         return False
 
     async def rerun_rj_subtitle_task(self, task_id: str, overrides: Optional[dict] = None) -> Task:
@@ -4380,27 +4437,39 @@ class TaskEngine:
         """保存等待重试任务到数据库"""
         from ..models.database import WaitingRetryTask, SessionLocal
         from ..config.settings import get_config
-        import uuid
 
         logger.info(f"[等待重试] 开始保存任务 {task.rjcode} 到数据库...")
         db = SessionLocal()
         try:
+            waiting_task_id = str(task.id or "").strip()
+            if not waiting_task_id:
+                raise ValueError("等待重试任务缺少任务 ID")
+            task_metadata = dict(task.task_metadata or {})
+            task_metadata.setdefault("origin_task_id", waiting_task_id)
+            task_metadata["waiting_retry_record_id"] = waiting_task_id
+            task.task_metadata = task_metadata
+
             # 检查是否已存在
             existing = db.query(WaitingRetryTask).filter(WaitingRetryTask.rjcode == task.rjcode).first()
             if existing:
+                if existing.id != waiting_task_id:
+                    duplicate = db.query(WaitingRetryTask).filter(WaitingRetryTask.id == waiting_task_id).first()
+                    if duplicate and duplicate is not existing:
+                        raise ValueError(f"等待重试任务 ID 已存在: {waiting_task_id}")
+                    existing.id = waiting_task_id
                 # 更新现有记录
                 existing.retry_count = (existing.retry_count or 0) + 1
                 existing.retry_reason = retry_reason
                 existing.retry_after = retry_after
                 existing.updated_at = datetime.now()
-                existing.task_metadata = task.task_metadata
+                existing.task_metadata = task_metadata
                 logger.info(f"[等待重试] 更新任务 {task.rjcode}, 重试次数: {existing.retry_count}")
             else:
                 # 创建新记录
                 config = get_config()
                 max_retry = config.asmr_sync.max_retry_count if hasattr(config, 'asmr_sync') else 10
                 waiting_task = WaitingRetryTask(
-                    id=str(uuid.uuid4()),
+                    id=waiting_task_id,
                     rjcode=task.rjcode,
                     subtitle_folder=subtitle_folder,
                     work_title=work_title,
@@ -4408,7 +4477,7 @@ class TaskEngine:
                     retry_count=1,
                     max_retry_count=max_retry,
                     retry_after=retry_after,
-                    task_metadata=task.task_metadata
+                    task_metadata=task_metadata
                 )
                 db.add(waiting_task)
                 logger.info(f"[等待重试] 创建新任务记录 {task.rjcode}")

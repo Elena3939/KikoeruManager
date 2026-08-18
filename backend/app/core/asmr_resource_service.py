@@ -22,6 +22,10 @@ from .ttl_cache import TTLCache
 logger = logging.getLogger(__name__)
 
 
+class ASMRSourceUnavailableError(RuntimeError):
+    """ASMR 源站网络不可用，不能当成作品不存在。"""
+
+
 class ASMRFileDownloadScheduler:
     """全局文件下载槽位，按 RJ 会话创建顺序优先分配。"""
 
@@ -432,7 +436,7 @@ class ASMRResourceService:
         if failed_stage:
             file_progress = min(file_progress, 99)
 
-        download_progress_state[file_key] = {
+        next_file_state = {
             **previous,
             "name": file_name,
             "downloaded": normalized_downloaded,
@@ -446,33 +450,76 @@ class ASMRResourceService:
             "speed_bytes_per_sec": file_speed,
             "eta_seconds": file_eta,
         }
-        ordered_files = sorted(download_progress_state.values(), key=lambda item: item.get("index") or 0)
-        task.task_metadata["download_files"] = ordered_files
+        current_file_state = download_progress_state.get(file_key)
+        if isinstance(current_file_state, dict):
+            current_file_state.clear()
+            current_file_state.update(next_file_state)
+        else:
+            current_file_state = next_file_state
+            download_progress_state[file_key] = current_file_state
+            task.task_metadata["download_files"] = sorted(
+                download_progress_state.values(),
+                key=lambda item: item.get("index") or 0,
+            )
 
-        transferred_bytes = sum(
-            min(
+        def transferred_contribution(item: Dict[str, Any]) -> int:
+            return min(
                 max(0, int(item.get("downloaded") or 0)),
                 max(0, int(item.get("total") or 0)),
             )
-            for item in ordered_files
+
+        completed_stages = {"downloaded", "download_reused", "ready_for_upload"}
+
+        def is_completed(item: Dict[str, Any]) -> bool:
+            return (
+                str(item.get("stage") or "") in completed_stages
+                and int(item.get("progress") or 0) >= 100
+            )
+
+        def is_failed(item: Dict[str, Any]) -> bool:
+            return str(item.get("stage") or "").endswith("_failed")
+
+        def is_active(item: Dict[str, Any]) -> bool:
+            item_total = max(0, int(item.get("total") or 0))
+            item_downloaded = max(0, int(item.get("downloaded") or 0))
+            return 0 < item_downloaded < max(1, item_total)
+
+        transferred_bytes = max(
+            0,
+            int(runtime.get("transferred_bytes") or 0)
+            - transferred_contribution(previous)
+            + transferred_contribution(current_file_state),
         )
         known_total_bytes = max(0, int(runtime.get("expected_total_bytes") or runtime.get("total_bytes") or 0))
+        observed_total_bytes = max(
+            0,
+            int(runtime.get("observed_total_bytes") or 0)
+            - max(0, int(previous.get("total") or 0))
+            + max(0, int(current_file_state.get("total") or 0)),
+        )
         aggregate_total = max(
             known_total_bytes,
-            sum(max(0, int(item.get("total") or 0)) for item in ordered_files),
+            observed_total_bytes,
         )
-        completed_stages = {"downloaded", "download_reused", "ready_for_upload"}
-        completed_files = sum(
-            1
-            for item in ordered_files
-            if str(item.get("stage") or "") in completed_stages
-            and int(item.get("progress") or 0) >= 100
+        completed_files = max(
+            0,
+            int(runtime.get("completed_files") or 0)
+            - int(is_completed(previous))
+            + int(is_completed(current_file_state)),
         )
-        has_failed_file = any(str(item.get("stage") or "").endswith("_failed") for item in ordered_files)
-        active_items = [
-            item for item in ordered_files
-            if 0 < int(item.get("downloaded") or 0) < max(1, int(item.get("total") or 0))
-        ]
+        failed_file_count = max(
+            0,
+            int(runtime.get("failed_file_count") or 0)
+            - int(is_failed(previous))
+            + int(is_failed(current_file_state)),
+        )
+        active_file_count = max(
+            0,
+            int(runtime.get("active_file_count") or 0)
+            - int(is_active(previous))
+            + int(is_active(current_file_state)),
+        )
+        has_failed_file = failed_file_count > 0
         aggregate_speed = 0
         remaining_bytes = max(0, aggregate_total - transferred_bytes)
         # 总速度必须按整个任务的字节增量采样。逐文件平均速度会把已启动但未实际并发传输的文件全部相加，
@@ -520,9 +567,11 @@ class ASMRResourceService:
             "current_file_index": index,
             "total_files": total_files,
             "completed_files": completed_files,
-            "active_file_count": len(active_items),
+            "failed_file_count": failed_file_count,
+            "active_file_count": active_file_count,
             "transferred_bytes": transferred_bytes,
             "total_bytes": aggregate_total,
+            "observed_total_bytes": observed_total_bytes,
             "expected_total_bytes": known_total_bytes,
             "progress": aggregate_progress,
             "speed_bytes_per_sec": aggregate_speed,
@@ -799,10 +848,32 @@ class ASMRResourceService:
         }
 
     async def _fetch_remote_source_payload(self, normalized_rjcode: str) -> Tuple[Dict[str, Any], List[Any]]:
-        work_info = await self.asmr_service.fetch_work_info(normalized_rjcode)
+        from .asmr_download_service import (
+            ASMR_PROBE_STATUS_MISSING,
+            ASMR_PROBE_STATUS_UNAVAILABLE,
+        )
+
+        fetch_work_with_status = getattr(self.asmr_service, "fetch_work_info_with_status", None)
+        if callable(fetch_work_with_status):
+            work_info, work_status = await fetch_work_with_status(normalized_rjcode)
+        else:
+            work_info = await self.asmr_service.fetch_work_info(normalized_rjcode)
+            work_status = "available" if work_info else ASMR_PROBE_STATUS_MISSING
+
+        if work_status == ASMR_PROBE_STATUS_UNAVAILABLE:
+            raise ASMRSourceUnavailableError(f"ASMR 源站暂时不可用，无法获取作品 {normalized_rjcode}")
         if not work_info:
             raise ValueError(f"未找到作品 {normalized_rjcode}")
-        tracks = await self.asmr_service.fetch_track_list(normalized_rjcode)
+
+        fetch_tracks_with_status = getattr(self.asmr_service, "fetch_track_list_with_status", None)
+        if callable(fetch_tracks_with_status):
+            tracks, track_status = await fetch_tracks_with_status(normalized_rjcode)
+        else:
+            tracks = await self.asmr_service.fetch_track_list(normalized_rjcode)
+            track_status = "available" if tracks else ASMR_PROBE_STATUS_MISSING
+
+        if track_status == ASMR_PROBE_STATUS_UNAVAILABLE:
+            raise ASMRSourceUnavailableError(f"ASMR 源站暂时不可用，无法获取作品文件列表 {normalized_rjcode}")
         return dict(work_info or {}), list(tracks or [])
 
     async def _get_remote_source_payload(self, normalized_rjcode: str, *, refresh: bool = False) -> Tuple[Dict[str, Any], List[Any]]:
@@ -2658,7 +2729,13 @@ class ASMRResourceService:
                 await asyncio.to_thread(shutil.rmtree, renamed_root, True)
                 # 远程库不维护库存索引；本调用只兼容本地库路径。
                 try:
-                    manager._notify_index_self_mutation_upsert_subtree(target_library, final_path)
+                    index_result = manager._notify_index_self_mutation_upsert_subtree(
+                        target_library,
+                        final_path,
+                    )
+                    task.task_metadata["library_index_fences"] = list(
+                        (index_result or {}).get("index_fences") or []
+                    )
                 except Exception:
                     logger.debug(
                         "[索引] 社团补全入库后通知 upsert 失败 path=%s",
@@ -2711,15 +2788,37 @@ class ASMRResourceService:
         # 索引同步：本地落地后按路径反查 library 通知（target_library 可能是 None）
         try:
             if target_library is not None:
-                manager._notify_index_self_mutation_upsert_subtree(target_library, final_path)
+                index_result = manager._notify_index_self_mutation_upsert_subtree(
+                    target_library,
+                    final_path,
+                )
             else:
-                manager.notify_index_upsert_by_path(final_path)
+                index_result = manager.notify_index_upsert_by_path(final_path)
+            task.task_metadata["library_index_fences"] = list(
+                (index_result or {}).get("index_fences") or []
+            )
         except Exception:
             logger.debug(
                 "[索引] 社团补全本地入库后通知 upsert 失败 path=%s",
                 final_path, exc_info=True,
             )
         return final_path
+
+    async def _wait_for_library_index_materialization(self, task) -> None:
+        fences = list((task.task_metadata or {}).get("library_index_fences") or [])
+        if not fences:
+            return
+        from .library_index import get_library_index_mutation_service
+
+        task.update_progress(99, "等待库存索引刷新")
+        service = get_library_index_mutation_service()
+        await asyncio.to_thread(
+            service.wait_until_materialized,
+            fences,
+            timeout_seconds=120.0,
+        )
+        task.task_metadata["library_index_materialized"] = True
+        task.touch_metadata("library_index_materialized")
 
     async def _sync_circle_completion_owned_state(self, rjcode: str, folder_path: str, library_id: str = "") -> None:
         if not rjcode or not folder_path:
@@ -2751,20 +2850,39 @@ class ASMRResourceService:
             and not all_files_uploaded
         )
 
-    async def _refresh_library_after_full_upload(self, rjcode: str, folder_path: str, library_id: str = "") -> None:
+    async def _refresh_library_after_full_upload(
+        self,
+        task,
+        rjcode: str,
+        folder_path: str,
+        library_id: str = "",
+    ) -> None:
         if not rjcode or not folder_path:
             return
-        await self._sync_circle_completion_owned_state(rjcode, folder_path, library_id=library_id)
-        if not library_id:
-            return
-        try:
-            from .library_manager import get_library_manager
+        if library_id:
+            try:
+                from .library_manager import get_library_manager
 
-            manager = get_library_manager()
-            await manager.ensure_stats(force=True, library_id=library_id)
-            manager.notify_index_upsert_by_path(folder_path)
-        except Exception:
-            logger.warning("[库存] 上传完成后刷新库存统计失败 library=%s path=%s", library_id, folder_path, exc_info=True)
+                manager = get_library_manager()
+                await manager.ensure_stats(force=True, library_id=library_id)
+                index_result = manager.notify_index_upsert_by_path(folder_path)
+                task.task_metadata["library_index_fences"] = list(
+                    (index_result or {}).get("index_fences") or []
+                )
+                await self._wait_for_library_index_materialization(task)
+            except Exception:
+                logger.warning(
+                    "[库存] 上传完成后刷新库存统计失败 library=%s path=%s",
+                    library_id,
+                    folder_path,
+                    exc_info=True,
+                )
+                raise
+        await self._sync_circle_completion_owned_state(
+            rjcode,
+            folder_path,
+            library_id=library_id,
+        )
 
     async def process_download_task(self, task) -> Dict[str, Any]:
         from .activity_log_service import log_asmr_sync_event
@@ -2787,7 +2905,38 @@ class ASMRResourceService:
         }
         if is_retry_download:
             self._append_task_log(task, "重试前重新获取失败资源下载链接")
-            selected_resources = await self._refresh_retry_resource_links(rjcode, selected_resources)
+            try:
+                selected_resources = await self._refresh_retry_resource_links(rjcode, selected_resources)
+            except ASMRSourceUnavailableError as exc:
+                failed_files = [
+                    {
+                        "name": str(resource.get("file_name") or resource.get("relative_path") or ""),
+                        "relative_path": str(resource.get("relative_path") or resource.get("file_name") or ""),
+                        "reason": str(exc),
+                        "resource": dict(resource),
+                        "stage": "refresh_download_link",
+                    }
+                    for resource in selected_resources
+                ]
+                download_root = str(metadata.get("download_root") or "").strip()
+                await self._schedule_failed_resource_retry(
+                    task,
+                    rjcode=rjcode,
+                    metadata=metadata,
+                    selected_resources=selected_resources,
+                    failed_files=failed_files,
+                    download_root=download_root,
+                )
+                task.task_metadata["failure_reason"] = str(exc)
+                self._append_task_log(task, f"{exc}，已保留等待重试记录", "warning")
+                waiting_retry = str(getattr(task.status, "value", task.status)) == "waiting_retry"
+                return {
+                    "success": False,
+                    "waiting_retry": waiting_retry,
+                    "download_root": download_root,
+                    "downloaded_resources": [],
+                    "failed_files": failed_files,
+                }
             task.task_metadata["selected_resources"] = selected_resources
 
         timeout = int(metadata.get("download_timeout_seconds") or getattr(config.asmr_sync, "download_timeout_seconds", 60) or 60)
@@ -2872,6 +3021,7 @@ class ASMRResourceService:
         state_lock = asyncio.Lock()
         session_result_persisted = False
         completed_count = 0
+        last_download_step_event_at = 0.0
         total_files = max(len(selected_resources), 1)
         network_download_indices: set[int] = set()
         expected_download_total_bytes = sum(
@@ -2954,7 +3104,7 @@ class ASMRResourceService:
         self._append_task_log(task, start_summary)
 
         async def handle_resource(index: int, resource: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-            nonlocal completed_count
+            nonlocal completed_count, last_download_step_event_at
             await task.wait_if_paused()
             if task.is_cancelled():
                 raise RuntimeError("用户取消")
@@ -2986,7 +3136,10 @@ class ASMRResourceService:
                         )
                         runtime = dict(task.task_metadata.get("download_runtime") or {})
                         completed_files = int(runtime.get("completed_files") or 0)
-                        task.current_step = f"{'资源检查中' if reimport_only else '下载中'} {completed_files}/{total_files}: {name}"
+                        now_monotonic = time.monotonic()
+                        if now_monotonic - last_download_step_event_at >= 0.75:
+                            last_download_step_event_at = now_monotonic
+                            task.current_step = f"{'资源检查中' if reimport_only else '下载中'} {completed_files}/{total_files}: {name}"
 
                     file_exists = os.path.exists(destination) and os.path.getsize(destination) > 0
                     existing_size = os.path.getsize(destination) if file_exists else 0
@@ -3536,10 +3689,13 @@ class ASMRResourceService:
             )
             if all_files_uploaded:
                 await self._refresh_library_after_full_upload(
+                    task,
                     rjcode,
                     final_output_path,
                     library_id=target_owned_library_id,
                 )
+            elif final_output_path:
+                await self._wait_for_library_index_materialization(task)
             if self._should_sync_owned_state_after_finalize(
                 final_status=final_status,
                 postprocess_options=postprocess_options,
