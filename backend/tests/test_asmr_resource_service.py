@@ -1,6 +1,7 @@
 import os
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -168,6 +169,82 @@ async def test_retry_does_not_reuse_expired_url_when_resource_is_missing(monkeyp
     assert refreshed[0]["remote_url"] == ""
 
 
+@pytest.mark.anyio
+async def test_remote_source_unavailable_is_not_reported_as_missing(monkeypatch):
+    service = create_service()
+
+    async def fake_fetch_work_info_with_status(_rjcode):
+        return None, "unavailable"
+
+    monkeypatch.setattr(
+        service.asmr_service,
+        "fetch_work_info_with_status",
+        fake_fetch_work_info_with_status,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="ASMR 源站暂时不可用"):
+        await service._fetch_remote_source_payload("RJ01455100")
+
+
+@pytest.mark.anyio
+async def test_remote_source_missing_keeps_missing_error(monkeypatch):
+    service = create_service()
+
+    async def fake_fetch_work_info_with_status(_rjcode):
+        return None, "missing"
+
+    monkeypatch.setattr(
+        service.asmr_service,
+        "fetch_work_info_with_status",
+        fake_fetch_work_info_with_status,
+        raising=False,
+    )
+
+    with pytest.raises(ValueError, match="未找到作品 RJ01455100"):
+        await service._fetch_remote_source_payload("RJ01455100")
+
+
+@pytest.mark.anyio
+async def test_retry_source_unavailable_returns_to_waiting_retry(monkeypatch, tmp_path):
+    service = create_service()
+    download_root = str(tmp_path / "RJ01455100")
+    selected = [{"relative_path": "bonus.png", "file_name": "bonus.png", "remote_url": "expired"}]
+    task = Task(
+        task_type=TaskType.ASMR_SYNC_DOWNLOAD,
+        source_path="",
+        rjcode="RJ01455100",
+        metadata={
+            "rjcode": "RJ01455100",
+            "source_action": "auto_retry_failed_resources",
+            "selected_resources": selected,
+            "download_root": download_root,
+        },
+    )
+
+    async def unavailable(*_args, **_kwargs):
+        from app.core.asmr_resource_service import ASMRSourceUnavailableError
+
+        raise ASMRSourceUnavailableError("ASMR 源站暂时不可用")
+
+    async def schedule_retry(retry_task, **_kwargs):
+        retry_task.set_waiting_retry(
+            "ASMR 源站暂时不可用",
+            datetime.now() + timedelta(minutes=5),
+        )
+
+    monkeypatch.setattr(service, "_refresh_retry_resource_links", unavailable)
+    monkeypatch.setattr(service, "_schedule_failed_resource_retry", schedule_retry)
+
+    result = await service.process_download_task(task)
+
+    assert result["success"] is False
+    assert result["waiting_retry"] is True
+    assert result["download_root"] == download_root
+    assert task.status == TaskStatus.WAITING_RETRY
+    assert task.task_metadata["failure_reason"] == "ASMR 源站暂时不可用"
+
+
 @pytest.mark.parametrize(
     ("source_page", "all_files_uploaded", "expected"),
     [
@@ -189,6 +266,39 @@ def test_local_finalize_syncs_owned_state_regardless_of_source_page(
         final_output_path="/library/RJ123456",
         all_files_uploaded=all_files_uploaded,
     ) is expected
+
+
+@pytest.mark.anyio
+async def test_waits_for_inventory_index_before_syncing_owned_state(monkeypatch):
+    service = create_service()
+    task = Task(
+        task_type=TaskType.ASMR_SYNC_DOWNLOAD,
+        source_path="",
+        rjcode="RJ01455100",
+        metadata={
+            "library_index_fences": [
+                {"library_id": "local-library-3", "accepted_seq": 739},
+            ],
+        },
+    )
+    waited = []
+
+    class FakeMutationService:
+        def wait_until_materialized(self, fences, *, timeout_seconds):
+            waited.append((list(fences), timeout_seconds))
+
+    monkeypatch.setattr(
+        "app.core.library_index.get_library_index_mutation_service",
+        lambda: FakeMutationService(),
+    )
+
+    await service._wait_for_library_index_materialization(task)
+
+    assert waited == [(
+        [{"library_id": "local-library-3", "accepted_seq": 739}],
+        120.0,
+    )]
+    assert task.task_metadata["library_index_materialized"] is True
 
 
 def test_detect_local_pair_issues_uses_name_and_track_number():
@@ -502,6 +612,82 @@ def test_download_runtime_clamps_oversized_failed_file():
     assert runtime["transferred_bytes"] == 1000
     assert runtime["completed_files"] == 0
     assert runtime["progress"] == 99
+
+
+def test_download_runtime_updates_existing_rows_without_rebuilding_file_list():
+    service = create_service()
+    first_row = {
+        "name": "01.wav",
+        "relative_path": "audio/01.wav",
+        "downloaded": 0,
+        "total": 100,
+        "progress": 0,
+        "index": 1,
+        "stage": "pending",
+    }
+    second_row = {
+        "name": "02.wav",
+        "relative_path": "audio/02.wav",
+        "downloaded": 0,
+        "total": 200,
+        "progress": 0,
+        "index": 2,
+        "stage": "pending",
+    }
+
+    class RuntimeTask:
+        task_metadata = {
+            "download_files": [first_row, second_row],
+            "download_runtime": {
+                "expected_total_bytes": 300,
+                "total_bytes": 300,
+                "transferred_bytes": 0,
+            },
+        }
+
+    task = RuntimeTask()
+    progress_state = {
+        "audio/01.wav": first_row,
+        "audio/02.wav": second_row,
+    }
+    original_file_list = task.task_metadata["download_files"]
+
+    service._update_download_runtime(
+        task,
+        progress_state,
+        file_key="audio/02.wav",
+        file_name="02.wav",
+        relative_path="audio/02.wav",
+        downloaded_bytes=50,
+        total_bytes=200,
+        index=2,
+        total_files=2,
+        stage="download",
+    )
+
+    assert task.task_metadata["download_files"] is original_file_list
+    assert task.task_metadata["download_files"][1] is second_row
+    assert second_row["downloaded"] == 50
+    assert task.task_metadata["download_runtime"]["transferred_bytes"] == 50
+    assert task.task_metadata["download_runtime"]["active_file_count"] == 1
+
+    service._update_download_runtime(
+        task,
+        progress_state,
+        file_key="audio/02.wav",
+        file_name="02.wav",
+        relative_path="audio/02.wav",
+        downloaded_bytes=200,
+        total_bytes=200,
+        index=2,
+        total_files=2,
+        stage="downloaded",
+    )
+
+    runtime = task.task_metadata["download_runtime"]
+    assert runtime["transferred_bytes"] == 200
+    assert runtime["completed_files"] == 1
+    assert runtime["active_file_count"] == 0
 
 
 @pytest.mark.anyio

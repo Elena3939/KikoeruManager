@@ -1,4 +1,5 @@
 import errno
+import json
 import os
 import time
 from types import SimpleNamespace
@@ -124,6 +125,66 @@ def test_redis_service_task_runtime_helpers(monkeypatch):
     assert payload["upload_runtime"] == {"current_file_name": "upload.wav"}
     assert payload["bonus_probe_meta"] == {"release_date": "2026-01-06"}
     assert payload["awaiting_manual_match"] is True
+
+
+def test_redis_service_task_runtime_compacts_large_transfer_rows(monkeypatch):
+    store = {}
+
+    class FakeClient:
+        def set(self, key, value, ex=None):
+            store[key] = value
+
+        def get(self, key):
+            return store.get(key)
+
+    monkeypatch.setattr(
+        "app.config.settings.get_config",
+        lambda: SimpleNamespace(
+            redis=SimpleNamespace(
+                enabled=True,
+                required=False,
+                url="redis://localhost:6379/0",
+                namespace="kikoerumanager",
+                environment="test",
+                socket_timeout_seconds=0.1,
+                connect_timeout_seconds=0.1,
+                runtime_ttl_seconds=60,
+                short_cache_ttl_seconds=1,
+                event_stream_maxlen=100,
+                dirty_stream_maxlen=100,
+            )
+        ),
+    )
+    client = FakeClient()
+    service = RedisService()
+    monkeypatch.setattr(service, "client", lambda required=False: client)
+    rows = [
+        {
+            "index": index,
+            "name": f"track-{index:04d}.wav",
+            "relative_path": f"audio/track-{index:04d}.wav",
+            "downloaded": index,
+            "total": 1000,
+            "stage": "pending",
+        }
+        for index in range(4000)
+    ]
+    task = SimpleNamespace(
+        id="large-runtime",
+        type=SimpleNamespace(value="asmr_sync_download"),
+        status=SimpleNamespace(value="processing"),
+        progress=20,
+        current_step="下载中",
+        task_metadata={"task_domain": "asmr_sync", "download_files": rows},
+    )
+
+    service.write_task_runtime_sync(task, reason="progress")
+    payload = service.get_task_runtime_sync(task.id)
+
+    assert len(payload["download_files"]) == 120
+    assert payload["download_files_total"] == 4000
+    assert payload["download_files_truncated"] is True
+    assert len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) < 100_000
 
 
 def test_redis_service_write_realtime_event_uses_events_stream(monkeypatch):
@@ -386,6 +447,61 @@ def test_library_index_consumer_group_reclaims_reads_and_acks(monkeypatch):
         ("11-0", "12-0"),
     )
     assert acked == 2
+
+
+def test_consumer_group_is_created_once_per_process(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def xgroup_create(self, key, group, id=None, mkstream=False):
+            calls.append(("xgroup_create", key, group, id, mkstream))
+
+        def xreadgroup(self, group, consumer, streams, **kwargs):
+            calls.append(("xreadgroup", group, consumer, streams, kwargs))
+            return []
+
+    monkeypatch.setattr(
+        "app.config.settings.get_config",
+        lambda: _library_index_redis_config(),
+    )
+    client = FakeClient()
+    service = RedisService()
+    monkeypatch.setattr(service, "client", lambda required=False: client)
+
+    service.read_consumer_group_sync("events:stream", "events", block_ms=0)
+    service.read_consumer_group_sync("events:stream", "events", block_ms=0)
+
+    assert [call[0] for call in calls].count("xgroup_create") == 1
+    assert [call[0] for call in calls].count("xreadgroup") == 2
+
+
+def test_consumer_group_recreates_after_nogroup(monkeypatch):
+    calls = []
+    read_count = 0
+
+    class FakeClient:
+        def xgroup_create(self, key, group, id=None, mkstream=False):
+            calls.append(("xgroup_create", key, group, id, mkstream))
+
+        def xreadgroup(self, group, consumer, streams, **kwargs):
+            nonlocal read_count
+            read_count += 1
+            if read_count == 1:
+                raise RuntimeError("NOGROUP No such key or consumer group")
+            return []
+
+    monkeypatch.setattr(
+        "app.config.settings.get_config",
+        lambda: _library_index_redis_config(),
+    )
+    client = FakeClient()
+    service = RedisService()
+    monkeypatch.setattr(service, "client", lambda required=False: client)
+
+    service.read_consumer_group_sync("events:stream", "events", block_ms=0)
+    service.read_consumer_group_sync("events:stream", "events", block_ms=0)
+
+    assert [call[0] for call in calls].count("xgroup_create") == 2
 
 
 def test_library_index_hint_ack_requires_pg_watermark_or_persisted_retry(monkeypatch):

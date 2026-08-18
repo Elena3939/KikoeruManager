@@ -2698,8 +2698,12 @@ class TaskResponse(BaseModel):
 _TASK_RUNTIME_ACTIVE_STATUSES = {"pending", "processing", "paused", "waiting_manual", "waiting_retry"}
 _TASK_RUNTIME_METADATA_OVERLAY_KEYS = (
     "download_files",
+    "download_files_total",
+    "download_files_truncated",
     "download_runtime",
     "failed_files",
+    "failed_files_total",
+    "failed_files_truncated",
     "upload_runtime",
     "bonus_probe_meta",
     "progress_log",
@@ -17476,10 +17480,22 @@ def _serialize_asmr_sync_task_status(task, session_map: Dict[str, dict], *, comp
     session_id = str(metadata.get("session_id") or "").strip()
     session_state = session_map.get(session_id, {})
     raw_download_files = metadata.get("download_files") if isinstance(metadata.get("download_files"), list) else []
+    runtime_download_files_total = max(
+        len(raw_download_files),
+        int(metadata.get("download_files_total") or 0),
+    )
+    runtime_download_files_truncated = bool(
+        metadata.get("download_files_truncated")
+        or runtime_download_files_total > len(raw_download_files)
+    )
     if compact:
-        download_files, download_files_total, download_files_truncated = _compact_transfer_rows(raw_download_files)
+        download_files, _, preview_truncated = _compact_transfer_rows(raw_download_files)
+        download_files_total = runtime_download_files_total
+        download_files_truncated = runtime_download_files_truncated or preview_truncated
     else:
-        download_files, download_files_total, download_files_truncated = raw_download_files, len(raw_download_files), False
+        download_files = raw_download_files
+        download_files_total = runtime_download_files_total
+        download_files_truncated = runtime_download_files_truncated
     failed_files = metadata.get("failed_files") if isinstance(metadata.get("failed_files"), list) else []
     return {
         "session_state": session_state,
@@ -20997,8 +21013,17 @@ async def asmr_sync_retry_waiting_task(task_id: str):
 
     try:
         engine = get_task_engine()
-        if engine.retry_task(task_id):
-            return {"success": True, "message": "任务已加入重试队列"}
+        retry_result = engine.retry_task(task_id)
+        if retry_result:
+            retry_details = retry_result if isinstance(retry_result, dict) else {}
+            return {
+                "success": True,
+                "message": "任务已加入重试队列",
+                "task_id": str(retry_details.get("task_id") or task_id),
+                "superseded_task_id": str(
+                    retry_details.get("superseded_task_id") or ""
+                ),
+            }
         else:
             raise HTTPException(status_code=400, detail="任务不在等待重试状态")
     except HTTPException:
