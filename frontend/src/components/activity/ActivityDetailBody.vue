@@ -487,6 +487,7 @@ const sourcePathDisplay = computed(() => {
     props.row?.source_path
     || detail.archive_path
     || detail.source_path
+    || detail.retry_source_path
     || detail.folder_path
     || ''
   )
@@ -499,6 +500,8 @@ const outputPathDisplay = computed(() => {
     || detail.target_path
     || detail.renamed_output_path
     || detail.final_output_path
+    || detail.final_path
+    || detail.retry_final_path
     || detail.staging_dir
     || ''
   )
