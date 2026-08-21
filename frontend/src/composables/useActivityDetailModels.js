@@ -573,6 +573,9 @@ const HIGHLIGHT_LABELS = {
   aggregate_extract_output_bytes: '批量解压产物大小',
   aggregate_filtered_count: '批量过滤文件数',
   aggregate_filtered_size: '批量过滤体积',
+  conflict_type: '问题类型', original_failure_reason: '原失败原因',
+  retry_completed_at: '重试完成时间', retry_source_path: '重试来源',
+  retry_final_path: '重试最终路径', final_path: '最终入库路径', resolution_status: '处理状态',
 }
 
 const HIGHLIGHT_BYTE_KEYS = new Set([
@@ -605,6 +608,18 @@ const SUBTITLE_IMPORT_HIGHLIGHT_KEYS = [
   'task_id',
 ]
 
+const CONFLICT_RESOLUTION_HIGHLIGHT_KEYS = [
+  'rjcode',
+  'conflict_type',
+  'original_failure_reason',
+  'retry_completed_at',
+  'retry_source_path',
+  'retry_final_path',
+  'final_path',
+  'resolution_status',
+  'task_id',
+]
+
 function normalizeHighlightValue(key, value) {
   if (key === 'duration_ms' || key === 'batch_duration_ms') return formatDurationMs(value)
   if (key === 'awaiting_manual_match') return value ? '是' : '否'
@@ -614,6 +629,23 @@ function normalizeHighlightValue(key, value) {
     if (strategy === 'audio') return '按音频名'
     if (strategy === 'subtitle') return '按字幕名'
     return strategy
+  }
+  if (key === 'conflict_type') {
+    return {
+      EXTRACT_FAILED: '解压失败',
+      PROCESS_FAILED: '处理失败',
+    }[String(value || '').trim().toUpperCase()] || value
+  }
+  if (key === 'resolution_status') {
+    return {
+      success: '已完成',
+      partial_success: '部分完成',
+      failed: '失败',
+    }[String(value || '').trim().toLowerCase()] || value
+  }
+  if (key === 'retry_completed_at') {
+    const parsed = dayjs(value)
+    return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm:ss') : value
   }
   if (HIGHLIGHT_BYTE_KEYS.has(key)) return formatBytes(value)
   if (key === 'average_upload_speed_bytes') return `${formatBytes(value)}/s`
@@ -625,9 +657,12 @@ function detailHighlights(row) {
   const d = row?.detail
   if (!d || typeof d !== 'object') return []
   const out = []
-  const keys = String(row?.category || '').trim() === 'subtitle_import'
+  const category = String(row?.category || '').trim()
+  const keys = category === 'subtitle_import'
     ? [...SUBTITLE_IMPORT_HIGHLIGHT_KEYS, ...Object.keys(HIGHLIGHT_LABELS)]
-    : Object.keys(HIGHLIGHT_LABELS)
+    : category === 'conflict_resolution'
+      ? [...CONFLICT_RESOLUTION_HIGHLIGHT_KEYS, ...Object.keys(HIGHLIGHT_LABELS)]
+      : Object.keys(HIGHLIGHT_LABELS)
   const pushed = new Set()
   const pushedLabels = new Set()
   for (const k of keys) {
