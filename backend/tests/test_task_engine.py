@@ -22,8 +22,8 @@ from app.models.database import (
 )
 
 
-def test_get_task_engine_reserves_asmr_file_download_slots(monkeypatch):
-    """任务引擎容量至少覆盖全局文件并发，后续 RJ 才能使用空余槽位。"""
+def test_get_task_engine_configures_processing_and_download_slots_separately(monkeypatch):
+    """处理任务和下载任务使用各自的顶层并发上限。"""
     engine = Mock()
     monkeypatch.setattr(task_engine_module, "_task_engine", engine)
     monkeypatch.setattr(
@@ -36,7 +36,8 @@ def test_get_task_engine_reserves_asmr_file_download_slots(monkeypatch):
     )
 
     assert task_engine_module.get_task_engine() is engine
-    engine.set_max_concurrent.assert_called_once_with(5)
+    engine.set_max_concurrent.assert_called_once_with(2)
+    engine.set_max_concurrent_downloads.assert_called_once_with(5)
 
 
 class TestTaskEngine:
@@ -256,6 +257,92 @@ class TestTaskEngine:
         assert queued.id == waiting_id
         assert queued.task_metadata["waiting_retry_record_id"] == waiting_id
         assert db_session.query(WaitingRetryTask).filter_by(id=waiting_id).one()
+
+    @pytest.mark.asyncio
+    async def test_download_starts_when_processing_lane_is_full(self):
+        engine = TaskEngine(max_concurrent=1, max_concurrent_downloads=1)
+        active_processing_task = Task(
+            task_type=TaskType.AUTO_PROCESS,
+            source_path="/test/RJ00000001.zip",
+            status=TaskStatus.PROCESSING,
+        )
+        blocked_processing_task = Task(
+            task_type=TaskType.AUTO_PROCESS,
+            source_path="/test/RJ00000002.zip",
+        )
+        download_task = Task(
+            task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+            source_path="pan.baidu.com",
+        )
+        engine.tasks[active_processing_task.id] = active_processing_task
+        engine.processing.add(active_processing_task.id)
+        started = asyncio.Event()
+
+        async def process_task(task):
+            started.set()
+            with task._set_state_silent():
+                task.status = TaskStatus.COMPLETED
+            engine.processing.discard(task.id)
+
+        engine._process_task = process_task
+        engine.tasks[blocked_processing_task.id] = blocked_processing_task
+        engine.tasks[download_task.id] = download_task
+        await engine.queue.put(blocked_processing_task)
+        await engine.queue.put(download_task)
+        worker = asyncio.create_task(engine._worker())
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1)
+        finally:
+            engine._shutdown = True
+            worker.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await worker
+
+        assert download_task.status == TaskStatus.COMPLETED
+        assert blocked_processing_task.status == TaskStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_processing_starts_when_download_lane_is_full(self):
+        engine = TaskEngine(max_concurrent=1, max_concurrent_downloads=1)
+        active_download = Task(
+            task_type=TaskType.HTTP_DOWNLOAD,
+            source_path="https://example.com/file.zip",
+            status=TaskStatus.PROCESSING,
+        )
+        blocked_download = Task(
+            task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+            source_path="pan.baidu.com",
+        )
+        processing_task = Task(
+            task_type=TaskType.AUTO_PROCESS,
+            source_path="/test/RJ00000003.zip",
+        )
+        engine.tasks[active_download.id] = active_download
+        engine.processing.add(active_download.id)
+        started = asyncio.Event()
+
+        async def process_task(task):
+            started.set()
+            with task._set_state_silent():
+                task.status = TaskStatus.COMPLETED
+            engine.processing.discard(task.id)
+
+        engine._process_task = process_task
+        engine.tasks[blocked_download.id] = blocked_download
+        engine.tasks[processing_task.id] = processing_task
+        await engine.queue.put(blocked_download)
+        await engine.queue.put(processing_task)
+        worker = asyncio.create_task(engine._worker())
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1)
+        finally:
+            engine._shutdown = True
+            worker.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await worker
+
+        assert processing_task.status == TaskStatus.COMPLETED
+        assert blocked_download.status == TaskStatus.PENDING
 
     def test_global_event_hook_ignores_unregistered_temporary_task(self, engine, monkeypatch):
         calls = []

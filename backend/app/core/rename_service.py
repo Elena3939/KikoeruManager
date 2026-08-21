@@ -41,7 +41,11 @@ class RenameService:
         """
         metadata = task.task_metadata
         logger.info(f"重命名服务 - 原始路径: {path}")
-        logger.info(f"重命名服务 - 任务元数据: {metadata}")
+        logger.debug(
+            "重命名服务 - 任务元数据字段: keys=%s rjcode=%s",
+            sorted((metadata or {}).keys()),
+            str((metadata or {}).get("rjcode") or ""),
+        )
 
         if not metadata:
             raise Exception("缺少元数据，无法重命名")

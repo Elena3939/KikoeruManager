@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+from pathlib import Path
 
 import uvicorn
 
@@ -38,7 +39,15 @@ def setup_logging():
     from .core.app_logging import configure_app_logging
 
     log_dir = os.environ.get("DATA_PATH", "./data")
-    configure_app_logging(log_dir=log_dir, use_console=True)
+    configure_app_logging(log_dir=log_dir, use_console=_console_logging_enabled())
+
+
+def _console_logging_enabled() -> bool:
+    """容器默认只写异步文件日志，避免未消费的 TTY 反压应用主线程。"""
+    configured = os.environ.get("KIKOERUMANAGER_CONSOLE_LOGGING", "").strip().lower()
+    if configured:
+        return configured in {"1", "true", "yes", "on"}
+    return not Path("/.dockerenv").exists()
 
 
 def init_database():

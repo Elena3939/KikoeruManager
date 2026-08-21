@@ -2582,6 +2582,60 @@ class TestExtractService:
             extract_service.config.extract.password_list = old_password_list
 
     @pytest.mark.asyncio
+    async def test_nested_extract_tries_outer_filename_password_candidate(
+        self, extract_service, temp_dir,
+    ):
+        """未加密外壳嗅探到的密码必须继续传给加密内包。"""
+        archive_path = os.path.join(temp_dir, "RJ01684548.zzz")
+        output_path = os.path.join(temp_dir, "out")
+        os.makedirs(output_path, exist_ok=True)
+        with open(archive_path, "wb") as fp:
+            fp.write(b"PK\x03\x04" + (b"\0" * 64))
+
+        old_password_list = extract_service.config.extract.password_list
+        try:
+            extract_service.config.extract.password_list = []
+            extract_service._get_password_candidates_for_archive = AsyncMock(return_value=[])
+            extract_service._is_rar_archive = Mock(return_value=False)
+
+            async def run_command(cmd, **_kwargs):
+                password_arg = next(
+                    (str(arg) for arg in cmd if str(arg).startswith("-p")),
+                    "",
+                )
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0 if password_arg == "-pSnezhnaya" else 2,
+                    b"",
+                    b"" if password_arg == "-pSnezhnaya" else b"Wrong password",
+                )
+
+            extract_service._run_7z_command = AsyncMock(side_effect=run_command)
+            extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+            inherited_passwords = extract_service._build_nested_inherited_passwords(
+                None,
+                [
+                    {"password": "Snezhnaya", "source": "文件名嗅探"},
+                    {"password": "generic-password", "source": "密码库-通用"},
+                ],
+            )
+
+            success, password = await extract_service._try_extract_nested_direct(
+                archive_path,
+                output_path,
+                inherited_passwords=inherited_passwords,
+            )
+
+            assert inherited_passwords == ["Snezhnaya"]
+            assert success is True
+            assert password == "Snezhnaya"
+            assert extract_service._run_7z_command.await_count == 2
+            assert "-p" in extract_service._run_7z_command.await_args_list[0].args[0]
+            assert "-pSnezhnaya" in extract_service._run_7z_command.await_args_list[1].args[0]
+        finally:
+            extract_service.config.extract.password_list = old_password_list
+
+    @pytest.mark.asyncio
     async def test_nested_extract_retries_unsupported_method_with_zstd_backend(
         self, extract_service, temp_dir,
     ):

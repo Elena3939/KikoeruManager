@@ -1,7 +1,11 @@
 from datetime import datetime
 
 from app.core import activity_log_service as activity_log_service_module
-from app.core.activity_log_service import _build_and_write_task_lifecycle_log, write_activity_log
+from app.core.activity_log_service import (
+    _build_and_write_task_lifecycle_log,
+    log_conflict_resolution_activity,
+    write_activity_log,
+)
 from app.core.task_engine import TaskStatus, TaskType
 
 
@@ -209,3 +213,35 @@ def test_write_activity_log_projects_searchable_text(monkeypatch):
     assert "task-1" in text
     assert "batch-1" in text
     assert "session-1" in text
+
+
+def test_conflict_retry_success_is_recorded_with_work_and_paths(monkeypatch):
+    captured = []
+
+    def fake_write_activity_log(**payload):
+        captured.append(payload)
+
+    monkeypatch.setattr(activity_log_service_module, "write_activity_log", fake_write_activity_log)
+
+    log_conflict_resolution_activity(
+        conflict_id="conflict-1",
+        action="RETRY",
+        status="success",
+        rjcode="rj01684548",
+        task_id="task-1",
+        source_path="/down/RJ01684548.zip",
+        final_path="/library/RJ01684548",
+        extra_detail={
+            "conflict_type": "EXTRACT_FAILED",
+            "original_failure_reason": "嵌套压缩包未展开",
+            "retry_completed_at": "2026-08-19T21:38:24",
+        },
+    )
+
+    assert len(captured) == 1
+    assert captured[0]["summary"] == "重试完成，作品 RJ01684548"
+    assert captured[0]["detail"]["resolution_status"] == "success"
+    assert captured[0]["detail"]["conflict_type"] == "EXTRACT_FAILED"
+    assert captured[0]["detail"]["original_failure_reason"] == "嵌套压缩包未展开"
+    assert captured[0]["detail"]["source_path"] == "/down/RJ01684548.zip"
+    assert captured[0]["detail"]["final_path"] == "/library/RJ01684548"
