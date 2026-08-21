@@ -1999,7 +1999,17 @@ def log_conflict_resolution_activity(
     added_count = sum(1 for item in resolved_diff if str(item.get("variant") or "") == "added")
     deleted_count = sum(1 for item in resolved_diff if str(item.get("variant") or "") == "deleted")
     changed_count = sum(1 for item in resolved_diff if str(item.get("variant") or "") == "changed")
-    summary_parts = [label]
+    if raw_action == "RETRY":
+        if status in {"success", "partial_success"}:
+            summary_parts = ["重试完成"]
+        elif status in {"failed", "error"}:
+            summary_parts = ["重试失败"]
+        else:
+            summary_parts = [label]
+    else:
+        summary_parts = [label]
+    if rjcode:
+        summary_parts.append(f"作品 {str(rjcode).strip().upper()}")
     if added_count:
         summary_parts.append(f"新增 {added_count} 项")
     if deleted_count:
@@ -2024,6 +2034,7 @@ def log_conflict_resolution_activity(
         "deleted_count": deleted_count,
         "changed_count": changed_count,
         "error_message": error_message or "",
+        "resolution_status": status,
     }
     if extra:
         detail.update(extra)

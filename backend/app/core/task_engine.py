@@ -550,6 +550,11 @@ def get_conflict_type_name(conflict_type: str) -> str:
 
 class TaskEngine:
     """任务引擎 - 管理任务队列和执行"""
+    _DOWNLOAD_TASK_TYPES = {
+        TaskType.ASMR_SYNC_DOWNLOAD,
+        TaskType.HTTP_DOWNLOAD,
+        TaskType.BAIDU_NETDISK_DOWNLOAD,
+    }
     _TERMINAL_OR_WAITING_STATUSES = {
         TaskStatus.COMPLETED.value,
         TaskStatus.FAILED.value,
@@ -557,8 +562,16 @@ class TaskEngine:
         TaskStatus.WAITING_MANUAL.value,
         TaskStatus.WAITING_RETRY.value,
     }
-    def __init__(self, max_concurrent: int = 2):
+    def __init__(
+        self,
+        max_concurrent: int = 2,
+        max_concurrent_downloads: Optional[int] = None,
+    ):
         self.max_concurrent = max_concurrent
+        self.max_concurrent_downloads = max(
+            1,
+            int(max_concurrent if max_concurrent_downloads is None else max_concurrent_downloads),
+        )
         self.tasks: dict[str, Task] = {}
         self.queue: asyncio.Queue = asyncio.Queue()
         self.processing: set[str] = set()
@@ -655,11 +668,39 @@ class TaskEngine:
             logger.debug("[Redis] 写入任务运行态失败: task_id=%s", getattr(task, "id", ""), exc_info=True)
 
     def set_max_concurrent(self, max_concurrent: int):
-        """动态更新最大并发数"""
+        """动态更新非下载任务最大并发数。"""
         max_concurrent = max(1, int(max_concurrent))
         if self.max_concurrent != max_concurrent:
             logger.info(f"更新任务引擎最大并发数: {self.max_concurrent} -> {max_concurrent}")
             self.max_concurrent = max_concurrent
+
+    def set_max_concurrent_downloads(self, max_concurrent_downloads: int):
+        """动态更新下载任务最大并发数。"""
+        max_concurrent_downloads = max(1, int(max_concurrent_downloads))
+        if self.max_concurrent_downloads != max_concurrent_downloads:
+            logger.info(
+                "更新任务引擎下载并发数: %s -> %s",
+                self.max_concurrent_downloads,
+                max_concurrent_downloads,
+            )
+            self.max_concurrent_downloads = max_concurrent_downloads
+
+    @classmethod
+    def _is_download_task(cls, task: Task) -> bool:
+        return task.type in cls._DOWNLOAD_TASK_TYPES
+
+    def _processing_lane_count(self, *, download: bool) -> int:
+        count = 0
+        for task_id in self.processing:
+            task = self.tasks.get(task_id)
+            if task is not None and self._is_download_task(task) == download:
+                count += 1
+        return count
+
+    def _task_lane_has_capacity(self, task: Task) -> bool:
+        download = self._is_download_task(task)
+        limit = self.max_concurrent_downloads if download else self.max_concurrent
+        return self._processing_lane_count(download=download) < limit
 
     @staticmethod
     async def _abort_precheck(precheck_task: Optional[asyncio.Task]) -> None:
@@ -1715,9 +1756,10 @@ class TaskEngine:
                 conflict = query.filter(ConflictWork.new_path == source_path).first()
 
             if conflict:
+                retry_completed_at = datetime.now().isoformat()
                 next_metadata = dict(conflict.new_metadata or {})
                 next_metadata["retry_result"] = "completed"
-                next_metadata["retry_completed_at"] = datetime.now().isoformat()
+                next_metadata["retry_completed_at"] = retry_completed_at
                 next_metadata["retry_task_id"] = task.id
                 if task.output_path:
                     next_metadata["retry_output_path"] = task.output_path
@@ -1733,6 +1775,26 @@ class TaskEngine:
             if conflict:
                 try:
                     from .activity_log_service import log_conflict_resolution_activity
+                    conflict_metadata = dict(conflict.new_metadata or {})
+                    original_failure_reason = next(
+                        (
+                            str(conflict_metadata.get(key) or "").strip()
+                            for key in ("error_message", "failure_reason", "extract_failure_reason")
+                            if str(conflict_metadata.get(key) or "").strip()
+                        ),
+                        "",
+                    )
+                    extra_detail = self._build_retry_conflict_activity_extra(task)
+                    extra_detail.update(
+                        {
+                            "conflict_type": conflict.conflict_type,
+                            "retry_completed_at": retry_completed_at,
+                            "retry_source_path": source_path or conflict.new_path or task.source_path or "",
+                            "retry_final_path": task.output_path or "",
+                        }
+                    )
+                    if original_failure_reason:
+                        extra_detail["original_failure_reason"] = original_failure_reason
                     log_conflict_resolution_activity(
                         conflict_id=str(conflict.id),
                         action="RETRY",
@@ -1742,7 +1804,7 @@ class TaskEngine:
                         source_path=str(source_path or conflict.new_path or getattr(task, "source_path", "") or ""),
                         final_path=str(task.output_path or ""),
                         error_message="乱码强制入库" if bool(metadata.get("garbled_filename_bypassed")) else None,
-                        extra_detail=self._build_retry_conflict_activity_extra(task),
+                        extra_detail=extra_detail,
                     )
                 except Exception:
                     logger.warning("写入问题作品重试成功操作记录失败: task_id=%s conflict_id=%s", task.id, conflict.id, exc_info=True)
@@ -1898,11 +1960,52 @@ class TaskEngine:
 
             if action == "RETRY":
                 if task.status == TaskStatus.COMPLETED:
+                    retry_completed_at = datetime.now().isoformat()
                     next_metadata["retry_result"] = "completed"
-                    next_metadata["retry_completed_at"] = datetime.now().isoformat()
+                    next_metadata["retry_completed_at"] = retry_completed_at
                     next_metadata["retry_task_id"] = task.id
                     if task.output_path:
                         next_metadata["retry_output_path"] = task.output_path
+                    try:
+                        from .activity_log_service import log_conflict_resolution_activity
+
+                        conflict_metadata = dict(conflict.new_metadata or {})
+                        original_failure_reason = next(
+                            (
+                                str(conflict_metadata.get(key) or "").strip()
+                                for key in ("error_message", "failure_reason", "extract_failure_reason")
+                                if str(conflict_metadata.get(key) or "").strip()
+                            ),
+                            "",
+                        )
+                        extra_detail = self._build_retry_conflict_activity_extra(task)
+                        extra_detail.update(
+                            {
+                                "conflict_type": conflict.conflict_type,
+                                "retry_completed_at": retry_completed_at,
+                                "retry_source_path": str(conflict.new_path or task.source_path or ""),
+                                "retry_final_path": task.output_path or "",
+                            }
+                        )
+                        if original_failure_reason:
+                            extra_detail["original_failure_reason"] = original_failure_reason
+                        log_conflict_resolution_activity(
+                            conflict_id=str(conflict.id),
+                            action="RETRY",
+                            status="success",
+                            rjcode=conflict.rjcode or getattr(task, "rjcode", None),
+                            task_id=task.id,
+                            source_path=str(conflict.new_path or task.source_path or ""),
+                            final_path=str(task.output_path or ""),
+                            extra_detail=extra_detail,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "写入问题作品重试成功操作记录失败: task_id=%s conflict_id=%s",
+                            task.id,
+                            conflict_id,
+                            exc_info=True,
+                        )
                     conflict.new_metadata = next_metadata
                     db.delete(conflict)
                     db.commit()
@@ -3841,13 +3944,7 @@ class TaskEngine:
         """工作线程"""
         while not self._shutdown:
             try:
-                # 控制并发数
-                while len(self.processing) >= self.max_concurrent:
-                    self._release_non_running_slots()
-                    if len(self.processing) < self.max_concurrent:
-                        break
-                    await asyncio.sleep(0.1)
-                
+                self._release_non_running_slots()
                 task = await asyncio.wait_for(self.queue.get(), timeout=1.0)
                 if task.status != TaskStatus.PENDING:
                     logger.info(
@@ -3855,6 +3952,11 @@ class TaskEngine:
                         task.id,
                         task.status,
                     )
+                    continue
+                if not self._task_lane_has_capacity(task):
+                    # 当前通道已满时轮转队列，避免解压任务占满处理槽后阻塞下载任务。
+                    await self.queue.put(task)
+                    await asyncio.sleep(0.05)
                     continue
                 self.processing.add(task.id)
                 
@@ -7395,13 +7497,13 @@ def get_task_engine() -> TaskEngine:
     global _task_engine
     from ..config.settings import get_config
     config = get_config()
-    configured_max_workers = max(
-        1,
-        int(config.processing.max_workers),
-        int(config.asmr_sync.max_concurrent_downloads),
-    )
+    configured_max_workers = max(1, int(config.processing.max_workers))
+    configured_max_downloads = max(1, int(config.asmr_sync.max_concurrent_downloads))
     if _task_engine is None:
-        _task_engine = TaskEngine(max_concurrent=configured_max_workers)
+        _task_engine = TaskEngine(
+            max_concurrent=configured_max_workers,
+            max_concurrent_downloads=configured_max_downloads,
+        )
         # 启动时清理上次服务重启前残留的"正在处理中"临时冲突记录
         try:
             from ..models.database import ConflictWork, get_db
@@ -7426,4 +7528,5 @@ def get_task_engine() -> TaskEngine:
             logger.warning(f"[启动清理] 清理残留冲突记录时出错: {e}")
     else:
         _task_engine.set_max_concurrent(configured_max_workers)
+        _task_engine.set_max_concurrent_downloads(configured_max_downloads)
     return _task_engine
