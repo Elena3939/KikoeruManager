@@ -2575,6 +2575,67 @@ class TestExtractService:
             extract_service.config.extract.password_list = old_password_list
 
     @pytest.mark.asyncio
+    async def test_large_opaque_archive_uses_verified_parent_password_without_timeout(
+        self, extract_service, temp_dir,
+    ):
+        """大无扩展名内层包先用外层已验证密码不限时解压，不能在 45 秒后杀掉。"""
+        archive_path = os.path.join(temp_dir, "解压码0821")
+        output_path = os.path.join(temp_dir, "out")
+        os.makedirs(output_path, exist_ok=True)
+        with open(archive_path, "wb") as fp:
+            fp.write(b"7z\xbc\xaf'\x1c" + (b"\0" * 64))
+        task = Task(
+            TaskType.EXTRACT,
+            os.path.join(temp_dir, "RJ01645278(0821).7z"),
+            task_id="large-opaque-parent-password",
+        )
+
+        old_password_list = extract_service.config.extract.password_list
+        try:
+            extract_service.config.extract.password_list = []
+            extract_service._get_password_candidates_for_archive = AsyncMock(return_value=[
+                {"password": f"vault-{index}"}
+                for index in range(58)
+            ])
+            extract_service._list_archive_contents = AsyncMock(return_value=[
+                {
+                    "name": "RJ01645278",
+                    "size": 5_375_627_698,
+                    "is_dir": False,
+                },
+            ])
+            extract_service._probe_password = AsyncMock(return_value="unknown")
+            extract_service._is_rar_archive = Mock(return_value=False)
+            extract_service._run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=b"",
+                stderr=b"",
+            ))
+
+            with patch.object(
+                extract_service,
+                "_reject_if_garbled_after_extract",
+                new=AsyncMock(return_value=False),
+            ):
+                success, password = await extract_service._try_extract_nested_direct(
+                    archive_path,
+                    output_path,
+                    parent_password="0821",
+                    task=task,
+                )
+
+            assert success is True
+            assert password == "0821"
+            extract_call = extract_service._run_7z_command.await_args
+            assert "-p0821" in extract_call.args[0]
+            assert extract_call.kwargs["command_timeout"] is None
+            assert task.task_metadata["nested_password_candidate_limited"] is True
+            assert task.task_metadata["nested_parent_password_unlimited"] is True
+        finally:
+            extract_service.config.extract.password_list = old_password_list
+
+    @pytest.mark.asyncio
     async def test_encrypted_opaque_archive_rejects_without_full_extract_when_all_passwords_fail(
         self, extract_service, temp_dir,
     ):
