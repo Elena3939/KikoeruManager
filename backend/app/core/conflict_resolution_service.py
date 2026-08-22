@@ -741,6 +741,24 @@ class ConflictResolutionService:
                 return ["RETRY", "SKIP"]
             return ["SKIP"]
 
+        # v1.6.122 之前创建的“原作目录已有字幕”问题项把可用操作固化成
+        # ["SKIP"]。这些记录不会在新版本部署时自动重建；但只要目标目录仍
+        # 是当前容器可见的真实目录，就允许复用既有 KEEP_NEW 的原子替换链路。
+        # 不能泛化所有 LINKED_WORK，也不能对已不存在的旧目标开放删除操作。
+        analysis_info = dict(getattr(conflict, "analysis_info", None) or {})
+        is_legacy_existing_subtitle_conflict = (
+            conflict_type_upper == "LINKED_WORK"
+            and (
+                str(metadata.get("reason") or "") == "原作目录已有字幕，按重复作品处理"
+                or str(analysis_info.get("source_mode") or "")
+                == "linked_translation_archive_existing_subtitle_conflict"
+                or str(analysis_info.get("problem_kind") or "") == "existing_subtitles"
+            )
+        )
+        existing_path = str(getattr(conflict, "existing_path", "") or "").strip()
+        if is_legacy_existing_subtitle_conflict and existing_path and os.path.isdir(existing_path):
+            return ["KEEP_NEW", "SKIP"]
+
         configured_actions = metadata.get("available_actions")
         if isinstance(configured_actions, list):
             actions: list[str] = []
