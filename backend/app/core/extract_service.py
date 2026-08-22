@@ -3892,6 +3892,26 @@ class ExtractService:
                     )
                     return False, None
 
+        # 非空 parent_password 只会来自上层已经成功解开的压缩包。无扩展名的
+        # 大型 7z 可能没有可供小条目 CRC 探测的文件，此时不能再把这个已验证
+        # 的父级密码也套进 45 秒完整解压超时；否则正确密码会在真实解压完成前
+        # 被杀掉。若两层密码不同，父级密码失败后仍按受限候选继续尝试。
+        trusted_parent_password = (
+            normalize_password_value(parent_password)
+            if is_opaque_nested_archive and parent_password
+            else ""
+        )
+        has_trusted_parent_password = trusted_parent_password in password_list
+        fallback_password_list = (
+            [
+                password
+                for password in password_list
+                if password != trusted_parent_password
+            ]
+            if has_trusted_parent_password
+            else password_list
+        )
+
         nested_candidate_limit = max(
             2,
             int(getattr(
@@ -3903,24 +3923,38 @@ class ExtractService:
         candidate_limit_reached = (
             is_opaque_nested_archive
             and not opaque_password_prevalidated
-            and len(password_list) > nested_candidate_limit
+            and len(fallback_password_list) > nested_candidate_limit
         )
         if candidate_limit_reached:
             total_candidates = len(password_list)
-            password_list = password_list[:nested_candidate_limit]
+            fallback_password_list = fallback_password_list[:nested_candidate_limit]
             if task is not None:
                 self._set_extract_meta(
                     task,
                     nested_password_candidate_limited=True,
                     nested_password_candidate_limit=nested_candidate_limit,
                     nested_password_candidate_total=total_candidates,
-                    nested_password_probe_reason="无扩展名嵌套包候选过多，已限制探测次数",
+                    nested_password_probe_reason=(
+                        "无扩展名嵌套包候选过多，已限制后备候选探测次数"
+                        if has_trusted_parent_password
+                        else "无扩展名嵌套包候选过多，已限制探测次数"
+                    ),
+                    nested_parent_password_unlimited=has_trusted_parent_password,
                 )
             logger.warning(
-                "无扩展名嵌套压缩包候选密码过多，限制为 %d 次轻量尝试: %s",
+                "无扩展名嵌套压缩包候选密码过多，限制后备候选为 %d 次: %s",
                 nested_candidate_limit,
                 archive_name,
             )
+
+        if has_trusted_parent_password:
+            password_list = [trusted_parent_password, *fallback_password_list]
+            logger.info(
+                "无扩展名嵌套压缩包将先使用外层已验证密码进行不限时完整解压: %s",
+                archive_name,
+            )
+        else:
+            password_list = fallback_password_list
 
         nested_attempt_timeout = (
             max(
@@ -4050,16 +4084,25 @@ class ExtractService:
                 unar_unsupported, archive_path,
             )
 
-        for password in password_list:
+        for index, password in enumerate(password_list):
             await asyncio.to_thread(clean_output)
             cmd = [self.seven_zip, "x", "-y", f"-o{output_path}", *self._get_seven_zip_mmt_args(), *self._get_mcp_args(archive_path), archive_path]
             cmd.append(f"-p{password}" if password else "-p")
+            is_trusted_parent_password_attempt = (
+                has_trusted_parent_password
+                and index == 0
+                and password == trusted_parent_password
+            )
             try:
                 result = await self._run_7z_command(
                     cmd,
                     capture_stdout=False,
                     task=task,
-                    command_timeout=nested_attempt_timeout,
+                    command_timeout=(
+                        None
+                        if is_trusted_parent_password_attempt
+                        else nested_attempt_timeout
+                    ),
                 )
                 if result.returncode == 0:
                     if await self._reject_if_garbled_after_extract(
