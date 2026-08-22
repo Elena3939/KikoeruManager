@@ -2620,6 +2620,12 @@ class ExtractService:
                     success_password,
                     password_candidates,
                 )
+                # 外层文件名中的 RJ 号也必须传给无扩展名内层包。
+                # 例如 RJ01607556(0822).7z -> 解压码0822：内层文件名不含 RJ，
+                # 但内层密码仍可能是外层作品 RJ 号。
+                for inherited_password in self._get_rj_passwords(archive_path):
+                    if inherited_password not in inherited_nested_passwords:
+                        inherited_nested_passwords.append(inherited_password)
                 nested_count = await self._extract_nested_archives(
                     output_path,
                     task,
@@ -3174,6 +3180,21 @@ class ExtractService:
                     if subtitle_probe_mode:
                         probe_archive_info = await self._get_archive_info(
                             file_path,
+                            password_candidates=[
+                                {
+                                    "password": password,
+                                    "source": "嵌套继承候选",
+                                    "entry_id": None,
+                                    "rjcode": None,
+                                }
+                                for password in [
+                                    parent_password,
+                                    *(parent_passwords or []),
+                                    *self._get_rj_passwords(getattr(task, "source_path", "") or ""),
+                                    *self._get_manual_retry_passwords(task),
+                                ]
+                                if password
+                            ],
                             task=task,
                             update_task_progress=False,
                         )
@@ -3197,7 +3218,12 @@ class ExtractService:
                             probe_subtitle_entries = [
                                 name for name in probe_subtitle_entries if name
                             ]
-                            if not probe_subtitle_entries:
+                            nested_encryption_status = await self._probe_7z_no_password_status(
+                                file_path,
+                                task=task,
+                                allow_extensionless_7z=(detected_archive_type == "7z"),
+                            )
+                            if not probe_subtitle_entries and nested_encryption_status != "encrypted":
                                 logger.info(
                                     "[字幕预检] 嵌套压缩包清单确认无字幕，跳过且不记失败: %s",
                                     filename,
@@ -3212,11 +3238,21 @@ class ExtractService:
                                     no_subtitle_archives.append(filename)
                                 processed_paths.add(file_real_path)
                                 continue
-                            logger.info(
-                                "[字幕预检] 嵌套压缩包仅选择性提取 %d 个字幕条目: %s",
-                                len(probe_subtitle_entries),
-                                filename,
-                            )
+                            if not probe_subtitle_entries and nested_encryption_status == "encrypted":
+                                logger.info(
+                                    "[字幕预检] 内层清单含加密条目，不能按无字幕处理，将继续按密码候选解包: %s",
+                                    filename,
+                                )
+                                # 不能把空字幕列表放进 probe_subtitle_entries。
+                                # 空列表会让阶段 2 直接报“清单读取失败”，阻断递归解包；
+                                # 加密内层必须走常规嵌套解压，再扫描更深一层的字幕。
+                                probe_subtitle_entries = None
+                            if probe_subtitle_entries:
+                                logger.info(
+                                    "[字幕预检] 嵌套压缩包仅选择性提取 %d 个字幕条目: %s",
+                                    len(probe_subtitle_entries),
+                                    filename,
+                                )
 
                     if 0 < nested_archive_size < self.NESTED_SUBTITLE_SIZE_THRESHOLD:
                         # subtitle_probe_mode：专门用于字幕补配预检的临时解包，直接展开小包
@@ -3281,7 +3317,7 @@ class ExtractService:
                         "archive_type": detected_archive_type,
                         **(
                             {"probe_subtitle_entries": probe_subtitle_entries}
-                            if subtitle_probe_mode
+                            if subtitle_probe_mode and probe_subtitle_entries
                             else {}
                         ),
                     })
@@ -3758,6 +3794,11 @@ class ExtractService:
                 vault_candidates = await self._get_password_candidates_for_archive(archive_path)
                 for item in vault_candidates:
                     add(item.get("password"))
+                # 外层可能是未加密的包装壳，实际密码只存在于内层归档自身的 RJ 文件名。
+                # 例如 RJ01524818.zip -> RJ01524818.z删ip，内层密码仍是 RJ01524818；
+                # 不能只依赖外层 success_password 或密码库记录。
+                for rj_password in self._get_rj_passwords(archive_path):
+                    add(rj_password)
                 for pwd in self.config.extract.password_list:
                     add(pwd)
 
@@ -7058,16 +7099,19 @@ class ExtractService:
         self,
         archive_path: str,
         task: Optional[Task] = None,
+        *,
+        allow_extensionless_7z: bool = False,
     ) -> Optional[str]:
         """只读 7z 技术清单，判断 7z/SFX 是否明确不加密。"""
         lower_path = str(archive_path or "").lower()
         if self._is_zip_like_archive(archive_path) or self._is_rar_archive(archive_path):
             return None
-        if not (
+        is_named_7z = (
             lower_path.endswith(".7z")
             or lower_path.endswith(".exe")
             or bool(re.search(r"\.7z\.\d{3}$", lower_path))
-        ):
+        )
+        if not is_named_7z and not allow_extensionless_7z:
             return None
 
         cmd = [
