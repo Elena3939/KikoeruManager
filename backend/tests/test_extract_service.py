@@ -2359,11 +2359,50 @@ class TestExtractService:
                 next((arg[2:] for arg in call.args[0] if str(arg).startswith("-p")), "")
                 for call in extract_service._run_7z_command.await_args_list
             ]
-            assert tried_passwords[:3] == ["", "20260531南＋冒険者本体", "default_pwd"]
+            assert tried_passwords[:4] == [
+                "",
+                "20260531南＋冒険者本体",
+                "RJ01624471",
+                "RJ01624472",
+            ]
         finally:
             extract_service.config.extract.filename_password_sniff_templates = old_templates
             extract_service.config.extract.filename_password_sniff_enabled = old_enabled
             extract_service.config.extract.password_list = old_password_list
+
+    @pytest.mark.asyncio
+    async def test_nested_extract_uses_inner_rj_filename_password(self, extract_service, temp_dir):
+        """未加密外层包装壳中的 RJ 内层包必须尝试内层文件名对应的 RJ 密码。"""
+        archive_path = os.path.join(temp_dir, "RJ01524818.z删ip")
+        output_path = os.path.join(temp_dir, "out")
+        os.makedirs(output_path, exist_ok=True)
+
+        extract_service._get_password_candidates_for_archive = AsyncMock(return_value=[])
+        extract_service._is_rar_archive = Mock(return_value=False)
+        extract_service.config.extract.password_list = []
+        extract_service._run_7z_command = AsyncMock(side_effect=lambda cmd, **_: subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0 if f"-pRJ01524818" in cmd else 2,
+            stdout=b"",
+            stderr=b"" if f"-pRJ01524818" in cmd else b"Wrong password",
+        ))
+
+        with patch.object(
+            extract_service,
+            "_reject_if_garbled_after_extract",
+            new=AsyncMock(return_value=False),
+        ):
+            success, password = await extract_service._try_extract_nested_direct(
+                archive_path, output_path, parent_password=None, inherited_passwords=[]
+            )
+
+        assert success is True
+        assert password == "RJ01524818"
+        tried_passwords = [
+            next((arg[2:] for arg in call.args[0] if str(arg).startswith("-p")), "")
+            for call in extract_service._run_7z_command.await_args_list
+        ]
+        assert tried_passwords == ["", "RJ01524818"]
 
     @pytest.mark.asyncio
     async def test_nested_extract_includes_manual_retry_password(self, extract_service, temp_dir):
@@ -2529,7 +2568,7 @@ class TestExtractService:
             assert f"-p{correct_password}" in extract_call.args[0]
             assert extract_call.kwargs["command_timeout"] is None
             assert task.task_metadata["nested_password_candidate_limited"] is False
-            assert task.task_metadata["nested_password_candidate_total"] == 14
+            assert task.task_metadata["nested_password_candidate_total"] == 17
             assert task.task_metadata["nested_password_probe_mode"] == "small_entry"
             assert task.task_metadata["nested_password_prevalidated"] is True
         finally:
@@ -2573,10 +2612,10 @@ class TestExtractService:
 
             assert success is False
             assert password is None
-            assert extract_service._probe_password.await_count == 14
+            assert extract_service._probe_password.await_count == 17
             extract_service._run_7z_command.assert_not_awaited()
             assert task.task_metadata["nested_password_candidate_limited"] is False
-            assert task.task_metadata["nested_password_candidate_total"] == 14
+            assert task.task_metadata["nested_password_candidate_total"] == 17
             assert task.task_metadata["nested_password_probe_failed"] is True
         finally:
             extract_service.config.extract.password_list = old_password_list
@@ -4636,6 +4675,59 @@ Encrypted = +
         selected_mock.assert_awaited_once()
         assert os.path.exists(os.path.join(output_path, "RJ01656747_1", "track", "voice.lrc"))
         assert os.path.exists(nested_rar)
+
+    @pytest.mark.asyncio
+    async def test_subtitle_probe_unwraps_extensionless_encrypted_inner_7z(
+        self, extract_service, temp_dir,
+    ):
+        """目录头可读但内容加密的无扩展名内层 7z 不能被误判为无字幕。"""
+        output_path = os.path.join(temp_dir, "probe-output")
+        os.makedirs(output_path)
+        nested_7z = os.path.join(output_path, "解压码0822")
+        with open(nested_7z, "wb") as fp:
+            fp.write(b"7z\xbc\xaf'\x1c" + (b"\0" * 64))
+
+        task = Task(
+            task_type=TaskType.EXTRACT,
+            source_path=os.path.join(temp_dir, "RJ01607556(0822).7z"),
+            metadata={"subtitle_probe_mode": True},
+        )
+        archive_info = ArchiveInfo(
+            nested_7z,
+            [{"name": "RJ01607556", "size": 128, "is_dir": False}],
+            "",
+        )
+
+        with patch.object(
+            extract_service,
+            "_detect_by_magic_bytes",
+            new=AsyncMock(return_value="7z"),
+        ), patch.object(
+            extract_service,
+            "_get_archive_info",
+            new=AsyncMock(return_value=archive_info),
+        ) as info_mock, patch.object(
+            extract_service,
+            "_probe_7z_no_password_status",
+            new=AsyncMock(return_value="encrypted"),
+        ) as encryption_mock, patch.object(
+            extract_service,
+            "_try_extract_nested_direct",
+            new=AsyncMock(return_value=(True, "0822")),
+        ) as extract_mock:
+            result = await extract_service._extract_nested_archives(
+                output_path,
+                task,
+                max_depth=2,
+                parent_password="0822",
+                parent_passwords=["0822"],
+            )
+
+        assert result == 1
+        assert task.task_metadata.get("nested_archives_without_subtitles") is None
+        assert info_mock.await_args.kwargs["password_candidates"][0]["password"] == "0822"
+        assert encryption_mock.await_args.kwargs["allow_extensionless_7z"] is True
+        assert extract_mock.await_args.args[2] == "0822"
 
     def test_extract_nested_archives_part_failure_does_not_raise(
         self, extract_service, temp_dir
