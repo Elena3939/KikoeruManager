@@ -742,6 +742,52 @@ def test_existing_subtitle_conflict_includes_target_work_details():
     }]
 
 
+def test_existing_subtitle_conflict_allows_replace_existing_work():
+    class _Query:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return None
+
+    class _Db:
+        def __init__(self):
+            self.added = []
+
+        def query(self, *_args, **_kwargs):
+            return _Query()
+
+        def add(self, value):
+            self.added.append(value)
+
+    service = object.__new__(LinkedSubtitleImportService)
+    service.subtitle_service = SimpleNamespace(
+        extract_rjcode=lambda value: str(value or '').strip().upper()
+    )
+    db = _Db()
+
+    conflict = service._upsert_existing_subtitle_conflict(
+        db,
+        source_path='/down_asmr/RJ01303631.zip',
+        preview={
+            'stage_reason': LinkedSubtitleImportService.EXISTING_SUBTITLE_REASON,
+            'source_rjcode': 'RJ01303631',
+            'target_rjcode': 'RJ01291089',
+            'source_label': 'RJ01303631.zip',
+            'selected_candidate': {
+                'library_id': 'asmr',
+                'folder_path': '/library/原作/RJ01291089',
+                'folder_name': 'RJ01291089',
+            },
+        },
+        task_id='task-1',
+    )
+
+    assert conflict in db.added
+    assert conflict.new_metadata['available_actions'] == ['KEEP_NEW', 'SKIP']
+    assert conflict.existing_path == '/library/原作/RJ01291089'
+
+
 @pytest.mark.asyncio
 async def test_common_preview_marks_unverified_translation_page_as_uncertain():
     service = object.__new__(LinkedSubtitleImportService)

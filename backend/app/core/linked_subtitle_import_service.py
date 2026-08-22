@@ -3296,7 +3296,10 @@ class LinkedSubtitleImportService:
             "existing_library_name": str(candidate.get("library_name") or "").strip(),
             "existing_subtitle_count": int(candidate.get("existing_subtitle_count") or 0),
             "existing_audio_count": int(candidate.get("audio_count") or 0),
-            "available_actions": ["SKIP"],
+            # 原作目录已有字幕时，用户可能明确要用当前新作替换旧目录。
+            # KEEP_NEW 会复用问题作品页现有的删旧保新任务链：先确认目标目录，
+            # 再解压当前来源并原子替换旧目录，不能把该选项限制为只能跳过。
+            "available_actions": ["KEEP_NEW", "SKIP"],
         }
         analysis_info = {
             "preview": preview_data,

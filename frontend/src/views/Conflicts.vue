@@ -2224,11 +2224,12 @@ async function handleKeepNew(conflict) {
   markAction(conflict.id, 'KEEP_NEW', true)
   try {
     const preview = await loadKeepNewPreview(conflict)
+    const linkedWorkConflict = isLinkedWorkConflict(conflict)
     await showSystemConfirm({
-      title: '删除审查确认',
+      title: linkedWorkConflict ? '删除旧作并重新入库' : '删除审查确认',
       message: buildKeepNewSummary(conflict, preview),
       tone: 'danger',
-      confirmText: '确认删除并写入新内容',
+      confirmText: linkedWorkConflict ? '确认删除旧作并重新入库' : '确认删除并写入新内容',
       cancelText: '取消'
     })
 
@@ -2613,11 +2614,16 @@ function skipDispatchLabel(conflict) {
 }
 
 function keepNewDispatchLabel(conflict) {
-  if (isActionLoading(conflict?.id, 'KEEP_NEW')) return '保留新版中'
+  const actionLabel = isLinkedWorkConflict(conflict) ? '删除旧作并重新入库' : '保留新版'
+  if (isActionLoading(conflict?.id, 'KEEP_NEW')) return `${actionLabel}中`
   if (isBatchableActive(conflict, 'KEEP_NEW')) {
-    return `批量保留新版 (${selectedActionCount('KEEP_NEW')})`
+    return `批量${actionLabel} (${selectedActionCount('KEEP_NEW')})`
   }
-  return '保留新版'
+  return actionLabel
+}
+
+function isLinkedWorkConflict(conflict) {
+  return String(conflict?.conflict_type || '').toUpperCase().startsWith('LINKED_WORK')
 }
 
 function retryDispatchLabel(conflict) {
