@@ -7265,7 +7265,7 @@ async def resolve_conflict(conflict_id: str, action: dict):
             if action_type == "KEEP_NEW":
                 if not confirmed:
                     raise HTTPException(status_code=400, detail="保留新版前必须先完成删除审查确认")
-                source_path = str(conflict.new_path or "").strip()
+                source_path = service._resolve_conflict_new_path(conflict)
                 existing_path = str(conflict.existing_path or "").strip()
                 if not source_path:
                     raise HTTPException(status_code=400, detail="缺少待处理源路径")
@@ -7273,6 +7273,13 @@ async def resolve_conflict(conflict_id: str, action: dict):
                     raise HTTPException(status_code=400, detail="缺少待替换目标路径")
                 if not os.path.exists(source_path):
                     raise HTTPException(status_code=404, detail="待处理源文件不存在")
+
+                # 旧版本曾把“正在处理中”等状态文案写入 existing_path。
+                # 没有真实旧目录时不能进入 safe_replace_directory，否则任务必然报
+                # Target path does not exist；将新版作为普通入库继续处理。
+                has_existing_target = await asyncio.to_thread(os.path.exists, existing_path)
+                if not has_existing_target:
+                    existing_path = ""
 
                 existing_task = None
                 if conflict.task_id:
@@ -7347,14 +7354,18 @@ async def resolve_conflict(conflict_id: str, action: dict):
 
                 source_is_file = await asyncio.to_thread(os.path.isfile, source_path)
                 task_type = TaskType.AUTO_PROCESS if source_is_file else TaskType.PROCESS_EXISTING_FOLDER
+                resolution_metadata = {
+                    **next_metadata,
+                    "existing_folder_resolution": "KEEP_NEW" if existing_path else "",
+                    "existing_path": existing_path,
+                    "skip_duplicate_precheck": not bool(existing_path),
+                }
                 task = Task(
                     task_type=task_type,
                     source_path=source_path,
                     auto_classify=True,
                     metadata={
-                        **next_metadata,
-                        "existing_folder_resolution": "KEEP_NEW",
-                        "existing_path": existing_path,
+                        **resolution_metadata,
                         "conflict_resolution_conflict_id": conflict.id,
                         "conflict_resolution_action": "KEEP_NEW",
                         "source_page": "conflicts",

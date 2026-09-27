@@ -781,6 +781,25 @@ class ConflictResolutionService:
         description = await self.describe_conflict_async(conflict)
         existing = description["existing"]
         manager = get_library_manager()
+        # 历史重复检测可能把“正在处理中”等状态文案写进 existing_path。
+        # 这类冲突没有可替换的旧目录，保留新版应继续走普通入库，预览不能把文案当本地路径。
+        if not existing.get("path") or (
+            not existing.get("is_remote")
+            and not await asyncio.to_thread(os.path.exists, str(existing.get("path") or ""))
+        ):
+            return {
+                "need_confirm": False,
+                "exists": False,
+                "type": "missing",
+                "name": os.path.basename(str(existing.get("path") or "")) or "旧版本",
+                "path": str(existing.get("path") or ""),
+                "size": 0,
+                "file_count": 0,
+                "folder_count": 0,
+                "library_id": existing.get("library_id"),
+                "library_type": existing.get("library_type"),
+                "library_name": existing.get("library_name"),
+            }
         if existing["library_id"]:
             preview = await manager.delete(existing["library_id"], existing["path"], confirmed=False)
         else:
