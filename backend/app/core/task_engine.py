@@ -808,10 +808,10 @@ class TaskEngine:
             logger.info(f"取消标记RJ号: {rjcode}")
         # 无论是否在集合中，都尝试清理该RJ号的"正在处理中"临时冲突（兼容重复调用）
         try:
-            from ..models.database import ConflictWork, get_db
+            from ..models.database import ConflictWork, Task as DatabaseTask, get_db
             db = next(get_db())
             try:
-                deleted = (
+                candidates = (
                     db.query(ConflictWork)
                     .filter(
                         ConflictWork.rjcode == rjcode,
@@ -820,11 +820,16 @@ class TaskEngine:
                     )
                     .all()
                 )
-                if deleted:
-                    for c in deleted:
-                        db.delete(c)
+                deleted_count = 0
+                for conflict in candidates:
+                    task = db.query(DatabaseTask).filter(DatabaseTask.id == conflict.task_id).first()
+                    if task and str(task.status or "").lower() == TaskStatus.WAITING_MANUAL.value:
+                        continue
+                    db.delete(conflict)
+                    deleted_count += 1
+                if deleted_count:
                     db.commit()
-                    logger.info(f"清理 {rjcode} 的临时'正在处理中'冲突记录 {len(deleted)} 条")
+                    logger.info(f"清理 {rjcode} 的临时'正在处理中'冲突记录 {deleted_count} 条")
             finally:
                 db.close()
         except Exception as e:
@@ -7524,10 +7529,10 @@ def get_task_engine() -> TaskEngine:
         )
         # 启动时清理上次服务重启前残留的"正在处理中"临时冲突记录
         try:
-            from ..models.database import ConflictWork, get_db
+            from ..models.database import ConflictWork, Task as DatabaseTask, get_db
             db = next(get_db())
             try:
-                stale = (
+                candidates = (
                     db.query(ConflictWork)
                     .filter(
                         ConflictWork.existing_path == "正在处理中",
@@ -7535,11 +7540,16 @@ def get_task_engine() -> TaskEngine:
                     )
                     .all()
                 )
-                if stale:
-                    for c in stale:
-                        db.delete(c)
+                deleted_count = 0
+                for conflict in candidates:
+                    task = db.query(DatabaseTask).filter(DatabaseTask.id == conflict.task_id).first()
+                    if task and str(task.status or "").lower() == TaskStatus.WAITING_MANUAL.value:
+                        continue
+                    db.delete(conflict)
+                    deleted_count += 1
+                if deleted_count:
                     db.commit()
-                    logger.info(f"[启动清理] 删除 {len(stale)} 条残留的'正在处理中'冲突记录")
+                    logger.info(f"[启动清理] 删除 {deleted_count} 条残留的'正在处理中'冲突记录")
             finally:
                 db.close()
         except Exception as e:
