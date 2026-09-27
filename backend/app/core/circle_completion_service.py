@@ -1320,31 +1320,33 @@ class CircleCompletionService:
                 query_meta.get("link_type"),
                 query_meta.get("lang"),
             )
-            group_key = str(query_group.get("key") or "")
-            if group_key not in {"simplified", "traditional"}:
-                result = {
-                    **empty_result,
-                    "group_key": group_key,
-                    "group_label": str(query_group.get("short_label") or ""),
-                }
-                self._inventory_translation_search_cache[normalized_rj] = result
-                return deepcopy(result)
-
-            related_rjcodes = sorted({
-                linked_rjcode
-                for linked_rjcode, meta in link_meta_by_rj.items()
-                if self._variant_group(meta.get("link_type"), meta.get("lang")).get("key") == group_key
-            })
-            search_rjcodes = [normalized_rj, *[
-                candidate for candidate in related_rjcodes if candidate != normalized_rj
-            ]]
-
-            owned_locations: List[Dict[str, Any]] = []
             owned_rows = (
                 db.query(LibraryOwnedWork)
                 .filter(LibraryOwnedWork.canonical_rjcode.in_(canonical_rjcodes))
                 .all()
             )
+
+            group_key = str(query_group.get("key") or "")
+            if group_key in {"simplified", "traditional"}:
+                related_rjcodes = sorted({
+                    linked_rjcode
+                    for linked_rjcode, meta in link_meta_by_rj.items()
+                    if self._variant_group(meta.get("link_type"), meta.get("lang")).get("key") == group_key
+                })
+            else:
+                # 原作查询也要能定位“实际收录的是关联译作”的目录。
+                # 只追加 owned 快照明确记录的 RJ，避免把同社团其它变体混入搜索。
+                related_rjcodes = sorted({
+                    self.normalize_rjcode(candidate)
+                    for owned_row in owned_rows
+                    for candidate in list(owned_row.owned_rjcodes or [])
+                    if self.normalize_rjcode(candidate) and self.normalize_rjcode(candidate) != normalized_rj
+                })
+            search_rjcodes = [normalized_rjcode, *[
+                candidate for candidate in related_rjcodes if candidate != normalized_rj
+            ]]
+
+            owned_locations: List[Dict[str, Any]] = []
             related_set = set(search_rjcodes)
             for owned_row in owned_rows:
                 actual_owned_rjcodes = {

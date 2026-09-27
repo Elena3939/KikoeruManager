@@ -234,6 +234,16 @@ def test_inventory_translation_search_relation_only_expands_same_language_group(
         "actual_rjcode": simplified_owned,
     }]
 
+    service._inventory_translation_search_cache.clear()
+    query_results = iter([link_rows, link_rows, [owned_row]])
+    original_relation = service.get_inventory_translation_search_relation(canonical)
+    assert original_relation["search_rjcodes"] == [canonical, simplified_owned]
+    assert original_relation["owned_locations"] == [{
+        "library_id": "default-local",
+        "path": owned_path,
+        "actual_rjcode": simplified_owned,
+    }]
+
 
 def test_apply_library_index_owned_state_skips_when_ready_index_unavailable(monkeypatch):
     service = CircleCompletionService()
