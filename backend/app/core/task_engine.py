@@ -823,7 +823,9 @@ class TaskEngine:
                 deleted_count = 0
                 for conflict in candidates:
                     task = db.query(DatabaseTask).filter(DatabaseTask.id == conflict.task_id).first()
-                    if task and str(task.status or "").lower() == TaskStatus.WAITING_MANUAL.value:
+                    if (
+                        task and str(task.status or "").lower() == TaskStatus.WAITING_MANUAL.value
+                    ) or os.path.exists(str(conflict.new_path or "")):
                         continue
                     db.delete(conflict)
                     deleted_count += 1
@@ -1414,6 +1416,54 @@ class TaskEngine:
             return loaded_count
         except Exception:
             logger.warning("[任务持久化] 恢复字幕补配任务失败", exc_info=True)
+            return 0
+        finally:
+            db.close()
+
+    def load_persisted_conflict_tasks(self) -> int:
+        """恢复仍有实体问题作品的等待人工任务，避免重启后任务中心丢失。"""
+        from ..models.database import SessionLocal, ConflictWork
+
+        db = SessionLocal()
+        loaded_count = 0
+        try:
+            rows = db.query(ConflictWork).filter(
+                ConflictWork.status.in_(["PENDING", "PROCESSING"])
+            ).all()
+            for conflict in rows:
+                task_id = str(conflict.task_id or conflict.id)
+                if task_id in self.tasks:
+                    continue
+                metadata = dict(conflict.new_metadata or {})
+                metadata.update({
+                    "rjcode": conflict.rjcode or "",
+                    "conflict_type": conflict.conflict_type or "DUPLICATE",
+                    "conflict_id": conflict.id,
+                    "recovered_from_conflict": True,
+                })
+                task = Task(
+                    task_type=TaskType.AUTO_PROCESS,
+                    source_path=conflict.new_path or "",
+                    output_path=conflict.new_path or "",
+                    auto_classify=True,
+                    metadata=metadata,
+                    task_id=task_id,
+                    status=TaskStatus.WAITING_MANUAL,
+                    rjcode=conflict.rjcode or "",
+                )
+                with task._set_state_silent():
+                    task.progress = 100
+                    task.current_step = "正在处理中，请在问题作品页面查看"
+                    task.completed_at = conflict.created_at
+                self._ensure_task_context(task)
+                self.tasks[task.id] = task
+                self.persist_task_center_item_snapshot(task)
+                loaded_count += 1
+            if loaded_count:
+                logger.info("[任务持久化] 已恢复问题作品等待人工任务 %s 个", loaded_count)
+            return loaded_count
+        except Exception:
+            logger.warning("[任务持久化] 恢复问题作品任务失败", exc_info=True)
             return 0
         finally:
             db.close()
@@ -4004,6 +4054,7 @@ class TaskEngine:
 
         # 加载等待重试的任务
         self.load_persisted_linked_subtitle_tasks()
+        self.load_persisted_conflict_tasks()
         self.recover_stale_processing_tasks()
         self.load_waiting_retry_tasks()
 
@@ -7543,7 +7594,9 @@ def get_task_engine() -> TaskEngine:
                 deleted_count = 0
                 for conflict in candidates:
                     task = db.query(DatabaseTask).filter(DatabaseTask.id == conflict.task_id).first()
-                    if task and str(task.status or "").lower() == TaskStatus.WAITING_MANUAL.value:
+                    if (
+                        task and str(task.status or "").lower() == TaskStatus.WAITING_MANUAL.value
+                    ) or os.path.exists(str(conflict.new_path or "")):
                         continue
                     db.delete(conflict)
                     deleted_count += 1
