@@ -26,6 +26,8 @@
         @action="handleTaskCenterAction"
       />
 
+      <aside class="dashboard-maintenance-column flex min-h-0 flex-col gap-3 overflow-auto">
+      <DeferredArchiveQueue class="max-h-[440px] shrink-0" />
       <DashboardArchive
         :archives="displayedArchives"
         :filtered-archives="filteredArchives"
@@ -48,6 +50,7 @@
         @update:search-query="onArchiveSearchInput"
         @update:domain-filter="(v) => (archiveDomainFilter = v)"
       />
+      </aside>
     </main>
   </div>
 </template>
@@ -76,6 +79,7 @@ import DashboardHero from '../components/dashboard/DashboardHero.vue'
 import DashboardCommandStrip from '../components/dashboard/DashboardCommandStrip.vue'
 import DashboardActiveTasks from '../components/dashboard/DashboardActiveTasks.vue'
 import DashboardArchive from '../components/dashboard/DashboardArchive.vue'
+import DeferredArchiveQueue from '../components/dashboard/DeferredArchiveQueue.vue'
 import { normalizeTaskCenterRealtimePayloads, patchTaskCenterItemListBatch } from '../composables/taskCenterEventUtils'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { useRealtimeEvents } from '../composables/useRealtimeEvents'
@@ -952,6 +956,12 @@ function getArchiveStatusMeta(value) {
  *      改成自然内容高度 + 外层 .content-shell 整页滚动。
  * ============================================================ */
 @media (max-width: 1024px) {
+  .dashboard-maintenance-column {
+    overflow: visible;
+  }
+  .dashboard-maintenance-column :deep(.deferred-archive-queue) {
+    max-height: none;
+  }
   .dashboard-page-shell {
     height: auto !important;
     min-height: 100%;

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, FileResponse, Response
@@ -4716,6 +4716,41 @@ async def get_library_backup_checkpoint():
     return checkpoint or {"has_checkpoint": False}
 
 
+@app.get("/api/deferred-archive-jobs")
+async def list_deferred_archive_jobs(
+    status: str = "", page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=100),
+):
+    """查询独立的延后归档维护队列。"""
+    from ..core.deferred_archive_service import get_deferred_archive_service
+    try:
+        return await asyncio.to_thread(
+            get_deferred_archive_service().list_jobs_sync,
+            status=status, page=page, page_size=page_size,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+async def _control_deferred_archive_job(job_id: str, action: str):
+    from ..core.deferred_archive_service import get_deferred_archive_service
+    try:
+        return await get_deferred_archive_service().control_job(job_id, action)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/deferred-archive-jobs/{job_id}/cancel")
+async def cancel_deferred_archive_job(job_id: str):
+    return await _control_deferred_archive_job(job_id, "cancel")
+
+
+@app.post("/api/deferred-archive-jobs/{job_id}/retry")
+async def retry_deferred_archive_job(job_id: str):
+    return await _control_deferred_archive_job(job_id, "retry")
+
+
 @app.post("/api/watcher/start")
 async def start_watcher():
     """启动文件夹监视器"""
@@ -7063,6 +7098,100 @@ def _collect_split_archive_siblings(main_path: str):
     return list(siblings)
 
 
+async def _resolve_conflict_skip(conflict_id: str, service) -> dict:
+    """跳过的数据库会话只覆盖读写阶段，不跨文件操作或独立会话调用。"""
+    from ..core.activity_log_service import (
+        log_conflict_resolution_activity,
+        mark_task_conflict_resolved_activity_log,
+        snapshot_file_tree_for_activity,
+    )
+    from ..core.task_engine import TaskStatus, get_task_engine
+    from ..models.database import ConflictWork, ProcessedArchive, get_db
+
+    def load_conflict():
+        db = next(get_db())
+        try:
+            conflict = db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
+            if not conflict:
+                raise HTTPException(status_code=404, detail="问题作品不存在")
+            db.expunge(conflict)
+            return conflict
+        finally:
+            db.close()
+
+    def finish_conflict(conflict):
+        db = next(get_db())
+        try:
+            updated = db.query(ConflictWork).filter(ConflictWork.id == conflict_id).update(
+                {"status": "SKIP"}, synchronize_session=False,
+            )
+            if not updated:
+                raise HTTPException(status_code=404, detail="问题作品不存在")
+            archive = None
+            if conflict.new_path:
+                archive = db.query(ProcessedArchive).filter(
+                    ProcessedArchive.filename == os.path.basename(str(conflict.new_path))
+                ).first()
+                if archive:
+                    archive.status = "completed"
+                    archive.processed_at = datetime.now()
+                    db.flush()
+                    # 广播读取脱离会话的快照，避免 commit 过期属性触发隐式 SELECT。
+                    db.expunge(archive)
+            db.commit()
+            return archive
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    try:
+        conflict = await asyncio.to_thread(load_conflict)
+        available_actions = await asyncio.to_thread(service.get_available_actions, conflict)
+        if "SKIP" not in available_actions:
+            raise HTTPException(status_code=400, detail="当前问题项不支持该操作")
+
+        source_path = str(conflict.new_path or "")
+        skip_tree_items = await asyncio.to_thread(snapshot_file_tree_for_activity, source_path, 300)
+        result = await service.resolve_skip(conflict)
+        archive = await asyncio.to_thread(finish_conflict, conflict)
+        if archive:
+            await asyncio.to_thread(_broadcast_processed_archive_changed_safe, archive)
+        task_id = str(conflict.task_id).strip() if conflict.task_id else None
+        if task_id:
+            await asyncio.to_thread(
+                get_task_engine().update_task_status, task_id, TaskStatus.COMPLETED, "跳过完成",
+            )
+        await asyncio.to_thread(
+            mark_task_conflict_resolved_activity_log, task_id, "SKIP", conflict_id=conflict.id,
+        )
+        await asyncio.to_thread(
+            log_conflict_resolution_activity,
+            conflict_id=conflict.id,
+            action="SKIP",
+            status="success",
+            rjcode=conflict.rjcode,
+            task_id=conflict.task_id,
+            source_path=source_path,
+            target_path=str(conflict.existing_path or ""),
+            final_path=str(result.get("final_path") or conflict.existing_path or ""),
+            diff_items=[{**item, "variant": "deleted"} for item in skip_tree_items],
+            extra_detail={"source_missing": True, "source_missing_reason": "源文件已不存在，无需删除"}
+            if result.get("source_missing") else None,
+        )
+        return {"success": True, "conflict_id": conflict.id, "action": "SKIP", **result}
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("跳过问题作品失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.post("/api/conflicts/{conflict_id}/resolve")
 async def resolve_conflict(conflict_id: str, action: dict):
     """处理问题作品"""
@@ -7075,6 +7204,14 @@ async def resolve_conflict(conflict_id: str, action: dict):
     from ..core.conflict_resolution_service import get_conflict_resolution_service
     from ..core.task_engine import Task, TaskStatus, TaskType, get_task_engine
     from ..models.database import ConflictWork, ProcessedArchive, get_db
+
+    service = get_conflict_resolution_service()
+    try:
+        action_type = service.normalize_action(action.get("action"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if action_type == "SKIP":
+        return await _resolve_conflict_skip(conflict_id, service)
 
     db = next(get_db())
     try:
@@ -7408,6 +7545,8 @@ async def resolve_conflict(conflict_id: str, action: dict):
                 target_path=str(conflict.existing_path or ""),
                 final_path=str((result or {}).get("final_path") or conflict.existing_path or ""),
                 diff_items=resolution_diff_items,
+                extra_detail={"source_missing": True, "source_missing_reason": "源文件已不存在，无需删除"}
+                if (result or {}).get("source_missing") else None,
             )
         return {
             "success": True,
@@ -14610,9 +14749,18 @@ async def process_existing_folders(request: Request):
         data = await request.json()
         folders = data.get("folders", [])
         auto_classify = data.get("auto_classify", True)
+        target_library_id = str(data.get("target_library_id") or "").strip()
         
         if not folders:
             raise HTTPException(status_code=400, detail="未选择任何文件夹")
+
+        if auto_classify:
+            if not target_library_id:
+                raise HTTPException(status_code=400, detail="自动分类入库必须选择目标库存")
+            try:
+                get_library_manager().get_library_definition(target_library_id)
+            except Exception:
+                raise HTTPException(status_code=400, detail="目标库存不存在或已被删除")
         
         # 验证所有路径是否有效
         config = get_config()
@@ -14694,6 +14842,7 @@ async def process_existing_folders(request: Request):
                     "inferred_rjcode": inferred_rjcode,
                     "rjcode": inferred_rjcode,
                     "auto_classify": bool(auto_classify),
+                    "target_library_id": target_library_id if auto_classify else "",
                     "skip_duplicate_precheck": bool(skip_duplicate_precheck),
                     "duplicate_precheck_source": "existing_folder_cache" if skip_duplicate_precheck else "",
                 }
@@ -14714,6 +14863,7 @@ async def process_existing_folders(request: Request):
                 "archive_count": 0,
                 "extracted_count": 0,
                 "auto_classify": bool(auto_classify),
+                "target_library_id": target_library_id if auto_classify else "",
                 "source_page": "existing-folders",
                 "source_action": "process_existing_batch",
                 "source_label": "已有目录页 / 批量处理",
@@ -17955,11 +18105,12 @@ def _google_drive_oauth_popup_html(payload: dict, target_origin: str = "*") -> s
 
 
 @app.get("/api/http-download/health")
-async def http_download_health():
+async def http_download_health(refresh: bool = False):
     from ..core.http_download_service import get_http_download_service
 
     try:
-        return await get_http_download_service().health()
+        service = get_http_download_service()
+        return await service.health(force=True) if refresh else await service.health()
     except Exception as exc:
         logger.warning("HTTP 下载健康检查失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"健康检查失败: {str(exc)}")
@@ -18277,11 +18428,12 @@ async def http_download_status(compact: bool = False):
 
 
 @app.get("/api/baidu-netdisk/backend-health")
-async def baidu_netdisk_backend_health():
+async def baidu_netdisk_backend_health(refresh: bool = False):
     from ..core.baidu_netdisk_service import get_baidu_netdisk_service
 
     try:
-        return await get_baidu_netdisk_service().health()
+        service = get_baidu_netdisk_service()
+        return await service.health(force=True) if refresh else await service.health()
     except Exception as exc:
         logger.warning("百度网盘后端健康检查失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"健康检查失败: {str(exc)}")
@@ -20226,7 +20378,9 @@ async def circle_completion_cover(filename: str):
     rjcode, variant = image_cache_service._parse_filename(filename)
     cache_path = image_cache_service.resolve_filename(filename)
     if cache_path is not None and not image_cache_service.has_local(rjcode, variant):
-        cache_path = await image_cache_service.ensure_local_for_filename(filename)
+        # 缺图不能阻塞 HTTP 请求：下载放入受控后台任务，当前请求立即返回 404。
+        # 前端会显示占位并可稍后重试，避免每张图占用 12 秒事件循环预算。
+        image_cache_service.schedule_ensure_for_filename(filename)
     if cache_path is None or not image_cache_service.has_local(rjcode, variant):
         raise HTTPException(status_code=404, detail="封面未缓存")
     return FileResponse(

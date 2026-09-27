@@ -6,6 +6,27 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence
 
 
+def normalize_part_volume_filename(filename: str) -> str:
+    """仅调整 RAR 分卷密码提示的位置，不改动磁盘文件或丢弃提示。"""
+    match = re.fullmatch(
+        r"(?P<base>.+)\.part(?P<index>\d+)"
+        r"(?P<inner>\([^()\\/]+\))?\.(?P<ext>rar)"
+        r"(?P<outer>\([^()\\/]+\))?",
+        filename,
+        re.IGNORECASE,
+    )
+    if not match:
+        return filename
+    inner, outer = match.group("inner", "outer")
+    if not (inner or outer) or (inner and outer and inner != outer):
+        return filename
+    hint = inner or outer
+    base = match.group("base")
+    if not base.endswith(hint):
+        base += hint
+    return f"{base}.part{match.group('index')}.{match.group('ext')}"
+
+
 @dataclass(frozen=True)
 class ArchiveVolumeGroup:
     """同一压缩包的分卷集合，volumes[0] 约定为首卷/主卷。"""
@@ -27,7 +48,7 @@ def sort_archive_volumes(paths: Iterable[str]) -> List[str]:
     """把同组分卷按主卷优先、编号升序排序。"""
 
     def key(path: str):
-        name = os.path.basename(path).lower()
+        name = normalize_part_volume_filename(os.path.basename(path)).lower()
 
         match = re.search(r"\.part(\d+)\.(rar|zip|7z|exe)$", name, re.IGNORECASE)
         if match:
@@ -82,7 +103,7 @@ def detect_archive_volume_group(
     """从任意分卷成员定位整组分卷；单文件压缩包返回 None。"""
 
     directory = os.path.dirname(file_path)
-    filename = os.path.basename(file_path)
+    filename = normalize_part_volume_filename(os.path.basename(file_path))
     if sibling_names is None:
         try:
             siblings = os.listdir(directory)
@@ -101,7 +122,10 @@ def detect_archive_volume_group(
 
     def collect(pattern: str) -> List[str]:
         regex = re.compile(pattern, re.IGNORECASE)
-        return [existing(name) for name in siblings if regex.fullmatch(name)]
+        return [
+            existing(name) for name in siblings
+            if regex.fullmatch(normalize_part_volume_filename(name))
+        ]
 
     match = re.fullmatch(r"(?P<base>.+)\.part\d+\.(?:rar|zip|7z|exe)", filename, re.IGNORECASE)
     if match:

@@ -3122,6 +3122,7 @@ class ASMRResourceService:
                         self._update_session(session_id, status="downloading")
 
                     def file_progress_callback(downloaded_bytes: int, total_bytes: int, name=display_name, file_index=index):
+                        nonlocal last_download_step_event_at
                         self._update_download_runtime(
                             task,
                             progress_state,

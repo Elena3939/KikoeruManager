@@ -779,8 +779,20 @@ class TestTaskEngine:
         )
 
         task = Task(task_type=TaskType.AUTO_PROCESS, source_path=str(exe), task_id="archive-size-task")
+        from tests.test_deferred_archive_service import _configure_service
+        archive_service, _factory = _configure_service(
+            monkeypatch, db_session, source_dir, processed_dir, tmp_path
+        )
+        monkeypatch.setattr(
+            'app.core.deferred_archive_service.get_deferred_archive_service', lambda: archive_service
+        )
 
-        await engine._archive_source_file(task)
+        result = await engine._archive_source_file(task)
+        assert result['queued'] is True
+        assert exe.exists()
+        assert db_session.query(ProcessedArchive).filter_by(filename=exe.name).count() == 0
+        claim = archive_service._claim_next_job_sync()
+        await archive_service._execute_claimed_job(claim)
 
         archive = db_session.query(ProcessedArchive).filter_by(filename="RJ01629292.exe").one()
         assert archive.file_size == 1524

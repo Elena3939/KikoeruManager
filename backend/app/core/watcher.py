@@ -15,7 +15,7 @@ import logging
 
 from ..config.settings import get_config
 from ..core.task_engine import Task, TaskType, get_task_engine
-from .archive_volume_utils import get_archive_volume_paths
+from .archive_volume_utils import get_archive_volume_paths, normalize_part_volume_filename
 from .deferred_archive_service import get_deferred_archive_service
 from .file_processor import get_file_processor
 
@@ -53,6 +53,8 @@ class ArchiveHandler(FileSystemEventHandler):
         if not os.path.exists(file_path):
             logger.debug(f"文件不存在，跳过: {file_path}")
             return
+        if self._file_processor.has_active_download(file_path):
+            return
         result = self._is_archive(file_path)
         if result:
             self.on_archive_detected(file_path)
@@ -69,6 +71,8 @@ class ArchiveHandler(FileSystemEventHandler):
             return
         if not os.path.exists(file_path):
             return
+        if self._file_processor.has_active_download(file_path):
+            return
         result = self._is_archive(file_path)
         if result:
             self.on_archive_detected(file_path)
@@ -77,7 +81,9 @@ class ArchiveHandler(FileSystemEventHandler):
 
     def _mark_volume_file_processed(self, file_path: str):
         """将分卷文件标记为已处理（防止重复检测）"""
-        filename = os.path.basename(file_path).lower()
+        if self._file_processor.has_active_download(file_path):
+            return
+        filename = normalize_part_volume_filename(os.path.basename(file_path)).lower()
 
         if re.search(r'\.z\d{2}$', filename):
             logger.debug(f"ZIP 分卷文件标记为已处理: {file_path}")
@@ -85,7 +91,7 @@ class ArchiveHandler(FileSystemEventHandler):
         elif re.search(r'\.r\d{2}$', filename):
             logger.debug(f"旧式 RAR 分卷文件标记为已处理: {file_path}")
             self.mark_processed(file_path)
-        elif re.search(r'\.7z\.\d{3}$', filename):
+        elif (match := re.search(r'\.7z\.(\d{3})$', filename)) and int(match.group(1)) > 1:
             logger.debug(f"7z 分卷文件标记为已处理: {file_path}")
             self.mark_processed(file_path)
         elif re.search(r'\.part\d+\.(rar|zip|7z|exe)$', filename, re.IGNORECASE):
@@ -149,11 +155,19 @@ class FolderWatcher:
 
     def _mark_file_processed(self, file_path: str):
         """将文件标记为已处理"""
+        if self._loop and self._loop.is_running():
+            try:
+                current_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                current_loop = None
+            if current_loop is not self._loop:
+                self._loop.call_soon_threadsafe(self._mark_file_processed, file_path)
+                return
         self._processed_files.add(file_path)
 
     def _is_file_processed(self, file_path: str) -> bool:
         """检查文件是否已处理"""
-        return file_path in self._processed_files or file_path in self.pending_files
+        return file_path in self._processed_files
 
     def pause_watching(self):
         """暂停文件监听（在重命名等操作前调用）"""
@@ -224,6 +238,18 @@ class FolderWatcher:
 
     def _on_archive_detected(self, file_path: str):
         """检测到压缩包"""
+        if not self.is_running or not self._loop or not self._loop.is_running():
+            return
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if current_loop is not self._loop:
+            try:
+                self._loop.call_soon_threadsafe(self._on_archive_detected, file_path)
+            except RuntimeError:
+                logger.debug("监听器事件循环已关闭，忽略检测事件")
+            return
         # 检查是否已经在处理中或已处理过
         if file_path in self.pending_files:
             logger.debug(f"文件已在处理中，跳过: {file_path}")
@@ -245,6 +271,7 @@ class FolderWatcher:
                 asyncio.run_coroutine_threadsafe(self._process_file(file_path), self._loop)
                 logger.debug(f"任务已调度: {file_path}")
             else:
+                self.pending_files.discard(file_path)
                 logger.error(f"事件循环未就绪，无法调度任务: {file_path}")
         else:
             logger.info(f"auto_start为false，跳过自动处理: {file_path}")
@@ -255,6 +282,8 @@ class FolderWatcher:
         original_path = file_path
 
         try:
+            if not await asyncio.to_thread(os.path.isfile, file_path):
+                return
             # 使用 FileProcessor 处理文件
             # 传入暂停/恢复监听回调，用于文件名规范化时避免重复事件
             task = await self._file_processor.process_file(
@@ -369,31 +398,40 @@ class FolderWatcher:
             except Exception as e:
                 logger.error(f"定期扫描失败: {e}")
 
-    async def _scan_folder(self):
-        """扫描文件夹中的现有文件"""
-        watch_path = self.config.storage.input_path
-
-        if not self.handler:
-            return
-
+    def _collect_archive_candidates(self, watch_path: str, excluded: set[str]) -> list[str]:
+        """在线程内枚举并识别候选，只返回路径快照，不修改运行态。"""
+        candidates = set()
         for root, dirs, files in os.walk(watch_path):
             for file in files:
                 file_path = os.path.join(root, file)
-
-                if file_path in self._get_excluded_paths():
+                if file_path in excluded or file.lower().endswith('.aria2'):
                     continue
+                if self._file_processor.has_active_download(file_path):
+                    continue
+                if self._file_processor.is_archive(file_path):
+                    candidates.add(file_path)
+        return sorted(candidates)
 
-                if self.handler._is_archive(file_path):
-                    if await get_deferred_archive_service().is_source_claimed(file_path):
-                        continue
-                    engine = get_task_engine()
-                    existing = any(
-                        t.source_path == file_path and t.status.value in ["pending", "processing"]
-                        for t in engine.get_all_tasks()
-                    )
-
-                    if not existing and file_path not in self.pending_files and file_path not in self._processed_files:
-                        self._on_archive_detected(file_path)
+    async def _scan_folder(self):
+        """后台收集候选，回到事件循环后重新核对声明与活动任务。"""
+        if not self.handler or not self.is_running or self._paused:
+            return
+        candidates = await asyncio.to_thread(
+            self._collect_archive_candidates,
+            self.config.storage.input_path, self._get_excluded_paths(),
+        )
+        active_paths = {
+            task.source_path for task in get_task_engine().get_all_tasks()
+            if task.status.value in {"pending", "processing"}
+        }
+        for file_path in candidates:
+            if not self.is_running or self._paused:
+                return
+            if file_path in active_paths or file_path in self._get_excluded_paths():
+                continue
+            if await get_deferred_archive_service().is_source_claimed(file_path):
+                continue
+            self._on_archive_detected(file_path)
 
 
 # 全局监视器实例

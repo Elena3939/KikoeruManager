@@ -79,12 +79,7 @@ COPY requirements.txt .
 
 # 安装Python依赖
 RUN pip install --no-cache-dir -r requirements.txt
-RUN python - <<'PY'
-import psycopg
-
-print("psycopg version:", psycopg.__version__)
-print("PostgreSQL Python driver check OK")
-PY
+RUN python -c "import psycopg; print('psycopg version:', psycopg.__version__); print('PostgreSQL Python driver check OK')"
 RUN psql --version
 
 # 复制应用代码与 PostgreSQL schema baseline

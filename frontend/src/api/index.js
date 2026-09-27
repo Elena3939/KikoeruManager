@@ -715,6 +715,21 @@ export const conflictApi = {
   }
 }
 
+export const deferredArchiveApi = {
+  list: async (params = {}, options = {}) => {
+    const response = await apiClient.get('/deferred-archive-jobs', { ...options, params })
+    return response.data
+  },
+  cancel: async (id) => {
+    const response = await apiClient.post(`/deferred-archive-jobs/${encodeURIComponent(id)}/cancel`)
+    return response.data
+  },
+  retry: async (id) => {
+    const response = await apiClient.post(`/deferred-archive-jobs/${encodeURIComponent(id)}/retry`)
+    return response.data
+  },
+}
+
 export const processedArchiveApi = {
   list: async (params = {}) => {
     const response = await apiClient.get('/processed-archives', { params })
@@ -1486,10 +1501,11 @@ export const existingFolderApi = {
     return response.data
   },
 
-  process: async (folders, autoClassify = true) => {
+  process: async (folders, autoClassify = true, targetLibraryId = '') => {
     const response = await apiClient.post('/existing-folders/process', {
       folders,
-      auto_classify: autoClassify
+      auto_classify: autoClassify,
+      target_library_id: targetLibraryId || null
     })
     return response.data
   },
@@ -1830,8 +1846,10 @@ export const asmrSyncApi = {
 }
 
 export const httpDownloadApi = {
-  health: async () => {
-    const response = await apiClient.get('/http-download/health')
+  health: async (options = {}) => {
+    const response = await apiClient.get('/http-download/health', {
+      params: options.force ? { refresh: true } : undefined
+    })
     return response.data
   },
 
@@ -1973,8 +1991,10 @@ export const httpDownloadApi = {
 }
 
 export const baiduNetdiskApi = {
-  health: async () => {
-    const response = await apiClient.get('/baidu-netdisk/backend-health')
+  health: async (options = {}) => {
+    const response = await apiClient.get('/baidu-netdisk/backend-health', {
+      params: options.force ? { refresh: true } : undefined
+    })
     return response.data
   },
 

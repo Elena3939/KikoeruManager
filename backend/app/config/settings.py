@@ -93,6 +93,7 @@ class ProcessingConfig(BaseModel):
     max_wait_time: int = 3600
     # 归档是低优先级维护工作：只有普通任务清空一段时间后才允许运行。
     archive_idle_delay_seconds: int = 60
+    archive_starvation_seconds: int = Field(default=900, gt=0)
     archive_poll_interval_seconds: float = 3.0
     archive_retry_delay_seconds: int = 300
     archive_max_retry_count: int = 5

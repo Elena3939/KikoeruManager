@@ -217,7 +217,7 @@ class CircleCompletionService:
     _COMPLETION_ALIAS_REDIS_TTL_SECONDS = 86400
     # 封面缓存键从展示 RJ 统一为图片 URL 中的真实 RJ；升级版本让 Redis / L1
     # 中仍指向旧文件名的社团视图立即失效并按新键重建。
-    _COMPLETION_CACHE_SCHEMA_VERSION = 9
+    _COMPLETION_CACHE_SCHEMA_VERSION = 16
 
     def __init__(self):
         self.metadata_service = MetadataService()
@@ -693,6 +693,16 @@ class CircleCompletionService:
 
     def _normalize_lang_code(self, value: Any) -> str:
         normalized = str(value or "").strip().upper().replace("-", "_")
+        # DLsite 的 language_editions 在原作行上可能写成
+        # ``CHI_HANS,JPN``：它表示该原作同时有简中关联，不是“其他语言”。
+        # 归一化前拆开复合值，并优先保留 JPN，避免原作被
+        # ``_variant_group`` 判成 other 后从社团索引中丢失。
+        if any(separator in normalized for separator in (",", ";", "|")):
+            parts = [part.strip() for part in re.split(r"[,;|]", normalized) if part.strip()]
+            if "JPN" in parts:
+                normalized = "JPN"
+            elif parts:
+                normalized = parts[0]
         alias_map = {
             "CHN": "CHI_HANS",
             "CHI_SIMP": "CHI_HANS",
@@ -2032,6 +2042,112 @@ class CircleCompletionService:
                 return normalized
         return ""
 
+    @staticmethod
+    def _completion_bonus_numbered_suffix(item: Dict[str, Any]) -> Optional[int]:
+        if not bool(item.get("is_bonus_work")):
+            return None
+        title = str(item.get("title") or "").strip()
+        match = re.search(r"[_＿]\s*([0-9０-９]+)\s*$", title)
+        if not match:
+            return None
+        digits = match.group(1).translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+        return int(digits)
+
+    @classmethod
+    def _completion_is_numbered_bonus_noise(cls, item: Dict[str, Any]) -> bool:
+        """判断特典是否带编号后缀；是否保留由同组候选共同决定。"""
+        return cls._completion_bonus_numbered_suffix(item) is not None
+
+    @classmethod
+    def _completion_select_bonus_variants(cls, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """同一特典组优先保留无后缀项；整组只有编号时保留最小编号。"""
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        order: List[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            base_title = re.sub(r"[_＿]\s*[0-9０-９]+\s*$", "", title).strip() or title
+            if base_title not in groups:
+                groups[base_title] = []
+                order.append(base_title)
+            groups[base_title].append(item)
+
+        selected: List[Dict[str, Any]] = []
+        for base_title in order:
+            candidates = groups[base_title]
+            candidates_with_cover = [
+                item for item in candidates
+                if item.get("cover_available") is not False
+                and not bool(item.get("cover_confirmed_missing"))
+            ]
+            pool = candidates_with_cover or candidates
+            plain = [item for item in pool if cls._completion_bonus_numbered_suffix(item) is None]
+            if plain:
+                selected.extend(plain[:1])
+                continue
+            min_suffix = min(
+                cls._completion_bonus_numbered_suffix(item)
+                for item in pool
+                if cls._completion_bonus_numbered_suffix(item) is not None
+            )
+            selected.extend(
+                item for item in pool
+                if cls._completion_bonus_numbered_suffix(item) == min_suffix
+            )
+        return selected
+
+    @staticmethod
+    def _completion_is_numbered_bonus_noise_legacy(item: Dict[str, Any]) -> bool:
+        """兼容旧调用：带编号的特典不再单独视为必须删除。"""
+        if not bool(item.get("is_bonus_work")):
+            return False
+        title = str(item.get("title") or "").strip()
+        return bool(re.search(r"[_＿]\s*\d+\s*$", title))
+
+    @staticmethod
+    def _completion_is_bonus_without_cover(item: Dict[str, Any]) -> bool:
+        """过滤已确认不存在官方封面的特典记录。"""
+        if not bool(item.get("is_bonus_work")):
+            return False
+        return bool(item.get("cover_confirmed_missing")) or item.get("dlsite_cover_available") is False
+
+    def _completion_prune_bonus_items(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """从社团补全视图中移除重复编号项和官方无封面特典。"""
+        visible_items: List[Dict[str, Any]] = []
+        top_level_bonus_groups: Dict[str, List[Dict[str, Any]]] = {}
+        for candidate in items:
+            if not isinstance(candidate, dict) or not bool(candidate.get("is_bonus_work")):
+                continue
+            if self._completion_is_bonus_without_cover(candidate):
+                continue
+            parent_key = self.normalize_rjcode(candidate.get("bonus_parent_rjcode"))
+            if not parent_key:
+                parent_key = self.normalize_rjcode(candidate.get("canonical_rjcode")) or str(id(candidate))
+            top_level_bonus_groups.setdefault(parent_key, []).append(candidate)
+        selected_top_level_ids = {
+            id(candidate)
+            for group in top_level_bonus_groups.values()
+            for candidate in self._completion_select_bonus_variants(group)
+        }
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            bonuses = item.get("bonus_works")
+            if isinstance(bonuses, list):
+                clean_bonuses = [
+                    bonus for bonus in bonuses
+                    if isinstance(bonus, dict)
+                    and not self._completion_is_bonus_without_cover(bonus)
+                ]
+                item["bonus_works"] = self._completion_select_bonus_variants(clean_bonuses)
+            if self._completion_is_bonus_without_cover(item):
+                continue
+            if bool(item.get("is_bonus_work")) and id(item) not in selected_top_level_ids:
+                continue
+            visible_items.append(item)
+        return visible_items
+
     def _completion_group_bonus_items(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         code_to_item: Dict[str, Dict[str, Any]] = {}
         for item in rows:
@@ -2086,7 +2202,28 @@ class CircleCompletionService:
             for item in items
             if include_dl_only or item.get("owned") or item.get("has_asmr_one")
         ]
-        rows = self._completion_group_bonus_items(source_visible_items)
+        if tab_key == "missing":
+            # 缺失页只展示真正缺失的作品卡。原作已入库、只有特典缺失时，
+            # 只保留缺失特典本身，不能把已入库原作再重复展示一张。
+            grouped_rows = self._completion_group_bonus_items(source_visible_items)
+            rows = []
+            for group in grouped_rows:
+                members = self._completion_group_members(group)
+                missing_members = [
+                    member for member in members
+                    if not member.get("owned") and self._is_preferred_missing_completion_item(member)
+                ]
+                if not missing_members:
+                    continue
+                # 原作已收录时，缺失页只保留待补的特典；整组都未收录时，
+                # 保留原作卡并把特典挂在同一组，避免本作从缺失列表中消失。
+                if any(member.get("owned") for member in members):
+                    missing_bonuses = [member for member in missing_members if member.get("is_bonus_work")]
+                    rows.extend(missing_bonuses or [member for member in missing_members if not member.get("is_bonus_work")])
+                else:
+                    rows.append(group)
+        else:
+            rows = self._completion_group_bonus_items(source_visible_items)
 
         if tab_key == "owned":
             rows = [
@@ -2118,8 +2255,11 @@ class CircleCompletionService:
         else:
             rows = [
                 item for item in rows
-                if not any(bool(member.get("owned")) for member in self._completion_group_members(item))
-                and self._is_preferred_missing_completion_item(item)
+                if any(
+                    not bool(member.get("owned"))
+                    and self._is_preferred_missing_completion_item(member)
+                    for member in self._completion_group_members(item)
+                )
             ]
 
         if status_filters:
@@ -2158,6 +2298,7 @@ class CircleCompletionService:
 
     def _completion_attach_bonus_parent_codes(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         parents_by_key: Dict[Tuple[str, str], List[Tuple[int, str, Dict[str, Any]]]] = defaultdict(list)
+        parents_by_linked_code: Dict[str, List[Tuple[int, str, Dict[str, Any]]]] = defaultdict(list)
         for item in items:
             if bool(item.get("is_bonus_work")):
                 continue
@@ -2175,6 +2316,22 @@ class CircleCompletionService:
                 parent_code,
                 item,
             ))
+            parent_codes = {
+                self.normalize_rjcode(value)
+                for value in [
+                    item.get("canonical_rjcode"),
+                    item.get("display_rjcode"),
+                    *(item.get("linked_rjcodes") or []),
+                ]
+                if self.normalize_rjcode(value)
+            }
+            for linked_code in parent_codes:
+                if linked_code != parent_code:
+                    parents_by_linked_code[linked_code].append((
+                        self._completion_rj_number(parent_code) or 10**12,
+                        parent_code,
+                        item,
+                    ))
 
         if not parents_by_key:
             return items
@@ -2185,11 +2342,22 @@ class CircleCompletionService:
         for item in items:
             if not bool(item.get("is_bonus_work")) or item.get("bonus_parent_rjcode"):
                 continue
+            own_codes = self._completion_bonus_own_codes(item)
+            own_codes.add(self.normalize_rjcode(item.get("canonical_rjcode")))
+            linked_parents = [
+                candidate
+                for own_code in own_codes
+                if own_code
+                for candidate in parents_by_linked_code.get(own_code, [])
+            ]
+            if linked_parents:
+                linked_parents.sort(key=lambda row: (row[0], row[1]))
+                item["bonus_parent_rjcode"] = linked_parents[0][1]
+                continue
             maker_id = str(item.get("maker_id") or "").strip().upper()
             release_date = self._completion_normalized_release_date(item.get("release_date"))
             if not maker_id or not release_date:
                 continue
-            own_codes = self._completion_bonus_own_codes(item)
             bonus_number = self._completion_rj_number(item.get("display_rjcode") or item.get("canonical_rjcode"))
             candidates: List[Tuple[int, str, Dict[str, Any]]] = []
             for parent_number, parent_code, parent_item in parents_by_key.get((maker_id, release_date), []):
@@ -2402,10 +2570,19 @@ class CircleCompletionService:
             is_new = 0 <= age <= 48 * 60 * 60
         local_download = (local_download_session_map or {}).get(self.normalize_rjcode(row.canonical_rjcode)) or {}
         cover_source_url = row.image_url
+        metadata_entry = metadata_map.get(stored_display_rjcode)
+        metadata_cover_url = str((metadata_entry or {}).get("cover_url") or "").strip()
+        dlsite_cover_available = None
+        if is_bonus_work and isinstance(metadata_entry, dict):
+            verification_status = str(metadata_entry.get("metadata_verification_status") or "").strip().lower()
+            # 只有已验证的 DLsite 元数据明确没有封面时，才判定为无封面。
+            # 未验证/旧缓存的空 cover_url 不能当成官方无封面，否则会把有效特典全部删掉。
+            if verification_status == "verified":
+                dlsite_cover_available = bool(metadata_cover_url)
         if is_bonus_work:
             # 历史索引会把原作封面残留在特典行；没有特典 cover_url 时由自身 RJ
             # 推导 CDN 地址，不能继续沿用原作图。
-            cover_source_url = str((metadata_map.get(stored_display_rjcode) or {}).get("cover_url") or "")
+            cover_source_url = metadata_cover_url
         normalized_remote_cover = self._normalize_dlsite_cover_url(
             cover_source_url,
             stored_display_rjcode or row.canonical_rjcode,
@@ -2413,6 +2590,7 @@ class CircleCompletionService:
         )
         local_cover_url = ""
         local_thumb_url = ""
+        cover_known_missing = False
         if image_cache_service is not None:
             cover_cache_rjcode = image_cache_service.cache_rjcode_for_url(
                 normalized_remote_cover,
@@ -2439,6 +2617,10 @@ class CircleCompletionService:
                 variant="list",
                 allow_missing=True,
             )
+            cover_known_missing = (
+                image_cache_service.has_known_missing(cover_cache_rjcode)
+                and image_cache_service.has_known_missing(cover_cache_rjcode, variant="list")
+            )
         cvs = list((metadata_map.get(stored_display_rjcode) or {}).get("cvs") or [])
         if not cvs:
             for metadata in metadata_map.values():
@@ -2447,6 +2629,10 @@ class CircleCompletionService:
                     break
         if is_bonus_work:
             cvs = []
+        cover_available = bool(local_cover_url or local_thumb_url) or (
+            bool(metadata_cover_url)
+            and not cover_known_missing
+        )
         item = {
             "id": row.id,
             "circle_id": row.circle_id,
@@ -2461,12 +2647,18 @@ class CircleCompletionService:
             "has_dlsite": True,
             "has_asmr_one": bool(row.has_asmr_one),
             "asmr_available_rjcode": row.asmr_available_rjcode,
-            "image_url": local_cover_url or normalized_remote_cover,
+            "image_url": local_cover_url or local_thumb_url or (normalized_remote_cover if cover_available else ""),
+            "cover_available": cover_available,
+            "cover_confirmed_missing": bool(is_bonus_work and cover_known_missing),
+            # 特典是否有 DLsite 官方封面只看元数据，不能被本地缓存或网络结果覆盖。
+            "dlsite_cover_available": dlsite_cover_available if is_bonus_work else True,
             "remote_image_url": normalized_remote_cover,
-            "thumb_image_url": local_thumb_url or self._normalize_dlsite_thumb_url(
-                normalized_remote_cover,
-                stored_display_rjcode or row.canonical_rjcode,
-                is_unreleased=is_unreleased,
+            "thumb_image_url": local_thumb_url or local_cover_url or (
+                self._normalize_dlsite_thumb_url(
+                    normalized_remote_cover,
+                    stored_display_rjcode or row.canonical_rjcode,
+                    is_unreleased=is_unreleased,
+                ) if cover_available else ""
             ),
             "price_text": str(getattr(row, "price_text", "") or "").strip(),
             "release_date": release_date,
@@ -2669,6 +2861,8 @@ class CircleCompletionService:
         items = self._completion_apply_explicit_bonus_parent_codes(items, link_rows)
         items = self._completion_attach_bonus_parent_codes(items)
         self._completion_apply_early_bonus_status(items, early_bonus_state_map)
+        items = self._completion_prune_bonus_items(items)
+        self._schedule_view_cover_cache(catalog.circle_id, items, image_cache_service)
         catalog_payload = {
             "circle_id": catalog.circle_id,
             "circle_name": catalog.circle_name,
@@ -2740,7 +2934,16 @@ class CircleCompletionService:
     def _is_preferred_missing_completion_item(self, item: Dict[str, Any]) -> bool:
         if item.get("owned"):
             return False
-        group_key = str((item.get("preferred_variant") or {}).get("group_key") or "original").strip()
+        # 没有任何可下载来源的缺失作品仍是用户需要处理的缺失项，
+        # 不能因为版本分组为 other / 未标记就从列表中隐藏。
+        if not item.get("has_asmr_one"):
+            return True
+        preferred_variant = item.get("preferred_variant")
+        if not isinstance(preferred_variant, dict):
+            # 缺失作品没有可用版本时仍必须出现在“缺失作品”列表，
+            # 否则 missing_count 会大于列表实际可见数量。
+            return True
+        group_key = str(preferred_variant.get("group_key") or "original").strip()
         return group_key in {"original", "simplified", "traditional", ""}
 
     def _filter_completion_items_for_tab(
@@ -2755,10 +2958,17 @@ class CircleCompletionService:
         search: str = "",
     ) -> List[Dict[str, Any]]:
         tab_key = str(tab or "missing").strip().lower()
-        source_visible_items = [
-            item for item in items
-            if include_dl_only or item.get("owned") or item.get("has_asmr_one")
-        ]
+        source_visible_items = []
+        for item in items:
+            if not (include_dl_only or item.get("owned") or item.get("has_asmr_one")):
+                continue
+            bonuses = item.get("bonus_works")
+            if isinstance(bonuses, list):
+                item = {
+                    **item,
+                    "bonus_works": list(bonuses),
+                }
+            source_visible_items.append(item)
         if tab_key == "owned":
             rows = [item for item in source_visible_items if item.get("owned")]
             owned_filter = str(owned_filter or "all").strip().lower()
@@ -2833,6 +3043,7 @@ class CircleCompletionService:
         state = await self._get_completion_view_state(circle_id_or_query)
         catalog = state["catalog"]
         items = self._completion_attach_bonus_parent_codes([dict(item) for item in state["items"]])
+        items = self._completion_prune_bonus_items(items)
         visible_items = [
             item for item in items
             if include_dl_only or item.get("owned") or item.get("has_asmr_one")
@@ -2893,6 +3104,7 @@ class CircleCompletionService:
         state = await self._get_completion_view_state(circle_id_or_query)
         catalog = state["catalog"]
         items = self._completion_attach_bonus_parent_codes([dict(item) for item in state["items"]])
+        items = self._completion_prune_bonus_items(items)
         if card_mode and tab_key in {"missing", "owned"}:
             grouped_filtered = self._filter_completion_items_for_card_tab(
                 items,
@@ -2934,6 +3146,8 @@ class CircleCompletionService:
         else:
             payload_items = [self._strip_completion_internal_fields(item) for item in page_items]
         summary = self._completion_summary_from_items(catalog, items, visible_items=filtered)
+        if tab_key == "missing":
+            summary["missing_count"] = len(filtered)
         result = {
             **summary,
             "tab": tab_key,
@@ -6590,6 +6804,38 @@ class CircleCompletionService:
                 candidates.append(normalized)
         return candidates
 
+    def _collect_cached_maker_candidates(self, maker_id: str) -> List[Dict[str, Any]]:
+        """回补 DLsite maker 列表接口漏掉、但商品元数据已验证缓存的作品。
+
+        DLsite 社团页在部分网络/地区响应中只返回少量作品；缓存表里的 maker_id
+        是商品页实测值，先作为候选重新走后续 canonical、音声和身份校验。
+        """
+        normalized_maker_id = self._normalize_maker_id(maker_id)
+        if not normalized_maker_id:
+            return []
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(WorkMetadata)
+                .filter(WorkMetadata.maker_id == normalized_maker_id)
+                .all()
+            )
+            return [
+                {
+                    "rjcode": self.normalize_rjcode(row.rjcode),
+                    "title": str(row.work_name or "").strip(),
+                    "maker_id": normalized_maker_id,
+                    "maker_name": str(row.maker_name or "").strip(),
+                    "price_text": str(row.price_text or "").strip(),
+                    "image_url": str(row.cover_url or "").strip(),
+                    "source": "dlsite_cached_maker",
+                }
+                for row in rows
+                if self.normalize_rjcode(row.rjcode)
+            ]
+        finally:
+            db.close()
+
     def _owned_sync_row_target_canonical(
         self,
         related: Any,
@@ -6796,6 +7042,7 @@ class CircleCompletionService:
             finally:
                 # 任务结束后从字典清除，避免长期占用内存
                 self._cover_cache_tasks.pop(circle_id, None)
+                self.invalidate_completion_view_cache(circle_id)
 
         try:
             task = asyncio.create_task(_runner(), name=f"circle-cover-cache:{circle_id}")
@@ -6806,6 +7053,58 @@ class CircleCompletionService:
             return None
         self._cover_cache_tasks[circle_id] = task
         return task
+
+    def _schedule_view_cover_cache(
+        self,
+        circle_id: str,
+        items: Iterable[Dict[str, Any]],
+        image_cache_service: Any,
+    ) -> Optional[asyncio.Task]:
+        """浏览社团详情时补齐原作和特典封面本地缓存。
+
+        索引阶段可能因为代理/CDN 抖动下载失败；如果只在索引阶段缓存，
+        这些封面之后会一直依赖公网 URL。浏览阶段重新派发缺失缓存任务，
+        下载成功后后续请求只命中 ``/api/circle-completion/cover``。
+        """
+        cover_pairs: List[Tuple[str, str]] = []
+        thumb_pairs: List[Tuple[str, str]] = []
+        seen: Set[Tuple[str, str]] = set()
+
+        def add_item(item: Any) -> None:
+            if not isinstance(item, dict) or item.get("cover_available") is False:
+                return
+            remote_url = str(item.get("remote_image_url") or "").strip()
+            if not remote_url.startswith(("http://", "https://")):
+                return
+            display_rjcode = self.normalize_rjcode(
+                item.get("display_rjcode") or item.get("canonical_rjcode")
+            )
+            cache_rjcode = image_cache_service.cache_rjcode_for_url(remote_url, display_rjcode)
+            if not cache_rjcode:
+                return
+            key = (cache_rjcode, remote_url)
+            if key in seen:
+                return
+            seen.add(key)
+            cover_pairs.append(key)
+            thumb_url = self._normalize_dlsite_thumb_url(
+                remote_url,
+                display_rjcode or cache_rjcode,
+                is_unreleased=self._is_future_release_date(item.get("release_date")),
+            )
+            if thumb_url.startswith(("http://", "https://")):
+                thumb_pairs.append((cache_rjcode, thumb_url))
+
+        def walk(item: Any) -> None:
+            if not isinstance(item, dict):
+                return
+            add_item(item)
+            for bonus in item.get("bonus_works") or []:
+                walk(bonus)
+
+        for item in items or []:
+            walk(item)
+        return self._schedule_circle_cover_cache(circle_id, cover_pairs, thumb_pairs)
 
     def _queue_circle_cover_alias_restore(
         self,
@@ -7123,6 +7422,26 @@ class CircleCompletionService:
                     identity_seed["maker_id"],
                     progress_callback=report,
                     perf=perf,
+                )
+            cached_maker_candidates = self._collect_cached_maker_candidates(identity_seed["maker_id"])
+            known_dlsite_rjcodes = {
+                self.normalize_rjcode(item.get("rjcode"))
+                for item in dlsite_candidates
+                if self.normalize_rjcode(item.get("rjcode"))
+            }
+            cached_maker_candidates = [
+                item
+                for item in cached_maker_candidates
+                if self.normalize_rjcode(item.get("rjcode")) not in known_dlsite_rjcodes
+            ]
+            if cached_maker_candidates:
+                dlsite_candidates.extend(cached_maker_candidates)
+                if perf:
+                    perf.inc("dlsite_cached_maker_candidates", len(cached_maker_candidates))
+                report(
+                    46,
+                    f"已回补缓存中的 DLsite 社团作品 {len(cached_maker_candidates)} 件",
+                    dlsite_cached_maker_candidates=len(cached_maker_candidates),
                 )
         ensure_not_cancelled()
 
@@ -8146,6 +8465,11 @@ class CircleCompletionService:
         )
         cached_result = self._completion_view_cache.get(cache_key)
         if cached_result is not None:
+            self._schedule_view_cover_cache(
+                str(cached_result.get("circle_id") or circle_id_or_query),
+                cached_result.get("works") or [],
+                get_circle_image_cache_service(),
+            )
             return deepcopy(cached_result)
 
         started_at = time.perf_counter()
@@ -8346,11 +8670,30 @@ class CircleCompletionService:
                     variant="list",
                     allow_missing=True,
                 )
-                item["image_url"] = local_cover_url or normalized_remote_cover
-                item["thumb_image_url"] = local_thumb_url or self._normalize_dlsite_thumb_url(
-                    normalized_remote_cover,
-                    stored_display_rjcode or row.canonical_rjcode,
-                    is_unreleased=item["is_unreleased"],
+                cover_known_missing = (
+                    image_cache_service.has_known_missing(cover_cache_rjcode)
+                    and image_cache_service.has_known_missing(cover_cache_rjcode, variant="list")
+                )
+                cover_available = bool(local_cover_url or local_thumb_url) or (
+                    bool((metadata_map.get(stored_display_rjcode) or {}).get("cover_url"))
+                    and not cover_known_missing
+                )
+                item["image_url"] = local_cover_url or local_thumb_url or (
+                    normalized_remote_cover if cover_available else ""
+                )
+                item["cover_available"] = cover_available
+                item["cover_confirmed_missing"] = bool(item["is_bonus_work"] and cover_known_missing)
+                metadata_entry = metadata_map.get(stored_display_rjcode) or {}
+                if item["is_bonus_work"] and str(metadata_entry.get("metadata_verification_status") or "").strip().lower() == "verified":
+                    item["dlsite_cover_available"] = bool(str(metadata_entry.get("cover_url") or "").strip())
+                else:
+                    item["dlsite_cover_available"] = True
+                item["thumb_image_url"] = local_thumb_url or local_cover_url or (
+                    self._normalize_dlsite_thumb_url(
+                        normalized_remote_cover,
+                        stored_display_rjcode or row.canonical_rjcode,
+                        is_unreleased=item["is_unreleased"],
+                    ) if cover_available else ""
                 )
                 # 远程 URL 单独再露一份给邮件 / 复制链接等场景使用，前端目前没用，
                 # 但保留这个字段成本极低，以后扩展邮件预览 / 复制图片链接时不用回头改 API。
@@ -8454,6 +8797,8 @@ class CircleCompletionService:
                 ]
                 item["download_plan"] = {"rjcode": row.asmr_available_rjcode or row.display_rjcode} if row.has_asmr_one else None
                 items.append(item)
+
+            self._schedule_view_cover_cache(catalog.circle_id, items, image_cache_service)
 
             visible_items = []
             for item in items:

@@ -117,12 +117,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmwa
 # 复制后端依赖
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN python - <<'PY'
-import psycopg
-
-print("psycopg version:", psycopg.__version__)
-print("PostgreSQL Python driver check OK")
-PY
+RUN python -c "import psycopg; print('psycopg version:', psycopg.__version__); print('PostgreSQL Python driver check OK')"
 RUN psql --version
 RUN redis-server --version
 

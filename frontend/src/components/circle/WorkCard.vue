@@ -273,7 +273,7 @@ function preventNativeShiftSelection(event) {
         v-if="imageActive && coverUrl && !imageFailed"
         :src="coverUrl"
         class="work-cover"
-        loading="eager"
+        loading="lazy"
         decoding="async"
         fetchpriority="auto"
         referrerpolicy="no-referrer"

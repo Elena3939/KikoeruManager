@@ -18,6 +18,10 @@ _EXTRACT_REASON_MESSAGES = {
     "nested_archive_failed": "解压失败：存在未成功展开的嵌套压缩包，已阻止半成品入库",
 }
 
+_NON_EXTRACT_REASON_MESSAGES = {
+    "dlsite_linkage_uncertain": "处理暂停：DLsite 关联链不完整，尚未进入正式解压，请稍后重试或人工处理",
+}
+
 
 _TEXT_REASON_MARKERS = (
     ("wrong_password", ("无正确密码", "密码错误", "密码不正确", "wrong password", "incorrect password")),
@@ -29,7 +33,9 @@ _TEXT_REASON_MARKERS = (
     ("unsupported_method", ("unsupported method", "unsupported compression method", "不支持", "e_invalidarg")),
     ("garbled_filename", ("文件名乱码", "乱码")),
     ("nested_archive_failed", ("嵌套压缩包解压失败", "未完整解压的产物入库")),
-    ("extract_incomplete", ("解压产物为空", "不完整", "完整性校验")),
+    # 不能使用裸的“不完整”：DLsite 关联链也会使用“结果不完整”，
+    # 否则预检失败会被误报成解压产物完整性失败。
+    ("extract_incomplete", ("解压产物为空", "解压产物不完整", "解压结果不完整", "完整性校验")),
 )
 
 
@@ -40,6 +46,8 @@ def _clean_text(value: Any) -> str:
 def infer_extract_failure_reason(metadata: Mapping[str, Any] | None = None, fallback: Any = "") -> str:
     """从结构化 reason 优先，文本 marker 兜底推断解压失败类型。"""
     meta = dict(metadata or {})
+    if str(meta.get("retry_kind") or "").strip().lower() == "dlsite_linkage_uncertain":
+        return "dlsite_linkage_uncertain"
     reason = _clean_text(meta.get("extract_failure_reason")).lower()
     if reason:
         return reason
@@ -100,6 +108,8 @@ def format_problem_failure_message(
     """问题作品 / 通知统一展示的失败文案。"""
     meta = dict(metadata or {})
     stage_text = _clean_text(stage or meta.get("failure_stage")).lower()
+    if str(meta.get("retry_kind") or "").strip().lower() == "dlsite_linkage_uncertain":
+        return _NON_EXTRACT_REASON_MESSAGES["dlsite_linkage_uncertain"]
     if stage_text == "extract" or infer_extract_failure_reason(meta, fallback):
         return format_extract_failure_message(meta, fallback)
     return _clean_text(fallback) or _clean_text(meta.get("error_message")) or "需要人工处理"

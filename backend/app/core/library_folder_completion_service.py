@@ -441,6 +441,7 @@ class LibraryFolderCompletionService:
             raise ValueError("没有可启动的补全任务")
 
         engine = get_task_engine()
+        config = get_config()
         created_tasks: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         for raw_item in raw_items:

@@ -56,12 +56,15 @@ _SHARE_PREVIEW_ONLY_SOURCES = {"pikpak", "transferit"}
 _FILE_LEVEL_SELECTION_SOURCES = _SHARE_PREVIEW_ONLY_SOURCES | {"gofile", "google_drive"}
 _GOFILE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 _GOFILE_LANGUAGE = "en-US"
-_GOFILE_WEBSITE_TOKEN_SALT = "9844d94d963d30"
+# Gofile 网页端 wt.obf.js 的签名盐值。该值会随官方前端版本轮换，
+# 当前版本（2026-09）为 12af056dacea0b。
+_GOFILE_WEBSITE_TOKEN_SALT = "12af056dacea0b"
 _GOFILE_API_TIMEOUT_SECONDS = 45
 _GOFILE_CDN_ERROR_CONTENT_TYPES = ("text/html", "application/json", "text/plain")
 _GOFILE_NOT_PREMIUM_STATUS = {"error-notpremium", "error-not-premium", "notpremium"}
 _GOFILE_DEFAULT_ARIA2_SPLIT = 5
 _GOFILE_DEFAULT_ARIA2_MAX_ACTIVE_FILES = 2
+_HEALTH_CACHE_TTL_SECONDS = 30.0
 GOOGLE_DRIVE_PROBE_BYTES = 1024
 GOOGLE_DRIVE_STREAM_CHUNK_BYTES = 1024 * 1024
 HTTP_DOWNLOAD_PLATFORM_LABELS = {
@@ -380,6 +383,8 @@ class HttpDownloadService:
         self._pikpak_status_refresh_tasks: Dict[str, asyncio.Task] = {}
         self._transferit_target_lock = asyncio.Lock()
         self._active_transferit_targets: set[str] = set()
+        self._health_cache: Optional[tuple[tuple[Any, ...], float, Dict[str, Any]]] = None
+        self._health_task: Optional[asyncio.Task] = None
 
     def _config(self):
         return get_config().http_downloader
@@ -933,12 +938,23 @@ class HttpDownloadService:
                     return selected
             return None
 
+        selected_pikpak = {
+            str(item["file_id"]): item for item in selected_items or []
+            if isinstance(item, dict) and item.get("source") == "pikpak" and item.get("file_id")
+        }
         out = dict(preview or {})
         items = []
         for item in list(out.get("items") or []):
             if not isinstance(item, dict):
                 continue
             key = self._preview_item_selection_key(item)
+            # 分享文件 ID 稳定；目录信息或旧 selection_key 不应导致续传选择失配。
+            pikpak_selection = selected_pikpak.get(str(item.get("file_id") or "")) if item.get("source") == "pikpak" else None
+            if pikpak_selection is not None:
+                merged = dict(item)
+                merged.update(self._http_selected_item_overrides(pikpak_selection))
+                items.append(merged)
+                continue
             selected_transferit = None
             if key not in keys:
                 if str(item.get("source") or "").strip().lower() != "transferit":
@@ -964,6 +980,20 @@ class HttpDownloadService:
                     "source": "transferit",
                     "filename": "Transfer.it 已选文件",
                     "reason": "Transfer.it 分享文件标识已变化，无法安全恢复原选择，请重试整个任务以重新解析",
+                })
+        matched_ids = {str(item.get("file_id") or "") for item in items if item.get("source") == "pikpak"}
+        for file_id, selected in selected_pikpak.items():
+            if file_id not in matched_ids:
+                reasons = [
+                    str(row.get("reason") or row.get("failure_reason") or "")
+                    for row in out.get("items") or []
+                    if isinstance(row, dict) and row.get("source") == "pikpak" and not row.get("ok")
+                    and (not row.get("share_id") or row.get("share_id") == selected.get("share_id"))
+                ]
+                items.append({
+                    **self._normalize_retry_source_item(selected),
+                    "ok": False,
+                    "reason": next((reason for reason in reasons if reason), "PikPak 分享重新解析后找不到已选文件，请重新预览并确认文件选择"),
                 })
         out["items"] = items
         ok_count = sum(1 for item in items if item.get("ok"))
@@ -1902,6 +1932,8 @@ class HttpDownloadService:
 
     def _gofile_api_status_error(self, status: Any) -> HttpDownloadError:
         status_text = str(status or "unknown").strip()
+        if status_text.lower() in {"error-ratelimit", "error-rate-limit", "ratelimit", "rate-limit"}:
+            return HttpDownloadError("Gofile API 触发限流，请稍后重试；如频繁出现，请在 HTTP 下载设置中配置 Gofile 账号 token 或代理")
         if status_text.lower() in _GOFILE_NOT_PREMIUM_STATUS:
             return HttpDownloadError(self._gofile_not_premium_message())
         return HttpDownloadError(f"Gofile 解析失败: {status_text or 'unknown'}")
@@ -1939,7 +1971,15 @@ class HttpDownloadService:
     async def _collect_gofile_files(self, raw_url: str) -> Dict[str, Any]:
         content_id = self._gofile_content_id_from_url(raw_url)
         configured_token = self._gofile_token()
-        token = configured_token or await self._gofile_guest_token()
+        token = configured_token
+        # 访客账号接口偶发被网络策略或 Gofile 风控拦截；公开分享本身不应因此无法预览。
+        # 先尝试访客 token，失败后用匿名请求继续读取 contents。
+        if not token:
+            try:
+                token = await self._gofile_guest_token()
+            except Exception as exc:
+                logger.warning("Gofile 访客 token 获取失败，尝试匿名解析: %s", self._sanitize_error(exc))
+                token = ""
         params: Dict[str, str] = {
             "contentFilter": "",
             "page": "1",
@@ -1950,21 +1990,42 @@ class HttpDownloadService:
         public_token = self._gofile_public_token(raw_url)
         if public_token:
             params["publicToken"] = public_token
+        # Gofile 当前 contents API 从 wt 查询参数读取网站签名；保留请求头兼容旧接口。
+        if token:
+            params["wt"] = self._gofile_website_token(token)
         password = self._gofile_password(raw_url)
         if password:
             params["password"] = hashlib.sha256(password.encode("utf-8")).hexdigest()
         api_url = f"https://api.gofile.io/contents/{content_id}"
         if params:
             api_url = f"{api_url}?{urlencode(params)}"
-        data = await self._fetch_gofile_json(
-            api_url,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "X-Website-Token": self._gofile_website_token(token),
+        async def fetch_contents(current_token: str) -> Dict[str, Any]:
+            current_params = dict(params)
+            headers = {
                 "X-BL": _GOFILE_LANGUAGE,
                 "User-Agent": _GOFILE_USER_AGENT,
-            },
-        )
+            }
+            if current_token:
+                current_wt = self._gofile_website_token(current_token)
+                current_params["wt"] = current_wt
+                headers.update({
+                    "Authorization": f"Bearer {current_token}",
+                    "X-Website-Token": current_wt,
+                })
+            current_url = f"https://api.gofile.io/contents/{content_id}?{urlencode(current_params)}"
+            return await self._fetch_gofile_json(
+                current_url,
+                headers=headers,
+            )
+
+        data = await fetch_contents(token)
+        if (
+            not configured_token
+            and str(data.get("status") or "").strip().lower() in {"error-token", "error-token-invalid"}
+        ):
+            self._gofile_guest_token_cache = ("", 0.0)
+            token = await self._gofile_guest_token()
+            data = await fetch_contents(token)
         if str(data.get("status") or "").lower() != "ok":
             raise self._gofile_api_status_error(data.get("status"))
         root = data.get("data") or {}
@@ -1993,7 +2054,7 @@ class HttpDownloadService:
             if not link:
                 return
             name = self._sanitize_filename(node.get("name") or node.get("filename") or "gofile-file")
-            files.append({
+            file_item = {
                 "source": "gofile",
                 "share_url": self._mask_url(raw_url),
                 "url": link,
@@ -2003,9 +2064,11 @@ class HttpDownloadService:
                 "relative_dir": prefix.strip("/"),
                 "size_bytes": int(node.get("size") or 0),
                 "content_id": str(node.get("id") or content_id),
-                "headers": {"Cookie": f"accountToken={token}"},
-                "aria2_header": [f"Cookie: accountToken={token}"],
-            })
+            }
+            if token:
+                file_item["headers"] = {"Cookie": f"accountToken={token}"}
+                file_item["aria2_header"] = [f"Cookie: accountToken={token}"]
+            files.append(file_item)
 
         walk(root)
         return {"files": files, "token_configured": bool(self._gofile_token())}
@@ -2967,6 +3030,10 @@ class HttpDownloadService:
                 if handle in folder_paths:
                     return folder_paths[handle]
                 parent = folder_parents.get(handle, "")
+                # 无父节点的分享根仅作为容器，不加入下载相对目录。
+                if not parent:
+                    folder_paths[handle] = ""
+                    return ""
                 parent_path = folder_path(parent) if parent and parent in folder_names else ""
                 path = "/".join(part for part in (parent_path, folder_names[handle]) if part)
                 folder_paths[handle] = path
@@ -3880,6 +3947,8 @@ class HttpDownloadService:
             return True
         source_name = str(source or "").strip().lower()
         file_id = str(item.get("id") or item.get("file_id") or item.get("content_id") or item.get("download_file_id") or item.get("transferit_node_handle") or "").strip()
+        if source_name == "pikpak" and any(key.startswith("pikpak:id:") for key in selection_filter):
+            return bool(file_id and f"pikpak:id:{file_id}" in selection_filter)
         if file_id and f"{source_name}:id:{file_id}" in selection_filter:
             return True
         name = str(item.get("name") or item.get("filename") or "").strip().replace("\\", "/").strip("/")
@@ -3957,9 +4026,8 @@ class HttpDownloadService:
                 if share_id:
                     retry_share_ids.add(share_id)
 
-        # PikPak / Transfer.it 分卷不能拆开重试：同一分享的所有文件必须
-        # 重新解析并重新转存，否则清理旧空间后会出现 .001 和 .002 分散在
-        # 不同账号、不同转存目录，最终下载到残缺分卷。
+        # 整个任务重试时补上同分享中未完成的文件；已经成功的分卷由
+        # completed_keys 排除，不需要重新转存或重新下载。
         if retry_share_ids:
             for row in list(metadata.get("source_items") or []) + list(metadata.get("selected_items") or []):
                 if not isinstance(row, dict):
@@ -4003,23 +4071,7 @@ class HttpDownloadService:
             return bool(wanted_name and row_name == wanted_name)
 
         retry_items = [dict(row) for row in candidates if isinstance(row, dict) and matches(row)]
-        # PikPak 分卷是一个不可拆分的下载单元。单独点击 .001 重试时，
-        # 必须把同一分享的其它分卷一起重新转存，否则任务会留下残缺压缩包。
-        if str(file_row.get("source") or "").strip().lower() == "pikpak":
-            share_id = str(file_row.get("share_id") or "").strip()
-            if share_id:
-                all_rows = [
-                    row for row in [
-                        *list(metadata.get("selected_items") or []),
-                        *list(metadata.get("source_items") or []),
-                    ]
-                    if isinstance(row, dict)
-                    and str(row.get("source") or "").strip().lower() == "pikpak"
-                    and str(row.get("share_id") or "").strip() == share_id
-                ]
-                by_key = {self._download_attempt_row_key(row): dict(row) for row in all_rows}
-                by_key.update({self._download_attempt_row_key(row): row for row in retry_items})
-                retry_items = list(by_key.values())
+        # 单文件重试只刷新该文件的转存和直链，其它分卷保留历史状态。
         if not retry_items:
             retry_items = [dict(file_row)]
         retry_items = [self._normalize_retry_source_item(item) for item in retry_items]
@@ -4132,8 +4184,7 @@ class HttpDownloadService:
         ):
             normalized.pop(key, None)
         normalized["status"] = "pending"
-        normalized["downloaded"] = 0
-        normalized["progress"] = 0
+        # 字节数只供续传初始化使用，提交前仍必须核对本地文件和控制文件。
         return normalized
 
     async def resolve_source_urls(
@@ -4178,7 +4229,16 @@ class HttpDownloadService:
                     resolved.append(download_url)
                     source_items.append(item)
             except Exception as exc:
-                failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": self._sanitize_error(exc), "source": "gofile"})
+                reason = self._sanitize_error(exc)
+                logger.warning(
+                    "[Gofile解析] url=%s proxy_enabled=%s proxy=%s token_configured=%s reason=%s",
+                    self._mask_url(raw_url),
+                    self._proxy_enabled_for("gofile"),
+                    bool(self._proxy_url("gofile")),
+                    bool(self._gofile_token()),
+                    reason,
+                )
+                failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": reason, "source": "gofile"})
 
         onedrive_links = [url for url in urls if self._is_onedrive_url(url)]
         for raw_url in onedrive_links:
@@ -5114,6 +5174,13 @@ class HttpDownloadService:
         }
         if source == "pikpak":
             options["user-agent"] = _GOFILE_USER_AGENT
+            retry_attempt = min(4, max(0, int(item.get("pikpak_retry_attempt") or 0)))
+            if retry_attempt:
+                retry_split = max(1, min(split, max_connection) // (2 ** retry_attempt))
+                options["split"] = str(retry_split)
+                options["max-connection-per-server"] = str(retry_split)
+                options["connect-timeout"] = str(max(int(options["connect-timeout"]), 30))
+                options["timeout"] = str(max(int(options["timeout"]), 120))
         elif source == "gofile":
             gofile_split = self._gofile_split_limit()
             retry_attempt = max(0, int(item.get("gofile_retry_attempt") or 0))
@@ -5206,6 +5273,25 @@ class HttpDownloadService:
 
     def _prepare_existing_gofile_target(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return self._prepare_existing_aria2_target(item)
+
+    def _pikpak_resume_bytes(self, item: Dict[str, Any], metadata: Dict[str, Any]) -> int:
+        """用同一目标的历史进度恢复显示，不能把预分配文件大小当作进度。"""
+        if item.get("source") != "pikpak":
+            return 0
+        path = str(item.get("final_path") or "")
+        if not os.path.isfile(path) or not os.path.isfile(path + ".aria2"):
+            return 0
+        key = self._download_attempt_row_key(item)
+        downloaded = 0
+        for field in ("download_attempt_history", "download_files", "selected_items"):
+            for row in metadata.get(field) or []:
+                if not isinstance(row, dict) or self._download_attempt_row_key(row) != key:
+                    continue
+                previous_path = str(row.get("local_path") or row.get("final_path") or "")
+                if not previous_path or os.path.normcase(os.path.abspath(previous_path)) != os.path.normcase(os.path.abspath(path)):
+                    continue
+                downloaded = max(downloaded, int(row.get("downloaded") or 0))
+        return max(0, min(downloaded, int(item.get("size_bytes") or 0), os.path.getsize(path)))
 
     async def _download_google_drive_item(self, item: Dict[str, Any], task=None, progress_callback=None) -> Dict[str, Any]:
         async with get_resource_budget_service().acquire("network_download", reason="http.google_drive"):
@@ -5887,12 +5973,9 @@ class HttpDownloadService:
             item for item in list(metadata.get("selected_items") or [])
             if isinstance(item, dict)
         ]
-        # PikPak 分享重试必须重新收集整份分享。旧任务可能只持久化了已成功
-        # 解析的分卷，继续带 selected_keys 会把分享里的其它分卷静默过滤掉。
-        retry_rebuild_share = bool(metadata.get("pikpak_retry_rebuild_share"))
-        if retry_rebuild_share and any(self._is_pikpak_url(url) for url in raw_urls):
-            selected_items = []
-            task.task_metadata["selected_keys"] = []
+        # 旧版重试标记会导致先转存整份分享、再筛掉已完成分卷，从而泄漏空间。
+        # 分享仍重新读取，但转存必须使用原始文件选择。
+        task.task_metadata.pop("pikpak_retry_rebuild_share", None)
         preview = await self.preview_urls(
             raw_urls,
             target_subdir=target_subdir,
@@ -5991,6 +6074,10 @@ class HttpDownloadService:
         for item in aria2_items:
             if str(item.get("source") or "").strip().lower() == "gofile":
                 item["gofile_retry_attempt"] = gofile_retry_attempt
+            elif str(item.get("source") or "").strip().lower() == "pikpak":
+                item["pikpak_retry_attempt"] = max(
+                    gofile_retry_attempt, int(metadata.get("retry_count") or 0)
+                )
 
         os.makedirs(self._download_root(), exist_ok=True)
         gids: List[str] = []
@@ -6031,6 +6118,7 @@ class HttpDownloadService:
                 total_bytes += int(existing_row.get("size") or 0)
                 download_files.append(existing_row)
                 continue
+            resume_bytes = self._pikpak_resume_bytes(item, metadata)
             options = self._aria2_options(item, item["target_dir"])
             if str(item.get("source") or "").strip().lower() == "gofile":
                 if gofile_submitted_count >= gofile_max_active_files:
@@ -6050,8 +6138,9 @@ class HttpDownloadService:
                 "original_url": item["url"],
                 "source": item.get("source", "http"),
                 "status": "pending",
-                "progress": 0,
-                "downloaded": 0,
+                "progress": min(99, int(resume_bytes / max(1, int(item.get("size_bytes") or 0)) * 100)),
+                "downloaded": resume_bytes,
+                "pikpak_resume_pending": bool(resume_bytes),
                 "total": int(item.get("size_bytes") or 0),
                 "size": int(item.get("size_bytes") or 0),
                 "expected_size_bytes": int(item.get("size_bytes") or 0),
@@ -6126,7 +6215,10 @@ class HttpDownloadService:
             submit_parts.append(f"{existing_aria2_count} 个已存在完整文件")
         if transferit_items:
             submit_parts.append(f"{len(transferit_items)} 个专用下载")
-        task.update_progress(1, f"已提交 {'，'.join(submit_parts) if submit_parts else '0 个下载'}")
+        initial_bytes = sum(int(row.get("downloaded") or 0) for row in download_files)
+        task.task_metadata["download_runtime"]["transferred_bytes"] = initial_bytes
+        initial_progress = max(1, min(99, int(initial_bytes / max(1, total_bytes) * 100)))
+        task.update_progress(initial_progress, f"已提交 {'，'.join(submit_parts) if submit_parts else '0 个下载'}")
 
         started = time.monotonic()
         google_success_files = []
@@ -6401,7 +6493,7 @@ class HttpDownloadService:
             raise HttpDownloadError(f"没有任何文件下载成功：{detail}" if detail else "没有任何文件下载成功")
         try:
             pikpak_cleanup_result = await self.cleanup_pikpak_transfer_items_from_rows(
-                [*download_files, *failed_items]
+                [*source_items, *download_files, *failed_items]
             )
         except Exception as exc:
             pikpak_cleanup_result = {
@@ -6490,14 +6582,9 @@ class HttpDownloadService:
             ]
             task.task_metadata["selected_keys"] = retry_keys
             task.task_metadata["retry_target_count"] = len(retry_items)
-            task.task_metadata["pikpak_retry_rebuild_share"] = any(
-                str(item.get("source") or "").strip().lower() == "pikpak"
-                for item in retry_items
-                if isinstance(item, dict)
-            )
         else:
             task.task_metadata["retry_target_count"] = 0
-            task.task_metadata.pop("pikpak_retry_rebuild_share", None)
+        task.task_metadata.pop("pikpak_retry_rebuild_share", None)
         task.task_metadata["resolved_urls"] = []
         task.task_metadata["download_files"] = []
         task.task_metadata["download_runtime"] = {}
@@ -6528,7 +6615,7 @@ class HttpDownloadService:
         task.task_metadata["progress_log"] = logs[-80:]
 
     async def _tell_status(self, gid: str) -> Dict[str, Any]:
-        keys = ["gid", "status", "totalLength", "completedLength", "downloadSpeed", "files", "errorMessage"]
+        keys = ["gid", "status", "totalLength", "completedLength", "downloadSpeed", "files", "errorMessage", "errorCode", "connections"]
         try:
             return await self._rpc_call("aria2.tellStatus", [gid, keys])
         except Exception as exc:
@@ -6597,6 +6684,11 @@ class HttpDownloadService:
             aria_status = str(status.get("status") or "")
             total = int(status.get("totalLength") or row.get("total") or 0)
             done = int(status.get("completedLength") or 0)
+            if row.get("pikpak_resume_pending"):
+                if done == 0 and aria_status in {"waiting", "active", "paused"}:
+                    done = int(row.get("downloaded") or 0)
+                else:
+                    row.pop("pikpak_resume_pending", None)
             total_bytes += total
             transferred += done
             row_speed = int(status.get("downloadSpeed") or 0)
@@ -6634,6 +6726,21 @@ class HttpDownloadService:
                 self._aria2_progress_state.pop(str(gid), None)
                 row["status"] = "failed"
                 failure_reason = str(status.get("errorMessage") or aria_status)
+                if str(row.get("source") or "").strip().lower() == "pikpak":
+                    host = urlparse(str(row.get("original_url") or row.get("url") or "")).hostname or "未知节点"
+                    path = str(row.get("local_path") or "")
+                    resume_available = bool(path and os.path.isfile(path) and os.path.isfile(path + ".aria2"))
+                    route = "代理" if self._pikpak_download_proxy_url() else "直连"
+                    reason = self._sanitize_error(failure_reason)
+                    row["aria2_error_code"] = str(status.get("errorCode") or "")
+                    row["resume_available"] = resume_available
+                    failure_reason = f"PikPak CDN {host}（{route}）下载 {done}/{total} bytes 后失败：{reason}"
+                    if resume_available:
+                        failure_reason += "；断点文件已保留，重试将刷新直链并降低并发"
+                    logger.warning(
+                        "[PikPak下载] gid=%s host=%s route=%s code=%s connections=%s downloaded=%s total=%s resume=%s reason=%s",
+                        gid, host, route, row["aria2_error_code"], status.get("connections"), done, total, resume_available, reason,
+                    )
                 if str(row.get("source") or "").strip().lower() == "gofile":
                     host = urlparse(str(row.get("original_url") or row.get("url") or "")).hostname or "gofile.io"
                     failure_lower = failure_reason.lower()
@@ -6715,7 +6822,34 @@ class HttpDownloadService:
             active_task.cancel()
         await self._remove_task_gids(task_id)
 
-    async def health(self) -> Dict[str, Any]:
+    def _health_cache_key(self) -> tuple[Any, ...]:
+        cfg = self._config()
+        return (
+            bool(getattr(cfg, "enabled", True)),
+            str(getattr(cfg, "engine", "aria2") or "aria2"),
+            str(getattr(cfg, "aria2_path", "aria2c") or "aria2c"),
+            self._download_root(),
+            str(getattr(cfg, "proxy_url", "") or "").strip(),
+            self._pikpak_enabled(),
+            bool(self._gofile_token()),
+        )
+
+    async def health(self, *, force: bool = False) -> Dict[str, Any]:
+        cache_key = self._health_cache_key()
+        now = time.monotonic()
+        if not force and self._health_cache:
+            cached_key, cached_at, cached_payload = self._health_cache
+            if cached_key == cache_key and now - cached_at <= _HEALTH_CACHE_TTL_SECONDS:
+                return dict(cached_payload)
+        if self._health_task and not self._health_task.done():
+            return await self._health_task
+        self._health_task = asyncio.create_task(self._load_health(cache_key))
+        try:
+            return await self._health_task
+        finally:
+            self._health_task = None
+
+    async def _load_health(self, cache_key: tuple[Any, ...]) -> Dict[str, Any]:
         cfg = self._config()
         result = {
             "enabled": bool(getattr(cfg, "enabled", True)),
@@ -6747,6 +6881,7 @@ class HttpDownloadService:
             "gofile_token_configured": gofile_token_configured,
             "gofile_message": "Gofile 已配置账号 token" if gofile_token_configured else "Gofile 将使用临时网页账号解析",
         })
+        self._health_cache = (cache_key, time.monotonic(), dict(result))
         return result
 
 

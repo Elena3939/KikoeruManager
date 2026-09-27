@@ -2892,14 +2892,14 @@ class DLsiteApiService:
 
                     page_summaries = self._extract_summaries_from_listing_html(response.text)
                     new_count = absorb_summaries(page_summaries)
-                    if new_count == 0:
-                        # summary 解析失败时降级到裸 RJ 提取，保持现存 fallback 路径。
-                        page_worknos = self._extract_worknos_from_listing_html(response.text)
-                        if not page_worknos and mode == "profile-touch":
-                            page_worknos = self._extract_any_worknos_from_listing_html(response.text)
-                        if not page_worknos and mode == "profile-touch":
-                            page_worknos = self._extract_not_product_ids_from_html(response.text)
-                        new_count = absorb_raw_worknos(page_worknos)
+                    # summary 只覆盖已识别的卡片模板；DLsite 同页可能混用卡片结构，
+                    # 因此始终再从完整 HTML 提取裸 RJ，补回没有 summary 的作品。
+                    page_worknos = self._extract_worknos_from_listing_html(response.text)
+                    if not page_worknos and mode == "profile-touch":
+                        page_worknos = self._extract_any_worknos_from_listing_html(response.text)
+                    if not page_worknos and mode == "profile-touch":
+                        page_worknos = self._extract_not_product_ids_from_html(response.text)
+                    new_count += absorb_raw_worknos(page_worknos)
                 except Exception as exc:
                     logger.warning(
                         "[DLsite] 社团%s summary 抓取异常 maker_id=%s page=%s error=%s",

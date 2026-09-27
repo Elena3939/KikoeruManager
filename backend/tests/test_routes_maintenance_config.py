@@ -881,7 +881,7 @@ def test_asmr_status_returns_requested_tasks_beyond_default_window(client, monke
     monkeypatch.setattr(
         routes,
         "_serialize_asmr_sync_task_status",
-        lambda task, session_map: {"id": task.id},
+        lambda task, session_map, **kwargs: {"id": task.id},
     )
 
     response = client.get(
