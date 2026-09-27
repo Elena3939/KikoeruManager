@@ -12,6 +12,7 @@ processing:
   file_stable_interval: 2
   max_wait_time: 3600
   archive_idle_delay_seconds: 60
+  archive_starvation_seconds: 900
   archive_poll_interval_seconds: 3
   archive_retry_delay_seconds: 300
   archive_max_retry_count: 5

@@ -98,8 +98,8 @@
         >
           <span class="activity-metric-label">{{ m.label }}</span>
           <strong class="activity-metric-value" :style="{ color: m.color }">
-            <span>{{ metricSplit(m.value).num }}</span>
-            <small v-if="metricSplit(m.value).unit">{{ metricSplit(m.value).unit }}</small>
+            <span>{{ splitActivityMetric(m.value).num }}</span>
+            <small v-if="splitActivityMetric(m.value).unit">{{ splitActivityMetric(m.value).unit }}</small>
           </strong>
         </article>
       </div>
@@ -442,6 +442,7 @@ import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import ActivityDetailBody from '../components/activity/ActivityDetailBody.vue'
 import { getHttpDownloadDisplayMeta } from '../components/common/httpDownloadPlatformMeta.js'
+import { splitActivityMetric } from '../utils/activityMetric.js'
 
 const router = useRouter()
 
@@ -1249,13 +1250,6 @@ function formatMetricHint(text) {
   return Number(stats.days || 0) ? `${stats.days} 天内${text}` : `所有时间${text}`
 }
 // 数字 + 单位拆分：「8.06 GB」→ {num: '8.06', unit: 'GB'}
-function metricSplit(value) {
-  const s = String(value ?? '').trim()
-  if (!s) return { num: '—', unit: '' }
-  const m = s.match(/^([+\-]?[\d.,<>= ]+)\s*([^\s].*?)$/)
-  if (m) return { num: m[1].trim(), unit: m[2].trim() }
-  return { num: s, unit: '' }
-}
 const metricCards = computed(() => {
   const m = stats.metrics || {}
   return [

@@ -80,6 +80,7 @@ class DeferredArchiveService:
         self._active_job_id = ""
         self._active_abort_reason = ""
         self._active_copy_running = False
+        self._active_starvation_protected = False
         self._active_interrupt = threading.Event()
 
     @staticmethod
@@ -93,6 +94,9 @@ class DeferredArchiveService:
     def _poll_interval_seconds(self) -> float:
         cfg = self._processing_config()
         return max(0.5, float(getattr(cfg, "archive_poll_interval_seconds", 3) or 3))
+
+    def _starvation_seconds(self) -> int:
+        return max(1, int(getattr(self._processing_config(), "archive_starvation_seconds", 900)))
 
     def _retry_delay_seconds(self) -> int:
         cfg = self._processing_config()
@@ -115,6 +119,7 @@ class DeferredArchiveService:
                 self._active_abort_reason = ""
                 self._active_interrupt.clear()
                 self._active_copy_running = False
+                self._active_starvation_protected = False
 
     def _request_active_abort(self, job_id: str, reason: str) -> None:
         with self._control_lock:
@@ -523,18 +528,17 @@ class DeferredArchiveService:
     async def _worker(self) -> None:
         while not self._shutdown:
             try:
-                if self._has_foreground_work():
+                foreground = self._has_foreground_work()
+                if foreground:
                     self._idle_since = None
-                    await asyncio.sleep(self._poll_interval_seconds())
-                    continue
                 now = time.monotonic()
-                if self._idle_since is None:
+                if not foreground and self._idle_since is None:
                     self._idle_since = now
-                remaining = self._idle_delay_seconds() - (now - self._idle_since)
-                if remaining > 0:
-                    await asyncio.sleep(min(self._poll_interval_seconds(), remaining))
-                    continue
-                claim = await asyncio.to_thread(self._claim_next_job_sync)
+                idle_ready = (
+                    not foreground and self._idle_since is not None
+                    and now - self._idle_since >= self._idle_delay_seconds()
+                )
+                claim = await asyncio.to_thread(self._claim_next_job_sync, starved_only=not idle_ready)
                 if claim is None:
                     await asyncio.sleep(self._poll_interval_seconds())
                     continue
@@ -545,13 +549,15 @@ class DeferredArchiveService:
                 logger.warning("[延后归档] worker 循环异常", exc_info=True)
                 await asyncio.sleep(self._poll_interval_seconds())
 
-    def _claim_next_job_sync(self) -> Optional[dict[str, Any]]:
+    def _claim_next_job_sync(self, *, starved_only: bool = False) -> Optional[dict[str, Any]]:
         db = SessionLocal()
         try:
             now = self._database_now(db)
+            starvation_cutoff = now - timedelta(seconds=self._starvation_seconds())
             job = (
                 db.query(DeferredArchiveJob)
                 .filter(
+                    DeferredArchiveJob.created_at <= starvation_cutoff if starved_only else True,
                     DeferredArchiveJob.cancel_requested.is_(False),
                     or_(
                         (
@@ -570,6 +576,9 @@ class DeferredArchiveService:
             )
             if job is None:
                 return None
+            starvation_protected = bool(db.query(
+                DeferredArchiveJob.created_at <= starvation_cutoff
+            ).filter(DeferredArchiveJob.id == job.id).scalar())
             job.status = "processing"
             job.lease_owner = self._owner
             job.lease_epoch = int(job.lease_epoch or 0) + 1
@@ -581,6 +590,7 @@ class DeferredArchiveService:
                 "task_id": str(job.task_id or ""),
                 "rjcode": str(job.rjcode or ""),
                 "lease_epoch": int(job.lease_epoch or 0),
+                "starvation_protected": starvation_protected,
                 "attempt_count": int(job.attempt_count or 0),
                 "source_manifest": [dict(item or {}) for item in list(job.source_manifest or [])],
                 "target_manifest": [dict(item or {}) for item in list(job.target_manifest or [])],
@@ -595,10 +605,14 @@ class DeferredArchiveService:
         job_id = str(claim["job_id"])
         epoch = int(claim["lease_epoch"])
         self._set_active_job(job_id)
+        with self._control_lock:
+            self._active_starvation_protected = bool(claim.get("starvation_protected"))
         heartbeat = asyncio.create_task(self._heartbeat_loop(job_id, epoch), name=f"deferred-archive-heartbeat:{job_id}")
         try:
             await self._update_parent_task(claim, "processing")
-            self._broadcast(claim, "processing", "系统空闲，开始低优先级归档")
+            self._broadcast(claim, "processing",
+                            "等待超过阈值，开始归档饥饿保护" if claim.get("starvation_protected")
+                            else "系统空闲，开始低优先级归档")
             for index, source in enumerate(claim["source_manifest"]):
                 self._raise_if_abort(self._copy_abort_reason(job_id, epoch, check_database=True))
                 await self._move_member(claim, index, source)
@@ -718,7 +732,9 @@ class DeferredArchiveService:
         active_reason = self._active_abort_reason_for(job_id)
         if active_reason:
             return active_reason
-        if self._has_foreground_work():
+        with self._control_lock:
+            protected = self._active_job_id == job_id and self._active_starvation_protected
+        if not protected and self._has_foreground_work():
             return "foreground"
         if check_database:
             return self._control_reason_sync(job_id, epoch)
@@ -1269,16 +1285,88 @@ class DeferredArchiveService:
         finally:
             db.close()
 
-    def request_cancel_sync(self, job_id: str) -> bool:
+    def list_jobs_sync(self, *, status: str = "", page: int = 1, page_size: int = 10) -> dict[str, Any]:
+        """分页查询持久化队列；摘要只读冻结清单，不重新扫描源文件。"""
+        statuses = _CLAIM_STATUSES | {"completed", "cancelled"}
+        if status and status not in statuses:
+            raise ValueError("不支持的归档状态")
+        if page < 1 or not 1 <= page_size <= 100:
+            raise ValueError("归档分页参数无效")
+        with SessionLocal() as db:
+            cutoff = self._database_now(db) - timedelta(seconds=self._starvation_seconds())
+            counts = {value: 0 for value in sorted(statuses)}
+            counts.update(dict(db.query(DeferredArchiveJob.status, func.count()).group_by(DeferredArchiveJob.status).all()))
+            query = db.query(DeferredArchiveJob)
+            if status:
+                query = query.filter(DeferredArchiveJob.status == status)
+            total = query.count()
+            rows = (query.add_columns(
+                (DeferredArchiveJob.created_at <= cutoff).label("starved"),
+                (DeferredArchiveJob.available_at <= func.now()).label("ready"),
+            ).order_by(DeferredArchiveJob.created_at.desc(), DeferredArchiveJob.id.desc())
+                .offset((page - 1) * page_size).limit(page_size).all())
+            items = []
+            for job, starved, ready in rows:
+                sources = list(job.source_manifest or [])
+                published = any(str(item.get("state") or "") != "pending" for item in job.target_manifest or [])
+                reason = {
+                    "completed": "源压缩包已归档", "cancelled": "归档已取消，保留源文件",
+                    "failed": "归档失败，等待人工重试", "processing": "正在归档",
+                }.get(job.status, "等待后台调度" if starved else "等待系统空闲")
+                if job.status in _READY_STATUSES and not ready:
+                    reason = "等待重试时间"
+                if job.cancel_requested and job.status == "processing":
+                    reason = "取消已请求，等待安全停止"
+                with self._control_lock:
+                    protected = job.id == self._active_job_id and self._active_starvation_protected
+                items.append({
+                    "job_id": job.id, "task_id": job.task_id, "rjcode": job.rjcode,
+                    "status": job.status, "created_at": job.created_at, "available_at": job.available_at,
+                    "updated_at": job.updated_at, "completed_at": job.completed_at,
+                    "attempt_count": int(job.attempt_count or 0), "last_error": job.last_error or "",
+                    "cancel_requested": bool(job.cancel_requested), "wait_reason": reason,
+                    "starvation_reached": bool(starved), "starvation_protected": protected,
+                    "can_cancel": job.status in _CLAIM_STATUSES and not published and not job.cancel_requested,
+                    "can_retry": job.status in {"failed", "waiting_retry"} and not job.cancel_requested,
+                    "source_summary": {
+                        "filename": str(sources[0].get("filename") or "") if sources else "",
+                        "source_path": str(sources[0].get("source_path") or "") if sources else "",
+                        "volume_count": len(sources),
+                        "total_bytes": sum(int(item.get("size") or 0) for item in sources),
+                    },
+                })
+            return {"items": items, "total": total, "page": page, "page_size": page_size,
+                    "pending_count": counts["pending"], "counts_by_status": counts,
+                    "starvation_seconds": self._starvation_seconds()}
+
+    async def control_job(self, job_id: str, action: str) -> dict[str, Any]:
+        """人工操作提交成功后通知父任务和实时队列，状态限制由行锁内校验。"""
+        if action not in {"cancel", "retry"}:
+            raise ValueError("不支持的归档操作")
+        operation = self.request_cancel_sync if action == "cancel" else self.retry_failed_sync
+        payload = await asyncio.to_thread(operation, job_id, strict=True)
+        status = str(payload["status"])
+        await self._update_parent_task(payload, status)
+        step = "取消已请求，等待安全停止" if status == "processing" else ("归档已取消" if action == "cancel" else "已重新加入归档队列")
+        self._broadcast(payload, status, step)
+        return {"success": True, "job_id": job_id, "status": status, "message": step}
+
+    def request_cancel_sync(self, job_id: str, *, strict: bool = False) -> Any:
         db = SessionLocal()
         try:
             job = db.query(DeferredArchiveJob).filter(
                 DeferredArchiveJob.id == str(job_id or "")
             ).with_for_update().first()
-            if job is None or job.status in {"completed", "cancelled"}:
+            if job is None and strict:
+                raise LookupError("归档作业不存在")
+            if job is None or job.status not in _CLAIM_STATUSES or job.cancel_requested:
+                if strict:
+                    raise ValueError("当前作业状态不允许取消")
                 return False
             # 已发布任何成员时取消会留下一个拆开的分卷组，拒绝而不是制造不可恢复状态。
             if any(str((item or {}).get("state") or "") != "pending" for item in list(job.target_manifest or [])):
+                if strict:
+                    raise ValueError("已有分卷发布，不能取消归档")
                 return False
             job.cancel_requested = True
             now = self._database_now(db)
@@ -1290,21 +1378,25 @@ class DeferredArchiveService:
             self._request_active_abort(str(job.id or ""), "cancelled")
             if job.status == "cancelled":
                 self._remove_claims(list(job.source_manifest or []))
-            return True
+            return self._job_payload(job) if strict else True
         except Exception:
             db.rollback()
             raise
         finally:
             db.close()
 
-    def retry_failed_sync(self, job_id: str) -> bool:
+    def retry_failed_sync(self, job_id: str, *, strict: bool = False) -> Any:
         """人工恢复失败归档作业，已发布成员会由恢复 worker 校验后继续收口。"""
         db = SessionLocal()
         try:
             job = db.query(DeferredArchiveJob).filter(
                 DeferredArchiveJob.id == str(job_id or "")
             ).with_for_update().first()
-            if job is None or str(job.status or "") != "failed":
+            if job is None and strict:
+                raise LookupError("归档作业不存在")
+            if job is None or job.status not in {"failed", "waiting_retry"} or job.cancel_requested:
+                if strict:
+                    raise ValueError("只有失败或等待重试的作业可以重试")
                 return False
             now = self._database_now(db)
             job.status = "pending"
@@ -1318,7 +1410,7 @@ class DeferredArchiveService:
             job.updated_at = now
             db.commit()
             self._add_claims(list(job.source_manifest or []))
-            return True
+            return self._job_payload(job) if strict else True
         except Exception:
             db.rollback()
             raise

@@ -17,6 +17,7 @@ import logging
 
 from ..config.settings import get_config
 from ..core.archive_detection import has_embedded_zip_archive
+from .archive_volume_utils import detect_archive_volume_group, normalize_part_volume_filename
 from ..core.task_engine import Task, TaskType, get_task_engine
 from ..core.password_utils import normalize_password_value
 from .deferred_archive_service import get_deferred_archive_service
@@ -55,6 +56,10 @@ class FileProcessor:
     @staticmethod
     def _has_active_aria2_sidecar(file_path: str) -> bool:
         return os.path.isfile(f"{file_path}.aria2")
+
+    def has_active_download(self, file_path: str) -> bool:
+        """查询文件是否仍由 aria2 下载，供监视器共用判断。"""
+        return self._has_active_aria2_sidecar(file_path)
 
     @staticmethod
     def _inherit_download_password_metadata(file_path: str, engine) -> dict:
@@ -275,6 +280,9 @@ class FileProcessor:
             # 标记文件为已处理
             if mark_processed:
                 mark_processed(file_path)
+                if volume_set:
+                    for volume in volume_set.volumes:
+                        mark_processed(volume)
 
             return task
 
@@ -396,8 +404,8 @@ class FileProcessor:
             logger.debug("[FileProcessor] 跳过 aria2 下载中的文件: %s", file_path)
             return False
 
-        filename = Path(file_path).name.lower()
-        ext = Path(file_path).suffix.lower()
+        filename = normalize_part_volume_filename(Path(file_path).name).lower()
+        ext = Path(filename).suffix.lower()
 
         # 先检查是否是分卷文件后缀，只有真正的主执行文件才创建任务
         # ZIP 分卷: .z01, .z02, ... .z99，应该由 *.zip 主文件触发处理
@@ -486,6 +494,11 @@ class FileProcessor:
         """
         directory = os.path.dirname(file_path)
         filename = os.path.basename(file_path)
+        if normalize_part_volume_filename(filename) != filename:
+            group = detect_archive_volume_group(file_path)
+            if group:
+                return VolumeSet(group.base_name, group.volumes, "part_password", entry_path=group.main_path)
+            return None
 
         zip_main_match = re.search(r'^(?P<base>.+)\.zip$', filename, re.IGNORECASE)
         zip_part_match = re.search(r'^(?P<base>.+)\.z\d{2}$', filename, re.IGNORECASE)
@@ -605,7 +618,7 @@ class FileProcessor:
         """处理分卷压缩组
 
         1. 等待所有分卷稳定
-        2. 标记所有分卷为已处理
+        2. 复核所有分卷均已结束下载；已处理标记由任务提交成功后写入
         3. 返回首卷路径
 
         Args:
@@ -619,10 +632,9 @@ class FileProcessor:
         """
         logger.info(f"[FileProcessor] 处理分卷组: {volume_set.base_name}")
 
-        # 标记所有分卷为已处理
-        for volume in volume_set.volumes:
-            if mark_processed and not (is_processed and is_processed(volume)):
-                mark_processed(volume)
+        # 任一成员仍在下载时保留整组重试机会，不能提前冻结首卷。
+        if any(self.has_active_download(volume) for volume in volume_set.volumes):
+            return None
 
         # 等待所有分卷稳定
         for volume in volume_set.volumes:
@@ -633,6 +645,9 @@ class FileProcessor:
                 except TimeoutError:
                     logger.error(f"[FileProcessor] 等待分卷稳定超时: {volume}")
                     return None
+
+        if any(self.has_active_download(volume) for volume in volume_set.volumes):
+            return None
 
         return volume_set.entry_path or file_path
 
@@ -661,7 +676,7 @@ class FileProcessor:
             r'\.r\d{2}$',                     # 旧式 RAR 分卷
             r'\.7z\.\d{3}$',                  # 7z 分卷首尾格式
         ]
-        basename = os.path.basename(file_path)
+        basename = normalize_part_volume_filename(os.path.basename(file_path))
         main_volume_patterns = [
             r'^.+\.part1(?:\.(rar|zip|7z|exe))?$',
             r'^.+\.7z\.001$',

@@ -56,6 +56,7 @@ _BAIDU_COOKIE_PRIORITY = [
 ]
 _BAIDU_COOKIE_NAME_BY_UPPER = {name.upper(): name for name in _BAIDU_COOKIE_PRIORITY}
 _BAIDU_RAW_PREVIEW_CACHE_TTL_SECONDS = 10 * 60
+_BAIDU_HEALTH_CACHE_TTL_SECONDS = 30.0
 _BAIDU_PREVIEW_TOTAL_TIMEOUT_SECONDS = 38.0
 _BAIDU_PREVIEW_ITEM_TIMEOUT_SECONDS = 24.0
 _BAIDU_PREVIEW_HTTP_TIMEOUT_SECONDS = 8.0
@@ -282,6 +283,7 @@ class BaiduNetdiskService:
         self._download_slot_active = 0
         self._transfer_slot_lock = threading.Lock()
         self._transfer_slot_active = 0
+        self._health_cache: Optional[tuple[tuple[Any, ...], float, Dict[str, Any]]] = None
 
     def _config(self):
         return get_config().baidu_netdisk
@@ -1765,7 +1767,23 @@ class BaiduNetdiskService:
         vip_label = str(getattr(cfg, "vip_label", "") or "").lower()
         return vip_type >= 2 or "svip" in vip_label or "超级" in vip_label
 
-    async def health(self) -> Dict[str, Any]:
+    def _health_cache_key(self) -> tuple[Any, ...]:
+        cfg = self._config()
+        cookie = str(getattr(cfg, "cookie", "") or "")
+        return (
+            bool(getattr(cfg, "enabled", False)),
+            hashlib.sha1(cookie.encode("utf-8", errors="ignore")).hexdigest(),
+            str(getattr(cfg, "account_cached_at", 0) or 0),
+            str(getattr(cfg, "download_root", "") or ""),
+        )
+
+    async def health(self, *, force: bool = False) -> Dict[str, Any]:
+        cache_key = self._health_cache_key()
+        now = time.monotonic()
+        if not force and self._health_cache:
+            cached_key, cached_at, cached_payload = self._health_cache
+            if cached_key == cache_key and now - cached_at <= _BAIDU_HEALTH_CACHE_TTL_SECONDS:
+                return copy.deepcopy(cached_payload)
         ready = self._has_baidu_login_cookie()
         result = {
             "enabled": bool(getattr(self._config(), "enabled", False) and ready),
@@ -1777,6 +1795,7 @@ class BaiduNetdiskService:
             "account": self.account_status(),
             "svip_speed": self._is_svip(),
         }
+        self._health_cache = (cache_key, now, result)
         return result
 
     def account_status(self) -> Dict[str, Any]:

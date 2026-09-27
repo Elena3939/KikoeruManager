@@ -41,6 +41,7 @@ from datetime import datetime
 
 from ..config.settings import get_config
 from ..core.archive_detection import detect_embedded_zip_offset
+from .archive_volume_utils import detect_archive_volume_group, normalize_part_volume_filename
 from ..core.task_engine import Task
 from ..core.password_utils import (
     normalize_filename_value,
@@ -162,6 +163,10 @@ class ExtractService:
         )
         or str(64 * 1024 * 1024)
     )
+    ZIP_COMPAT_UNAR_TIMEOUT_SECONDS: float = max(
+        15.0,
+        float(os.getenv("KIKOERUMANAGER_ZIP_COMPAT_UNAR_TIMEOUT_SECONDS", "90") or 90),
+    )
     INSPECT_SLOT_WAIT_TIMEOUT: float = float(os.getenv("KIKOERUMANAGER_7Z_INSPECT_SLOT_WAIT_TIMEOUT_SECONDS", "45") or 45)
     PROBE_SLOT_WAIT_TIMEOUT: float = float(
         os.getenv(
@@ -270,6 +275,8 @@ class ExtractService:
     @classmethod
     def _looks_like_wrong_password_error(cls, text: str) -> bool:
         lowered = str(text or "").lower()
+        if "missing volume" in lowered or "required volume" in lowered:
+            return False
         return any(marker in lowered for marker in cls._LIST_WRONG_PASSWORD_MARKERS)
 
     @classmethod
@@ -2274,6 +2281,15 @@ class ExtractService:
         await self._rollback_part_exe_remap(task)
 
     async def extract(self, task: Task) -> Optional[str]:
+        """统一清理标准卷名视图，包括预读失败和取消的提前退出。"""
+        try:
+            return await self._extract(task)
+        finally:
+            view = (task.task_metadata or {}).pop("password_part_volume_view", None)
+            if view:
+                await asyncio.to_thread(shutil.rmtree, view["temp_dir"])
+
+    async def _extract(self, task: Task) -> Optional[str]:
         """
         解压压缩包
         返回解压后的目录路径
@@ -2351,6 +2367,10 @@ class ExtractService:
             if not await self._wait_for_complete_set(volume_set, task):
                 raise Exception("分卷组不完整或等待超时")
             archive_path = volume_set.entry_path or volume_set.volumes[0]
+
+            if volume_set.type == "part_password":
+                volume_set = await self._prepare_password_part_volume_view(volume_set, task)
+                archive_path = volume_set.entry_path
 
             # 自解压 .exe + .eNN 国产 SFX 工具命名 7z/RAR 都不能直接识别多卷
             # （`7zz l x.exe` 报 returncode=2）。先探测内嵌档真实格式，再按
@@ -4276,6 +4296,8 @@ class ExtractService:
 
         filename = Path(file_path).name
         current_ext = Path(file_path).suffix.lower()
+        if normalize_part_volume_filename(filename) != filename:
+            return file_path
 
         if detect_embedded_zip_offset(file_path) is not None:
             logger.info(f"[Extract] 检测到带前缀伪装 ZIP，跳过后缀修复: {file_path}")
@@ -4417,6 +4439,8 @@ class ExtractService:
         path = Path(file_path)
         filename = path.name
         current_ext = path.suffix.lower()
+        if normalize_part_volume_filename(filename) != filename:
+            return file_path
 
         if detect_embedded_zip_offset(file_path) is not None:
             logger.info(f"[Normalize] 检测到带前缀伪装 ZIP，保持原始文件名: {file_path}")
@@ -4958,6 +4982,11 @@ class ExtractService:
         """检测是否是分卷压缩包"""
         directory = os.path.dirname(file_path)
         filename = os.path.basename(file_path)
+        if normalize_part_volume_filename(filename) != filename:
+            group = detect_archive_volume_group(file_path)
+            if group:
+                return VolumeSet(group.base_name, group.volumes, "part_password", entry_path=group.main_path)
+            return None
 
         zip_main_match = re.search(r'^(?P<base>.+)\.zip$', filename, re.IGNORECASE)
         zip_part_match = re.search(r'^(?P<base>.+)\.z\d{2}$', filename, re.IGNORECASE)
@@ -5190,6 +5219,42 @@ class ExtractService:
             self._copy_sfx_payload_first_volume(source_path, payload_offset, target_path)
             return "payload_copy"
         return self._link_or_copy_file(source_path, target_path)
+
+    async def _prepare_password_part_volume_view(self, volume_set: 'VolumeSet', task: Task) -> 'VolumeSet':
+        """用标准卷名链接整组来源，保留原路径供密码匹配、审计和归档使用。"""
+        names = [normalize_part_volume_filename(os.path.basename(path)) for path in volume_set.volumes]
+        indices = [int(re.search(r"\.part(\d+)\.", name, re.IGNORECASE).group(1)) for name in names]
+        if indices != list(range(1, len(indices) + 1)):
+            self._set_extract_meta(task, extract_failure_reason="volume_incomplete")
+            raise ValueError("分卷压缩包缺少首卷、存在重号或中间卷不连续")
+        temp_dir = await self._create_temp_dir_with_fallback(
+            "kikoerumanager_password_part_", "extract.password_part_volume_view",
+        )
+        paths = []
+        try:
+            for source, name in zip(volume_set.volumes, names):
+                if task.is_cancelled():
+                    raise asyncio.CancelledError()
+                target = os.path.join(temp_dir, name)
+                # 跨卷挂载使用符号链接，不复制数 GB 原包；无符号链接权限时复用已有文件视图工具。
+                try:
+                    await asyncio.to_thread(os.symlink, os.path.abspath(source), target)
+                except OSError:
+                    async with get_resource_budget_service().acquire(
+                        "disk_io_local", reason="extract.password_part_volume_view",
+                    ):
+                        await asyncio.to_thread(self._link_or_copy_file, source, target)
+                paths.append(target)
+        except BaseException:
+            await asyncio.to_thread(shutil.rmtree, temp_dir)
+            raise
+        self._set_extract_meta(task, password_part_volume_view={
+            "temp_dir": temp_dir,
+            "source_path": task.source_path,
+            "volume_count": len(paths),
+        })
+        logger.info("[VolumeSet] 已创建标准卷名视图，保留原始来源: volumes=%s", len(paths))
+        return VolumeSet(volume_set.base_name, paths, "part", entry_path=paths[0])
 
     def _link_or_copy_file(self, source_path: str, target_path: str) -> str:
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
@@ -8050,6 +8115,7 @@ class ExtractService:
         encountered_wrong_password = False
         last_corrupt_stderr: Optional[str] = None
         is_zip_archive = self._is_zip_like_archive(archive_info.path)
+        zip_compat_unar_attempted = False
         try:
             archive_size_bytes = os.path.getsize(archive_info.path)
         except OSError:
@@ -8129,6 +8195,7 @@ class ExtractService:
             return True, backend_name
 
         async def try_zip_compat_backend(current_password: str) -> Tuple[bool, str]:
+            nonlocal zip_compat_unar_attempted
             if not (
                 is_zip_archive
                 and current_password
@@ -8137,8 +8204,17 @@ class ExtractService:
                 return False, "not_applicable"
 
             async def try_unar_zip_compat_backend() -> Tuple[bool, str]:
+                nonlocal zip_compat_unar_attempted
                 if not self._find_unar_executable():
                     return False, "unar_unavailable"
+                if zip_compat_unar_attempted:
+                    logger.info(
+                        "ZIP 中文密码兼容后端已尝试过 unar，跳过重复完整解压: archive=%s",
+                        archive_info.path,
+                    )
+                    return False, "unar_attempt_limit"
+                zip_compat_unar_attempted = True
+                self._set_extract_meta(task, zip_compat_unar_attempted=True)
                 await self._cleanup_extract_attempt(output_path)
                 task.update_progress(39, "尝试 unar ZIP 中文密码兼容解压")
                 unar_result = await self._try_unar_extract(
@@ -8146,6 +8222,7 @@ class ExtractService:
                     output_path,
                     current_password,
                     task=task,
+                    command_timeout=self.ZIP_COMPAT_UNAR_TIMEOUT_SECONDS,
                 )
                 if task.is_cancelled():
                     return False, "cancelled"
@@ -8979,6 +9056,11 @@ class ExtractService:
                         extract_path_too_long_error=stderr_text[:1000],
                     )
                     return False, None, remap_reason or "path_too_long"
+
+                if "missing volume" in stderr_lower or "required volume" in stderr_lower:
+                    self._set_extract_meta(task, extract_failure_reason="volume_incomplete")
+                    logger.error("7z 无法续接分卷，停止密码尝试: %s", self._redact_sensitive_text(stderr_text[:500]))
+                    return False, None, "volume_incomplete"
 
                 if (
                     self._is_sfx_temporary_volume_view_path(archive_info.path, task)

@@ -126,6 +126,49 @@ class CircleImageCacheService:
             return f"{normalized}_sam.jpg"
         return f"{normalized}.jpg"
 
+    def _missing_marker_path(self, rjcode: str, variant: str = "card") -> Optional[Path]:
+        filename = self._filename_for(rjcode, variant)
+        if not filename:
+            return None
+        return self.cache_dir / f".{filename}.missing"
+
+    def has_known_missing(self, rjcode: str, variant: str = "card") -> bool:
+        marker = self._missing_marker_path(rjcode, variant)
+        if marker is None:
+            return False
+        try:
+            return marker.is_file()
+        except OSError:
+            return False
+
+    def _mark_known_missing(self, rjcode: str, variant: str = "card") -> None:
+        marker = self._missing_marker_path(rjcode, variant)
+        if marker is None:
+            return
+        try:
+            marker.write_text("confirmed-http-404\n", encoding="ascii")
+        except OSError:
+            logger.warning(
+                "[社团补全/封面缓存] 写入无图标记失败 rjcode=%s variant=%s",
+                self.normalize_rjcode(rjcode),
+                self._normalize_variant(variant),
+                exc_info=True,
+            )
+
+    def _clear_known_missing(self, rjcode: str, variant: str = "card") -> None:
+        marker = self._missing_marker_path(rjcode, variant)
+        if marker is None:
+            return
+        try:
+            marker.unlink(missing_ok=True)
+        except OSError:
+            logger.debug(
+                "[社团补全/封面缓存] 清理无图标记失败 rjcode=%s variant=%s",
+                self.normalize_rjcode(rjcode),
+                self._normalize_variant(variant),
+                exc_info=True,
+            )
+
     def _get_download_semaphore(self) -> asyncio.Semaphore:
         """限制真实 CDN 传输并发；队列等待不计入单张下载超时。"""
         if self._download_semaphore is None:
@@ -154,7 +197,13 @@ class CircleImageCacheService:
         让首屏直接打本地 cover API，缺图时由 API 做一次按需下载并落盘。
         """
         filename = self._filename_for(rjcode, variant)
-        if filename and (allow_missing or self.has_local(rjcode, variant)):
+        if not filename:
+            return ""
+        if self.has_local(rjcode, variant):
+            return f"{self.URL_PATH_PREFIX}{filename}"
+        if self.has_known_missing(rjcode, variant):
+            return ""
+        if allow_missing:
             return f"{self.URL_PATH_PREFIX}{filename}"
         return ""
 
@@ -214,9 +263,11 @@ class CircleImageCacheService:
                 if copied <= 0:
                     raise OSError("历史封面缓存为空")
                 if target.is_file() and target.stat().st_size > 0:
+                    self._clear_known_missing(normalized_target, variant)
                     return target
                 os.replace(tmp_path, target)
                 tmp_path = None
+                self._clear_known_missing(normalized_target, variant)
                 logger.info(
                     "[社团补全/封面缓存] 已修复历史别名 target=%s alias=%s variant=%s",
                     normalized_target,
@@ -360,6 +411,8 @@ class CircleImageCacheService:
             return None
         if self.has_local(rjcode, variant):
             return target
+        if not force and self.has_known_missing(rjcode, variant):
+            return None
         if not force and self._is_in_failure_cooldown(rjcode, variant):
             logger.debug(
                 "[社团补全/封面缓存] 命中失败冷却 rjcode=%s variant=%s",
@@ -377,6 +430,8 @@ class CircleImageCacheService:
             if not force and self._is_in_failure_cooldown(rjcode, variant):
                 return None
             failures: List[str] = []
+            saw_404 = False
+            saw_non_404 = False
             try:
                 # 先进入全局下载闸门，再开始计算单张网络超时；连接池排队不能算作
                 # 当前 RJ 的下载失败。批量预热与按需下载共用该预算，避免互相打满。
@@ -390,15 +445,23 @@ class CircleImageCacheService:
                             )
                             if ok:
                                 self._clear_failure(rjcode, variant)
+                                self._clear_known_missing(rjcode, variant)
                                 return target if self.has_local(rjcode, variant) else None
                             if outcome:
                                 failures.append(outcome)
+                                if outcome == "status=404":
+                                    saw_404 = True
+                                else:
+                                    saw_non_404 = True
                             # 同一 CDN 的传输异常通常意味着网络或代理暂时不可用；继续穷举
                             # 同域候选只会把首屏卡成几十秒，直接进入短冷却即可。
                             if retryable:
                                 break
             except TimeoutError:
                 failures.append("total-timeout")
+                saw_non_404 = True
+            if saw_404 and not saw_non_404:
+                self._mark_known_missing(rjcode, variant)
             self._remember_failure(rjcode, variant)
             log = logger.warning if log_failure else logger.debug
             log(
@@ -575,7 +638,7 @@ class CircleImageCacheService:
         """后台补齐缺失封面；同一文件只保留一个在途任务。"""
 
         rjcode, variant = self._parse_filename(filename)
-        if not rjcode or self.has_local(rjcode, variant):
+        if not rjcode or self.has_local(rjcode, variant) or self.has_known_missing(rjcode, variant):
             return None
         task_key = self._filename_for(rjcode, variant)
         if not task_key:
@@ -728,9 +791,14 @@ class CircleImageCacheService:
         if lock is None:
             return False
         async with lock:
-            if not force and self.has_local(normalized, variant):
+            if self.has_local(normalized, variant):
                 self._clear_failure(normalized, variant)
+                self._clear_known_missing(normalized, variant)
                 return True
+            if force:
+                self._clear_known_missing(normalized, variant)
+            elif self.has_known_missing(normalized, variant):
+                return False
 
             async with self._get_download_semaphore():
                 ok, outcome, _ = await self._download_with_outcome(
@@ -740,7 +808,10 @@ class CircleImageCacheService:
                 )
             if ok:
                 self._clear_failure(normalized, variant)
+                self._clear_known_missing(normalized, variant)
                 return True
+            if outcome == "status=404":
+                self._mark_known_missing(normalized, variant)
             logger.debug(
                 "[社团补全/封面缓存] 下载失败 rjcode=%s variant=%s outcome=%s",
                 normalized,

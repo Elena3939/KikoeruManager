@@ -10,6 +10,7 @@ import time
 import zipfile
 import struct
 import binascii
+from pathlib import Path
 from contextlib import asynccontextmanager
 from unittest.mock import Mock, AsyncMock, patch
 
@@ -3587,6 +3588,48 @@ Encrypted = +
         extract_service._try_extract_zip_with_python.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_try_extract_large_zip_limits_unar_to_one_attempt_per_archive(
+        self, extract_service, temp_dir,
+    ):
+        """多个中文候选不能为同一个大 ZIP 重复跑完整 unar。"""
+        archive_path = os.path.join(temp_dir, "large-cn-password-unar-once.zip")
+        self.create_test_zip(archive_path)
+        output_path = os.path.join(temp_dir, "large-cn-password-unar-once-output")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+
+        extract_service.ZIP_COMPAT_UNAR_FIRST_MIN_BYTES = 1
+        extract_service._find_unar_executable = Mock(return_value="/usr/bin/unar")
+        extract_service._probe_password = AsyncMock(return_value="wrong_password")
+        extract_service._try_unar_extract = AsyncMock(return_value=subprocess.CompletedProcess(
+            args=["unar"], returncode=1, stdout=b"", stderr=b"",
+        ))
+        extract_service._try_extract_zip_with_python = AsyncMock(
+            side_effect=AssertionError("大 ZIP 不应回退 Python 全量解压")
+        )
+        extract_service._cleanup_extract_attempt = AsyncMock()
+        extract_service._run_7z_command = AsyncMock(
+            side_effect=AssertionError("错误密码不应进入完整 7zz 解压")
+        )
+
+        success, password, reason = await extract_service._try_extract(
+            ArchiveInfo(
+                archive_path,
+                [{"name": "20260604161913.zip", "size": 10, "is_dir": False}],
+            ),
+            output_path,
+            task,
+            password_candidates=[
+                {"password": "第一个候选", "source": "密码库-通用"},
+                {"password": "第二个候选", "source": "密码库-通用"},
+            ],
+        )
+
+        assert (success, password) == (False, None)
+        assert reason in {"wrong_password", "unar_failed"}
+        extract_service._try_unar_extract.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_try_extract_large_zip_with_listed_password_uses_python_compat_path(
         self, extract_service, temp_dir,
     ):
@@ -4901,13 +4944,13 @@ Encrypted = +
 
         first_volume = os.path.join(output_path, "RJ353111.part1.exe")
         with open(first_volume, "wb") as fp:
-            fp.write(b"MZ" + (b"\\0" * 64) + b"Rar!\\x1a\\x07\\x01\\x00")
+            fp.write(b"MZ" + (b"\0" * 64) + b"Rar!\x1a\x07\x01\x00")
         for index in (2, 3, 4):
             with open(
                 os.path.join(output_path, f"RJ353111.part{index}.ra删除r"),
                 "wb",
             ) as fp:
-                fp.write(b"Rar!\\x1a\\x07\\x01\\x00payload")
+                fp.write(b"Rar!\x1a\x07\x01\x00payload")
 
         task = Task(
             task_type=TaskType.EXTRACT,

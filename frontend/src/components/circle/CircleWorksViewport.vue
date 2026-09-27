@@ -243,12 +243,82 @@ function normalizeBonusGroupTitle(value) {
     .trim()
 }
 
+function normalizeBonusTitleForComparison(value) {
+  return normalizeBonusGroupTitle(value)
+    .replace(/[\s　]+/gu, ' ')
+    .trim()
+}
+
+function bonusThemeKey(value) {
+  const title = normalizeBonusTitleForComparison(value)
+  const match = title.match(/(\d+)\s*大特典/u)
+  return match ? `${match[1]}大特典` : ''
+}
+
+function isEmbeddedBonusTitleVariant(item, candidates) {
+  const title = normalizeBonusTitleForComparison(bonusDisplayTitle(item))
+  if (!title || !/特典/u.test(title)) return false
+  return candidates.some((candidate) => {
+    if (!candidate || candidate === item) return false
+    const candidateTitle = normalizeBonusTitleForComparison(bonusDisplayTitle(candidate))
+    const theme = bonusThemeKey(title)
+    const candidateTheme = bonusThemeKey(candidateTitle)
+    if (theme && theme === candidateTheme && candidateTitle.length < title.length) return true
+    if (!candidateTitle || candidateTitle.length >= title.length || !title.includes(candidateTitle)) return false
+    // 只压掉“纯特典标题 + 完整作品描述”的变体，避免误伤两个真实不同的特典。
+    return /^【[^】]+】$/u.test(candidateTitle) || !candidateTitle.includes('】')
+  })
+}
+
 function bonusDisplayTitle(item) {
   return String(item?._bonus_display_title || item?.title || '未命名特典').trim()
 }
 
 function bonusMembers(item) {
   return Array.isArray(item?._bonus_members) && item._bonus_members.length ? item._bonus_members : [item].filter(Boolean)
+}
+
+function bonusHasCover(item) {
+  // 后端明确判定无封面的特典直接排除；网络暂时失败但有合法封面来源的保留。
+  return item?.cover_available !== false
+}
+
+function shouldDisplayBonus(item) {
+  if (!isStrictTrue(item?.is_bonus_work)) return false
+  if (item?.dlsite_cover_available === false) return false
+  if (item?.cover_confirmed_missing === true) return false
+  return true
+}
+
+function bonusNumberedSuffix(item) {
+  const match = String(item?.title || '').trim().match(/[_＿]\s*([0-9０-９]+)\s*$/u)
+  if (!match) return null
+  return Number(match[1].replace(/[０-９]/gu, digit => String('０１２３４５６７８９'.indexOf(digit))))
+}
+
+function selectBonusVariants(bonuses) {
+  const groups = new Map()
+  for (const bonus of bonuses) {
+    const key = normalizeBonusGroupTitle(bonusDisplayTitle(bonus)) || bonusCode(bonus)
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(bonus)
+  }
+  const selected = []
+  for (const candidates of groups.values()) {
+    const withCover = candidates.filter(candidate => (
+      candidate?.cover_available !== false && candidate?.cover_confirmed_missing !== true
+    ))
+    const pool = withCover.length ? withCover : candidates
+    const plain = pool.filter(candidate => bonusNumberedSuffix(candidate) === null)
+    if (plain.length) {
+      selected.push(plain[0])
+      continue
+    }
+    const numbered = pool.filter(candidate => bonusNumberedSuffix(candidate) !== null)
+    const minSuffix = Math.min(...numbered.map(candidate => bonusNumberedSuffix(candidate)))
+    selected.push(...numbered.filter(candidate => bonusNumberedSuffix(candidate) === minSuffix))
+  }
+  return selected
 }
 
 function bonusCodeList(item) {
@@ -301,10 +371,23 @@ function bonusActionItem(item, action = '') {
 }
 
 function aggregateBonusWorks(bonuses = []) {
-  if (!Array.isArray(bonuses) || bonuses.length <= 1) return Array.isArray(bonuses) ? bonuses : []
+  if (!Array.isArray(bonuses)) return []
+  bonuses = bonuses.filter(shouldDisplayBonus)
+  bonuses = selectBonusVariants(bonuses)
+  bonuses = bonuses.filter((bonus) => !isEmbeddedBonusTitleVariant(bonus, bonuses))
+  if (bonuses.length <= 1) return bonuses
+  const seenCodes = new Set()
+  const uniqueBonuses = bonuses.filter((bonus) => {
+    if (!bonus) return false
+    const codes = bonusCodeList(bonus)
+    const key = codes[0] || `${bonusDisplayTitle(bonus)}:${bonus?.canonical_rjcode || ''}`
+    if (!key || seenCodes.has(key)) return false
+    seenCodes.add(key)
+    return true
+  })
   const buckets = new Map()
   const result = []
-  for (const bonus of bonuses) {
+  for (const bonus of uniqueBonuses) {
     if (!bonus) continue
     const title = bonusDisplayTitle(bonus)
     const baseTitle = normalizeBonusGroupTitle(title)
@@ -333,16 +416,42 @@ function aggregateBonusWorks(bonuses = []) {
     bucket.server_owned = bucket.server_owned || bonus.server_owned
     bucket.completion_owned = bucket.completion_owned || bonus.completion_owned
     bucket.local_owned = bucket.local_owned || bonus.local_owned
+    bucket.cover_available = bucket.cover_available || bonus.cover_available !== false
     if (!bucket.image_url && bonus.image_url) bucket.image_url = bonus.image_url
     if (!bucket.thumb_image_url && bonus.thumb_image_url) bucket.thumb_image_url = bonus.thumb_image_url
   }
   return result
 }
 
+function bonusCollectionViewModel(viewModel) {
+  const bonuses = Array.isArray(viewModel?.bonuses) ? viewModel.bonuses : []
+  const members = bonuses.flatMap(bonus => bonusMembers(bonus)).filter(bonus => bonus && shouldDisplayBonus(bonus))
+  const first = members[0] || null
+  if (!first) return null
+  const owned = members.some(isCompletionOwned)
+  return {
+    item: {
+      ...first,
+      title: bonusDisplayTitle(first),
+      _bonus_display_title: bonusDisplayTitle(first),
+      _bonus_members: members,
+      linked_rjcodes: bonusCodeList({ _bonus_members: members }),
+    },
+    key: bonusCollectionKey(viewModel),
+    code: bonusCode(first),
+    owned,
+    dimmed: groupHasOwnedWork(viewModel.item, bonuses) && !owned,
+    selected: members.some(member => isItemSelected(member)),
+    flashed: members.some(member => matchesWorkCodeSet(member, props.flashedCodes)),
+    located: members.some(member => matchesWorkCodeSet(member, props.locatedCodes)),
+  }
+}
+
 const groupedItems = computed(() => {
   const items = safeItems.value
   const directGroups = items.map((item, index) => {
     const bonuses = aggregateBonusWorks(Array.isArray(item?.bonus_works) ? item.bonus_works : [])
+      .filter(shouldDisplayBonus)
     return { item, bonuses, sourceIndex: index }
   })
   if (directGroups.some(group => group.bonuses.length)) {
@@ -380,7 +489,7 @@ const groupedItems = computed(() => {
     if (!parentItem || parentItem === item || isStrictTrue(parentItem?.is_bonus_work)) continue
     const parentKey = itemKey(parentItem, items.indexOf(parentItem))
     if (!bonusBuckets.has(parentKey)) bonusBuckets.set(parentKey, [])
-    bonusBuckets.get(parentKey).push(item)
+    if (shouldDisplayBonus(item)) bonusBuckets.get(parentKey).push(item)
     hiddenBonusItems.add(item)
   }
 
@@ -537,6 +646,7 @@ const visibleImageKeys = computed(() => {
     return itemViewModels.value.flatMap(item => [
       item.key,
       ...item.bonusViewModels.map(bonus => bonus.key),
+      bonusCollectionKey(item),
     ])
   }
   const keys = []
@@ -546,6 +656,7 @@ const visibleImageKeys = computed(() => {
       for (const bonus of cell.bonusViewModels) {
         keys.push(bonus.key)
       }
+      if (cell.bonuses.length) keys.push(bonusCollectionKey(cell))
     }
   }
   return keys
@@ -622,7 +733,17 @@ function bonusReleaseLabel(item) {
 }
 
 function bonusCoverUrl(item) {
-  return coverOverrideFor(item) || String(item?.[props.imageField] || item?.image_url || item?.thumb_image_url || '').trim()
+  const override = coverOverrideFor(item)
+  if (override) return override
+  if (item?.dlsite_cover_available === false) return ''
+  if (item?.cover_confirmed_missing === true) return ''
+  return String(item?.[props.imageField] || item?.image_url || item?.thumb_image_url || '').trim()
+}
+
+function normalizeLocalMainImageUrl(value) {
+  const url = String(value || '').trim()
+  if (!url.includes('/api/circle-completion/cover/')) return ''
+  return url.endsWith('_sam.jpg') ? url.replace(/_sam\.jpg$/i, '.jpg') : url
 }
 
 function hasBonusImageFailed(key) {
@@ -683,10 +804,17 @@ function normalizeDlsiteMainImageUrl(value) {
 function bonusMainCoverUrl(item) {
   const override = coverOverrideFor(item)
   if (override) return override
+  if (item?.dlsite_cover_available === false) return ''
+  if (item?.cover_confirmed_missing === true) return ''
+  if (item?.cover_available === false) return ''
+  const localMain = normalizeLocalMainImageUrl(item?.image_url)
+  if (localMain) return localMain
+  const localThumb = normalizeLocalMainImageUrl(item?.thumb_image_url || item?.[props.imageField])
+  if (localThumb) return localThumb
   const storedMain = normalizeDlsiteMainImageUrl(item?.image_url)
-  if (storedMain) return storedMain
+  if (storedMain && !storedMain.includes('/api/circle-completion/cover/')) return storedMain
   const storedThumb = normalizeDlsiteMainImageUrl(item?.thumb_image_url || item?.[props.imageField])
-  if (storedThumb) return storedThumb
+  if (storedThumb && !storedThumb.includes('/api/circle-completion/cover/')) return storedThumb
   return buildDlsiteImageUrl(bonusCode(item), 'main')
 }
 
@@ -700,6 +828,11 @@ function getRowItems(rowIndex) {
 
 function isImageActive(key) {
   return activeImageKeys.value.has(String(key || ''))
+}
+
+function bonusCollectionKey(viewModel) {
+  const key = String(viewModel?.key || '').trim()
+  return key ? `${key}:bonus-collection` : ''
 }
 
 function releaseImageSlot(key) {
@@ -891,7 +1024,7 @@ onBeforeUnmount(() => {
             />
             <div v-if="viewModel.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
               <button
-                v-for="bonusViewModel in viewModel.bonusViewModels"
+                v-for="bonusViewModel in [bonusCollectionViewModel(viewModel)]"
                 :key="bonusViewModel.key"
                 type="button"
                 class="circle-bonus-gift"
@@ -1006,6 +1139,7 @@ onBeforeUnmount(() => {
                     'is-selected': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).selected,
                     'status-flash': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).flashed,
                     'locate-flash': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).located,
+                    'is-dimmed': shouldDimBonusCard(viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`)),
                   }"
                   @click.stop="openBonusDetail(bonus, $event)"
                   @contextmenu.prevent.stop="emit('contextmenu', bonusActionItem(bonus, 'select'), $event)"
@@ -1172,7 +1306,7 @@ onBeforeUnmount(() => {
                 />
                 <div v-if="cell.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
                   <button
-                    v-for="bonusViewModel in cell.bonusViewModels"
+                    v-for="bonusViewModel in [bonusCollectionViewModel(cell)]"
                     :key="bonusViewModel.key"
                     type="button"
                     class="circle-bonus-gift"
@@ -1287,6 +1421,7 @@ onBeforeUnmount(() => {
                         'is-selected': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).selected,
                         'status-flash': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).flashed,
                         'locate-flash': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).located,
+                        'is-dimmed': shouldDimBonusCard(viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`)),
                       }"
                       @click.stop="openBonusDetail(bonus, $event)"
                       @contextmenu.prevent.stop="emit('contextmenu', bonusActionItem(bonus, 'select'), $event)"

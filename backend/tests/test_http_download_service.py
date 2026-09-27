@@ -1375,6 +1375,7 @@ async def test_resolve_gofile_uses_guest_token_when_unconfigured(monkeypatch, tm
             "pageSize": ["1000"],
             "sortField": ["createTime"],
             "sortDirection": ["-1"],
+            "wt": [service._gofile_website_token("guest-token")],
         }
         assert headers["Authorization"] == "Bearer guest-token"
         assert headers["X-Website-Token"] == service._gofile_website_token("guest-token")
@@ -1405,6 +1406,41 @@ async def test_resolve_gofile_uses_guest_token_when_unconfigured(monkeypatch, tm
     assert result["token_configured"] is False
     assert result["files"][0]["filename"] == "voice.zip"
     assert result["files"][0]["aria2_header"] == ["Cookie: accountToken=guest-token"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_gofile_falls_back_to_anonymous_contents_when_guest_account_unavailable(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    requests = []
+
+    async def unavailable_guest_token():
+        raise TimeoutError("accounts endpoint timeout")
+
+    async def fake_fetch_json(url, headers=None, method="GET", platform="http"):
+        requests.append((url, headers or {}))
+        parsed = urlparse(url)
+        assert parsed.path == "/contents/content-id"
+        assert "wt" not in parse_qs(parsed.query, keep_blank_values=True)
+        assert "Authorization" not in (headers or {})
+        return {
+            "status": "ok",
+            "data": {
+                "type": "file",
+                "name": "voice.zip",
+                "size": 12,
+                "downloadPage": "https://store1.gofile.io/download/direct/voice.zip",
+            },
+        }
+
+    monkeypatch.setattr(service, "_gofile_guest_token", unavailable_guest_token)
+    monkeypatch.setattr(service, "_fetch_json", fake_fetch_json)
+
+    result = await service._collect_gofile_files("https://gofile.io/d/content-id")
+
+    assert len(requests) == 1
+    assert result["files"][0]["filename"] == "voice.zip"
+    assert "aria2_header" not in result["files"][0]
 
 
 @pytest.mark.asyncio
@@ -1467,6 +1503,7 @@ async def test_resolve_gofile_folder_files(monkeypatch, tmp_path):
             "pageSize": ["1000"],
             "sortField": ["createTime"],
             "sortDirection": ["-1"],
+            "wt": [service._gofile_website_token("secret-token")],
         }
         assert headers["Authorization"] == "Bearer secret-token"
         assert headers["X-Website-Token"] == service._gofile_website_token("secret-token")
@@ -2067,6 +2104,29 @@ async def test_collect_transferit_files_retries_busy_response(monkeypatch, tmp_p
 
     assert attempts["count"] == 3
     assert result["files"][0]["filename"] == "pack.zip"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('parent,expected_dir', [('root', ''), ('one', '一级'), ('two', '一级/二级')])
+async def test_transferit_paths_exclude_share_root(monkeypatch, tmp_path, parent, expected_dir):
+    """分享根只是容器，真实子目录必须完整保留。"""
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    class FakeTransferit:
+        def info(self, _url, **_kwargs):
+            return [
+                {'kind': 'folder', 'handle': 'root', 'parent': '', 'name': '分享根'},
+                {'kind': 'folder', 'handle': 'one', 'parent': 'root', 'name': '一级'},
+                {'kind': 'folder', 'handle': 'two', 'parent': 'one', 'name': '二级'},
+                {'kind': 'file', 'handle': 'audio', 'parent': parent, 'name': 'voice.zip', 'size': 12},
+            ]
+
+    monkeypatch.setattr(service, '_transferit_api_client', lambda: FakeTransferit())
+    result = await service._collect_transferit_files('https://transfer.it/t/iVqeTDhlyRbA')
+    assert len(result['files']) == 1
+    assert result['files'][0]['relative_dir'] == expected_dir
+    assert result['files'][0]['filename'] == 'voice.zip'
 
 
 @pytest.mark.asyncio
@@ -3613,7 +3673,7 @@ def test_build_retry_selection_for_task_rebuilds_pikpak_share_source_items():
     assert all("original_url" not in item for item in retry_items)
 
 
-def test_build_retry_selection_for_file_retries_all_pikpak_share_parts():
+def test_build_retry_selection_for_file_preserves_other_pikpak_share_parts():
     service = HttpDownloadService()
     task = Task(
         task_type=TaskType.HTTP_DOWNLOAD,
@@ -3636,7 +3696,8 @@ def test_build_retry_selection_for_file_retries_all_pikpak_share_parts():
 
     items, _keys = service.build_retry_selection_for_file(task, task.task_metadata["download_files"][0])
 
-    assert {item["file_id"] for item in items} == {"part-1", "part-2", "part-3"}
+    assert {item["file_id"] for item in items} == {"part-1"}
+    assert task.task_metadata["download_files"][1]["status"] == "completed"
 
 
 def test_build_retry_selection_for_task_falls_back_to_initial_selected_items():

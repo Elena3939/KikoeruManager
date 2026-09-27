@@ -138,6 +138,240 @@ describe('CircleWorksViewport', () => {
     wrapper.unmount()
   })
 
+  it('同名特典合并时保留有封面的成员', async () => {
+    mockClientWidth = 600
+    mockClientHeight = 600
+    const wrapper = mount(CircleWorksViewport, {
+      props: {
+        imageField: 'thumb_image_url',
+        items: [
+          {
+            canonical_rjcode: 'RJ01708868',
+            display_rjcode: 'RJ01708868',
+            title: '原作',
+            bonus_works: [
+              {
+                canonical_rjcode: 'RJ01708881',
+                display_rjcode: 'RJ01708881',
+                title: '期间限定特典_01',
+                is_bonus_work: true,
+                cover_available: false,
+              },
+              {
+                canonical_rjcode: 'RJ01708876',
+                display_rjcode: 'RJ01708876',
+                title: '期间限定特典',
+                is_bonus_work: true,
+                cover_available: true,
+                thumb_image_url: '/api/circle-completion/cover/RJ01708876_sam.jpg',
+                image_url: '/api/circle-completion/cover/RJ01708876.jpg',
+              },
+            ],
+          },
+        ],
+      },
+      global: {
+        stubs: {
+          WorkCard: { template: '<div />' },
+          WorkListRow: { template: '<div />' },
+          ElPagination: { template: '<div />' },
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.find('.circle-bonus-gift').exists()).toBe(true)
+    expect(wrapper.get('.circle-bonus-gift').attributes('title')).toBe('期间限定特典')
+
+    wrapper.unmount()
+  })
+
+  it('同一特典的完整标题变体只保留纯特典标题', async () => {
+    mockClientWidth = 600
+    mockClientHeight = 600
+    const wrapper = mount(CircleWorksViewport, {
+      props: {
+        items: [{
+          canonical_rjcode: 'RJ01529215',
+          display_rjcode: 'RJ01529215',
+          title: '原作',
+          bonus_works: [
+            {
+              canonical_rjcode: 'RJ01549463',
+              display_rjcode: 'RJ01549463',
+              title: '【早期限定415大特典】',
+              is_bonus_work: true,
+            },
+            {
+              canonical_rjcode: 'RJ01549461',
+              display_rjcode: 'RJ01549461',
+              title: '【2/3日まで 早期限定415大特典】【3周年×11時間半×4人ハーレム王×王族母乳女神官】',
+              is_bonus_work: true,
+            },
+          ],
+        }],
+      },
+      global: {
+        stubs: {
+          WorkCard: { template: '<div />' },
+          WorkListRow: { template: '<div />' },
+          ElPagination: { template: '<div />' },
+        },
+      },
+    })
+
+    await flushPromises()
+
+    const bonusRows = wrapper.findAll('.circle-bonus-gift')
+    expect(bonusRows).toHaveLength(1)
+    expect(bonusRows[0].attributes('title')).toBe('【早期限定415大特典】')
+
+    wrapper.unmount()
+  })
+
+  it('无封面但不是编号脏数据的特典仍挂在本体卡片上', async () => {
+    mockClientWidth = 600
+    mockClientHeight = 600
+    const wrapper = mount(CircleWorksViewport, {
+      props: {
+        items: [
+          {
+            canonical_rjcode: 'RJ01647392',
+            display_rjcode: 'RJ01647392',
+            title: '原作',
+            owned: true,
+            bonus_works: [
+              {
+                canonical_rjcode: 'RJ01657211',
+                display_rjcode: 'RJ01657211',
+                title: '早期購入限定500大特典',
+                is_bonus_work: true,
+                cover_available: false,
+              },
+            ],
+          },
+        ],
+      },
+      global: {
+        stubs: {
+          WorkCard: { template: '<div />' },
+          WorkListRow: { template: '<div />' },
+          ElPagination: { template: '<div />' },
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.find('.circle-bonus-gift').exists()).toBe(true)
+    expect(wrapper.find('.circle-bonus-gift-cover img').exists()).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('DLsite 官方无封面的特典不显示', async () => {
+    mockClientWidth = 600
+    mockClientHeight = 600
+    const wrapper = mount(CircleWorksViewport, {
+      props: {
+        items: [{
+          canonical_rjcode: 'RJ01647392',
+          display_rjcode: 'RJ01647392',
+          title: '原作',
+          bonus_works: [{
+            canonical_rjcode: 'RJ01715445',
+            display_rjcode: 'RJ01715445',
+            title: '早期限定340大特典',
+            is_bonus_work: true,
+            cover_available: true,
+            dlsite_cover_available: false,
+            image_url: '/api/circle-completion/cover/RJ01715445.jpg',
+          }],
+        }],
+      },
+      global: {
+        stubs: {
+          WorkCard: { template: '<div />' },
+          WorkListRow: { template: '<div />' },
+          ElPagination: { template: '<div />' },
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.find('.circle-bonus-gift').exists()).toBe(false)
+    expect(wrapper.find('.circle-bonus-gift-cover img').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('确认不存在官方封面的特典不显示', async () => {
+    const wrapper = mount(CircleWorksViewport, {
+      props: {
+        items: [{
+          canonical_rjcode: 'RJ01647392',
+          title: '原作',
+          bonus_works: [{
+            canonical_rjcode: 'RJ01657211',
+            display_rjcode: 'RJ01657211',
+            title: '早期購入限定500大特典',
+            is_bonus_work: true,
+            cover_confirmed_missing: true,
+          }],
+        }],
+      },
+      global: {
+        stubs: {
+          WorkCard: { template: '<div />' },
+          WorkListRow: { template: '<div />' },
+          ElPagination: { template: '<div />' },
+        },
+      },
+    })
+
+    await flushPromises()
+    expect(wrapper.find('.circle-bonus-gift').exists()).toBe(false)
+    expect(wrapper.find('.circle-bonus-gift-cover img').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('本体已收录但特典未收录时将特典卡置灰', async () => {
+    mockClientWidth = 600
+    mockClientHeight = 600
+    const wrapper = mount(CircleWorksViewport, {
+      props: {
+        items: [{
+          canonical_rjcode: 'RJ01647392',
+          display_rjcode: 'RJ01647392',
+          title: '原作',
+          owned: true,
+          bonus_works: [{
+            canonical_rjcode: 'RJ01715445',
+            display_rjcode: 'RJ01715445',
+            title: '早期限定340大特典',
+            is_bonus_work: true,
+            owned: false,
+            cover_available: true,
+          }],
+        }],
+      },
+      global: {
+        stubs: {
+          WorkCard: { template: '<div />' },
+          WorkListRow: { template: '<div />' },
+          ElPagination: { template: '<div />' },
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.get('.circle-bonus-gift').classes()).toContain('is-dimmed')
+
+    wrapper.unmount()
+  })
+
   it('宽屏大页只挂载可见行和一行预渲染卡片', async () => {
     mockClientWidth = 1600
     mockClientHeight = 600

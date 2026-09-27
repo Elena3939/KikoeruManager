@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import pytest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -7,6 +8,67 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core import deferred_archive_service as deferred_archive_module
 from app.models.database import DeferredArchiveJob, ProcessedArchive
+
+
+@pytest.mark.parametrize('age,delay,eligible', [(899, 0, False), (901, 0, True), (901, 60, False)])
+def test_starvation_claim_preserves_retry_deadline(db_session, tmp_path, monkeypatch, age, delay, eligible):
+    source_dir = tmp_path / 'input'
+    processed_dir = tmp_path / 'processed'
+    source_dir.mkdir()
+    processed_dir.mkdir()
+    source = source_dir / 'RJ123456.zip'
+    source.write_bytes(b'archive')
+    service, session_factory = _configure_service(monkeypatch, db_session, source_dir, processed_dir, tmp_path)
+    queued = service.enqueue_sync(str(source))
+    with session_factory() as db:
+        now = service._database_now(db)
+        job = db.query(DeferredArchiveJob).filter_by(id=queued['job_id']).one()
+        job.created_at = now - timedelta(seconds=age)
+        job.available_at = now + timedelta(seconds=delay)
+        job.status = 'waiting_retry'
+        db.commit()
+    monkeypatch.setattr(service, '_has_foreground_work', lambda: True)
+    claim = service._claim_next_job_sync(starved_only=True)
+    assert (claim is not None) is eligible
+    if claim:
+        assert claim['starvation_protected'] is True
+
+
+def test_starved_archive_finishes_with_foreground_work(db_session, tmp_path, monkeypatch):
+    source_dir = tmp_path / 'input'
+    processed_dir = tmp_path / 'processed'
+    source_dir.mkdir()
+    processed_dir.mkdir()
+    source = source_dir / 'RJ123456.zip'
+    payload = b'archive-content' * 1024
+    source.write_bytes(payload)
+    service, session_factory = _configure_service(monkeypatch, db_session, source_dir, processed_dir, tmp_path)
+    queued = service.enqueue_sync(str(source))
+    with session_factory() as db:
+        job = db.query(DeferredArchiveJob).filter_by(id=queued['job_id']).one()
+        job.created_at = service._database_now(db) - timedelta(seconds=901)
+        db.commit()
+    claim = service._claim_next_job_sync(starved_only=True)
+    assert claim is not None
+    monkeypatch.setattr(service, '_has_foreground_work', lambda: True)
+    asyncio.run(service._execute_claimed_job(claim))
+    with session_factory() as db:
+        job = db.query(DeferredArchiveJob).filter_by(id=queued['job_id']).one()
+        assert job.status == 'completed'
+        assert job.lease_owner is None
+    assert not source.exists()
+    assert (processed_dir / source.name).read_bytes() == payload
+
+
+@pytest.mark.parametrize('reason', ['cancelled', 'lease_lost', 'shutdown'])
+def test_starvation_protection_keeps_control_interrupts(monkeypatch, reason):
+    service = deferred_archive_module.DeferredArchiveService()
+    service._set_active_job('protected')
+    service._active_starvation_protected = True
+    monkeypatch.setattr(service, '_has_foreground_work', lambda: True)
+    assert service._copy_abort_reason('protected', 1) == ''
+    service._request_active_abort('protected', reason)
+    assert service._copy_abort_reason('protected', 1) == reason
 
 
 def _configure_service(monkeypatch, db_session, source_dir, processed_dir, tmp_path):

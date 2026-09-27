@@ -1,3 +1,39 @@
+html.kikoerumanager-dark .deferred-archive-queue {
+  background: var(--km-dark-surface);
+  border-color: var(--km-dark-border);
+  color: var(--km-dark-text);
+}
+
+html.kikoerumanager-dark .deferred-archive-queue .queue-item {
+  background: var(--km-dark-elevated);
+  border-color: var(--km-dark-border-soft);
+}
+
+html.kikoerumanager-dark .deferred-archive-queue .queue-muted {
+  color: var(--km-dark-text-muted);
+}
+
+html.kikoerumanager-dark .deferred-archive-queue .text-rose-600 {
+  color: var(--km-dark-red);
+}
+
+html.kikoerumanager-dark .deferred-archive-queue .queue-control,
+html.kikoerumanager-dark .deferred-archive-queue .queue-page-indicator,
+html.kikoerumanager-dark .deferred-archive-queue .queue-status {
+  background: var(--km-dark-accent-bg);
+  border-color: var(--km-dark-border);
+  color: var(--km-dark-text);
+}
+
+html.kikoerumanager-dark .deferred-archive-queue .queue-control:hover:not(:disabled) {
+  background: var(--km-dark-accent-bg-strong);
+  border-color: var(--km-dark-border-strong);
+}
+
+html.kikoerumanager-dark .deferred-archive-queue .queue-pager {
+  border-color: var(--km-dark-border-soft);
+}
+
 html.kikoerumanager-dark {
   color-scheme: dark;
   --km-dark-bg: #08090c;

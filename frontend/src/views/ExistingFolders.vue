@@ -130,6 +130,15 @@
                 <span class="ef-switch-thumb"></span>
               </span>
             </button>
+            <label v-if="autoClassify" class="library-target-row">
+              <span class="library-target-label"><HardDrive :size="15" />目标库存</span>
+              <select v-model="targetLibraryId" class="library-target-select" :disabled="librariesLoading">
+                <option value="" disabled>{{ librariesLoading ? '正在加载库存…' : '请选择库存' }}</option>
+                <option v-for="library in libraries" :key="library.id" :value="library.id">
+                  {{ library.name || library.id }}{{ library.is_default ? '（默认）' : '' }}
+                </option>
+              </select>
+            </label>
             <button
               type="button"
               class="option-row"
@@ -776,6 +785,9 @@ const checkDuplicates = ref(true)
 const conflictCount = ref(0)
 const resultDialogVisible = ref(false)
 const resultData = ref({ success: true, message: '', tasks: [] })
+const libraries = ref([])
+const targetLibraryId = ref('')
+const librariesLoading = ref(false)
 const duplicateDetailVisible = ref(false)
 const duplicateDetailData = ref(null)
 const selectedResolution = ref('')
@@ -899,6 +911,7 @@ onMounted(() => {
   })
   if (folderViewportHostRef.value) folderResizeObserver.observe(folderViewportHostRef.value)
   refreshWithCache()
+  loadLibraries()
 })
 
 onBeforeUnmount(() => {
@@ -980,6 +993,23 @@ function refreshWithCache() {
 
 function closeResultDialog() {
   resultDialogVisible.value = false
+}
+
+async function loadLibraries() {
+  librariesLoading.value = true
+  try {
+    const response = await fetch(apiUrl('/library/libraries'), apiFetchOptions())
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const data = await response.json()
+    libraries.value = data.libraries || data || []
+    const preferred = libraries.value.find((library) => library?.is_default) || libraries.value[0]
+    if (!targetLibraryId.value && preferred?.id) targetLibraryId.value = preferred.id
+  } catch (error) {
+    console.error('加载库存列表失败:', error)
+    ElMessage.error('加载库存列表失败')
+  } finally {
+    librariesLoading.value = false
+  }
 }
 
 async function refreshForce() {
@@ -1067,8 +1097,12 @@ async function submitProcessFolders(targets, { title, message, confirmText = '�
         confirmText
       })
     }
+    if (autoClassify.value && !targetLibraryId.value) {
+      ElMessage.warning('请先选择目标库存')
+      return false
+    }
     processing.value = true
-    const data = await existingFolderApi.process(processableTargets.map((folder) => folder.path), autoClassify.value)
+    const data = await existingFolderApi.process(processableTargets.map((folder) => folder.path), autoClassify.value, targetLibraryId.value)
     resultData.value = { success: true, message: data.message, tasks: data.tasks || [] }
     resultDialogVisible.value = true
     if (clearSelection) selectedFolderPaths.value = []
@@ -2518,13 +2552,13 @@ function getConflictTypeLabel(conflictType) {
   background: rgba(15, 23, 42, 0.48);
 }
 .ef-result-dialog {
-  width: min(560px, calc(100vw - 32px));
-  max-height: min(82vh, 680px);
+  width: min(620px, calc(100vw - 32px));
+  max-height: min(78vh, 620px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 22px;
+  border-radius: 16px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.9)),
     var(--ef-surface);
@@ -2535,17 +2569,17 @@ function getConflictTypeLabel(conflictType) {
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
-  padding: 20px 20px 16px;
+  padding: 16px 18px 14px;
   border-bottom: 1px solid rgba(15, 23, 42, 0.08);
 }
 .ef-result-body {
   min-height: 0;
   overflow: auto;
-  padding: 16px 20px;
+  padding: 14px 18px;
 }
 .ef-result-footer {
   flex: 0 0 auto;
-  padding: 0 20px 20px;
+  padding: 0 18px 16px;
 }
 .ef-result-dialog :is(button, [tabindex]):focus,
 .ef-result-dialog :is(button, [tabindex]):focus-visible,
@@ -2736,6 +2770,29 @@ function getConflictTypeLabel(conflictType) {
 .dialog-ep-btn:active { transform: scale(0.96); transition: transform 0.12s ease; }
 .dialog-ep-btn.primary { background: #111827; border-color: #111827; color: #fff; box-shadow: 0 6px 14px rgba(15,23,42,0.18); }
 .dialog-ep-btn.primary:hover { box-shadow: 0 10px 22px rgba(15,23,42,0.26); }
+
+.library-target-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -4px 0 2px 42px;
+  padding: 9px 10px;
+  border: 1px solid var(--ef-border);
+  border-radius: 10px;
+  background: var(--ef-surface-soft);
+}
+.library-target-label { display: inline-flex; align-items: center; gap: 7px; color: var(--ef-text-soft); font-size: 12px; font-weight: 800; }
+.library-target-select { min-width: 170px; max-width: 55%; height: 30px; border: 1px solid var(--ef-border-strong); border-radius: 8px; background: var(--ef-surface); color: var(--ef-text); padding: 0 9px; font-size: 12px; }
+.library-target-select:focus { outline: none; box-shadow: none; }
+
+@media (max-width: 640px) {
+  .library-target-row { margin-left: 0; align-items: stretch; flex-direction: column; }
+  .library-target-select { max-width: none; width: 100%; }
+  .task-row { grid-template-columns: 1fr auto; }
+  .task-id { display: none; }
+  .task-path { grid-column: 1; }
+}
 
 .detail-card { border: 1px solid var(--ef-border); border-radius: 14px; padding: 12px; background: var(--ef-surface-soft); transition: border-color 0.25s ease, background-color 0.25s ease; }
 .detail-card:hover { border-color: var(--ef-border-strong); background: var(--ef-surface-hover); }

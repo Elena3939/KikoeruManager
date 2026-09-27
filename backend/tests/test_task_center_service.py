@@ -2,13 +2,13 @@ from datetime import datetime
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from sqlalchemy import create_engine
+
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+
 
 from app.core.task_center_service import TaskCenterService
 from app.core.task_engine import Task, TaskEngine, TaskStatus, TaskType
-from app.models.database import Base, TaskCenterItem
+from app.models.database import TaskCenterItem
 
 
 @pytest.mark.asyncio
@@ -21,8 +21,8 @@ async def test_task_center_cache_uses_engine_version_without_rescanning_tasks(mo
     monkeypatch.setattr(service, "_engine_tasks_snapshot", snapshot)
     monkeypatch.setattr(service, "_engine_change_version", lambda: 7)
     monkeypatch.setattr(service, "_get_pending_items_cached", AsyncMock(return_value=[]))
-    monkeypatch.setattr(service, "_get_waiting_retry_items_cached", Mock(return_value=[]))
-    monkeypatch.setattr(service, "_get_active_conflicts_cached", Mock(return_value=[]))
+    monkeypatch.setattr(service, "_get_waiting_retry_items_cached", AsyncMock(return_value=[]))
+    monkeypatch.setattr(service, "_get_active_conflicts_cached", AsyncMock(return_value=[]))
     monkeypatch.setattr(
         service,
         "_safe_serialize_engine_task",
@@ -51,11 +51,15 @@ async def test_task_center_cache_uses_engine_version_without_rescanning_tasks(mo
     assert snapshot.call_count == 1
 
 
-def test_task_engine_task_center_version_increments_on_task_event():
+def test_task_engine_task_center_version_increments_on_task_event(monkeypatch):
     engine = TaskEngine()
     task = Task(TaskType.EXTRACT, "/tmp/work.zip", task_id="task-version")
     engine._ensure_task_context(task)
 
+    engine.tasks[task.id] = task
+    monkeypatch.setattr(engine, '_write_task_runtime_to_redis', Mock())
+    monkeypatch.setattr(engine, 'enqueue_task_center_item_snapshot', Mock())
+    monkeypatch.setattr('app.core.task_center_event_service.broadcast_task_center_changed', Mock())
     before = engine.get_task_center_version()
     task.status = TaskStatus.PROCESSING
 
@@ -376,14 +380,8 @@ def test_summary_serialization_never_scans_file_tree(monkeypatch, tmp_path):
     service._serialize_engine_task(task, mode="summary")
 
 
-def test_task_snapshot_materializes_task_center_item(monkeypatch):
-    engine_db = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine_db)
-    Base.metadata.create_all(bind=engine_db)
+def test_task_snapshot_materializes_task_center_item(monkeypatch, db_session):
+    TestingSessionLocal = sessionmaker(bind=db_session.connection())
 
     import app.models.database as database_module
     import app.core.task_center_materialization_service as materialization_module
@@ -407,6 +405,7 @@ def test_task_snapshot_materializes_task_center_item(monkeypatch):
     task.created_at = datetime(2026, 1, 1, 8, 0, 0)
     task.update_progress(42, "下载中")
 
+    task_engine._ensure_task_context(task)
     expected = TaskCenterService()._safe_serialize_engine_task(task, mode="summary")
     task_engine.persist_task_snapshot(task)
 
@@ -452,14 +451,8 @@ def test_task_snapshot_materializes_task_center_item(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_task_center_backfill_materialized_items_supports_sql_listing(monkeypatch):
-    engine_db = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine_db)
-    Base.metadata.create_all(bind=engine_db)
+async def test_task_center_backfill_materialized_items_supports_sql_listing(monkeypatch, db_session):
+    TestingSessionLocal = sessionmaker(bind=db_session.connection())
 
     import app.models.database as database_module
     import app.core.task_center_materialization_service as materialization_module
@@ -487,8 +480,8 @@ async def test_task_center_backfill_materialized_items_supports_sql_listing(monk
     monkeypatch.setattr(service, "_engine_tasks_snapshot", Mock(return_value=[task]))
     monkeypatch.setattr(service, "_engine_change_version", lambda: 11)
     monkeypatch.setattr(service, "_get_pending_items_cached", AsyncMock(return_value=[]))
-    monkeypatch.setattr(service, "_get_waiting_retry_items_cached", Mock(return_value=[]))
-    monkeypatch.setattr(service, "_get_active_conflicts_cached", Mock(return_value=[]))
+    monkeypatch.setattr(service, "_get_waiting_retry_items_cached", AsyncMock(return_value=[]))
+    monkeypatch.setattr(service, "_get_active_conflicts_cached", AsyncMock(return_value=[]))
 
     result = await service.backfill_materialized_items()
     assert result["matched"] is True
@@ -506,20 +499,14 @@ async def test_task_center_backfill_materialized_items_supports_sql_listing(monk
 
     assert listed["total"] == 1
     assert listed["items"][0]["id"] == f"engine:{task.id}"
-    assert listed["counts_by_domain"] == {"http_download": 1}
-    assert listed["counts_by_status"] == {TaskStatus.PROCESSING.value: 1}
+    assert {key: value for key, value in listed["counts_by_domain"].items() if value} == {"http_download": 1}
+    assert {key: value for key, value in listed["counts_by_status"].items() if value} == {TaskStatus.PROCESSING.value: 1}
     assert listed["highlight_counts"]["processing"] == 1
 
 
 @pytest.mark.asyncio
-async def test_task_center_materialized_summary_can_read_all_item_kinds(monkeypatch):
-    engine_db = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine_db)
-    Base.metadata.create_all(bind=engine_db)
+async def test_task_center_materialized_summary_can_read_all_item_kinds(monkeypatch, db_session):
+    TestingSessionLocal = sessionmaker(bind=db_session.connection())
 
     import app.models.database as database_module
     import app.core.task_center_materialization_service as materialization_module
@@ -551,8 +538,8 @@ async def test_task_center_materialized_summary_can_read_all_item_kinds(monkeypa
     monkeypatch.setattr(service, "_engine_tasks_snapshot", Mock(return_value=[task]))
     monkeypatch.setattr(service, "_engine_change_version", lambda: 12)
     monkeypatch.setattr(service, "_get_pending_items_cached", AsyncMock(return_value=[pending_item]))
-    monkeypatch.setattr(service, "_get_waiting_retry_items_cached", Mock(return_value=[]))
-    monkeypatch.setattr(service, "_get_active_conflicts_cached", Mock(return_value=[]))
+    monkeypatch.setattr(service, "_get_waiting_retry_items_cached", AsyncMock(return_value=[]))
+    monkeypatch.setattr(service, "_get_active_conflicts_cached", AsyncMock(return_value=[]))
 
     backfill = await service.backfill_materialized_items()
     assert backfill["matched"] is True

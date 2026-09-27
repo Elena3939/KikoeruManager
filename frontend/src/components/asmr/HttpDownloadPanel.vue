@@ -14,7 +14,7 @@
           unstyled
           :show-default-icons="false"
           :success-hold="1000"
-          @click="loadHealth"
+          @click="loadHealth({ force: true })"
         >
           <template #prefix="{ state }">
             <span class="asmr-health-action-icon" :class="`is-${state}`" aria-hidden="true">
@@ -380,6 +380,7 @@ import {
   normalizeHttpDownloadInputRows,
   pikPakShareIdentity,
 } from './httpDownloadInput.js'
+import { getCachedServiceHealth, loadServiceHealth } from '../../utils/serviceHealthCache.js'
 
 const DOWNLOAD_PANEL_CONFLICT_POLICIES = ['resume', 'rename', 'skip']
 const DOWNLOAD_PREVIEW_CACHE_VERSION = 3
@@ -871,21 +872,35 @@ const healthText = computed(() => {
   return health.value.message || (isBaidu.value ? '百度登录态不可用' : 'aria2 不可用')
 })
 
-async function loadHealth() {
+async function loadHealth(options = {}) {
+  const force = options?.force !== false
+  const silent = Boolean(options?.silent)
   const targetName = isBaidu.value ? '百度登录态' : 'aria2'
-  healthLoading.value = true
+  if (!silent) healthLoading.value = true
   try {
-    health.value = await activeApi.value.health()
-    if (health.value?.ok) {
+    const provider = isBaidu.value ? 'baidu' : 'http'
+    health.value = await loadServiceHealth(provider, () => activeApi.value.health({ force }), { force })
+    if (!silent && health.value?.ok) {
       ElMessage.success(`${targetName} 可用`)
-    } else {
+    } else if (!silent) {
       ElMessage.warning(health.value?.message || `${targetName} 不可用`)
     }
   } catch (error) {
     health.value = { ok: false, message: error.response?.data?.detail || error.message || '检测失败' }
-    ElMessage.error(health.value.message)
+    if (!silent) ElMessage.error(health.value.message)
   } finally {
-    healthLoading.value = false
+    if (!silent) healthLoading.value = false
+  }
+}
+
+function scheduleBackgroundHealthRefresh() {
+  const refresh = () => {
+    void loadHealth({ force: true, silent: true })
+  }
+  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(refresh, { timeout: 1500 })
+  } else {
+    window.setTimeout(refresh, 0)
   }
 }
 
@@ -2420,7 +2435,10 @@ watch([previewItems, previewLogs, previewProgress], () => {
 
 onMounted(() => {
   restoreOrClearPreviewCache(props.draft?.previewCache)
-  loadHealth()
+  const provider = isBaidu.value ? 'baidu' : 'http'
+  const cached = getCachedServiceHealth(provider)
+  if (cached?.data) health.value = cached.data
+  if (!cached?.isFresh) scheduleBackgroundHealthRefresh()
 })
 
 onBeforeUnmount(() => {

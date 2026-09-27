@@ -1315,15 +1315,23 @@ class ConflictResolutionService:
                 await asyncio.to_thread(shutil.rmtree, workspace, True)
 
     async def resolve_skip(self, conflict) -> dict[str, Any]:
-        description = self.describe_conflict(conflict)
+        description = await asyncio.to_thread(self.describe_conflict, conflict)
         source = description["source"]
         # 走 fallback 路径，避免老 conflict 数据 new_path 死路径导致 _conflicts/ 残留。
-        delete_target = self._resolve_conflict_new_path(conflict) or conflict.new_path
-        await self._delete_source_path(delete_target, source.get("library_id"))
+        delete_target = await asyncio.to_thread(self._resolve_conflict_new_path, conflict) or conflict.new_path
+        source_missing = False
+        if not source.get("library_id"):
+            source_missing = not await asyncio.to_thread(os.path.exists, str(delete_target or ""))
+        try:
+            await self._delete_source_path(delete_target, source.get("library_id"))
+        except FileNotFoundError:
+            # 来源已由外部删除，无需再次删除，仍完成问题记录的跳过操作。
+            source_missing = True
         await self.cleanup_conflict_sessions(conflict.id)
         return {
-            "message": "已跳过当前压缩包或目录，并删除待处理来源",
-            "deleted_path": delete_target,
+            "message": "已跳过，源文件已不存在，无需删除" if source_missing else "已跳过当前压缩包或目录，并删除待处理来源",
+            "deleted_path": None if source_missing else delete_target,
+            "source_missing": source_missing,
         }
 
     async def rename_disguised_volumes(
@@ -1690,10 +1698,10 @@ class ConflictResolutionService:
         if library_id:
             await manager.delete(library_id, target_path, confirmed=True)
             return
-        if not os.path.exists(target_path):
+        if not await asyncio.to_thread(os.path.exists, target_path):
             return
-        if os.path.isdir(target_path):
-            await asyncio.to_thread(shutil.rmtree, target_path, True)
+        if await asyncio.to_thread(os.path.isdir, target_path):
+            await asyncio.to_thread(shutil.rmtree, target_path)
         else:
             await asyncio.to_thread(self._delete_local_file_with_split_siblings, target_path)
 

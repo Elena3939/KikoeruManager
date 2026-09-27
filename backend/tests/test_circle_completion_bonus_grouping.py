@@ -47,6 +47,108 @@ def test_completion_attach_bonus_parent_codes_uses_same_release_parent():
     assert result[0]["bonus_works"][0]["bonus_parent_rjcode"] == "RJ01538146"
 
 
+def test_numbered_bonus_title_is_filtered_as_dlsite_noise():
+    service = CircleCompletionService()
+
+    assert service._completion_is_numbered_bonus_noise({
+        "is_bonus_work": True,
+        "title": "【早期限定415大特典】_01",
+    }) is True
+    assert service._completion_is_numbered_bonus_noise({
+        "is_bonus_work": True,
+        "title": "【早期限定415大特典】",
+    }) is False
+
+
+def test_numbered_bonus_variants_keep_plain_title_or_lowest_suffix():
+    service = CircleCompletionService()
+    numbered = [
+        {"is_bonus_work": True, "title": "限定特典_02"},
+        {"is_bonus_work": True, "title": "限定特典_01"},
+    ]
+    selected = service._completion_select_bonus_variants(numbered)
+    assert [item["title"] for item in selected] == ["限定特典_01"]
+
+    with_plain = numbered + [{"is_bonus_work": True, "title": "限定特典"}]
+    selected = service._completion_select_bonus_variants(with_plain)
+    assert [item["title"] for item in selected] == ["限定特典"]
+
+    with_cover = [
+        {"is_bonus_work": True, "title": "限定特典_01", "cover_confirmed_missing": True},
+        {"is_bonus_work": True, "title": "限定特典_02", "cover_available": True},
+    ]
+    selected = service._completion_select_bonus_variants(with_cover)
+    assert [item["title"] for item in selected] == ["限定特典_02"]
+
+
+def test_confirmed_missing_bonus_cover_is_pruned():
+    service = CircleCompletionService()
+    parent = _work("RJ01000001", owned=True)
+    missing_bonus = _work("RJ01000002", bonus=True, owned=False)
+    missing_bonus["bonus_parent_rjcode"] = "RJ01000001"
+    missing_bonus["cover_confirmed_missing"] = True
+
+    result = service._completion_prune_bonus_items([parent, missing_bonus])
+
+    assert result == [parent]
+
+
+def test_dlsite_cover_state_does_not_use_local_cache_as_authority():
+    service = CircleCompletionService()
+    assert service._completion_is_numbered_bonus_noise({
+        "is_bonus_work": True,
+        "title": "早期特典",
+    }) is False
+
+
+@pytest.mark.asyncio
+async def test_list_completion_filters_bonus_without_dlsite_cover(monkeypatch):
+    service = CircleCompletionService()
+    parent = _work("RJ01000001", owned=True)
+    bonus = _work("RJ01000002", bonus=True, owned=False)
+    bonus["bonus_parent_rjcode"] = "RJ01000001"
+    bonus["dlsite_cover_available"] = False
+
+    monkeypatch.setattr(
+        service,
+        "_build_completion_view_state",
+        lambda _circle: {
+            "catalog": {
+                "circle_id": "RG00001",
+                "circle_name": "测试社团",
+                "source_mask": "",
+                "last_indexed_at": None,
+            },
+            "items": [parent, bonus],
+        },
+    )
+
+    missing_page = await service.list_circle_completion_works(
+        "RG00001",
+        tab="missing",
+        page=1,
+        page_size=10,
+        include_dl_only=True,
+        view_mode="card",
+    )
+    owned_page = await service.list_circle_completion_works(
+        "RG00001",
+        tab="owned",
+        page=1,
+        page_size=10,
+        include_dl_only=True,
+        view_mode="card",
+    )
+
+    assert missing_page["total"] == 0
+    assert owned_page["total"] == 1
+    assert owned_page["items"][0].get("bonus_works") in (None, [])
+    assert service._completion_is_numbered_bonus_noise({
+        "is_bonus_work": False,
+        "title": "作品_01",
+    }) is False
+
+
 def test_completion_explicit_bonus_link_beats_nearest_same_day_parent():
     service = CircleCompletionService()
     correct_parent = _work("RJ01673453")
@@ -165,6 +267,7 @@ def test_completion_bonus_item_uses_own_date_and_cached_cover():
             "release_date": "2026-03-22",
             "is_bonus_work": True,
             "cover_url": "",
+            "metadata_verification_status": "verified",
         },
         "RJ01592088": {
             "work_name": "错误翻译版",
@@ -189,6 +292,7 @@ def test_completion_bonus_item_uses_own_date_and_cached_cover():
 
     assert item["display_rjcode"] == "RJ01576811"
     assert item["release_date"] == "2026-03-22"
+    assert item["dlsite_cover_available"] is False
     assert item["image_url"].endswith("RJ01576811.jpg")
     assert item["thumb_image_url"].endswith("RJ01576811_sam.jpg")
 
@@ -268,7 +372,8 @@ async def test_card_completion_works_keeps_owned_parent_with_missing_bonus(monke
     )
 
     assert owned_page["total"] == 1
-    assert missing_page["total"] == 0
+    assert missing_page["total"] == 1
+    assert missing_page["items"][0]["display_rjcode"] == "RJ01000002"
     assert owned_page["items"][0]["canonical_rjcode"] == "RJ01000001"
     assert owned_page["items"][0].get("completion_card_dimmed") is False
     assert owned_page["items"][0]["bonus_works"][0]["display_rjcode"] == "RJ01000002"
@@ -314,7 +419,8 @@ async def test_card_completion_works_keeps_owned_bonus_with_missing_parent(monke
     )
 
     assert owned_page["total"] == 1
-    assert missing_page["total"] == 0
+    assert missing_page["total"] == 1
+    assert missing_page["items"][0]["canonical_rjcode"] == "RJ01000001"
     assert owned_page["items"][0]["canonical_rjcode"] == "RJ01000001"
     assert owned_page["items"][0]["completion_card_dimmed"] is True
     assert owned_page["items"][0]["bonus_works"][0]["completion_card_dimmed"] is False
@@ -351,8 +457,8 @@ async def test_card_completion_works_keeps_missing_group_colorful(monkeypatch):
     )
 
     assert result["total"] == 1
-    assert result["items"][0]["completion_card_dimmed"] is False
-    assert result["items"][0]["bonus_works"][0]["completion_card_dimmed"] is False
+    assert result["items"][0]["display_rjcode"] == "RJ01000001"
+    assert result["items"][0]["bonus_works"][0]["display_rjcode"] == "RJ01000002"
 
 
 @pytest.mark.asyncio

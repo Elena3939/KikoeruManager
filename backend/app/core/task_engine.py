@@ -1349,6 +1349,7 @@ class TaskEngine:
 
         db = SessionLocal()
         loaded_count = 0
+        recovered_tasks = []
         try:
             rows = db.query(TaskRecord).filter(TaskRecord.type == TaskType.RJ_SUBTITLE_FETCH.value).all()
             for row in rows:
@@ -1366,6 +1367,17 @@ class TaskEngine:
                 task_type = self._coerce_task_type(row.type)
                 if task_type is None:
                     continue
+                recovered_manual = (
+                    is_waiting_manual and not is_manual_completed
+                    and self._coerce_task_status(row.status) in {TaskStatus.PENDING, TaskStatus.PROCESSING}
+                )
+                if recovered_manual:
+                    # 已存在的内存任务在入口跳过；这里只恢复没有执行器的人工配对快照。
+                    row.status = TaskStatus.WAITING_MANUAL.value
+                    row.current_step = "等待筛选与配对：上次进程中断，已恢复人工处理"
+                    row.completed_at = None
+                    metadata["manual_match_recovered_at"] = datetime.now().isoformat()
+                    row.task_metadata = metadata
                 task = Task(
                     task_type=task_type,
                     source_path=row.source_path or metadata.get("folder_path") or "",
@@ -1386,6 +1398,12 @@ class TaskEngine:
                 self._ensure_task_context(task)
                 self.tasks[task.id] = task
                 loaded_count += 1
+                if recovered_manual:
+                    recovered_tasks.append(task)
+            if recovered_tasks:
+                db.commit()
+                for recovered_task in recovered_tasks:
+                    self.persist_task_center_item_snapshot(recovered_task)
             if loaded_count:
                 logger.info("[任务持久化] 已恢复字幕补配人工配对任务 %s 个", loaded_count)
             return loaded_count
@@ -3980,9 +3998,9 @@ class TaskEngine:
             logger.info("重试调度器已启动")
 
         # 加载等待重试的任务
+        self.load_persisted_linked_subtitle_tasks()
         self.recover_stale_processing_tasks()
         self.load_waiting_retry_tasks()
-        self.load_persisted_linked_subtitle_tasks()
 
     async def _retry_scheduler(self):
         """定时重试调度器，使用cron表达式"""

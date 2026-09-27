@@ -15,6 +15,8 @@ known index 字段名 / 类型的回归都会让"列表 chip 短路 metadata"和
 两条性能路径静默退化，**没有这些测试很难发现**——因此必须保留。
 """
 
+import pytest
+
 from app.core.circle_completion_service import CircleCompletionService
 from app.core.dlsite_service import DLsiteApiService
 
@@ -81,6 +83,38 @@ def test_classify_listing_summary_audio_falls_back_to_none_without_chip():
     plain = summaries[0]
     # is_probably_audio = None 让下游走 metadata fallback（旧行为）
     assert plain.is_probably_audio is None
+
+
+@pytest.mark.asyncio
+async def test_profile_listing_fills_rj_codes_missing_from_summary_cards(monkeypatch):
+    service = DLsiteApiService()
+    html = (
+        _build_listing_html([("RJ03333333", "SOU", "Recognized", "RG99999", "Plain Circle")])
+        + '<a href="/maniax/work/=/product_id/RJ04444444.html">mixed card</a>'
+        + '<a href="/maniax/work/=/product_id/RJ05555555.html">unrecognized card</a>'
+    )
+
+    class Response:
+        status_code = 200
+        text = html
+
+    async def fake_get(url, **_kwargs):
+        if "/announce/" in url or "/page/" in url:
+            return type("NotFound", (), {"status_code": 404, "text": ""})()
+        return Response()
+
+    monkeypatch.setattr(service, "_guarded_get", fake_get)
+
+    summaries, status = await service.list_circle_work_summaries_by_maker("RG99999")
+
+    assert status == "ok"
+    assert {item.workno for item in summaries} == {
+        "RJ03333333",
+        "RJ04444444",
+        "RJ05555555",
+    }
+    assert next(item for item in summaries if item.workno == "RJ03333333").is_probably_audio is True
+    assert next(item for item in summaries if item.workno == "RJ04444444").is_probably_audio is None
 
 
 def test_build_known_kikoeru_index_returns_compatible_state_payload():
