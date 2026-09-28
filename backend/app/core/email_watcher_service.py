@@ -74,7 +74,16 @@ def _subject_matches_filter(subject: str, subject_filter: str) -> bool:
     keyword = str(subject_filter or "").strip()
     if not keyword:
         return True
-    return _normalize_subject_text(keyword) in _normalize_subject_text(subject)
+    normalized_subject = _normalize_subject_text(subject)
+    normalized_keyword = _normalize_subject_text(keyword)
+    if normalized_keyword in normalized_subject:
+        return True
+    if normalized_keyword == "新着作品":
+        return "dlsite" in normalized_subject and any(
+            marker in normalized_subject
+            for marker in ("新作已開始販售", "新作已开始贩售", "新作が販売開始", "新作が登録")
+        )
+    return False
 
 
 def _normalize_mail_address(value: str) -> str:
