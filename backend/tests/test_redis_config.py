@@ -946,6 +946,65 @@ def test_library_index_watcher_degrades_cleanly_when_inotify_limit_is_reached(mo
         driver.stop(timeout=0.5)
 
 
+def test_library_index_watcher_registers_only_two_directory_levels(monkeypatch, tmp_path):
+    root = tmp_path / "library"
+    level_one = root / "circle"
+    level_two = level_one / "RJ00000001"
+    level_three = level_two / "nested"
+    level_three.mkdir(parents=True)
+    schedules = []
+
+    class FakeManager:
+        def list_libraries(self):
+            return [{"id": "library-a", "type": "local", "root_path": str(root)}]
+
+    class FakeRedis:
+        def read_library_index_dirty_paths_sync(self, _library_id):
+            return []
+
+    class FakeObserver:
+        def schedule(self, _handler, path, recursive):
+            schedules.append((path, recursive))
+
+        def start(self):
+            return None
+
+        def stop(self):
+            return None
+
+        def join(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr("app.core.library_manager.get_library_manager", lambda: FakeManager())
+    monkeypatch.setattr(watcher_module, "get_redis_service", lambda: FakeRedis())
+    monkeypatch.setattr(watcher_module, "Observer", FakeObserver)
+
+    driver = LibraryIndexWatcherDriver()
+    try:
+        driver.start()
+        assert {os.path.normcase(path) for path, _recursive in schedules} == {
+            os.path.normcase(str(root)),
+            os.path.normcase(str(level_one)),
+            os.path.normcase(str(level_two)),
+        }
+        assert all(recursive is False for _path, recursive in schedules)
+    finally:
+        driver.stop(timeout=0.5)
+
+
+def test_library_index_watcher_signature_detects_same_size_mtime_change(tmp_path):
+    root = tmp_path / "library"
+    root.mkdir()
+    target = root / "file.txt"
+    target.write_text("same-size", encoding="utf-8")
+    driver = LibraryIndexWatcherDriver()
+    before = driver._direct_signature(str(root))
+    changed_mtime = time.time_ns() + 60_000_000_000
+    os.utime(target, ns=(changed_mtime, changed_mtime))
+
+    assert driver._direct_signature(str(root)) != before
+
+
 def test_library_index_dirty_zset_and_channel_diagnostics(monkeypatch):
     zsets = {}
     eval_calls = []

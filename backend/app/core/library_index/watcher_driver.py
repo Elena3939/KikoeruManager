@@ -26,6 +26,7 @@ SCRUB_INTERVAL_SECONDS = 300.0
 SCRUB_MAX_DIRECTORIES = 200
 SCRUB_MAX_SECONDS = 2.0
 GENERATION_RECOVERY_DEBOUNCE_SECONDS = 5.0
+MAX_WATCH_DEPTH = 2
 _INOTIFY_LIMIT_PATHS = {
     "max_user_watches": "/proc/sys/fs/inotify/max_user_watches",
     "max_user_instances": "/proc/sys/fs/inotify/max_user_instances",
@@ -94,6 +95,15 @@ class _InventoryEventHandler(FileSystemEventHandler):
         paths = [getattr(event, "src_path", None), getattr(event, "dest_path", None)]
         for path in paths:
             if path:
+                if (
+                    getattr(event, "is_directory", False)
+                    and getattr(event, "event_type", "") in {"created", "moved"}
+                ):
+                    self.owner.register_directory_watch(
+                        self.library_id,
+                        self.root_path,
+                        str(path),
+                    )
                 self.owner.mark_dirty(self.library_id, self.root_path, str(path))
 
     def on_error(self, _event) -> None:
@@ -110,6 +120,8 @@ class LibraryIndexWatcherDriver:
         self._dirty: dict[str, dict[str, _DirtyPath]] = {}
         self._roots: dict[str, str] = {}
         self._observers: list[Observer] = []
+        self._observers_by_library: dict[str, Observer] = {}
+        self._watched_directories: dict[str, set[str]] = {}
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -138,6 +150,8 @@ class LibraryIndexWatcherDriver:
         self._last_start_errno = None
         self._inotify_limits = _read_inotify_limits()
         self._roots.clear()
+        self._observers_by_library.clear()
+        self._watched_directories.clear()
         manager = get_library_manager()
         observers: list[Observer] = []
         try:
@@ -151,15 +165,20 @@ class LibraryIndexWatcherDriver:
                 self._roots[library_id] = root_path
                 self._restore_redis_dirty(library_id, root_path)
                 observer = Observer()
-                observer.schedule(
-                    _InventoryEventHandler(self, library_id, root_path),
-                    root_path,
-                    recursive=True,
-                )
+                handler = _InventoryEventHandler(self, library_id, root_path)
+                directories = self._iter_shallow_directories(root_path)
+                for directory in directories:
+                    observer.schedule(handler, directory, recursive=False)
+                self._observers_by_library[library_id] = observer
+                self._watched_directories[library_id] = {
+                    os.path.normcase(directory) for directory in directories
+                }
                 observers.append(observer)
                 observer.start()
         except Exception as exc:
             self._stop_observers(observers)
+            self._observers_by_library.clear()
+            self._watched_directories.clear()
             if not _is_inotify_capacity_error(exc):
                 self._watcher_mode = "start_failed"
                 self._last_start_error = str(exc)
@@ -210,7 +229,78 @@ class LibraryIndexWatcherDriver:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=max(0.1, timeout))
         self._observers.clear()
+        self._observers_by_library.clear()
+        self._watched_directories.clear()
         self._watcher_mode = "stopped"
+
+    @staticmethod
+    def _iter_shallow_directories(root_path: str) -> list[str]:
+        result = [root_path]
+        frontier = [root_path]
+        for _depth in range(MAX_WATCH_DEPTH):
+            next_frontier: list[str] = []
+            for parent in frontier:
+                try:
+                    children = [
+                        entry.path
+                        for entry in os.scandir(parent)
+                        if entry.is_dir(follow_symlinks=False)
+                    ]
+                except OSError:
+                    continue
+                result.extend(children)
+                next_frontier.extend(children)
+            frontier = next_frontier
+            if not frontier:
+                break
+        return result
+
+    def register_directory_watch(
+        self,
+        library_id: str,
+        root_path: str,
+        directory: str,
+    ) -> None:
+        """为新出现的浅层目录补注册非递归 watch。"""
+        try:
+            normalized_root = os.path.abspath(root_path)
+            normalized_directory = os.path.abspath(directory)
+            if not os.path.isdir(normalized_directory):
+                return
+            relative = os.path.relpath(normalized_directory, normalized_root)
+            depth = 0 if relative == "." else len(relative.split(os.sep))
+            if depth > MAX_WATCH_DEPTH:
+                return
+            if os.path.normcase(
+                os.path.commonpath([normalized_root, normalized_directory])
+            ) != os.path.normcase(normalized_root):
+                return
+        except (OSError, ValueError):
+            return
+        normalized_key = os.path.normcase(normalized_directory)
+        with self._lock:
+            watched = self._watched_directories.setdefault(library_id, set())
+            if normalized_key in watched:
+                return
+            observer = self._observers_by_library.get(library_id)
+            if observer is None or self._stop_event.is_set():
+                return
+            watched.add(normalized_key)
+        try:
+            observer.schedule(
+                _InventoryEventHandler(self, library_id, normalized_root),
+                normalized_directory,
+                recursive=False,
+            )
+        except Exception:
+            with self._lock:
+                self._watched_directories.get(library_id, set()).discard(normalized_key)
+            logger.debug(
+                "[索引 watcher] 动态注册目录失败 library=%s path=%s",
+                library_id,
+                normalized_directory,
+                exc_info=True,
+            )
 
     def _restore_redis_dirty(self, library_id: str, root_path: str) -> None:
         try:
@@ -504,7 +594,7 @@ class LibraryIndexWatcherDriver:
                 except Exception:
                     logger.exception("[索引 watcher] reconcile 入账失败 library=%s", library_id)
                     self._requeue(library_id, paths)
-            if time.monotonic() >= next_scrub_at:
+            if self._watcher_mode == "inotify_limit" and time.monotonic() >= next_scrub_at:
                 try:
                     self._scrub_once()
                 except Exception:
@@ -528,9 +618,11 @@ class LibraryIndexWatcherDriver:
                         is_dir,
                         None if is_dir and ignore_directory_stats else int(stat_result.st_size or 0),
                         None if is_dir and ignore_directory_stats else int(stat_result.st_mtime_ns or 0),
+                        int(getattr(stat_result, "st_dev", 0) or 0),
+                        int(getattr(stat_result, "st_ino", 0) or 0),
                     ))
                 except OSError:
-                    rows.append((entry.name, None, None, None))
+                    rows.append((entry.name, None, None, None, None, None))
         return tuple(sorted(rows, key=lambda item: str(item[0]).casefold()))
 
     def _scrub_once(self) -> None:
@@ -539,13 +631,8 @@ class LibraryIndexWatcherDriver:
         for library_id, root_path in sorted(self._roots.items()):
             if visited >= SCRUB_MAX_DIRECTORIES or time.monotonic() - started >= SCRUB_MAX_SECONDS:
                 break
-            directories = [root_path]
             try:
-                directories.extend(
-                    entry.path
-                    for entry in os.scandir(root_path)
-                    if entry.is_dir(follow_symlinks=False)
-                )
+                directories = self._iter_shallow_directories(root_path)
             except OSError:
                 self.request_generation_recovery(
                     library_id,
