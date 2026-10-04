@@ -168,6 +168,7 @@ import { aiSubtitleMatchApi, libraryApi, rjSubtitleApi, subtitleImportApi } from
 import { runWithConcurrency } from '../../composables/useAsyncBatch'
 import { normalizeTaskCenterRealtimePayloads } from '../../composables/taskCenterEventUtils'
 import { useRealtimeEvents } from '../../composables/useRealtimeEvents'
+import { useLibraryIndexStateStore } from '../../stores/libraryIndexState'
 import { libraryEntryIconFor, libraryEntryMetaFor } from '../library/_libraryFileKind'
 import FilterDeleteDialog from '../library/FilterDeleteDialog.vue'
 import SubtitleWorkbenchStage from '../library/subtitle-workbench/SubtitleWorkbenchStage.vue'
@@ -189,6 +190,45 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'hide-background', 'select-task', 'state-change'])
 const realtimeEvents = useRealtimeEvents()
+const libraryIndexStateStore = useLibraryIndexStateStore()
+
+function applyLibraryIndexStatusEvent (event) {
+  const detail = event?.detail || {}
+  if (!['library.index.status.changed', 'library_index_status_changed'].includes(String(detail.type || ''))) return
+  const payload = detail.type === 'library.index.status.changed' ? (detail.payload || {}) : detail
+  if (!payload?.library_id) return
+  libraryIndexStateStore.applyStatusSnapshot(payload, 'sse')
+  libraryIndexStateStore.recordIndexViews({ index_view: payload })
+}
+
+function indexFencesMaterialized (fences) {
+  return (Array.isArray(fences) ? fences : []).every(fence => {
+    const libraryId = String(fence?.library_id || '').trim()
+    const acceptedSeq = Number(fence?.accepted_seq || 0)
+    const status = libraryIndexStateStore.statusFor(libraryId) || libraryIndexStateStore.indexViewFor(libraryId)
+    return libraryId && acceptedSeq > 0 && Number(status?.materialized_seq || 0) >= acceptedSeq
+  })
+}
+
+async function waitForIndexMutation (response, fallback = {}, timeoutMs = 8000) {
+  libraryIndexStateStore.registerMutationResponse(response, fallback)
+  const fences = Array.isArray(response?.index_fences) ? response.index_fences : []
+  if (!fences.length) return false
+  if (indexFencesMaterialized(fences)) return true
+  await new Promise(resolve => {
+    const startedAt = Date.now()
+    const timer = window.setInterval(() => {
+      if (indexFencesMaterialized(fences) || Date.now() - startedAt >= timeoutMs) {
+        window.clearInterval(timer)
+        resolve()
+      }
+    }, 250)
+  })
+  if (!indexFencesMaterialized(fences)) {
+    ElMessage.info('索引仍在后台更新，字幕文件树将在物化后自动校正')
+  }
+  return true
+}
 
 const LEGACY_SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
 const SUBTITLE_IMPORT_OPTIONS_KEY = 'kikoeru.ui.subtitleImport.workbenchOptions'
@@ -1525,10 +1565,15 @@ async function confirmSubtitleRename() {
 
   subtitleRenameLoading.value = true
   try {
-    const result = await libraryApi.browserRename(subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId, subtitleRenameForm.value.path, subtitleRenameForm.value.newName)
+    const libraryId = subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId
+    const result = await libraryApi.browserRename(libraryId, subtitleRenameForm.value.path, subtitleRenameForm.value.newName)
     applySubtitleRenameResultToSnapshot(subtitleRenameForm.value.path, subtitleRenameForm.value.newName, result)
     subtitleRenameDialogVisible.value = false
     ElMessage.success('字幕文件重命名成功')
+    await waitForIndexMutation(result, {
+      libraryId,
+      deletedPaths: [{ libraryId, path: subtitleRenameForm.value.path, scope: 'subtree' }]
+    })
     const reloaded = await reloadCurrentSubtitleInspectorSnapshot()
     if (reloaded === null) await reloadSubtitleInspector()
   } catch (error) {
@@ -1560,8 +1605,12 @@ async function deleteSubtitleTreeEntry(row) {
     })
     subtitleInspectorDeleting.value = true
     try {
-      await libraryApi.browserDelete(inspectorLibraryId, path, true)
+      const result = await libraryApi.browserDelete(inspectorLibraryId, path, true)
       ElMessage.success('删除成功')
+      await waitForIndexMutation(result, {
+        libraryId: inspectorLibraryId,
+        deletedPaths: [{ libraryId: inspectorLibraryId, path, scope: 'subtree' }]
+      })
       const reloaded = await reloadCurrentSubtitleInspectorSnapshot()
       if (reloaded === null) await reloadSubtitleInspector()
     } finally {
@@ -1603,6 +1652,10 @@ async function batchDeleteSubtitleTreeEntries() {
     if (failed.length) {
       throw new Error(failed[0]?.error || failed[0]?.path || '部分字幕文件删除失败')
     }
+    await waitForIndexMutation(result, {
+      libraryId: targetLibraryId,
+      deletedPaths: paths.map(path => ({ libraryId: targetLibraryId, path, scope: 'subtree' }))
+    })
     clearSubtitleInspectorSelection()
     ElMessage.success(`已删除 ${sortedRows.length} 项`)
     const reloaded = await reloadCurrentSubtitleInspectorSnapshot()
@@ -1628,6 +1681,18 @@ function normalizeSubtitleMatchName(value = '') {
     .replace(/^(track|trk|tr)[_\-\s]*/i, '')
     .replace(/[\s_\-]+/g, '')
     .replace(/[^\w\u4e00-\u9fff\u3040-\u30ff]+/g, '')
+}
+
+function dedupeSubtitleCandidates(items = []) {
+  const seen = new Set()
+  return items.filter(item => {
+    const stem = String(item?.name || '').replace(/\.[^.]+$/, '')
+    const canonical = stem.replace(/(?:[_\- ]+\d+)$/i, '').toLowerCase()
+    const key = canonical
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 function normalizeSubtitlePairPath(value = '') {
@@ -2227,7 +2292,7 @@ async function applySubtitleManualPairs() {
       }
     }
 
-    const scheduleFinalIndexMoves = (renamedPairs) => {
+    const scheduleFinalIndexMoves = async (renamedPairs) => {
       const buckets = groupByLibrary(renamedPairs || [])
       const jobs = []
       for (const [libraryId, bucketPairs] of buckets) {
@@ -2236,11 +2301,17 @@ async function applySubtitleManualPairs() {
           .filter(item => item.source && item.destination && item.source !== item.destination)
         if (moves.length) jobs.push(libraryApi.browserNotifyIndexMoves(libraryId, moves))
       }
-      if (!jobs.length) return
-      Promise.allSettled(jobs).then(results => {
+      if (!jobs.length) return []
+      const results = await Promise.allSettled(jobs)
+      const fulfilled = results
+        .filter(item => item.status === 'fulfilled' && item.value)
+        .map(item => item.value)
+      await Promise.all(fulfilled.map(result => waitForIndexMutation(result)))
+      {
         const failed = results.find(item => item.status === 'rejected')
         if (failed) console.warn('字幕补配最终索引移动调度失败', failed.reason)
-      })
+      }
+      return fulfilled
     }
 
     // —— Phase 1：source_path → temp_name
@@ -2293,9 +2364,10 @@ async function applySubtitleManualPairs() {
     }
 
     // —— Phase 3：删除未用字幕
+    let deleteResult = null
     if (unusedSubtitleRows.length) {
       const deletePaths = unusedSubtitleRows.map(subtitle => resolveSubtitleEntryPath(subtitle)).filter(Boolean)
-      const deleteResult = await libraryApi.browserBatchDelete(subtitleLibraryId, deletePaths, true, {
+      deleteResult = await libraryApi.browserBatchDelete(subtitleLibraryId, deletePaths, true, {
         skipActivityLog: true,
         batchId: `subtitle-manual-unused-${Date.now()}`
       })
@@ -2312,8 +2384,17 @@ async function applySubtitleManualPairs() {
       namingStrategy: subtitleOptions.value.namingStrategy || 'audio'
     })
 
+    await scheduleFinalIndexMoves(phaseTwoRenamed)
+    if (deleteResult) {
+      await waitForIndexMutation(deleteResult, {
+        libraryId: subtitleLibraryId,
+        deletedPaths: unusedSubtitleRows
+          .map(subtitle => resolveSubtitleEntryPath(subtitle))
+          .filter(Boolean)
+          .map(path => ({ libraryId: subtitleLibraryId, path, scope: 'subtree' }))
+      })
+    }
     await refreshSubtitleInspectorAfterManualApply(currentTaskId)
-    scheduleFinalIndexMoves(phaseTwoRenamed)
     ElMessage.success(`已重命名并导入 ${appliedPairCount} 组配对${unusedSubtitleRows.length ? `，并删除 ${unusedSubtitleRows.length} 个未使用字幕` : ''}`)
   } catch (error) {
     const rollbackErrors = []
@@ -2374,7 +2455,13 @@ async function openSubtitleInspectorFilterDeleteDialog() {
   filterDeleteDialogVisible.value = true
 }
 
-async function handleFilterDeleteDeleted() {
+async function handleFilterDeleteDeleted ({ mutations = [] } = {}) {
+  await Promise.all((Array.isArray(mutations) ? mutations : [mutations])
+    .filter(Boolean)
+    .map(result => waitForIndexMutation(result, {
+      libraryId: filterDeleteDialogLibraryId.value,
+      deletedPaths: []
+    })))
   const reloaded = await reloadCurrentSubtitleInspectorSnapshot()
   if (reloaded === null) await reloadSubtitleInspector()
 }
@@ -2393,9 +2480,10 @@ const subtitleInspectorAudioFiles = computed(() => (
     .sort((left, right) => compareSubtitleWorkbenchNames(left?.name, right?.name))
 ))
 const subtitleInspectorSubtitleFiles = computed(() => (
-  (subtitleInspectorItems.value || [])
-    .filter(item => isSubtitleFileName(item?.name || ''))
-    .sort((left, right) => compareSubtitleWorkbenchNames(left?.name, right?.name))
+  dedupeSubtitleCandidates(
+    (subtitleInspectorItems.value || [])
+      .filter(item => isSubtitleFileName(item?.name || ''))
+  ).sort((left, right) => compareSubtitleWorkbenchNames(left?.name, right?.name))
 ))
 const filteredSubtitleInspectorAudioFiles = computed(() => {
   const keyword = subtitleInspectorAudioSearch.value.trim().toLowerCase()
@@ -2531,10 +2619,12 @@ watch(activeTask, async (task) => {
 
 onMounted(() => {
   window.addEventListener('kikoerumanager:events:message', handleTaskRealtimeEvent)
+  window.addEventListener('kikoerumanager:events:message', applyLibraryIndexStatusEvent)
 })
 
 onUnmounted(() => {
   window.removeEventListener('kikoerumanager:events:message', handleTaskRealtimeEvent)
+  window.removeEventListener('kikoerumanager:events:message', applyLibraryIndexStatusEvent)
   stopTaskStatusPolling()
 })
 
