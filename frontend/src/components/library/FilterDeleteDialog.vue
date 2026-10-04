@@ -1507,7 +1507,8 @@ function applyFilterDeletePostDelete (deletedPaths, options = {}) {
     deletedFolderCount = 0,
     successCount = 0,
     failedCount = 0,
-    progressMessage = ''
+    progressMessage = '',
+    mutations = []
   } = options
   const deletedTargets = (deletedPaths || [])
     .map(item => typeof item === 'string' ? { library_id: props.libraryId, path: item } : item)
@@ -1548,7 +1549,8 @@ function applyFilterDeletePostDelete (deletedPaths, options = {}) {
   emit('deleted', {
     deletedBytes,
     deletedFolderCount,
-    libraryIds: [...new Set(deletedTargets.map(item => String(item.library_id || props.libraryId || '').trim()).filter(Boolean))]
+    libraryIds: [...new Set(deletedTargets.map(item => String(item.library_id || props.libraryId || '').trim()).filter(Boolean))],
+    mutations
   })
 }
 
@@ -1617,6 +1619,7 @@ async function confirmFilterDeleteSelection () {
     const batchId = `filter-delete-${filterDeleteSessionKey.value || Date.now()}`
     const succeededPaths = []
     const failedItems = []
+    const completedMutations = []
     if (!filterDeleteDeleteCancelRequested.value) {
       filterDeletePreviewInfo.value = {
         ...filterDeletePreviewInfo.value,
@@ -1662,6 +1665,9 @@ async function confirmFilterDeleteSelection () {
             scope: 'subtree',
           })),
         })
+        if (Array.isArray(result?.index_fences) && result.index_fences.length) {
+          completedMutations.push(result)
+        }
       } catch (error) {
         const errorMessage = error?.response?.data?.detail || error?.message || '删除失败'
         deleteTargets.forEach(target => {
@@ -1698,7 +1704,8 @@ async function confirmFilterDeleteSelection () {
         failedCount,
         progressMessage: filterDeleteDeleteCancelRequested.value
           ? `\u5220\u9664\u5df2\u505c\u6b62\uff0c\u5df2\u5b8c\u6210 ${successCount} / ${deleteTargets.length}`
-          : `\u5220\u9664\u5b8c\u6210\uff0c\u6210\u529f ${successCount} / ${deleteTargets.length}`
+          : `\u5220\u9664\u5b8c\u6210\uff0c\u6210\u529f ${successCount} / ${deleteTargets.length}`,
+        mutations: completedMutations
       })
     }
     const succeededItems = buildFilterDeleteLogItemsByTargets(attemptedItems, succeededPaths)

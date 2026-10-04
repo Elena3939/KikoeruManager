@@ -95,16 +95,25 @@ class _InventoryEventHandler(FileSystemEventHandler):
         paths = [getattr(event, "src_path", None), getattr(event, "dest_path", None)]
         for path in paths:
             if path:
-                if (
-                    getattr(event, "is_directory", False)
-                    and getattr(event, "event_type", "") in {"created", "moved"}
-                ):
-                    self.owner.register_directory_watch(
-                        self.library_id,
-                        self.root_path,
-                        str(path),
+                # watchdog 会在子目录创建、删除时额外向递归 observer 报一个
+                # 根目录 modified 事件；它不代表根目录被替换，不能触发全量代际重建。
+                try:
+                    is_root = os.path.normcase(os.path.abspath(str(path))) == os.path.normcase(
+                        os.path.abspath(self.root_path)
                     )
-                self.owner.mark_dirty(self.library_id, self.root_path, str(path))
+                except (OSError, ValueError):
+                    is_root = False
+                if (
+                    is_root
+                    and getattr(event, "event_type", "") == "modified"
+                    and getattr(event, "is_directory", False)
+                ):
+                    continue
+                self.owner.mark_dirty(
+                    self.library_id,
+                    self.root_path,
+                    self.owner._coalesce_event_path(self.root_path, str(path)),
+                )
 
     def on_error(self, _event) -> None:
         self.owner.request_generation_recovery(
@@ -120,8 +129,6 @@ class LibraryIndexWatcherDriver:
         self._dirty: dict[str, dict[str, _DirtyPath]] = {}
         self._roots: dict[str, str] = {}
         self._observers: list[Observer] = []
-        self._observers_by_library: dict[str, Observer] = {}
-        self._watched_directories: dict[str, set[str]] = {}
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -150,8 +157,6 @@ class LibraryIndexWatcherDriver:
         self._last_start_errno = None
         self._inotify_limits = _read_inotify_limits()
         self._roots.clear()
-        self._observers_by_library.clear()
-        self._watched_directories.clear()
         manager = get_library_manager()
         observers: list[Observer] = []
         try:
@@ -166,19 +171,13 @@ class LibraryIndexWatcherDriver:
                 self._restore_redis_dirty(library_id, root_path)
                 observer = Observer()
                 handler = _InventoryEventHandler(self, library_id, root_path)
-                directories = self._iter_shallow_directories(root_path)
-                for directory in directories:
-                    observer.schedule(handler, directory, recursive=False)
-                self._observers_by_library[library_id] = observer
-                self._watched_directories[library_id] = {
-                    os.path.normcase(directory) for directory in directories
-                }
+                # 一个库存只创建一个 inotify emitter；逐目录 schedule 会为每个目录
+                # 创建独立 inotify 实例，目录多时会直接撞上 max_user_instances。
+                observer.schedule(handler, root_path, recursive=True)
                 observers.append(observer)
                 observer.start()
         except Exception as exc:
             self._stop_observers(observers)
-            self._observers_by_library.clear()
-            self._watched_directories.clear()
             if not _is_inotify_capacity_error(exc):
                 self._watcher_mode = "start_failed"
                 self._last_start_error = str(exc)
@@ -229,8 +228,6 @@ class LibraryIndexWatcherDriver:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=max(0.1, timeout))
         self._observers.clear()
-        self._observers_by_library.clear()
-        self._watched_directories.clear()
         self._watcher_mode = "stopped"
 
     @staticmethod
@@ -255,52 +252,23 @@ class LibraryIndexWatcherDriver:
                 break
         return result
 
-    def register_directory_watch(
-        self,
-        library_id: str,
-        root_path: str,
-        directory: str,
-    ) -> None:
-        """为新出现的浅层目录补注册非递归 watch。"""
+    @staticmethod
+    def _coalesce_event_path(root_path: str, absolute_path: str) -> str:
+        """把深层文件事件归并到前两层目录，避免一次上传产生海量 dirty path。"""
         try:
             normalized_root = os.path.abspath(root_path)
-            normalized_directory = os.path.abspath(directory)
-            if not os.path.isdir(normalized_directory):
-                return
-            relative = os.path.relpath(normalized_directory, normalized_root)
-            depth = 0 if relative == "." else len(relative.split(os.sep))
-            if depth > MAX_WATCH_DEPTH:
-                return
+            normalized_path = os.path.abspath(absolute_path)
             if os.path.normcase(
-                os.path.commonpath([normalized_root, normalized_directory])
+                os.path.commonpath([normalized_root, normalized_path])
             ) != os.path.normcase(normalized_root):
-                return
+                return normalized_path
+            relative = os.path.relpath(normalized_path, normalized_root)
+            parts = [] if relative == "." else relative.split(os.sep)
+            if len(parts) > MAX_WATCH_DEPTH:
+                return os.path.join(normalized_root, *parts[:MAX_WATCH_DEPTH])
+            return normalized_path
         except (OSError, ValueError):
-            return
-        normalized_key = os.path.normcase(normalized_directory)
-        with self._lock:
-            watched = self._watched_directories.setdefault(library_id, set())
-            if normalized_key in watched:
-                return
-            observer = self._observers_by_library.get(library_id)
-            if observer is None or self._stop_event.is_set():
-                return
-            watched.add(normalized_key)
-        try:
-            observer.schedule(
-                _InventoryEventHandler(self, library_id, normalized_root),
-                normalized_directory,
-                recursive=False,
-            )
-        except Exception:
-            with self._lock:
-                self._watched_directories.get(library_id, set()).discard(normalized_key)
-            logger.debug(
-                "[索引 watcher] 动态注册目录失败 library=%s path=%s",
-                library_id,
-                normalized_directory,
-                exc_info=True,
-            )
+            return absolute_path
 
     def _restore_redis_dirty(self, library_id: str, root_path: str) -> None:
         try:

@@ -689,6 +689,8 @@ class LibraryIndexMutationService:
                     ),
                     "relative_path": effect["relative_path"],
                     "scope": effect["scope"],
+                    "target_library_id": effect.get("target_library_id"),
+                    "target_path": effect.get("target_path"),
                 }
                 for effect in effects
             ],
@@ -1044,6 +1046,7 @@ class LibraryIndexMutationService:
         ledger_id: int,
         epoch: int,
         generation: int,
+        effects: Optional[Iterable[LibraryIndexMutationEffect]] = None,
     ) -> None:
         status = db.query(LibraryIndexStatus).filter(
             LibraryIndexStatus.library_id == library_id
@@ -1061,6 +1064,13 @@ class LibraryIndexMutationService:
         ledger.applied_at = get_local_now()
         ledger.error = None
         ledger.next_retry_at = None
+        self._refresh_derived_tables_in_session(
+            db,
+            effects or (),
+            default_library_id=library_id,
+            generation_by_library={library_id: generation},
+            materialized_seq_by_library={library_id: seq},
+        )
         db.query(LibraryIndexPendingMask).filter(
             LibraryIndexPendingMask.library_id == library_id,
             LibraryIndexPendingMask.ledger_seq == seq,
@@ -1173,6 +1183,7 @@ class LibraryIndexMutationService:
                     ledger_id,
                     epoch,
                     generation,
+                    effects,
                 )
                 db.commit()
                 self._fast_path_last_duration_ms = (time.monotonic() - started) * 1000
@@ -1398,6 +1409,19 @@ class LibraryIndexMutationService:
                             "跨库 move 未命中旧索引，转入最小路径 reconcile"
                         )
                 store._flush_status_deltas(db, status_deltas)
+                self._refresh_derived_tables_in_session(
+                    db,
+                    effects,
+                    default_library_id=library_ids[0],
+                    generation_by_library={
+                        library_id: int(status_by_library[library_id].active_generation or 1)
+                        for library_id in library_ids
+                    },
+                    materialized_seq_by_library={
+                        library_id: int(ledger_by_library[library_id].seq)
+                        for library_id in library_ids
+                    },
+                )
                 for library_id in library_ids:
                     status = status_by_library[library_id]
                     ledger = ledger_by_library[library_id]
@@ -1965,6 +1989,36 @@ class LibraryIndexMutationService:
                 result.append(current)
         return result
 
+    def _refresh_derived_tables_in_session(
+        self,
+        db,
+        effects: Iterable[LibraryIndexMutationEffect],
+        *,
+        default_library_id: str,
+        generation_by_library: dict[str, int],
+        materialized_seq_by_library: dict[str, int],
+    ) -> None:
+        """在同一物化事务内刷新目录统计和 RJ 关联。"""
+        paths_by_generation: dict[tuple[str, int], set[str]] = {}
+        for effect in effects:
+            source_library_id = str(effect.library_id or default_library_id)
+            source_generation = max(1, int(generation_by_library.get(source_library_id, 1)))
+            paths_by_generation.setdefault((source_library_id, source_generation), set()).add(
+                str(effect.relative_path or "")
+            )
+            if effect.target_path is not None:
+                target_library_id = str(effect.target_library_id or source_library_id)
+                target_generation = max(1, int(generation_by_library.get(target_library_id, 1)))
+                paths_by_generation.setdefault((target_library_id, target_generation), set()).add(
+                    str(effect.target_path or "")
+                )
+        if paths_by_generation:
+            self._materializer_store()._refresh_derived_paths_in_session(
+                db,
+                paths_by_generation,
+                materialized_seq_by_library=materialized_seq_by_library,
+            )
+
     def _complete_seq_in_session(
         self,
         db,
@@ -1991,6 +2045,13 @@ class LibraryIndexMutationService:
         ledger.applied_at = get_local_now()
         ledger.error = None
         ledger.next_retry_at = None
+        self._refresh_derived_tables_in_session(
+            db,
+            effects,
+            default_library_id=library_id,
+            generation_by_library={library_id: generation},
+            materialized_seq_by_library={library_id: seq},
+        )
         ancestors = sorted({
             ancestor
             for effect in effects

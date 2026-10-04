@@ -769,6 +769,7 @@ async function deletePaths (paths, options = {}) {
       else ElMessage.success(`批量删除完成：成功 ${successCount} 项`)
       const previewCounts = getRowsDeleteCounts(sourceRows)
       emit('mutated', {
+        mutations: results,
         deletedBytes: resolveDeletePreviewSize(preview?.total_size, sourceRows.reduce((sum, row) => sum + Number(row?.size || 0), 0)),
         deletedFolderCount: Number(preview?.total_folder_count ?? previewCounts.folderCount)
       })
@@ -797,6 +798,7 @@ async function deletePaths (paths, options = {}) {
       ElMessage.success('删除成功')
       const previewCounts = getRowDeleteCounts(effectivePreviewRow)
       emit('mutated', {
+        mutations: [result],
         deletedBytes: resolveDeletePreviewSize(preview?.size, effectivePreviewRow?.size),
         deletedFolderCount: Number(preview?.folder_count ?? previewCounts.folderCount)
       })
@@ -825,6 +827,7 @@ async function deletePaths (paths, options = {}) {
       }
       const previewCounts = getRowsDeleteCounts(previewRows)
       emit('mutated', {
+        mutations: [result],
         deletedBytes: resolveDeletePreviewSize(preview?.total_size, previewRows.reduce((sum, row) => sum + Number(row?.size || 0), 0)),
         deletedFolderCount: Number(preview?.total_folder_count ?? previewCounts.folderCount)
       })
@@ -1787,6 +1790,15 @@ async function applyMojibakeRepair () {
           reason: item?.error || '重命名失败'
         })
       })
+      indexStateStore.registerMutationResponse(result, {
+        libraryId: props.libraryId,
+        deletedPaths: renameItems.map(item => ({
+          libraryId: props.libraryId,
+          path: item.path,
+          scope: 'subtree'
+        }))
+      })
+      emit('mutated', { mutations: [result] })
     }
 
     repairPreviewVisible.value = false

@@ -806,6 +806,139 @@ def test_local_listing_counts_descendants_only_for_current_page(monkeypatch, tmp
     assert all(item["folder_count_status"] == "lazy" for item in result["files"])
 
 
+def test_force_refresh_does_not_reconcile_every_indexed_child(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    library_root.mkdir()
+    child = library_root / "circle"
+    child.mkdir()
+    library = library_manager_module.LibraryDefinition(
+        id="local-refresh",
+        name="本地刷新",
+        type="local",
+        path=str(library_root),
+    )
+    entry = IndexEntry(
+        library_id=library.id,
+        entry_type="dir",
+        relative_path="circle",
+        absolute_path=str(child),
+        name="circle",
+    )
+
+    class FakeIndexService:
+        def has_library_entries(self, _library_id):
+            return True
+
+        def list_children_page(self, *_args, **_kwargs):
+            return {"entries": [entry], "total": 1}
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    queued = []
+    monkeypatch.setattr(manager, "_library_uses_inventory_index", lambda _library: True)
+    monkeypatch.setattr(manager, "_index_has_usable_snapshot", lambda *_args: True)
+    monkeypatch.setattr(manager, "_validate_local_index_entries_for_read", lambda _library, entries, **_kwargs: (entries, set()))
+    monkeypatch.setattr(manager, "_enqueue_index_read_repair_upserts", lambda _library, paths: queued.extend(paths))
+    monkeypatch.setattr(manager, "_build_search_entry_from_index", lambda *_args, **_kwargs: {"name": "circle", "size_status": "ready"})
+    monkeypatch.setattr(manager, "_build_browse_result_from_index", lambda _library, **kwargs: kwargs)
+    monkeypatch.setattr(library_index_module, "get_library_index_service", FakeIndexService)
+
+    result = manager._list_files_via_index(
+        library,
+        page=1,
+        page_size=50,
+        current_path=str(library_root),
+        browse_root=str(library_root),
+        parent_path="",
+        sort_by="time",
+        sort_order="desc",
+        force_refresh=True,
+    )
+
+    assert len(result["files"]) == 1
+    assert result["files"][0]["size_status"] != "stale"
+    assert queued == []
+
+
+def test_materialized_directory_mtime_does_not_trigger_subtree_repair(tmp_path):
+    directory = tmp_path / "circle"
+    directory.mkdir()
+    current_mtime = int(os.stat(directory).st_mtime * 1000)
+    entry = IndexEntry(
+        library_id="local-test",
+        entry_type="dir",
+        relative_path="circle",
+        absolute_path=str(directory),
+        name="circle",
+        mtime=current_mtime - 5000,
+        indexed_at=current_mtime + 1,
+    )
+    manager = object.__new__(library_manager_module.LibraryManager)
+
+    assert not manager._index_entry_stat_is_stale(entry, os.stat(directory))
+    entry.indexed_at = current_mtime - 1
+    assert manager._index_entry_stat_is_stale(entry, os.stat(directory))
+
+
+def test_delete_preview_repairs_only_stale_directory(monkeypatch, tmp_path):
+    root = tmp_path / "library"
+    root.mkdir()
+    directory = root / "circle"
+    directory.mkdir()
+    sibling = root / "other"
+    sibling.mkdir()
+    current_mtime = int(os.stat(directory).st_mtime * 1000)
+    library = library_manager_module.LibraryDefinition(
+        id="local-preview",
+        name="本地库存",
+        type="local",
+        path=str(root),
+    )
+    entry = IndexEntry(
+        library_id=library.id,
+        entry_type="dir",
+        relative_path="circle",
+        absolute_path=str(directory),
+        name="circle",
+        mtime=current_mtime,
+        indexed_at=current_mtime,
+    )
+    sibling_entry = IndexEntry(
+        library_id=library.id,
+        entry_type="dir",
+        relative_path="other",
+        absolute_path=str(sibling),
+        name="other",
+        mtime=int(os.stat(sibling).st_mtime * 1000),
+    )
+    count_calls = []
+
+    class FakeIndexService:
+        def get_entry(self, _library_id, _relative_path):
+            return {"circle": entry, "other": sibling_entry}.get(_relative_path)
+
+        def count_descendant_dirs_many(self, _library_id, paths):
+            count_calls.append(paths)
+            return {path: 0 for path in paths}
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    queued = []
+    monkeypatch.setattr(manager, "_index_service_if_ready", lambda _library: FakeIndexService())
+    monkeypatch.setattr(manager, "_enqueue_index_read_repair_upserts", lambda _library, paths: queued.extend(paths))
+
+    fresh = manager._delete_preview_via_index(library, str(directory))
+    assert fresh["size_status"] == "ready"
+    assert queued == []
+    batch = manager._batch_delete_preview_via_index(library, [str(directory), str(sibling)])
+    assert batch["total_folder_count"] == 2
+    assert count_calls == [["circle"], ["circle", "other"]]
+
+    entry.mtime = current_mtime - 5000
+    entry.indexed_at = current_mtime - 1000
+    stale = manager._delete_preview_via_index(library, str(directory))
+    assert stale["size_status"] == "stale"
+    assert queued == [str(directory)]
+
+
 def test_list_files_coalesces_identical_inflight_requests(monkeypatch, tmp_path):
     local_root = tmp_path / "library"
     local_root.mkdir()

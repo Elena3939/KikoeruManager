@@ -52,11 +52,31 @@ def _console_logging_enabled() -> bool:
 
 def init_database():
     """Initialize PostgreSQL database tables and indexes."""
-    from .models.database import init_db
+    from .models.database import (
+        _LIBRARY_INDEX_GENERATION_CONTRACT_ENV,
+        engine,
+        init_db,
+        library_index_generation_contract_requested,
+        library_index_generation_contract_status,
+    )
 
     init_db()
 
     logger = logging.getLogger(__name__)
+    if not library_index_generation_contract_requested():
+        try:
+            with engine.connect() as conn:
+                generation_status = library_index_generation_contract_status(conn)
+            if generation_status.get("ready"):
+                os.environ[_LIBRARY_INDEX_GENERATION_CONTRACT_ENV] = "1"
+                logger.info(
+                    "[数据库] 检测到库存索引 generation contract 已就绪，自动启用代际重建"
+                )
+        except Exception:
+            logger.warning(
+                "[数据库] 检查库存索引 generation contract 失败，保持保护开关关闭",
+                exc_info=True,
+            )
     logger.info("PostgreSQL 数据库初始化完成")
 
 

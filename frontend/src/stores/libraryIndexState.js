@@ -138,6 +138,19 @@ export const useLibraryIndexStateStore = defineStore('library-index-state', {
         if (currentRevision !== null && nextRevision === null) return false
         if (currentRevision === null && nextRevision === null && currentSource === 'sse' && source !== 'sse') return false
         if (currentRevision !== null && nextRevision === currentRevision) {
+          const currentAcceptedSeq = finiteRevision(current.accepted_seq) ?? 0
+          const nextAcceptedSeq = finiteRevision(snapshot.accepted_seq) ?? 0
+          const currentMaterializedSeq = finiteRevision(current.materialized_seq) ?? 0
+          const nextMaterializedSeq = finiteRevision(snapshot.materialized_seq) ?? 0
+          if (nextAcceptedSeq > currentAcceptedSeq || nextMaterializedSeq > currentMaterializedSeq) {
+            this.statusByLibrary = {
+              ...this.statusByLibrary,
+              [libraryId]: { ...current, ...snapshot, ...runtimeStatusPatch(snapshot), library_id: libraryId },
+            }
+            this.statusSourceByLibrary = { ...this.statusSourceByLibrary, [libraryId]: source }
+            this.releaseMaterializedTombstones(libraryId, snapshot)
+            return true
+          }
           if (compareRuntimeSnapshot(current, snapshot) <= 0) return false
           this.statusByLibrary = {
             ...this.statusByLibrary,

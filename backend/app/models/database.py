@@ -1701,6 +1701,65 @@ class LibraryIndexStatus(Base):
         }
 
 
+class LibraryIndexDirectoryStats(Base):
+    """库存索引目录直接子项统计快照。"""
+    __tablename__ = 'library_index_directory_stats'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    library_id = Column(String(60), nullable=False)
+    generation = Column(Integer, nullable=False, default=1)
+    parent_path = Column(Text, nullable=False, default='')
+    direct_children = Column(Integer, nullable=False, default=0)
+    total_size = Column(BigInteger, nullable=False, default=0)
+    top_level_dirs = Column(Integer, nullable=False, default=0)
+    materialized_seq = Column(BigInteger, nullable=False, default=0)
+    updated_at = Column(DateTime, nullable=False, default=get_local_now)
+
+    __table_args__ = (
+        Index(
+            'uq_library_index_directory_stats_scope',
+            'library_id', 'generation', 'parent_path',
+            unique=True,
+        ),
+        Index(
+            'idx_library_index_directory_stats_watermark',
+            'library_id', 'generation', 'materialized_seq',
+        ),
+    )
+
+
+class LibraryIndexRJEntry(Base):
+    """规范化 RJ 与库存真实路径的关联索引。"""
+    __tablename__ = 'library_index_rj_entries'
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    library_id = Column(String(60), nullable=False)
+    generation = Column(Integer, nullable=False, default=1)
+    rjcode = Column(String(20), nullable=False)
+    relative_path = Column(Text, nullable=False)
+    absolute_path = Column(Text, nullable=False)
+    entry_type = Column(String(10), nullable=False)
+    depth = Column(Integer)
+    materialized_seq = Column(BigInteger, nullable=False, default=0)
+    updated_at = Column(DateTime, nullable=False, default=get_local_now)
+
+    __table_args__ = (
+        Index(
+            'uq_library_index_rj_entries_scope',
+            'library_id', 'generation', 'rjcode', 'relative_path',
+            unique=True,
+        ),
+        Index(
+            'idx_library_index_rj_entries_lookup',
+            'library_id', 'generation', 'rjcode', 'depth', 'relative_path',
+        ),
+        Index(
+            'idx_library_index_rj_entries_prefix',
+            'library_id', 'generation', 'rjcode',
+        ),
+    )
+
+
 class LibraryIndexMutationOperation(Base):
     """一次确认型文件系统操作及其幂等、崩溃恢复状态。"""
     __tablename__ = 'library_index_mutation_operations'
@@ -2454,31 +2513,6 @@ _POSTGRES_LIBRARY_INDEX_SPECS = (
         "fragments": ("library_index_entries", "library_id", "indexed_at", "id"),
     },
     {
-        "name": "idx_lie_children_name",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_children_name ON library_index_entries(library_id, parent_path, name_sort_key, relative_path)",
-        "fragments": ("library_index_entries", "library_id", "parent_path", "name_sort_key", "relative_path"),
-    },
-    {
-        "name": "idx_lie_children_size",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_children_size ON library_index_entries(library_id, parent_path, size, name_sort_key, relative_path)",
-        "fragments": ("library_index_entries", "library_id", "parent_path", "size", "name_sort_key", "relative_path"),
-    },
-    {
-        "name": "idx_lie_children_size_desc",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_children_size_desc ON library_index_entries(library_id, parent_path, size DESC, name_sort_key, relative_path)",
-        "fragments": ("library_index_entries", "library_id", "parent_path", "size DESC", "name_sort_key", "relative_path"),
-    },
-    {
-        "name": "idx_lie_children_time",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_children_time ON library_index_entries(library_id, parent_path, mtime, name_sort_key, relative_path)",
-        "fragments": ("library_index_entries", "library_id", "parent_path", "mtime", "name_sort_key", "relative_path"),
-    },
-    {
-        "name": "idx_lie_children_time_desc",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_children_time_desc ON library_index_entries(library_id, parent_path, mtime DESC NULLS LAST, name_sort_key, relative_path)",
-        "fragments": ("library_index_entries", "library_id", "parent_path", "mtime DESC", "NULLS LAST", "name_sort_key", "relative_path"),
-    },
-    {
         "name": "idx_lie_subtree_path_pattern",
         "sql": "CREATE INDEX IF NOT EXISTS idx_lie_subtree_path_pattern ON library_index_entries(library_id, relative_path text_pattern_ops)",
         "fragments": ("library_index_entries", "library_id", "relative_path", "text_pattern_ops"),
@@ -2527,19 +2561,9 @@ _POSTGRES_LIBRARY_INDEX_SPECS = (
         "fragments": ("library_index_entries", "library_id", "generation", "parent_path", "size", "name_sort_key", "relative_path"),
     },
     {
-        "name": "idx_lie_generation_children_size_desc",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_generation_children_size_desc ON library_index_entries(library_id, generation, parent_path, size DESC, name_sort_key, relative_path)",
-        "fragments": ("library_index_entries", "library_id", "generation", "parent_path", "size DESC", "name_sort_key", "relative_path"),
-    },
-    {
         "name": "idx_lie_generation_children_time",
         "sql": "CREATE INDEX IF NOT EXISTS idx_lie_generation_children_time ON library_index_entries(library_id, generation, parent_path, mtime, name_sort_key, relative_path)",
         "fragments": ("library_index_entries", "library_id", "generation", "parent_path", "mtime", "name_sort_key", "relative_path"),
-    },
-    {
-        "name": "idx_lie_generation_children_time_desc",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_generation_children_time_desc ON library_index_entries(library_id, generation, parent_path, mtime DESC NULLS LAST, name_sort_key, relative_path)",
-        "fragments": ("library_index_entries", "library_id", "generation", "parent_path", "mtime DESC", "NULLS LAST", "name_sort_key", "relative_path"),
     },
     {
         "name": "idx_lie_generation_subtree_path",
@@ -2555,6 +2579,12 @@ _POSTGRES_LIBRARY_INDEX_SPECS = (
 
 
 _POSTGRES_OBSOLETE_INDEX_NAMES = (
+    # 目录浏览改用 generation 版 children 索引；旧索引会重复维护同一批写入。
+    "idx_lie_children_name",
+    "idx_lie_children_size",
+    "idx_lie_children_size_desc",
+    "idx_lie_children_time",
+    "idx_lie_children_time_desc",
     # 任务中心迁移期遗留索引；已由下方 domain/status/updated_at 复合索引和 trigram 搜索索引覆盖。
     "idx_task_center_items_domain_status",
     "idx_task_center_items_updated_at",
@@ -2594,6 +2624,9 @@ _POSTGRES_OBSOLETE_INDEX_NAMES = (
 
 _POSTGRES_LIBRARY_OBSOLETE_INDEX_NAMES = (
     # 库存索引：旧 btree / 多 GIN 写放大明显，已由复合业务索引和合并 trigram 表达式索引覆盖。
+    # generation 版 size/time 统一使用一个 B-tree，降序由反向扫描完成。
+    "idx_lie_generation_children_size_desc",
+    "idx_lie_generation_children_time_desc",
     "idx_lie_library_parent",
     "ix_library_index_entries_library_id",
     "idx_lie_library_rj",
@@ -3879,6 +3912,63 @@ def _migrate_library_index_status_schema(conn, existing_tables: Optional[set[str
         """))
 
 
+def _migrate_library_index_derived_tables(conn) -> None:
+    """创建并初始化目录统计与 RJ 关联表。"""
+    dialect = getattr(getattr(conn, "dialect", None), "name", None)
+    if dialect != "postgresql":
+        return
+    if not _table_exists(conn, "library_index_entries"):
+        return
+    stats_exists = _table_exists(conn, "library_index_directory_stats")
+    rj_exists = _table_exists(conn, "library_index_rj_entries")
+    LibraryIndexDirectoryStats.__table__.create(bind=conn, checkfirst=True)
+    LibraryIndexRJEntry.__table__.create(bind=conn, checkfirst=True)
+    if not stats_exists or not bool(conn.execute(text(
+        "SELECT 1 FROM library_index_directory_stats LIMIT 1"
+    )).first()):
+        conn.execute(text("""
+            INSERT INTO library_index_directory_stats (
+                library_id, generation, parent_path, direct_children,
+                total_size, top_level_dirs, materialized_seq, updated_at
+            )
+            SELECT e.library_id, e.generation, COALESCE(e.parent_path, ''),
+                   COUNT(*)::integer,
+                   COALESCE(SUM(GREATEST(COALESCE(e.size, 0), 0)), 0),
+                   COUNT(*) FILTER (WHERE e.entry_type = 'dir')::integer,
+                   COALESCE(MAX(e.materialized_seq), 0), CURRENT_TIMESTAMP
+              FROM library_index_entries e
+             GROUP BY e.library_id, e.generation, COALESCE(e.parent_path, '')
+            ON CONFLICT (library_id, generation, parent_path) DO UPDATE SET
+                direct_children = EXCLUDED.direct_children,
+                total_size = EXCLUDED.total_size,
+                top_level_dirs = EXCLUDED.top_level_dirs,
+                materialized_seq = EXCLUDED.materialized_seq,
+                updated_at = EXCLUDED.updated_at
+        """))
+    if not rj_exists or not bool(conn.execute(text(
+        "SELECT 1 FROM library_index_rj_entries LIMIT 1"
+    )).first()):
+        conn.execute(text("""
+            INSERT INTO library_index_rj_entries (
+                library_id, generation, rjcode, relative_path,
+                absolute_path, entry_type, depth, materialized_seq, updated_at
+            )
+            SELECT e.library_id, e.generation, e.rjcode, e.relative_path,
+                   e.absolute_path, e.entry_type, e.depth,
+                   e.materialized_seq, CURRENT_TIMESTAMP
+              FROM library_index_entries e
+             WHERE NULLIF(e.rjcode, '') IS NOT NULL
+            ON CONFLICT (library_id, generation, rjcode, relative_path) DO UPDATE SET
+                absolute_path = EXCLUDED.absolute_path,
+                entry_type = EXCLUDED.entry_type,
+                depth = EXCLUDED.depth,
+                materialized_seq = EXCLUDED.materialized_seq,
+                updated_at = EXCLUDED.updated_at
+        """))
+    conn.execute(text("ANALYZE library_index_directory_stats"))
+    conn.execute(text("ANALYZE library_index_rj_entries"))
+
+
 def _migrate_library_owned_works_schema(conn, existing_tables: Optional[set[str]] = None) -> None:
     if existing_tables is not None:
         if "library_owned_works" not in existing_tables:
@@ -4272,6 +4362,7 @@ def _migrate_compat_schema(conn) -> None:
         )
     _migrate_library_index_entries_schema(conn, existing_tables)
     _migrate_library_index_status_schema(conn, existing_tables)
+    _migrate_library_index_derived_tables(conn)
     _migrate_library_index_consistency_tables(conn)
     _migrate_library_owned_works_schema(conn, existing_tables)
     _migrate_work_canonical_links_schema(conn, existing_tables)

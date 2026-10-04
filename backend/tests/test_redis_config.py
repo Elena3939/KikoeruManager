@@ -946,12 +946,8 @@ def test_library_index_watcher_degrades_cleanly_when_inotify_limit_is_reached(mo
         driver.stop(timeout=0.5)
 
 
-def test_library_index_watcher_registers_only_two_directory_levels(monkeypatch, tmp_path):
+def test_library_index_watcher_uses_one_recursive_observer_per_library(monkeypatch, tmp_path):
     root = tmp_path / "library"
-    level_one = root / "circle"
-    level_two = level_one / "RJ00000001"
-    level_three = level_two / "nested"
-    level_three.mkdir(parents=True)
     schedules = []
 
     class FakeManager:
@@ -982,12 +978,7 @@ def test_library_index_watcher_registers_only_two_directory_levels(monkeypatch, 
     driver = LibraryIndexWatcherDriver()
     try:
         driver.start()
-        assert {os.path.normcase(path) for path, _recursive in schedules} == {
-            os.path.normcase(str(root)),
-            os.path.normcase(str(level_one)),
-            os.path.normcase(str(level_two)),
-        }
-        assert all(recursive is False for _path, recursive in schedules)
+        assert schedules == [(str(root), True)]
     finally:
         driver.stop(timeout=0.5)
 
@@ -1003,6 +994,17 @@ def test_library_index_watcher_signature_detects_same_size_mtime_change(tmp_path
     os.utime(target, ns=(changed_mtime, changed_mtime))
 
     assert driver._direct_signature(str(root)) != before
+
+
+def test_library_index_watcher_coalesces_deep_events_to_second_level(tmp_path):
+    root = tmp_path / "library"
+    deep_file = root / "circle" / "RJ00000001" / "wav" / "track.wav"
+    deep_file.parent.mkdir(parents=True)
+
+    assert LibraryIndexWatcherDriver._coalesce_event_path(
+        str(root),
+        str(deep_file),
+    ) == str(root / "circle" / "RJ00000001")
 
 
 def test_library_index_dirty_zset_and_channel_diagnostics(monkeypatch):

@@ -1513,16 +1513,18 @@
         class="pointer-events-none fixed inset-0 z-[2450] flex items-center justify-center p-6 max-[900px]:p-3"
       >
         <div
-          class="media-preview-dialog pointer-events-auto flex max-h-[calc(100vh-48px)] w-fit max-w-[calc(100vw-48px)] flex-col overflow-hidden rounded-[22px] border border-white/70 bg-white/28 shadow-[0_22px_70px_rgba(15,23,42,0.18),inset_0_1px_0_rgba(255,255,255,0.82)] backdrop-blur-2xl backdrop-saturate-150 max-[900px]:max-h-[calc(100vh-24px)] max-[900px]:max-w-[calc(100vw-24px)]"
+          class="media-preview-dialog pointer-events-auto grid max-h-[calc(100vh-48px)] w-fit max-w-[calc(100vw-48px)] grid-rows-[48px_minmax(0,1fr)] overflow-hidden rounded-[22px] border border-white/70 bg-white/28 shadow-[0_22px_70px_rgba(15,23,42,0.18),inset_0_1px_0_rgba(255,255,255,0.82)] backdrop-blur-2xl backdrop-saturate-150 max-[900px]:max-h-[calc(100vh-24px)] max-[900px]:max-w-[calc(100vw-24px)]"
+          :style="mediaPreviewDialogStyle"
         >
           <header
-            class="flex h-12 flex-shrink-0 items-center justify-between gap-3 bg-white/24 px-4 backdrop-blur-xl"
+            class="relative z-30 flex h-12 min-h-12 min-w-0 cursor-grab touch-none select-none items-center justify-between gap-3 overflow-visible bg-transparent px-4 active:cursor-grabbing"
             :class="mediaPreviewDialog.kind === 'pdf' ? 'border-b-0 shadow-[inset_0_-1px_0_rgba(255,255,255,0.42)]' : 'border-b border-white/55'"
+            @pointerdown="handleMediaPreviewDragStart"
           >
-            <div class="min-w-0 truncate text-[13px] font-semibold text-slate-900">
+            <div class="min-w-0 flex-1 truncate text-[13px] font-semibold text-slate-900">
               {{ mediaPreviewDialog.title || '文件观看' }}
             </div>
-            <div class="flex flex-shrink-0 items-center gap-2">
+            <div class="relative z-10 flex flex-shrink-0 items-center gap-2 whitespace-nowrap">
               <template v-if="mediaPreviewDialog.kind === 'image'">
                 <div class="flex items-center gap-1 rounded-[12px] border border-white/50 bg-white/26 p-0.5 shadow-sm backdrop-blur-xl">
                   <button
@@ -1544,6 +1546,18 @@
                   >
                     <IconChevronRight class="h-[15px] w-[15px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:translate-x-0.5" :stroke-width="2.4" />
                   </button>
+                </div>
+                <div class="flex items-center gap-1 rounded-[12px] border border-white/50 bg-white/26 p-0.5 shadow-sm backdrop-blur-xl">
+                  <button
+                    type="button"
+                    class="group inline-flex h-8 w-8 items-center justify-center rounded-[10px] text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:scale-[0.94]"
+                    :title="mediaPreviewResizeLocked ? '解锁弹窗比例' : '锁定弹窗比例'"
+                    @click="toggleMediaPreviewResizeLock"
+                  >
+                    <IconLock v-if="mediaPreviewResizeLocked" class="h-[15px] w-[15px]" :stroke-width="2.2" />
+                    <IconUnlock v-else class="h-[15px] w-[15px]" :stroke-width="2.2" />
+                  </button>
+                  <span class="px-1 text-[11px] font-semibold text-slate-500 select-none">{{ mediaPreviewDialogSizeText }}</span>
                 </div>
 
                 <div class="flex items-center gap-1 rounded-[12px] border border-white/50 bg-white/26 p-0.5 shadow-sm backdrop-blur-xl">
@@ -1597,7 +1611,7 @@
 
           <div
             ref="imageZoomContainerRef"
-            class="relative flex min-h-0 w-fit max-w-full flex-1 items-center justify-center overflow-hidden bg-white/10 select-none"
+            class="media-preview-frame relative z-0 flex min-h-0 min-w-0 items-center justify-center overflow-hidden bg-white/10 select-none"
             :style="mediaPreviewFrameStyle"
             @wheel="handleImageZoomWheel"
             @mousemove="handleImageZoomMouseMove"
@@ -1614,23 +1628,28 @@
             </div>
 
             <template v-else-if="mediaPreviewDialog.kind === 'image'">
-              <div
-                class="media-preview-image-wrapper"
-                :style="imageZoomTransformStyle"
-              >
-                <img
-                  ref="mediaPreviewImageRef"
+              <Transition :name="mediaPreviewTransitionName">
+                <div
                   :key="mediaPreviewDialog.previewKey || mediaPreviewDialog.url"
-                  class="media-preview-image block h-auto max-h-[calc(100vh-96px)] w-auto max-w-[calc(100vw-48px)] object-contain max-[900px]:max-h-[calc(100vh-72px)] max-[900px]:max-w-[calc(100vw-24px)]"
-                  :class="mediaPreviewImageMotionClass"
-                  :src="mediaPreviewDialog.url"
-                  :alt="mediaPreviewDialog.title"
-                  draggable="false"
-                  @load="handleMediaPreviewImageLoad"
-                  @mousedown="handleImageZoomMouseDown"
-                  @dblclick="resetImageZoom"
-                />
-              </div>
+                  class="media-preview-slide"
+                >
+                  <div
+                    class="media-preview-image-wrapper"
+                    :style="imageZoomTransformStyle"
+                  >
+                    <img
+                      ref="mediaPreviewImageRef"
+                      class="media-preview-image block h-auto max-h-full w-auto max-w-full object-contain"
+                      :src="mediaPreviewDialog.url"
+                      :alt="mediaPreviewDialog.title"
+                      draggable="false"
+                      @load="handleMediaPreviewImageLoad"
+                      @mousedown="handleImageZoomMouseDown"
+                      @dblclick="resetImageZoom"
+                    />
+                  </div>
+                </div>
+              </Transition>
               <button
                 v-if="mediaPreviewCanGoPrev"
                 type="button"
@@ -1669,6 +1688,17 @@
               :title="mediaPreviewDialog.title"
             ></iframe>
           </div>
+
+          <template v-if="mediaPreviewDialog.kind === 'image'">
+            <div class="media-preview-resize-zone media-preview-resize-zone-top" data-direction="n" @pointerdown="handleMediaPreviewResizeStart"></div>
+            <div class="media-preview-resize-zone media-preview-resize-zone-right" data-direction="e" @pointerdown="handleMediaPreviewResizeStart"></div>
+            <div class="media-preview-resize-zone media-preview-resize-zone-bottom" data-direction="s" @pointerdown="handleMediaPreviewResizeStart"></div>
+            <div class="media-preview-resize-zone media-preview-resize-zone-left" data-direction="w" @pointerdown="handleMediaPreviewResizeStart"></div>
+            <div class="media-preview-resize-zone media-preview-resize-zone-corner-tl" data-direction="nw" @pointerdown="handleMediaPreviewResizeStart"></div>
+            <div class="media-preview-resize-zone media-preview-resize-zone-corner-tr" data-direction="ne" @pointerdown="handleMediaPreviewResizeStart"></div>
+            <div class="media-preview-resize-zone media-preview-resize-zone-corner-br" data-direction="se" @pointerdown="handleMediaPreviewResizeStart"></div>
+            <div class="media-preview-resize-zone media-preview-resize-zone-corner-bl" data-direction="sw" @pointerdown="handleMediaPreviewResizeStart"></div>
+          </template>
         </div>
       </section>
     </Teleport>
@@ -1975,6 +2005,10 @@ import {
 
   RotateCcw as IconRotateCcw,
 
+  Lock as IconLock,
+
+  Unlock as IconUnlock,
+
 } from 'lucide-vue-next'
 
 import { classifyLibraryEntryKind, libraryEntryIconFor, libraryEntryMetaFor } from '../components/library/_libraryFileKind'
@@ -2090,6 +2124,7 @@ const libraryViewModeSwitching = ref(false)
 const files = ref([])
 
 const recentRenamePathMap = ref(new Map())
+let recentRenamePathMapNextPruneAt = 0
 
 const totalFiles = ref(0)
 
@@ -2193,6 +2228,7 @@ const circleCurrentWorkContext = computed(() => {
 let circleRefreshSequence = 0
 let circleAbortController = null
 const directoryRequestGate = createLatestRequestGate()
+const directoryRefreshInFlight = new Map()
 let statsRequestSequence = 0
 const statsRequestEpochByKey = new Map()
 const statsAbortControllers = new Map()
@@ -2634,7 +2670,7 @@ function applyCircleLibraryViewData ({ data, requestPageSize }) {
   currentPath.value = responsePath
   parentPath.value = data.parent_path || ''
 
-  files.value = applyRecentRenameRows(filterRowsByIndexTombstones(data.files || []))
+  files.value = filterRowsByIndexTombstones(applyRecentRenameRows(data.files || []))
   totalFiles.value = Number(data.total || files.value.length || 0)
   if (data.circle_summary && typeof data.circle_summary === 'object') {
     circleSummary.value = {
@@ -2646,7 +2682,7 @@ function applyCircleLibraryViewData ({ data, requestPageSize }) {
   if (responseDecoded.type === 'root') {
     circleGroupPage.value = Number(data.page || circleGroupPage.value || 1)
     circleGroupPageSize.value = Number(data.page_size || circleGroupPageSize.value || requestPageSize)
-    circleGroups.value = applyRecentRenameRows(filterRowsByIndexTombstones(Array.isArray(data.circle_groups) ? data.circle_groups : files.value))
+    circleGroups.value = filterRowsByIndexTombstones(applyRecentRenameRows(Array.isArray(data.circle_groups) ? data.circle_groups : files.value))
     circleGroupTotal.value = totalFiles.value
     circleSelectedGroupKey.value = ''
     circleSelectedWorkKey.value = ''
@@ -2662,13 +2698,13 @@ function applyCircleLibraryViewData ({ data, requestPageSize }) {
   }
 
   if (responseDecoded.type === 'group') {
-    circleWorks.value = applyRecentRenameRows(filterRowsByIndexTombstones(Array.isArray(data.circle_works) ? data.circle_works : []))
+    circleWorks.value = filterRowsByIndexTombstones(applyRecentRenameRows(Array.isArray(data.circle_works) ? data.circle_works : []))
     circleWorkTotal.value = totalFiles.value
     circleSelectedWorkKey.value = ''
   } else if (['work', 'item', 'location', 'location-item'].includes(responseDecoded.type)) {
     circleSelectedWorkKey.value = responseDecoded.workKey || data.circle_work?.rjcode || circleSelectedWorkKey.value
     if (Array.isArray(data.circle_works)) {
-      circleWorks.value = applyRecentRenameRows(filterRowsByIndexTombstones(data.circle_works))
+      circleWorks.value = filterRowsByIndexTombstones(applyRecentRenameRows(data.circle_works))
     } else if (data.circle_work?.rjcode) {
       const workIndex = circleWorks.value.findIndex(item => String(item?.rjcode || '') === String(data.circle_work.rjcode || ''))
       if (workIndex >= 0) circleWorks.value.splice(workIndex, 1, data.circle_work)
@@ -3366,11 +3402,89 @@ const mediaPreviewTextEncodingOptions = [
   { value: 'utf-16', label: 'UTF-16', description: 'Windows 记事本文本' },
 ]
 
-const mediaPreviewImageMotionClass = ref('media-preview-image-next')
+const mediaPreviewTransitionName = ref('media-preview-next')
 
 const mediaPreviewImageFrame = ref({ width: 0, height: 0 })
 
 const imageZoomContainerRef = ref(null)
+
+const mediaPreviewDialogSize = ref({ width: 760, height: 680 })
+
+const mediaPreviewDialogOffset = ref({ x: 0, y: 0 })
+
+const mediaPreviewResizeLocked = ref(true)
+
+const mediaPreviewResizeState = ref(null)
+
+const mediaPreviewDragState = ref(null)
+
+const mediaPreviewDialogFitPending = ref(false)
+
+const mediaPreviewDialogUserResized = ref(false)
+
+function getMediaPreviewViewportInset () {
+  return window.innerWidth <= 900 ? 12 : 24
+}
+
+function getMediaPreviewViewportBounds () {
+  const inset = getMediaPreviewViewportInset()
+  return {
+    inset,
+    maxWidth: Math.max(1, window.innerWidth - inset * 2),
+    maxHeight: Math.max(1, window.innerHeight - inset * 2),
+  }
+}
+
+function clampMediaPreviewDialogOffset (offset, size = mediaPreviewDialogSize.value) {
+  const { maxWidth, maxHeight } = getMediaPreviewViewportBounds()
+  const maxOffsetX = Math.max(0, (maxWidth - Number(size.width || 0)) / 2)
+  const maxOffsetY = Math.max(0, (maxHeight - Number(size.height || 0)) / 2)
+  const x = Number(offset?.x || 0)
+  const y = Number(offset?.y || 0)
+
+  return {
+    x: Math.min(maxOffsetX, Math.max(-maxOffsetX, x)),
+    y: Math.min(maxOffsetY, Math.max(-maxOffsetY, y)),
+  }
+}
+
+const mediaPreviewDialogStyle = computed(() => ({
+  ...(mediaPreviewDialog.value.kind === 'image'
+    ? {
+        width: `${mediaPreviewDialogSize.value.width}px`,
+        height: `${mediaPreviewDialogSize.value.height}px`,
+        maxWidth: `${getMediaPreviewViewportBounds().maxWidth}px`,
+        maxHeight: `${getMediaPreviewViewportBounds().maxHeight}px`,
+        transform: (() => {
+          const offset = clampMediaPreviewDialogOffset(mediaPreviewDialogOffset.value)
+          return `translate(${offset.x}px, ${offset.y}px)`
+        })(),
+      }
+    : {}),
+}))
+
+const mediaPreviewDialogSizeText = computed(() => {
+  const { width, height } = mediaPreviewDialogSize.value
+  return `${Math.round(width)} × ${Math.round(height)}`
+})
+
+function handleMediaPreviewViewportResize () {
+  if (!mediaPreviewDialog.value.visible || mediaPreviewDialog.value.kind !== 'image') return
+  const { maxWidth, maxHeight } = getMediaPreviewViewportBounds()
+  const current = mediaPreviewDialogSize.value
+  const scale = Math.min(1, maxWidth / Math.max(current.width, 1), maxHeight / Math.max(current.height, 1))
+  const size = scale < 1
+    ? {
+        width: Math.max(1, Math.floor(current.width * scale)),
+        height: Math.max(1, Math.floor(current.height * scale)),
+      }
+    : current
+
+  if (size.width !== current.width || size.height !== current.height) {
+    mediaPreviewDialogSize.value = size
+  }
+  mediaPreviewDialogOffset.value = clampMediaPreviewDialogOffset(mediaPreviewDialogOffset.value, size)
+}
 
 const mediaPreviewImageRef = ref(null)
 
@@ -3461,6 +3575,131 @@ function handleImageZoomMouseUp () {
   isImageZoomDragging.value = false
 }
 
+function toggleMediaPreviewResizeLock () {
+  mediaPreviewResizeLocked.value = !mediaPreviewResizeLocked.value
+}
+
+function handleMediaPreviewDragStart (event) {
+  if (!mediaPreviewDialog.value.visible || event.button !== 0) return
+
+  const target = event.target
+  if (target instanceof Element && target.closest('button, input, textarea, select, [role="button"], [role="listbox"]')) {
+    return
+  }
+
+  event.preventDefault()
+  event.currentTarget?.setPointerCapture?.(event.pointerId)
+  mediaPreviewDragState.value = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    offsetX: mediaPreviewDialogOffset.value.x,
+    offsetY: mediaPreviewDialogOffset.value.y,
+  }
+  window.addEventListener('pointermove', handleMediaPreviewDragMove)
+  window.addEventListener('pointerup', handleMediaPreviewDragEnd, { once: true })
+  window.addEventListener('pointercancel', handleMediaPreviewDragEnd, { once: true })
+}
+
+function handleMediaPreviewDragMove (event) {
+  const state = mediaPreviewDragState.value
+  if (!state || event.pointerId !== state.pointerId) return
+
+  mediaPreviewDialogOffset.value = clampMediaPreviewDialogOffset({
+    x: state.offsetX + event.clientX - state.startX,
+    y: state.offsetY + event.clientY - state.startY,
+  })
+}
+
+function handleMediaPreviewDragEnd () {
+  mediaPreviewDragState.value = null
+  window.removeEventListener('pointermove', handleMediaPreviewDragMove)
+  window.removeEventListener('pointerup', handleMediaPreviewDragEnd)
+  window.removeEventListener('pointercancel', handleMediaPreviewDragEnd)
+}
+
+function handleMediaPreviewResizeStart (event) {
+  if (mediaPreviewDialog.value.kind !== 'image') return
+  event.preventDefault()
+  event.currentTarget?.setPointerCapture?.(event.pointerId)
+  mediaPreviewDialogUserResized.value = true
+  mediaPreviewResizeState.value = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    width: mediaPreviewDialogSize.value.width,
+    height: mediaPreviewDialogSize.value.height,
+    ratio: mediaPreviewDialogSize.value.width / Math.max(mediaPreviewDialogSize.value.height, 1),
+    offsetX: mediaPreviewDialogOffset.value.x,
+    offsetY: mediaPreviewDialogOffset.value.y,
+    direction: event.currentTarget?.dataset?.direction || 'se',
+  }
+  window.addEventListener('pointermove', handleMediaPreviewResizeMove)
+  window.addEventListener('pointerup', handleMediaPreviewResizeEnd, { once: true })
+}
+
+function handleMediaPreviewResizeMove (event) {
+  const state = mediaPreviewResizeState.value
+  if (!state) return
+  const { maxWidth, maxHeight } = getMediaPreviewViewportBounds()
+  const minWidth = Math.min(420, maxWidth)
+  const minHeight = Math.min(320, maxHeight)
+  const dx = event.clientX - state.startX
+  const dy = event.clientY - state.startY
+  const hasWest = state.direction.includes('w')
+  const hasEast = state.direction.includes('e')
+  const hasNorth = state.direction.includes('n')
+  const hasSouth = state.direction.includes('s')
+  const horizontal = hasWest || hasEast
+  const vertical = hasNorth || hasSouth
+  const requestedWidth = state.width + (hasEast ? dx : 0) - (hasWest ? dx : 0)
+  const requestedHeight = state.height + (hasSouth ? dy : 0) - (hasNorth ? dy : 0)
+  let width = Math.min(maxWidth, Math.max(minWidth, requestedWidth))
+  let height = Math.min(maxHeight, Math.max(minHeight, requestedHeight))
+
+  if (mediaPreviewResizeLocked.value && horizontal && vertical) {
+    const maxRatioWidth = Math.min(maxWidth, maxHeight * state.ratio)
+    const minRatioWidth = Math.min(maxRatioWidth, Math.max(minWidth, minHeight * state.ratio))
+    let ratioWidth = state.width
+    if (horizontal && vertical) {
+      const widthProgress = Math.abs(dx) / Math.max(state.width, 1)
+      const heightProgress = Math.abs(dy) / Math.max(state.height, 1)
+      ratioWidth = widthProgress >= heightProgress
+        ? requestedWidth
+        : requestedHeight * state.ratio
+    } else if (horizontal) {
+      ratioWidth = requestedWidth
+    } else {
+      ratioWidth = requestedHeight * state.ratio
+    }
+    ratioWidth = Math.min(maxRatioWidth, Math.max(minRatioWidth, ratioWidth))
+    width = ratioWidth
+    height = ratioWidth / state.ratio
+  }
+
+  const offsetX = state.offsetX + (hasWest
+    ? (state.width - width) / 2
+    : hasEast
+      ? (width - state.width) / 2
+      : 0)
+  const offsetY = state.offsetY + (hasNorth
+    ? (state.height - height) / 2
+    : hasSouth
+      ? (height - state.height) / 2
+      : 0)
+
+  mediaPreviewDialogSize.value = { width, height }
+  mediaPreviewDialogOffset.value = clampMediaPreviewDialogOffset(
+    { x: offsetX, y: offsetY },
+    { width, height },
+  )
+}
+
+function handleMediaPreviewResizeEnd () {
+  mediaPreviewResizeState.value = null
+  window.removeEventListener('pointermove', handleMediaPreviewResizeMove)
+}
+
 const mediaPreviewImageRows = computed(() => files.value.filter(row =>
   row &&
   !row.is_directory &&
@@ -3488,14 +3727,20 @@ const mediaPreviewImagePositionText = computed(() => {
 })
 
 const mediaPreviewFrameStyle = computed(() => {
-  if (mediaPreviewDialog.value.kind !== 'image') return {}
-  const width = Number(mediaPreviewImageFrame.value.width || 0)
-  const height = Number(mediaPreviewImageFrame.value.height || 0)
-  return {
-    minWidth: width > 0 ? `${width}px` : 'min(72vw, 760px)',
-    minHeight: height > 0 ? `${height}px` : 'min(68vh, 560px)',
-  }
+  return {}
 })
+
+function resetMediaPreviewDialogSize () {
+  mediaPreviewResizeState.value = null
+  mediaPreviewDialogFitPending.value = true
+  mediaPreviewDialogUserResized.value = false
+  const { maxWidth, maxHeight } = getMediaPreviewViewportBounds()
+  mediaPreviewDialogSize.value = {
+    width: Math.min(860, maxWidth),
+    height: Math.min(760, maxHeight),
+  }
+  mediaPreviewDialogOffset.value = { x: 0, y: 0 }
+}
 
 function buildMediaPreviewUrl (libraryId, path, options = {}) {
 
@@ -3547,13 +3792,7 @@ function buildMediaPreviewKey (libraryId, path) {
 }
 
 function setMediaPreviewImageMotion (direction = 1) {
-
-  mediaPreviewImageMotionClass.value = ''
-
-  requestAnimationFrame(() => {
-    mediaPreviewImageMotionClass.value = direction < 0 ? 'media-preview-image-prev' : 'media-preview-image-next'
-  })
-
+  mediaPreviewTransitionName.value = direction < 0 ? 'media-preview-prev' : 'media-preview-next'
 }
 
 function handleMediaPreviewImageLoad (event) {
@@ -3562,12 +3801,46 @@ function handleMediaPreviewImageLoad (event) {
 
   if (!image) return
 
-  const width = Math.ceil(image.clientWidth || image.naturalWidth || 0)
+  const width = Math.ceil(image.naturalWidth || image.clientWidth || 0)
 
-  const height = Math.ceil(image.clientHeight || image.naturalHeight || 0)
+  const height = Math.ceil(image.naturalHeight || image.clientHeight || 0)
 
   if (width > 0 && height > 0) {
     mediaPreviewImageFrame.value = { width, height }
+
+    if (mediaPreviewDialogFitPending.value && !mediaPreviewDialogUserResized.value) {
+      const { maxWidth: viewportMaxWidth, maxHeight: viewportMaxHeight } = getMediaPreviewViewportBounds()
+      const framePaddingX = 32
+      const framePaddingY = 32
+      const headerHeight = 48
+      const minWidth = Math.min(680, viewportMaxWidth)
+      const maxWidth = Math.min(900, viewportMaxWidth)
+      const maxOuterHeight = Math.min(760, viewportMaxHeight)
+      const maxImageHeight = Math.max(1, maxOuterHeight - headerHeight - framePaddingY)
+      const maxImageWidth = Math.max(1, maxWidth - framePaddingX)
+      const ratio = width / Math.max(height, 1)
+
+      let imageWidth = maxImageWidth
+      let imageHeight = imageWidth / ratio
+
+      if (imageHeight > maxImageHeight) {
+        imageHeight = maxImageHeight
+        imageWidth = imageHeight * ratio
+      }
+
+      const dialogWidth = Math.max(minWidth, Math.ceil(imageWidth + framePaddingX))
+      const dialogHeight = Math.min(maxOuterHeight, Math.ceil(imageHeight + headerHeight + framePaddingY))
+
+      mediaPreviewDialogSize.value = {
+        width: Math.round(dialogWidth),
+        height: Math.round(dialogHeight),
+      }
+      mediaPreviewDialogOffset.value = clampMediaPreviewDialogOffset(
+        mediaPreviewDialogOffset.value,
+        mediaPreviewDialogSize.value,
+      )
+      mediaPreviewDialogFitPending.value = false
+    }
   }
 
 }
@@ -7628,6 +7901,7 @@ onMounted(async () => {
   window.addEventListener('kikoerumanager:events:message', handleFolderCompletionRealtimeEvent)
 
   window.addEventListener('resize', updateBaiduUploadTreeViewportHeight)
+  window.addEventListener('resize', handleMediaPreviewViewportResize)
 
   nextTick(() => bindPathBreadcrumbResizeObserver())
 
@@ -7822,6 +8096,13 @@ onBeforeUnmount(() => {
 
   libraryViewActive = false
 
+  for (const pending of pendingIndexFenceRefreshes.values()) {
+    clearPendingIndexFence(pending)
+  }
+  pendingIndexFenceRefreshes.clear()
+  pendingFenceRefreshInFlight = false
+  pendingFenceRefreshNeedsFlush = false
+
   closeMediaPreviewDialog()
 
   closeLibraryRowContextMenu()
@@ -7853,6 +8134,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('kikoerumanager:events:message', handleFolderCompletionRealtimeEvent)
 
   window.removeEventListener('resize', updateBaiduUploadTreeViewportHeight)
+  window.removeEventListener('resize', handleMediaPreviewViewportResize)
 
   unbindLibraryKeydown()
 
@@ -7942,17 +8224,52 @@ watch(trackedUploadTaskIds, () => {
 
 
 
-watch(pageSize, async value => {
+let scheduledDirectoryRefresh = null
+
+function scheduleDirectoryRefresh (options = {}) {
+
+  const key = [
+    selectedLibraryId.value,
+    currentPath.value,
+    currentPage.value,
+    pageSize.value,
+    sortBy.value,
+    sortOrder.value
+  ].join('|')
+
+  if (scheduledDirectoryRefresh?.key === key) {
+    scheduledDirectoryRefresh.options = {
+      ...scheduledDirectoryRefresh.options,
+      ...options,
+      forceRefresh: Boolean(scheduledDirectoryRefresh.options?.forceRefresh || options.forceRefresh),
+    }
+    return
+  }
+
+  scheduledDirectoryRefresh = { key, options }
+  queueMicrotask(async () => {
+    const scheduled = scheduledDirectoryRefresh
+    scheduledDirectoryRefresh = null
+    if (!scheduled || scheduled.key !== key || !selectedLibraryId.value) return
+    await refreshLibrary(scheduled.options)
+  })
+}
+
+watch(pageSize, value => {
 
   syncLibraryPageSizePreference(value)
 
   if (libraryViewMode.value === 'circle') return
 
+  const previousPage = Number(currentPage.value || 1)
   resetLibraryPageCursorCache()
 
-  currentPage.value = 1
+  if (previousPage !== 1) {
+    currentPage.value = 1
+    return
+  }
 
-  if (selectedLibraryId.value) await refreshLibrary()
+  if (selectedLibraryId.value) scheduleDirectoryRefresh({ forceRefresh: false })
 
 })
 
@@ -8020,6 +8337,8 @@ watch([currentPath, selectedLibraryId], () => {
 
   pathBreadcrumbPopoverVisible.value = false
 
+  flushPendingIndexFenceRefreshes()
+
   nextTick(() => updatePathBreadcrumbWidth())
 
 })
@@ -8029,6 +8348,15 @@ watch([currentPath, selectedLibraryId], () => {
 watch([sortBy, sortOrder], () => {
 
   resetLibraryPageCursorCache()
+
+  if (libraryViewMode.value === 'circle' || !selectedLibraryId.value) return
+
+  if (Number(currentPage.value || 1) !== 1) {
+    currentPage.value = 1
+    return
+  }
+
+  scheduleDirectoryRefresh({ forceRefresh: false })
 
 })
 
@@ -8686,6 +9014,7 @@ function handleLibraryIndexStatusChange (status, source = 'store') {
       invalidateDirectoryViewRequests()
     }
   }
+  flushPendingIndexFenceRefreshes()
 
   const library = libraries.value.find(item => item.id === libraryId) || currentLibrary.value || {}
   if (library?.type === 'synology_filestation' || durableStatus?.status === 'disabled') return
@@ -8882,7 +9211,7 @@ async function refreshCurrentPageIndexStatus () {
 
 
 
-async function refreshLibrary (options = {}) {
+async function refreshLibraryInternal (options = {}) {
 
   const { silent = false, forceRefresh = false, throwOnError = false } = options
   const requestMode = libraryViewMode.value
@@ -8965,7 +9294,7 @@ async function refreshLibrary (options = {}) {
     if (!libraryIndexStateStore.isIndexViewResponseCurrent(data)) return
     libraryIndexStateStore.recordIndexViews(data)
 
-    files.value = applyRecentRenameRows(filterRowsByIndexTombstones(data.files || [], requestLibraryId))
+    files.value = filterRowsByIndexTombstones(applyRecentRenameRows(data.files || []), requestLibraryId)
 
     totalFiles.value = data.total || 0
 
@@ -9141,12 +9470,40 @@ async function navigateToIndexEntry (entry) {
 
   currentPath.value = targetPath
 
-  const shouldRefreshNow = currentPage.value === 1
-
   currentPage.value = 1
 
-  if (shouldRefreshNow) await refreshLibrary()
+}
 
+function directoryRefreshKey (options = {}) {
+  const mode = libraryViewMode.value
+  if (mode === 'circle') {
+    return ['circle', selectedLibraryId.value || '', circleVirtualCurrentPath.value || '', circleGroupPage.value, circleWorkPage.value, circleGroupPageSize.value, circleWorkPageSize.value].join('|')
+  }
+  return [
+    'directory',
+    selectedLibraryId.value || '',
+    currentPath.value || '',
+    currentPage.value,
+    pageSize.value,
+    sortBy.value || DEFAULT_SORT_BY,
+    sortOrder.value || DEFAULT_SORT_ORDER,
+    Boolean(options.forceRefresh),
+  ].join('|')
+}
+
+function refreshLibrary (options = {}) {
+  const key = directoryRefreshKey(options)
+  const existing = directoryRefreshInFlight.get(key)
+  if (existing) return existing
+
+  const request = refreshLibraryInternal(options)
+  directoryRefreshInFlight.set(key, request)
+  request.then(() => {
+    if (directoryRefreshInFlight.get(key) === request) directoryRefreshInFlight.delete(key)
+  }, () => {
+    if (directoryRefreshInFlight.get(key) === request) directoryRefreshInFlight.delete(key)
+  })
+  return request
 }
 
 
@@ -9355,15 +9712,27 @@ function pruneRecentRenamePathMap () {
 
   const now = Date.now()
 
+  if (now < recentRenamePathMapNextPruneAt) return recentRenamePathMap.value
+
   const nextMap = new Map()
+  let nextPruneAt = Number.POSITIVE_INFINITY
 
   recentRenamePathMap.value.forEach((entry, key) => {
-    if (entry?.expiresAt && entry.expiresAt > now) nextMap.set(key, entry)
+    const expiresAt = Number(entry?.expiresAt || 0)
+    if (expiresAt > now) {
+      nextMap.set(key, entry)
+      nextPruneAt = Math.min(nextPruneAt, expiresAt)
+    }
   })
 
-  if (nextMap.size !== recentRenamePathMap.value.size) recentRenamePathMap.value = nextMap
+  if (nextMap.size !== recentRenamePathMap.value.size) {
+    recentRenamePathMap.value = nextMap
+  }
+  recentRenamePathMapNextPruneAt = Number.isFinite(nextPruneAt)
+    ? nextPruneAt
+    : now + RECENT_RENAME_TTL_MS
 
-  return nextMap
+  return recentRenamePathMap.value
 
 }
 
@@ -9384,6 +9753,7 @@ function rememberRecentRenamePath (oldPath, newPath, nextName = '') {
   })
 
   recentRenamePathMap.value = nextMap
+  recentRenamePathMapNextPruneAt = 0
 
 }
 
@@ -9602,6 +9972,7 @@ async function runAutoCircleGroupForRow (row) {
   const targetLibraryId = target.library_id || selectedLibraryId.value
 
   let currentPath = target.path
+  let renameMutation = null
 
   let data = await libraryApi.autoCircleGroup(targetLibraryId, currentPath)
 
@@ -9609,6 +9980,7 @@ async function runAutoCircleGroupForRow (row) {
   if (data?.need_api_rename) {
 
     const renameData = await libraryApi.apiRename(currentPath, targetLibraryId)
+    renameMutation = renameData
 
     const newPath = String(renameData?.path || '').trim()
 
@@ -9617,6 +9989,10 @@ async function runAutoCircleGroupForRow (row) {
     currentPath = newPath
 
     data = await libraryApi.autoCircleGroup(targetLibraryId, currentPath)
+
+    if (renameMutation && data?.result) {
+      data = { ...data, index_mutations: [renameMutation, data.result] }
+    }
 
     if (data?.skipped && Array.isArray(renameData?.index_fences) && renameData.index_fences.length) {
       data = { ...data, result: renameData }
@@ -9653,7 +10029,7 @@ async function autoCircleGroup (row) {
   try {
 
     const data = await runAutoCircleGroupForRow(row)
-    const indexMutation = registerAutoCircleGroupIndexMutation(data, row)
+    const indexMutations = registerAutoCircleGroupIndexMutation(data, row)
 
     if (data?.skipped) {
 
@@ -9669,9 +10045,10 @@ async function autoCircleGroup (row) {
       pruneRowsFromCurrentViewByPaths([row.path])
     }
 
-    if (indexMutation) await waitForMoveIndexFences(indexMutation)
-
-    refreshCurrentLibraryAndStatsInBackground('按社团分类已完成', { forceRefresh: false })
+    refreshAfterIndexFencesInBackground(
+      indexMutations,
+      '按社团分类已完成'
+    )
 
   } catch (error) {
 
@@ -17864,6 +18241,8 @@ async function applySubtitleManualPairs () {
 
   const phaseTwoCompleted = []
 
+  const subtitleIndexMutations = []
+
   const preApplySnapshot = createSubtitleManualMatchSnapshot()
 
   try {
@@ -17974,7 +18353,7 @@ async function applySubtitleManualPairs () {
       }
     }
 
-    const scheduleFinalIndexMoves = (renamedPairs) => {
+    const scheduleFinalIndexMoves = async (renamedPairs) => {
       const buckets = groupByLibrary(renamedPairs || [])
       const jobs = []
       for (const [libraryId, bucketPairs] of buckets) {
@@ -17983,11 +18362,16 @@ async function applySubtitleManualPairs () {
           .filter(item => item.source && item.destination && item.source !== item.destination)
         if (moves.length) jobs.push(libraryApi.browserNotifyIndexMoves(libraryId, moves))
       }
-      if (!jobs.length) return
-      Promise.allSettled(jobs).then(results => {
-        const failed = results.find(item => item.status === 'rejected')
-        if (failed) console.warn('字幕配对最终索引移动调度失败', failed.reason)
+      if (!jobs.length) return []
+      const results = await Promise.allSettled(jobs)
+      results.forEach(result => {
+        if (result.status === 'fulfilled' && Array.isArray(result.value?.index_fences) && result.value.index_fences.length) {
+          subtitleIndexMutations.push(result.value)
+        }
       })
+      const failed = results.find(item => item.status === 'rejected')
+      if (failed) console.warn('字幕配对最终索引移动调度失败', failed.reason)
+      return results.filter(result => result.status === 'fulfilled').map(result => result.value)
     }
 
     const phaseOneBuckets = groupByLibrary(phaseOne)
@@ -18047,6 +18431,7 @@ async function applySubtitleManualPairs () {
       if (failedDelete) {
         throw new Error(`删除未用字幕失败：${failedDelete.error || failedDelete.path || '未知错误'}`)
       }
+      subtitleIndexMutations.push(deleteResult)
     }
 
     const currentTaskId = subtitleInspectorInfo.value.taskId
@@ -18125,13 +18510,7 @@ async function applySubtitleManualPairs () {
 
 
 
-      await Promise.all([
-
-        refreshLibrary({ silent: true, forceRefresh: true }),
-
-        refreshRJSubtitleStatus(false, { silent: true })
-
-      ])
+      await refreshRJSubtitleStatus(false, { silent: true })
 
 
 
@@ -18181,19 +18560,18 @@ async function applySubtitleManualPairs () {
 
       await reloadSubtitleInspector()
 
-      await Promise.all([
-
-        refreshLibrary({ silent: true, forceRefresh: true }),
-
-        refreshRJSubtitleStatus(false, { silent: true })
-
-      ])
+      await refreshRJSubtitleStatus(false, { silent: true })
 
     }
 
 
 
-    scheduleFinalIndexMoves(phaseTwoCompleted)
+    await scheduleFinalIndexMoves(phaseTwoCompleted)
+    subtitleIndexMutations.forEach(mutation => libraryIndexStateStore.registerMutationResponse(mutation, {
+      libraryId: subtitleLibraryId,
+      deletedPaths: [],
+    }))
+    refreshAfterIndexFencesInBackground(subtitleIndexMutations, '字幕配对已完成')
 
     ElMessage.success(`${isLinkedImport ? '已重命名并导入' : '已应用'} ${appliedPairCount} 组配对${unusedSubtitleRows.length ? `，并删除 ${unusedSubtitleRows.length} 个未使用字幕` : ''}。当前目录已标记为已执行过配对，可继续调整后再次应用。`)
 
@@ -19366,7 +19744,10 @@ function restoreDirectoryReturnState () {
     currentPage.value = Number(state.currentPage || 1)
     sortBy.value = state.sortBy || DEFAULT_SORT_BY
     sortOrder.value = state.sortOrder || DEFAULT_SORT_ORDER
-    const restoredRows = filterRowsByIndexTombstones(state.files, state.libraryId || selectedLibraryId.value)
+    const restoredRows = filterRowsByIndexTombstones(
+      applyRecentRenameRows(state.files),
+      state.libraryId || selectedLibraryId.value,
+    )
     files.value = cloneLibraryRows(restoredRows)
     totalFiles.value = Number(state.totalFiles || files.value.length || 0)
     librarySearchState.value = createLibrarySearchState(state.librarySearchState || {})
@@ -19422,7 +19803,10 @@ async function circleLoadWorkChildRows (decoded) {
   if (!libraryIndexStateStore.isIndexViewResponseCurrent(data)) return false
   libraryIndexStateStore.recordIndexViews(data)
 
-  const rows = filterRowsByIndexTombstones(data.files || [], location?.library_id).map(item => circleBuildWorkChildRow(work, location, item))
+  const rows = filterRowsByIndexTombstones(
+    applyRecentRenameRows(data.files || []),
+    location?.library_id,
+  ).map(item => circleBuildWorkChildRow(work, location, item))
 
   files.value = rows
   totalFiles.value = Number(data.total || rows.length)
@@ -19468,7 +19852,10 @@ async function circleLoadLocationChildRows (decoded) {
   if (!libraryIndexStateStore.isIndexViewResponseCurrent(data)) return false
   libraryIndexStateStore.recordIndexViews(data)
 
-  const rows = filterRowsByIndexTombstones(data.files || [], location?.library_id).map(item => circleBuildLocationChildRow(work, location, locationIndex, item))
+  const rows = filterRowsByIndexTombstones(
+    applyRecentRenameRows(data.files || []),
+    location?.library_id,
+  ).map(item => circleBuildLocationChildRow(work, location, locationIndex, item))
 
   files.value = rows
   totalFiles.value = Number(data.total || rows.length)
@@ -21118,9 +21505,19 @@ async function batchDeleteSubtitleTreeEntries () {
 
     clearSubtitleInspectorSelection()
 
+    const inspectorLibraryId = subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value
+    libraryIndexStateStore.registerMutationResponse(result, {
+      libraryId: inspectorLibraryId,
+      deletedPaths: paths.map(path => ({ libraryId: inspectorLibraryId, path, scope: 'subtree' })),
+    })
+
     ElMessage.success(`已删除 ${sortedRows.length} 项`)
 
-    await Promise.all([reloadSubtitleInspector(), refreshLibrary({ silent: true }), refreshRJSubtitleStatus(false)])
+    await Promise.all([reloadSubtitleInspector(), refreshRJSubtitleStatus(false)])
+    refreshAfterMutationWithIndexFence(result, {
+      libraryId: inspectorLibraryId,
+      messagePrefix: '字幕批量删除已完成',
+    })
 
   } catch (error) {
 
@@ -21244,13 +21641,22 @@ async function confirmSubtitleRename () {
 
   try {
 
-    await libraryApi.browserRename(subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value, subtitleRenameForm.value.path, subtitleRenameForm.value.newName)
+    const inspectorLibraryId = subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value
+    const result = await libraryApi.browserRename(inspectorLibraryId, subtitleRenameForm.value.path, subtitleRenameForm.value.newName)
 
     subtitleRenameDialogVisible.value = false
 
     ElMessage.success('字幕文件重命名成功')
 
-    await Promise.all([reloadSubtitleInspector(), refreshLibrary({ silent: true })])
+    libraryIndexStateStore.registerMutationResponse(result, {
+      libraryId: inspectorLibraryId,
+      deletedPaths: [{ libraryId: inspectorLibraryId, path: subtitleRenameForm.value.path, scope: 'exact' }],
+    })
+    await reloadSubtitleInspector()
+    refreshAfterMutationWithIndexFence(result, {
+      libraryId: inspectorLibraryId,
+      messagePrefix: '字幕重命名已完成',
+    })
 
   } catch (error) {
 
@@ -21316,29 +21722,21 @@ async function deleteSubtitleTreeEntry (row) {
 
     try {
 
-      await libraryApi.browserDelete(inspectorLibraryId, path, true)
+      const result = await libraryApi.browserDelete(inspectorLibraryId, path, true)
 
       ElMessage.success('删除成功')
 
-      await Promise.all([
-
-        reloadSubtitleInspector(),
-
-        refreshLibrary({ silent: true }),
-
-        refreshRJSubtitleStatus(false),
-
-        refreshStatsAfterMutation({
-
-          deletedBytes: preview.size || 0,
-
-          deletedFolderCount: preview.folder_count || 0,
-
-          libraryId: inspectorLibraryId
-
-        })
-
-      ])
+      libraryIndexStateStore.registerMutationResponse(result, {
+        libraryId: inspectorLibraryId,
+        deletedPaths: [{ libraryId: inspectorLibraryId, path, scope: 'subtree' }],
+      })
+      await Promise.all([reloadSubtitleInspector(), refreshRJSubtitleStatus(false)])
+      refreshAfterMutationWithIndexFence(result, {
+        deletedBytes: preview.size || 0,
+        deletedFolderCount: preview.folder_count || 0,
+        libraryId: inspectorLibraryId,
+        messagePrefix: '字幕删除已完成',
+      })
 
     } finally {
 
@@ -21566,7 +21964,11 @@ async function viewLibraryRow (row) {
 
     const kind = classifyLibraryEntryKind(target)
 
-    if (kind === 'image') setMediaPreviewImageMotion(1)
+    if (kind === 'image') {
+      setMediaPreviewImageMotion(1)
+      resetImageZoom()
+      resetMediaPreviewDialogSize()
+    }
 
     if (kind === 'text') mediaPreviewTextEncoding.value = 'auto'
 
@@ -21594,7 +21996,11 @@ async function viewLibraryRow (row) {
     ? buildTextMediaPreviewUrl(targetLibraryId, target.path)
     : buildMediaPreviewUrl(targetLibraryId, target.path)
 
-  if (kind === 'image') setMediaPreviewImageMotion(1)
+  if (kind === 'image') {
+    setMediaPreviewImageMotion(1)
+    resetImageZoom()
+    resetMediaPreviewDialogSize()
+  }
 
   mediaPreviewDialog.value = {
     visible: true,
@@ -21622,6 +22028,11 @@ function switchMediaPreviewImage (direction) {
   resetImageZoom()
 
   setMediaPreviewImageMotion(direction)
+  resetImageZoom()
+
+  if (!mediaPreviewDialogUserResized.value) {
+    mediaPreviewDialogFitPending.value = true
+  }
 
   const nextUrl = buildMediaPreviewUrl(selectedLibraryId.value, nextRow.path)
 
@@ -21670,6 +22081,8 @@ function closeMediaPreviewDialog () {
   releaseMediaPreviewStreams()
 
   resetImageZoom()
+  handleMediaPreviewDragEnd()
+  handleMediaPreviewResizeEnd()
 
   mediaPreviewDialog.value = {
     visible: false,
@@ -22754,61 +23167,215 @@ function refreshAfterMoveInBackground (sourceLibraryId, targetLibraryId) {
 
 }
 
-function moveIndexFencesMaterialized (result) {
-  const fences = Array.isArray(result?.index_fences) ? result.index_fences : []
-  if (!fences.length) return false
-  return fences.every(fence => {
-    const libraryId = String(fence?.library_id || '')
-    const acceptedSeq = Number(fence?.accepted_seq || 0)
-    const status = libraryIndexStateStore.statusFor(libraryId) || libraryIndexStateStore.indexViewFor(libraryId)
-    return acceptedSeq > 0 && Number(status?.materialized_seq || 0) >= acceptedSeq
+const pendingIndexFenceRefreshes = new Map()
+let pendingFenceRefreshInFlight = false
+let pendingFenceRefreshNeedsFlush = false
+
+function refreshMaterializedLibraryViews (messagePrefix = '操作已完成') {
+  const jobs = [refreshLibrary({ silent: true, forceRefresh: true })]
+  if (folderDialogVisible.value && folderDialogRef.value?.reload) {
+    jobs.push(folderDialogRef.value.reload())
+  }
+  pendingFenceRefreshInFlight = true
+  Promise.all(jobs).catch(error => {
+    ElMessage.warning(`${messagePrefix}，但索引物化后的刷新失败：${error?.response?.data?.detail || error?.message || '未知错误'}`)
+  }).finally(() => {
+    pendingFenceRefreshInFlight = false
+    if (pendingFenceRefreshNeedsFlush) {
+      pendingFenceRefreshNeedsFlush = false
+      flushPendingIndexFenceRefreshes()
+    }
   })
 }
 
-async function waitForMoveIndexFences (result, timeoutMs = 8000) {
-  const fences = Array.isArray(result?.index_fences) ? result.index_fences : []
-  if (!fences.length) return false
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (moveIndexFencesMaterialized(result)) return true
-    await new Promise(resolve => window.setTimeout(resolve, 120))
+function indexFencesMaterialized (fences) {
+  const normalized = Array.isArray(fences) ? fences : []
+  if (!normalized.length) return false
+  return normalized.every(fence => {
+    const libraryId = String(fence?.library_id || '')
+    const acceptedSeq = Number(fence?.accepted_seq || 0)
+    const status = libraryIndexStateStore.statusFor(libraryId)
+    const view = libraryIndexStateStore.indexViewFor(libraryId)
+    const materializedSeq = Math.max(
+      Number(status?.materialized_seq || 0),
+      Number(view?.materialized_seq || 0),
+    )
+    return acceptedSeq > 0 && materializedSeq >= acceptedSeq
+  })
+}
+
+function clearPendingIndexFence (pending) {
+  if (pending?.timeoutId) window.clearTimeout(pending.timeoutId)
+  pending?.timeoutId && (pending.timeoutId = null)
+}
+
+function fenceAffectedPaths (fence, mutation) {
+  const pathsByLibrary = {}
+  const addPath = (libraryId, path) => {
+    const normalizedLibraryId = String(libraryId || '').trim()
+    const normalizedPath = normalizeLibraryPathKey(path)
+    if (!normalizedLibraryId || !normalizedPath) return
+    const paths = pathsByLibrary[normalizedLibraryId] || (pathsByLibrary[normalizedLibraryId] = [])
+    if (!paths.includes(normalizedPath)) paths.push(normalizedPath)
   }
-  return moveIndexFencesMaterialized(result)
+
+  addPath(fence?.library_id, fence?.relative_path)
+  for (const effect of Array.isArray(fence?.effects) ? fence.effects : []) {
+    addPath(fence?.library_id, effect?.relative_path)
+    addPath(effect?.target_library_id || fence?.library_id, effect?.target_path)
+  }
+  for (const moved of Array.isArray(mutation?.moved) ? mutation.moved : []) {
+    addPath(fence?.library_id, moved?.source)
+    addPath(moved?.target_library_id || fence?.library_id, moved?.target)
+  }
+  return pathsByLibrary
+}
+
+function pendingFenceAffectsCurrentDirectory (pending) {
+  const libraryId = String(selectedLibraryId.value || '')
+  if (!libraryId) return false
+  const paths = pending?.affected_paths_by_library?.[libraryId]
+  if (!Array.isArray(paths) || !paths.length) return true
+  const currentDirectoryPath = normalizeLibraryPathKey(currentPath.value)
+  const currentRelativePath = normalizeLibraryPathKey(
+    libraryIndexStateStore.relativePathFor(libraryId, currentPath.value),
+  )
+  const currentPaths = [...new Set([currentDirectoryPath, currentRelativePath].filter(Boolean))]
+  if (!currentPaths.length) return true
+  return paths.some(path => {
+    const normalizedPath = normalizeLibraryPathKey(path)
+    return currentPaths.some(currentPathKey => (
+      normalizedPath === currentPathKey ||
+      normalizedPath.startsWith(`${currentPathKey}/`) ||
+      currentPathKey.startsWith(`${normalizedPath}/`)
+    ))
+  })
+}
+
+function flushPendingIndexFenceRefreshes () {
+  let readyPending = null
+  const currentLibraryId = String(selectedLibraryId.value || '')
+  for (const [key, pending] of pendingIndexFenceRefreshes) {
+    if (!indexFencesMaterialized(pending.index_fences)) continue
+    if (!pending.index_fences.some(fence => String(fence?.library_id || '') === currentLibraryId)) continue
+    if (!pendingFenceAffectsCurrentDirectory(pending)) {
+      pendingIndexFenceRefreshes.delete(key)
+      clearPendingIndexFence(pending)
+      continue
+    }
+    pendingIndexFenceRefreshes.delete(key)
+    clearPendingIndexFence(pending)
+    readyPending = readyPending || pending
+  }
+  if (readyPending) {
+    if (pendingFenceRefreshInFlight) {
+      pendingFenceRefreshNeedsFlush = true
+      return
+    }
+    refreshMaterializedLibraryViews(readyPending.messagePrefix || '操作已完成')
+  }
+}
+
+function registerPendingIndexFenceRefresh (mutations, messagePrefix = '操作已完成') {
+  const mutationList = Array.isArray(mutations) ? mutations : [mutations]
+  const fenceEntries = mutationList.flatMap(mutation =>
+    (Array.isArray(mutation?.index_fences) ? mutation.index_fences : [])
+      .map(fence => ({ fence, mutation })),
+  )
+  const fences = fenceEntries
+    .map(entry => entry.fence)
+    .filter(fence => String(fence?.library_id || '').trim() && Number(fence?.accepted_seq || 0) > 0)
+  if (!fences.length) return false
+
+  const grouped = new Map()
+  for (const fence of fences) {
+    const key = `${String(fence.library_id)}:${Number(fence.accepted_seq)}`
+    const current = grouped.get(key) || []
+    if (!current.some(item => String(item?.library_id) === String(fence.library_id) && Number(item?.accepted_seq) === Number(fence.accepted_seq))) {
+      current.push(fence)
+    }
+    grouped.set(key, current)
+  }
+
+  for (const [key, groupedFences] of grouped) {
+    const affectedPathsByLibrary = {}
+    for (const entry of fenceEntries) {
+      const entryKey = `${String(entry.fence?.library_id || '')}:${Number(entry.fence?.accepted_seq || 0)}`
+      if (entryKey !== key) continue
+      const pathsByLibrary = fenceAffectedPaths(entry.fence, entry.mutation)
+      for (const [libraryId, paths] of Object.entries(pathsByLibrary)) {
+        affectedPathsByLibrary[libraryId] = [
+          ...(affectedPathsByLibrary[libraryId] || []),
+          ...paths.filter(path => !(affectedPathsByLibrary[libraryId] || []).includes(path)),
+        ]
+      }
+    }
+    const existing = pendingIndexFenceRefreshes.get(key)
+    if (existing) {
+      existing.index_fences = [...existing.index_fences, ...groupedFences]
+        .filter((fence, index, all) => all.findIndex(item => `${item.library_id}:${item.accepted_seq}` === `${fence.library_id}:${fence.accepted_seq}`) === index)
+      existing.messagePrefix = messagePrefix || existing.messagePrefix
+      for (const [libraryId, paths] of Object.entries(affectedPathsByLibrary)) {
+        existing.affected_paths_by_library[libraryId] = [
+          ...(existing.affected_paths_by_library[libraryId] || []),
+          ...paths.filter(path => !(existing.affected_paths_by_library[libraryId] || []).includes(path)),
+        ]
+      }
+      continue
+    }
+    const pending = {
+      index_fences: groupedFences,
+      affected_paths_by_library: affectedPathsByLibrary,
+      messagePrefix,
+      timeoutId: null,
+      timedOut: false,
+    }
+    pending.timeoutId = window.setTimeout(() => {
+      if (!pendingFenceAffectsCurrentDirectory(pending)) return
+      pending.timedOut = true
+      markCurrentPageIndexRefreshing()
+      ElMessage.info('索引仍在后台更新，页面将在物化后自动校正')
+      if (pendingFenceRefreshInFlight) {
+        pendingFenceRefreshNeedsFlush = true
+        return
+      }
+      refreshMaterializedLibraryViews(messagePrefix)
+    }, 8000)
+    pendingIndexFenceRefreshes.set(key, pending)
+  }
+  flushPendingIndexFenceRefreshes()
+  return true
+}
+
+function refreshAfterIndexFencesInBackground (mutations, messagePrefix) {
+  if (registerPendingIndexFenceRefresh(mutations, messagePrefix)) return
+  refreshCurrentLibraryAndStatsInBackground(messagePrefix)
+}
+
+function refreshAfterMutationWithIndexFence (mutation, options = {}) {
+  const messagePrefix = options.messagePrefix || '操作已完成'
+  if (registerPendingIndexFenceRefresh(mutation, messagePrefix)) return
+  refreshAfterMutationInBackground({ ...options, messagePrefix })
 }
 
 function registerAutoCircleGroupIndexMutation (data, row) {
-  const mutation = data?.result
-  if (!Array.isArray(mutation?.index_fences) || !mutation.index_fences.length) return null
+  const mutations = (Array.isArray(data?.index_mutations) ? data.index_mutations : [data?.result])
+    .filter(mutation => Array.isArray(mutation?.index_fences) && mutation.index_fences.length)
+  if (!mutations.length) return []
 
-  const movedPaths = (Array.isArray(mutation.moved) ? mutation.moved : [])
+  const movedPaths = mutations.flatMap(mutation => (Array.isArray(mutation.moved) ? mutation.moved : []))
     .map(item => item?.source)
     .filter(Boolean)
   const libraryId = String(row?.library_id || selectedLibraryId.value || '').trim()
 
-  libraryIndexStateStore.registerMutationResponse(mutation, {
+  mutations.forEach(mutation => libraryIndexStateStore.registerMutationResponse(mutation, {
     libraryId,
     deletedPaths: (movedPaths.length ? movedPaths : [row?.path])
       .filter(Boolean)
       .map(path => ({ libraryId, path, scope: 'subtree' })),
-  })
-  return mutation
+  }))
+  return mutations
 }
-
-function refreshAfterMoveFenceInBackground (result, sourceLibraryId, targetLibraryId) {
-  waitForMoveIndexFences(result)
-    .then(materialized => {
-      if (!materialized) {
-        refreshAfterMoveInBackground(sourceLibraryId, targetLibraryId)
-        return
-      }
-      refreshLibrary({ silent: true, forceRefresh: false }).catch(error => {
-        ElMessage.warning('移动已完成，但刷新列表失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
-      })
-    })
-    .catch(() => refreshAfterMoveInBackground(sourceLibraryId, targetLibraryId))
-}
-
-
 
 function refreshCurrentLibraryAndStatsInBackground (messagePrefix = '操作已完成', options = {}) {
 
@@ -22875,7 +23442,9 @@ async function executeLibraryMove ({ sourceLibraryId, targetLibraryId, targetPat
 
   clearSelection()
 
-  refreshAfterMoveFenceInBackground(result, sourceLibraryId, targetLibraryId)
+  if (!registerPendingIndexFenceRefresh(result, '移动已完成')) {
+    refreshAfterMoveInBackground(sourceLibraryId, targetLibraryId)
+  }
 
   return result
 
@@ -23034,34 +23603,10 @@ async function createFolderInCurrentDirectory () {
 
     ElMessage.success(`文件夹“${data?.name || normalizedName}”已创建`)
 
-    const refreshCreatedFolder = () => {
-
-      if (
-        libraryViewMode.value !== 'directory' ||
-        selectedLibraryId.value !== targetLibraryId ||
-        (currentPath.value || browseRootPath.value) !== targetParentPath
-      ) return
-
-      refreshLibrary({ silent: true, forceRefresh: false }).catch((error) => {
-
-        console.warn('新建文件夹后的当前目录增量刷新失败', error)
-
+    if (!registerPendingIndexFenceRefresh(data, '新建文件夹已完成')) {
+      refreshLibrary({ silent: true, forceRefresh: true }).catch((error) => {
+        console.warn('新建文件夹后的当前目录刷新失败', error)
       })
-
-    }
-
-    if (Array.isArray(data?.index_fences) && data.index_fences.length) {
-
-      waitForMoveIndexFences(data).then(materialized => {
-
-        if (materialized) refreshCreatedFolder()
-
-      })
-
-    } else {
-
-      refreshCreatedFolder()
-
     }
 
     return true
@@ -23155,17 +23700,19 @@ async function renameItem (row) {
 
     const nextPath = data?.new_path || data?.path || ''
 
+    const libraryId = renameForm.value.libraryId || selectedLibraryId.value
+    libraryIndexStateStore.registerMutationResponse(data, {
+      libraryId,
+      deletedPaths: [{ libraryId, path: renameForm.value.path, scope: 'subtree' }],
+    })
     if (nextPath) {
-      const libraryId = renameForm.value.libraryId || selectedLibraryId.value
-      libraryIndexStateStore.registerMutationResponse(data, {
-        libraryId,
-        deletedPaths: [{ libraryId, path: renameForm.value.path, scope: 'subtree' }],
-      })
       invalidateDirectoryViewRequests()
       replaceRowPathInCurrentView(renameForm.value.path, nextPath, renameForm.value.newName)
     }
 
-    refreshCurrentLibraryAndStatsInBackground('重命名已完成')
+    if (!registerPendingIndexFenceRefresh(data, '重命名已完成')) {
+      refreshCurrentLibraryAndStatsInBackground('重命名已完成')
+    }
 
   } catch (error) {
 
@@ -23209,17 +23756,19 @@ async function apiRenameItem (row) {
 
     const nextPath = data?.new_path || data?.path || ''
 
+    const libraryId = target.library_id || selectedLibraryId.value
+    libraryIndexStateStore.registerMutationResponse(data, {
+      libraryId,
+      deletedPaths: [{ libraryId, path: target.path, scope: 'subtree' }],
+    })
     if (nextPath) {
-      const libraryId = target.library_id || selectedLibraryId.value
-      libraryIndexStateStore.registerMutationResponse(data, {
-        libraryId,
-        deletedPaths: [{ libraryId, path: target.path, scope: 'subtree' }],
-      })
       invalidateDirectoryViewRequests()
       replaceRowPathInCurrentView(target.path, nextPath, data.new_name || data.name || '')
     }
 
-    refreshCurrentLibraryAndStatsInBackground('API 重命名已完成')
+    if (!registerPendingIndexFenceRefresh(data, 'API 重命名已完成')) {
+      refreshCurrentLibraryAndStatsInBackground('API 重命名已完成')
+    }
 
   } catch (error) {
 
@@ -23325,7 +23874,7 @@ async function deleteItem (row) {
     })
     pruneRowsFromCurrentViewByPaths([target.path])
 
-    refreshAfterMutationInBackground({
+    refreshAfterMutationWithIndexFence(result, {
       deletedBytes: preview.size || 0,
       deletedFolderCount: preview.folder_count || 0,
       libraryId,
@@ -23482,7 +24031,7 @@ async function handleBatchDelete () {
 
     clearSelection()
 
-    refreshAfterMutationInBackground({
+    refreshAfterMutationWithIndexFence(results, {
       deletedBytes: preview.total_size || 0,
       deletedFolderCount: preview.total_folder_count || 0,
       libraryId: groups.keys().next().value || selectedLibraryId.value,
@@ -23579,8 +24128,8 @@ async function handleBatchAutoCircleGroup () {
       if (itemPath) handledPaths.add(itemPath)
 
       const row = rowByPath.get(itemPath)
-      const indexMutation = registerAutoCircleGroupIndexMutation(item, row)
-      if (indexMutation) indexMutations.push(indexMutation)
+      const itemMutations = registerAutoCircleGroupIndexMutation(item, row)
+      indexMutations.push(...itemMutations)
 
       if (item?.need_api_rename && row) {
 
@@ -23637,8 +24186,8 @@ async function handleBatchAutoCircleGroup () {
         try {
 
           const data = await runAutoCircleGroupForRow(row)
-          const indexMutation = registerAutoCircleGroupIndexMutation(data, row)
-          if (indexMutation) indexMutations.push(indexMutation)
+          const rowMutations = registerAutoCircleGroupIndexMutation(data, row)
+          indexMutations.push(...rowMutations)
 
           results.push({
             path: row.path,
@@ -23701,11 +24250,7 @@ async function handleBatchAutoCircleGroup () {
       .filter(item => item.success && !item.skipped)
       .map(item => item.path))
 
-    if (indexMutations.length) {
-      await Promise.all(indexMutations.map(mutation => waitForMoveIndexFences(mutation)))
-    }
-
-    refreshCurrentLibraryAndStatsInBackground('批量按社团分类已完成', { forceRefresh: false })
+    refreshAfterIndexFencesInBackground(indexMutations, '批量按社团分类已完成')
 
   } catch (error) {
 
@@ -23773,7 +24318,8 @@ async function handleBatchApiRename () {
 
     const batchId = `api-rename-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
-    const results = await runBatchApiRenameRows(targetGroups, batchId)
+    const batchResponse = await runBatchApiRenameRows(targetGroups, batchId)
+    const results = batchResponse.results
 
     const successCount = results.filter(item => item.success).length
 
@@ -23793,7 +24339,7 @@ async function handleBatchApiRename () {
 
     }
 
-    refreshCurrentLibraryAndStatsInBackground('批量 API 重命名已完成')
+    refreshAfterIndexFencesInBackground(batchResponse.mutations, '批量 API 重命名已完成')
 
   } catch (error) {
 
@@ -23890,9 +24436,9 @@ function buildReplacedLibraryRowPath (row, targetPath, nextName = '') {
 
 
 
-async function handleFolderDialogMutated ({ deletedBytes = 0, deletedFolderCount = 0 } = {}) {
+async function handleFolderDialogMutated ({ deletedBytes = 0, deletedFolderCount = 0, mutations = [] } = {}) {
 
-  refreshAfterMutationInBackground({
+  refreshAfterMutationWithIndexFence(mutations, {
     deletedBytes,
     deletedFolderCount,
     libraryId: folderDialogLibraryId.value || selectedLibraryId.value,
@@ -24284,11 +24830,16 @@ async function openSubtitleInspectorFilterDeleteDialog () {
 
 
 
-async function handleFilterDeleteDeleted ({ deletedBytes = 0, deletedFolderCount = 0, libraryIds = [] } = {}) {
-
-  refreshLibrary({ silent: true }).catch((error) => {
-    ElMessage.warning('删除过滤已完成，但刷新列表失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
-  })
+async function handleFilterDeleteDeleted ({ deletedBytes = 0, deletedFolderCount = 0, libraryIds = [], mutations = [] } = {}) {
+  const indexMutations = (Array.isArray(mutations) ? mutations : [mutations])
+    .filter(mutation => Array.isArray(mutation?.index_fences) && mutation.index_fences.length)
+  if (indexMutations.length) {
+    refreshAfterIndexFencesInBackground(indexMutations, '过滤删除已完成')
+  } else {
+    refreshLibrary({ silent: true }).catch((error) => {
+      ElMessage.warning('删除过滤已完成，但刷新列表失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
+    })
+  }
 
   const affectedLibraryIds = [...new Set((libraryIds.length ? libraryIds : [filterDeleteDialogLibraryId.value || selectedLibraryId.value]).filter(Boolean))]
   affectedLibraryIds.forEach(libraryId => {
@@ -24711,6 +25262,7 @@ function resolveLibraryRowDropTargetState (row) {
 async function runBatchApiRenameRows (targetGroups, batchId) {
 
   const results = []
+  const mutations = []
 
   for (const [libraryId, rows] of targetGroups.entries()) {
 
@@ -24725,6 +25277,7 @@ async function runBatchApiRenameRows (targetGroups, batchId) {
         { idempotencyKey: `${batchId}:${libraryId}` },
       )
       const responseResults = Array.isArray(response?.results) ? response.results : []
+      mutations.push(response)
       const resultByPath = new Map(responseResults.map(item => [String(item?.path || ''), item]))
       const successfulPaths = responseResults
         .filter(item => item?.success)
@@ -24780,7 +25333,7 @@ async function runBatchApiRenameRows (targetGroups, batchId) {
 
   }
 
-  return results
+  return { results, mutations }
 
 }
 
@@ -25217,9 +25770,122 @@ function statsStatusTextDisplay (stats) {
 }
 
 .media-preview-image {
-  animation: media-preview-image-enter 180ms ease both;
   transform-origin: center;
-  will-change: opacity, transform;
+}
+
+.media-preview-dialog {
+  box-sizing: border-box;
+  position: relative;
+}
+
+.media-preview-frame {
+  box-sizing: border-box;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.media-preview-image-wrapper {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  transform-origin: center;
+}
+
+.media-preview-slide {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  contain: layout paint;
+  backface-visibility: hidden;
+}
+
+.media-preview-resize-zone {
+  position: absolute;
+  z-index: 20;
+  display: block;
+  border: 0;
+  background: transparent;
+  touch-action: none;
+  user-select: none;
+}
+
+.media-preview-resize-zone-top,
+.media-preview-resize-zone-bottom {
+  right: 12px;
+  left: 12px;
+  height: 10px;
+}
+
+.media-preview-resize-zone-top {
+  top: 48px;
+  cursor: ns-resize;
+}
+
+.media-preview-resize-zone-bottom {
+  bottom: 0;
+  cursor: ns-resize;
+}
+
+.media-preview-resize-zone-left,
+.media-preview-resize-zone-right {
+  top: 48px;
+  right: 0;
+  bottom: 0;
+  width: 10px;
+}
+
+.media-preview-resize-zone-left {
+  right: auto;
+  left: 0;
+  cursor: ew-resize;
+}
+
+.media-preview-resize-zone-right {
+  cursor: ew-resize;
+}
+
+.media-preview-resize-zone-corner-tl,
+.media-preview-resize-zone-corner-tr,
+.media-preview-resize-zone-corner-br,
+.media-preview-resize-zone-corner-bl {
+  z-index: 21;
+  width: 14px;
+  height: 14px;
+}
+
+.media-preview-resize-zone-corner-tl {
+  top: 48px;
+  left: 0;
+  cursor: nwse-resize;
+}
+
+.media-preview-resize-zone-corner-tr {
+  top: 48px;
+  right: 0;
+  cursor: nesw-resize;
+}
+
+.media-preview-resize-zone-corner-br {
+  right: 0;
+  bottom: 0;
+  cursor: nwse-resize;
+}
+
+.media-preview-resize-zone-corner-bl {
+  bottom: 0;
+  left: 0;
+  cursor: nesw-resize;
 }
 
 .media-preview-dialog button:not(:disabled) {
@@ -25238,7 +25904,7 @@ function statsStatusTextDisplay (stats) {
 
 :global(html.kikoerumanager-dark .media-preview-dialog > header) {
   border-color: rgba(255, 255, 255, 0.1) !important;
-  background: rgba(23, 24, 29, 0.96) !important;
+  background: transparent !important;
   box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.08) !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
@@ -25256,7 +25922,7 @@ function statsStatusTextDisplay (stats) {
   border-color: rgba(255, 255, 255, 0.12) !important;
 }
 
-:global(html.kikoerumanager-dark .media-preview-dialog > header :is(.bg-white\/24, .bg-white\/26, .bg-white\/28, .bg-white\/30, .bg-white\/34)) {
+:global(html.kikoerumanager-dark .media-preview-dialog > header > div:last-child :is(.bg-white\/24, .bg-white\/26, .bg-white\/28, .bg-white\/30, .bg-white\/34)) {
   background: #1d1e23 !important;
 }
 
@@ -25324,28 +25990,42 @@ function statsStatusTextDisplay (stats) {
   color: #e5e7eb !important;
 }
 
-.media-preview-image-next {
-  --media-preview-shift-x: 10px;
+.media-preview-next-enter-active,
+.media-preview-prev-enter-active,
+.media-preview-next-leave-active,
+.media-preview-prev-leave-active {
+  transition:
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms linear;
+  will-change: transform, opacity;
 }
 
-.media-preview-image-prev {
-  --media-preview-shift-x: -10px;
+.media-preview-next-enter-from {
+  opacity: 0;
+  transform: translate3d(4%, 0, 0);
 }
 
-@keyframes media-preview-image-enter {
-  from {
-    opacity: 0.72;
-    transform: translateX(var(--media-preview-shift-x, 0)) scale(0.996);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0) scale(1);
-  }
+.media-preview-next-leave-to {
+  opacity: 0;
+  transform: translate3d(-3%, 0, 0);
+}
+
+.media-preview-prev-enter-from {
+  opacity: 0;
+  transform: translate3d(-4%, 0, 0);
+}
+
+.media-preview-prev-leave-to {
+  opacity: 0;
+  transform: translate3d(3%, 0, 0);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .media-preview-image {
-    animation: none;
+  .media-preview-next-enter-active,
+  .media-preview-prev-enter-active,
+  .media-preview-next-leave-active,
+  .media-preview-prev-leave-active {
+    transition-duration: 1ms;
   }
 }
 
