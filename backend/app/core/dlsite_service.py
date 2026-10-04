@@ -191,6 +191,8 @@ class DLsiteProductProbeFeature:
     is_free: bool = False
     is_oly: bool = False
     wishlist_count: int = 0
+    # 直接构造的旧调用方默认按未售出处理；接口解析缺失时会显式写入 None，触发重新探测。
+    dl_count: Optional[int] = 0
     is_hidden_bonus_audio: bool = False
     title: str = ""
     raw_summary_json: Dict[str, Any] = field(default_factory=dict)
@@ -209,6 +211,7 @@ class DLsiteProductProbeFeature:
             'is_free': bool(self.is_free),
             'is_oly': bool(self.is_oly),
             'wishlist_count': int(self.wishlist_count or 0),
+            'dl_count': self.dl_count,
             'is_hidden_bonus_audio': bool(self.is_hidden_bonus_audio),
             'title': self.title,
             'raw_summary_json': dict(self.raw_summary_json or {}),
@@ -219,10 +222,9 @@ class DLsiteProductProbeFeature:
 def normalize_product_probe_feature_classification(
     feature: DLsiteProductProbeFeature,
 ) -> DLsiteProductProbeFeature:
-    """按当前结构规则重算特典标记，兼容历史错误缓存。"""
-    raw_summary = feature.raw_summary_json or {}
-    wishlist_count = raw_summary.get("raw_wishlist_count", feature.wishlist_count)
-    wishlist_is_zero = not isinstance(wishlist_count, bool) and wishlist_count == 0
+    """按当前下载数规则重算特典标记。"""
+    dl_count = feature.dl_count
+    downloads_are_zero = not isinstance(dl_count, bool) and dl_count == 0
     feature.is_hidden_bonus_audio = bool(
         feature.exists
         and feature.probe_status == "ok"
@@ -231,7 +233,7 @@ def normalize_product_probe_feature_classification(
         and not bool(feature.is_sale)
         and bool(feature.is_free)
         and bool(feature.is_oly)
-        and wishlist_is_zero
+        and downloads_are_zero
     )
     return feature
 
@@ -452,6 +454,28 @@ class DLsiteApiService:
         if page > 1:
             return f"{base}/page/{page}"
         return base
+
+    def _build_new_release_date_url_variants(
+        self,
+        release_date: str,
+        *,
+        language: str = "JPN",
+        page: int = 1,
+    ) -> List[str]:
+        """返回日期页的官方 URL 变体，兼容 DLsite 对筛选参数的出口差异。"""
+        normalized_date = self._normalize_date_text(release_date)
+        normalized_language = str(language or "JPN").strip().upper() or "JPN"
+        page_suffix = f"/page/{page}" if page > 1 else ""
+        candidates = [
+            self._build_new_release_date_url(
+                normalized_date,
+                language=normalized_language,
+                page=page,
+            ),
+            f"https://www.dlsite.com/maniax/new/=/date/{normalized_date}{page_suffix}",
+            f"https://www.dlsite.com/maniax/new/=/date/{normalized_date}/options[0]/{normalized_language.lower()}{page_suffix}",
+        ]
+        return list(dict.fromkeys(candidates))
 
     def _get_browser_headers(self, accept: str = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8') -> Dict[str, str]:
         # ★ 关键安全开关：只有当 brotli/brotlicffi 真的能 import 时才声明支持 br，
@@ -1549,7 +1573,7 @@ class DLsiteApiService:
                 payloads[workno] = value
         return payloads
 
-    def _wishlist_count_is_zero(self, value: Any) -> bool:
+    def _dl_count_is_zero(self, value: Any) -> bool:
         if isinstance(value, bool):
             return False
         if isinstance(value, int):
@@ -1565,7 +1589,7 @@ class DLsiteApiService:
             not bool(product.get("is_sale"))
             and bool(product.get("is_free"))
             and bool(product.get("is_oly"))
-            and self._wishlist_count_is_zero(product.get("wishlist_count"))
+            and self._dl_count_is_zero(product.get("dl_count"))
         )
 
     def _product_info_indicates_has_bonus(self, product: Optional[Dict]) -> bool:
@@ -2983,7 +3007,10 @@ class DLsiteApiService:
         cache_key = f"new_work_summaries_by_date:{normalized_date}:{normalized_language}:{int(max_pages or 0)}"
         if cache_key in self.cache:
             cached_data = self.cache[cache_key]
-            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+            cached_status = str(cached_data.get('parse_status') or '')
+            if cached_status in {'http_error', 'html_decode_failed'}:
+                self.cache.pop(cache_key, None)
+            elif datetime.now() - cached_data['timestamp'] < self.cache_ttl:
                 hydrated: List[DLsiteWorkSummary] = []
                 for item in list(cached_data.get('data') or []):
                     if isinstance(item, DLsiteWorkSummary):
@@ -3012,45 +3039,57 @@ class DLsiteApiService:
         any_html_looked_normal = False
         empty_streak = 0
         for page in range(1, max(1, int(max_pages or 1)) + 1):
-            url = self._build_new_release_date_url(normalized_date, language=normalized_language, page=page)
-            try:
-                response = await self._guarded_get(
-                    url,
-                    headers=self._get_browser_headers(),
-                    timeout=httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=None),
-                    retry=False,
-                )
-                if response.status_code != 200:
+            new_count = 0
+            page_loaded = False
+            for url in self._build_new_release_date_url_variants(
+                normalized_date,
+                language=normalized_language,
+                page=page,
+            ):
+                try:
+                    response = await self._guarded_get(
+                        url,
+                        headers=self._get_browser_headers(),
+                        timeout=httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=None),
+                        retry=False,
+                    )
+                    if response.status_code != 200:
+                        logger.warning(
+                            "[DLsite] 新作日期页抓取失败 date=%s page=%s status=%s url=%s",
+                            normalized_date,
+                            page,
+                            response.status_code,
+                            url,
+                        )
+                        continue
+                    page_loaded = True
+                    any_http_success = True
+                    if self._looks_like_dlsite_html(response.text):
+                        any_html_looked_normal = True
+                    page_summaries = self._extract_summaries_from_listing_html(response.text)
+                    for summary in page_summaries:
+                        if not summary.workno or summary.workno in summaries_by_rj:
+                            continue
+                        summary.release_date = normalized_date
+                        summaries_by_rj[summary.workno] = summary
+                        new_count += 1
+                    if new_count == 0:
+                        for workno in self._extract_worknos_from_listing_html(response.text):
+                            if workno and workno not in summaries_by_rj:
+                                summaries_by_rj[workno] = DLsiteWorkSummary(workno=workno, release_date=normalized_date)
+                                new_count += 1
+                    break
+                except Exception as exc:
                     logger.warning(
-                        "[DLsite] 新作日期页抓取失败 date=%s page=%s status=%s",
+                        "[DLsite] 新作日期页抓取异常 date=%s page=%s error=%s url=%s",
                         normalized_date,
                         page,
-                        response.status_code,
+                        exc,
+                        url,
                     )
+                    # 网络/传输异常按文档要求快速失败，不把一次失败扩展成多次请求。
                     break
-                any_http_success = True
-                if self._looks_like_dlsite_html(response.text):
-                    any_html_looked_normal = True
-                page_summaries = self._extract_summaries_from_listing_html(response.text)
-                new_count = 0
-                for summary in page_summaries:
-                    if not summary.workno or summary.workno in summaries_by_rj:
-                        continue
-                    summary.release_date = normalized_date
-                    summaries_by_rj[summary.workno] = summary
-                    new_count += 1
-                if new_count == 0:
-                    for workno in self._extract_worknos_from_listing_html(response.text):
-                        if workno and workno not in summaries_by_rj:
-                            summaries_by_rj[workno] = DLsiteWorkSummary(workno=workno, release_date=normalized_date)
-                            new_count += 1
-            except Exception as exc:
-                logger.warning(
-                    "[DLsite] 新作日期页抓取异常 date=%s page=%s error=%s",
-                    normalized_date,
-                    page,
-                    exc,
-                )
+            if not page_loaded:
                 break
 
             empty_streak = empty_streak + 1 if new_count == 0 else 0
@@ -3068,11 +3107,12 @@ class DLsiteApiService:
             parse_status = "html_decode_failed"
         else:
             parse_status = "empty"
-        self.cache[cache_key] = {
-            'data': [item.to_dict() for item in summaries],
-            'parse_status': parse_status,
-            'timestamp': datetime.now(),
-        }
+        if parse_status in {'ok', 'empty'}:
+            self.cache[cache_key] = {
+                'data': [item.to_dict() for item in summaries],
+                'parse_status': parse_status,
+                'timestamp': datetime.now(),
+            }
         return summaries, parse_status
 
     def normalize_product_probe_feature(self, rjcode: str, product: Optional[Dict]) -> DLsiteProductProbeFeature:
@@ -3093,6 +3133,8 @@ class DLsiteApiService:
         price = self._safe_product_int(raw_price, field="price", workno=workno)
         wishlist_value = product.get("wishlist_count")
         wishlist_count = self._safe_product_int(wishlist_value, field="wishlist_count", workno=workno)
+        dl_count_value = product.get("dl_count")
+        dl_count = self._safe_product_int(dl_count_value, field="dl_count", workno=workno) if dl_count_value is not None else None
         feature = DLsiteProductProbeFeature(
             workno=workno,
             exists=True,
@@ -3105,6 +3147,7 @@ class DLsiteApiService:
             is_free=bool(product.get("is_free")),
             is_oly=bool(product.get("is_oly")),
             wishlist_count=wishlist_count,
+            dl_count=dl_count,
             title=str(product.get("work_name") or product.get("title") or ""),
             raw_summary_json={
                 "workno": product.get("workno") or workno,
@@ -3118,6 +3161,7 @@ class DLsiteApiService:
                 "is_oly": bool(product.get("is_oly")),
                 "wishlist_count": wishlist_count,
                 "raw_wishlist_count": wishlist_value,
+                "raw_dl_count": dl_count_value,
             },
         )
         return normalize_product_probe_feature_classification(feature)

@@ -28,6 +28,7 @@ from ..models.database import (
     CircleCatalog,
     CircleWork,
     DLsiteBonusOriginalProbeState,
+    DLsiteBonusProbeHitIndex,
     LibraryOwnedWork,
     LibrarySnapshot,
     SessionLocal,
@@ -1431,8 +1432,8 @@ class CircleCompletionService:
     # 历史上这里曾留过 ``_title_looks_like_bonus_work``：标题级特典兜底正则。
     # 已删——明确禁止用标题判定特典：很多正常作品标题里就含"特典"二字（"早期特典つき"
     # 这种"附带特典的作品本体"反而最容易误命中）。特典识别只走
-    # ``DLsiteApiService._product_info_indicates_bonus_work`` 的 4 字段 AND 规则
-    # （!is_sale && is_free && is_oly && wishlist_count==0），结构化字段是唯一可信源。
+    # ``DLsiteApiService._product_info_indicates_bonus_work`` 的结构化字段规则
+    # （!is_sale && is_free && is_oly && dl_count==0）；已确认的探测命中另行保留。
 
     def _extract_text_values(self, value: Any) -> List[str]:
         if value is None:
@@ -2803,6 +2804,9 @@ class CircleCompletionService:
                 .all()
                 if works else []
             )
+            confirmed_bonus_rjcodes = self._confirmed_bonus_rjcodes(
+                db, work_canonical_rjcodes, circle_id=catalog.circle_id,
+            )
             early_bonus_state_map: Dict[str, str] = {}
             if work_canonical_rjcodes:
                 state_rows = (
@@ -2845,6 +2849,9 @@ class CircleCompletionService:
 
         image_cache_service = get_circle_image_cache_service()
         now_local_for_view = get_local_now()
+        for row in works:
+            if self.normalize_rjcode(row.canonical_rjcode) in confirmed_bonus_rjcodes:
+                row.is_bonus_work = True
         items = [
             self._build_completion_item(
                 catalog=catalog,
@@ -6729,7 +6736,13 @@ class CircleCompletionService:
         except Exception:
             logger.debug("[社团补全] 字幕 SSE 广播失败 rj=%s", normalized_rj, exc_info=True)
 
-    def _load_bonus_rjcodes_for_owned_state(self, rjcodes: Set[str]) -> Set[str]:
+    def _confirmed_bonus_rjcodes(
+        self,
+        db: Any,
+        rjcodes: Any,
+        *,
+        circle_id: str = "",
+    ) -> Set[str]:
         normalized_codes = {
             normalized
             for normalized in (self.normalize_rjcode(code) for code in rjcodes)
@@ -6737,22 +6750,31 @@ class CircleCompletionService:
         }
         if not normalized_codes:
             return set()
+        linked_rows = (
+            db.query(WorkCanonicalLink.linked_rjcode)
+            .filter(
+                WorkCanonicalLink.evidence_status == "verified",
+                WorkCanonicalLink.link_type == "bonus",
+                WorkCanonicalLink.linked_rjcode.in_(normalized_codes),
+            )
+            .all()
+        )
+        hit_query = db.query(DLsiteBonusProbeHitIndex.bonus_rjcode).filter(
+            DLsiteBonusProbeHitIndex.bonus_rjcode.in_(normalized_codes),
+        )
+        if circle_id:
+            hit_query = hit_query.filter(DLsiteBonusProbeHitIndex.circle_id.in_(("", circle_id)))
+        return {
+            normalized
+            for value in [*(row[0] for row in linked_rows), *(row[0] for row in hit_query.all())]
+            for normalized in [self.normalize_rjcode(value)]
+            if normalized
+        }
+
+    def _load_bonus_rjcodes_for_owned_state(self, rjcodes: Set[str]) -> Set[str]:
         db = SessionLocal()
         try:
-            rows = (
-                db.query(WorkCanonicalLink.linked_rjcode)
-                .filter(
-                    WorkCanonicalLink.evidence_status == "verified",
-                    WorkCanonicalLink.linked_rjcode.in_(normalized_codes),
-                    WorkCanonicalLink.link_type == "bonus",
-                )
-                .all()
-            )
-            return {
-                normalized
-                for normalized in (self.normalize_rjcode(row[0]) for row in rows)
-                if normalized
-            }
+            return self._confirmed_bonus_rjcodes(db, rjcodes)
         finally:
             db.close()
 
@@ -7257,9 +7279,7 @@ class CircleCompletionService:
             )
         except Exception:
             logger.warning("[社团补全] bonus 补刷失败 circle_id=%s force=%s", circle_id, force, exc_info=True)
-            return {}
-        if not bonus_updates:
-            return {}
+            bonus_updates = {}
 
         normalized_filter: Optional[List[str]] = None
         if canonical_filter is not None:
@@ -7276,7 +7296,13 @@ class CircleCompletionService:
             if normalized_filter is not None:
                 query = query.filter(CircleWork.canonical_rjcode.in_(normalized_filter))
             rows = query.all()
+            confirmed_bonus_rjcodes = self._confirmed_bonus_rjcodes(
+                db,
+                [row.canonical_rjcode for row in rows],
+                circle_id=circle_id,
+            )
             for row in rows:
+                canonical = self.normalize_rjcode(row.canonical_rjcode)
                 own_codes: List[str] = []
                 for code in [
                     row.canonical_rjcode,
@@ -7290,7 +7316,7 @@ class CircleCompletionService:
                     normalized = self.normalize_rjcode(code)
                     if normalized and normalized not in related:
                         related.append(normalized)
-                new_is_bonus = bool(row.is_bonus_work)
+                new_is_bonus = bool(row.is_bonus_work) or canonical in confirmed_bonus_rjcodes
                 new_has_bonus = bool(row.has_bonus)
                 hit = False
                 own_bonus_seen = False
@@ -7307,11 +7333,18 @@ class CircleCompletionService:
                         own_is_bonus = own_is_bonus or bool(payload.get("is_bonus_work"))
                     new_has_bonus = new_has_bonus or bool(payload.get("has_bonus"))
                 if own_bonus_seen:
-                    new_is_bonus = own_is_bonus
-                if hit and (new_is_bonus != bool(row.is_bonus_work) or new_has_bonus != bool(row.has_bonus)):
+                    new_is_bonus = own_is_bonus or canonical in confirmed_bonus_rjcodes
+                if new_is_bonus != bool(row.is_bonus_work) or (hit and new_has_bonus != bool(row.has_bonus)):
                     row.is_bonus_work = new_is_bonus
                     row.has_bonus = new_has_bonus
                     changed = True
+            if confirmed_bonus_rjcodes:
+                for metadata in db.query(WorkMetadata).filter(
+                    WorkMetadata.rjcode.in_(confirmed_bonus_rjcodes)
+                ).all():
+                    if not metadata.is_bonus_work:
+                        metadata.is_bonus_work = True
+                        changed = True
             db.commit()
         except Exception:
             db.rollback()
@@ -8063,6 +8096,9 @@ class CircleCompletionService:
                 row.canonical_rjcode: row
                 for row in db.query(CircleWork).filter(CircleWork.circle_id == circle_id).all()
             }
+            confirmed_bonus_rjcodes = self._confirmed_bonus_rjcodes(
+                db, aggregated.keys(), circle_id=circle_id,
+            )
             for canonical, item in aggregated.items():
                 row = existing_rows.pop(canonical, None)
                 if row is None:
@@ -8074,7 +8110,7 @@ class CircleCompletionService:
                 row.maker_name = item["maker_name"]
                 row.image_url = item.get("image_url") or ""
                 row.price_text = str(item.get("price_text") or "").strip() or None
-                row.is_bonus_work = bool(item.get("is_bonus_work"))
+                row.is_bonus_work = bool(item.get("is_bonus_work")) or canonical in confirmed_bonus_rjcodes
                 row.has_bonus = bool(item.get("has_bonus"))
                 row.source_mask = ",".join(sorted(item["source_flags"]))
                 row.linked_rjcodes = item["linked_rjcodes"]

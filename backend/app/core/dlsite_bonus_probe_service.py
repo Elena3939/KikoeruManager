@@ -19,6 +19,7 @@ from ..models.database import (
     DLsiteBonusProbeDate,
     DLsiteBonusOriginalProbeState,
     DLsiteBonusProbeHitIndex,
+    engine,
     SessionLocal,
     WorkCanonicalLink,
     WorkMetadata,
@@ -85,6 +86,27 @@ class DLsiteBonusProbeService:
             default_batch_size = int(cfg.normal_batch_size)
             default_concurrency = int(cfg.normal_concurrency)
         max_concurrency = min(max(1, int(cfg.max_concurrency or self.DEFAULT_MAX_DATE_WORKERS)), self.DEFAULT_MAX_DATE_WORKERS)
+        # 特典探测的日期 worker 会在网络请求前后并行执行缓存查询、批量写回和状态落库。
+        # 生产环境可能把连接池调得很小；如果仍按 HTTP 并发运行，会把安全网关等普通请求
+        # 一起挤进 QueuePool，最终触发 QueuePool timeout。保留两个连接给普通 API 和 dirty
+        # buffer flush，只有低容量连接池才降低日期 worker 并发，默认 10+20 不受影响。
+        try:
+            pool = getattr(engine, "pool", None)
+            pool_capacity = int(pool.size()) + int(pool._max_overflow) if pool is not None else 0
+        except Exception:
+            pool_capacity = 0
+        if pool_capacity > 0:
+            reserved_connections = 2
+            db_worker_limit = max(1, pool_capacity - reserved_connections)
+            if db_worker_limit < max_concurrency:
+                logger.warning(
+                    "[DLsite特典探测] 按数据库连接池容量限制日期并发: pool_capacity=%s reserved=%s configured=%s effective=%s",
+                    pool_capacity,
+                    reserved_connections,
+                    max_concurrency,
+                    db_worker_limit,
+                )
+                max_concurrency = db_worker_limit
         date_concurrency = min(max(1, int(concurrency or default_concurrency)), max_concurrency)
         return {
             "batch_size": min(max(1, int(batch_size or default_batch_size)), int(cfg.max_batch_size)),
@@ -687,7 +709,7 @@ class DLsiteBonusProbeService:
         selected: List[str] = []
         for rjcode in normalized:
             feature = cached.get(rjcode)
-            if feature is not None and str(feature.probe_status or "").strip() in {"ok", "missing"}:
+            if feature is not None and str(feature.probe_status or "").strip() in {"ok", "missing"} and not self._needs_dl_count_refresh(feature):
                 stats["cached"] += 1
                 continue
             if rjcode in active_set:
@@ -747,6 +769,7 @@ class DLsiteBonusProbeService:
             self._active_probe_rjcodes.difference_update(leased)
 
     def _feature_from_cache_row(self, row: DLsiteBonusProbeCache) -> DLsiteProductProbeFeature:
+        raw_summary = dict(row.raw_summary_json or {})
         feature = DLsiteProductProbeFeature(
             workno=self.normalize_rjcode(row.rjcode),
             exists=bool(row.exists),
@@ -759,9 +782,10 @@ class DLsiteBonusProbeService:
             is_free=bool(row.is_free),
             is_oly=bool(row.is_oly),
             wishlist_count=int(row.wishlist_count or 0),
+            dl_count=self._cached_dl_count(raw_summary),
             is_hidden_bonus_audio=bool(row.is_hidden_bonus_audio),
             title=row.title or "",
-            raw_summary_json=dict(row.raw_summary_json or {}),
+            raw_summary_json=raw_summary,
             error_message=row.error_message or "",
         )
         return normalize_product_probe_feature_classification(feature)
@@ -776,6 +800,15 @@ class DLsiteBonusProbeService:
             return int(value or 0)
         except Exception:
             return 0
+
+    def _cached_dl_count(self, raw_summary: Dict[str, Any]) -> Optional[int]:
+        value = raw_summary.get("raw_dl_count", raw_summary.get("dl_count_total", raw_summary.get("dl_count")))
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _cache_datetime(self, value: Any) -> datetime:
         if isinstance(value, datetime):
@@ -792,6 +825,7 @@ class DLsiteBonusProbeService:
         return datetime.now()
 
     def _feature_from_cache_payload(self, payload: Dict[str, Any]) -> DLsiteProductProbeFeature:
+        raw_summary = dict(payload.get("raw_summary_json") or {})
         feature = DLsiteProductProbeFeature(
             workno=self.normalize_rjcode(payload.get("rjcode") or payload.get("workno")),
             exists=self._cache_bool(payload.get("exists")),
@@ -804,9 +838,10 @@ class DLsiteBonusProbeService:
             is_free=self._cache_bool(payload.get("is_free")),
             is_oly=self._cache_bool(payload.get("is_oly")),
             wishlist_count=self._cache_int(payload.get("wishlist_count")),
+            dl_count=self._cached_dl_count(raw_summary),
             is_hidden_bonus_audio=self._cache_bool(payload.get("is_hidden_bonus_audio")),
             title=str(payload.get("title") or ""),
-            raw_summary_json=dict(payload.get("raw_summary_json") or {}),
+            raw_summary_json=raw_summary,
             error_message=str(payload.get("error_message") or ""),
         )
         return normalize_product_probe_feature_classification(feature)
@@ -851,7 +886,10 @@ class DLsiteBonusProbeService:
         except Exception:
             logger.debug("[DLsite特典探测] 读取 Redis 缓存 overlay 失败", exc_info=True)
 
-        missing = [workno for workno in normalized if workno not in features]
+        missing = [
+            workno for workno in normalized
+            if workno not in features or self._needs_dl_count_refresh(features[workno])
+        ]
         if not missing:
             return features
         db = SessionLocal()
@@ -1148,7 +1186,10 @@ class DLsiteBonusProbeService:
 
         features = await asyncio.to_thread(self._load_cached_features_sync, normalized)
 
-        missing = [workno for workno in normalized if workno not in features]
+        missing = [
+            workno for workno in normalized
+            if workno not in features or self._needs_dl_count_refresh(features[workno])
+        ]
         request_count = 0
         checked_count = len(normalized) - len(missing)
         cached_count = checked_count
@@ -1167,7 +1208,24 @@ class DLsiteBonusProbeService:
             await asyncio.sleep(0)
         return features, len(normalized) - len(missing), request_count
 
-    def _hidden_bonus_matches(self, feature: DLsiteProductProbeFeature, *, maker_id: str, release_date: str) -> bool:
+    def _needs_dl_count_refresh(self, feature: DLsiteProductProbeFeature) -> bool:
+        return bool(
+            feature.exists
+            and feature.probe_status == "ok"
+            and feature.price == 0
+            and not feature.is_sale
+            and feature.is_free
+            and feature.dl_count is None
+        )
+
+    def _hidden_bonus_matches(
+        self,
+        feature: DLsiteProductProbeFeature,
+        *,
+        maker_id: str,
+        release_date: str,
+        confirmed_hit: bool = False,
+    ) -> bool:
         # 调用方已经把范围收紧到当前发售日的隐藏候选区间；这里不能再依赖
         # 全局缓存分类的 is_hidden_bonus_audio / is_oly，否则 DLsite 返回
         # is_oly=false 的真实特典会被二次漏掉。
@@ -1178,7 +1236,7 @@ class DLsiteBonusProbeService:
             and int(feature.price or 0) == 0
             and not bool(feature.is_sale)
             and bool(feature.is_free)
-            and int(feature.wishlist_count or 0) == 0
+            and (confirmed_hit or feature.dl_count == 0)
         )
 
     def _selected_hidden_hit_matches_release_date(
@@ -1642,11 +1700,9 @@ class DLsiteBonusProbeService:
                 continue
             if explicit_originals and canonical not in explicit_originals:
                 continue
-            if (
-                not trust_request_release_date
-                and normalized_date
-                and self.normalize_date(getattr(metadata, "release_date", "")) != normalized_date
-            ):
+            # 特典只能挂到同一发售日的原作。指定目标作品时也不能跳过日期校验，
+            # 否则会在同社团跨日期作品中按 RJ 数字距离误选最近项。
+            if normalized_date and self.normalize_date(getattr(metadata, "release_date", "")) != normalized_date:
                 continue
             original_number = self._rj_number(canonical)
             distance = (
@@ -1783,7 +1839,12 @@ class DLsiteBonusProbeService:
             )
             for row in cache_rows:
                 feature = self._feature_from_cache_row(row)
-                if self._hidden_bonus_matches(feature, maker_id=normalized_maker, release_date=normalized_date):
+                if self._hidden_bonus_matches(
+                    feature,
+                    maker_id=normalized_maker,
+                    release_date=normalized_date,
+                    confirmed_hit=self.normalize_rjcode(feature.workno) in hit_rjcodes,
+                ):
                     normalized_workno = self.normalize_rjcode(feature.workno)
                     if normalized_workno:
                         features_by_rjcode[normalized_workno] = feature

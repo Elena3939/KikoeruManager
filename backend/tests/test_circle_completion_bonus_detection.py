@@ -31,21 +31,37 @@ def test_voicelinks_bonus_rule_marks_bonus_work(dlsite_service: DLsiteApiService
         "is_sale": False,
         "is_free": True,
         "is_oly": True,
-        "wishlist_count": 0,
+        "dl_count": 0,
+        "wishlist_count": 46,
     }
 
     assert dlsite_service._product_info_indicates_bonus_work(product) is True
 
 
-def test_bool_false_wishlist_count_does_not_match_js_strict_zero(
+def test_wishlist_count_does_not_replace_dl_count_for_bonus_detection(
     dlsite_service: DLsiteApiService,
 ) -> None:
-    """JS 里 false !== 0，不能被 Python 的 False == 0 坑到。"""
+    """收藏数不参与销量为零的特典判定。"""
     product = {
         "is_sale": False,
         "is_free": True,
         "is_oly": True,
-        "wishlist_count": False,
+        "dl_count": 0,
+        "wishlist_count": 1,
+    }
+
+    assert dlsite_service._product_info_indicates_bonus_work(product) is True
+
+
+def test_paid_download_work_is_not_bonus_even_without_sales_flag(
+    dlsite_service: DLsiteApiService,
+) -> None:
+    product = {
+        "is_sale": False,
+        "is_free": True,
+        "is_oly": True,
+        "dl_count": 1,
+        "wishlist_count": 0,
     }
 
     assert dlsite_service._product_info_indicates_bonus_work(product) is False
@@ -95,7 +111,8 @@ async def test_get_product_bonus_info_returns_dict_when_payload_present(
             "is_sale": False,
             "is_free": True,
             "is_oly": True,
-            "wishlist_count": 0,
+            "dl_count": 0,
+            "wishlist_count": 1,
             "bonuses": [{"workno": "RJ_BONUS"}],
         }
 

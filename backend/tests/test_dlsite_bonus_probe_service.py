@@ -77,6 +77,47 @@ def test_public_original_worknos_uses_canonical_only() -> None:
     assert worknos == ["RJ01569979"]
 
 
+def test_probe_runtime_limits_reserve_connections_for_small_pool(monkeypatch) -> None:
+    service = _service()
+    monkeypatch.setattr(
+        "app.core.dlsite_bonus_probe_service.get_config",
+        lambda: type("Config", (), {"bonus_probe": BonusProbeConfig(normal_concurrency=6, max_concurrency=6)})(),
+    )
+
+    class _Pool:
+        _max_overflow = 2
+
+        def size(self):
+            return 2
+
+    monkeypatch.setattr("app.core.dlsite_bonus_probe_service.engine", type("Engine", (), {"pool": _Pool()})())
+
+    limits = service.resolve_probe_runtime_limits(concurrency=6)
+
+    assert limits["concurrency"] == 2
+    assert limits["product_info_concurrency"] == 3
+
+
+def test_probe_runtime_limits_keep_configured_concurrency_for_normal_pool(monkeypatch) -> None:
+    service = _service()
+    monkeypatch.setattr(
+        "app.core.dlsite_bonus_probe_service.get_config",
+        lambda: type("Config", (), {"bonus_probe": BonusProbeConfig(normal_concurrency=6, max_concurrency=6)})(),
+    )
+
+    class _Pool:
+        _max_overflow = 20
+
+        def size(self):
+            return 10
+
+    monkeypatch.setattr("app.core.dlsite_bonus_probe_service.engine", type("Engine", (), {"pool": _Pool()})())
+
+    limits = service.resolve_probe_runtime_limits(concurrency=6)
+
+    assert limits["concurrency"] == 6
+
+
 def test_dedupe_keeps_order_for_large_candidate_set() -> None:
     service = _service()
     values = [f"RJ{index:08d}" for index in range(20_000)]
@@ -248,7 +289,8 @@ def test_hidden_bonus_match_allows_bonus_registered_before_original_date() -> No
         is_sale=False,
         is_free=True,
         is_oly=True,
-        wishlist_count=0,
+        dl_count=0,
+        wishlist_count=46,
         is_hidden_bonus_audio=True,
     )
 
@@ -277,7 +319,8 @@ def test_hidden_bonus_match_allows_non_audio_bonus_payload() -> None:
         is_sale=False,
         is_free=True,
         is_oly=True,
-        wishlist_count=0,
+        dl_count=0,
+        wishlist_count=1,
         is_hidden_bonus_audio=True,
     )
 
@@ -301,7 +344,8 @@ def test_hidden_bonus_match_uses_probe_context_without_is_oly() -> None:
         is_sale=False,
         is_free=True,
         is_oly=False,
-        wishlist_count=0,
+        dl_count=0,
+        wishlist_count=1,
         is_hidden_bonus_audio=False,
     )
 
@@ -310,6 +354,35 @@ def test_hidden_bonus_match_uses_probe_context_without_is_oly() -> None:
         maker_id="RG57278",
         release_date="2026-03-07",
     ) is True
+
+
+def test_hidden_bonus_match_uses_download_count_instead_of_wishlist_count() -> None:
+    service = _service()
+    feature = DLsiteProductProbeFeature(
+        workno="RJ01579902",
+        exists=True,
+        probe_status="ok",
+        maker_id="RG57278",
+        price=0,
+        is_sale=False,
+        is_free=True,
+        is_oly=False,
+        dl_count=0,
+        wishlist_count=1,
+    )
+
+    assert service._hidden_bonus_matches(
+        feature,
+        maker_id="RG57278",
+        release_date="2026-03-07",
+    ) is True
+
+    feature.dl_count = 1
+    assert service._hidden_bonus_matches(
+        feature,
+        maker_id="RG57278",
+        release_date="2026-03-07",
+    ) is False
 
 
 def test_hidden_bonus_match_rejects_unstable_probe_without_cached_flag() -> None:
@@ -323,7 +396,8 @@ def test_hidden_bonus_match_rejects_unstable_probe_without_cached_flag() -> None
         is_sale=False,
         is_free=True,
         is_oly=False,
-        wishlist_count=0,
+        dl_count=0,
+        wishlist_count=1,
         is_hidden_bonus_audio=True,
     )
 
@@ -347,7 +421,8 @@ def test_hidden_bonus_match_allows_missing_bonus_release_date() -> None:
         is_sale=False,
         is_free=True,
         is_oly=True,
-        wishlist_count=0,
+        dl_count=0,
+        wishlist_count=1,
         is_hidden_bonus_audio=True,
         title="♪早期限定4大特典♪",
     )
@@ -779,6 +854,7 @@ def test_selected_hidden_hit_release_date_filters_history_bonus() -> None:
         is_sale=False,
         is_free=True,
         is_oly=True,
+        raw_summary_json={"raw_dl_count": 0},
         wishlist_count=0,
         is_hidden_bonus_audio=True,
     )
@@ -1152,6 +1228,7 @@ def test_load_cached_features_reads_redis_overlay(monkeypatch) -> None:
                     "price": 0,
                     "is_free": True,
                     "is_oly": True,
+                    "raw_summary_json": {"raw_dl_count": 0},
                     "is_hidden_bonus_audio": True,
                     "title": "Redis 特典缓存",
                 }
@@ -1178,6 +1255,7 @@ def test_legacy_postgres_cache_reclassifies_hidden_bonus() -> None:
         is_sale=False,
         is_free=True,
         is_oly=True,
+        raw_summary_json={"raw_dl_count": 0},
         wishlist_count=0,
         is_hidden_bonus_audio=False,
         title="♪早期限定4大特典♪",
@@ -1202,6 +1280,7 @@ def test_legacy_redis_cache_reclassifies_hidden_bonus() -> None:
         "is_sale": False,
         "is_free": True,
         "is_oly": True,
+        "raw_summary_json": {"raw_dl_count": 0},
         "wishlist_count": 0,
         "is_hidden_bonus_audio": False,
         "title": "♪早期限定4大特典♪",
@@ -1210,7 +1289,7 @@ def test_legacy_redis_cache_reclassifies_hidden_bonus() -> None:
     assert feature.is_hidden_bonus_audio is True
 
 
-def test_cache_reclassification_preserves_raw_boolean_wishlist_semantics() -> None:
+def test_cache_reclassification_ignores_wishlist_count() -> None:
     service = _service()
 
     feature = service._feature_from_cache_payload({
@@ -1222,12 +1301,12 @@ def test_cache_reclassification_preserves_raw_boolean_wishlist_semantics() -> No
         "is_sale": False,
         "is_free": True,
         "is_oly": True,
+        "raw_summary_json": {"raw_dl_count": 0, "raw_wishlist_count": False},
         "wishlist_count": 0,
         "is_hidden_bonus_audio": True,
-        "raw_summary_json": {"raw_wishlist_count": False},
     })
 
-    assert feature.is_hidden_bonus_audio is False
+    assert feature.is_hidden_bonus_audio is True
 
 
 @pytest.mark.parametrize(
@@ -1239,7 +1318,8 @@ def test_cache_reclassification_preserves_raw_boolean_wishlist_semantics() -> No
         ({"is_sale": True}, False),
         ({"is_free": False}, False),
         ({"is_oly": False}, False),
-        ({"wishlist_count": 1}, False),
+        ({"raw_summary_json": {"raw_dl_count": 1}}, False),
+        ({"wishlist_count": 1}, True),
     ],
 )
 def test_legacy_cache_reclassification_keeps_non_bonus_false(overrides, expected) -> None:
@@ -1253,6 +1333,7 @@ def test_legacy_cache_reclassification_keeps_non_bonus_false(overrides, expected
         "is_sale": False,
         "is_free": True,
         "is_oly": True,
+        "raw_summary_json": {"raw_dl_count": 0},
         "wishlist_count": 0,
         "is_hidden_bonus_audio": True,
     }
@@ -1281,9 +1362,10 @@ async def test_load_or_probe_features_uses_redis_overlay_before_http(monkeypatch
                     "work_type": "SOU",
                     "price": 0,
                     "is_sale": False,
-                    "is_free": True,
-                    "is_oly": True,
-                    "wishlist_count": 0,
+                        "is_free": True,
+                        "is_oly": True,
+                        "raw_summary_json": {"raw_dl_count": 0},
+                        "wishlist_count": 0,
                     "is_hidden_bonus_audio": True,
                     "title": "Redis 命中特典",
                 }
@@ -2901,6 +2983,27 @@ def test_exclude_unprobeable_candidates_skips_cached_active_and_error_cooldown(m
 
     assert selected == ["RJ01000005"]
     assert stats == {"input": 5, "cached": 2, "active": 1, "cooldown": 1, "selected": 1}
+
+
+def test_exclude_unprobeable_candidates_refreshes_legacy_zero_price_cache(monkeypatch) -> None:
+    service = _service()
+    cached = {
+        "RJ01000001": DLsiteProductProbeFeature(
+            workno="RJ01000001",
+            exists=True,
+            probe_status="ok",
+            price=0,
+            is_sale=False,
+            is_free=True,
+            dl_count=None,
+        ),
+    }
+    monkeypatch.setattr(service, "_load_cached_features_sync", lambda _values: cached)
+
+    selected, stats = service._exclude_unprobeable_candidates(["RJ01000001"])
+
+    assert selected == ["RJ01000001"]
+    assert stats["selected"] == 1
 
 
 @pytest.mark.asyncio

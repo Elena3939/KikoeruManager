@@ -23,7 +23,8 @@ async def test_probe_product_info_features_uses_bulk_product_info_request() -> N
                 "is_sale": False,
                 "is_free": True,
                 "is_oly": True,
-                "wishlist_count": 0,
+                "dl_count": 0,
+                "wishlist_count": 1,
             },
             "RJ000002": {
                 "maker_id": "RG2",
@@ -41,6 +42,7 @@ async def test_probe_product_info_features_uses_bulk_product_info_request() -> N
     assert "product_id=RJ000001,RJ000002" in calls[0]
     assert features["RJ000001"].exists is True
     assert features["RJ000001"].is_hidden_bonus_audio is True
+    assert features["RJ000001"].dl_count == 0
     assert features["RJ000002"].exists is True
     assert features["RJ000002"].is_hidden_bonus_audio is False
 
