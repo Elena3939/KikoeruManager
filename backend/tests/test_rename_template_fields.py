@@ -22,6 +22,22 @@ def _config(template: str, *, use_japanese_metadata: bool = False):
     )
 
 
+def test_compile_name_removes_empty_template_wrapper(monkeypatch) -> None:
+    config = _config("[{rjcode}][{cvs}][{work_name}]")
+    config.rename.template_wrapper_enabled = True
+    config.rename.template_wrapper_left = "["
+    config.rename.template_wrapper_right = "]"
+    monkeypatch.setattr(rename_service_module, "get_config", lambda: config)
+
+    result = RenameService()._compile_name({
+        "rjcode": "RJ01670873",
+        "work_name": "怪異快楽",
+        "cvs": [],
+    })
+
+    assert result == "[RJ01670873][怪異快楽]"
+
+
 def test_compile_name_distinguishes_original_maker_and_translator(
     monkeypatch,
 ) -> None:

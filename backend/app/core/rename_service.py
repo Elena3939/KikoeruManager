@@ -371,6 +371,20 @@ class RenameService:
         if self.config.rename.exclude_square_brackets:
             name = re.sub(r'【.*?】', '', name)
 
+        # 模板字段为空时，同时移除包裹该字段的空括号，避免生成孤立的 `[]`。
+        # 只处理配置中的包裹符，模板正文里的其它方括号内容保持不变。
+        wrapper_left = str(getattr(self.config.rename, 'template_wrapper_left', '') or '')
+        wrapper_right = str(getattr(self.config.rename, 'template_wrapper_right', '') or '')
+        if (
+            getattr(self.config.rename, 'template_wrapper_enabled', False)
+            and wrapper_left
+            and wrapper_right
+        ):
+            empty_wrapper = re.compile(
+                rf'{re.escape(wrapper_left)}[\s\u00a0]*{re.escape(wrapper_right)}'
+            )
+            name = empty_wrapper.sub('', name)
+
         return name.strip()
     
     def _sanitize_filename(self, filename: str) -> str:
