@@ -140,6 +140,7 @@
       :merge-tasks="false"
       :compact="true"
       :enable-file-retry="true"
+      :enable-failed-cancel="true"
       @refresh="refreshHttpDownloadWorkbench({ silent: true })"
       @background="hideHttpDownloadWorkbenchToBackground"
       @close="closeHttpDownloadWorkbench"
@@ -650,8 +651,10 @@ import {
   createLatestRequestGuard,
   mergeTrackedDownloadTaskIds,
   replaceTrackedDownloadTaskId,
+  resolveTrackedDownloadBatch,
   selectTrackedDownloadTasks,
 } from './_downloadWorkbenchTracking.js'
+import { getDownloadBatchPercent } from '../utils/downloadProgress.js'
 
 const { isMobile: isMobileViewport } = useViewport()
 const route = useRoute()
@@ -788,6 +791,8 @@ const httpDownloadDraft = ref(readDownloadDraft(ASMR_SYNC_HTTP_DOWNLOAD_DRAFT_KE
 let httpDownloadWorkbenchTimer = null
 const httpDownloadWorkbenchRequestGuard = createLatestRequestGuard()
 const baiduNetdiskWorkbenchTaskIds = ref([])
+const baiduNetdiskWorkbenchBatchTaskIds = ref([])
+const baiduNetdiskWorkbenchBatchStartedAt = ref('')
 const baiduNetdiskWorkbenchTasks = ref([])
 const baiduNetdiskWorkbenchVisible = ref(false)
 const baiduNetdiskWorkbenchBackgroundActive = ref(false)
@@ -933,7 +938,12 @@ const enhancedProcessingTasks = computed(() => enhancedDownloadWorkbenchTasks.va
 const enhancedPendingTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => ['pending', 'paused', 'waiting_retry'].includes(String(t.status || ''))))
 const enhancedCompletedTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => t.status === 'completed' && String(t.display_status || '') !== 'partial_failed'))
 const enhancedFailedTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => ['failed', 'partial_failed'].includes(String(t.display_status || t.status || ''))))
-const showEnhancedDownloadBackgroundCard = computed(() => enhancedDownloadWorkbenchBackgroundActive.value && !enhancedDownloadWorkbenchVisible.value && enhancedDownloadWorkbenchTaskIds.value.length > 0)
+const showEnhancedDownloadBackgroundCard = computed(() => (
+  enhancedDownloadWorkbenchBackgroundActive.value
+  && !enhancedDownloadWorkbenchVisible.value
+  && enhancedDownloadWorkbenchTasks.value.length > 0
+  && enhancedDownloadWorkbenchTaskIds.value.length > 0
+))
 const enhancedActiveBackgroundTask = computed(() => enhancedProcessingTasks.value[0] || enhancedPendingTasks.value[0] || enhancedDownloadWorkbenchTasks.value[0] || null)
 const enhancedBackgroundPercent = computed(() => {
   if (!enhancedDownloadWorkbenchTasks.value.length) return 0
@@ -996,7 +1006,12 @@ const httpDownloadProcessingTasks = computed(() => httpDownloadWorkbenchTasks.va
 const httpDownloadPendingTasks = computed(() => httpDownloadWorkbenchTasks.value.filter(t => ['pending', 'paused', 'waiting_retry'].includes(String(t.status || ''))))
 const httpDownloadCompletedTasks = computed(() => httpDownloadWorkbenchTasks.value.filter(t => t.status === 'completed' && String(t.display_status || '') !== 'partial_failed'))
 const httpDownloadFailedTasks = computed(() => httpDownloadWorkbenchTasks.value.filter(t => ['failed', 'partial_failed'].includes(String(t.display_status || t.status || ''))))
-const showHttpDownloadBackgroundCard = computed(() => httpDownloadWorkbenchBackgroundActive.value && !httpDownloadWorkbenchVisible.value && httpDownloadWorkbenchTaskIds.value.length > 0)
+const showHttpDownloadBackgroundCard = computed(() => (
+  httpDownloadWorkbenchBackgroundActive.value
+  && !httpDownloadWorkbenchVisible.value
+  && httpDownloadWorkbenchTasks.value.length > 0
+  && httpDownloadWorkbenchTaskIds.value.length > 0
+))
 const httpDownloadActiveBackgroundTask = computed(() => httpDownloadProcessingTasks.value[0] || httpDownloadPendingTasks.value[0] || httpDownloadWorkbenchTasks.value[0] || null)
 const httpDownloadBackgroundPercent = computed(() => {
   if (!httpDownloadWorkbenchTasks.value.length) return 0
@@ -1048,13 +1063,14 @@ const baiduNetdiskProcessingTasks = computed(() => baiduNetdiskWorkbenchTasks.va
 const baiduNetdiskPendingTasks = computed(() => baiduNetdiskWorkbenchTasks.value.filter(t => ['pending', 'paused', 'waiting_retry'].includes(String(t.status || ''))))
 const baiduNetdiskCompletedTasks = computed(() => baiduNetdiskWorkbenchTasks.value.filter(t => t.status === 'completed' && String(t.display_status || '') !== 'partial_failed'))
 const baiduNetdiskFailedTasks = computed(() => baiduNetdiskWorkbenchTasks.value.filter(t => ['failed', 'partial_failed'].includes(String(t.display_status || t.status || ''))))
-const showBaiduNetdiskBackgroundCard = computed(() => baiduNetdiskWorkbenchBackgroundActive.value && !baiduNetdiskWorkbenchVisible.value && baiduNetdiskWorkbenchTaskIds.value.length > 0)
+const showBaiduNetdiskBackgroundCard = computed(() => (
+  baiduNetdiskWorkbenchBackgroundActive.value
+  && !baiduNetdiskWorkbenchVisible.value
+  && baiduNetdiskWorkbenchTasks.value.length > 0
+  && baiduNetdiskWorkbenchTaskIds.value.length > 0
+))
 const baiduNetdiskActiveBackgroundTask = computed(() => baiduNetdiskProcessingTasks.value[0] || baiduNetdiskPendingTasks.value[0] || baiduNetdiskWorkbenchTasks.value[0] || null)
-const baiduNetdiskBackgroundPercent = computed(() => {
-  if (!baiduNetdiskWorkbenchTasks.value.length) return 0
-  const total = baiduNetdiskWorkbenchTasks.value.reduce((sum, t) => sum + Number(t.progress || 0), 0)
-  return Math.max(0, Math.min(100, Math.round(total / baiduNetdiskWorkbenchTasks.value.length)))
-})
+const baiduNetdiskBackgroundPercent = computed(() => getDownloadBatchPercent(baiduNetdiskWorkbenchTasks.value))
 const baiduNetdiskBackgroundCompleted = computed(() => (
   baiduNetdiskWorkbenchTasks.value.length > 0
   && baiduNetdiskCompletedTasks.value.length === baiduNetdiskWorkbenchTasks.value.length
@@ -1433,6 +1449,7 @@ function clearEnhancedDownloadWorkbenchState() {
   enhancedDownloadWorkbenchTasks.value = []
   enhancedDownloadWorkbenchVisible.value = false
   enhancedDownloadWorkbenchBackgroundActive.value = false
+  enhancedDownloadWorkbenchRefreshing.value = false
   stopEnhancedDownloadWorkbenchPolling()
   try { localStorage.removeItem(ASMR_SYNC_DOWNLOAD_WORKBENCH_KEY) } catch (_) {}
 }
@@ -1462,13 +1479,21 @@ async function refreshEnhancedDownloadWorkbench(options = {}) {
   }
   if (!silent) enhancedDownloadWorkbenchRefreshing.value = true
   try {
-    const result = await asmrSyncApi.status([], { compact: true })
+    const result = await asmrSyncApi.status(enhancedDownloadWorkbenchTaskIds.value, { compact: true })
     if (!enhancedDownloadWorkbenchRequestGuard.isLatest(requestSeq)) return
     const allTasks = Array.isArray(result.tasks) ? result.tasks : []
-    enhancedDownloadWorkbenchTasks.value = mergeWorkbenchTaskRows(enhancedDownloadWorkbenchTasks.value, selectTrackedDownloadTasks(
+    const trackedTasks = selectTrackedDownloadTasks(
       enhancedDownloadWorkbenchTaskIds.value,
       allTasks,
-    ))
+    )
+    if (!trackedTasks.length) {
+      clearEnhancedDownloadWorkbenchState()
+      return
+    }
+    enhancedDownloadWorkbenchTasks.value = mergeWorkbenchTaskRows(
+      enhancedDownloadWorkbenchTasks.value,
+      trackedTasks,
+    )
     const stillActive = enhancedDownloadWorkbenchTasks.value.some(t => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(t.status || '')))
     if (stillActive || enhancedDownloadWorkbenchVisible.value || enhancedDownloadWorkbenchBackgroundActive.value) startEnhancedDownloadWorkbenchPolling()
     else stopEnhancedDownloadWorkbenchPolling()
@@ -1585,6 +1610,7 @@ function clearHttpDownloadWorkbenchState() {
   httpDownloadWorkbenchTasks.value = []
   httpDownloadWorkbenchVisible.value = false
   httpDownloadWorkbenchBackgroundActive.value = false
+  httpDownloadWorkbenchRefreshing.value = false
   stopHttpDownloadWorkbenchPolling()
   try { localStorage.removeItem(ASMR_SYNC_HTTP_DOWNLOAD_WORKBENCH_KEY) } catch (_) {}
 }
@@ -1617,10 +1643,20 @@ async function refreshHttpDownloadWorkbench(options = {}) {
     const result = await httpDownloadApi.status({ compact: true })
     if (!httpDownloadWorkbenchRequestGuard.isLatest(requestSeq)) return
     const allTasks = Array.isArray(result.tasks) ? result.tasks : []
-    httpDownloadWorkbenchTasks.value = mergeWorkbenchTaskRows(httpDownloadWorkbenchTasks.value, selectTrackedDownloadTasks(
+    const trackedTasks = selectTrackedDownloadTasks(
       httpDownloadWorkbenchTaskIds.value,
       allTasks,
-    ))
+    )
+    const totalTasks = Number(result.total_tasks)
+    const hasCompleteSnapshot = Number.isFinite(totalTasks) && totalTasks <= allTasks.length
+    if (!trackedTasks.length && hasCompleteSnapshot) {
+      clearHttpDownloadWorkbenchState()
+      return
+    }
+    httpDownloadWorkbenchTasks.value = mergeWorkbenchTaskRows(
+      httpDownloadWorkbenchTasks.value,
+      trackedTasks,
+    )
     const stillActive = httpDownloadWorkbenchTasks.value.some(t => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(t.status || '')))
     if (stillActive || httpDownloadWorkbenchVisible.value || httpDownloadWorkbenchBackgroundActive.value) startHttpDownloadWorkbenchPolling()
     else stopHttpDownloadWorkbenchPolling()
@@ -1770,6 +1806,8 @@ function persistBaiduNetdiskWorkbenchState() {
   try {
     localStorage.setItem(ASMR_SYNC_BAIDU_NETDISK_WORKBENCH_KEY, JSON.stringify({
       taskIds: baiduNetdiskWorkbenchTaskIds.value,
+      batchTaskIds: baiduNetdiskWorkbenchBatchTaskIds.value,
+      batchStartedAt: baiduNetdiskWorkbenchBatchStartedAt.value,
       visible: baiduNetdiskWorkbenchVisible.value,
       background: baiduNetdiskWorkbenchBackgroundActive.value
     }))
@@ -1780,10 +1818,16 @@ function hydrateBaiduNetdiskWorkbenchState() {
   try {
     const raw = JSON.parse(localStorage.getItem(ASMR_SYNC_BAIDU_NETDISK_WORKBENCH_KEY) || '{}')
     baiduNetdiskWorkbenchTaskIds.value = Array.isArray(raw.taskIds) ? raw.taskIds.filter(Boolean) : []
+    baiduNetdiskWorkbenchBatchTaskIds.value = Array.isArray(raw.batchTaskIds) && raw.batchTaskIds.length
+      ? mergeTrackedDownloadTaskIds(raw.batchTaskIds)
+      : baiduNetdiskWorkbenchTaskIds.value.slice(0, 1)
+    baiduNetdiskWorkbenchBatchStartedAt.value = String(raw.batchStartedAt || '')
     baiduNetdiskWorkbenchVisible.value = Boolean(raw.visible && baiduNetdiskWorkbenchTaskIds.value.length)
     baiduNetdiskWorkbenchBackgroundActive.value = Boolean(raw.background && baiduNetdiskWorkbenchTaskIds.value.length)
   } catch (_) {
     baiduNetdiskWorkbenchTaskIds.value = []
+    baiduNetdiskWorkbenchBatchTaskIds.value = []
+    baiduNetdiskWorkbenchBatchStartedAt.value = ''
     baiduNetdiskWorkbenchVisible.value = false
     baiduNetdiskWorkbenchBackgroundActive.value = false
   }
@@ -1792,9 +1836,12 @@ function hydrateBaiduNetdiskWorkbenchState() {
 function clearBaiduNetdiskWorkbenchState() {
   baiduNetdiskWorkbenchRequestGuard.invalidate()
   baiduNetdiskWorkbenchTaskIds.value = []
+  baiduNetdiskWorkbenchBatchTaskIds.value = []
+  baiduNetdiskWorkbenchBatchStartedAt.value = ''
   baiduNetdiskWorkbenchTasks.value = []
   baiduNetdiskWorkbenchVisible.value = false
   baiduNetdiskWorkbenchBackgroundActive.value = false
+  baiduNetdiskWorkbenchRefreshing.value = false
   stopBaiduNetdiskWorkbenchPolling()
   try { localStorage.removeItem(ASMR_SYNC_BAIDU_NETDISK_WORKBENCH_KEY) } catch (_) {}
 }
@@ -1827,10 +1874,29 @@ async function refreshBaiduNetdiskWorkbench(options = {}) {
     const result = await baiduNetdiskApi.status({ compact: true })
     if (!baiduNetdiskWorkbenchRequestGuard.isLatest(requestSeq)) return
     const allTasks = Array.isArray(result.tasks) ? result.tasks : []
-    baiduNetdiskWorkbenchTasks.value = mergeWorkbenchTaskRows(baiduNetdiskWorkbenchTasks.value, selectTrackedDownloadTasks(
+    const batch = resolveTrackedDownloadBatch(
+      baiduNetdiskWorkbenchTaskIds.value,
+      baiduNetdiskWorkbenchBatchTaskIds.value,
+      allTasks,
+      baiduNetdiskWorkbenchBatchStartedAt.value,
+    )
+    baiduNetdiskWorkbenchTaskIds.value = batch.taskIds
+    baiduNetdiskWorkbenchBatchStartedAt.value = batch.batchStartedAt
+    persistBaiduNetdiskWorkbenchState()
+    const trackedTasks = selectTrackedDownloadTasks(
       baiduNetdiskWorkbenchTaskIds.value,
       allTasks,
-    ))
+    )
+    const totalTasks = Number(result.total_tasks)
+    const hasCompleteSnapshot = Number.isFinite(totalTasks) && totalTasks <= allTasks.length
+    if (!trackedTasks.length && hasCompleteSnapshot) {
+      clearBaiduNetdiskWorkbenchState()
+      return
+    }
+    baiduNetdiskWorkbenchTasks.value = mergeWorkbenchTaskRows(
+      baiduNetdiskWorkbenchTasks.value,
+      trackedTasks,
+    )
     const stillActive = baiduNetdiskWorkbenchTasks.value.some(t => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(t.status || '')))
     if (stillActive || baiduNetdiskWorkbenchVisible.value || baiduNetdiskWorkbenchBackgroundActive.value) startBaiduNetdiskWorkbenchPolling()
     else stopBaiduNetdiskWorkbenchPolling()
@@ -1846,6 +1912,8 @@ async function refreshBaiduNetdiskWorkbench(options = {}) {
 async function handleBaiduNetdiskStarted(taskIds = []) {
   const newTaskIds = Array.isArray(taskIds) ? taskIds.filter(Boolean) : []
   if (!newTaskIds.length) return
+  baiduNetdiskWorkbenchBatchTaskIds.value = mergeTrackedDownloadTaskIds(newTaskIds)
+  baiduNetdiskWorkbenchBatchStartedAt.value = ''
   baiduNetdiskWorkbenchTaskIds.value = mergeTrackedDownloadTaskIds(
     baiduNetdiskWorkbenchTaskIds.value,
     newTaskIds,

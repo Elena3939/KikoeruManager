@@ -1547,6 +1547,9 @@ class TaskEngine:
 
     def _get_effective_rjcode(self, task: Task, fallback_path: Optional[str] = None) -> str:
         """统一获取当前任务可用的 RJ 号，优先复用已推断结果。"""
+        from .archive_identity import aggregate_rjcodes
+        if aggregate_rjcodes(task.task_metadata):
+            return ""
         candidates = [
             getattr(task, "rjcode", None),
             (task.task_metadata or {}).get("rjcode"),
@@ -1614,6 +1617,12 @@ class TaskEngine:
             normalized_rjcode = self._extract_rjcode_from_path_tail(source_path) or ""
 
         metadata = dict(task.task_metadata or {})
+        from .archive_identity import aggregate_archive_title, aggregate_rjcodes
+        if aggregate_rjcodes(metadata):
+            normalized_rjcode = ""
+            metadata["work_name"] = aggregate_archive_title(metadata, source_path)
+            for key in ("rjcode", "inferred_rjcode", "rjcode_source", "inferred_rjcode_source"):
+                metadata.pop(key, None)
         metadata["failure_stage"] = "extract"
         metadata["error_message"] = reason
         metadata["available_actions"] = ["RETRY", "SKIP"]
@@ -2699,6 +2708,10 @@ class TaskEngine:
             "aggregate_rjcodes": list(rjcodes),
             "aggregate_rj_count": len(rjcodes),
         }
+        # 父任务代表整个合集；作品身份只属于拆分后的子任务。
+        task.rjcode = None
+        for key in ("rjcode", "inferred_rjcode", "rjcode_source", "inferred_rjcode_source"):
+            task.task_metadata.pop(key, None)
         logger.info(
             "[%s] 清单检测到 %s 个独立 RJ（合集包），跳过整包字幕关联预检和整体查重: %s%s",
             task.rjcode or rjcodes[0],
@@ -2812,16 +2825,12 @@ class TaskEngine:
                             extract_service,
                         )
                         is_multi_rj_archive = len(archive_top_rjs) >= 2
-                        if is_multi_rj_archive and not rjcode:
-                            rjcode = self._sync_task_rjcode(
-                                task,
-                                archive_top_rjs[0],
-                                source="aggregate_archive_precheck",
-                            )
+                        if is_multi_rj_archive:
+                            rjcode = ""
 
                         precheck_task = None
                         linked_result = {"handled": False, "reason": "not_run", "preview": {}}
-                        if not rjcode:
+                        if not rjcode and not is_multi_rj_archive:
                             logger.warning(f"[未知] 无法从文件名提取RJ号，跳过字幕补配预检和预检查重: {os.path.basename(task.source_path)}")
                             # 小型压缩包且 RJ 号未知：视作疑似字幕包，无法自动关联，转入问题作品等待人工处理
                             if (
@@ -3331,7 +3340,13 @@ class TaskEngine:
                     logger.info(f"[{rjcode}] 更新任务RJ号为解压后提取的RJ号")
                     
                     # 如果预检时没有提取到 RJ 号，现在进行重复检查
-                    if config.auto_process.check_duplicate and task.auto_classify:
+                    # KEEP_NEW/RETRY 等问题作品处理任务已经由用户确认过冲突。
+                    # 解压后目录名可能带出真实 RJ，但不能因此再次把已批准的新版本判成重复。
+                    if (
+                        config.auto_process.check_duplicate
+                        and task.auto_classify
+                        and not skip_retry_precheck
+                    ):
                         logger.info(f"[{rjcode}] 解压后进行重复检查")
                         is_duplicate = await classifier.check_duplicate_before_extract(rjcode, task, self)
                         logger.info(f"[{rjcode}] 解压后重复检查结果: {is_duplicate}")
@@ -5837,6 +5852,16 @@ class TaskEngine:
                         'status': 'downloading'
                     })
                 task.task_metadata['download_files'] = files
+
+                # 文件回调才是下载阶段的真实进度来源。把所有文件的已下载字节
+                # 聚合到 10%~70% 的下载阶段，并通过 update_progress 推送实时日志。
+                total_downloaded = sum(max(0, int(f.get('downloaded') or 0)) for f in files)
+                total_size = sum(max(0, int(f.get('total') or 0)) for f in files)
+                if total_size > 0:
+                    download_ratio = min(1.0, total_downloaded / total_size)
+                    download_progress = 10 + int(download_ratio * 60)
+                    download_progress = max(task.progress, min(70, download_progress))
+                    task.update_progress(download_progress, f"下载中 {file_name}")
 
             def check_pause():
                 """检查任务是否被暂停"""

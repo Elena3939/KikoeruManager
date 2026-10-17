@@ -2,10 +2,52 @@
 
 import logging
 import os
+import struct
 import zipfile
+import zlib
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def detect_embedded_7z_offset(path: str) -> Optional[int]:
+    """有界分块查找前缀壳内的 7z，并校验起始头，避免把图片内容误判为压缩包。
+
+    最多搜索前 8 MiB，不扫描整个媒体文件；起始头的 CRC 和下一头位置
+    必须有效。只探测，不复制或修改原文件，7zz 可直接处理这个偏移。
+    """
+    signature = b"7z\xbc\xaf\x27\x1c"
+    search_limit = 8 * 1024 * 1024
+    chunk_size = 64 * 1024
+    try:
+        with open(path, "rb") as fp:
+            file_size = os.fstat(fp.fileno()).st_size
+            end = min(file_size, search_limit + 32)
+            position = 0
+            while position < end:
+                fp.seek(position)
+                chunk = fp.read(min(chunk_size + 31, end - position))
+                if position == 0 and chunk.startswith((
+                    signature, b'PK\x03\x04', b'Rar!', b'\x1f\x8b', b'BZh', b'\xfd7zXZ',
+                )):
+                    return None
+                start = 0
+                while (index := chunk.find(signature, start)) >= 0:
+                    offset = position + index
+                    header = chunk[index:index + 32]
+                    if 0 < offset <= search_limit and len(header) == 32 and header[6] == 0:
+                        expected_crc = struct.unpack_from("<I", header, 8)[0]
+                        next_offset, next_size = struct.unpack_from("<QQ", header, 12)
+                        if (
+                            zlib.crc32(header[12:32]) == expected_crc
+                            and offset + 32 + next_offset + next_size <= file_size
+                        ):
+                            return offset
+                    start = index + 1
+                position += chunk_size
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 def detect_embedded_zip_offset(path: str) -> Optional[int]:

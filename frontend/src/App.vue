@@ -239,7 +239,7 @@ const conflictCount = ref(0)
 const watcherStatus = ref({ is_running: false, watch_path: '', pending_files: [] })
 const mobileNavOpen = ref(false)
 const sidebarPinnedStorageKey = 'kikoerumanager.sidebarPinned'
-const sidebarPinned = ref(false)
+const sidebarPinned = ref(readInitialSidebarPinned())
 const { applyTheme } = useTheme()
 const realtimeEvents = useRealtimeEvents()
 const { panelOpen: notificationPanelOpen } = useNotifications()
@@ -299,7 +299,6 @@ const WATCHER_STATUS_FALLBACK_MS = 30000
 const WATCHER_STATUS_POLL_MAX_MS = 120000
 
 onMounted(async () => {
-  sidebarPinned.value = readInitialSidebarPinned()
   applyTheme()
   await refreshAppVersion()
   if (isGateRoute.value) return
@@ -5237,6 +5236,26 @@ html.kikoerumanager-dark .detail-body .path {
   background: #ffffff;
 }
 
+/* 门禁独占视口，不继承工作台边距和滚动条预留空间。 */
+.app-container.is-gate-route {
+  height: 100dvh;
+  padding: 0;
+  gap: 0;
+  min-height: 0;
+}
+
+.app-container.is-gate-route .main-frame,
+.app-container.is-gate-route .main-content,
+.app-container.is-gate-route .content-shell {
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+}
+
+.app-container.is-gate-route .content-shell {
+  scrollbar-gutter: auto;
+}
+
 .sidebar {
   --sidebar-collapsed-width: 64px;
   --sidebar-expanded-width: 248px;
@@ -5853,129 +5872,129 @@ html.kikoerumanager-dark .detail-body .path {
   background: #070b12;
 }
 
-:global(html.kikoerumanager-dark) .app-container {
+html.kikoerumanager-dark .app-container {
   background: #070b12;
 }
 
-:global(html.kikoerumanager-dark) .sidebar-shell {
+html.kikoerumanager-dark .sidebar-shell {
   background: rgba(15, 23, 42, 0.86);
   border-color: rgba(148, 163, 184, 0.14);
   box-shadow: 0 22px 56px rgba(0, 0, 0, 0.38);
 }
 
-:global(html.kikoerumanager-dark) .logo-text,
-:global(html.kikoerumanager-dark) .sidebar-status-title,
-:global(html.kikoerumanager-dark) .watcher-button,
-:global(html.kikoerumanager-dark) .version-text {
+html.kikoerumanager-dark .logo-text,
+html.kikoerumanager-dark .sidebar-status-title,
+html.kikoerumanager-dark .watcher-button,
+html.kikoerumanager-dark .version-text {
   color: #f8fafc;
 }
 
-:global(html.kikoerumanager-dark) .logo-subtitle,
-:global(html.kikoerumanager-dark) .sidebar-section-label,
-:global(html.kikoerumanager-dark) .sidebar-status-text {
+html.kikoerumanager-dark .logo-subtitle,
+html.kikoerumanager-dark .sidebar-section-label,
+html.kikoerumanager-dark .sidebar-status-text {
   color: rgba(226, 232, 240, 0.62);
 }
 
-:global(html.kikoerumanager-dark) .logo-mark,
-:global(html.kikoerumanager-dark) .app-mobile-brand-mark {
+html.kikoerumanager-dark .logo-mark,
+html.kikoerumanager-dark .app-mobile-brand-mark {
   background: rgba(59, 130, 246, 0.16);
   color: #93c5fd;
   box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.16);
 }
 
-:global(html.kikoerumanager-dark) .sidebar-status-card {
+html.kikoerumanager-dark .sidebar-status-card {
   background: rgba(30, 41, 59, 0.76);
   box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.12);
 }
 
-:global(html.kikoerumanager-dark) .watcher-button,
-:global(html.kikoerumanager-dark) .version-text {
+html.kikoerumanager-dark .watcher-button,
+html.kikoerumanager-dark .version-text {
   background: rgba(15, 23, 42, 0.86);
   border-color: rgba(148, 163, 184, 0.16);
   box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.1);
 }
 
-:global(html.kikoerumanager-dark) .watcher-button:hover,
-:global(html.kikoerumanager-dark) .watcher-button:focus {
+html.kikoerumanager-dark .watcher-button:hover,
+html.kikoerumanager-dark .watcher-button:focus {
   background: rgba(30, 41, 59, 0.92);
   border-color: rgba(148, 163, 184, 0.24);
   color: #f8fafc;
 }
 
-:global(html.kikoerumanager-dark) :deep(.sidebar-menu .el-menu-item) {
+:global(html.kikoerumanager-dark .sidebar-menu .el-menu-item) {
   color: rgba(226, 232, 240, 0.74);
 }
 
-:global(html.kikoerumanager-dark) :deep(.sidebar-menu .el-menu-item > svg) {
+:global(html.kikoerumanager-dark .sidebar-menu .el-menu-item > svg) {
   color: var(--sidebar-nav-icon, rgba(203, 213, 225, 0.58));
 }
 
-:global(html.kikoerumanager-dark) :deep(.sidebar-menu .el-menu-item:hover) {
+:global(html.kikoerumanager-dark .sidebar-menu .el-menu-item:hover) {
   background: transparent;
   color: #f8fafc;
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) :deep(.sidebar-menu .el-menu-item:hover > svg) {
+:global(html.kikoerumanager-dark .sidebar-menu .el-menu-item:hover > svg) {
   color: var(--sidebar-nav-icon, #f8fafc);
 }
 
-:global(html.kikoerumanager-dark) :deep(.sidebar-menu .el-menu-item.is-active) {
+:global(html.kikoerumanager-dark .sidebar-menu .el-menu-item.is-active) {
   background: transparent;
   color: #f8fafc;
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) :deep(.sidebar-menu .el-menu-item.is-active > svg) {
+:global(html.kikoerumanager-dark .sidebar-menu .el-menu-item.is-active > svg) {
   color: var(--sidebar-nav-icon, #f8fafc);
 }
 
-:global(html.kikoerumanager-dark) :deep(.el-card),
-:global(html.kikoerumanager-dark) :deep(.el-dialog),
-:global(html.kikoerumanager-dark) :deep(.el-drawer),
-:global(html.kikoerumanager-dark) :deep(.el-message-box),
-:global(html.kikoerumanager-dark) :deep(.el-popover),
-:global(html.kikoerumanager-dark) :deep(.el-popper),
-:global(html.kikoerumanager-dark) :deep(.el-dropdown__popper .el-dropdown-menu),
-:global(html.kikoerumanager-dark) :deep(.el-picker-panel),
-:global(html.kikoerumanager-dark) :deep(.el-select-dropdown) {
+:global(html.kikoerumanager-dark .el-card),
+:global(html.kikoerumanager-dark .el-dialog),
+:global(html.kikoerumanager-dark .el-drawer),
+:global(html.kikoerumanager-dark .el-message-box),
+:global(html.kikoerumanager-dark .el-popover),
+:global(html.kikoerumanager-dark .el-popper),
+:global(html.kikoerumanager-dark .el-dropdown__popper .el-dropdown-menu),
+:global(html.kikoerumanager-dark .el-picker-panel),
+:global(html.kikoerumanager-dark .el-select-dropdown) {
   background: rgba(15, 23, 42, 0.96);
   border-color: rgba(148, 163, 184, 0.16);
   color: #e2e8f0;
 }
 
-:global(html.kikoerumanager-dark) :deep(.el-input__wrapper),
-:global(html.kikoerumanager-dark) :deep(.el-textarea__inner) {
+:global(html.kikoerumanager-dark .el-input__wrapper),
+:global(html.kikoerumanager-dark .el-textarea__inner) {
   background: rgba(15, 23, 42, 0.88);
   box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.16) inset;
 }
 
-:global(html.kikoerumanager-dark) :deep(.el-input__inner),
-:global(html.kikoerumanager-dark) :deep(.el-textarea__inner),
-:global(html.kikoerumanager-dark) :deep(.el-form-item__label),
-:global(html.kikoerumanager-dark) :deep(.el-dialog__title),
-:global(html.kikoerumanager-dark) :deep(.el-message-box__title),
-:global(html.kikoerumanager-dark) :deep(.el-message-box__message) {
+:global(html.kikoerumanager-dark .el-input__inner),
+:global(html.kikoerumanager-dark .el-textarea__inner),
+:global(html.kikoerumanager-dark .el-form-item__label),
+:global(html.kikoerumanager-dark .el-dialog__title),
+:global(html.kikoerumanager-dark .el-message-box__title),
+:global(html.kikoerumanager-dark .el-message-box__message) {
   color: #e2e8f0;
 }
 
-:global(html.kikoerumanager-dark) :deep(.el-table),
-:global(html.kikoerumanager-dark) :deep(.el-table tr),
-:global(html.kikoerumanager-dark) :deep(.el-table th.el-table__cell),
-:global(html.kikoerumanager-dark) :deep(.el-table td.el-table__cell) {
+:global(html.kikoerumanager-dark .el-table),
+:global(html.kikoerumanager-dark .el-table tr),
+:global(html.kikoerumanager-dark .el-table th.el-table__cell),
+:global(html.kikoerumanager-dark .el-table td.el-table__cell) {
   background: rgba(15, 23, 42, 0.92);
   color: #e2e8f0;
   border-color: rgba(148, 163, 184, 0.14);
 }
 
-:global(html.kikoerumanager-dark) .theme-toggle-button {
+html.kikoerumanager-dark .theme-toggle-button {
   background: rgba(15, 23, 42, 0.36);
   border-color: rgba(147, 197, 253, 0.18);
   color: #dbeafe;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 
-:global(html.kikoerumanager-dark) .theme-toggle-button:hover {
+html.kikoerumanager-dark .theme-toggle-button:hover {
   border-color: rgba(147, 197, 253, 0.34);
   color: #f8fafc;
   box-shadow: 0 8px 18px rgba(37, 99, 235, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
@@ -6111,18 +6130,18 @@ html.kikoerumanager-dark .detail-body .path {
     width: 32px;
     height: 32px;
   }
-  :global(html.kikoerumanager-dark) .app-mobile-topbar {
+  html.kikoerumanager-dark .app-mobile-topbar {
     background: rgba(15, 23, 42, 0.92);
     border-bottom-color: rgba(148, 163, 184, 0.12);
   }
-  :global(html.kikoerumanager-dark) .app-mobile-trigger,
-  :global(html.kikoerumanager-dark) .app-mobile-brand-text {
+  html.kikoerumanager-dark .app-mobile-trigger,
+html.kikoerumanager-dark .app-mobile-brand-text {
     color: #f8fafc;
   }
-  :global(html.kikoerumanager-dark) .app-mobile-brand-version {
+  html.kikoerumanager-dark .app-mobile-brand-version {
     color: rgba(226, 232, 240, 0.58);
   }
-  :global(html.kikoerumanager-dark) .app-mobile-trigger:hover {
+  html.kikoerumanager-dark .app-mobile-trigger:hover {
     background: rgba(148, 163, 184, 0.12);
     border-color: rgba(148, 163, 184, 0.16);
   }

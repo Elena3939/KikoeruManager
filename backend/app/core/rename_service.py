@@ -72,8 +72,15 @@ class RenameService:
             if japanese_metadata:
                 japanese_maker_name = str(japanese_metadata.get('maker_name') or '').strip()
                 if japanese_maker_name:
-                    metadata['classification_maker_name'] = japanese_maker_name
-                    metadata['original_maker_name'] = japanese_maker_name
+                    # 日文 product 接口对翻译作品可能把译者名放在 maker_name；
+                    # 不要覆盖当前元数据已经确认的原社团。
+                    if not str(
+                        metadata.get('original_maker_name')
+                        or metadata.get('maker_name')
+                        or ''
+                    ).strip():
+                        metadata['classification_maker_name'] = japanese_maker_name
+                        metadata['original_maker_name'] = japanese_maker_name
 
         # 生成新名称
         new_name = self._compile_name(metadata, japanese_metadata)
@@ -301,10 +308,10 @@ class RenameService:
         if use_japanese:
             maker_id = japanese_metadata.get('maker_id', metadata.get('maker_id', ''))
             original_maker_name = normalize_template_maker_name(
-                japanese_metadata.get('original_maker_name')
-                or japanese_metadata.get('maker_name')
-                or metadata.get('original_maker_name')
-                or metadata.get('maker_name', '')
+                metadata.get('original_maker_name')
+                or metadata.get('maker_name')
+                or japanese_metadata.get('original_maker_name')
+                or japanese_metadata.get('maker_name', '')
             )
             logger.info(f"[RENAME] 使用日语元数据 - original_maker_name='{original_maker_name}'")
         else:

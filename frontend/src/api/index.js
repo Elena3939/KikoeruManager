@@ -244,6 +244,11 @@ export const configApi = {
     return response.data
   },
 
+  revealEmailWatcherSecret: async (payload) => {
+    const response = await apiClient.post('/config/email-watcher/reveal-secret', payload)
+    return response.data
+  },
+
   revealDatabaseSecret: async (payload) => {
     const response = await apiClient.post('/config/database/reveal-secret', payload)
     return response.data
@@ -678,10 +683,10 @@ export const conflictApi = {
     return response.data
   },
 
-  preview: async (conflictId, action) => {
+  preview: async (conflictId, action, mergeTarget = null) => {
     // 合并预览改成异步 job 模式后，后端立即返回 {async: true, job_id, status: 'running', ...}，
     // HTTP 不再阻塞。KEEP_NEW 仍是同步返回 preview。前端轮询 mergePreviewJob 拿真实进度。
-    const response = await apiClient.post(`/conflicts/${conflictId}/preview`, { action }, {
+    const response = await apiClient.post(`/conflicts/${conflictId}/preview`, { action, merge_target: mergeTarget }, {
       timeout: 60000,
     })
     return response.data
@@ -691,6 +696,13 @@ export const conflictApi = {
     // 合并预览异步 job 轮询接口：状态 running 时由前端按节奏继续 poll，
     // completed 时取 result（含 session_id / items / 默认 decisions），failed 时抛错。
     const response = await apiClient.get(`/conflicts/${conflictId}/preview-job/${jobId}`, {
+      timeout: 30000,
+    })
+    return response.data
+  },
+
+  cancelMergePreviewJob: async (conflictId, jobId) => {
+    const response = await apiClient.post(`/conflicts/${conflictId}/preview-job/${jobId}/cancel`, null, {
       timeout: 30000,
     })
     return response.data
@@ -1316,6 +1328,14 @@ export const libraryApi = {
     return response.data
   },
 
+  browserNotifyIndexDeletes: async (libraryId, deletedPaths, options = {}) => {
+    const response = await apiClient.post('/library/browser/index-delete-batch', {
+      library_id: libraryId,
+      deleted_paths: deletedPaths
+    }, mutationRequestConfig({ ...options, timeout: options.timeout || 60 * 1000 }))
+    return response.data
+  },
+
   apiRename: async (path, libraryId = null, options = {}) => {
     const payload = { path }
     if (libraryId) payload.library_id = libraryId
@@ -1335,8 +1355,9 @@ export const libraryApi = {
       path,
       confirmed,
       skip_activity_log: options.skipActivityLog ?? false,
-      batch_id: options.batchId || ''
-    }, confirmed ? mutationRequestConfig(options) : { signal: options.signal })
+      batch_id: options.batchId || '',
+      skip_index_mutation: options.skipIndexMutation ?? false
+    }, confirmed && !options.skipIndexMutation ? mutationRequestConfig(options) : { signal: options.signal })
     return response.data
   },
 
@@ -1352,8 +1373,9 @@ export const libraryApi = {
       confirmed,
       skip_activity_log: options.skipActivityLog ?? false,
       batch_id: options.batchId || '',
-      known_items: options.knownItems || []
-    }, confirmed ? mutationRequestConfig(options) : { signal: options.signal })
+      known_items: options.knownItems || [],
+      skip_index_mutation: options.skipIndexMutation ?? false
+    }, confirmed && !options.skipIndexMutation ? mutationRequestConfig(options) : { signal: options.signal })
     return response.data
   },
 
@@ -1363,8 +1385,9 @@ export const libraryApi = {
       confirmed,
       skip_activity_log: options.skipActivityLog ?? false,
       batch_id: options.batchId || '',
-      known_items: options.knownItems || []
-    }, confirmed ? mutationRequestConfig(options) : { signal: options.signal })
+      known_items: options.knownItems || [],
+      skip_index_mutation: options.skipIndexMutation ?? false
+    }, confirmed && !options.skipIndexMutation ? mutationRequestConfig(options) : { signal: options.signal })
     return response.data
   },
 
@@ -2232,6 +2255,7 @@ export const rjSubtitleApi = {
       overwrite_existing: options.overwriteExisting ?? false,
       enable_metadata_match: options.enableMetadataMatch ?? true,
       skip_if_existing_subtitles: options.skipIfExistingSubtitles ?? false,
+      subtitle_index_query_mode: options.subtitleIndexQueryMode === 'linked' ? 'linked' : 'exact',
       force_rerun: options.forceRerun ?? false,
       naming_strategy: options.namingStrategy ?? 'audio',
       use_filter_rules: options.useFilterRules ?? false,

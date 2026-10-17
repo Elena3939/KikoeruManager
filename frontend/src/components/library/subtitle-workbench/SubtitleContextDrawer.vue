@@ -266,7 +266,7 @@ defineProps({
   background: var(--tab-accent);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-context-drawer {
+html.kikoerumanager-dark .subtitle-context-drawer {
   background: #111216 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.14) !important;
@@ -277,39 +277,39 @@ defineProps({
   -webkit-backdrop-filter: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-context-drawer .text-slate-900 {
+html.kikoerumanager-dark .subtitle-context-drawer .text-slate-900 {
   color: rgba(250, 250, 252, 0.96) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-context-drawer .text-slate-500 {
+html.kikoerumanager-dark .subtitle-context-drawer .text-slate-500 {
   color: rgba(214, 214, 220, 0.66) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-context-drawer .subtitle-context-tabs {
+html.kikoerumanager-dark .subtitle-context-drawer .subtitle-context-tabs {
   background: #24252a !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.14) !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-context-drawer .subtitle-context-tab {
+html.kikoerumanager-dark .subtitle-context-drawer .subtitle-context-tab {
   color: rgba(214, 214, 220, 0.76) !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-context-drawer .subtitle-context-tab.is-idle {
+html.kikoerumanager-dark .subtitle-context-drawer .subtitle-context-tab.is-idle {
   background: transparent !important;
   border-color: transparent !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-context-drawer .subtitle-context-tab.is-idle:hover {
+html.kikoerumanager-dark .subtitle-context-drawer .subtitle-context-tab.is-idle:hover {
   background: #303136 !important;
   border-color: var(--tab-accent-border) !important;
   color: rgba(250, 250, 252, 0.96) !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-context-drawer .subtitle-context-tab.is-active {
+html.kikoerumanager-dark .subtitle-context-drawer .subtitle-context-tab.is-active {
   background: color-mix(in srgb, var(--tab-accent) 28%, #24252a) !important;
   border-color: var(--tab-accent-border) !important;
   color: #ffffff !important;
@@ -318,11 +318,11 @@ defineProps({
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-context-drawer .subtitle-context-tab-icon {
+html.kikoerumanager-dark .subtitle-context-drawer .subtitle-context-tab-icon {
   color: var(--tab-accent) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-context-drawer .rail-handle {
+html.kikoerumanager-dark .subtitle-context-drawer .rail-handle {
   background: #2b2c30 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.14) !important;
@@ -331,7 +331,7 @@ defineProps({
   animation: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-context-drawer .rail-handle:hover {
+html.kikoerumanager-dark .subtitle-context-drawer .rail-handle:hover {
   background: #3a3b40 !important;
   border-color: rgba(255, 255, 255, 0.22) !important;
   color: #ffffff !important;

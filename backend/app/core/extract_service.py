@@ -40,7 +40,7 @@ import time
 from datetime import datetime
 
 from ..config.settings import get_config
-from ..core.archive_detection import detect_embedded_zip_offset
+from ..core.archive_detection import detect_embedded_7z_offset, detect_embedded_zip_offset
 from .archive_volume_utils import detect_archive_volume_group, normalize_part_volume_filename
 from ..core.task_engine import Task
 from ..core.password_utils import (
@@ -347,7 +347,7 @@ class ExtractService:
         if cls._utf8_len(cleaned) <= limit:
             return cleaned
         suffix = "_" + hashlib.sha1(cleaned.encode("utf-8", errors="ignore")).hexdigest()[:8]
-        budget = max(16, limit - cls._utf8_len(suffix))
+        budget = max(1, limit - cls._utf8_len(suffix))
         chars: List[str] = []
         used = 0
         for ch in cleaned:
@@ -403,21 +403,53 @@ class ExtractService:
         raw_parts = [part for part in normalized.split("/") if part not in {"", "."}]
         if not raw_parts:
             return None
+        if ".." in raw_parts:
+            return None
         mapped_parts: List[str] = []
         root_from = str((remap or {}).get("root_from") or "")
         root_to = str((remap or {}).get("root_to") or "")
+        component_limit = int(remap.get("component_max_bytes") or self.PATH_COMPONENT_SAFE_BYTES)
         for index, part in enumerate(raw_parts):
             if index == 0 and root_from and part == root_from:
                 mapped = root_to or part
             else:
                 mapped = part
-            mapped_parts.append(
-                self._shorten_archive_path_component(
-                    mapped,
-                    fallback=f"entry_{index}",
-                )
-            )
+            # 超长文件名保留扩展名，避免合并后音频、字幕失去类型识别。
+            extension = os.path.splitext(mapped)[1] if index == len(raw_parts) - 1 else ""
+            if self._utf8_len(mapped) > component_limit and 0 < self._utf8_len(extension) <= 16:
+                mapped = self._shorten_archive_path_component(
+                    mapped[:-len(extension)], fallback=f"entry_{index}",
+                    max_bytes=component_limit - self._utf8_len(extension),
+                ) + extension
+            else:
+                mapped = self._shorten_archive_path_component(mapped, fallback=f"entry_{index}", max_bytes=component_limit)
+            mapped_parts.append(mapped)
         return "/".join(mapped_parts)
+
+    def _build_long_component_path_remap(self, archive_info: ArchiveInfo, output_path: str = "") -> Optional[Dict[str, str]]:
+        """普通顶层目录下也可能存在超长文件名或子目录，按组件稳定缩短。"""
+        remap = self._build_single_root_path_remap(archive_info)
+        needs_component_remap = False
+        max_depth = 1
+        for item in archive_info.file_list or []:
+            parts = str(item.get("name") or "").replace("\\", "/").split("/")
+            max_depth = max(max_depth, len(parts))
+            if any(self._utf8_len(part) > self.PATH_COMPONENT_SAFE_BYTES for part in parts):
+                needs_component_remap = True
+        # Windows 还限制完整路径长度，给原子写入的 .part 后缀留空间；
+        # 统一组件预算保证同一个父目录在不同条目中映射一致。
+        if sys.platform == "win32" and output_path and any(
+            self._utf8_len(os.path.abspath(output_path)) + 1 + self._utf8_len(
+                self._remap_archive_relative_path(str(item.get("name") or ""), remap or {"root_from": "", "root_to": ""}) or ""
+            ) > 240
+            for item in archive_info.file_list or []
+        ):
+            budget = (240 - self._utf8_len(os.path.abspath(output_path)) - max_depth) // max_depth
+            if budget < self.PATH_COMPONENT_SAFE_BYTES:
+                if budget < 32:
+                    return None
+                return {**(remap or {"root_from": "", "root_to": ""}), "component_max_bytes": str(budget)}
+        return remap or ({"root_from": "", "root_to": ""} if needs_component_remap else None)
 
     def _is_sfx_temporary_volume_view_path(self, archive_path: str, task: Optional[Task]) -> bool:
         metadata = getattr(task, "task_metadata", None) or {}
@@ -2517,7 +2549,7 @@ class ExtractService:
             not success
             and embedded_source_path
             and not embedded_view_path
-            and extract_failure_reason not in {"cancelled", "disk_full"}
+            and extract_failure_reason not in {"cancelled", "disk_full", "extract_exception"}
             and not task.is_cancelled()
         ):
             logger.warning(
@@ -3168,8 +3200,10 @@ class ExtractService:
                     if not is_archive:
                         continue
 
-                    # 分卷非首卷一律跳过
-                    part_match = re.search(r'\.part(\d+)\.', filename, re.IGNORECASE)
+                    # 分卷非首卷一律跳过。无扩展名 RAR 分卷使用
+                    # ``.part02``，标准命名则可能是 ``.part02.rar``；
+                    # 两者都必须只调度首卷，否则并发任务会互相删除整组分卷。
+                    part_match = re.search(r'\.part(\d+)(?:\.|$)', filename, re.IGNORECASE)
                     if part_match and int(part_match.group(1)) > 1:
                         continue
                     if re.search(r'\.z\d{2}$', filename, re.IGNORECASE):
@@ -3395,12 +3429,7 @@ class ExtractService:
                     )
                     return 1
 
-                # 嵌套 ZIP 预填编码缓存：让 _try_extract_nested_direct → _get_mcp_args
-                # 能取到父级检测到的编码（如 shift_jis→-mcp=932），避免日文嵌套 ZIP 乱码。
-                # 继承优先级：
-                #   1. 父级是非 UTF-8 有效编码 → 直接继承
-                #   2. 父级是 UTF-8/空（7z/RAR 外层或无信息）→ 对嵌套 ZIP 做轻量嗅探
-                _utf8_like = {'utf-8', 'utf_8', 'ascii', None}
+                # 每个子包独立探测；外层条目名的编码不能代表子包内部的编码。
                 low_fp = file_path.lower()
                 _is_zip_file = (
                     archive_type == "zip"
@@ -3408,15 +3437,12 @@ class ExtractService:
                     or bool(re.search(r'\.zip\.\d+$', low_fp))
                 )
                 if _is_zip_file:
-                    if parent_encoding and parent_encoding.lower() not in _utf8_like:
-                        self.__class__._archive_encoding_cache.setdefault(file_path, parent_encoding)
-                    elif file_path not in self.__class__._archive_encoding_cache:
-                        # 父级无有效编码信息 → 用 zipfile 快速嗅探嵌套文件名字节流
+                    if file_path not in self.__class__._archive_encoding_cache:
                         sniffed = self._sniff_zip_encoding(file_path)
                         if sniffed:
                             logger.debug(f"[嵌套编码嗅探] {filename} → {sniffed}")
                             self.__class__._archive_encoding_cache[file_path] = sniffed
-                nested_encoding = self.__class__._archive_encoding_cache.get(file_path) or parent_encoding
+                nested_encoding = self.__class__._archive_encoding_cache.get(file_path)
                 success, nested_success_password = await self._try_extract_nested_direct(
                     file_path,
                     nested_output_dir,
@@ -3848,11 +3874,72 @@ class ExtractService:
                     exc,
                 )
 
-            if opaque_file_list:
-                selected_password: Optional[str] = None
+            selected_password: Optional[str] = None
+            if not opaque_file_list:
+                # RAR5 的“加密文件头”不会允许空密码读取目录，线上常见的
+                # 无扩展名内层包会因此直接落入 45 秒完整解压超时。用候选密码
+                # 重新读取目录只解密文件头，不展开内容，成功后即可安全地把
+                # 后续完整解压切换为不限时。
+                header_probe_attempted = 0
+                for password in password_list:
+                    if task is not None:
+                        if task.is_cancelled():
+                            return False, None
+                        await task.wait_if_paused()
+                    header_probe_attempted += 1
+                    try:
+                        candidate_file_list = await self._list_archive_contents(
+                            archive_path,
+                            password=password,
+                            task=task,
+                            command_timeout=self.PRECHECK_LIST_TIMEOUT_SECONDS,
+                            update_task_progress=False,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.debug(
+                            "无扩展名嵌套包候选密码清单校验失败: archive=%s password=%s error=%s",
+                            archive_name,
+                            self._password_log_state(password),
+                            exc,
+                        )
+                        continue
+                    if candidate_file_list:
+                        selected_password = password
+                        password_list = [selected_password]
+                        opaque_password_prevalidated = True
+                        if task is not None:
+                            self._set_extract_meta(
+                                task,
+                                nested_password_candidate_limited=False,
+                                nested_password_candidate_total=len(seen),
+                                nested_password_probe_attempted_count=header_probe_attempted,
+                                nested_password_probe_mode="encrypted_header_list",
+                                nested_password_probe_reason="无扩展名嵌套包已通过候选密码文件头清单校验",
+                                nested_password_prevalidated=True,
+                            )
+                        logger.info(
+                            "无扩展名嵌套包已通过候选密码文件头清单校验，将执行一次不限时完整解压: %s",
+                            archive_name,
+                        )
+                        break
+
+            if opaque_file_list and selected_password is None:
                 probe_attempted = 0
                 probe_had_unknown = False
-                for password in password_list:
+                probe_inconclusive_counts: Dict[str, int] = {}
+                # RAR 不允许魔数探测；没有小条目时每个候选都会直接返回 unknown。
+                skip_lightweight_probe = (
+                    self._is_rar_archive(archive_path)
+                    and self._pick_probe_entry(opaque_file_list) is None
+                )
+                if skip_lightweight_probe:
+                    logger.info(
+                        "无扩展名嵌套 RAR 无可用小条目，跳过候选轻量校验，继续原有解压流程: %s",
+                        archive_name,
+                    )
+                for password in ([] if skip_lightweight_probe else password_list):
                     if task is not None:
                         if task.is_cancelled():
                             return False, None
@@ -3871,11 +3958,22 @@ class ExtractService:
                         break
                     if probe_result != "wrong_password":
                         probe_had_unknown = True
-                        logger.warning(
-                            "无扩展名嵌套包候选轻量校验无法定性: archive=%s result=%s",
-                            archive_name,
-                            probe_result,
+                        probe_inconclusive_counts[probe_result] = (
+                            probe_inconclusive_counts.get(probe_result, 0) + 1
                         )
+
+                if probe_inconclusive_counts:
+                    log_probe_summary = (
+                        logger.info
+                        if set(probe_inconclusive_counts) == {"unknown"}
+                        else logger.warning
+                    )
+                    log_probe_summary(
+                        "无扩展名嵌套包候选轻量校验结果汇总: archive=%s attempted=%d inconclusive=%s",
+                        archive_name,
+                        probe_attempted,
+                        probe_inconclusive_counts,
+                    )
 
                 if selected_password is not None:
                     password_list = [selected_password]
@@ -3894,7 +3992,7 @@ class ExtractService:
                         "无扩展名嵌套包已通过小文件密码校验，将执行一次不限时完整解压: %s",
                         archive_name,
                     )
-                elif not probe_had_unknown:
+                elif probe_attempted and not probe_had_unknown:
                     if task is not None:
                         self._set_extract_meta(
                             task,
@@ -4013,6 +4111,14 @@ class ExtractService:
             self.config.extract.prefer_unar_for_rar
             and self._is_rar_archive(archive_path)
             and self._find_unar_executable()
+            # 普通无扩展名 RAR 仍保留 unar 的文件名编码优势；只有内层包
+            # 已继承外层成功密码，或已完成文件头密码校验时，才交给 7zz。
+            # 这两类场景代表密码路径可信，避免 unar 在超大加密 RAR5 上
+            # 启动后无输出并失败。
+            and not (
+                is_opaque_nested_archive
+                and (bool(parent_password) or opaque_password_prevalidated)
+            )
         ):
             unar_unsupported = False
             unar_disk_full = False
@@ -4299,8 +4405,12 @@ class ExtractService:
         if normalize_part_volume_filename(filename) != filename:
             return file_path
 
-        if detect_embedded_zip_offset(file_path) is not None:
-            logger.info(f"[Extract] 检测到带前缀伪装 ZIP，跳过后缀修复: {file_path}")
+        # 内嵌 7z 改为 .7z 后，7zz 会按零偏移打开；保留媒体后缀才能自动找壳内归档。
+        if (
+            detect_embedded_zip_offset(file_path) is not None
+            or await asyncio.to_thread(detect_embedded_7z_offset, file_path) is not None
+        ):
+            logger.info(f"[Extract] 检测到带前缀伪装压缩包，跳过后缀修复: {file_path}")
             return file_path
 
         # 跳过自解压文件（.exe）
@@ -4442,8 +4552,11 @@ class ExtractService:
         if normalize_part_volume_filename(filename) != filename:
             return file_path
 
-        if detect_embedded_zip_offset(file_path) is not None:
-            logger.info(f"[Normalize] 检测到带前缀伪装 ZIP，保持原始文件名: {file_path}")
+        if (
+            detect_embedded_zip_offset(file_path) is not None
+            or await asyncio.to_thread(detect_embedded_7z_offset, file_path) is not None
+        ):
+            logger.info(f"[Normalize] 检测到带前缀伪装压缩包，保持原始文件名: {file_path}")
             return file_path
 
         # 检查是否是分卷压缩文件
@@ -4623,8 +4736,11 @@ class ExtractService:
 
         logger.debug(f"[Normalize] 检查文件: {filename}, 当前后缀: {current_ext}")
 
-        if detect_embedded_zip_offset(file_path) is not None:
-            logger.debug("[Normalize] 带前缀伪装 ZIP 不做文件名预览修复")
+        if (
+            detect_embedded_zip_offset(file_path) is not None
+            or await asyncio.to_thread(detect_embedded_7z_offset, file_path) is not None
+        ):
+            logger.debug("[Normalize] 带前缀伪装压缩包不做文件名预览修复")
             return None
 
         # 检查是否是分卷压缩文件
@@ -4671,10 +4787,11 @@ class ExtractService:
         """检测文件真实类型"""
         # 方法1: 使用 filetype 库（添加重试机制）
         max_retries = 3
+        kind = None
         for retry in range(max_retries):
             try:
                 kind = filetype.guess(file_path)
-                if kind:
+                if kind and kind.extension in {'zip', 'rar', '7z', 'gz', 'bz2', 'xz', 'tar'}:
                     return kind.extension
                 break
             except PermissionError:
@@ -4683,6 +4800,13 @@ class ExtractService:
                     await asyncio.sleep(2)  # 等待2秒再试
                 else:
                     logger.error(f"文件访问被拒绝，跳过 filetype 检测: {file_path}")
+
+        # 图片壳之后可能才是真正的 7z，不能让 filetype 的 JPG 结论抢先返回。
+        embedded_offset = await asyncio.to_thread(detect_embedded_7z_offset, file_path)
+        if embedded_offset is not None:
+            return '7z'
+        if kind:
+            return kind.extension
 
         # 方法2: 使用 7z 测试
         try:
@@ -7137,17 +7261,19 @@ class ExtractService:
         import zipfile as _zipfile
         try:
             sample_bytes_list: list[bytes] = []
+            utf8_directories: set[str] = set()
             with _zipfile.ZipFile(file_path, 'r') as zf:
                 for info in zf.infolist():
                     # bit 11 = UTF-8 flag，已是标准 UTF-8，跳过
                     if info.flag_bits & 0x800:
+                        parts = info.filename.replace('\\', '/').strip('/').split('/')
+                        for end in range(1, len(parts)):
+                            utf8_directories.add('/'.join(parts[:end]))
                         continue
                     raw = info.orig_filename.encode('cp437') if isinstance(info.orig_filename, str) else info.filename.encode('utf-8')
                     # 只采集含高位字节的条目
-                    if any(b > 0x7F for b in raw):
+                    if len(sample_bytes_list) < 20 and any(b > 0x7F for b in raw):
                         sample_bytes_list.append(raw)
-                    if len(sample_bytes_list) >= 20:
-                        break
             if not sample_bytes_list:
                 return None
             combined = b'\n'.join(sample_bytes_list)
@@ -7157,19 +7283,30 @@ class ExtractService:
             except UnicodeDecodeError:
                 pass
 
-            candidates = ["shift_jis", "gbk", "cp936", "big5", "euc_kr"]
+            candidates = ["cp932", "gbk", "big5", "euc_kr"]
             scored: List[Tuple[float, str]] = []
             for encoding in candidates:
-                decoded = combined.decode(encoding, errors="replace")
-                replacement_ratio = decoded.count("\ufffd") / max(len(decoded), 1)
-                if replacement_ratio >= 0.05:
+                try:
+                    decoded = combined.decode(encoding)
+                except UnicodeDecodeError:
                     continue
                 score = float(self._score_decoded_text(decoded))
+                # 中文代码页错解出少量假名时，不能享受日文编码的假名加分。
+                if encoding != 'cp932':
+                    score -= sum(1 for ch in decoded if '\u3040' <= ch <= '\u30ff')
+                # 同包 UTF-8 文件路径是确定的证据，用共享目录校准旧代码页。
+                for raw in sample_bytes_list:
+                    parts = raw.decode(encoding).replace('\\', '/').strip('/').split('/')
+                    score += 100 * sum(
+                        '/'.join(parts[:end]) in utf8_directories
+                        for end in range(1, len(parts) + 1)
+                        if any(ord(ch) > 127 for ch in '/'.join(parts[:end]))
+                    )
                 score -= self._garbled_text_score(decoded) * 20.0
                 scored.append((score, encoding))
             if not scored:
                 return None
-            scored.sort(reverse=True)
+            scored.sort(key=lambda item: item[0], reverse=True)
             result = scored[0][1]
             logger.debug("[编码嗅探] ZIP 文件名编码候选: archive=%s scores=%s", file_path, scored)
             return result
@@ -7800,6 +7937,7 @@ class ExtractService:
             self.seven_zip,
             "x",
             "-so",
+            "-spd",
             "-y",
             "-bso0",
             "-bsp0",
@@ -7860,12 +7998,13 @@ class ExtractService:
                                 progress_callback(len(chunk))
                     return_code = await process.wait()
                     await stderr_task
-                except asyncio.CancelledError:
+                except (asyncio.CancelledError, OSError):
                     if process.returncode is None:
                         try:
                             process.kill()
                         except ProcessLookupError:
                             pass
+                        await process.wait()
                     raise
                 finally:
                     if not stderr_task.done():
@@ -7912,8 +8051,8 @@ class ExtractService:
         *,
         ignore_garbled: bool = False,
     ) -> Tuple[bool, str]:
-        """单一顶层目录过长时，把顶层目录映射成短名后逐文件流式解压。"""
-        remap = self._build_single_root_path_remap(archive_info)
+        """路径组件过长时，保留层级并逐文件流式解压到稳定短名。"""
+        remap = self._build_long_component_path_remap(archive_info, output_path)
         if not remap:
             return False, "path_too_long"
 
@@ -7931,10 +8070,10 @@ class ExtractService:
             task,
             extract_path_remap_root_from=remap.get("root_from"),
             extract_path_remap_root_to=remap.get("root_to"),
-            extract_path_remap_mode="single_root_stream",
+            extract_path_remap_mode="single_root_stream" if remap.get("root_from") else "long_component_stream",
         )
         logger.warning(
-            "检测到压缩包顶层目录过长，启用路径重映射解压: %s -> %s archive=%s",
+            "检测到压缩包路径组件过长，启用路径重映射解压: %s -> %s archive=%s",
             remap.get("root_from"),
             remap.get("root_to"),
             archive_info.path,
@@ -8680,26 +8819,12 @@ class ExtractService:
                                 return False, None, zstd_reason
                         elif zstd_probe_result in {"wrong_password", "corrupt"}:
                             return False, None, "archive_corrupt" if zstd_probe_result == "corrupt" else "wrong_password"
-                        elif zstd_probe_result == "unsupported_method":
-                            self._set_extract_meta(
-                                task,
-                                extract_failure_reason="unsupported_method",
-                            )
-                            return False, None, "unsupported_method"
-                        elif listed_no_password_large_archive:
-                            self._set_extract_meta(
-                                task,
-                                extract_failure_reason="light_probe_unknown",
-                                extract_zstd_probe_result=zstd_probe_result,
-                            )
-                            logger.warning(
-                                "7-Zip ZS 对未加密大包轻量探测仍无法定性，停止完整解压: %s",
-                                os.path.basename(archive_info.path),
-                            )
-                            return False, None, "light_probe_unknown"
+                        # 官方后端已明确不支持；备用后端未成功验证时，不能再用
+                        # 同一个官方后端全量重试。未加密只排除密码问题，不代表支持算法。
                         self._set_extract_meta(
                             task,
                             extract_failure_reason="unsupported_method",
+                            extract_zstd_probe_result=zstd_probe_result,
                         )
                         logger.error(
                             "轻量探测命中当前 7z 不支持的压缩方法，停止完整解压: %s",
@@ -8727,20 +8852,9 @@ class ExtractService:
                             )
                             return False, None, "archive_corrupt"
                         else:
-                            if listed_no_password_large_archive and not subtitle_probe_mode:
-                                self._set_extract_meta(
-                                    task,
-                                    extract_failure_reason="light_probe_unknown",
-                                )
-                                logger.warning(
-                                    "7z/SFX 未加密大包轻量验证无法定性，停止完整解压以避免大文件全量试错: %s size=%s",
-                                    os.path.basename(archive_info.path),
-                                    archive_size_bytes,
-                                )
-                                return False, None, "light_probe_unknown"
-                            if listed_no_password_large_archive and subtitle_probe_mode:
+                            if listed_no_password_large_archive:
                                 logger.info(
-                                    "字幕补配预检允许未加密大包在轻量探测不确定时继续完整解压: %s size=%s",
+                                    "未加密大包轻量验证无法定性，继续无密码完整解压: %s size=%s",
                                     os.path.basename(archive_info.path),
                                     archive_size_bytes,
                                 )
@@ -8994,7 +9108,7 @@ class ExtractService:
                             extract_failure_reason="unsupported_method",
                         )
                         return False, None, "unsupported_method"
-                    elif listed_no_password_large_archive:
+                    elif listed_no_password_large_archive and password != "":
                         self._set_extract_meta(
                             task,
                             extract_failure_reason="light_probe_unknown",
@@ -9212,8 +9326,14 @@ class ExtractService:
                     continue
 
             except Exception as e:
-                logger.warning(f"解压尝试失败: {e}")
-                continue
+                # 调用异常与候选密码无关，停止重试并保留异常类型，避免落入密码错误。
+                self._set_extract_meta(
+                    task,
+                    extract_failure_reason="extract_exception",
+                    extract_exception_type=type(e).__name__,
+                )
+                logger.warning("解压执行异常: %s", self._redact_sensitive_text(str(e), password))
+                return False, None, "extract_exception"
 
         # 所有密码都失败后的统一定性：
         # 1) 曾命中明确的加密错误 → 判密码错误
@@ -11764,6 +11884,71 @@ class ExtractService:
             return None
         return "/".join(repaired_parts)
 
+    @classmethod
+    def _move_repaired_filename(cls, source: str, target: str) -> bool:
+        """合并编码修复后重合的目录；遇到同名文件保留两边并继续阻断。"""
+        if os.path.islink(source) or os.path.islink(target):
+            return False
+        if not os.path.lexists(target):
+            os.rename(source, target)
+            return True
+        if not os.path.isdir(source) or not os.path.isdir(target):
+            return False
+        with os.scandir(source) as entries:
+            children = [entry.name for entry in entries]
+        for name in children:
+            cls._move_repaired_filename(
+                os.path.join(source, name), os.path.join(target, name),
+            )
+        if os.listdir(source):
+            return False
+        os.rmdir(source)
+        return True
+
+    def _repair_zip_filenames_in_place(self, archive_path: str, directory: str) -> int:
+        """按中央目录修复 7zz 原样写出的旧编码名字节，保留条目自身的 UTF-8 标记。"""
+        if not self._is_zip_like_archive(archive_path):
+            return 0
+        encoding = self.__class__._archive_encoding_cache.get(archive_path)
+        if not encoding:
+            encoding = self._sniff_zip_encoding(archive_path)
+        if not encoding:
+            return 0
+        replacements: Dict[str, str] = {}
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                for info in archive.infolist():
+                    if info.flag_bits & 0x800:
+                        continue
+                    raw_path = info.orig_filename.encode('cp437').replace(b'\\', b'/')
+                    for raw in raw_path.split(b'/'):
+                        original = raw.decode(sys.getfilesystemencoding() or 'utf-8', 'surrogateescape')
+                        if not self._has_surrogateescape_bytes(original):
+                            continue
+                        try:
+                            expected = raw.decode(encoding)
+                        except UnicodeError:
+                            continue
+                        if expected in {'.', '..'} or any(ch in expected for ch in '/\\\x00'):
+                            continue
+                        replacements[original] = expected
+        except (OSError, UnicodeError, zipfile.BadZipFile):
+            return 0
+        repaired = 0
+        for current, dirs, files in os.walk(directory, topdown=False, followlinks=False):
+            for name in files + dirs:
+                expected = replacements.get(name)
+                if not expected:
+                    continue
+                try:
+                    if self._move_repaired_filename(
+                        os.path.join(current, name), os.path.join(current, expected),
+                    ):
+                        repaired += 1
+                except OSError as exc:
+                    logger.warning("ZIP 原始字节文件名修复失败: archive=%s error=%s", archive_path, exc)
+        return repaired
+
     def _repair_mojibake_filenames_in_place(self, directory: str) -> int:
         """自底向上重命名目录树中的可逆 mojibake 文件名。"""
         if not directory or not os.path.isdir(directory):
@@ -11777,12 +11962,12 @@ class ExtractService:
                     continue
                 old_path = os.path.join(current, name)
                 new_path = os.path.join(current, fixed_name)
-                if old_path == new_path or os.path.exists(new_path):
+                if old_path == new_path:
                     continue
                 try:
-                    os.rename(old_path, new_path)
-                    repaired += 1
-                    logger.debug("[unar编码] 反乱码重命名: %s -> %s", old_path, new_path)
+                    if self._move_repaired_filename(old_path, new_path):
+                        repaired += 1
+                        logger.debug("[unar编码] 反乱码重命名: %s -> %s", old_path, new_path)
                 except OSError as exc:
                     logger.warning(
                         "[unar编码] 反乱码重命名失败: %s -> %s error=%s",
@@ -11941,6 +12126,11 @@ class ExtractService:
         )
         try:
             repaired_count = await asyncio.to_thread(
+                self._repair_zip_filenames_in_place,
+                archive_path,
+                output_path,
+            )
+            repaired_count += await asyncio.to_thread(
                 self._repair_mojibake_filenames_in_place,
                 output_path,
             )

@@ -2766,20 +2766,26 @@ class LibraryManager:
             state["subtitle_dir"] = subtitle_dir
             return state
 
-        for code in normalized_codes:
-            for library in usable_libraries:
-                try:
-                    entries = service.find_by_rjcode(
-                        code,
-                        library.id,
-                        entry_type="dir",
-                        limit=per_rj_limit,
-                        repair_missing=False,
-                    )
-                except Exception:
-                    logger.debug("[索引] 批量 RJ 查询失败 rj=%s library=%s", code, library.id, exc_info=True)
-                    continue
-                for entry in entries:
+        for library in usable_libraries:
+            try:
+                # 这里必须走批量索引查询。之前虽然调用方传入了多个 RJ，
+                # 但内部仍按 RJ 逐个开数据库会话，字幕批量预检会放大成 N 次查询。
+                entries = service.find_by_rjcodes(
+                    normalized_codes,
+                    library.id,
+                    entry_type="dir",
+                    limit=per_rj_limit * max(1, len(normalized_codes)),
+                )
+            except Exception:
+                logger.debug("[索引] 批量 RJ 查询失败 library=%s", library.id, exc_info=True)
+                continue
+            entries_by_code: dict[str, list[Any]] = {item: [] for item in normalized_codes}
+            for entry in entries:
+                entry_code = str(entry.rjcode or "").strip().upper()
+                if entry_code in entries_by_code and len(entries_by_code[entry_code]) < per_rj_limit:
+                    entries_by_code[entry_code].append(entry)
+            for code in normalized_codes:
+                for entry in entries_by_code.get(code, []):
                     key = (code, str(entry.library_id or ""), str(entry.relative_path or ""))
                     if key in seen_paths:
                         continue
@@ -3014,6 +3020,8 @@ class LibraryManager:
         bucket: dict[str, dict[str, Any]],
         library: LibraryDefinition,
         absolute_paths: list[str],
+        *,
+        scopes_by_path: Optional[dict[str, str]] = None,
     ) -> bool:
         paths = [str(path or "").strip() for path in absolute_paths or [] if str(path or "").strip()]
         if not paths:
@@ -3028,6 +3036,11 @@ class LibraryManager:
         with self._index_mutation_lock:
             entry = bucket.setdefault(library.id, {"library": library, "paths": []})
             entry["library"] = library
+            if scopes_by_path:
+                entry_scopes = entry.setdefault("scopes_by_path", {})
+                for path, scope in scopes_by_path.items():
+                    if scope in {"exact", "subtree"}:
+                        entry_scopes[self._normalize_index_abs_key(library, path)] = scope
             if loop is not None:
                 entry["loop"] = loop
             entry["paths"] = self._compress_index_absolute_paths(
@@ -3076,20 +3089,30 @@ class LibraryManager:
         *,
         scopes_by_path: Optional[dict[str, str]] = None,
     ) -> Optional[dict[str, Any]]:
-        return self._record_index_reconcile_many(
+        paths = self._compress_index_absolute_paths(library, absolute_paths or [])
+        if not paths:
+            return None
+        if not self._queue_index_paths(
+            self._index_mutation_pending_deletes,
             library,
-            absolute_paths,
-            kind="delete",
-            source="self_mutation_delete",
+            paths,
             scopes_by_path=scopes_by_path,
-        )
+        ):
+            return None
+        return {
+            "submitted": False,
+            "queued": True,
+            "queued_count": len(paths),
+            "total_count": len(paths),
+            "index_fences": [],
+        }
 
     def _enqueue_index_upsert_subtree_many(self, library: LibraryDefinition, absolute_paths: list[str]) -> bool:
-        return self._record_index_reconcile_many(
+        paths = self._compress_index_absolute_paths(library, absolute_paths or [])
+        return self._queue_index_paths(
+            self._index_mutation_pending_upserts,
             library,
-            absolute_paths,
-            kind="reconcile",
-            source="self_mutation_upsert",
+            paths,
         )
 
     def _enqueue_index_replace_subtree_many(
@@ -3099,15 +3122,22 @@ class LibraryManager:
         *,
         return_result: bool = False,
     ) -> bool | Optional[dict[str, Any]]:
-        result = self._record_index_reconcile_many(
+        paths = self._compress_index_absolute_paths(library, absolute_paths or [])
+        queued = self._queue_index_paths(
+            self._index_mutation_pending_replaces,
             library,
-            absolute_paths,
-            kind="reconcile",
-            source="self_mutation_replace",
+            paths,
         )
+        result = {
+            "submitted": False,
+            "queued": queued,
+            "queued_count": len(paths) if queued else 0,
+            "total_count": len(paths),
+            "index_fences": [],
+        } if queued else None
         if return_result:
             return result
-        return bool(result)
+        return queued
 
     def _enqueue_index_move_many(
         self,
@@ -3115,12 +3145,16 @@ class LibraryManager:
         target_library: LibraryDefinition,
         moved_items: list[dict[str, Any]],
     ) -> Optional[dict[str, Any]]:
-        return self._record_index_move_many(
-            source_library,
-            target_library,
-            moved_items,
-            source="self_mutation_move",
-        )
+        items = [dict(item or {}) for item in moved_items or [] if item]
+        if not items or not self._queue_index_moves(source_library, target_library, items):
+            return None
+        return {
+            "submitted": False,
+            "queued": True,
+            "queued_count": len(items),
+            "total_count": len(items),
+            "index_fences": [],
+        }
 
     def _flush_index_move_many_now(
         self,
@@ -6642,13 +6676,13 @@ class LibraryManager:
         self._invalidate_local_browse_caches(library.id)
         if was_top_level_dir:
             self._local_top_level_delta(library, path, -1)
-        # 索引同步：删除完成后立即同步索引（不依赖 watcher）
+        # 文件系统删除先返回；索引 mutation 进入后台队列，避免把索引物化事务串进删除请求。
         index_mutation = None
         if not skip_index_mutation:
             index_mutation = self._notify_index_self_mutation_delete(
                 library,
                 path,
-                sync=True,
+                sync=False,
                 scope="subtree" if was_top_level_dir else "exact",
             )
         self._append_stats_log(library, "INFO", f"删除完成 path={path}")
@@ -6745,13 +6779,13 @@ class LibraryManager:
                 failed_paths.append({"path": path, "error": str(exc)})
         if successful_paths:
             self._invalidate_local_browse_caches(library.id)
-        # 索引同步：批量通知删除（单事务一次提交）
+        # 文件系统批删先返回；索引 mutation 在后台合并入队，避免批删等待索引物化。
         index_mutation = None
         if not skip_index_mutation:
             index_mutation = self._notify_index_self_mutation_delete_batch(
                 library,
                 successful_paths,
-                sync=True,
+                sync=False,
                 scopes_by_path=successful_scopes,
             )
         self._append_stats_log(
@@ -11328,7 +11362,7 @@ class LibraryManager:
                         path=root,
                         relative_path=os.path.relpath(root, target_path).replace("\\", "/"),
                         item_type="dir",
-                        size=self._path_size(root),
+                        size=0,
                         modified_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
                         selectable=False,
                         covered_by=delete_path,
@@ -11350,6 +11384,26 @@ class LibraryManager:
                         delete_path=file_path,
                     )
                 )
+        # 该兼容入口仍可能被其它调用方使用；目录大小在单次遍历后由文件大小汇总，
+        # 不再对每个目录递归调用 _path_size。
+        directory_sizes: dict[str, int] = {}
+        for item in descendants:
+            if item.get("type") == "file":
+                current = os.path.dirname(str(item.get("path") or ""))
+                while current and os.path.abspath(current).startswith(os.path.abspath(folder_path).rstrip("\\/") + os.sep):
+                    directory_sizes[os.path.normcase(os.path.abspath(current))] = (
+                        directory_sizes.get(os.path.normcase(os.path.abspath(current)), 0)
+                        + int(item.get("size") or 0)
+                    )
+                    parent = os.path.dirname(current)
+                    if parent == current:
+                        break
+                    current = parent
+        for item in descendants:
+            if item.get("type") != "dir":
+                continue
+            key = os.path.normcase(os.path.abspath(str(item.get("path") or "")))
+            item["size"] = directory_sizes.get(key, 0)
         return descendants
 
     def _local_filter_delete_preview(
@@ -11377,15 +11431,52 @@ class LibraryManager:
         preview_items: list[dict[str, Any]] = []
         selected_count = 0
         selected_size = 0
+        covered_roots: dict[str, dict[str, Any]] = {}
+        directory_sizes: dict[str, int] = {}
 
+        def normalized_path(value: str) -> str:
+            return os.path.normcase(os.path.abspath(value))
+
+        def covered_by(path_value: str) -> Optional[dict[str, Any]]:
+            current = normalized_path(path_value)
+            best = None
+            best_length = -1
+            for root_path, item in covered_roots.items():
+                if current == root_path or current.startswith(root_path.rstrip("\\/") + os.sep):
+                    if len(root_path) > best_length:
+                        best = item
+                        best_length = len(root_path)
+            return best
+
+        # 索引不可用时也只遍历一次：命中目录后继续沿同一棵 os.walk 收集后代，
+        # 不再为命中目录重新 os.walk，再对每个子目录调用 _path_size。
         for root, dirs, files in os.walk(target_path, topdown=True):
             dirs.sort()
             files.sort()
-            remaining_dirs: list[str] = []
-            for directory in dirs:
+            root_abs = normalized_path(root)
+            parent_cover = covered_by(root) if root_abs != normalized_path(target_path) else None
+            if parent_cover and root_abs != normalized_path(parent_cover["path"]):
+                stat = os.stat(root)
+                dir_item = self._build_preview_item(
+                    path=root,
+                    relative_path=os.path.relpath(root, target_path).replace("\\", "/"),
+                    item_type="dir",
+                    size=0,
+                    modified_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    selectable=False,
+                    covered_by=parent_cover["path"],
+                    delete_path=root,
+                )
+                preview_items.append(dir_item)
+
+            for directory in list(dirs):
                 if self._should_skip_filter_preview_name(directory):
+                    dirs.remove(directory)
                     continue
                 folder_path = os.path.join(root, directory)
+                folder_abs = normalized_path(folder_path)
+                if parent_cover or covered_by(folder_path):
+                    continue
                 matched_rules = self._match_filter_rule_names(
                     directory,
                     "folder",
@@ -11395,30 +11486,53 @@ class LibraryManager:
                 )
                 if matched_rules:
                     stat = os.stat(folder_path)
-                    folder_size = self._path_size(folder_path)
-                    preview_items.append(
-                        self._build_preview_item(
-                            path=folder_path,
-                            relative_path=os.path.relpath(folder_path, target_path).replace("\\", "/"),
-                            item_type="dir",
-                            size=folder_size,
-                            modified_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                            matched_rules=matched_rules,
-                            delete_scope="preview_parent",
-                        )
+                    parent_item = self._build_preview_item(
+                        path=folder_path,
+                        relative_path=os.path.relpath(folder_path, target_path).replace("\\", "/"),
+                        item_type="dir",
+                        size=0,
+                        modified_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                        matched_rules=matched_rules,
+                        delete_scope="preview_parent",
                     )
-                    descendants = self._collect_local_filter_preview_descendants(target_path, folder_path, folder_path)
-                    preview_items.extend(descendants)
-                    selected_count += sum(1 for item in descendants if item.get("type") == "file" and item.get("delete_scope") == "self")
-                    selected_size += sum(int(item.get("size") or 0) for item in descendants if item.get("type") == "file" and item.get("delete_scope") == "self")
-                    continue
-                remaining_dirs.append(directory)
-            dirs[:] = remaining_dirs
+                    preview_items.append(parent_item)
+                    covered_roots[folder_abs] = parent_item
 
             for filename in files:
                 if self._should_skip_filter_preview_name(filename):
                     continue
                 file_path = os.path.join(root, filename)
+                stat = os.stat(file_path)
+                file_size = int(stat.st_size)
+                current_dir = root
+                target_abs = normalized_path(target_path)
+                while current_dir and normalized_path(current_dir).startswith(target_abs):
+                    current_key = normalized_path(current_dir)
+                    directory_sizes[current_key] = directory_sizes.get(current_key, 0) + file_size
+                    if current_key == target_abs:
+                        break
+                    parent_dir = os.path.dirname(current_dir)
+                    if parent_dir == current_dir:
+                        break
+                    current_dir = parent_dir
+
+                parent_cover = covered_by(file_path)
+                if parent_cover:
+                    item = self._build_preview_item(
+                        path=file_path,
+                        relative_path=os.path.relpath(file_path, target_path).replace("\\", "/"),
+                        item_type="file",
+                        size=file_size,
+                        modified_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                        selectable=True,
+                        covered_by=parent_cover["path"],
+                        delete_path=file_path,
+                    )
+                    preview_items.append(item)
+                    selected_count += 1
+                    selected_size += file_size
+                    continue
+
                 matched_rules = self._match_filter_rule_names(
                     filename,
                     "file",
@@ -11428,19 +11542,23 @@ class LibraryManager:
                 )
                 if not matched_rules:
                     continue
-                stat = os.stat(file_path)
                 preview_items.append(
                     self._build_preview_item(
                         path=file_path,
                         relative_path=os.path.relpath(file_path, target_path).replace("\\", "/"),
                         item_type="file",
-                        size=stat.st_size,
+                        size=file_size,
                         modified_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
                         matched_rules=matched_rules,
                     )
                 )
                 selected_count += 1
-                selected_size += stat.st_size
+                selected_size += file_size
+
+        for item in preview_items:
+            if item.get("type") != "dir":
+                continue
+            item["size"] = directory_sizes.get(normalized_path(str(item.get("path") or "")), 0)
 
         preview_items.sort(key=lambda item: (item["relative_path"].count("/"), item["relative_path"].lower(), item["type"] != "dir"))
         return {

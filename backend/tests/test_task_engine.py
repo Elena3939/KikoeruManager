@@ -302,6 +302,64 @@ class TestTaskEngine:
         assert blocked_processing_task.status == TaskStatus.PENDING
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("provider", ["http", "baidu_netdisk"])
+    @pytest.mark.parametrize("partial_failed", [False, True])
+    async def test_download_completion_leaves_extraction_to_watcher(
+        self, monkeypatch, tmp_path, provider, partial_failed,
+    ):
+        """下载只保留落地文件，自动解压统一交给监视器。"""
+        from app.core import http_download_service, baidu_netdisk_service
+        from app.core.file_processor import get_file_processor
+
+        engine = TaskEngine(max_concurrent=1)
+        archive = tmp_path / "RJ01716758.zip"
+        archive.write_bytes(b"PK\x03\x04" + b"x" * 2048)
+        rows = [{"status": "completed", "local_path": str(archive)}]
+        if partial_failed:
+            rows.append({"status": "failed", "local_path": str(tmp_path / "failed.zip")})
+        is_http = provider == "http"
+        service_module = http_download_service if is_http else baidu_netdisk_service
+        service_class = (
+            http_download_service.HttpDownloadService
+            if is_http else baidu_netdisk_service.BaiduNetdiskService
+        )
+        service = service_class()
+        monkeypatch.setattr(service, "start_download_task", AsyncMock(return_value={"success": True}))
+        getter_name = "get_http_download_service" if is_http else "get_baidu_netdisk_service"
+        monkeypatch.setattr(service_module, getter_name, lambda: service)
+        processor = get_file_processor()
+        process_directory = AsyncMock()
+        process_file = AsyncMock()
+        monkeypatch.setattr(processor, "process_directory", process_directory)
+        monkeypatch.setattr(processor, "process_file", process_file)
+        submit = AsyncMock()
+        monkeypatch.setattr(engine, "submit", submit)
+        task = Task(
+            task_type=TaskType.HTTP_DOWNLOAD if is_http else TaskType.BAIDU_NETDISK_DOWNLOAD,
+            source_path=provider,
+            status=TaskStatus.PROCESSING,
+            metadata={
+                "final_output_path": str(tmp_path),
+                "download_files": rows,
+                "http_download_auto_retry_limit": 0,
+            },
+        )
+
+        if is_http:
+            await engine._process_http_download(task)
+        else:
+            await engine._process_baidu_netdisk_download(task)
+
+        assert task.status == (TaskStatus.FAILED if partial_failed else TaskStatus.COMPLETED)
+        assert task.task_metadata["download_runtime"]["completed_files"] == 1
+        assert task.task_metadata["download_runtime"]["failed_files"] == int(partial_failed)
+        assert archive.exists()
+        assert "import_task_ids" not in task.task_metadata
+        process_directory.assert_not_awaited()
+        process_file.assert_not_awaited()
+        submit.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_processing_starts_when_download_lane_is_full(self):
         engine = TaskEngine(max_concurrent=1, max_concurrent_downloads=1)
         active_download = Task(

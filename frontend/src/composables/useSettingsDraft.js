@@ -237,7 +237,6 @@ export const defaultConfig = {
     timeout_seconds: 60,
     allow_private_network: false,
     conflict_policy: 'resume',
-    gofile_token: '',
     gofile_max_concurrent_downloads: 2,
     gofile_split: 5,
     google_drive_oauth_enabled: false,
@@ -363,6 +362,7 @@ export const defaultConfig = {
     imap_host: 'imap.gmail.com',
     imap_port: 993,
     imap_ssl: true,
+    proxy_url: '',
     username: '',
     password: '',
     mailbox: 'INBOX',
@@ -841,10 +841,8 @@ export function useSettingsDraft(options = {}) {
       ) {
         delete payload.http_downloader.pikpak_encoded_token
       }
-      if (
-        payload.http_downloader?.gofile_token === MASKED_PASSWORD &&
-        snapshot.value?.http_downloader?.gofile_token === MASKED_PASSWORD
-      ) {
+      if (payload.http_downloader) {
+        // 丢弃旧版本返回的固定 Token，Gofile 统一使用临时账号。
         delete payload.http_downloader.gofile_token
       }
       if (

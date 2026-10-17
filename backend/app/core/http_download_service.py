@@ -162,6 +162,10 @@ def build_http_download_batch_title(metadata: Dict[str, Any], item_count: int = 
 class HttpDownloadError(ValueError):
     """HTTP 外链下载的可预期业务错误。"""
 
+    def __init__(self, message: str, *, api_status: str = ""):
+        super().__init__(message)
+        self.api_status = api_status
+
 
 class _TransferitDownloadAbort(RuntimeError):
     """内部控制异常：用于从 transferit-py 的同步流式回调里中止下载。"""
@@ -376,7 +380,6 @@ class HttpDownloadService:
         self._aria2_progress_state: Dict[str, tuple[int, float]] = {}
         self._active_download_tasks: Dict[str, asyncio.Task] = {}
         self._rpc_id = 0
-        self._gofile_guest_token_cache: tuple[str, float] = ("", 0.0)
         self._gofile_guest_token_lock = asyncio.Lock()
         self._google_drive_access_token_cache: tuple[str, float] = ("", 0.0)
         self._google_drive_access_token_lock = asyncio.Lock()
@@ -1837,7 +1840,15 @@ class HttpDownloadService:
             async with request(url, headers=headers or {}, allow_redirects=True, proxy=proxy) as response:
                 body = await response.text()
                 if response.status >= 400:
-                    raise HttpDownloadError(f"源站 API 返回 HTTP {response.status}: {body[:160]}")
+                    api_status = ""
+                    with contextlib.suppress(ValueError, TypeError):
+                        error_data = json.loads(body)
+                        if isinstance(error_data, dict):
+                            api_status = str(error_data.get("status") or "")
+                    raise HttpDownloadError(
+                        f"源站 API 返回 HTTP {response.status}: {body[:160]}",
+                        api_status=api_status,
+                    )
                 try:
                     data = json.loads(body)
                 except Exception as exc:
@@ -1878,22 +1889,15 @@ class HttpDownloadService:
             return parts[-1]
         raise HttpDownloadError("Gofile 分享链接格式不正确")
 
-    def _gofile_token(self) -> str:
-        return str(getattr(self._config(), "gofile_token", "") or "").strip()
-
     def _gofile_website_token(self, token: str) -> str:
         slot = str(int(time.time() // 14400))
         payload = f"{_GOFILE_USER_AGENT}::{_GOFILE_LANGUAGE}::{token}::{slot}::{_GOFILE_WEBSITE_TOKEN_SALT}"
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     async def _gofile_guest_token(self) -> str:
-        cached_token, expires_at = self._gofile_guest_token_cache
-        if cached_token and expires_at > time.time():
-            return cached_token
+        # 每次分享解析新建会话；仅串行化建号请求，不跨任务缓存账号。
+        # Token 由调用者保存在本次文件请求头里，避免并发刷新污染其它下载。
         async with self._gofile_guest_token_lock:
-            cached_token, expires_at = self._gofile_guest_token_cache
-            if cached_token and expires_at > time.time():
-                return cached_token
             data = await self._fetch_gofile_json(
                 "https://api.gofile.io/accounts",
                 method="POST",
@@ -1904,7 +1908,6 @@ class HttpDownloadService:
             token = str((data.get("data") or {}).get("token") or "").strip()
             if not token:
                 raise HttpDownloadError("Gofile 未返回访客 token")
-            self._gofile_guest_token_cache = (token, time.time() + 6 * 60 * 60)
             return token
 
     def _gofile_password(self, raw_url: str) -> str:
@@ -1970,16 +1973,13 @@ class HttpDownloadService:
 
     async def _collect_gofile_files(self, raw_url: str) -> Dict[str, Any]:
         content_id = self._gofile_content_id_from_url(raw_url)
-        configured_token = self._gofile_token()
-        token = configured_token
         # 访客账号接口偶发被网络策略或 Gofile 风控拦截；公开分享本身不应因此无法预览。
         # 先尝试访客 token，失败后用匿名请求继续读取 contents。
-        if not token:
-            try:
-                token = await self._gofile_guest_token()
-            except Exception as exc:
-                logger.warning("Gofile 访客 token 获取失败，尝试匿名解析: %s", self._sanitize_error(exc))
-                token = ""
+        try:
+            token = await self._gofile_guest_token()
+        except Exception as exc:
+            logger.warning("Gofile 访客 token 获取失败，尝试匿名解析: %s", self._sanitize_error(exc))
+            token = ""
         params: Dict[str, str] = {
             "contentFilter": "",
             "page": "1",
@@ -2018,14 +2018,22 @@ class HttpDownloadService:
                 headers=headers,
             )
 
-        data = await fetch_contents(token)
-        if (
-            not configured_token
-            and str(data.get("status") or "").strip().lower() in {"error-token", "error-token-invalid"}
-        ):
-            self._gofile_guest_token_cache = ("", 0.0)
+        invalid_token_statuses = {"error-token", "error-token-invalid", "error-wrongtoken"}
+        for attempt in range(2):
+            try:
+                data = await fetch_contents(token)
+                status = str(data.get("status") or "").strip().lower()
+            except HttpDownloadError as exc:
+                status = str(exc.api_status or "").strip().lower()
+                if status not in invalid_token_statuses:
+                    raise
+                data = {"status": status}
+            if status not in invalid_token_statuses:
+                break
+            if attempt:
+                raise HttpDownloadError("Gofile 新建的访客 token 仍被拒绝，请检查 GoFile 服务状态及代理出口")
+            # 仅替换本次解析的会话，其它正在下载的文件保留自己的 Cookie。
             token = await self._gofile_guest_token()
-            data = await fetch_contents(token)
         if str(data.get("status") or "").lower() != "ok":
             raise self._gofile_api_status_error(data.get("status"))
         root = data.get("data") or {}
@@ -2071,7 +2079,7 @@ class HttpDownloadService:
             files.append(file_item)
 
         walk(root)
-        return {"files": files, "token_configured": bool(self._gofile_token())}
+        return {"files": files, "token_configured": False}
 
     def _google_drive_file_id_from_url(self, raw_url: str) -> str:
         parsed = urlparse(raw_url)
@@ -4231,11 +4239,10 @@ class HttpDownloadService:
             except Exception as exc:
                 reason = self._sanitize_error(exc)
                 logger.warning(
-                    "[Gofile解析] url=%s proxy_enabled=%s proxy=%s token_configured=%s reason=%s",
+                    "[Gofile解析] url=%s proxy_enabled=%s proxy=%s reason=%s",
                     self._mask_url(raw_url),
                     self._proxy_enabled_for("gofile"),
                     bool(self._proxy_url("gofile")),
-                    bool(self._gofile_token()),
                     reason,
                 )
                 failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": reason, "source": "gofile"})
@@ -5098,8 +5105,13 @@ class HttpDownloadService:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urlopen(request, timeout=8) as response:
-                body = json.loads(response.read().decode("utf-8"))
+            try:
+                with urlopen(request, timeout=8) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+            except Exception as exc:
+                # 控制接口异常与源站下载异常必须分开，不能仅显示 timed out。
+                reason = self._sanitize_error(exc) or exc.__class__.__name__
+                raise HttpDownloadError(f"本机 aria2 控制接口 {method} 请求失败: {reason}") from exc
             if body.get("error"):
                 raise HttpDownloadError(body["error"].get("message") or "aria2 RPC 调用失败")
             return body.get("result")
@@ -6742,14 +6754,11 @@ class HttpDownloadService:
                         gid, host, route, row["aria2_error_code"], status.get("connections"), done, total, resume_available, reason,
                     )
                 if str(row.get("source") or "").strip().lower() == "gofile":
+                    row["aria2_error_code"] = str(status.get("errorCode") or "")
                     host = urlparse(str(row.get("original_url") or row.get("url") or "")).hostname or "gofile.io"
                     failure_lower = failure_reason.lower()
                     if "429" in failure_lower or "too many requests" in failure_lower:
-                        account_hint = (
-                            "当前未配置 Gofile token，访客账号或出口 IP 已被限流"
-                            if not self._gofile_token()
-                            else "当前 Gofile 账号或出口 IP 已被限流"
-                        )
+                        account_hint = "Gofile 访客账号或出口 IP 已被限流"
                         failure_reason = f"Gofile CDN {host} 返回 HTTP 429：{account_hint}"
                     elif "control file" in failure_lower and ".aria2" in failure_lower:
                         failure_reason = (
@@ -6831,7 +6840,6 @@ class HttpDownloadService:
             self._download_root(),
             str(getattr(cfg, "proxy_url", "") or "").strip(),
             self._pikpak_enabled(),
-            bool(self._gofile_token()),
         )
 
     async def health(self, *, force: bool = False) -> Dict[str, Any]:
@@ -6872,14 +6880,13 @@ class HttpDownloadService:
             accounts = self._pikpak_accounts()
             pikpak_ready = bool(accounts)
             pikpak_message = f"PikPak 已配置 {len(accounts)} 个账号" if pikpak_ready else "PikPak 已启用但缺少账号或 token"
-        gofile_token_configured = bool(self._gofile_token())
         result.update({
             "pikpak_enabled": self._pikpak_enabled(),
             "pikpak_ready": pikpak_ready,
             "pikpak_message": pikpak_message,
             "gofile_ready": True,
-            "gofile_token_configured": gofile_token_configured,
-            "gofile_message": "Gofile 已配置账号 token" if gofile_token_configured else "Gofile 将使用临时网页账号解析",
+            "gofile_token_configured": False,
+            "gofile_message": "Gofile 每次下载新建临时网页账号",
         })
         self._health_cache = (cache_key, time.monotonic(), dict(result))
         return result

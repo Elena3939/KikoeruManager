@@ -261,3 +261,7 @@ backup_zip:
   compression_threads: 8
   archive_format: zip
   compression_level: 9
+
+# DLsite 邮件监听：代理由应用所在主机 / 容器访问，留空直连。
+email_watcher:
+  proxy_url: ""  # 例如 socks5h://192.168.1.10:7890 或 http://192.168.1.10:7890

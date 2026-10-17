@@ -413,10 +413,10 @@ const gridClass = computed(() => {
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-workbench-stage > div > aside,
-:global(html.dark) .subtitle-workbench-stage > div > aside,
-:global(html.kikoerumanager-dark) .subtitle-workbench-stage :is([class*="bg-white"], [class*="bg-slate-50"], [class*="bg-slate-100"]),
-:global(html.dark) .subtitle-workbench-stage :is([class*="bg-white"], [class*="bg-slate-50"], [class*="bg-slate-100"]) {
+html.kikoerumanager-dark .subtitle-workbench-stage > div > aside,
+html.dark .subtitle-workbench-stage > div > aside,
+html.kikoerumanager-dark .subtitle-workbench-stage :is([class*="bg-white"], [class*="bg-slate-50"], [class*="bg-slate-100"]),
+html.dark .subtitle-workbench-stage :is([class*="bg-white"], [class*="bg-slate-50"], [class*="bg-slate-100"]) {
   background-color: #111216 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.14) !important;
@@ -494,7 +494,7 @@ const gridClass = computed(() => {
   color: #a78bfa !important;
 }
 
-:global(html.kikoerumanager-dark) .rail-handle {
+html.kikoerumanager-dark .rail-handle {
   border-color: rgba(255, 255, 255, 0.14);
   background: #24252a;
   color: rgba(244, 244, 245, 0.78);
@@ -502,7 +502,7 @@ const gridClass = computed(() => {
   animation: none;
 }
 
-:global(html.kikoerumanager-dark) .rail-handle:hover {
+html.kikoerumanager-dark .rail-handle:hover {
   border-color: rgba(255, 255, 255, 0.22);
   background: #303136;
   color: #ffffff;

@@ -63,6 +63,7 @@
       <div
         v-if="isFilterMenuOpen"
         class="lib-filter-menu"
+        :class="{ 'is-dark': isDark }"
         @mousedown.prevent
       >
         <header class="lib-filter-menu-head">
@@ -239,6 +240,7 @@ import {
 } from 'lucide-vue-next'
 
 import { libraryApi } from '../../api'
+import { useTheme } from '../../composables/useTheme'
 import {
   LIBRARY_FILTER_OPTIONS,
   applyLibraryFrontendFilter,
@@ -256,6 +258,8 @@ const props = defineProps({
   // 输入触发的最小长度。RJ 数字短一些，名字至少 2 字符
   minQueryLength: { type: Number, default: 2 },
 })
+
+const { isDark } = useTheme()
 
 const emit = defineEmits([
   'update:modelValue',
@@ -1347,8 +1351,8 @@ onBeforeUnmount(() => {
   background-clip: content-box;
 }
 
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-pop,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu {
+html.kikoerumanager-dark .lib-search-box .lib-suggest-pop,
+html.kikoerumanager-dark .lib-search-box .lib-filter-menu {
   background: #0b0c10 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.16) !important;
@@ -1358,9 +1362,9 @@ onBeforeUnmount(() => {
   -webkit-backdrop-filter: none !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-head,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-foot,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-head {
+html.kikoerumanager-dark .lib-search-box .lib-suggest-head,
+html.kikoerumanager-dark .lib-search-box .lib-suggest-foot,
+html.kikoerumanager-dark .lib-search-box .lib-filter-menu-head {
   background: #16171b !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.14) !important;
@@ -1368,46 +1372,46 @@ onBeforeUnmount(() => {
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-head svg {
+html.kikoerumanager-dark .lib-search-box .lib-filter-menu-head svg {
   color: #64748b !important;
   stroke: currentColor !important;
   opacity: 1 !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-head-title,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row-name,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-state .font-medium {
+html.kikoerumanager-dark .lib-search-box .lib-suggest-head-title,
+html.kikoerumanager-dark .lib-search-box .lib-suggest-row-name,
+html.kikoerumanager-dark .lib-search-box .lib-suggest-state .font-medium {
   color: var(--km-dark-text-strong) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-row {
+html.kikoerumanager-dark .lib-search-box .lib-filter-menu-row {
   color: rgba(226, 232, 240, 0.78) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-label {
+html.kikoerumanager-dark .lib-search-box .lib-filter-menu-label {
   color: currentColor !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-icon svg {
+html.kikoerumanager-dark .lib-search-box .lib-filter-menu-icon svg {
   color: currentColor !important;
   stroke: currentColor !important;
   opacity: 1 !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-head-loader,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-head-meta,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-state,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-state-hint,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row-sub,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row-path,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-foot-hint {
+html.kikoerumanager-dark .lib-search-box .lib-suggest-head-loader,
+html.kikoerumanager-dark .lib-search-box .lib-suggest-head-meta,
+html.kikoerumanager-dark .lib-search-box .lib-suggest-state,
+html.kikoerumanager-dark .lib-search-box .lib-suggest-state-hint,
+html.kikoerumanager-dark .lib-search-box .lib-suggest-row-sub,
+html.kikoerumanager-dark .lib-search-box .lib-suggest-row-path,
+html.kikoerumanager-dark .lib-search-box .lib-suggest-foot-hint {
   color: var(--km-dark-text-muted) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row:hover,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row.is-active,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-row:hover,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-row.is-active {
+html.kikoerumanager-dark .lib-search-box .lib-suggest-row:hover,
+html.kikoerumanager-dark .lib-search-box .lib-suggest-row.is-active,
+html.kikoerumanager-dark .lib-search-box .lib-filter-menu-row:hover,
+html.kikoerumanager-dark .lib-search-box .lib-filter-menu-row.is-active {
   background: #2b2c30 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.18) !important;
@@ -1415,47 +1419,186 @@ onBeforeUnmount(() => {
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-check {
+html.kikoerumanager-dark .lib-search-box .lib-filter-menu-check {
   color: #6366f1 !important;
   stroke: currentColor !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-head-count,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row-rj,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row-relation,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-lib-chip,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-foot-hint kbd {
+/* 主题状态可能只挂载标准 dark 类；搜索菜单是浮层，必须覆盖自身浅色渐变。 */
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) .lib-search-box .lib-filter-menu {
+  background: #0f1116 !important;
+  background-color: #0f1116 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: rgba(241, 245, 249, 0.92) !important;
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.46) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) .lib-search-box .lib-filter-menu-head {
+  background: #181b22 !important;
+  background-color: #181b22 !important;
+  background-image: none !important;
+  border-bottom-color: rgba(255, 255, 255, 0.12) !important;
+  color: rgba(203, 213, 225, 0.78) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) .lib-search-box .lib-filter-menu-row {
+  background: transparent !important;
+  background-color: transparent !important;
+  color: rgba(226, 232, 240, 0.82) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) .lib-search-box .lib-filter-menu-row:hover,
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) .lib-search-box .lib-filter-menu-row.is-active {
+  background: #292d36 !important;
+  background-color: #292d36 !important;
+  background-image: none !important;
+  color: #f8fafc !important;
+}
+
+html.kikoerumanager-dark .lib-search-box .lib-suggest-head-count,
+html.kikoerumanager-dark .lib-search-box .lib-suggest-row-rj,
+html.kikoerumanager-dark .lib-search-box .lib-suggest-row-relation,
+html.kikoerumanager-dark .lib-search-box .lib-suggest-lib-chip,
+html.kikoerumanager-dark .lib-search-box .lib-suggest-foot-hint kbd {
   background: var(--km-dark-field) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-banner.is-warning {
+html.kikoerumanager-dark .lib-search-box .lib-suggest-banner.is-warning {
   background: rgba(245, 158, 11, 0.14) !important;
   border-color: rgba(245, 158, 11, 0.34) !important;
   color: #fbbf24 !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-banner.is-error {
+html.kikoerumanager-dark .lib-search-box .lib-suggest-banner.is-error {
   background: rgba(244, 63, 94, 0.14) !important;
   border-color: rgba(251, 113, 133, 0.34) !important;
   color: #fda4af !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-foot-btn {
+html.kikoerumanager-dark .lib-search-box .lib-suggest-foot-btn {
   background: #020617 !important;
   border: 1px solid var(--km-dark-border-strong) !important;
   color: #ffffff !important;
   box-shadow: 0 10px 22px rgba(0, 0, 0, 0.38) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-list::-webkit-scrollbar-thumb {
+html.kikoerumanager-dark .lib-search-box .lib-suggest-list::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.18);
   background-clip: content-box;
 }
 </style>
 
 <style>
+/* 由 useTheme 直接标记，避免依赖页面外层 class 的挂载位置。 */
+.lib-filter-menu.is-dark {
+  background: #0b0c10 !important;
+  background-color: #0b0c10 !important;
+  background-image: none !important;
+  border: 1px solid #30323a !important;
+  color: #f1f5f9 !important;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.52) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.lib-filter-menu.is-dark .lib-filter-menu-head {
+  background: #111218 !important;
+  background-color: #111218 !important;
+  background-image: none !important;
+  border-bottom: 1px solid #292c34 !important;
+  color: #aeb6c4 !important;
+}
+
+.lib-filter-menu.is-dark .lib-filter-menu-row {
+  background: transparent !important;
+  background-color: transparent !important;
+  border: 0 !important;
+  color: #d7dce5 !important;
+}
+
+.lib-filter-menu.is-dark .lib-filter-menu-row:hover,
+.lib-filter-menu.is-dark .lib-filter-menu-row.is-active {
+  background: #242832 !important;
+  background-color: #242832 !important;
+  color: #ffffff !important;
+}
+
+.lib-filter-menu.is-dark .lib-filter-menu-check {
+  color: #60a5fa !important;
+  stroke: currentColor !important;
+}
+
+/* 库存工作台本身采用深色基线，菜单也固定沿用右键菜单的黑灰配比。 */
+.lib-filter-menu {
+  background: #0b0c10 !important;
+  background-color: #0b0c10 !important;
+  background-image: none !important;
+  border: 1px solid #30323a !important;
+  color: #f1f5f9 !important;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.52) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.lib-filter-menu .lib-filter-menu-head {
+  background: #111218 !important;
+  background-color: #111218 !important;
+  background-image: none !important;
+  border-bottom: 1px solid #292c34 !important;
+  color: #aeb6c4 !important;
+}
+
+.lib-filter-menu .lib-filter-menu-row {
+  background: transparent !important;
+  background-color: transparent !important;
+  color: #d7dce5 !important;
+}
+
+.lib-filter-menu .lib-filter-menu-row:hover,
+.lib-filter-menu .lib-filter-menu-row.is-active {
+  background: #242832 !important;
+  background-color: #242832 !important;
+  color: #ffffff !important;
+}
+
+/* 非 scoped 版本：保证组件样式注入顺序变化时，浮层仍继承暗色主题。 */
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) .lib-filter-menu {
+  background: #0f1116 !important;
+  background-color: #0f1116 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: #e2e8f0 !important;
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.46) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) .lib-filter-menu-head {
+  background: #181b22 !important;
+  background-color: #181b22 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #cbd5e1 !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) .lib-filter-menu-row {
+  background: transparent !important;
+  background-color: transparent !important;
+  color: #e2e8f0 !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) .lib-filter-menu-row:hover,
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) .lib-filter-menu-row.is-active {
+  background: #292d36 !important;
+  background-color: #292d36 !important;
+  color: #f8fafc !important;
+}
+
 html.kikoerumanager-dark .lib-suggest-pop {
   background: #0b0c10 !important;
   border: 1px solid rgba(255, 255, 255, 0.15) !important;

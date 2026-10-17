@@ -15,6 +15,7 @@ _EXTRACT_REASON_MESSAGES = {
     "light_probe_unknown": "解压失败：大文件轻量探测无法定性，已停止全量试错",
     "garbled_filename": "解压失败：文件名疑似乱码，需要确认编码",
     "extract_incomplete": "解压失败：解压结果未通过完整性校验",
+    "extract_exception": "解压失败：解压执行过程发生异常，请查看日志",
     "nested_archive_failed": "解压失败：存在未成功展开的嵌套压缩包，已阻止半成品入库",
 }
 

@@ -2917,27 +2917,27 @@ watch(totalPages, (val) => {
   background: #202126 !important;
 }
 
-:global(html.kikoerumanager-dark) .cat-tone-indigo { background: rgba(129, 140, 248, 0.16); color: #c7d2fe; --tw-ring-color: rgba(129, 140, 248, 0.28); }
-:global(html.kikoerumanager-dark) .cat-tone-violet { background: rgba(167, 139, 250, 0.16); color: #ddd6fe; --tw-ring-color: rgba(167, 139, 250, 0.28); }
-:global(html.kikoerumanager-dark) .cat-tone-purple { background: rgba(192, 132, 252, 0.15); color: #e9d5ff; --tw-ring-color: rgba(192, 132, 252, 0.26); }
-:global(html.kikoerumanager-dark) .cat-tone-fuchsia { background: rgba(232, 121, 249, 0.14); color: #f5d0fe; --tw-ring-color: rgba(232, 121, 249, 0.26); }
-:global(html.kikoerumanager-dark) .cat-tone-amber { background: rgba(251, 191, 36, 0.15); color: #fde68a; --tw-ring-color: rgba(251, 191, 36, 0.28); }
-:global(html.kikoerumanager-dark) .cat-tone-orange { background: rgba(251, 146, 60, 0.15); color: #fed7aa; --tw-ring-color: rgba(251, 146, 60, 0.28); }
-:global(html.kikoerumanager-dark) .cat-tone-emerald { background: rgba(52, 211, 153, 0.14); color: #a7f3d0; --tw-ring-color: rgba(52, 211, 153, 0.26); }
-:global(html.kikoerumanager-dark) .cat-tone-teal { background: rgba(45, 212, 191, 0.14); color: #99f6e4; --tw-ring-color: rgba(45, 212, 191, 0.26); }
-:global(html.kikoerumanager-dark) .cat-tone-lime { background: rgba(163, 230, 53, 0.13); color: #d9f99d; --tw-ring-color: rgba(163, 230, 53, 0.25); }
-:global(html.kikoerumanager-dark) .cat-tone-rose { background: rgba(251, 113, 133, 0.14); color: #fecdd3; --tw-ring-color: rgba(251, 113, 133, 0.28); }
-:global(html.kikoerumanager-dark) .cat-tone-pink { background: rgba(244, 114, 182, 0.14); color: #fbcfe8; --tw-ring-color: rgba(244, 114, 182, 0.26); }
-:global(html.kikoerumanager-dark) .cat-tone-sky { background: rgba(56, 189, 248, 0.13); color: #bae6fd; --tw-ring-color: rgba(56, 189, 248, 0.26); }
-:global(html.kikoerumanager-dark) .cat-tone-blue { background: rgba(96, 165, 250, 0.14); color: #bfdbfe; --tw-ring-color: rgba(96, 165, 250, 0.28); }
-:global(html.kikoerumanager-dark) .cat-tone-cyan { background: rgba(34, 211, 238, 0.13); color: #a5f3fc; --tw-ring-color: rgba(34, 211, 238, 0.26); }
-:global(html.kikoerumanager-dark) .cat-tone-slate { background: rgba(212, 212, 216, 0.1); color: #e4e4e7; --tw-ring-color: rgba(212, 212, 216, 0.18); }
+html.kikoerumanager-dark .cat-tone-indigo { background: rgba(129, 140, 248, 0.16); color: #c7d2fe; --tw-ring-color: rgba(129, 140, 248, 0.28); }
+html.kikoerumanager-dark .cat-tone-violet { background: rgba(167, 139, 250, 0.16); color: #ddd6fe; --tw-ring-color: rgba(167, 139, 250, 0.28); }
+html.kikoerumanager-dark .cat-tone-purple { background: rgba(192, 132, 252, 0.15); color: #e9d5ff; --tw-ring-color: rgba(192, 132, 252, 0.26); }
+html.kikoerumanager-dark .cat-tone-fuchsia { background: rgba(232, 121, 249, 0.14); color: #f5d0fe; --tw-ring-color: rgba(232, 121, 249, 0.26); }
+html.kikoerumanager-dark .cat-tone-amber { background: rgba(251, 191, 36, 0.15); color: #fde68a; --tw-ring-color: rgba(251, 191, 36, 0.28); }
+html.kikoerumanager-dark .cat-tone-orange { background: rgba(251, 146, 60, 0.15); color: #fed7aa; --tw-ring-color: rgba(251, 146, 60, 0.28); }
+html.kikoerumanager-dark .cat-tone-emerald { background: rgba(52, 211, 153, 0.14); color: #a7f3d0; --tw-ring-color: rgba(52, 211, 153, 0.26); }
+html.kikoerumanager-dark .cat-tone-teal { background: rgba(45, 212, 191, 0.14); color: #99f6e4; --tw-ring-color: rgba(45, 212, 191, 0.26); }
+html.kikoerumanager-dark .cat-tone-lime { background: rgba(163, 230, 53, 0.13); color: #d9f99d; --tw-ring-color: rgba(163, 230, 53, 0.25); }
+html.kikoerumanager-dark .cat-tone-rose { background: rgba(251, 113, 133, 0.14); color: #fecdd3; --tw-ring-color: rgba(251, 113, 133, 0.28); }
+html.kikoerumanager-dark .cat-tone-pink { background: rgba(244, 114, 182, 0.14); color: #fbcfe8; --tw-ring-color: rgba(244, 114, 182, 0.26); }
+html.kikoerumanager-dark .cat-tone-sky { background: rgba(56, 189, 248, 0.13); color: #bae6fd; --tw-ring-color: rgba(56, 189, 248, 0.26); }
+html.kikoerumanager-dark .cat-tone-blue { background: rgba(96, 165, 250, 0.14); color: #bfdbfe; --tw-ring-color: rgba(96, 165, 250, 0.28); }
+html.kikoerumanager-dark .cat-tone-cyan { background: rgba(34, 211, 238, 0.13); color: #a5f3fc; --tw-ring-color: rgba(34, 211, 238, 0.26); }
+html.kikoerumanager-dark .cat-tone-slate { background: rgba(212, 212, 216, 0.1); color: #e4e4e7; --tw-ring-color: rgba(212, 212, 216, 0.18); }
 
-:global(html.kikoerumanager-dark) .chip-tone-success { background: rgba(52, 211, 153, 0.13); color: #a7f3d0; --tw-ring-color: rgba(52, 211, 153, 0.24); }
-:global(html.kikoerumanager-dark) .chip-tone-warn { background: rgba(251, 191, 36, 0.14); color: #fde68a; --tw-ring-color: rgba(251, 191, 36, 0.25); }
-:global(html.kikoerumanager-dark) .chip-tone-danger { background: rgba(251, 113, 133, 0.13); color: #fecdd3; --tw-ring-color: rgba(251, 113, 133, 0.25); }
-:global(html.kikoerumanager-dark) .chip-tone-info,
-:global(html.kikoerumanager-dark) .chip-tone-neutral { background: rgba(212, 212, 216, 0.1); color: #e4e4e7; --tw-ring-color: rgba(212, 212, 216, 0.18); }
+html.kikoerumanager-dark .chip-tone-success { background: rgba(52, 211, 153, 0.13); color: #a7f3d0; --tw-ring-color: rgba(52, 211, 153, 0.24); }
+html.kikoerumanager-dark .chip-tone-warn { background: rgba(251, 191, 36, 0.14); color: #fde68a; --tw-ring-color: rgba(251, 191, 36, 0.25); }
+html.kikoerumanager-dark .chip-tone-danger { background: rgba(251, 113, 133, 0.13); color: #fecdd3; --tw-ring-color: rgba(251, 113, 133, 0.25); }
+html.kikoerumanager-dark .chip-tone-info,
+html.kikoerumanager-dark .chip-tone-neutral { background: rgba(212, 212, 216, 0.1); color: #e4e4e7; --tw-ring-color: rgba(212, 212, 216, 0.18); }
 
 @media (max-width: 1180px) {
   .activity-metric-rail {

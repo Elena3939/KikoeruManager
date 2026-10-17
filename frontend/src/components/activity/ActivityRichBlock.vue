@@ -2121,7 +2121,7 @@ function formatBytes(size) {
   border-color: rgba(148, 163, 184, 0.32);
 }
 
-:global(html.kikoerumanager-dark) .panel {
+html.kikoerumanager-dark .panel {
   border-color: rgba(255, 255, 255, 0.08);
   background: #111216;
   background-image: none;
@@ -2129,161 +2129,161 @@ function formatBytes(size) {
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .panel-head,
-:global(html.kikoerumanager-dark) .entry-section-head {
+html.kikoerumanager-dark .panel-head,
+html.kikoerumanager-dark .entry-section-head {
   border-color: rgba(255, 255, 255, 0.08);
 }
 
-:global(html.kikoerumanager-dark) .panel-head,
-:global(html.kikoerumanager-dark) .panel-head > svg,
-:global(html.kikoerumanager-dark) .entry-section-title,
-:global(html.kikoerumanager-dark) .highlight-value,
-:global(html.kikoerumanager-dark) .highlight-num {
+html.kikoerumanager-dark .panel-head,
+html.kikoerumanager-dark .panel-head > svg,
+html.kikoerumanager-dark .entry-section-title,
+html.kikoerumanager-dark .highlight-value,
+html.kikoerumanager-dark .highlight-num {
   color: #f4f4f5;
 }
 
-:global(html.kikoerumanager-dark) .panel-head-count,
-:global(html.kikoerumanager-dark) .entry-eyebrow,
-:global(html.kikoerumanager-dark) .entry-section-desc,
-:global(html.kikoerumanager-dark) .highlight-label,
-:global(html.kikoerumanager-dark) .highlight-unit,
-:global(html.kikoerumanager-dark) .bonus-probe-source,
-:global(html.kikoerumanager-dark) .bonus-work-meta {
+html.kikoerumanager-dark .panel-head-count,
+html.kikoerumanager-dark .entry-eyebrow,
+html.kikoerumanager-dark .entry-section-desc,
+html.kikoerumanager-dark .highlight-label,
+html.kikoerumanager-dark .highlight-unit,
+html.kikoerumanager-dark .bonus-probe-source,
+html.kikoerumanager-dark .bonus-work-meta {
   color: rgba(212, 212, 216, 0.66);
 }
 
-:global(html.kikoerumanager-dark) .bonus-probe-panel.is-miss,
-:global(html.kikoerumanager-dark) .bonus-work-item,
-:global(html.kikoerumanager-dark) .bonus-probe-empty {
+html.kikoerumanager-dark .bonus-probe-panel.is-miss,
+html.kikoerumanager-dark .bonus-work-item,
+html.kikoerumanager-dark .bonus-probe-empty {
   border-color: rgba(255, 255, 255, 0.08);
   background: #17181d;
 }
 
-:global(html.kikoerumanager-dark) .bonus-probe-title,
-:global(html.kikoerumanager-dark) .bonus-work-name,
-:global(html.kikoerumanager-dark) .bonus-probe-metric b,
-:global(html.kikoerumanager-dark) .bonus-date-pill b {
+html.kikoerumanager-dark .bonus-probe-title,
+html.kikoerumanager-dark .bonus-work-name,
+html.kikoerumanager-dark .bonus-probe-metric b,
+html.kikoerumanager-dark .bonus-date-pill b {
   color: #f4f4f5;
 }
 
-:global(html.kikoerumanager-dark) .bonus-probe-metric,
-:global(html.kikoerumanager-dark) .bonus-date-pill,
-:global(html.kikoerumanager-dark) .bonus-date-more,
-:global(html.kikoerumanager-dark) .bonus-work-rj {
+html.kikoerumanager-dark .bonus-probe-metric,
+html.kikoerumanager-dark .bonus-date-pill,
+html.kikoerumanager-dark .bonus-date-more,
+html.kikoerumanager-dark .bonus-work-rj {
   border-color: rgba(255, 255, 255, 0.12);
   background: #202126;
   color: #d7dde7;
 }
 
-:global(html.kikoerumanager-dark) .bonus-probe-empty {
+html.kikoerumanager-dark .bonus-probe-empty {
   color: rgba(212, 212, 216, 0.68);
 }
 
-:global(html.kikoerumanager-dark) .bonus-date-strip {
+html.kikoerumanager-dark .bonus-date-strip {
   border-top-color: rgba(255, 255, 255, 0.08);
 }
 
-:global(html.dark) .bonus-probe-panel,
-:global(html.kikoerumanager-dark) .bonus-probe-panel {
+html.dark .bonus-probe-panel,
+html.kikoerumanager-dark .bonus-probe-panel {
   background: #111216;
   border-color: rgba(255, 255, 255, 0.1);
 }
 
-:global(html.dark) .bonus-probe-status,
-:global(html.kikoerumanager-dark) .bonus-probe-status {
+html.dark .bonus-probe-status,
+html.kikoerumanager-dark .bonus-probe-status {
   border-color: rgba(255, 255, 255, 0.14);
   background: #202126;
   color: #f4f4f5;
 }
 
-:global(html.dark) .bonus-probe-source,
-:global(html.kikoerumanager-dark) .bonus-probe-source {
+html.dark .bonus-probe-source,
+html.kikoerumanager-dark .bonus-probe-source {
   color: rgba(232, 236, 243, 0.76);
 }
 
-:global(html.dark) .bonus-work-item,
-:global(html.kikoerumanager-dark) .bonus-work-item {
+html.dark .bonus-work-item,
+html.kikoerumanager-dark .bonus-work-item {
   border-color: rgba(255, 255, 255, 0.12);
   background: #17181d;
   box-shadow: none;
 }
 
-:global(html.dark) .bonus-work-item:hover,
-:global(html.kikoerumanager-dark) .bonus-work-item:hover {
+html.dark .bonus-work-item:hover,
+html.kikoerumanager-dark .bonus-work-item:hover {
   border-color: rgba(255, 255, 255, 0.2);
   background: #1c1d23;
 }
 
-:global(html.dark) .bonus-work-cover,
-:global(html.kikoerumanager-dark) .bonus-work-cover {
+html.dark .bonus-work-cover,
+html.kikoerumanager-dark .bonus-work-cover {
   border-color: rgba(255, 255, 255, 0.12);
   background: #202126;
   color: rgba(232, 236, 243, 0.62);
 }
 
-:global(html.dark) .bonus-work-meta,
-:global(html.kikoerumanager-dark) .bonus-work-meta {
+html.dark .bonus-work-meta,
+html.kikoerumanager-dark .bonus-work-meta {
   color: rgba(212, 212, 216, 0.72);
 }
 
-:global(html.kikoerumanager-dark) .highlight-row {
+html.kikoerumanager-dark .highlight-row {
   border-bottom-color: rgba(255, 255, 255, 0.08);
 }
 
-:global(html.kikoerumanager-dark) .highlight-row:hover,
-:global(html.kikoerumanager-dark) .tree-row:hover {
+html.kikoerumanager-dark .highlight-row:hover,
+html.kikoerumanager-dark .tree-row:hover {
   background: #17181d;
 }
 
 :global(html.kikoerumanager-dark .activity-detail-panel .pair-metric-card),
 :global(html.dark .activity-detail-panel .pair-metric-card),
-:global(html.kikoerumanager-dark) .pair-metric-card,
-:global(html.dark) .pair-metric-card {
+html.kikoerumanager-dark .pair-metric-card,
+html.dark .pair-metric-card {
   border-color: rgba(255, 255, 255, 0.12) !important;
   background: #17181d !important;
 }
 
 :global(html.kikoerumanager-dark .activity-detail-panel .pair-metric-label),
 :global(html.dark .activity-detail-panel .pair-metric-label),
-:global(html.kikoerumanager-dark) .pair-metric-label,
-:global(html.dark) .pair-metric-label {
+html.kikoerumanager-dark .pair-metric-label,
+html.dark .pair-metric-label {
   color: rgba(212, 212, 216, 0.66) !important;
 }
 
 :global(html.kikoerumanager-dark .activity-detail-panel .pair-metric-value),
 :global(html.dark .activity-detail-panel .pair-metric-value),
-:global(html.kikoerumanager-dark) .pair-metric-value,
-:global(html.dark) .pair-metric-value {
+html.kikoerumanager-dark .pair-metric-value,
+html.dark .pair-metric-value {
   color: #f4f4f5 !important;
 }
 
 :global(html.kikoerumanager-dark .activity-detail-panel .pair-workbench-card),
 :global(html.dark .activity-detail-panel .pair-workbench-card),
-:global(html.kikoerumanager-dark) .pair-workbench-card,
-:global(html.dark) .pair-workbench-card {
+html.kikoerumanager-dark .pair-workbench-card,
+html.dark .pair-workbench-card {
   border-color: rgba(255, 255, 255, 0.12) !important;
   background: #111216 !important;
 }
 
 :global(html.kikoerumanager-dark .activity-detail-panel .pair-workbench-card.is-awaiting),
 :global(html.dark .activity-detail-panel .pair-workbench-card.is-awaiting),
-:global(html.kikoerumanager-dark) .pair-workbench-card.is-awaiting,
-:global(html.dark) .pair-workbench-card.is-awaiting {
+html.kikoerumanager-dark .pair-workbench-card.is-awaiting,
+html.dark .pair-workbench-card.is-awaiting {
   border-color: rgba(16, 185, 129, 0.28) !important;
   background: #101714 !important;
 }
 
 :global(html.kikoerumanager-dark .activity-detail-panel .pair-workbench-title),
 :global(html.dark .activity-detail-panel .pair-workbench-title),
-:global(html.kikoerumanager-dark) .pair-workbench-title,
-:global(html.dark) .pair-workbench-title {
+html.kikoerumanager-dark .pair-workbench-title,
+html.dark .pair-workbench-title {
   color: #f4f4f5 !important;
 }
 
 :global(html.kikoerumanager-dark .activity-detail-panel .pair-workbench-desc),
 :global(html.dark .activity-detail-panel .pair-workbench-desc),
-:global(html.kikoerumanager-dark) .pair-workbench-desc,
-:global(html.dark) .pair-workbench-desc {
+html.kikoerumanager-dark .pair-workbench-desc,
+html.dark .pair-workbench-desc {
   color: rgba(212, 212, 216, 0.72) !important;
 }
 
@@ -2291,10 +2291,10 @@ function formatBytes(size) {
 :global(html.dark .activity-detail-panel .pair-workbench-badge),
 :global(html.kikoerumanager-dark .activity-detail-panel .pair-workbench-chip),
 :global(html.dark .activity-detail-panel .pair-workbench-chip),
-:global(html.kikoerumanager-dark) .pair-workbench-badge,
-:global(html.dark) .pair-workbench-badge,
-:global(html.kikoerumanager-dark) .pair-workbench-chip,
-:global(html.dark) .pair-workbench-chip {
+html.kikoerumanager-dark .pair-workbench-badge,
+html.dark .pair-workbench-badge,
+html.kikoerumanager-dark .pair-workbench-chip,
+html.dark .pair-workbench-chip {
   border-color: rgba(255, 255, 255, 0.12) !important;
   background: #202126 !important;
   color: #d7dde7 !important;
@@ -2302,8 +2302,8 @@ function formatBytes(size) {
 
 :global(html.kikoerumanager-dark .activity-detail-panel .pair-result-open-btn),
 :global(html.dark .activity-detail-panel .pair-result-open-btn),
-:global(html.kikoerumanager-dark) .pair-result-open-btn,
-:global(html.dark) .pair-result-open-btn {
+html.kikoerumanager-dark .pair-result-open-btn,
+html.dark .pair-result-open-btn {
   border-color: rgba(16, 185, 129, 0.3) !important;
   background: rgba(16, 185, 129, 0.12) !important;
   color: #86efac !important;
@@ -2312,29 +2312,29 @@ function formatBytes(size) {
 
 :global(html.kikoerumanager-dark .activity-detail-panel .pair-result-open-btn:hover),
 :global(html.dark .activity-detail-panel .pair-result-open-btn:hover),
-:global(html.kikoerumanager-dark) .pair-result-open-btn:hover,
-:global(html.dark) .pair-result-open-btn:hover {
+html.kikoerumanager-dark .pair-result-open-btn:hover,
+html.dark .pair-result-open-btn:hover {
   border-color: rgba(16, 185, 129, 0.42) !important;
   background: rgba(16, 185, 129, 0.18) !important;
 }
 
-:global(html.kikoerumanager-dark) .panel-toggle,
-:global(html.kikoerumanager-dark) .entry-section-toggle,
-:global(html.kikoerumanager-dark) .tree-inline-toggle:hover {
+html.kikoerumanager-dark .panel-toggle,
+html.kikoerumanager-dark .entry-section-toggle,
+html.kikoerumanager-dark .tree-inline-toggle:hover {
   border-color: rgba(255, 255, 255, 0.12);
   background: #202126;
   background-image: none;
   color: #d7dde7;
 }
 
-:global(html.kikoerumanager-dark) .panel-toggle:hover,
-:global(html.kikoerumanager-dark) .entry-section-toggle:hover {
+html.kikoerumanager-dark .panel-toggle:hover,
+html.kikoerumanager-dark .entry-section-toggle:hover {
   border-color: rgba(255, 255, 255, 0.18);
   background: #2b2c31;
   color: #f4f4f5;
 }
 
-:global(html.kikoerumanager-dark) .tree-row:hover {
+html.kikoerumanager-dark .tree-row:hover {
   border-color: rgba(255, 255, 255, 0.12);
 }
 

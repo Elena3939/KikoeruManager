@@ -148,4 +148,4 @@ def test_circle_completion_bonus_probe_lite_keeps_source_action():
     assert item["detail"]["bonus_probe_status"] == "hit"
     assert {"label": "命中", "value": "1", "tone": "success"} in item["chips"]
     assert {"label": "写入", "value": "1", "tone": "info"} in item["chips"]
-    assert {"label": "探测", "value": "42", "tone": "neutral"} in item["chips"]
+    assert {"label": "实际探测", "value": "42", "tone": "neutral"} in item["chips"]

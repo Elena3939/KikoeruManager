@@ -1168,7 +1168,7 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   -webkit-backdrop-filter: none !important;
 }
 
-.tab-count {
+.circle-download-preview-modal .tab-count {
   padding: 2px 5px;
   border-radius: 999px;
   font-size: 10px;
@@ -1179,17 +1179,17 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   color: rgb(156, 163, 175);
 }
 
-.tab-chip-active .tab-count {
+.circle-download-preview-modal .tab-chip-active .tab-count {
   background: rgba(255, 255, 255, 0.25);
   color: #ffffff;
 }
 
-.tab-chip-partial .tab-count {
+.circle-download-preview-modal .tab-chip-partial .tab-count {
   background: rgba(59, 130, 246, 0.15);
   color: #2563eb;
 }
 
-.content-grid {
+.circle-download-preview-modal .content-grid {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -1197,7 +1197,7 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   padding: 8px 32px;
 }
 
-.left-column {
+.circle-download-preview-modal .left-column {
   width: 380px;
   flex: 0 0 380px;
   display: flex;
@@ -1206,7 +1206,7 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   min-width: 0;
 }
 
-.glass-card {
+.circle-download-preview-modal .glass-card {
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.3);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.25), rgba(255, 255, 255, 0.1));
@@ -1218,20 +1218,20 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
 
 /* 隐藏滚动条但保留滚轮滚动能力；
    scoped 样式无法继承其他组件定义，必须在本组件里复刻一份。 */
-.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
-.no-scrollbar::-webkit-scrollbar { display: none; }
+.circle-download-preview-modal .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.circle-download-preview-modal .no-scrollbar::-webkit-scrollbar { display: none; }
 
-.circle-preview-settings-card {
+.circle-download-preview-modal .circle-preview-settings-card {
   padding: 24px;
   flex: 1 1 auto;
   overflow-y: auto;
 }
 
-.mode-switch {
+.circle-download-preview-modal .mode-switch {
   flex: 0 0 auto;
 }
 
-.mode-tab {
+.circle-download-preview-modal .mode-tab {
   border: 0;
   cursor: pointer;
   color: rgb(100, 116, 139);
@@ -1239,22 +1239,22 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   transition: all 0.18s ease;
 }
 
-.mode-tab-active {
+.circle-download-preview-modal .mode-tab-active {
   background: rgba(255, 255, 255, 0.95);
   color: rgb(30, 41, 59);
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.95);
 }
 
-.mode-tab-idle:hover {
+.circle-download-preview-modal .mode-tab-idle:hover {
   background: rgba(248, 250, 252, 0.65);
   color: rgb(30, 41, 59);
 }
 
-.section-head {
+.circle-download-preview-modal .section-head {
   margin-bottom: 16px;
 }
 
-.section-head h2 {
+.circle-download-preview-modal .section-head h2 {
   margin: 0 0 4px;
   font-size: 16px;
   line-height: 1;
@@ -1262,26 +1262,26 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   color: rgb(15, 23, 42);
 }
 
-.section-head p {
+.circle-download-preview-modal .section-head p {
   margin: 0;
   font-size: 12px;
   line-height: 1.45;
   color: rgb(100, 116, 139);
 }
 
-.field-group {
+.circle-download-preview-modal .field-group {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.field-group label {
+.circle-download-preview-modal .field-group label {
   font-size: 12px;
   font-weight: 500;
   color: rgb(100, 116, 139);
 }
 
-.field-input {
+.circle-download-preview-modal .field-input {
   width: 100%;
   height: 36px;
   border-radius: 8px;
@@ -1297,26 +1297,26 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   transition: box-shadow 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
 }
 
-.field-input:focus,
-.field-input:hover {
+.circle-download-preview-modal .field-input:focus,
+.circle-download-preview-modal .field-input:hover {
   border-color: rgba(96, 165, 250, 0.6);
   box-shadow:
     0 0 0 3px rgba(59, 130, 246, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.98);
 }
 
-.select-grid {
+.circle-download-preview-modal .select-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 14px;
   margin-top: 14px;
 }
 
-.select-wrap {
+.circle-download-preview-modal .select-wrap {
   position: relative;
 }
 
-.select-button {
+.circle-download-preview-modal .select-button {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1324,43 +1324,43 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   text-align: left;
 }
 
-.picker-wrap {
+.circle-download-preview-modal .picker-wrap {
   position: relative;
 }
 
-.picker-button {
+.circle-download-preview-modal .picker-button {
   cursor: pointer;
   text-align: left;
 }
 
-.picker-button:disabled {
+.circle-download-preview-modal .picker-button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
   background: rgba(248, 250, 252, 0.6);
 }
 
-.picker-button:not(:disabled):hover {
+.circle-download-preview-modal .picker-button:not(:disabled):hover {
   border-color: rgba(17, 24, 39, 0.32);
 }
 
-.picker-clear {
+.circle-download-preview-modal .picker-clear {
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.picker-clear:hover {
+.circle-download-preview-modal .picker-clear:hover {
   background: rgba(15, 23, 42, 0.08);
 }
 
-.select-arrow {
+.circle-download-preview-modal .select-arrow {
   color: #7f8792;
   flex: 0 0 auto;
 }
 
-.placeholder {
+.circle-download-preview-modal .placeholder {
   color: #a2a8b0;
 }
 
-.dropdown-menu {
+.circle-download-preview-modal .dropdown-menu {
   position: absolute;
   top: calc(100% + 8px);
   left: 0;
@@ -1375,7 +1375,7 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   animation: dropdown-in 0.18s ease;
 }
 
-.dropdown-item {
+.circle-download-preview-modal .dropdown-item {
   width: 100%;
   border: 0;
   background: transparent;
@@ -1390,27 +1390,27 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   cursor: pointer;
 }
 
-.dropdown-item:hover {
+.circle-download-preview-modal .dropdown-item:hover {
   background: rgba(241, 245, 249, 0.8);
 }
 
-.dropdown-item.is-selected {
+.circle-download-preview-modal .dropdown-item.is-selected {
   background: rgba(226, 232, 240, 0.86);
   color: rgb(15, 23, 42);
   font-weight: 600;
 }
 
-.dropdown-item.is-selected:hover {
+.circle-download-preview-modal .dropdown-item.is-selected:hover {
   background: rgba(203, 213, 225, 0.9);
 }
 
-.action-buttons {
+.circle-download-preview-modal .action-buttons {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
-.soft-button {
+.circle-download-preview-modal .soft-button {
   border: 1px solid rgba(226, 232, 240, 0.7);
   background: rgba(255, 255, 255, 0.55);
   box-shadow:
@@ -1419,7 +1419,7 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   color: rgb(71, 85, 105);
 }
 
-.soft-button {
+.circle-download-preview-modal .soft-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1440,7 +1440,7 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
 
 /* 选中态对齐顶部 mode-tab-active 的「浅白浮起」语言，
    不再用突兀的彩色渐变，保持整体玻璃浅色风格统一。 */
-.soft-button.active {
+.circle-download-preview-modal .soft-button.active {
   background: rgba(255, 255, 255, 0.95);
   color: rgb(15, 23, 42);
   font-weight: 600;
@@ -1451,7 +1451,7 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
     inset 0 0 0 1px rgba(15, 23, 42, 0.04);
 }
 
-.soft-button.active:hover {
+.circle-download-preview-modal .soft-button.active:hover {
   transform: translateY(-1px);
   box-shadow:
     0 6px 16px rgba(15, 23, 42, 0.12),
@@ -1459,40 +1459,40 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
     inset 0 0 0 1px rgba(15, 23, 42, 0.05);
 }
 
-.soft-button[disabled],
-.soft-button.is-disabled {
+.circle-download-preview-modal .soft-button[disabled],
+.circle-download-preview-modal .soft-button.is-disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 
-.soft-button[disabled]:hover,
-.soft-button.is-disabled:hover {
+.circle-download-preview-modal .soft-button[disabled]:hover,
+.circle-download-preview-modal .soft-button.is-disabled:hover {
   transform: none;
   box-shadow:
     0 2px 8px rgba(31, 45, 61, 0.04),
     inset 0 1px 0 rgba(255, 255, 255, 0.98);
 }
 
-.soft-button:hover {
+.circle-download-preview-modal .soft-button:hover {
   transform: translateY(-1px);
   box-shadow:
     0 8px 16px rgba(148, 163, 184, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.98);
 }
 
-.target-path {
+.circle-download-preview-modal .target-path {
   margin: 12px 0 0;
   font-size: 12px;
   color: rgb(100, 116, 139);
 }
 
-.tree-panel {
+.circle-download-preview-modal .tree-panel {
   min-width: 0;
   overflow: hidden;
   flex: 1 1 auto;
 }
 
-.tree-scroll {
+.circle-download-preview-modal .tree-scroll {
   height: 100%;
   overflow: auto;
   padding: 16px;
@@ -1500,22 +1500,22 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   scrollbar-color: rgba(119, 129, 141, 0.58) transparent;
 }
 
-.tree-scroll::-webkit-scrollbar {
+.circle-download-preview-modal .tree-scroll::-webkit-scrollbar {
   width: 8px;
 }
 
-.tree-scroll::-webkit-scrollbar-thumb {
+.circle-download-preview-modal .tree-scroll::-webkit-scrollbar-thumb {
   background: rgba(119, 129, 141, 0.48);
   border-radius: 999px;
 }
 
-.tree-list {
+.circle-download-preview-modal .tree-list {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.tree-row {
+.circle-download-preview-modal .tree-row {
   min-height: 32px;
   display: flex;
   align-items: center;
@@ -1528,21 +1528,21 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   transition: background-color 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
 }
 
-.plan-node-header {
+.circle-download-preview-modal .plan-node-header {
   padding-left: 8px;
 }
 
-.tree-row:hover {
+.circle-download-preview-modal .tree-row:hover {
   background: rgba(248, 250, 252, 0.72);
   box-shadow: inset 0 0 0 1px rgba(226, 232, 240, 0.84);
 }
 
-.tree-row-selected {
+.circle-download-preview-modal .tree-row-selected {
   background: rgba(239, 246, 255, 0.7);
   box-shadow: inset 0 0 0 1px rgba(219, 234, 254, 0.8);
 }
 
-.tree-main {
+.circle-download-preview-modal .tree-main {
   display: flex;
   align-items: center;
   min-width: 0;
@@ -1551,13 +1551,13 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   z-index: 1;
 }
 
-.tree-expander,
-.expander-spacer {
+.circle-download-preview-modal .tree-expander,
+.circle-download-preview-modal .expander-spacer {
   width: 20px;
   flex: 0 0 20px;
 }
 
-.tree-expander {
+.circle-download-preview-modal .tree-expander {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1569,12 +1569,12 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   cursor: pointer;
 }
 
-.tree-expander:hover {
+.circle-download-preview-modal .tree-expander:hover {
   background: rgba(255, 255, 255, 0.55);
   color: rgb(100, 116, 139);
 }
 
-.tree-checkbox {
+.circle-download-preview-modal .tree-checkbox {
   width: 16px;
   height: 16px;
   border-radius: 4px;
@@ -1588,11 +1588,11 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
 }
 
-.tree-checkbox svg {
+.circle-download-preview-modal .tree-checkbox svg {
   stroke-width: 1.9;
 }
 
-.checkbox-minus {
+.circle-download-preview-modal .checkbox-minus {
   width: 8px;
   height: 1.5px;
   border-radius: 999px;
@@ -1600,50 +1600,50 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   opacity: 0.95;
 }
 
-.tree-checkbox-on {
+.circle-download-preview-modal .tree-checkbox-on {
   border-color: rgb(59, 130, 246);
   background: rgb(59, 130, 246);
   color: #ffffff;
 }
 
-.tree-checkbox-partial {
+.circle-download-preview-modal .tree-checkbox-partial {
   border-color: rgb(59, 130, 246);
   background: rgb(59, 130, 246);
   color: #ffffff;
 }
 
-.tree-checkbox-off {
+.circle-download-preview-modal .tree-checkbox-off {
   border-color: rgb(203, 213, 225);
   background: rgba(255, 255, 255, 0.95);
 }
 
-.tree-row:hover .tree-checkbox-off {
+.circle-download-preview-modal .tree-row:hover .tree-checkbox-off {
   border-color: rgba(148, 163, 184, 0.48);
   background: rgba(255, 255, 255, 0.98);
 }
 
-.tree-icon {
+.circle-download-preview-modal .tree-icon {
   flex: 0 0 auto;
 }
 
-.icon-folder {
+.circle-download-preview-modal .icon-folder {
   color: rgb(96, 165, 250);
   fill: rgba(96, 165, 250, 0.2);
 }
 
-.icon-audio-blue {
+.circle-download-preview-modal .icon-audio-blue {
   color: rgb(129, 140, 248);
 }
 
-.icon-audio-purple {
+.circle-download-preview-modal .icon-audio-purple {
   color: rgb(196, 181, 253);
 }
 
-.icon-file {
+.circle-download-preview-modal .icon-file {
   color: rgb(156, 163, 175);
 }
 
-.tree-name {
+.circle-download-preview-modal .tree-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1654,20 +1654,20 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   color: rgb(30, 41, 59);
 }
 
-.node-rjcode {
+.circle-download-preview-modal .node-rjcode {
   font-size: 14px;
   font-weight: 600;
   color: rgb(30, 41, 59);
   margin-right: 4px;
 }
 
-.node-title-muted {
+.circle-download-preview-modal .node-title-muted {
   margin-left: 4px;
   font-weight: 400;
   color: rgb(148, 163, 184);
 }
 
-.tree-size {
+.circle-download-preview-modal .tree-size {
   position: relative;
   z-index: 1;
   flex: 0 0 auto;
@@ -1679,7 +1679,7 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   font-variant-numeric: tabular-nums;
 }
 
-.soft-button:active {
+.circle-download-preview-modal .soft-button:active {
   transform: scale(0.98);
 }
 
@@ -1832,19 +1832,19 @@ html.kikoerumanager-dark .circle-download-preview-overlay {
   -webkit-backdrop-filter: none !important;
 }
 
-.soft-button.mode-classify.active {
+.circle-download-preview-modal .soft-button.mode-classify.active {
   background: rgba(219, 234, 254, 0.82);
   border-color: rgba(59, 130, 246, 0.42);
   color: #1d4ed8;
 }
 
-.soft-button.mode-api.active {
+.circle-download-preview-modal .soft-button.mode-api.active {
   background: rgba(237, 233, 254, 0.84);
   border-color: rgba(139, 92, 246, 0.42);
   color: #6d28d9;
 }
 
-.soft-button.mode-direct.active {
+.circle-download-preview-modal .soft-button.mode-direct.active {
   background: rgba(204, 251, 241, 0.84);
   border-color: rgba(13, 148, 136, 0.42);
   color: #0f766e;
@@ -2170,74 +2170,74 @@ html.kikoerumanager-dark .circle-download-preview-window .app-loading-animation_
 }
 
 @media (max-width: 1280px) {
-  .custom-preview-modal.el-dialog {
+  .circle-download-preview-modal.el-dialog {
     width: min(calc(100vw - 24px), calc((100vh - 24px) * 16 / 9)) !important;
     max-width: min(calc(100vw - 24px), calc((100vh - 24px) * 16 / 9)) !important;
   }
 }
 
 @media (max-width: 1120px) {
-  .action-buttons {
+  .circle-download-preview-modal .action-buttons {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 640px) {
-  .action-buttons,
-  .select-grid {
+  .circle-download-preview-modal .action-buttons,
+  .circle-download-preview-modal .select-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 
 @media (max-width: 960px) {
-  .custom-preview-modal.el-dialog {
+  .circle-download-preview-modal.el-dialog {
     width: calc(100vw - 24px) !important;
     max-width: calc(100vw - 24px) !important;
   }
 
-  .window {
+  .circle-download-preview-modal .window {
     aspect-ratio: auto;
     height: calc(100vh - 24px);
     max-height: calc(100vh - 24px);
     border-radius: 20px;
   }
 
-  .window-header {
+  .circle-download-preview-modal .window-header {
     padding: 20px 18px;
   }
 
-  .tabs-row {
+  .circle-download-preview-modal .tabs-row {
     padding: 0 18px 14px;
   }
 
-  .content-grid {
+  .circle-download-preview-modal .content-grid {
     flex-direction: column;
     gap: 16px;
     padding: 6px 18px;
   }
 
-  .left-column {
+  .circle-download-preview-modal .left-column {
     width: auto;
     flex-basis: auto;
     gap: 16px;
   }
 
-  .footer-row {
+  .circle-download-preview-modal .footer-row {
     flex-direction: column;
     align-items: stretch;
     padding: 18px;
   }
 
-  .summary {
+  .circle-download-preview-modal .summary {
     margin-left: 0;
   }
 
-  .footer-actions {
+  .circle-download-preview-modal .footer-actions {
     justify-content: stretch;
   }
 
-  .primary-cta,
-  .secondary-cta {
+  .circle-download-preview-modal .primary-cta,
+  .circle-download-preview-modal .secondary-cta {
     flex: 1;
     width: auto;
   }

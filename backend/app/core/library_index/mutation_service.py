@@ -160,7 +160,7 @@ class LibraryIndexMutationService:
         self._fast_path_enabled = (
             bool(fast_path_enabled)
             if fast_path_enabled is not None
-            else str(os.getenv("KIKOERUMANAGER_LIBRARY_INDEX_FAST_PATH", "0")).lower()
+            else str(os.getenv("KIKOERUMANAGER_LIBRARY_INDEX_FAST_PATH", "1")).lower()
             in {"1", "true", "yes", "on"}
         )
         self._publisher_queue: queue.Queue[tuple[str, int, str]] = queue.Queue()
@@ -1790,8 +1790,16 @@ class LibraryIndexMutationService:
                 status.materializer_owner != self._consumer_name
                 or int(status.materializer_epoch or 0) != int(epoch)
                 or int(status.active_generation or 1) != int(generation)
-                or int(status.materialized_seq or 0) + 1 != int(expected_seq)
             ):
+                db.rollback()
+                return False
+            current_seq = int(status.materialized_seq or 0)
+            # 最后一个 reconcile 在持有状态行锁的事务内提交序号，等待行锁的心跳
+            # 会在提交后才读到结果；本序号已完成不代表租约被其他 worker 抢占。
+            if current_seq == int(expected_seq):
+                db.rollback()
+                return True
+            if current_seq + 1 != int(expected_seq):
                 db.rollback()
                 return False
             status.materializer_lease_until = get_local_now() + timedelta(seconds=LEASE_SECONDS)
@@ -1946,7 +1954,8 @@ class LibraryIndexMutationService:
                             owner=self._consumer_name,
                             epoch=epoch,
                         )
-                assert_fence()
+                if not completed_in_reconcile:
+                    assert_fence()
             if completed_in_reconcile:
                 self._broadcast_libraries({library_id}, "mutation_materialized")
             else:
@@ -2193,6 +2202,9 @@ class LibraryIndexMutationService:
             ledger = db.query(LibraryIndexMutationLedger).filter(
                 LibraryIndexMutationLedger.id == ledger_id
             ).with_for_update().one()
+            if ledger.applied_at is not None or int(status.materialized_seq or 0) >= seq:
+                db.rollback()
+                return
             ledger.attempt_count = int(ledger.attempt_count or 0) + 1
             ledger.error = str(exc)
             status.state_revision = int(status.state_revision or 0) + 1

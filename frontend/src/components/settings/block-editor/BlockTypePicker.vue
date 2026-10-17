@@ -184,8 +184,8 @@ function commitSel() {
   animation: btp-pop 0.14s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-:global(html.kikoerumanager-dark) .btp-panel,
-:global(body.kikoerumanager-dark) .btp-panel {
+html.kikoerumanager-dark .btp-panel,
+body.kikoerumanager-dark .btp-panel {
   --set-surface: #151515;
   --set-surface-soft: #1b1b1d;
   --set-surface-hover: #202023;

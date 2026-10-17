@@ -435,36 +435,36 @@ function getDisplayFolderName(task) {
   background-image: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep([class*="bg-white"]),
-:global(html.dark) .subtitle-task-navigator :deep([class*="bg-white"]) {
+html.kikoerumanager-dark .subtitle-task-navigator :deep([class*="bg-white"]),
+html.dark .subtitle-task-navigator :deep([class*="bg-white"]) {
   background-color: #242529 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.15) !important;
   color: rgba(246, 246, 248, 0.88) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep(.bg-slate-50),
-:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep(.bg-slate-50\/80),
-:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep(.bg-slate-100),
-:global(html.dark) .subtitle-task-navigator :deep(.bg-slate-50),
-:global(html.dark) .subtitle-task-navigator :deep(.bg-slate-50\/80),
-:global(html.dark) .subtitle-task-navigator :deep(.bg-slate-100) {
+html.kikoerumanager-dark .subtitle-task-navigator :deep(.bg-slate-50),
+html.kikoerumanager-dark .subtitle-task-navigator :deep(.bg-slate-50\/80),
+html.kikoerumanager-dark .subtitle-task-navigator :deep(.bg-slate-100),
+html.dark .subtitle-task-navigator :deep(.bg-slate-50),
+html.dark .subtitle-task-navigator :deep(.bg-slate-50\/80),
+html.dark .subtitle-task-navigator :deep(.bg-slate-100) {
   background-color: #2b2c30 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.15) !important;
   color: rgba(218, 218, 224, 0.72) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep([class*="bg-emerald-"]),
-:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep([class*="bg-sky-"]),
-:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep([class*="bg-violet-"]),
-:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep([class*="bg-amber-"]),
-:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep([class*="bg-rose-"]),
-:global(html.dark) .subtitle-task-navigator :deep([class*="bg-emerald-"]),
-:global(html.dark) .subtitle-task-navigator :deep([class*="bg-sky-"]),
-:global(html.dark) .subtitle-task-navigator :deep([class*="bg-violet-"]),
-:global(html.dark) .subtitle-task-navigator :deep([class*="bg-amber-"]),
-:global(html.dark) .subtitle-task-navigator :deep([class*="bg-rose-"]) {
+html.kikoerumanager-dark .subtitle-task-navigator :deep([class*="bg-emerald-"]),
+html.kikoerumanager-dark .subtitle-task-navigator :deep([class*="bg-sky-"]),
+html.kikoerumanager-dark .subtitle-task-navigator :deep([class*="bg-violet-"]),
+html.kikoerumanager-dark .subtitle-task-navigator :deep([class*="bg-amber-"]),
+html.kikoerumanager-dark .subtitle-task-navigator :deep([class*="bg-rose-"]),
+html.dark .subtitle-task-navigator :deep([class*="bg-emerald-"]),
+html.dark .subtitle-task-navigator :deep([class*="bg-sky-"]),
+html.dark .subtitle-task-navigator :deep([class*="bg-violet-"]),
+html.dark .subtitle-task-navigator :deep([class*="bg-amber-"]),
+html.dark .subtitle-task-navigator :deep([class*="bg-rose-"]) {
   background-color: #242529 !important;
   background-image: none !important;
   box-shadow: none !important;

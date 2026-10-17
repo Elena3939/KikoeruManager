@@ -212,13 +212,18 @@ class ActivityLogWriter:
             INSERT INTO activity_log_daily_stats(date, category, status, count, updated_at)
             VALUES (:date, :category, :status, :count, CURRENT_TIMESTAMP)
             ON CONFLICT(date, category, status) DO UPDATE SET
-                count = count + excluded.count,
+                count = activity_log_daily_stats.count + excluded.count,
                 updated_at = CURRENT_TIMESTAMP
             """
         )
         try:
             with db.begin_nested():
-                for (date_str, category, status), delta in counters.items():
+                # 与按日重建互斥；共享锁不串行正常写入，固定日期顺序避免跨日批次死锁。
+                for date_str in sorted({key[0] for key in counters}):
+                    db.execute(_text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:key, 0))"), {
+                        "key": f"activity-log-daily:{date_str}",
+                    })
+                for (date_str, category, status), delta in sorted(counters.items()):
                     db.execute(stmt, {
                         "date": date_str,
                         "category": category,

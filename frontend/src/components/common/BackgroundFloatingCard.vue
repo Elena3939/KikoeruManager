@@ -511,14 +511,14 @@ onBeforeUnmount(() => {
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .background-floating-card.is-compact .floating-hero-icon.has-hero-animation {
+html.kikoerumanager-dark .background-floating-card.is-compact .floating-hero-icon.has-hero-animation {
   border-color: transparent !important;
   background: transparent !important;
   color: inherit !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .background-floating-card .floating-hero-icon.has-hero-animation .floating-hero-lottie {
+html.kikoerumanager-dark .background-floating-card .floating-hero-icon.has-hero-animation .floating-hero-lottie {
   filter: none !important;
   color: inherit !important;
 }

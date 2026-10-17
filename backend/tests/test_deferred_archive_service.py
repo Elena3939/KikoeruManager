@@ -1,13 +1,167 @@
 import asyncio
 import hashlib
+from pathlib import Path
 import pytest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy import text
 
 from app.core import deferred_archive_service as deferred_archive_module
 from app.models.database import DeferredArchiveJob, ProcessedArchive
+
+
+@pytest.fixture
+def published_member(db_session, db_engine, tmp_path, monkeypatch):
+    source_dir = tmp_path / 'input'
+    processed_dir = tmp_path / 'processed'
+    source_dir.mkdir()
+    processed_dir.mkdir()
+    source = source_dir / 'RJ123456.zip'
+    source.write_bytes(b'verified archive content' * 1024)
+    service, _ = _configure_service(monkeypatch, db_session, source_dir, processed_dir, tmp_path)
+    # 使用真实独立事务，以便 NOWAIT 确认哈希期间另一连接可以取得同一行锁。
+    factory = sessionmaker(bind=db_engine, autoflush=False)
+    monkeypatch.setattr(deferred_archive_module, 'SessionLocal', factory)
+    service.enqueue_sync(str(source))
+    claim = service._claim_next_job_sync()
+    target = Path(claim['target_manifest'][0]['target_path'])
+    target.write_bytes(source.read_bytes())
+    checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+    service._record_member_published_sync(claim['job_id'], claim['lease_epoch'], 0, checksum)
+    return service, factory, claim, source, target, checksum
+
+
+def test_finalize_hashes_without_job_lock_and_deletes_under_fence(published_member, monkeypatch):
+    service, factory, claim, source, target, checksum = published_member
+    original_hash = service._hash_file
+    hashed = []
+
+    def checked_hash(path, should_abort):
+        with factory() as db:
+            db.query(DeferredArchiveJob).filter_by(id=claim['job_id']).with_for_update(nowait=True).one()
+        assert service._heartbeat_sync(claim['job_id'], claim['lease_epoch'])
+        hashed.append(path)
+        return original_hash(path, should_abort)
+
+    original_remove = deferred_archive_module.os.remove
+
+    def checked_remove(path):
+        if str(path) == str(source):
+            with factory() as db:
+                db.execute(text("SET LOCAL lock_timeout = '50ms'"))
+                with pytest.raises(Exception, match='lock timeout|could not obtain lock'):
+                    db.query(DeferredArchiveJob).filter_by(id=claim['job_id']).with_for_update(nowait=True).one()
+        return original_remove(path)
+
+    monkeypatch.setattr(service, '_hash_file', checked_hash)
+    monkeypatch.setattr(deferred_archive_module.os, 'remove', checked_remove)
+    service._finalize_published_member_sync(claim['job_id'], claim['lease_epoch'], 0, checksum)
+    assert hashed == [str(target), str(source)]
+    assert not source.exists()
+
+
+@pytest.mark.parametrize('change', ['source', 'target', 'cancel', 'owner', 'epoch', 'manifest'])
+def test_finalize_rejects_changes_after_hash(published_member, monkeypatch, change):
+    service, factory, claim, source, target, checksum = published_member
+    original_hash = service._hash_file
+
+    def changed_hash(path, should_abort):
+        result = original_hash(path, should_abort)
+        if path == str(source):
+            if change in {'source', 'target'}:
+                changed = source if change == 'source' else target
+                changed.write_bytes(b'x' * changed.stat().st_size)
+            else:
+                with factory() as db:
+                    job = db.query(DeferredArchiveJob).filter_by(id=claim['job_id']).one()
+                    if change == 'cancel':
+                        job.cancel_requested = True
+                    elif change == 'owner':
+                        job.lease_owner = 'replacement-owner'
+                    elif change == 'epoch':
+                        job.lease_epoch += 1
+                    else:
+                        job.target_manifest = [dict(job.target_manifest[0], state='pending')]
+                    db.commit()
+        return result
+
+    monkeypatch.setattr(service, '_hash_file', changed_hash)
+    with pytest.raises((RuntimeError, deferred_archive_module._ArchiveCancelled)):
+        service._finalize_published_member_sync(claim['job_id'], claim['lease_epoch'], 0, checksum)
+    assert source.exists()
+
+
+def test_finalize_recovery_after_source_delete_before_commit(published_member, monkeypatch):
+    service, factory, claim, source, target, checksum = published_member
+    original_now = service._database_now
+
+    def crash_after_delete(db):
+        assert not source.exists()
+        raise RuntimeError('模拟删除后进程中断')
+
+    monkeypatch.setattr(service, '_database_now', crash_after_delete)
+    with pytest.raises(RuntimeError, match='模拟删除后'):
+        service._finalize_published_member_sync(claim['job_id'], claim['lease_epoch'], 0, checksum)
+    with factory() as db:
+        job = db.query(DeferredArchiveJob).filter_by(id=claim['job_id']).one()
+        assert job.target_manifest[0]['state'] == 'published'
+        job.lease_owner = 'new-owner'
+        job.lease_epoch += 1
+        epoch = job.lease_epoch
+        db.commit()
+    service._owner = 'new-owner'
+    monkeypatch.setattr(service, '_database_now', original_now)
+    service._finalize_published_member_sync(claim['job_id'], epoch, 0, checksum)
+    with factory() as db:
+        assert db.get(DeferredArchiveJob, claim['job_id']).target_manifest[0]['state'] == 'completed'
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == checksum
+
+
+def test_finalize_requires_durable_published_checksum(published_member):
+    service, factory, claim, source, target, checksum = published_member
+    with factory() as db:
+        job = db.get(DeferredArchiveJob, claim['job_id'])
+        job.target_manifest = [dict(job.target_manifest[0], state='pending', sha256='')]
+        db.commit()
+    with pytest.raises(RuntimeError, match='持久化发布记录'):
+        service._finalize_published_member_sync(claim['job_id'], claim['lease_epoch'], 0, checksum)
+    assert source.exists()
+
+
+def test_published_member_rejects_user_cancel_and_keeps_recovery_record(published_member):
+    service, factory, claim, source, target, checksum = published_member
+    with pytest.raises(ValueError, match='已有分卷发布'):
+        service.request_cancel_sync(claim['job_id'], strict=True)
+    with factory() as db:
+        job = db.get(DeferredArchiveJob, claim['job_id'])
+        assert not job.cancel_requested
+        assert job.target_manifest[0]['state'] == 'published'
+    assert source.exists()
+
+
+@pytest.mark.parametrize('change', ['target', 'recreate_source'])
+def test_finalize_recovery_rejects_file_changes(published_member, monkeypatch, change):
+    service, factory, claim, source, target, checksum = published_member
+    source.unlink()
+    original_hash = service._hash_file
+
+    def changed_hash(path, should_abort):
+        result = original_hash(path, should_abort)
+        if change == 'target':
+            target.write_bytes(b'x' * target.stat().st_size)
+        else:
+            source.write_bytes(b'new source')
+        return result
+
+    monkeypatch.setattr(service, '_hash_file', changed_hash)
+    with pytest.raises(RuntimeError):
+        service._finalize_published_member_sync(claim['job_id'], claim['lease_epoch'], 0, checksum)
+    with factory() as db:
+        assert db.get(DeferredArchiveJob, claim['job_id']).target_manifest[0]['state'] == 'published'
+    if change == 'recreate_source':
+        assert source.read_bytes() == b'new source'
 
 
 @pytest.mark.parametrize('age,delay,eligible', [(899, 0, False), (901, 0, True), (901, 60, False)])
@@ -101,6 +255,8 @@ def _configure_service(monkeypatch, db_session, source_dir, processed_dir, tmp_p
     )
     service = deferred_archive_module.DeferredArchiveService()
     monkeypatch.setattr(service, "_has_foreground_work", lambda: False)
+    # 本模块验证归档事务与文件协议；事件传输不连接真实 Redis。
+    monkeypatch.setattr(service, "_broadcast", lambda *_args, **_kwargs: None)
     return service, session_factory
 
 

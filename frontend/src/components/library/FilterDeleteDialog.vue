@@ -1631,6 +1631,7 @@ async function confirmFilterDeleteSelection () {
       try {
         const result = await libraryApi.browserBatchDeleteTargets(deleteTargets, true, {
           skipActivityLog: true,
+          skipIndexMutation: true,
           batchId,
           knownItems: selectedRootItems
         })

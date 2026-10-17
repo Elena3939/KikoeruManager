@@ -57,6 +57,8 @@ _EVENT_LOOP_WATCHDOG_TASK: Optional[asyncio.Task] = None
 _EVENT_LOOP_WATCHDOG_THREAD: Optional[threading.Thread] = None
 _EVENT_LOOP_WATCHDOG_STOP_EVENT: Optional[threading.Event] = None
 _EVENT_LOOP_WATCHDOG_LAST_BEAT = time.monotonic()
+_EVENT_LOOP_WATCHDOG_PHASE = "startup"
+_EVENT_LOOP_STALL_ID: Optional[str] = None
 _LOG_IO_EXECUTOR: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _LOG_SEARCH_EXECUTOR: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _LOG_IO_EXECUTOR_LOCK = threading.Lock()
@@ -101,39 +103,55 @@ async def _event_loop_watchdog_loop() -> None:
         now = loop.time()
         lag = max(0.0, now - expected)
         expected = now + interval
+        stall_id = _EVENT_LOOP_STALL_ID
         _EVENT_LOOP_WATCHDOG_LAST_BEAT = time.monotonic()
         warn_threshold = _env_float("KIKOERUMANAGER_EVENT_LOOP_LAG_WARN_SECONDS", 2.0, min_value=0.2, max_value=600.0)
         if lag >= warn_threshold:
-            logger.warning("[事件循环] 主循环延迟 %.3fs，HTTP 请求和后台任务可能被同步阻塞拖慢", lag)
+            logger.warning("[事件循环] 主循环延迟 %.3fs phase=%s stall_id=%s，HTTP 请求和后台任务可能被同步阻塞拖慢", lag, _EVENT_LOOP_WATCHDOG_PHASE, stall_id)
 
 
 def _event_loop_watchdog_thread(stop_event: threading.Event) -> None:
+    global _EVENT_LOOP_STALL_ID
     interval = _env_float("KIKOERUMANAGER_EVENT_LOOP_WATCHDOG_INTERVAL", 1.0, min_value=0.2, max_value=60.0)
     warn_threshold = _env_float("KIKOERUMANAGER_EVENT_LOOP_LAG_WARN_SECONDS", 2.0, min_value=0.2, max_value=600.0)
     stack_threshold = _env_float("KIKOERUMANAGER_EVENT_LOOP_STACK_SECONDS", 8.0, min_value=1.0, max_value=1800.0)
     stack_cooldown = _env_float("KIKOERUMANAGER_EVENT_LOOP_STACK_COOLDOWN_SECONDS", 60.0, min_value=5.0, max_value=3600.0)
-    last_warn = 0.0
-    last_stack_dump = 0.0
+    warn_cooldown = _env_float("KIKOERUMANAGER_EVENT_LOOP_WARN_COOLDOWN_SECONDS", 60.0, min_value=0.2, max_value=3600.0)
+    last_warn = None
+    last_stack_dump = None
+    observed_beat = None
     while not stop_event.wait(interval):
         now = time.monotonic()
-        lag = max(0.0, now - _EVENT_LOOP_WATCHDOG_LAST_BEAT)
-        if lag < warn_threshold or now - last_warn < stack_cooldown:
+        beat = _EVENT_LOOP_WATCHDOG_LAST_BEAT
+        if beat != observed_beat:
+            observed_beat = beat
+            _EVENT_LOOP_STALL_ID = None
+            last_warn = None
+            last_stack_dump = None
+        lag = max(0.0, now - beat)
+        if lag < min(warn_threshold, stack_threshold):
             continue
-        last_warn = now
-        logger.warning("[事件循环] 心跳停顿 %.3fs，主循环可能被同步阻塞", lag)
-        if lag >= stack_threshold and now - last_stack_dump >= stack_cooldown:
+        if _EVENT_LOOP_STALL_ID is None:
+            _EVENT_LOOP_STALL_ID = uuid.uuid4().hex[:12]
+        if lag >= warn_threshold and (last_warn is None or now - last_warn >= warn_cooldown):
+            last_warn = now
+            logger.warning("[事件循环] 心跳停顿 %.3fs phase=%s stall_id=%s，主循环可能被同步阻塞", lag, _EVENT_LOOP_WATCHDOG_PHASE, _EVENT_LOOP_STALL_ID)
+        if lag >= stack_threshold and (last_stack_dump is None or now - last_stack_dump >= stack_cooldown):
             last_stack_dump = now
-            logger.error("[事件循环] 心跳停顿 %.3fs，线程栈如下:%s", lag, _format_all_thread_stacks())
+            logger.error("[事件循环] 心跳停顿 %.3fs phase=%s stall_id=%s，线程栈如下:%s", lag, _EVENT_LOOP_WATCHDOG_PHASE, _EVENT_LOOP_STALL_ID, _format_all_thread_stacks())
 
 
 def _start_event_loop_watchdog() -> None:
     global _EVENT_LOOP_WATCHDOG_TASK, _EVENT_LOOP_WATCHDOG_THREAD, _EVENT_LOOP_WATCHDOG_STOP_EVENT, _EVENT_LOOP_WATCHDOG_LAST_BEAT
+    global _EVENT_LOOP_WATCHDOG_PHASE, _EVENT_LOOP_STALL_ID
     if os.environ.get("KIKOERUMANAGER_EVENT_LOOP_WATCHDOG", "1").strip().lower() in {"0", "false", "no", "off"}:
         logger.info("[事件循环] watchdog 已通过环境变量禁用")
         return
     if _EVENT_LOOP_WATCHDOG_TASK and not _EVENT_LOOP_WATCHDOG_TASK.done():
         return
     _EVENT_LOOP_WATCHDOG_LAST_BEAT = time.monotonic()
+    _EVENT_LOOP_WATCHDOG_PHASE = "startup"
+    _EVENT_LOOP_STALL_ID = None
     _EVENT_LOOP_WATCHDOG_STOP_EVENT = threading.Event()
     _EVENT_LOOP_WATCHDOG_THREAD = threading.Thread(
         target=_event_loop_watchdog_thread,
@@ -2597,13 +2615,15 @@ async def startup_event():
 
     # 启动库存索引低频维护：过期 generation、旧 RJ 字段和状态统计漂移。
     asyncio.create_task(_periodic_library_index_maintenance())
+    global _EVENT_LOOP_WATCHDOG_PHASE
+    _EVENT_LOOP_WATCHDOG_PHASE = "runtime"
 
 # 关闭事件
 @app.on_event("shutdown")
 async def shutdown_event():
     """应用关闭时执行"""
     try:
-        stop_library_index_watcher_driver()
+        await asyncio.to_thread(stop_library_index_watcher_driver)
     except Exception:
         logger.warning("关闭库存索引 watcher 失败", exc_info=True)
     try:
@@ -2919,6 +2939,10 @@ class BaiduNetdiskSecretRevealRequest(BaseModel):
 
 
 class NotificationEmailSecretRevealRequest(BaseModel):
+    key: str
+
+
+class EmailWatcherSecretRevealRequest(BaseModel):
     key: str
 
 
@@ -3497,6 +3521,28 @@ async def batch_cancel_cleanup(request: Request):
         )
     return {"cancelled": cancelled, "cleaned": cleaned, "message": f"已取消 {cancelled} 个任务，清理 {cleaned} 个下载产物"}
 
+def _mask_email_watcher_config(config) -> dict:
+    """邮箱密码脱敏，代理地址按设置页要求明文展示。"""
+    data = config.email_watcher.model_dump()
+    if data.get("password"):
+        data["password"] = "********"
+    return data
+
+
+def _restore_email_watcher_secrets(data: dict, config) -> dict:
+    """省略或传回脱敏值时保留磁盘真实值，空串允许显式清除。"""
+    result = dict(data)
+    disk = {}
+    path = _runtime_config_path_from_settings()
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as stream:
+            disk = (yaml.safe_load(stream) or {}).get("email_watcher", {}) or {}
+    for key in ("password", "proxy_url"):
+        if key not in result or result[key] == "********":
+            result[key] = disk.get(key, getattr(config.email_watcher, key, ""))
+    return result
+
+
 def _mask_notification_email_config(config) -> Optional[dict]:
     """返回 notification_email 配置，密码脱敏"""
     if not hasattr(config, 'notification_email'):
@@ -3824,7 +3870,7 @@ def get_configuration():
         rj_subtitle=config.rj_subtitle.model_dump() if hasattr(config, 'rj_subtitle') else None,
         ai_subtitle_matching=_mask_ai_subtitle_matching_config(config),
         backup_zip=config.backup_zip.model_dump() if hasattr(config, 'backup_zip') else None,
-        email_watcher=config.email_watcher.model_dump() if hasattr(config, 'email_watcher') else None,
+        email_watcher=_mask_email_watcher_config(config),
         notification_email=_mask_notification_email_config(config),
         notification_center=config.notification_center.model_dump() if hasattr(config, 'notification_center') else None,
         redis=_mask_redis_config(config),
@@ -3848,7 +3894,7 @@ def reveal_http_downloader_secret(payload: HttpDownloaderSecretRevealRequest):
     """从本地配置文件读取 HTTP 下载敏感字段，只供设置页显隐使用。"""
     key = str(payload.key or "").strip()
     account_id = str(payload.account_id or "").strip()
-    if key not in {"pikpak_password", "gofile_token", "google_drive_client_secret", "google_drive_refresh_token", "password", "encoded_token"}:
+    if key not in {"pikpak_password", "google_drive_client_secret", "google_drive_refresh_token", "password", "encoded_token"}:
         raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
     if account_id:
         if key not in {"password", "encoded_token"}:
@@ -3875,6 +3921,15 @@ def reveal_notification_email_secret(payload: NotificationEmailSecretRevealReque
     if key != "password":
         raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
     return {"value": _read_notification_email_password_from_disk()}
+
+
+@app.post("/api/config/email-watcher/reveal-secret")
+def reveal_email_watcher_secret(payload: EmailWatcherSecretRevealRequest):
+    """读取已保存的邮件监听授权码，供设置页眼睛按钮展示。"""
+    if str(payload.key or "").strip() != "password":
+        raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
+    password = _restore_email_watcher_secrets({}, get_config()).get("password", "")
+    return {"value": password if password != "********" else ""}
 
 
 @app.post("/api/config/ai-subtitle-match/reveal-secret")
@@ -4199,6 +4254,17 @@ def get_runtime_status():
     }
 
 
+@app.get("/api/system/storage-observation")
+def get_storage_observation(interval_seconds: float = Query(default=1.0, ge=0.1, le=10.0)):
+    """手动同窗采样，在 FastAPI 工作线程中执行；不修改存储和持久化配置。"""
+    from ..core.storage_observation_service import sample_storage_observation, StorageObservationBusyError
+
+    try:
+        return sample_storage_observation(interval_seconds)
+    except StorageObservationBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
 @app.get("/api/system/remote-fs-health")
 def get_remote_fs_health_snapshot():
     """返回远程库存健康状态，不触发远程探测。"""
@@ -4375,12 +4441,8 @@ async def update_configuration(request: Request):
                         _read_http_downloader_secret_from_disk('pikpak_encoded_token')
                         or (current_token if current_token != '********' else '')
                     )
-                if http_data.get('gofile_token') == '********' or 'gofile_token' not in http_data:
-                    current_gofile_token = getattr(current_cfg.http_downloader, 'gofile_token', '')
-                    http_data['gofile_token'] = (
-                        _read_http_downloader_secret_from_disk('gofile_token')
-                        or (current_gofile_token if current_gofile_token != '********' else '')
-                    )
+                # 旧前端传回的固定 Token 已停用，不再恢复或保存。
+                http_data.pop('gofile_token', None)
                 for secret_key in ('google_drive_client_secret', 'google_drive_refresh_token'):
                     if http_data.get(secret_key) == '********' or secret_key not in http_data:
                         current_secret = getattr(current_cfg.http_downloader, secret_key, '')
@@ -4480,6 +4542,17 @@ async def update_configuration(request: Request):
             except Exception as e:
                 logger.error(f"[AI字幕] 配置验证失败: {e}")
                 raise HTTPException(status_code=400, detail=f"AI 字幕配对配置无效: {e}")
+
+        if 'email_watcher' in config_data and config_data['email_watcher'] is not None:
+            from ..config.settings import EmailWatcherConfig
+            from ..core.imap_proxy import parse_proxy_url
+            ew_data = _restore_email_watcher_secrets(config_data['email_watcher'], get_config())
+            if ew_data.get('proxy_url'):
+                try:
+                    parse_proxy_url(ew_data['proxy_url'])
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from None
+            config_data['email_watcher'] = EmailWatcherConfig(**ew_data).model_dump()
 
         if 'notification_email' in config_data and config_data['notification_email']:
             try:
@@ -4588,6 +4661,10 @@ async def update_configuration(request: Request):
         else:
             logger.debug("配置已保存: keys=%s classification=%s", config_keys, len(config_data.get('classification', [])))
 
+        if 'email_watcher' in config_data and result.email_watcher.enabled:
+            from ..core.email_watcher_service import get_email_watcher_service
+            await get_email_watcher_service().start()
+
         if 'kikoeru_server' in config_data:
             try:
                 kikoeru_service = get_kikoeru_service()
@@ -4633,7 +4710,10 @@ async def update_configuration(request: Request):
             await archive_cleanup_service.restart()
             logger.info("已处理压缩包清理服务已重启")
 
-        return {"message": "配置已保存", "config": config_data}
+        response_config = dict(config_data)
+        if 'email_watcher' in response_config:
+            response_config['email_watcher'] = _mask_email_watcher_config(result)
+        return {"message": "配置已保存", "config": response_config}
     except Exception as e:
         logger.error(f"保存配置失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"保存配置失败: {str(e)}")
@@ -6742,6 +6822,14 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             engine.cleanup_retry_output_artifacts(failed_task_id, source_path)
 
         retry_metadata = dict(conflict_metadata) if is_rename_retry else {}
+        # 解压重试仍然是合集父任务，不能丢掉已确认的作品清单再绑定第一个 RJ。
+        from ..core.archive_identity import aggregate_rjcodes
+        if aggregate_rjcodes(conflict_metadata):
+            retry_metadata.update({
+                "aggregate_archive": True,
+                "aggregate_rjcodes": aggregate_rjcodes(conflict_metadata),
+                "aggregate_rj_count": len(aggregate_rjcodes(conflict_metadata)),
+            })
         for key in (
             "failure_stage",
             "error_message",
@@ -6783,7 +6871,7 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             task.task_metadata["manual_retry_ignore_garbled"] = True
         if failed_task_id:
             task.task_metadata["retry_failed_task_id"] = failed_task_id
-        if conflict.rjcode:
+        if conflict.rjcode and not aggregate_rjcodes(retry_metadata):
             task.task_metadata["inferred_rjcode"] = conflict.rjcode
 
         # 问题作品重试会创建新的引擎任务，但旧的 waiting_manual 任务仍然保留。
@@ -6994,11 +7082,11 @@ async def preview_conflict_resolution(conflict_id: str, payload: dict):
             # 合并预览改成异步 job 模式：HTTP 立即返回 job_id，前端轮询
             # /api/conflicts/{id}/preview-job/{job_id} 拿真实阶段。
             # 避免大压缩包 + 嵌套包必 504 网关超时。
-            job_status = await service.start_merge_preview(conflict)
+            job_status = await service.start_merge_preview(conflict, payload.get("merge_target"))
             return {
                 "action": action,
                 "conflict_id": conflict.id,
-                "async": True,
+                "async": not bool(job_status.get("requires_target_selection")),
                 **job_status,
             }
 
@@ -7036,6 +7124,21 @@ async def get_conflict_preview_job(conflict_id: str, job_id: str):
         # 防御：job_id 和 conflict_id 不匹配（前端串了 / 旧 job 漂移）
         raise HTTPException(status_code=400, detail="任务 ID 与问题作品不匹配")
     return job
+
+
+@app.post("/api/conflicts/{conflict_id}/preview-job/{job_id}/cancel")
+async def cancel_conflict_preview_job(conflict_id: str, job_id: str):
+    """终止指定的合并预览 worker，并清理它创建的临时工作区。"""
+    from ..core.conflict_resolution_service import get_conflict_resolution_service
+
+    service = get_conflict_resolution_service()
+    job = service.get_merge_preview_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="合并预览任务不存在或已过期")
+    if str(job.get("conflict_id") or "") != str(conflict_id or ""):
+        raise HTTPException(status_code=400, detail="任务 ID 与问题作品不匹配")
+    cancelled = await service.cancel_merge_preview(job_id)
+    return cancelled or job
 
 def _collect_split_archive_siblings(main_path: str):
     """收集与主文件同目录的所有分卷兄弟文件（含主文件自身）。
@@ -7267,9 +7370,13 @@ async def resolve_conflict(conflict_id: str, action: dict):
                     raise HTTPException(status_code=400, detail="保留新版前必须先完成删除审查确认")
                 source_path = service._resolve_conflict_new_path(conflict)
                 existing_path = str(conflict.existing_path or "").strip()
+                is_processing_placeholder = existing_path == "正在处理中"
+                if is_processing_placeholder:
+                    description = await service.describe_conflict_async(conflict)
+                    existing_path = str(description["existing"].get("path") or "")
                 if not source_path:
                     raise HTTPException(status_code=400, detail="缺少待处理源路径")
-                if not existing_path:
+                if not existing_path and not is_processing_placeholder:
                     raise HTTPException(status_code=400, detail="缺少待替换目标路径")
                 if not os.path.exists(source_path):
                     raise HTTPException(status_code=404, detail="待处理源文件不存在")
@@ -11154,12 +11261,43 @@ async def notify_library_browser_index_move_batch(request: Request):
         raise HTTPException(status_code=500, detail=f"调度库存索引移动失败: {str(e)}")
 
 
+@app.post("/api/library/browser/index-delete-batch")
+async def notify_library_browser_index_delete_batch(request: Request):
+    try:
+        data = await request.json()
+        library_id = str(data.get("library_id") or "").strip()
+        deleted_paths = data.get("deleted_paths") or []
+        if not library_id or not isinstance(deleted_paths, list) or not deleted_paths:
+            raise HTTPException(status_code=400, detail="缺少库存 ID 或索引删除项")
+        manager = get_library_manager()
+        library = manager.get_library_definition(library_id)
+        paths = []
+        scopes = {}
+        for item in deleted_paths:
+            item = item if isinstance(item, dict) else {"path": item}
+            path = str(item.get("path") or "").strip()
+            if not path:
+                continue
+            paths.append(path)
+            scopes[os.path.normcase(os.path.abspath(path))] = str(item.get("scope") or "exact")
+        result = manager._notify_index_self_mutation_delete_batch(
+            library, paths, sync=False, scopes_by_path=scopes,
+        )
+        return result or {"submitted": False, "submitted_count": 0, "total_count": len(paths)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("调度库存索引删除失败: %s", sanitize_text_for_log(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"调度库存索引删除失败: {str(e)}")
+
+
 @app.post("/api/library/browser/delete")
 async def delete_library_browser_item(request: Request):
     path = ""
     library_id = None
     skip_activity_log = False
     batch_id = ""
+    skip_index_mutation = False
     try:
         data = await request.json()
         path = str(data.get("path") or "").strip()
@@ -11167,13 +11305,14 @@ async def delete_library_browser_item(request: Request):
         confirmed = data.get("confirmed", False)
         skip_activity_log = bool(data.get("skip_activity_log"))
         batch_id = str(data.get("batch_id") or "").strip()
+        skip_index_mutation = bool(data.get("skip_index_mutation"))
         if not path:
             raise HTTPException(status_code=400, detail="缺少路径")
         manager = get_library_manager()
         library = manager.get_library_definition(library_id)
         prepared = None
         mutation_effect = None
-        if confirmed and library.type == "local":
+        if confirmed and library.type == "local" and not skip_index_mutation:
             service = get_library_index_mutation_service()
             mutation_effect = {
                 "kind": "delete",
@@ -11195,7 +11334,7 @@ async def delete_library_browser_item(request: Request):
                 library_id,
                 path,
                 confirmed=confirmed,
-                skip_index_mutation=prepared is not None,
+                skip_index_mutation=skip_index_mutation or prepared is not None,
             )
             if confirmed:
                 _invalidate_rj_subtitle_folder_summary_cache(library_id)
@@ -11288,6 +11427,7 @@ async def batch_delete_library_browser_items(request: Request):
         library_id = data.get("library_id")
         confirmed = data.get("confirmed", False)
         skip_activity_log = bool(data.get("skip_activity_log"))
+        skip_index_mutation = bool(data.get("skip_index_mutation"))
         batch_id = str(data.get("batch_id") or "").strip()
         known_items = data.get("known_items") if isinstance(data.get("known_items"), list) else []
         if not paths:
@@ -11296,7 +11436,7 @@ async def batch_delete_library_browser_items(request: Request):
         library = manager.get_library_definition(library_id)
         prepared = None
         planned_effects = []
-        if confirmed and library.type == "local":
+        if confirmed and library.type == "local" and not skip_index_mutation:
             planned_effects = [
                 {
                     "kind": "delete",
@@ -11321,7 +11461,7 @@ async def batch_delete_library_browser_items(request: Request):
                 library_id,
                 paths,
                 confirmed=confirmed,
-                skip_index_mutation=prepared is not None,
+                skip_index_mutation=skip_index_mutation or prepared is not None,
             )
             if confirmed and int((result or {}).get("success_count") or 0) > 0:
                 _invalidate_rj_subtitle_folder_summary_cache(library_id)
@@ -11450,6 +11590,7 @@ async def batch_delete_library_browser_targets(request: Request):
     targets: list[dict[str, Any]] = []
     skip_activity_log = False
     batch_id = ""
+    skip_index_mutation = False
     try:
         data = await request.json()
         raw_targets = data.get("targets") if isinstance(data.get("targets"), list) else []
@@ -11463,6 +11604,7 @@ async def batch_delete_library_browser_targets(request: Request):
         confirmed = data.get("confirmed", False)
         skip_activity_log = bool(data.get("skip_activity_log"))
         batch_id = str(data.get("batch_id") or "").strip()
+        skip_index_mutation = bool(data.get("skip_index_mutation"))
         known_items = data.get("known_items") if isinstance(data.get("known_items"), list) else []
         if not targets:
             raise HTTPException(status_code=400, detail="路径列表不能为空")
@@ -11485,7 +11627,7 @@ async def batch_delete_library_browser_targets(request: Request):
                 key = (library.id, os.path.normcase(os.path.abspath(path)))
                 planned_effects_by_target[key] = effect
                 planned_by_library.setdefault(library.id, []).append(effect)
-            if planned_by_library:
+            if planned_by_library and not skip_index_mutation:
                 mutation_service = get_library_index_mutation_service()
                 prepared = mutation_service.prepare(
                     kind="batch_delete_targets",
@@ -11501,7 +11643,7 @@ async def batch_delete_library_browser_targets(request: Request):
             result = await manager.batch_delete_targets(
                 targets,
                 confirmed=confirmed,
-                skip_index_mutation=prepared is not None,
+                skip_index_mutation=skip_index_mutation or prepared is not None,
             )
             if confirmed:
                 for item in list((result or {}).get("success_paths") or []):
@@ -11516,6 +11658,40 @@ async def batch_delete_library_browser_targets(request: Request):
             result["index_mutation_queued"] = int(result.get("success_count") or 0) > 0
             if batch_id:
                 result["batch_id"] = batch_id
+            if skip_index_mutation:
+                queued_by_library: dict[str, list[dict[str, Any]]] = {}
+                for item in success_targets:
+                    if not isinstance(item, dict):
+                        continue
+                    library_id = str(item.get("library_id") or "").strip()
+                    path = str(item.get("path") or "").strip()
+                    if not library_id or not path:
+                        continue
+                    effect = planned_effects_by_target.get(
+                        (library_id, os.path.normcase(os.path.abspath(path)))
+                    )
+                    if effect is None:
+                        continue
+                    queued_by_library.setdefault(library_id, []).append({
+                        "path": path,
+                        "scope": effect.get("scope") or "exact",
+                    })
+                queued_count = 0
+                for library_id, deleted_paths in queued_by_library.items():
+                    library = manager.get_library_definition(library_id)
+                    queued = manager._notify_index_self_mutation_delete_batch(
+                        library,
+                        [item["path"] for item in deleted_paths],
+                        sync=False,
+                        scopes_by_path={
+                            os.path.normcase(os.path.abspath(item["path"])): item["scope"]
+                            for item in deleted_paths
+                        },
+                    )
+                    if isinstance(queued, dict):
+                        queued_count += int(queued.get("queued_count") or queued.get("total_count") or 0)
+                result["index_mutation_queued"] = queued_count > 0
+                result["index_mutation_queued_count"] = queued_count
             try:
                 from ..core.activity_log_service import log_api_delete_action, log_batch_api_delete_result
                 if not skip_activity_log:
@@ -15906,6 +16082,7 @@ class RJSubtitleStartRequest(BaseModel):
     overwrite_existing: bool = False
     enable_metadata_match: bool = True
     skip_if_existing_subtitles: bool = False
+    subtitle_index_query_mode: str = "exact"
     force_rerun: bool = False
     naming_strategy: str = "audio"
     use_filter_rules: bool = False
@@ -15946,6 +16123,7 @@ class RJSubtitleFolderSubtitleStateRequest(BaseModel):
 
 class RJSubtitleKikoeruSubtitleStateRequest(BaseModel):
     rjcode: str
+    query_mode: str = "exact"
 
 
 def _invalidate_rj_subtitle_folder_summary_cache(library_id: Any) -> None:
@@ -15976,8 +16154,13 @@ def _normalize_rj_for_library_index(value: Any) -> str:
     return matched.group(0).upper() if matched else ""
 
 
-def _library_index_subtitle_state(rjcode: str, library_id: Optional[str] = None) -> Dict[str, Any]:
+async def _library_index_subtitle_state(
+    rjcode: str,
+    library_id: Optional[str] = None,
+    query_mode: str = "exact",
+) -> Dict[str, Any]:
     normalized_rjcode = _normalize_rj_for_library_index(rjcode)
+    normalized_query_mode = "linked" if str(query_mode or "").strip().lower() == "linked" else "exact"
     empty_state = {
         "checked": False,
         "checked_rjcode": normalized_rjcode,
@@ -15985,7 +16168,8 @@ def _library_index_subtitle_state(rjcode: str, library_id: Optional[str] = None)
         "has_existing_subtitles": False,
         "matched_rjcode": "",
         "subtitle_file_count": 0,
-        "subtitle_check_source": "library_index",
+        "subtitle_check_source": f"library_index_{normalized_query_mode}",
+        "query_mode": normalized_query_mode,
         "title": "",
         "matches": [],
         "error": "",
@@ -16005,8 +16189,29 @@ def _library_index_subtitle_state(rjcode: str, library_id: Optional[str] = None)
             "error": "library_index_not_ready",
         }
 
-    index_hits = manager.find_rj_in_ready_index([normalized_rjcode], library_ids=library_ids)
-    hits = list(index_hits.get(normalized_rjcode) or [])
+    query_codes = [normalized_rjcode]
+    if normalized_query_mode == "linked":
+        try:
+            from ..core.dlsite_service import get_dlsite_service
+
+            linked_works = await get_dlsite_service().get_full_linkage(
+                normalized_rjcode,
+                ["CHI_HANS", "CHI_HANT", "ENG", "JPN"],
+            )
+            query_codes = list(dict.fromkeys(
+                [_normalize_rj_for_library_index(code) for code in linked_works.keys()]
+            ))
+            query_codes = [code for code in query_codes if code]
+            if normalized_rjcode not in query_codes:
+                query_codes.insert(0, normalized_rjcode)
+        except Exception:
+            logger.debug("[RJ字幕] 解析关联作品失败，退回精准库存索引查询 rj=%s", normalized_rjcode, exc_info=True)
+            normalized_query_mode = "exact"
+            empty_state["query_mode"] = normalized_query_mode
+            empty_state["subtitle_check_source"] = "library_index_exact"
+
+    index_hits = manager.find_rj_in_ready_index(query_codes, library_ids=library_ids)
+    hits = [hit for code in query_codes for hit in list(index_hits.get(code) or [])]
     subtitle_hits = [
         hit for hit in hits
         if bool(hit.get("local_subtitle_present")) or int(hit.get("subtitle_file_count") or 0) > 0
@@ -16023,7 +16228,7 @@ def _library_index_subtitle_state(rjcode: str, library_id: Optional[str] = None)
         {
             "rjcode": str(hit.get("matched_rjcode") or hit.get("rjcode") or normalized_rjcode).upper(),
             "subtitle_file_count": int(hit.get("subtitle_file_count") or 0),
-            "subtitle_check_source": "library_index",
+            "subtitle_check_source": f"library_index_{normalized_query_mode}",
             "title": "",
             "match_type": "library_index",
             "path": str(hit.get("path") or ""),
@@ -16545,7 +16750,11 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
 
             if request.skip_if_existing_subtitles and rjcode:
                 try:
-                    kikoeru_state = _library_index_subtitle_state(rjcode, library_id)
+                    kikoeru_state = await _library_index_subtitle_state(
+                        rjcode,
+                        library_id,
+                        request.subtitle_index_query_mode,
+                    )
                 except Exception as exc:
                     logger.warning(
                         "[RJ字幕] 查询 ready 库存索引字幕状态失败，继续后续流程: rj=%s error=%s",
@@ -16618,6 +16827,7 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
                     "subtitle_filter_rules": request.subtitle_filter_rules,
                     "ai_match_mode": request.ai_match_mode,
                     "ai_confidence_threshold": request.ai_confidence_threshold,
+                    "subtitle_index_query_mode": request.subtitle_index_query_mode,
                     "batch_id": batch_id or None,
                     "kikoeru_checked_rjcode": (kikoeru_state or {}).get("checked_rjcode", rjcode),
                     "kikoeru_has_work": bool((kikoeru_state or {}).get("has_work")),
@@ -16725,7 +16935,7 @@ async def rj_subtitle_kikoeru_subtitle_state(request: RJSubtitleKikoeruSubtitleS
         if not rjcode:
             raise HTTPException(status_code=400, detail="RJ号不能为空")
 
-        state = _library_index_subtitle_state(rjcode)
+        state = await _library_index_subtitle_state(rjcode, query_mode=request.query_mode)
         return {
             "success": True,
             **state,
@@ -17929,6 +18139,10 @@ def _serialize_asmr_sync_task_status(task, session_map: Dict[str, dict], *, comp
         "upload_files": metadata.get("upload_files", []),
         "upload_runtime": metadata.get("upload_runtime", {}),
         "failed_files": failed_files,
+        "retry_available": bool(metadata.get("retry_available")),
+        "retry_reason": metadata.get("retry_reason", ""),
+        "retry_entry": metadata.get("retry_entry", {}),
+        "staging_cleanup": metadata.get("staging_cleanup", {}),
         "uploaded_files": metadata.get("uploaded_files", []),
         "verification_failures": metadata.get("verification_failures", []),
         "progress_log": metadata.get("progress_log", []),
@@ -17947,6 +18161,10 @@ def _serialize_asmr_sync_task_status(task, session_map: Dict[str, dict], *, comp
             "verify_summary": metadata.get("verify_summary", {}),
             "upload_summary": metadata.get("upload_summary", {}),
             "retry_summary": metadata.get("retry_summary", {}),
+            "retry_available": bool(metadata.get("retry_available")),
+            "retry_reason": metadata.get("retry_reason", ""),
+            "retry_entry": metadata.get("retry_entry", {}),
+            "staging_cleanup": metadata.get("staging_cleanup", {}),
             "source_action": metadata.get("source_action", ""),
             "circle_name": metadata.get("circle_name", ""),
             "download_root": session_state.get("local_download_root") or metadata.get("download_root", ""),
@@ -19721,17 +19939,24 @@ async def asmr_sync_enhanced_dashboard():
 
 
 @app.get("/api/asmr-sync/enhanced/sessions")
-async def asmr_sync_enhanced_sessions(limit: int = 50):
-    from ..core.asmr_resource_service import get_asmr_resource_service
-
+async def asmr_sync_enhanced_sessions(request: Request, limit: int = 50):
+    request_id = str(getattr(request.state, "request_id", ""))
     try:
-        return {
-            "success": True,
-            "sessions": get_asmr_resource_service().list_sessions(limit=limit),
-        }
+        # Session 创建、查询、数据构建和 JSON 编码都在同一个工作线程完成。
+        return await asyncio.to_thread(_build_asmr_session_list_response, limit, request_id)
     except Exception as exc:
         logger.error("获取增强下载会话列表失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"获取会话列表失败: {str(exc)}")
+
+
+def _build_asmr_session_list_response(limit: int, request_id: str) -> JSONResponse:
+    from ..core.asmr_resource_service import get_asmr_resource_service
+
+    sessions = get_asmr_resource_service().list_sessions(limit=limit, request_id=request_id)
+    started = time.perf_counter()
+    response = JSONResponse({"success": True, "sessions": sessions})
+    logger.info("[ASMR会话列表] request_id=%s encode_ms=%.1f response_bytes=%s", request_id, (time.perf_counter() - started) * 1000, len(response.body))
+    return response
 
 
 @app.get("/api/asmr-sync/enhanced/sessions/{session_id}")
@@ -20626,8 +20851,8 @@ async def circle_completion_cover(filename: str):
 
     - 文件名通过 ``CircleImageCacheService.resolve_filename`` 做严格白名单
       校验（只允许 ``RJ\\d{6,8}.jpg``），杜绝 ``../`` 路径穿越。
-    - 文件不存在时由服务端按 RJ 下载一次并原子落盘；成功后当前请求直接返回
-      本地文件，浏览器不再额外直连 DLsite CDN。
+    - 文件不存在时排入受控后台下载，当前请求立即返回 404；缓存原子落盘后，
+      后续请求返回本地文件，浏览器不再额外直连 DLsite CDN。
     - 30 天 ``public`` 缓存：索引刷新会原子重写同名文件，浏览器拿旧缓存的
       代价仅是封面没及时换，可接受。
     """
@@ -21484,6 +21709,7 @@ class EmailWatcherTestRequest(BaseModel):
     username: str = ""
     password: str = ""
     mailbox: str = "INBOX"
+    proxy_url: Optional[str] = None
 
 
 @app.get("/api/email-watcher/status")
@@ -21509,11 +21735,15 @@ async def email_watcher_test(request: EmailWatcherTestRequest):
     port = request.imap_port or config.email_watcher.imap_port
     ssl = request.imap_ssl if request.imap_host else config.email_watcher.imap_ssl
     username = request.username or config.email_watcher.username
-    password = request.password or config.email_watcher.password
+    secrets = _restore_email_watcher_secrets(
+        {key: value for key, value in request.model_dump().items() if key != "proxy_url" or value is not None},
+        config,
+    )
+    password = secrets["password"] or config.email_watcher.password
     mailbox = request.mailbox or config.email_watcher.mailbox
     if not username or not password:
         raise HTTPException(status_code=400, detail="邮箱账号和密码不能为空")
-    result = await get_email_watcher_service().test_connection(host, port, ssl, username, password, mailbox)
+    result = await get_email_watcher_service().test_connection(host, port, ssl, username, password, mailbox, secrets["proxy_url"])
     return {"success": result.get("success", False), **result}
 
 

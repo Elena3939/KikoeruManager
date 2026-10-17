@@ -102,8 +102,8 @@ def test_find_rj_in_ready_index_uses_usable_snapshot_while_catching_up(monkeypat
         def has_usable_snapshot(self, _library_id):
             return True
 
-        def find_by_rjcode(self, *_args, **_kwargs):
-            self.find_calls.append((_args, _kwargs))
+        def find_by_rjcodes(self, rjcodes, library_id=None, **kwargs):
+            self.find_calls.append(((rjcodes, library_id), kwargs))
             return [entry]
 
     manager = object.__new__(library_manager_module.LibraryManager)
@@ -122,7 +122,8 @@ def test_find_rj_in_ready_index_uses_usable_snapshot_while_catching_up(monkeypat
 
     assert result["RJ01618558"][0]["path"] == entry.absolute_path
     assert result["RJ01618558"][0]["file_count"] == 30
-    assert index_service.find_calls[0][1]["repair_missing"] is False
+    assert index_service.find_calls[0][0] == (["RJ01618558"], library.id)
+    assert index_service.find_calls[0][1]["entry_type"] == "dir"
     assert manager.has_ready_index() is True
 
 
@@ -2115,6 +2116,80 @@ def test_cross_library_batch_delete_fence_contains_only_success_targets(monkeypa
             "relative_path": "ok",
             "scope": "exact",
         }],
+    }
+
+
+def test_cross_library_batch_delete_can_skip_index_transaction_and_queue_success_paths(monkeypatch):
+    captured = {}
+
+    class FakeLibraryManager:
+        def get_library_definition(self, library_id):
+            return SimpleNamespace(
+                id=library_id,
+                type="local",
+                root_path=f"/library/{library_id}",
+            )
+
+        async def batch_delete_targets(self, targets, confirmed=False, *, skip_index_mutation=False):
+            captured["skip_index_mutation"] = skip_index_mutation
+            return {
+                "message": "批量删除完成",
+                "success_count": 1,
+                "success_paths": [{"library_id": "library-a", "path": "/library/library-a/ok"}],
+                "failed_paths": [],
+            }
+
+        def _notify_index_self_mutation_delete_batch(
+            self,
+            library,
+            paths,
+            *,
+            sync=False,
+            scopes_by_path=None,
+        ):
+            captured["queued"] = {
+                "library_id": library.id,
+                "paths": paths,
+                "sync": sync,
+                "scopes_by_path": scopes_by_path,
+            }
+            return {"queued": True, "queued_count": len(paths)}
+
+    class UnexpectedMutationService:
+        def prepare(self, **kwargs):
+            raise AssertionError("skip_index_mutation=true 时不应创建索引事务")
+
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
+    monkeypatch.setattr(
+        routes_module,
+        "get_library_index_mutation_service",
+        lambda: UnexpectedMutationService(),
+    )
+
+    response = asyncio.run(
+        routes_module.batch_delete_library_browser_targets(_FakeJsonRequest(
+            {
+                "confirmed": True,
+                "skip_index_mutation": True,
+                "skip_activity_log": True,
+                "targets": [
+                    {"library_id": "library-a", "path": "/library/library-a/ok"},
+                ],
+            },
+        ))
+    )
+
+    assert response["success_count"] == 1
+    assert response["index_mutation_queued"] is True
+    assert response["index_mutation_queued_count"] == 1
+    assert captured["skip_index_mutation"] is True
+    assert captured["queued"] == {
+        "library_id": "library-a",
+        "paths": ["/library/library-a/ok"],
+        "sync": False,
+        "scopes_by_path": {
+            os.path.normcase(os.path.abspath("/library/library-a/ok")): "exact",
+        },
     }
 
 

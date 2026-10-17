@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { Calendar, Gift, PackageCheck } from 'lucide-vue-next'
 import WorkCard from './WorkCard.vue'
@@ -40,9 +40,13 @@ const scrollRef = ref(null)
 const viewportRef = ref(null)
 const viewportWidth = ref(0)
 const motionActive = ref(false)
-const activeImageKeys = ref(new Set())
-const loadingImageKeys = ref(new Set())
-const queuedImageKeys = ref([])
+const activeImageKeys = shallowRef(new Set())
+// 队列属于调度内部状态，不参与 Vue 深响应式追踪。
+const loadingImageKeys = new Set()
+const queuedImageKeys = new Set()
+const settledImages = new Map()
+const activeImageSignatures = new Map()
+let imagePumpFrame = null
 const activeBonusDetail = ref(null)
 const failedBonusImageKeys = ref(new Set())
 const viewportScrolling = ref(false)
@@ -645,18 +649,14 @@ const visibleImageKeys = computed(() => {
   if (usePlainRender.value) {
     return itemViewModels.value.flatMap(item => [
       item.key,
-      ...item.bonusViewModels.map(bonus => bonus.key),
-      bonusCollectionKey(item),
+      ...(props.mode === 'card' && item.bonuses.length ? [bonusCollectionKey(item)] : []),
     ])
   }
   const keys = []
   for (const virtualRow of virtualRows.value) {
     for (const cell of getRowItems(virtualRow.index)) {
       keys.push(cell.key)
-      for (const bonus of cell.bonusViewModels) {
-        keys.push(bonus.key)
-      }
-      if (cell.bonuses.length) keys.push(bonusCollectionKey(cell))
+      if (props.mode === 'card' && cell.bonuses.length) keys.push(bonusCollectionKey(cell))
     }
   }
   return keys
@@ -752,7 +752,7 @@ function hasBonusImageFailed(key) {
 
 function onBonusCoverLoad(event, key) {
   delete event.currentTarget.dataset.mainFallback
-  markImageSettled(key)
+  markImageSettled(key, { url: event.currentTarget.currentSrc || event.currentTarget.src })
 }
 
 function onBonusCoverError(event, item, key) {
@@ -827,7 +827,9 @@ function getRowItems(rowIndex) {
 }
 
 function isImageActive(key) {
-  return activeImageKeys.value.has(String(key || ''))
+  const normalized = String(key || '')
+  return activeImageKeys.value.has(normalized)
+    && activeImageSignatures.get(normalized) === imageSignatures.value.get(normalized)
 }
 
 function bonusCollectionKey(viewModel) {
@@ -835,54 +837,104 @@ function bonusCollectionKey(viewModel) {
   return key ? `${key}:bonus-collection` : ''
 }
 
+const imageSignatures = computed(() => {
+  const result = new Map()
+  for (const viewModel of itemViewModels.value) {
+    for (const model of [viewModel, ...viewModel.bonusViewModels]) {
+      const item = model.item || {}
+      result.set(model.key, JSON.stringify([
+        props.mode, item[props.imageField], item.remote_image_url,
+        item.display_rjcode, item.canonical_rjcode, coverOverrideFor(item),
+      ]))
+    }
+    if (viewModel.bonuses.length) {
+      const bonus = bonusCollectionViewModel(viewModel)
+      result.set(bonus.key, bonusCoverUrl(bonus.item))
+    }
+  }
+  return result
+})
+
+function resolvedImageUrl(key) {
+  const entry = settledImages.get(String(key || ''))
+  return entry?.signature === imageSignatures.value.get(key) ? entry.url : ''
+}
+
 function releaseImageSlot(key) {
   const normalized = String(key || '')
   const timer = imageLoadTimers.get(normalized)
-  if (timer) {
-    window.clearTimeout(timer)
-    imageLoadTimers.delete(normalized)
-  }
-  if (loadingImageKeys.value.has(normalized)) {
-    const next = new Set(loadingImageKeys.value)
-    next.delete(normalized)
-    loadingImageKeys.value = next
-  }
-  pumpImageQueue()
+  if (timer) window.clearTimeout(timer)
+  imageLoadTimers.delete(normalized)
+  loadingImageKeys.delete(normalized)
+  scheduleImagePump()
 }
 
-function markImageSettled(key) {
-  releaseImageSlot(key)
+function markImageSettled(key, result = null) {
+  const normalized = String(key || '')
+  const signature = imageSignatures.value.get(normalized)
+  if (result?.url && signature !== undefined) {
+    settledImages.delete(normalized)
+    settledImages.set(normalized, { signature, url: result.url })
+    while (settledImages.size > 512) settledImages.delete(settledImages.keys().next().value)
+  }
+  releaseImageSlot(normalized)
+}
+
+function scheduleImagePump() {
+  if (imagePumpFrame !== null) return
+  imagePumpFrame = requestAnimationFrame(() => {
+    imagePumpFrame = null
+    pumpImageQueue()
+  })
 }
 
 function pumpImageQueue() {
-  const activeVisible = new Set(visibleImageKeys.value.map(key => String(key || '')))
-  const queued = queuedImageKeys.value.filter(key => activeVisible.has(key))
-  const loading = new Set([...loadingImageKeys.value].filter(key => activeVisible.has(key)))
-  const active = new Set([...activeImageKeys.value].filter(key => activeVisible.has(key)))
-  while (queued.length && loading.size < MAX_ACTIVE_IMAGES) {
-    const key = queued.shift()
-    if (!key || active.has(key)) continue
-    active.add(key)
-    loading.add(key)
-    const timer = window.setTimeout(() => releaseImageSlot(key), 1600)
-    imageLoadTimers.set(key, timer)
+  const visible = new Set(visibleImageKeys.value.map(key => String(key || '')))
+  const signatures = imageSignatures.value
+  const active = new Set([...activeImageKeys.value].filter(key => visible.has(key)
+    && activeImageSignatures.get(key) === signatures.get(key)))
+  for (const key of loadingImageKeys) {
+    if (visible.has(key) && activeImageSignatures.get(key) === signatures.get(key)) continue
+    window.clearTimeout(imageLoadTimers.get(key))
+    imageLoadTimers.delete(key)
+    loadingImageKeys.delete(key)
   }
-  queuedImageKeys.value = queued
-  activeImageKeys.value = active
-  loadingImageKeys.value = loading
+  for (const key of queuedImageKeys) {
+    if (!visible.has(key)) queuedImageKeys.delete(key)
+  }
+  for (const key of visible) {
+    if (resolvedImageUrl(key)) {
+      active.add(key)
+      queuedImageKeys.delete(key)
+    } else if (key && !active.has(key) && !loadingImageKeys.has(key)) {
+      queuedImageKeys.add(key)
+    }
+  }
+  for (const key of queuedImageKeys) {
+    if (loadingImageKeys.size >= MAX_ACTIVE_IMAGES) break
+    queuedImageKeys.delete(key)
+    if (active.has(key)) continue
+    active.add(key)
+    loadingImageKeys.add(key)
+    imageLoadTimers.set(key, window.setTimeout(() => releaseImageSlot(key), 1600))
+  }
+  // 一个动画帧只发布一次，且集合未变化时不触发整个视口重渲染。
+  const previous = activeImageKeys.value
+  let signaturesChanged = false
+  for (const key of activeImageSignatures.keys()) {
+    if (!active.has(key)) activeImageSignatures.delete(key)
+  }
+  for (const key of active) {
+    if (activeImageSignatures.get(key) !== signatures.get(key)) signaturesChanged = true
+    activeImageSignatures.set(key, signatures.get(key))
+  }
+  if (signaturesChanged || previous.size !== active.size || [...active].some(key => !previous.has(key))) {
+    activeImageKeys.value = active
+  }
 }
 
-function enqueueVisibleImages(keys = []) {
-  const active = activeImageKeys.value
-  const loading = loadingImageKeys.value
-  const queued = [...queuedImageKeys.value]
-  for (const rawKey of keys) {
-    const key = String(rawKey || '')
-    if (!key || active.has(key) || loading.has(key) || queued.includes(key)) continue
-    queued.push(key)
-  }
-  queuedImageKeys.value = queued
-  pumpImageQueue()
+function enqueueVisibleImages() {
+  scheduleImagePump()
 }
 
 function triggerViewportMotion() {
@@ -940,8 +992,8 @@ watch(virtualRowHeight, () => {
   nextTick(() => rowVirtualizer.value.measure())
 })
 
-watch(visibleImageKeys, keys => {
-  enqueueVisibleImages(keys)
+watch([visibleImageKeys, imageSignatures], () => {
+  enqueueVisibleImages()
 }, { immediate: true })
 
 onMounted(() => {
@@ -956,6 +1008,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (imagePumpFrame !== null) cancelAnimationFrame(imagePumpFrame)
+  imagePumpFrame = null
   if (motionTimer) {
     window.clearTimeout(motionTimer)
     motionTimer = null
@@ -1011,6 +1065,7 @@ onBeforeUnmount(() => {
               :completion-dimmed="shouldDimWorkCard(viewModel)"
               :corner-label="cornerLabel"
               :image-active="isImageActive(viewModel.key)"
+              :resolved-cover-url="resolvedImageUrl(viewModel.key)"
               :cover-url-override="coverOverrideFor(viewModel.item)"
               :cover-fetching="isCoverFetching(viewModel.item)"
               @select="(item, event) => emit('select', item, event)"
@@ -1020,7 +1075,7 @@ onBeforeUnmount(() => {
               @external-search="emit('external-search', $event)"
               @image-failed="emit('cover-failed', $event)"
               @retry-cover="emit('ensure-cover', $event, { force: true })"
-              @image-settled="markImageSettled(viewModel.key)"
+              @image-settled="markImageSettled(viewModel.key, $event)"
             />
             <div v-if="viewModel.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
               <button
@@ -1041,7 +1096,7 @@ onBeforeUnmount(() => {
                 <span class="circle-bonus-gift-cover">
                   <img
                     v-if="isImageActive(bonusViewModel.key) && !hasBonusImageFailed(bonusViewModel.key) && bonusCoverUrl(bonusViewModel.item)"
-                    :src="bonusCoverUrl(bonusViewModel.item)"
+                    :src="resolvedImageUrl(bonusViewModel.key) || bonusCoverUrl(bonusViewModel.item)"
                     loading="lazy"
                     decoding="async"
                     fetchpriority="low"
@@ -1117,6 +1172,7 @@ onBeforeUnmount(() => {
                 :image-field="imageField"
                 :corner-label="cornerLabel"
                 :image-active="isImageActive(viewModel.key)"
+                :resolved-cover-url="resolvedImageUrl(viewModel.key)"
                 :cover-url-override="coverOverrideFor(viewModel.item)"
                 :cover-fetching="isCoverFetching(viewModel.item)"
                 @select="forwardRowSelect"
@@ -1126,7 +1182,7 @@ onBeforeUnmount(() => {
                 @external-search="forwardRowExternalSearch"
                 @image-failed="emit('cover-failed', $event)"
                 @retry-cover="emit('ensure-cover', $event, { force: true })"
-                @image-settled="markImageSettled(viewModel.key)"
+                @image-settled="markImageSettled(viewModel.key, $event)"
               />
               <div v-if="viewModel.bonuses.length" class="circle-bonus-shelf is-list">
                 <div
@@ -1293,6 +1349,7 @@ onBeforeUnmount(() => {
                   :completion-dimmed="shouldDimWorkCard(cell)"
                   :corner-label="cornerLabel"
                   :image-active="isImageActive(cell.key)"
+                  :resolved-cover-url="resolvedImageUrl(cell.key)"
                   :cover-url-override="coverOverrideFor(cell.item)"
                   :cover-fetching="isCoverFetching(cell.item)"
                   @select="(item, event) => emit('select', item, event)"
@@ -1302,7 +1359,7 @@ onBeforeUnmount(() => {
                   @external-search="emit('external-search', $event)"
                   @image-failed="emit('cover-failed', $event)"
                   @retry-cover="emit('ensure-cover', $event, { force: true })"
-                  @image-settled="markImageSettled(cell.key)"
+                  @image-settled="markImageSettled(cell.key, $event)"
                 />
                 <div v-if="cell.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
                   <button
@@ -1323,7 +1380,7 @@ onBeforeUnmount(() => {
                     <span class="circle-bonus-gift-cover">
                       <img
                         v-if="isImageActive(bonusViewModel.key) && !hasBonusImageFailed(bonusViewModel.key) && bonusCoverUrl(bonusViewModel.item)"
-                        :src="bonusCoverUrl(bonusViewModel.item)"
+                        :src="resolvedImageUrl(bonusViewModel.key) || bonusCoverUrl(bonusViewModel.item)"
                         loading="lazy"
                         decoding="async"
                         fetchpriority="low"
@@ -1399,6 +1456,7 @@ onBeforeUnmount(() => {
                     :image-field="imageField"
                     :corner-label="cornerLabel"
                     :image-active="isImageActive(cell.key)"
+                    :resolved-cover-url="resolvedImageUrl(cell.key)"
                     :cover-url-override="coverOverrideFor(cell.item)"
                     :cover-fetching="isCoverFetching(cell.item)"
                     @select="forwardRowSelect"
@@ -1408,7 +1466,7 @@ onBeforeUnmount(() => {
                     @external-search="forwardRowExternalSearch"
                     @image-failed="emit('cover-failed', $event)"
                     @retry-cover="emit('ensure-cover', $event, { force: true })"
-                    @image-settled="markImageSettled(cell.key)"
+                    @image-settled="markImageSettled(cell.key, $event)"
                   />
                   <div v-if="cell.bonuses.length" class="circle-bonus-shelf is-list">
                     <div

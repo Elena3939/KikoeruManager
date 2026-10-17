@@ -6,7 +6,23 @@ import subprocess
 import sys
 from pathlib import Path
 
-from app.core.app_logging import _BoundedQueueListener, _RecentFirstQueueHandler
+from app.core.app_logging import _BoundedQueueListener, _BoundedRotatingFileHandler, _RecentFirstQueueHandler
+
+
+def test_zero_backups_still_bounds_main_log_size(tmp_path):
+    log_path = tmp_path / "bounded.log"
+    handler = _BoundedRotatingFileHandler(log_path, maxBytes=256, backupCount=0, encoding="utf-8")
+    try:
+        for index in range(100):
+            handler.handle(_record(f"line-{index:03d}-" + "x" * 30))
+        handler.flush()
+        assert log_path.stat().st_size < 256
+        content = log_path.read_text(encoding="utf-8")
+        assert "line-099-" in content
+        assert "line-000-" not in content
+        assert not (tmp_path / "bounded.log.1").exists()
+    finally:
+        handler.close()
 
 
 def _record(message: str) -> logging.LogRecord:

@@ -171,6 +171,7 @@
       <div
         v-if="visible && isFilterMenuOpen"
         class="lib-panel-filter-menu"
+        :class="{ 'is-dark': isDark }"
         :style="filterMenuStyle"
         @mousedown.prevent
       >
@@ -211,6 +212,7 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useTheme } from '../../composables/useTheme'
 import {
   AlertCircle,
   Check as CheckIcon,
@@ -246,6 +248,8 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['update:visible', 'locate', 'close'])
+
+const { isDark } = useTheme()
 
 const inputRef = ref(null)
 const listRef = ref(null)
@@ -972,6 +976,42 @@ onBeforeUnmount(() => {
   color: rgb(37 99 235); /* sky-600，与 AppDropdown 的 ✓ 一致 */
 }
 
+.lib-panel-filter-menu.is-dark {
+  background: #0b0c10 !important;
+  background-color: #0b0c10 !important;
+  background-image: none !important;
+  border: 1px solid #30323a !important;
+  color: #f1f5f9 !important;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.52) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.lib-panel-filter-menu.is-dark .lib-panel-filter-menu-head {
+  background: #111218 !important;
+  background-color: #111218 !important;
+  background-image: none !important;
+  border-bottom-color: #292c34 !important;
+  color: #aeb6c4 !important;
+}
+
+.lib-panel-filter-menu.is-dark .lib-panel-filter-menu-row {
+  background: transparent !important;
+  background-color: transparent !important;
+  color: #d7dce5 !important;
+}
+
+.lib-panel-filter-menu.is-dark .lib-panel-filter-menu-row:hover,
+.lib-panel-filter-menu.is-dark .lib-panel-filter-menu-row.is-active {
+  background: #242832 !important;
+  background-color: #242832 !important;
+  color: #ffffff !important;
+}
+
+.lib-panel-filter-menu.is-dark .lib-panel-filter-menu-check {
+  color: #60a5fa !important;
+}
+
 .panel-filter-fade-enter-active,
 .panel-filter-fade-leave-active {
   transition:
@@ -1363,8 +1403,8 @@ onBeforeUnmount(() => {
   .lib-panel-row-sub { font-size: 10.5px; }
 }
 
-:global(html.kikoerumanager-dark) .lib-search-panel,
-:global(html.kikoerumanager-dark) .lib-panel-filter-menu {
+html.kikoerumanager-dark .lib-search-panel,
+html.kikoerumanager-dark .lib-panel-filter-menu {
   background: #08090d !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
@@ -1373,15 +1413,15 @@ onBeforeUnmount(() => {
     inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-panel-input-row,
-:global(html.kikoerumanager-dark) .lib-panel-results,
-:global(html.kikoerumanager-dark) .lib-panel-filter-menu-head {
+html.kikoerumanager-dark .lib-panel-input-row,
+html.kikoerumanager-dark .lib-panel-results,
+html.kikoerumanager-dark .lib-panel-filter-menu-head {
   background: #08090d !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-panel-input {
+html.kikoerumanager-dark .lib-panel-input {
   background: #090a0f !important;
   border: 1px solid rgba(255, 255, 255, 0.24) !important;
   border-radius: 0 !important;
@@ -1392,38 +1432,38 @@ onBeforeUnmount(() => {
     0 0 0 3px rgba(255, 255, 255, 0.08) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-panel-input::placeholder {
+html.kikoerumanager-dark .lib-panel-input::placeholder {
   color: var(--km-dark-text-muted) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-panel-filter,
-:global(html.kikoerumanager-dark) .lib-panel-input-close,
-:global(html.kikoerumanager-dark) .lib-panel-banner-retry {
+html.kikoerumanager-dark .lib-panel-filter,
+html.kikoerumanager-dark .lib-panel-input-close,
+html.kikoerumanager-dark .lib-panel-banner-retry {
   background: var(--km-dark-button-bg) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-panel-filter:hover,
-:global(html.kikoerumanager-dark) .lib-panel-filter.is-active,
-:global(html.kikoerumanager-dark) .lib-panel-filter.is-open,
-:global(html.kikoerumanager-dark) .lib-panel-input-close:hover,
-:global(html.kikoerumanager-dark) .lib-panel-banner-retry:hover {
+html.kikoerumanager-dark .lib-panel-filter:hover,
+html.kikoerumanager-dark .lib-panel-filter.is-active,
+html.kikoerumanager-dark .lib-panel-filter.is-open,
+html.kikoerumanager-dark .lib-panel-input-close:hover,
+html.kikoerumanager-dark .lib-panel-banner-retry:hover {
   background: var(--km-dark-button-bg-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
   color: var(--km-dark-text-strong) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-panel-filter-menu-row,
-:global(html.kikoerumanager-dark) .lib-panel-row {
+html.kikoerumanager-dark .lib-panel-filter-menu-row,
+html.kikoerumanager-dark .lib-panel-row {
   background: #08090d !important;
   color: var(--km-dark-text) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-panel-filter-menu-row:hover,
-:global(html.kikoerumanager-dark) .lib-panel-filter-menu-row.is-active,
-:global(html.kikoerumanager-dark) .lib-panel-row:hover,
-:global(html.kikoerumanager-dark) .lib-panel-row.is-active {
+html.kikoerumanager-dark .lib-panel-filter-menu-row:hover,
+html.kikoerumanager-dark .lib-panel-filter-menu-row.is-active,
+html.kikoerumanager-dark .lib-panel-row:hover,
+html.kikoerumanager-dark .lib-panel-row.is-active {
   background: rgba(255, 255, 255, 0.16) !important;
   color: var(--km-dark-text-strong) !important;
   box-shadow:
@@ -1431,51 +1471,51 @@ onBeforeUnmount(() => {
     inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-panel-filter-menu-head,
-:global(html.kikoerumanager-dark) .lib-panel-row-sub,
-:global(html.kikoerumanager-dark) .lib-panel-row-path,
-:global(html.kikoerumanager-dark) .lib-panel-row-meta,
-:global(html.kikoerumanager-dark) .lib-panel-row-size,
-:global(html.kikoerumanager-dark) .lib-panel-state {
+html.kikoerumanager-dark .lib-panel-filter-menu-head,
+html.kikoerumanager-dark .lib-panel-row-sub,
+html.kikoerumanager-dark .lib-panel-row-path,
+html.kikoerumanager-dark .lib-panel-row-meta,
+html.kikoerumanager-dark .lib-panel-row-size,
+html.kikoerumanager-dark .lib-panel-state {
   color: var(--km-dark-text-muted) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-panel-row-name,
-:global(html.kikoerumanager-dark) .lib-panel-filter-menu-label {
+html.kikoerumanager-dark .lib-panel-row-name,
+html.kikoerumanager-dark .lib-panel-filter-menu-label {
   color: var(--km-dark-text-strong) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-panel-list {
+html.kikoerumanager-dark .lib-panel-list {
   background: #08090d !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-panel-row-rj,
-:global(html.kikoerumanager-dark) .lib-panel-row-relation,
-:global(html.kikoerumanager-dark) .lib-panel-row-lib {
+html.kikoerumanager-dark .lib-panel-row-rj,
+html.kikoerumanager-dark .lib-panel-row-relation,
+html.kikoerumanager-dark .lib-panel-row-lib {
   background: var(--km-dark-field) !important;
   color: var(--km-dark-text) !important;
   border: 1px solid var(--km-dark-border) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-panel-banner.is-warning {
+html.kikoerumanager-dark .lib-panel-banner.is-warning {
   background: rgba(245, 158, 11, 0.14) !important;
   border-color: rgba(245, 158, 11, 0.34) !important;
   color: #fbbf24 !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-panel-banner.is-warning .lib-panel-banner-retry {
+html.kikoerumanager-dark .lib-panel-banner.is-warning .lib-panel-banner-retry {
   background: rgba(0, 0, 0, 0.24) !important;
   border: 1px solid rgba(245, 158, 11, 0.28) !important;
   color: #fbbf24 !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-panel-banner.is-error {
+html.kikoerumanager-dark .lib-panel-banner.is-error {
   background: rgba(244, 63, 94, 0.14) !important;
   border-color: rgba(251, 113, 133, 0.34) !important;
   color: #fda4af !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-panel-results::-webkit-scrollbar-thumb {
+html.kikoerumanager-dark .lib-panel-results::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.18);
   background-clip: content-box;
 }

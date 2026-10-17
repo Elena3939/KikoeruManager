@@ -831,21 +831,15 @@ def test_global_search_exact_rj_collapses_descendant_directories():
     ]
 
 
-def test_circle_cover_miss_downloads_and_returns_local_file(client, monkeypatch, tmp_path):
+def test_circle_cover_miss_schedules_download_then_cached_request_returns_file(client, monkeypatch, tmp_path):
     from app.core import circle_image_cache_service
     from app.core.circle_image_cache_service import CircleImageCacheService
 
     image_cache = CircleImageCacheService()
     image_cache._cache_dir = tmp_path
-    downloaded = []
+    scheduled = []
 
-    async def ensure_local(filename, **_kwargs):
-        downloaded.append(filename)
-        path = image_cache.resolve_filename(filename)
-        path.write_bytes(b"cached-cover")
-        return path
-
-    image_cache.ensure_local_for_filename = ensure_local
+    image_cache.schedule_ensure_for_filename = scheduled.append
 
     monkeypatch.setattr(
         circle_image_cache_service,
@@ -855,9 +849,13 @@ def test_circle_cover_miss_downloads_and_returns_local_file(client, monkeypatch,
 
     response = client.get("/api/circle-completion/cover/RJ01012345.jpg")
 
+    assert response.status_code == 404
+    assert scheduled == ["RJ01012345.jpg"]
+    image_cache.resolve_filename("RJ01012345.jpg").write_bytes(b"cached-cover")
+    response = client.get("/api/circle-completion/cover/RJ01012345.jpg")
     assert response.status_code == 200
     assert response.content == b"cached-cover"
-    assert downloaded == ["RJ01012345.jpg"]
+    assert scheduled == ["RJ01012345.jpg"]
 
 
 def test_asmr_status_returns_requested_tasks_beyond_default_window(client, monkeypatch):

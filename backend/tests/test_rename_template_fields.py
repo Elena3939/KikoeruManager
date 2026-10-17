@@ -79,6 +79,31 @@ def test_compile_name_keeps_legacy_maker_name_as_original_maker(
     assert result == "[生ハメ堕ち部★LACK][RJ01670873]"
 
 
+def test_compile_name_keeps_current_original_maker_over_japanese_translation_maker(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        rename_service_module,
+        "get_config",
+        lambda: _config("[{original_maker_name}][{rjcode}]", use_japanese_metadata=True),
+    )
+
+    result = RenameService()._compile_name(
+        {
+            "rjcode": "RJ01149478",
+            "work_name": "作品",
+            "original_maker_name": "ふぇち部",
+            "maker_name": "ふぇち部",
+        },
+        {
+            # 翻译作品的日文接口错误地把译者返回为 maker_name。
+            "maker_name": "咖啡武神",
+        },
+    )
+
+    assert result == "[ふぇち部][RJ01149478]"
+
+
 @pytest.mark.asyncio
 async def test_original_maker_resolution_preserves_translator(
     monkeypatch,

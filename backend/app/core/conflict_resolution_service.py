@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from ..config.settings import get_config
 from ..core.extract_service import ExtractService
+from ..core.failure_reason_formatter import format_extract_failure_message
 from ..core.filter_service import FilterService
 from ..core.folder_compare_service import get_folder_compare_service
 from ..core.library_manager import get_library_manager
@@ -55,11 +56,11 @@ class MergePreviewJob:
       - `extract` 解压新包（monitor 持续从 extract_task.progress 拿真实 7z 百分比 + step）
       - `nested_extract` 嵌套解压（extract_task.current_step 含"嵌套"时切换）
       - `filter` 过滤临时目录 → `scan_existing` 扫描库存 → `compare` 生成差异树
-      - `done` 完成 / `failed` 失败
+      - `done` 完成 / `failed` 失败 / `cancelled` 用户终止
     """
     id: str
     conflict_id: str
-    status: str = "running"        # running | completed | failed
+    status: str = "running"        # running | completed | failed | cancelled
     stage: str = "init"
     stage_label: str = "初始化"
     message: str = ""
@@ -68,6 +69,7 @@ class MergePreviewJob:
     error: Optional[str] = None
     created_at: float = 0.0
     updated_at: float = 0.0
+    target_context: Optional[dict[str, Any]] = None
 
 
 class ConflictResolutionService:
@@ -570,12 +572,91 @@ class ConflictResolutionService:
         except Exception:
             logger.warning("写入 conflict stats 缓存外层失败", exc_info=True)
 
+    @staticmethod
+    def _merge_work_root(path: str, rjcode: str, library_root: str = "") -> Optional[str]:
+        """将继承 RJ 的索引子目录还原到作品根，不跨越其它作品或合集目录。"""
+        current = os.path.abspath(path)
+        boundary = os.path.normcase(os.path.abspath(library_root)) if library_root else ""
+        if boundary:
+            try:
+                if os.path.commonpath([boundary, os.path.normcase(current)]) != boundary:
+                    return None
+            except ValueError:
+                return None
+        result = None
+        while current and os.path.normcase(current) != boundary:
+            codes = set(re.findall(r"[RVB]J(?:\d{8}|\d{6})(?!\d)", os.path.basename(current), re.IGNORECASE))
+            codes = {code.upper() for code in codes}
+            if codes:
+                if codes != {rjcode}:
+                    # 最近的明确作品号不属于当前 RJ，不能因祖先命中而误选。
+                    return result
+                result = current
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
+        return result or path
+
+    def _existing_conflict_context(self, conflict) -> dict[str, Any]:
+        """并发等待的状态文案不是目录；仅用唯一的真实库存索引命中恢复目标。"""
+        metadata = dict(conflict.new_metadata or {})
+        path = str(conflict.existing_path or "").strip()
+        if path != "正在处理中":
+            return self.infer_library_context(path, metadata.get("existing_library_id"))
+
+        rjcode = str(getattr(conflict, "rjcode", "") or "").strip().upper()
+        hits = get_library_manager().find_rj_in_ready_index(
+            [rjcode], include_subtitle_state=False,
+        ).get(rjcode, []) if rjcode else []
+        candidates = {}
+        source = os.path.normcase(os.path.abspath(str(conflict.new_path or "")))
+        for hit in hits:
+            target = str(hit.get("path") or "").strip()
+            library_id = hit.get("library_id")
+            if metadata.get("existing_library_id") and library_id != metadata["existing_library_id"]:
+                continue
+            if not target or not os.path.isdir(target):
+                continue
+            target = self._merge_work_root(target, rjcode, str(hit.get("library_root_path") or ""))
+            if not target or not os.path.isdir(target):
+                continue
+            normalized = os.path.normcase(os.path.abspath(target))
+            if normalized != source:
+                candidates[(library_id, normalized)] = self.infer_library_context(target, library_id)
+        if len(candidates) == 1:
+            return next(iter(candidates.values()))
+        context = self.infer_library_context("")
+        context["target_candidates"] = list(candidates.values())
+        context["unavailable_reason"] = (
+            "同一 RJ 在多个库存目录中存在，请先选择合并目标"
+            if candidates else "该记录是同 RJ 任务并发等待产生的，当前没有可合并的库存目录，请使用保留新版重新入库"
+        )
+        return context
+
+    def _select_merge_target(self, existing, selected_target=None):
+        candidates = existing.get("target_candidates") or []
+        if selected_target is not None and not isinstance(selected_target, dict):
+            raise ValueError("合并目标参数格式错误，请重新选择库存目录")
+        if selected_target:
+            allowed = candidates or ([existing] if existing.get("path") else [])
+            for candidate in allowed:
+                if (candidate.get("path") == selected_target.get("path")
+                        and candidate.get("library_id") == selected_target.get("library_id")):
+                    return dict(candidate)
+            raise ValueError("选定的合并目标已失效，请重新选择库存目录")
+        return existing
+
+    async def _validate_merge_target(self, existing: dict[str, Any]) -> None:
+        path = str(existing.get("path") or "")
+        if not path:
+            raise RuntimeError(existing.get("unavailable_reason") or "缺少可合并的库存目录")
+        if not existing.get("is_remote") and not await asyncio.to_thread(os.path.isdir, path):
+            raise FileNotFoundError(f"合并目标目录不存在或不是目录：{path}；请刷新问题记录并重新确认库存位置")
+
     def describe_conflict(self, conflict, include_stats: bool = False) -> dict[str, Any]:
         metadata = dict(conflict.new_metadata or {})
-        existing_context = self.infer_library_context(
-            conflict.existing_path,
-            preferred_library_id=metadata.get("existing_library_id"),
-        )
+        existing_context = self._existing_conflict_context(conflict)
         source_context = self.infer_library_context(
             conflict.new_path,
             preferred_library_id=metadata.get("source_library_id") or metadata.get("target_library_id"),
@@ -615,10 +696,7 @@ class ConflictResolutionService:
                 getattr(conflict, "id", ""), original_new_path, resolved_new_path,
             )
 
-        existing_context = self.infer_library_context(
-            conflict.existing_path,
-            preferred_library_id=metadata.get("existing_library_id"),
-        )
+        existing_context = await asyncio.to_thread(self._existing_conflict_context, conflict)
         source_context = self.infer_library_context(
             resolved_new_path,
             preferred_library_id=metadata.get("source_library_id") or metadata.get("target_library_id"),
@@ -759,6 +837,13 @@ class ConflictResolutionService:
         if is_legacy_existing_subtitle_conflict and existing_path and os.path.isdir(existing_path):
             return ["KEEP_NEW", "SKIP"]
 
+        if existing_path == "正在处理中":
+            context = self._existing_conflict_context(conflict)
+            if context.get("target_candidates"):
+                return ["MERGE", "SKIP"]
+            if not context.get("path"):
+                return ["KEEP_NEW", "SKIP"]
+
         configured_actions = metadata.get("available_actions")
         if isinstance(configured_actions, list):
             actions: list[str] = []
@@ -812,8 +897,7 @@ class ConflictResolutionService:
     async def create_merge_preview(self, conflict) -> dict[str, Any]:
         description = await self.describe_conflict_async(conflict)
         existing = description["existing"]
-        if not existing["path"]:
-            raise RuntimeError("Missing existing target path")
+        await self._validate_merge_target(existing)
         if not conflict.new_path:
             raise RuntimeError("Missing new source path")
 
@@ -849,7 +933,7 @@ class ConflictResolutionService:
                 )
             else:
                 if not os.path.exists(existing["path"]):
-                    raise FileNotFoundError("Existing target directory does not exist")
+                    raise FileNotFoundError(f"合并目标目录在预览期间被移除：{existing['path']}")
                 compare_items = compare_service.build_compare_items(staged_root, existing["path"])
 
             session_id = uuid.uuid4().hex
@@ -894,13 +978,17 @@ class ConflictResolutionService:
     # 前端轮询 GET /api/conflicts/{id}/preview-job/{job_id} 拿真实阶段 + 进度 + message。
     # 与日志记录一致：stage/stage_label/message 的语义对齐 ExtractService.update_progress。
 
-    async def start_merge_preview(self, conflict) -> dict[str, Any]:
+    async def start_merge_preview(self, conflict, selected_target=None) -> dict[str, Any]:
         """启动合并预览异步任务，立即返回 job_id 不阻塞 HTTP。"""
         # 入参基本校验：existing 路径与 conflict.new_path 必须存在
         description = await self.describe_conflict_async(conflict)
-        existing = description["existing"]
-        if not existing["path"]:
-            raise RuntimeError("Missing existing target path")
+        existing = self._select_merge_target(description["existing"], selected_target)
+        if existing.get("target_candidates"):
+            return {
+                "requires_target_selection": True,
+                "target_candidates": existing["target_candidates"],
+            }
+        await self._validate_merge_target(existing)
         if not getattr(conflict, "new_path", None):
             raise RuntimeError("Missing new source path")
 
@@ -911,6 +999,8 @@ class ConflictResolutionService:
                 existing_job.conflict_id == str(conflict.id)
                 and existing_job.status == "running"
             ):
+                if existing_job.target_context != existing:
+                    raise ValueError("另一个目标的合并预览正在执行，请先终止当前预览")
                 return self._serialize_merge_preview_job(existing_job)
 
         # 兜底回收：清理掉 30 分钟以前的旧 job + 已完成 worker 句柄
@@ -928,6 +1018,7 @@ class ConflictResolutionService:
             percent=2,
             created_at=now,
             updated_at=now,
+            target_context=existing,
         )
         self._merge_preview_jobs[job_id] = job
         worker = asyncio.create_task(
@@ -941,6 +1032,28 @@ class ConflictResolutionService:
         job = self._merge_preview_jobs.get(str(job_id or "").strip())
         if not job:
             return None
+        return self._serialize_merge_preview_job(job)
+
+    async def cancel_merge_preview(self, job_id: str) -> Optional[dict[str, Any]]:
+        """终止合并预览 worker，并让 worker 的 finally 清理临时工作区。"""
+        normalized_id = str(job_id or "").strip()
+        job = self._merge_preview_jobs.get(normalized_id)
+        if not job:
+            return None
+        if job.status != "running":
+            return self._serialize_merge_preview_job(job)
+
+        job.status = "cancelled"
+        job.stage = "cancelled"
+        job.stage_label = "已终止"
+        job.message = "用户已终止合并预览"
+        job.error = None
+        job.updated_at = time.time()
+        self._broadcast_merge_preview_job(job)
+
+        worker = self._merge_preview_workers.get(normalized_id)
+        if worker and not worker.done():
+            worker.cancel()
         return self._serialize_merge_preview_job(job)
 
     def cleanup_old_merge_preview_jobs(self, max_age_seconds: int = 1800) -> None:
@@ -996,9 +1109,8 @@ class ConflictResolutionService:
                 percent=5, message="读取冲突描述",
             )
             description = await self.describe_conflict_async(conflict)
-            existing = description["existing"]
-            if not existing["path"]:
-                raise RuntimeError("Missing existing target path")
+            existing = self._select_merge_target(description["existing"], job.target_context)
+            await self._validate_merge_target(existing)
 
             await self.cleanup_conflict_sessions(conflict.id)
             workspace = self._create_workspace(conflict.id)
@@ -1044,7 +1156,7 @@ class ConflictResolutionService:
                 )
             else:
                 if not os.path.exists(existing["path"]):
-                    raise FileNotFoundError("Existing target directory does not exist")
+                    raise FileNotFoundError(f"合并目标目录在预览期间被移除：{existing['path']}")
                 compare_items = compare_service.build_compare_items(staged_root, existing["path"])
 
             self._update_merge_preview_job(
@@ -1088,15 +1200,26 @@ class ConflictResolutionService:
         except FileNotFoundError as exc:
             self._fail_merge_preview_job(job, str(exc))
         except asyncio.CancelledError:
-            # worker 被外部 cancel（cleanup_old_merge_preview_jobs 命中），静默退出
-            self._fail_merge_preview_job(job, "任务已取消")
+            # 用户取消时保留 cancelled 状态；内部清理取消仍记录为失败。
+            if job.status == "running":
+                self._fail_merge_preview_job(job, "任务已取消")
             raise
         except Exception as exc:
             logger.error("合并预览 worker 失败 job=%s conflict=%s: %s", job_id, conflict_id, exc, exc_info=True)
             self._fail_merge_preview_job(job, str(exc) or "合并预览失败")
         finally:
-            if workspace and not session_registered and os.path.isdir(workspace):
-                await asyncio.to_thread(shutil.rmtree, workspace, True)
+            if workspace and os.path.isdir(workspace):
+                if job.status == "cancelled":
+                    stale_session_ids = [
+                        session_id
+                        for session_id, session in self._merge_sessions.items()
+                        if session.workspace == workspace
+                    ]
+                    for session_id in stale_session_ids:
+                        self._merge_sessions.pop(session_id, None)
+                    await asyncio.to_thread(shutil.rmtree, workspace, True)
+                elif not session_registered:
+                    await asyncio.to_thread(shutil.rmtree, workspace, True)
             # db 在前面 try/finally 内已经 close（成功路径）；这里只处理"还没到那一步
             # 就抛异常"的极端场景，避免连接泄漏。
             if db is not None:
@@ -1149,7 +1272,9 @@ class ConflictResolutionService:
                 pass
 
         if not extracted_path:
-            raise RuntimeError(extract_task.error_message or "Extract failed")
+            raise RuntimeError(format_extract_failure_message(
+                extract_task.task_metadata, extract_task.error_message or "解压未返回有效目录",
+            ))
         staged_root = extracted_path
 
         self._update_merge_preview_job(
@@ -1222,6 +1347,8 @@ class ConflictResolutionService:
         """统一更新 job 字段；percent 永远不回退；自动刷新 updated_at。"""
         if not job:
             return
+        if job.status == "cancelled":
+            return
         for key in ("stage", "stage_label", "message", "status", "error"):
             value = kwargs.get(key)
             if value is not None:
@@ -1242,7 +1369,11 @@ class ConflictResolutionService:
     def _fail_merge_preview_job(self, job: Optional["MergePreviewJob"], error: str) -> None:
         if not job:
             return
-        msg = str(error or "未知错误")
+        # 用户已经主动终止时，worker 的并发异常不能覆盖 cancelled 状态。
+        if job.status == "cancelled":
+            return
+        failed_stage = str(job.stage_label or "合并预览")
+        msg = f"{failed_stage}失败：{error or '未知错误'}"
         job.status = "failed"
         job.stage = "failed"
         job.stage_label = "失败"
@@ -1681,7 +1812,9 @@ class ConflictResolutionService:
             )
             extracted_path = await ExtractService().extract(extract_task)
             if not extracted_path:
-                raise RuntimeError(extract_task.error_message or "Extract failed")
+                raise RuntimeError(format_extract_failure_message(
+                    extract_task.task_metadata, extract_task.error_message or "解压未返回有效目录",
+                ))
             staged_root = extracted_path
         else:
             staged_root = os.path.join(workspace, os.path.basename(source_path))

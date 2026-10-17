@@ -88,6 +88,55 @@ def test_downloading_volume_is_never_marked_processed(watcher_setup, tmp_path, n
 
 
 @pytest.mark.asyncio
+async def test_downloaded_archive_waits_when_auto_start_is_disabled(watcher_setup, tmp_path):
+    """监视器发现下载好的压缩包，但关闭自动处理时不能提交解压。"""
+    watcher, _, submitted = watcher_setup
+    watcher._loop = asyncio.get_running_loop()
+    watcher.config.watcher.auto_start = False
+    path = tmp_path / 'RJ123456.zip'
+    path.write_bytes(b'PK\x03\x04')
+    watcher.handler.on_created(FileCreatedEvent(str(path)))
+    await watcher._scan_folder()
+    await drain_events()
+
+    assert submitted == []
+    assert path.exists()
+    assert str(path) in watcher.pending_files
+
+
+def test_disguised_z77_7z_is_detected_without_zip_main(watcher_setup, tmp_path):
+    """没有对应 .zip 主卷时，伪装成 .z77 的 7z 应按单体压缩包识别。"""
+    _, processor, _ = watcher_setup
+    path = tmp_path / 'RJ01649699(zwzww).z77'
+    path.write_bytes(b'7z\xbc\xaf\x27\x1c' + b'payload')
+
+    assert processor.is_archive(str(path)) is True
+
+
+def test_z77_with_zip_main_remains_zip_volume(watcher_setup, tmp_path):
+    """同目录存在对应 .zip 主卷时，.z77 仍按 ZIP 分卷跳过。"""
+    _, processor, _ = watcher_setup
+    path = tmp_path / 'archive.z77'
+    path.write_bytes(b'7z\xbc\xaf\x27\x1c' + b'payload')
+    (tmp_path / 'archive.zip').write_bytes(b'PK\x03\x04')
+
+    assert processor.is_archive(str(path)) is False
+
+
+@pytest.mark.asyncio
+async def test_orphan_z77_does_not_wait_as_zip_volume(watcher_setup, monkeypatch, tmp_path):
+    """没有 .zip 主卷的伪装 .z77 不应进入分卷等待分支。"""
+    _, processor, _ = watcher_setup
+    path = tmp_path / 'archive.z77'
+    path.write_bytes(b'7z\xbc\xaf\x27\x1c' + b'payload')
+    sleep = AsyncMock()
+    monkeypatch.setattr(processor_module.asyncio, 'sleep', sleep)
+
+    assert await processor._handle_potential_volume(str(path)) == str(path)
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_scan_traversal_and_detection_run_off_event_loop(watcher_setup, monkeypatch, tmp_path):
     watcher, processor, submitted = watcher_setup
     watcher._loop = asyncio.get_running_loop()

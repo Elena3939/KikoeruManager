@@ -8,7 +8,6 @@
         <!-- 透明点击层；弹窗打开时不虚化、不压暗背景 -->
         <div
           class="merge-dialog-overlay pointer-events-auto absolute inset-0 bg-transparent"
-          @click="close"
         />
         <!-- 玻璃面板 shell：对齐 Library.mediaPreviewDialog 的视觉范式 -->
         <div class="cmw-shell pointer-events-auto" @mousedown.stop>
@@ -30,6 +29,9 @@
               </div>
             </div>
             <div class="flex flex-shrink-0 items-center gap-2">
+              <button type="button" class="cmw-close-btn" title="缩小，保留合并进度" @click="emit('minimize')">
+                <Minimize2 class="h-[15px] w-[15px]" />
+              </button>
               <button
                 type="button"
                 class="cmw-close-btn"
@@ -106,7 +108,29 @@
           </div>
 
           <!-- Loading panel：阶段 / 进度由父组件 loadingProgress 实时驱动。 -->
-          <div v-if="loading || progressStatus === 'failed'" class="cmw-loading-panel">
+          <div v-if="submitError" class="px-6 py-4 text-sm text-red-500 whitespace-pre-wrap break-words" role="alert">{{ submitError }}</div>
+          <div v-if="targetCandidates.length" class="cmw-target-picker">
+            <h4 class="text-lg font-semibold">选择合并目标</h4>
+            <p class="mt-2 mb-5 text-sm opacity-70">这部作品在多个库存目录中存在，请选择本次要合并的位置。</p>
+            <button
+              v-for="target in targetCandidates"
+              :key="`${target.library_id}:${target.path}`"
+              type="button"
+              class="cmw-target-option"
+              :disabled="loading"
+              @click="emit('select-target', target)"
+            >
+              <span class="font-semibold">{{ target.library_name || '本地库存' }}</span>
+              <span class="mt-1 break-all text-sm opacity-70">{{ target.path }}</span>
+            </button>
+          </div>
+          <div v-else-if="progressStatus === 'failed'" class="cmw-empty-state" role="alert">
+            <AlertCircle class="h-12 w-12 text-red-400" />
+            <p class="mt-3 font-semibold">{{ progressStageLabel }}</p>
+            <p class="my-4 max-w-3xl whitespace-pre-wrap break-words px-6 text-sm">{{ progressMessage }}</p>
+            <button type="button" class="cmw-action-btn is-slate" @click="emit('refresh')">重新生成预览</button>
+          </div>
+          <div v-else-if="loading" class="cmw-loading-panel">
             <AppLoadingAnimation
               :label="loadingLabel"
               :description="loadingDescription"
@@ -240,13 +264,24 @@
                 :disabled="loading || submitting"
                 @click="close"
               >关闭</button>
+              <button
+                v-if="loading"
+                type="button"
+                class="cmw-action-btn is-danger"
+                :disabled="canceling || submitting"
+                @click="handleCancelClick"
+              >
+                <Loader2 v-if="canceling" class="h-4 w-4 animate-spin" :stroke-width="2.4" />
+                <XCircle v-else class="h-4 w-4" :stroke-width="2.4" />
+                {{ canceling ? '终止中...' : '终止生成' }}
+              </button>
               <StatefulButton
                 type="button"
                 class="cmw-action-btn is-emerald cmw-submit-btn"
                 unstyled
                 :show-default-icons="false"
                 :success-hold="900"
-                :disabled="!preview || loading"
+                :disabled="!preview || loading || progressStatus === 'failed'"
                 @click="handleSubmitClick"
               >
                 <template #prefix="{ state }">
@@ -270,8 +305,8 @@
 <script setup>
 import { computed, ref } from 'vue'
 import {
-  GitMerge, Search, RotateCcw, RefreshCw, X, Upload,
-  CheckCircle2,
+  GitMerge, Search, RotateCcw, RefreshCw, X, Upload, Minimize2,
+  CheckCircle2, XCircle,
   ArrowDownToLine, Archive, Loader2, AlertCircle
 } from 'lucide-vue-next'
 import AppDropdown from '../common/AppDropdown.vue'
@@ -292,6 +327,10 @@ const props = defineProps({
     type: Object,
     default: null
   },
+  targetCandidates: {
+    type: Array,
+    default: () => []
+  },
   decisions: {
     type: Object,
     default: () => ({})
@@ -311,13 +350,25 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
+  submitError: {
+    type: String,
+    default: ''
+  },
+  canceling: {
+    type: Boolean,
+    default: false
+  },
+  cancelAction: {
+    type: Function,
+    default: null
+  },
   submitAction: {
     type: Function,
     default: null
   }
 })
 
-const emit = defineEmits(['update:modelValue', 'update:decisions', 'refresh', 'submit', 'close'])
+const emit = defineEmits(['update:modelValue', 'update:decisions', 'refresh', 'submit', 'close', 'minimize', 'cancel', 'select-target'])
 
 const searchText = ref('')
 const statusFilter = ref('changed')
@@ -389,7 +440,7 @@ const resolvedSourcePath = computed(() => {
 })
 
 const resolvedExistingPath = computed(() => {
-  return props.conflict?.context?.existing?.path || props.preview?.existing_path || props.conflict?.existing_path || '-'
+  return props.preview?.existing_path || props.conflict?.context?.existing?.path || props.conflict?.existing_path || '-'
 })
 
 const treeData = computed(() => buildTree(compareItems.value))
@@ -799,11 +850,22 @@ function flattenTree(nodes, depth = 0) {
 const displayRows = computed(() => flattenTree(filteredTreeData.value))
 
 function close() {
-  // submitting 期间不允许关闭；loading 期间允许（用户想取消正在跑的 7z），
-  // 父组件监听 @close 取消 polling，后端 worker 自身的 cleanup 会兜底回收。
-  if (props.submitting) return
+  // 隐藏运行中的窗口只缩小，只有“终止生成”可以取消后端任务。
+  if (props.loading || props.submitting) {
+    emit('minimize')
+    return
+  }
   visible.value = false
   emit('close')
+}
+
+async function handleCancelClick() {
+  if (props.canceling) return false
+  if (typeof props.cancelAction === 'function') {
+    return props.cancelAction()
+  }
+  emit('cancel')
+  return true
 }
 
 async function handleSubmitClick() {
@@ -891,14 +953,14 @@ function formatDate(value) {
   height: min(88vh, 820px);
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  border-radius: 28px;
-  background: rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(24, 24, 27, 0.12);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(22px) saturate(1.08);
+  -webkit-backdrop-filter: blur(22px) saturate(1.08);
   box-shadow:
-    0 30px 80px rgba(15, 23, 42, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+    0 24px 64px rgba(24, 24, 27, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
   font-family: Inter, "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
   text-rendering: geometricPrecision;
@@ -907,6 +969,38 @@ function formatDate(value) {
 }
 
 /* Header：纯玻璃 */
+.cmw-target-picker {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 28px;
+  color: #334155;
+}
+
+.cmw-target-option {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin-bottom: 12px;
+  padding: 16px 20px;
+  text-align: left;
+  border: 1px solid rgba(100, 116, 139, 0.25);
+  border-radius: 14px;
+  background: rgba(148, 163, 184, 0.08);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.cmw-target-option:hover:not(:disabled) { transform: translateY(-2px) scale(1.02); }
+.cmw-target-option:active:not(:disabled) { transform: scale(0.96); }
+.cmw-target-option:focus,
+.cmw-target-option:focus-visible { outline: none; box-shadow: none; }
+
+:global(html.kikoerumanager-dark .cmw-target-picker) { color: var(--km-dark-text); }
+:global(html.kikoerumanager-dark .cmw-target-option) {
+  border-color: var(--km-dark-border);
+  background: var(--km-dark-surface-soft);
+}
+
 .cmw-header {
   display: flex;
   flex: none;
@@ -914,8 +1008,8 @@ function formatDate(value) {
   justify-content: space-between;
   gap: 12px;
   border-bottom: 1px solid rgba(226, 232, 240, 0.58);
-  background: transparent;
-  padding: 12px 18px;
+  background: rgba(255, 255, 255, 0.62);
+  padding: 22px 28px;
   backdrop-filter: blur(18px) saturate(140%);
   -webkit-backdrop-filter: blur(18px) saturate(140%);
 }
@@ -927,9 +1021,9 @@ function formatDate(value) {
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border-radius: 12px;
-  color: #4f46e5;
-  background: rgba(255, 255, 255, 0.34);
+  border-radius: 10px;
+  color: #64748b;
+  background: rgba(148, 163, 184, 0.16);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
@@ -1188,12 +1282,13 @@ function formatDate(value) {
   flex: 1;
   align-items: center;
   justify-content: center;
-  background: transparent;
-  padding: 28px;
+  min-height: 300px;
+  background: #f8fafc;
+  padding: 24px;
 }
 
 .cmw-loading-panel :deep(.app-loading-animation) {
-  width: min(520px, 100%);
+  width: min(460px, 100%);
 }
 
 .cmw-loading-panel :deep(.app-loading-animation__label) {
@@ -1778,7 +1873,7 @@ function formatDate(value) {
   gap: 12px;
   border-top: 1px solid rgba(255, 255, 255, 0.24);
   background: rgba(255, 255, 255, 0.16);
-  padding: 12px 20px;
+  padding: 10px 16px;
   backdrop-filter: blur(20px) saturate(140%);
   -webkit-backdrop-filter: blur(20px) saturate(140%);
 }
@@ -1789,8 +1884,8 @@ function formatDate(value) {
   align-items: center;
   justify-content: center;
   gap: 7px;
-  border-radius: 14px;
-  padding: 10px 20px;
+  border-radius: 10px;
+  padding: 9px 16px;
   font-size: 13px;
   font-weight: 780;
   letter-spacing: 0.005em;
@@ -1835,6 +1930,20 @@ function formatDate(value) {
   opacity: 0.55;
   box-shadow: none;
   transform: none;
+}
+
+.cmw-action-btn.is-danger {
+  border: 1px solid rgba(248, 113, 113, 0.42);
+  background: rgba(254, 226, 226, 0.78);
+  color: #b91c1c;
+  box-shadow: 0 8px 18px rgba(185, 28, 28, 0.1);
+}
+
+.cmw-action-btn.is-danger:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+  background: #fee2e2;
+  color: #991b1b;
+  box-shadow: 0 12px 24px rgba(185, 28, 28, 0.16);
 }
 
 .cmw-submit-btn {
@@ -1911,252 +2020,279 @@ function formatDate(value) {
 }
 
 /* 暗色态：目录差异工作台 */
-:global(html.kikoerumanager-dark) .cmw-shell {
-  border-color: var(--km-dark-border);
-  background: rgba(13, 14, 18, 0.96);
+html.kikoerumanager-dark .cmw-shell {
+  border-color: var(--km-dark-border-strong);
+  background: var(--km-dark-elevated);
   box-shadow:
-    0 30px 80px rgba(0, 0, 0, 0.38),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    0 24px 64px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
-:global(html.kikoerumanager-dark) .cmw-header,
-:global(html.kikoerumanager-dark) .cmw-toolbar,
-:global(html.kikoerumanager-dark) .cmw-pill-bar,
-:global(html.kikoerumanager-dark) .cmw-split-head {
-  border-color: var(--km-dark-border-soft);
+html.kikoerumanager-dark .cmw-header,
+html.kikoerumanager-dark .cmw-toolbar,
+html.kikoerumanager-dark .cmw-pill-bar,
+html.kikoerumanager-dark .cmw-split-head {
+  border-color: rgba(148, 163, 184, 0.22);
 }
 
-:global(html.kikoerumanager-dark) .cmw-icon,
-:global(html.kikoerumanager-dark) .cmw-tag,
-:global(html.kikoerumanager-dark) .cmw-close-btn,
-:global(html.kikoerumanager-dark) .cmw-pill,
-:global(html.kikoerumanager-dark) .cmw-bulk-group,
-:global(html.kikoerumanager-dark) .cmw-summary-remote {
+html.kikoerumanager-dark .cmw-header {
+  background: var(--km-dark-surface-soft);
+}
+
+html.kikoerumanager-dark .cmw-toolbar,
+html.kikoerumanager-dark .cmw-pill-bar {
+  background: var(--km-dark-elevated);
+}
+
+html.kikoerumanager-dark .cmw-icon,
+html.kikoerumanager-dark .cmw-tag,
+html.kikoerumanager-dark .cmw-close-btn,
+html.kikoerumanager-dark .cmw-pill,
+html.kikoerumanager-dark .cmw-bulk-group,
+html.kikoerumanager-dark .cmw-summary-remote {
   border-color: var(--km-dark-border);
   background: var(--km-dark-accent-bg);
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .cmw-icon {
-  color: #a5b4fc;
+html.kikoerumanager-dark .cmw-icon {
+  color: var(--km-dark-text-muted);
+  background: var(--km-dark-surface-muted);
 }
 
-:global(html.kikoerumanager-dark) .cmw-title,
-:global(html.kikoerumanager-dark) .cmw-diff-name,
-:global(html.kikoerumanager-dark) .cmw-loading-panel :deep(.app-loading-animation__label),
-:global(html.kikoerumanager-dark) .cmw-summary-stat b,
-:global(html.kikoerumanager-dark) .cmw-footer-remote-hint strong {
+html.kikoerumanager-dark .cmw-title,
+html.kikoerumanager-dark .cmw-diff-name,
+html.kikoerumanager-dark .cmw-loading-panel :deep(.app-loading-animation__label),
+html.kikoerumanager-dark .cmw-summary-stat b,
+html.kikoerumanager-dark .cmw-footer-remote-hint strong {
   color: var(--km-dark-text-strong);
 }
 
-:global(html.kikoerumanager-dark) .cmw-subtitle,
-:global(html.kikoerumanager-dark) .cmw-tag,
-:global(html.kikoerumanager-dark) .cmw-search-input,
-:global(html.kikoerumanager-dark) .cmw-toolbar-btn,
-:global(html.kikoerumanager-dark) .cmw-bulk-btn,
-:global(html.kikoerumanager-dark) .cmw-pill,
-:global(html.kikoerumanager-dark) .cmw-summary-stat,
-:global(html.kikoerumanager-dark) .cmw-summary-remote,
-:global(html.kikoerumanager-dark) .cmw-side-meta,
-:global(html.kikoerumanager-dark) .cmw-diff-side-primary,
-:global(html.kikoerumanager-dark) .cmw-footer-remote-hint {
+html.kikoerumanager-dark .cmw-subtitle,
+html.kikoerumanager-dark .cmw-tag,
+html.kikoerumanager-dark .cmw-search-input,
+html.kikoerumanager-dark .cmw-toolbar-btn,
+html.kikoerumanager-dark .cmw-bulk-btn,
+html.kikoerumanager-dark .cmw-pill,
+html.kikoerumanager-dark .cmw-summary-stat,
+html.kikoerumanager-dark .cmw-summary-remote,
+html.kikoerumanager-dark .cmw-side-meta,
+html.kikoerumanager-dark .cmw-diff-side-primary,
+html.kikoerumanager-dark .cmw-footer-remote-hint {
   color: var(--km-dark-text);
 }
 
-:global(html.kikoerumanager-dark) .cmw-split-title span,
-:global(html.kikoerumanager-dark) .cmw-split-title code,
-:global(html.kikoerumanager-dark) .cmw-side-path,
-:global(html.kikoerumanager-dark) .cmw-side-meta span:last-child,
-:global(html.kikoerumanager-dark) .cmw-loading-panel :deep(.app-loading-animation__description),
-:global(html.kikoerumanager-dark) .cmw-summary-label,
-:global(html.kikoerumanager-dark) .cmw-diff-pathtail,
-:global(html.kikoerumanager-dark) .cmw-diff-note,
-:global(html.kikoerumanager-dark) .cmw-diff-side-secondary,
-:global(html.kikoerumanager-dark) .cmw-diff-empty,
-:global(html.kikoerumanager-dark) .cmw-empty-state {
+html.kikoerumanager-dark .cmw-split-title span,
+html.kikoerumanager-dark .cmw-split-title code,
+html.kikoerumanager-dark .cmw-side-path,
+html.kikoerumanager-dark .cmw-side-meta span:last-child,
+html.kikoerumanager-dark .cmw-loading-panel :deep(.app-loading-animation__description),
+html.kikoerumanager-dark .cmw-summary-label,
+html.kikoerumanager-dark .cmw-diff-pathtail,
+html.kikoerumanager-dark .cmw-diff-note,
+html.kikoerumanager-dark .cmw-diff-side-secondary,
+html.kikoerumanager-dark .cmw-diff-empty,
+html.kikoerumanager-dark .cmw-empty-state {
   color: var(--km-dark-text-muted);
 }
 
-:global(html.kikoerumanager-dark) .cmw-search-input::placeholder {
+:global(html.kikoerumanager-dark .cmw-loading-panel) {
+  background: var(--km-dark-bg);
+}
+
+html.kikoerumanager-dark .cmw-search-input::placeholder {
   color: var(--km-dark-text-subtle);
 }
 
-:global(html.kikoerumanager-dark) .cmw-search-input:focus {
+html.kikoerumanager-dark .cmw-search-input:focus {
   border-color: var(--km-dark-border-strong);
   background: var(--km-dark-field);
 }
 
-:global(html.kikoerumanager-dark) .cmw-close-btn:hover:not(:disabled),
-:global(html.kikoerumanager-dark) .cmw-toolbar-btn:hover:not(:disabled),
-:global(html.kikoerumanager-dark) .cmw-bulk-btn:hover:not(:disabled),
-:global(html.kikoerumanager-dark) .cmw-pill:hover {
+html.kikoerumanager-dark .cmw-close-btn:hover:not(:disabled),
+html.kikoerumanager-dark .cmw-toolbar-btn:hover:not(:disabled),
+html.kikoerumanager-dark .cmw-bulk-btn:hover:not(:disabled),
+html.kikoerumanager-dark .cmw-pill:hover {
   border-color: var(--km-dark-border-strong);
   background: var(--km-dark-button-bg-hover);
   color: var(--km-dark-text-strong);
 }
 
-:global(html.kikoerumanager-dark) .cmw-bulk-btn + .cmw-bulk-btn {
+html.kikoerumanager-dark .cmw-bulk-btn + .cmw-bulk-btn {
   border-left-color: var(--km-dark-border-soft);
 }
 
-:global(html.kikoerumanager-dark) .cmw-pill.is-active {
-  border-color: rgba(129, 140, 248, 0.46);
-  background: rgba(99, 102, 241, 0.18);
-  color: #c7d2fe;
+html.kikoerumanager-dark .cmw-pill.is-active {
+  border-color: var(--km-dark-border-strong);
+  background: var(--km-dark-accent-bg);
+  color: var(--km-dark-text-strong);
 }
 
-:global(html.kikoerumanager-dark) .cmw-pill-count {
+html.kikoerumanager-dark .cmw-pill-count {
   background: rgba(255, 255, 255, 0.12);
 }
 
-:global(html.kikoerumanager-dark) .cmw-pill.is-active .cmw-pill-count {
+html.kikoerumanager-dark .cmw-pill.is-active .cmw-pill-count {
   background: rgba(129, 140, 248, 0.22);
   color: #ddd6fe;
 }
 
-:global(html.kikoerumanager-dark) .cmw-split-list,
-:global(html.kikoerumanager-dark) .cmw-table-pane {
-  background: var(--km-dark-surface);
+html.kikoerumanager-dark .cmw-split-list,
+html.kikoerumanager-dark .cmw-table-pane {
+  background: var(--km-dark-bg);
 }
 
-:global(html.kikoerumanager-dark) .cmw-split-row {
+html.kikoerumanager-dark .cmw-split-row {
   border-bottom-color: var(--km-dark-border-soft);
 }
 
-:global(html.kikoerumanager-dark) .cmw-split-row:hover {
-  background: var(--km-dark-surface-hover);
+html.kikoerumanager-dark .cmw-split-row:hover {
+  background: rgba(255, 255, 255, 0.035);
 }
 
-:global(html.kikoerumanager-dark) .cmw-side-line.is-pickable:hover {
+html.kikoerumanager-dark .cmw-side-line.is-pickable:hover {
   background: rgba(255, 255, 255, 0.08);
 }
 
-:global(html.kikoerumanager-dark) .cmw-side-line.is-picked {
-  border-left-color: #60a5fa;
-  background: rgba(96, 165, 250, 0.18);
+html.kikoerumanager-dark .cmw-side-line.is-picked {
+  border-left-color: var(--km-dark-text-muted);
+  background: rgba(255, 255, 255, 0.06);
 }
 
-:global(html.kikoerumanager-dark) .cmw-side-line.is-added {
+html.kikoerumanager-dark .cmw-side-line.is-added {
   border-left-color: #34d399;
   background: rgba(16, 185, 129, 0.13);
 }
 
-:global(html.kikoerumanager-dark) .cmw-side-line.is-removed {
+html.kikoerumanager-dark .cmw-side-line.is-removed {
   border-left-color: #fb7185;
   background: rgba(244, 63, 94, 0.13);
 }
 
-:global(html.kikoerumanager-dark) .cmw-side-line.is-changed {
+html.kikoerumanager-dark .cmw-side-line.is-changed {
   border-left-color: #fbbf24;
 }
 
-:global(html.kikoerumanager-dark) .cmw-side-line.is-missing {
+html.kikoerumanager-dark .cmw-side-line.is-missing {
   color: var(--km-dark-text-subtle);
   opacity: 0.8;
 }
 
-:global(html.kikoerumanager-dark) .cmw-side-meta .is-size-diff {
+html.kikoerumanager-dark .cmw-side-meta .is-size-diff {
   color: var(--km-dark-amber);
 }
 
-:global(html.kikoerumanager-dark) .cmw-pick-mark {
+html.kikoerumanager-dark .cmw-pick-mark {
   background: #60a5fa;
   color: #07111f;
 }
 
-:global(html.kikoerumanager-dark) .cmw-diff-table thead {
+html.kikoerumanager-dark .cmw-diff-table thead {
   background: rgba(16, 17, 22, 0.92);
 }
 
-:global(html.kikoerumanager-dark) .cmw-diff-th,
-:global(html.kikoerumanager-dark) .cmw-diff-row {
+html.kikoerumanager-dark .cmw-diff-th,
+html.kikoerumanager-dark .cmw-diff-row {
   border-color: var(--km-dark-border-soft);
 }
 
-:global(html.kikoerumanager-dark) .cmw-diff-th {
+html.kikoerumanager-dark .cmw-diff-th {
   color: var(--km-dark-text-muted);
 }
 
-:global(html.kikoerumanager-dark) .cmw-diff-row:hover {
+html.kikoerumanager-dark .cmw-diff-row:hover {
   background: var(--km-dark-surface-hover);
 }
 
-:global(html.kikoerumanager-dark) .cmw-diff-toggle:hover {
+html.kikoerumanager-dark .cmw-diff-toggle:hover {
   color: var(--km-dark-text-strong);
 }
 
-:global(html.kikoerumanager-dark) .cmw-diff-glyph,
-:global(html.kikoerumanager-dark) .cmw-diff-badge {
+html.kikoerumanager-dark .cmw-diff-glyph,
+html.kikoerumanager-dark .cmw-diff-badge {
   background: var(--km-dark-accent-bg);
   color: var(--km-dark-text-muted);
   border-color: var(--km-dark-border-soft);
 }
 
-:global(html.kikoerumanager-dark) .cmw-diff-glyph.is-new,
-:global(html.kikoerumanager-dark) .cmw-diff-badge.is-new {
+html.kikoerumanager-dark .cmw-diff-glyph.is-new,
+html.kikoerumanager-dark .cmw-diff-badge.is-new {
   background: rgba(16, 185, 129, 0.16);
   color: #a7f3d0;
   border-color: rgba(52, 211, 153, 0.22);
 }
 
-:global(html.kikoerumanager-dark) .cmw-diff-glyph.is-old,
-:global(html.kikoerumanager-dark) .cmw-diff-badge.is-old {
+html.kikoerumanager-dark .cmw-diff-glyph.is-old,
+html.kikoerumanager-dark .cmw-diff-badge.is-old {
   background: rgba(99, 102, 241, 0.18);
   color: #c7d2fe;
   border-color: rgba(129, 140, 248, 0.24);
 }
 
-:global(html.kikoerumanager-dark) .cmw-diff-glyph.is-size,
-:global(html.kikoerumanager-dark) .cmw-diff-glyph.is-time,
-:global(html.kikoerumanager-dark) .cmw-diff-badge.is-size,
-:global(html.kikoerumanager-dark) .cmw-diff-badge.is-time {
+html.kikoerumanager-dark .cmw-diff-glyph.is-size,
+html.kikoerumanager-dark .cmw-diff-glyph.is-time,
+html.kikoerumanager-dark .cmw-diff-badge.is-size,
+html.kikoerumanager-dark .cmw-diff-badge.is-time {
   background: rgba(245, 158, 11, 0.16);
   color: #fde68a;
   border-color: rgba(251, 191, 36, 0.24);
 }
 
-:global(html.kikoerumanager-dark) .cmw-diff-glyph.is-content,
-:global(html.kikoerumanager-dark) .cmw-diff-badge.is-content {
+html.kikoerumanager-dark .cmw-diff-glyph.is-content,
+html.kikoerumanager-dark .cmw-diff-badge.is-content {
   background: rgba(244, 63, 94, 0.16);
   color: #fecdd3;
   border-color: rgba(251, 113, 133, 0.24);
 }
 
-:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-audio-lossless { color: #93c5fd; }
-:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-audio { color: #c4b5fd; }
-:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-image { color: #fdba74; }
-:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-video { color: #a5b4fc; }
-:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-pdf { color: #fca5a5; }
-:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-archive { color: #fcd34d; }
-:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-text,
-:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-file { color: var(--km-dark-text-muted); }
+html.kikoerumanager-dark .cmw-diff-fileicon.icon-audio-lossless { color: #93c5fd; }
+html.kikoerumanager-dark .cmw-diff-fileicon.icon-audio { color: #c4b5fd; }
+html.kikoerumanager-dark .cmw-diff-fileicon.icon-image { color: #fdba74; }
+html.kikoerumanager-dark .cmw-diff-fileicon.icon-video { color: #a5b4fc; }
+html.kikoerumanager-dark .cmw-diff-fileicon.icon-pdf { color: #fca5a5; }
+html.kikoerumanager-dark .cmw-diff-fileicon.icon-archive { color: #fcd34d; }
+html.kikoerumanager-dark .cmw-diff-fileicon.icon-text,
+html.kikoerumanager-dark .cmw-diff-fileicon.icon-file { color: var(--km-dark-text-muted); }
 
-:global(html.kikoerumanager-dark) .cmw-footer {
+html.kikoerumanager-dark .cmw-footer {
   border-top-color: var(--km-dark-border-soft);
-  background: rgba(36, 37, 41, 0.92);
+  background: var(--km-dark-elevated);
 }
 
-:global(html.kikoerumanager-dark) .cmw-action-btn.is-slate {
+html.kikoerumanager-dark .cmw-action-btn.is-slate {
   border-color: var(--km-dark-border);
   background: var(--km-dark-accent-bg);
   color: var(--km-dark-text);
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .cmw-action-btn.is-slate:hover:not(:disabled) {
+html.kikoerumanager-dark .cmw-action-btn.is-slate:hover:not(:disabled) {
   background: var(--km-dark-button-bg-hover);
   color: var(--km-dark-text-strong);
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .cmw-action-btn.is-emerald {
-  background: #111827;
+html.kikoerumanager-dark .cmw-action-btn.is-emerald {
+  border: 1px solid var(--km-dark-border);
+  background: var(--km-dark-button-bg);
+  color: var(--km-dark-text-strong);
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .cmw-action-btn.is-emerald:hover:not(:disabled) {
-  background: #172033;
+html.kikoerumanager-dark .cmw-action-btn.is-emerald:hover:not(:disabled) {
+  background: var(--km-dark-button-bg-hover);
   box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark .cmw-action-btn.is-danger) {
+  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(127, 29, 29, 0.42);
+  color: #fecaca;
+}
+
+:global(html.kikoerumanager-dark .cmw-action-btn.is-danger:hover:not(:disabled)) {
+  background: rgba(153, 27, 27, 0.64);
+  color: #fee2e2;
 }
 
 button:not(:disabled) { cursor: pointer; }

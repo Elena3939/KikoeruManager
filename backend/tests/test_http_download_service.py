@@ -11,6 +11,7 @@ from app.core.http_download_service import (
     GOOGLE_DRIVE_STREAM_CHUNK_BYTES,
     HttpDownloadError,
     HttpDownloadService,
+    Aria2Daemon,
     sanitize_http_download_error,
     sanitize_http_download_item,
     sanitize_http_download_metadata,
@@ -20,6 +21,22 @@ from app.core.file_processor import FileProcessor
 from app.core.notification_helper import build_download_notification_extra
 from app.config.settings import HttpDownloaderConfig
 from app.core.task_engine import Task, TaskType
+
+
+@pytest.mark.asyncio
+async def test_rpc_timeout_identifies_control_interface_without_exposing_secret(monkeypatch):
+    service = HttpDownloadService()
+
+    def fail_request(*args, **kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("app.core.http_download_service.urlopen", fail_request)
+    daemon = Aria2Daemon(process=None, endpoint="http://127.0.0.1:6800/jsonrpc", secret="private-rpc-secret")
+    with pytest.raises(HttpDownloadError) as captured:
+        await service._rpc_call_raw(daemon, "aria2.tellStatus", ["gid-1"])
+    assert "本机 aria2 控制接口 aria2.tellStatus" in str(captured.value)
+    assert "timed out" in str(captured.value)
+    assert daemon.secret not in str(captured.value)
 
 
 class DummyStorage:
@@ -393,7 +410,7 @@ async def test_preview_url_passes_provider_headers(monkeypatch, tmp_path):
 def test_http_downloader_config_has_pikpak_defaults():
     cfg = HttpDownloaderConfig()
 
-    assert cfg.gofile_token == ""
+    assert "gofile_token" not in HttpDownloaderConfig(gofile_token="obsolete").model_dump()
     assert cfg.gofile_max_concurrent_downloads == 2
     assert cfg.gofile_split == 5
     assert cfg.pikpak_enabled is False
@@ -1467,7 +1484,86 @@ async def test_fetch_json_retries_transient_errors(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_gofile_guest_token_caches(monkeypatch, tmp_path):
+async def test_fetch_json_preserves_gofile_status_from_http_401(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+
+    class Response:
+        status = 401
+
+        async def text(self):
+            return '{"status":"error-wrongToken","data":{}}'
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class Session(Response):
+        def __init__(self, **_kwargs):
+            pass
+
+        def get(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr("app.core.http_download_service.aiohttp.ClientSession", Session)
+    with pytest.raises(HttpDownloadError) as error:
+        await HttpDownloadService()._fetch_json_once("https://api.gofile.io/contents/id")
+    assert error.value.api_status == "error-wrongToken"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("http_error", [False, True])
+async def test_gofile_wrong_token_refreshes_guest_and_download_cookie(monkeypatch, tmp_path, http_error):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    calls = []
+    accounts = 0
+
+    async def fetch(url, *, method="GET", headers=None):
+        nonlocal accounts
+        calls.append((url, headers))
+        if url.endswith("/accounts"):
+            accounts += 1
+            return {"status": "ok", "data": {"token": "expired" if accounts == 1 else "fresh"}}
+        if headers["Authorization"] == "Bearer expired":
+            if http_error:
+                raise HttpDownloadError("HTTP 401", api_status="error-wrongToken")
+            return {"status": "error-wrongToken"}
+        assert headers["Authorization"] == "Bearer fresh"
+        assert parse_qs(urlparse(url).query)["wt"] == [service._gofile_website_token("fresh")]
+        return {"status": "ok", "data": {
+            "id": "file", "type": "file", "name": "voice.zip", "size": 12,
+            "link": "https://store1.gofile.io/download/direct/voice.zip",
+        }}
+
+    monkeypatch.setattr(service, "_fetch_gofile_json", fetch)
+    result = await service._collect_gofile_files("https://gofile.io/d/content-id")
+    assert len(calls) == 4
+    assert result["files"][0]["aria2_header"] == ["Cookie: accountToken=fresh"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured", [False, True])
+async def test_gofile_wrong_token_stops_without_unbounded_retry(monkeypatch, tmp_path, configured):
+    bind_config(monkeypatch, tmp_path, gofile_token="fixed" if configured else "")
+    service = HttpDownloadService()
+    calls = []
+
+    async def fetch(url, *, method="GET", headers=None):
+        calls.append(url)
+        if url.endswith("/accounts"):
+            return {"status": "ok", "data": {"token": "rejected"}}
+        raise HttpDownloadError("HTTP 401", api_status="error-wrongToken")
+
+    monkeypatch.setattr(service, "_fetch_gofile_json", fetch)
+    with pytest.raises(HttpDownloadError, match="新建的访客 token"):
+        await service._collect_gofile_files("https://gofile.io/d/content-id")
+    assert len(calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_gofile_guest_token_is_new_for_each_session(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
     service = HttpDownloadService()
     calls = 0
@@ -1477,13 +1573,55 @@ async def test_gofile_guest_token_caches(monkeypatch, tmp_path):
         calls += 1
         assert url == "https://api.gofile.io/accounts"
         assert method == "POST"
-        return {"status": "ok", "data": {"token": "guest-token"}}
+        return {"status": "ok", "data": {"token": f"guest-token-{calls}"}}
 
     monkeypatch.setattr(service, "_fetch_json", fake_fetch_json)
 
-    assert await service._gofile_guest_token() == "guest-token"
-    assert await service._gofile_guest_token() == "guest-token"
-    assert calls == 1
+    assert await service._gofile_guest_token() == "guest-token-1"
+    assert await service._gofile_guest_token() == "guest-token-2"
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_gofile_concurrent_sessions_keep_separate_cookies(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    accounts = 0
+    contents_ready = asyncio.Event()
+    tokens = []
+
+    async def fetch(url, *, method="GET", headers=None):
+        nonlocal accounts
+        if url.endswith("/accounts"):
+            accounts += 1
+            return {"status": "ok", "data": {"token": f"guest-{accounts}"}}
+        token = headers["Authorization"].removeprefix("Bearer ")
+        tokens.append(token)
+        if len(tokens) == 2:
+            contents_ready.set()
+        await asyncio.wait_for(contents_ready.wait(), timeout=2)
+        assert parse_qs(urlparse(url).query)["wt"] == [service._gofile_website_token(token)]
+        return {"status": "ok", "data": {
+            "type": "folder", "children": {
+                str(index): {"id": str(index), "type": "file", "name": f"part-{index}.zip",
+                             "link": f"https://store1.gofile.io/download/direct/part-{index}.zip"}
+                for index in range(2)
+            },
+        }}
+
+    monkeypatch.setattr(service, "_fetch_gofile_json", fetch)
+    first, second = await asyncio.gather(
+        service._collect_gofile_files("https://gofile.io/d/first"),
+        service._collect_gofile_files("https://gofile.io/d/second"),
+    )
+    assert accounts == 2
+    for result, token in ((first, "guest-1"), (second, "guest-2")):
+        assert len(result["files"]) == 2
+        for item in result["files"]:
+            assert item["headers"] == {"Cookie": f"accountToken={token}"}
+            assert item["aria2_header"] == [f"Cookie: accountToken={token}"]
+            assert "headers" not in sanitize_http_download_item(item)
+            assert "aria2_header" not in sanitize_http_download_item(item)
 
 
 @pytest.mark.asyncio
@@ -1492,6 +1630,9 @@ async def test_resolve_gofile_folder_files(monkeypatch, tmp_path):
     service = HttpDownloadService()
 
     async def fake_fetch_json(url, headers=None, method="GET", platform="http"):
+        if url == "https://api.gofile.io/accounts":
+            assert method == "POST"
+            return {"status": "ok", "data": {"token": "guest-token"}}
         parsed = urlparse(url)
         query = parse_qs(parsed.query, keep_blank_values=True)
         assert parsed.scheme == "https"
@@ -1503,10 +1644,10 @@ async def test_resolve_gofile_folder_files(monkeypatch, tmp_path):
             "pageSize": ["1000"],
             "sortField": ["createTime"],
             "sortDirection": ["-1"],
-            "wt": [service._gofile_website_token("secret-token")],
+            "wt": [service._gofile_website_token("guest-token")],
         }
-        assert headers["Authorization"] == "Bearer secret-token"
-        assert headers["X-Website-Token"] == service._gofile_website_token("secret-token")
+        assert headers["Authorization"] == "Bearer guest-token"
+        assert headers["X-Website-Token"] == service._gofile_website_token("guest-token")
         return {
             "status": "ok",
             "data": {
@@ -1531,7 +1672,7 @@ async def test_resolve_gofile_folder_files(monkeypatch, tmp_path):
 
     assert result["files"][0]["filename"] == "voice.zip"
     assert result["files"][0]["source"] == "gofile"
-    assert result["files"][0]["aria2_header"] == ["Cookie: accountToken=secret-token"]
+    assert result["files"][0]["aria2_header"] == ["Cookie: accountToken=guest-token"]
 
 
 @pytest.mark.asyncio
@@ -2043,7 +2184,7 @@ async def test_poll_task_reports_gofile_rate_limit_without_configured_token(monk
     assert done is True
     assert failed_count == 1
     assert "HTTP 429" in rows[0]["failure_reason"]
-    assert "未配置 Gofile token" in rows[0]["failure_reason"]
+    assert "Gofile 访客账号或出口 IP 已被限流" in rows[0]["failure_reason"]
 
 
 @pytest.mark.asyncio

@@ -1,11 +1,12 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, inject, ref, watch } from 'vue'
 import { LibraryBig, Calendar, Gift, LoaderCircle, RefreshCw } from 'lucide-vue-next'
 import ExternalSearchSourceChips from './ExternalSearchSourceChips.vue'
 
 const props = defineProps({
   /** 作品数据对象 */
   item: { type: Object, required: true },
+  resolvedCoverUrl: { type: String, default: '' },
   /** 卡片在列表中的索引，用于入场动画延迟 */
   cardIndex: { type: Number, default: 0 },
   /** 是否选中 */
@@ -35,6 +36,12 @@ const props = defineProps({
   /** 尺寸变体 */
   size: { type: String, default: 'default', validator: v => ['default', 'lg'].includes(v) },
   showReleaseBadge: { type: Boolean, default: true },
+})
+
+const externalSearchResult = inject('circleExternalSearchResult', null)
+const externalSearchItem = computed(() => {
+  const state = externalSearchResult?.(props.item?.canonical_rjcode)
+  return state ? { ...props.item, external_search: state } : props.item
 })
 
 const emit = defineEmits(['select', 'preview', 'reimport', 'image-settled', 'image-failed', 'retry-cover', 'contextmenu', 'external-search'])
@@ -237,7 +244,7 @@ function onCoverError(event) {
 function onCoverLoad(event) {
   imageFailed.value = false
   delete event.currentTarget.dataset.fallbackIndex
-  emit('image-settled', displayCode.value)
+  emit('image-settled', { url: event.currentTarget.currentSrc || event.currentTarget.src })
 }
 
 function preventNativeShiftSelection(event) {
@@ -271,7 +278,7 @@ function preventNativeShiftSelection(event) {
     <div class="work-cover-wrapper">
       <img
         v-if="imageActive && coverUrl && !imageFailed"
-        :src="coverUrl"
+        :src="resolvedCoverUrl || coverUrl"
         class="work-cover"
         loading="lazy"
         decoding="async"
@@ -337,7 +344,7 @@ function preventNativeShiftSelection(event) {
             <span class="tag-chip" :class="item.server_owned ? 'is-primary' : 'is-danger'">{{ item.server_owned ? '已收录' : '未收录' }}</span>
             <span v-if="showOriginalSubtitleState" class="tag-chip" :class="canRepairSubtitle ? 'is-repair' : (item.subtitle_present ? 'is-subtitle' : 'is-subtitle-none')">{{ originalSubtitleLabel }}</span>
             <span class="tag-chip" :class="item.has_asmr_one ? 'is-success' : 'is-disabled'">{{ item.has_asmr_one ? '可下载' : '无源' }}</span>
-            <ExternalSearchSourceChips :item="item" @open="emit('external-search', $event)" />
+            <ExternalSearchSourceChips :item="externalSearchItem" @open="emit('external-search', $event)" />
           </template>
         </div>
       </slot>

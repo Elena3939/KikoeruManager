@@ -321,7 +321,6 @@ class HttpDownloaderConfig(BaseModel):
     timeout_seconds: int = 60
     allow_private_network: bool = False
     conflict_policy: str = "resume"
-    gofile_token: str = ""
     google_drive_oauth_enabled: bool = False
     google_drive_oauth_client_mode: str = "builtin"
     google_drive_client_id: str = ""
@@ -490,6 +489,7 @@ class EmailWatcherConfig(BaseModel):
     imap_host: str = "imap.gmail.com"
     imap_port: int = 993
     imap_ssl: bool = True
+    proxy_url: str = ""  # 空为直连，支持 HTTP CONNECT / SOCKS5 / SOCKS5H
     username: str = ""
     password: str = ""
     mailbox: str = "INBOX"

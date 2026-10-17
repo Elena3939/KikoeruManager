@@ -226,6 +226,9 @@ def test_completion_bonus_item_uses_own_date_and_cached_cover():
     service = CircleCompletionService()
 
     class _ImageCache:
+        def has_known_missing(self, _rjcode, variant="card"):
+            return False
+
         def cache_rjcode_for_url(self, url, _fallback):
             assert "RJ01576811" in url
             return "RJ01576811"

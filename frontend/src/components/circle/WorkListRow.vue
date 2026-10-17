@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, inject, ref, watch } from 'vue'
 import { FileText, LibraryBig, Server, X, PackageCheck, Layers, ExternalLink, Calendar, Gift, LoaderCircle, RefreshCw } from 'lucide-vue-next'
 import { useViewport } from '../../composables/useViewport'
 import ExternalSearchSourceChips from './ExternalSearchSourceChips.vue'
@@ -7,6 +7,7 @@ import ExternalSearchSourceChips from './ExternalSearchSourceChips.vue'
 const props = defineProps({
   /** 作品数据对象 */
   item: { type: Object, required: true },
+  resolvedCoverUrl: { type: String, default: '' },
   /** 行在列表中的索引，用于入场动画延迟 */
   rowIndex: { type: Number, default: 0 },
   /** 是否选中 */
@@ -29,6 +30,12 @@ const props = defineProps({
   coverUrlOverride: { type: String, default: '' },
   /** 当前封面是否正在下载到本地缓存 */
   coverFetching: { type: Boolean, default: false },
+})
+
+const externalSearchResult = inject('circleExternalSearchResult', null)
+const externalSearchItem = computed(() => {
+  const state = externalSearchResult?.(props.item?.canonical_rjcode)
+  return state ? { ...props.item, external_search: state } : props.item
 })
 
 const emit = defineEmits(['select', 'preview', 'reimport', 'image-settled', 'image-failed', 'retry-cover', 'contextmenu', 'external-search'])
@@ -209,7 +216,7 @@ function onImgError(event) {
 function onImgLoad(event) {
   imageFailed.value = false
   delete event.currentTarget.dataset.fallbackIndex
-  emit('image-settled', displayCode.value)
+  emit('image-settled', { url: event.currentTarget.currentSrc || event.currentTarget.src })
 }
 </script>
 
@@ -235,7 +242,7 @@ function onImgLoad(event) {
     <div class="wlr-thumb">
       <img
         v-if="imageActive && coverUrl && !imageFailed"
-        :src="coverUrl"
+        :src="resolvedCoverUrl || coverUrl"
         class="wlr-thumb-img"
         loading="lazy"
         decoding="async"
@@ -301,7 +308,7 @@ function onImgLoad(event) {
         <span class="wlr-pill" :class="item.has_asmr_one ? 'pill-ok' : 'pill-none'">
           <LibraryBig :size="10" />{{ item.has_asmr_one ? '可下载' : '无源' }}
         </span>
-        <ExternalSearchSourceChips :item="item" @open="emit('external-search', $event)" />
+        <ExternalSearchSourceChips :item="externalSearchItem" @open="emit('external-search', $event)" />
       </slot>
     </div>
 
@@ -382,7 +389,7 @@ function onImgLoad(event) {
     0 6px 14px color-mix(in srgb, var(--circle-primary, #2563eb) 12%, transparent);
 }
 
-:global(html.kikoerumanager-dark) .work-list-row.is-selected {
+html.kikoerumanager-dark .work-list-row.is-selected {
   border-color: rgba(96, 165, 250, 0.72);
   box-shadow:
     inset 4px 0 0 rgba(96, 165, 250, 0.95),

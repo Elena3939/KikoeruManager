@@ -1256,11 +1256,19 @@ class BaiduNetdiskService:
             for index, share in enumerate(shares)
         ]
         items: List[Optional[Dict[str, Any]]] = [None] * len(shares)
-        done, pending = await asyncio.wait(
-            tasks,
-            timeout=_BAIDU_PREVIEW_TOTAL_TIMEOUT_SECONDS,
-            return_when=asyncio.ALL_COMPLETED,
-        )
+        try:
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=_BAIDU_PREVIEW_TOTAL_TIMEOUT_SECONDS,
+                return_when=asyncio.ALL_COMPLETED,
+            )
+        except BaseException:
+            # wait 不会替父请求取消子任务；同时收回在信号量前排队的链接，
+            # 防止请求取消后还继续验证分享和枚举目录。
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         for task in done:
             try:
                 index, item = task.result()
@@ -3444,6 +3452,20 @@ class BaiduNetdiskService:
 
     async def start_download_task(self, task) -> Dict[str, Any]:
         metadata = dict(task.task_metadata or {})
+        try:
+            cleanup_result = await asyncio.to_thread(
+                self.cleanup_orphaned_empty_dirs,
+                min_age_seconds=3600,
+            )
+            if cleanup_result["staging_removed"] or cleanup_result["batch_removed"]:
+                logger.info(
+                    "[百度网盘] 下载前清理长期空目录: staging=%s batch=%s errors=%s",
+                    len(cleanup_result["staging_removed"]),
+                    len(cleanup_result["batch_removed"]),
+                    len(cleanup_result["errors"]),
+                )
+        except Exception:
+            logger.warning("[百度网盘] 下载前清理长期空目录失败", exc_info=True)
         preview = await self._resolve_download_preview(metadata)
         items = [item for item in list(preview.get("items") or []) if item.get("ok")]
         if not items:
@@ -3488,11 +3510,7 @@ class BaiduNetdiskService:
             os.makedirs(staging_parent, exist_ok=True)
             staging_dir = os.path.join(staging_parent, task.id)
         os.makedirs(staging_dir, exist_ok=True)
-
-        download_files = await self._build_download_file_rows(items)
-        if not download_files:
-            raise BaiduNetdiskError("分享里没有可直接下载的文件")
-        total_bytes = sum(int(item.get("size") or 0) for item in download_files)
+        # 先记录临时目录，确保构建下载清单或后续异常时都能走统一清理路径。
         task.task_metadata.update({
             "download_root": download_root,
             "download_batch_folder_name": batch_folder,
@@ -3501,6 +3519,42 @@ class BaiduNetdiskService:
             "final_output_path": final_dir,
             "renamed_output_path": "",
             "output_finalize_status": "pending",
+        })
+
+        try:
+            download_files = await self._build_download_file_rows(items)
+        except Exception:
+            self._record_retry_state(
+                task,
+                reason="构建下载清单失败，可重试本次百度网盘下载",
+                retry_available=True,
+            )
+            task.task_metadata["staging_cleanup"] = await asyncio.to_thread(
+                self._cleanup_completed_staging_dir,
+                task,
+                staging_dir,
+                download_root,
+            )
+            task.task_metadata["staging_cleanup"]["retained_for_retry"] = False
+            raise
+        if not download_files:
+            task.task_metadata["output_finalize_status"] = "failed"
+            self._record_retry_state(
+                task,
+                failed_files=[],
+                reason="分享里没有可直接下载的文件，可重新获取分享清单后重试",
+                retry_available=True,
+            )
+            task.task_metadata["staging_cleanup"] = await asyncio.to_thread(
+                self._cleanup_completed_staging_dir,
+                task,
+                staging_dir,
+                download_root,
+            )
+            task.task_metadata["staging_cleanup"]["retained_for_retry"] = False
+            raise BaiduNetdiskError("分享里没有可直接下载的文件")
+        total_bytes = sum(int(item.get("size") or 0) for item in download_files)
+        task.task_metadata.update({
             "download_files": download_files,
             "download_runtime": {
                 "status": "downloading",
@@ -3567,6 +3621,34 @@ class BaiduNetdiskService:
                     download_root=download_root,
                 )
             raise
+        except Exception:
+            task.task_metadata["output_finalize_status"] = "failed"
+            failed_files = [
+                dict(row) for row in download_files
+                if isinstance(row, dict) and str(row.get("status") or "").lower() != "completed"
+            ]
+            if not failed_files:
+                failed_files = []
+                for row in download_files:
+                    if not isinstance(row, dict):
+                        continue
+                    row["status"] = "failed"
+                    row["failure_reason"] = "下载过程异常，可重试下载"
+                    failed_files.append(dict(row))
+            self._record_retry_state(
+                task,
+                failed_files=failed_files,
+                reason="百度网盘下载异常，可重试失败文件",
+                retry_available=bool(failed_files),
+            )
+            task.task_metadata["staging_cleanup"] = await asyncio.to_thread(
+                self._cleanup_completed_staging_dir,
+                task,
+                staging_dir,
+                download_root,
+            )
+            task.task_metadata["staging_cleanup"]["retained_for_retry"] = False
+            raise
         finally:
             if self._task_cancel_events.get(task.id) is cancel_event:
                 self._task_cancel_events.pop(task.id, None)
@@ -3598,6 +3680,21 @@ class BaiduNetdiskService:
                 "speed_bytes_per_sec": 0,
             })
             task.task_metadata["download_runtime"] = runtime
+            task.task_metadata["output_finalize_status"] = "failed"
+            failure_reason = self._first_failure_reason(failed_files) or "没有任何百度网盘文件下载成功"
+            self._record_retry_state(
+                task,
+                failed_files=failed_files,
+                reason=failure_reason,
+                retry_available=bool(failed_files),
+            )
+            task.task_metadata["staging_cleanup"] = await asyncio.to_thread(
+                self._cleanup_completed_staging_dir,
+                task,
+                staging_dir,
+                download_root,
+            )
+            task.task_metadata["staging_cleanup"]["retained_for_retry"] = False
             try:
                 from .task_phase_metric_service import get_task_phase_metric_service
 
@@ -3618,9 +3715,41 @@ class BaiduNetdiskService:
                 )
             except Exception:
                 logger.warning("[百度网盘] 记录失败阶段指标失败 task_id=%s", getattr(task, "id", ""), exc_info=True)
-            raise BaiduNetdiskError(self._first_failure_reason(failed_files) or "没有任何百度网盘文件下载成功")
+            raise BaiduNetdiskError(failure_reason)
 
-        finalized = await asyncio.to_thread(self._finalize_output, staging_dir, final_dir, conflict_policy, len(items))
+        try:
+            finalized = await asyncio.to_thread(self._finalize_output, staging_dir, final_dir, conflict_policy, len(items))
+        except Exception:
+            task.task_metadata["output_finalize_status"] = "failed"
+            failed_files = [
+                dict(row) for row in download_files
+                if isinstance(row, dict) and str(row.get("status") or "").lower() != "completed"
+            ]
+            # 传输已经完成但最终落地失败时，原行不能继续保持 completed，
+            # 否则重试选择器会把它过滤掉，用户只能重新手工创建任务。
+            if not failed_files:
+                failed_files = []
+                for row in download_files:
+                    if not isinstance(row, dict):
+                        continue
+                    row["status"] = "failed"
+                    row["failure_reason"] = "最终落地失败，可重试下载"
+                    failed_files.append(dict(row))
+            failure_reason = "百度网盘下载完成目录落地失败，可重试下载"
+            self._record_retry_state(
+                task,
+                failed_files=failed_files,
+                reason=failure_reason,
+                retry_available=bool(failed_files),
+            )
+            task.task_metadata["staging_cleanup"] = await asyncio.to_thread(
+                self._cleanup_completed_staging_dir,
+                task,
+                staging_dir,
+                download_root,
+            )
+            task.task_metadata["staging_cleanup"]["retained_for_retry"] = False
+            raise
         staging_cleanup = await asyncio.to_thread(
             self._cleanup_completed_staging_dir,
             task,
@@ -5774,13 +5903,23 @@ class BaiduNetdiskService:
             for name in os.listdir(staging_dir)
             if name not in {".", ".."} and not name.endswith(".aria2")
         ] if os.path.isdir(staging_dir) else []
+        if item_count > 0 and not entries:
+            with contextlib.suppress(OSError):
+                os.rmdir(final_dir)
+            raise BaiduNetdiskError("百度网盘下载记录完成，但本地没有可落地文件")
         if len(entries) == 1 and os.path.isdir(entries[0]) and not os.listdir(final_dir):
             if os.path.exists(final_dir):
                 with contextlib.suppress(OSError):
                     os.rmdir(final_dir)
             try:
                 shutil.move(entries[0], final_dir)
+                if item_count > 0 and not self._directory_has_files(final_dir):
+                    with contextlib.suppress(OSError):
+                        shutil.rmtree(final_dir)
+                    raise BaiduNetdiskError("百度网盘下载完成目录中没有有效文件")
                 return final_dir
+            except BaiduNetdiskError:
+                raise
             except Exception:
                 os.makedirs(final_dir, exist_ok=True)
         os.makedirs(final_dir, exist_ok=True)
@@ -5793,7 +5932,68 @@ class BaiduNetdiskService:
                 else:
                     os.remove(target)
             shutil.move(entry, target)
+        if item_count > 0 and not self._directory_has_files(final_dir):
+            with contextlib.suppress(OSError):
+                shutil.rmtree(final_dir)
+            raise BaiduNetdiskError("百度网盘下载完成目录中没有有效文件")
         return final_dir
+
+    def _directory_has_files(self, path: str) -> bool:
+        """判断目录是否至少包含一个真实文件，忽略 aria2 中间文件。"""
+        if os.path.isfile(path):
+            return not path.endswith(".aria2")
+        if not os.path.isdir(path):
+            return False
+        for _root, _dirs, files in os.walk(path):
+            if any(not name.endswith(".aria2") for name in files):
+                return True
+        return False
+
+    def cleanup_orphaned_empty_dirs(self, *, min_age_seconds: int = 3600) -> Dict[str, Any]:
+        """清理百度下载产生的长期空 staging/批次目录。"""
+        root = self._download_root()
+        now = time.time()
+        result: Dict[str, Any] = {
+            "staging_removed": [],
+            "batch_removed": [],
+            "errors": [],
+        }
+        staging_parent = os.path.join(root, ".baidu-netdisk-staging")
+        if os.path.isdir(staging_parent):
+            for entry in os.scandir(staging_parent):
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                try:
+                    if now - entry.stat(follow_symlinks=False).st_mtime < min_age_seconds:
+                        continue
+                    if os.listdir(entry.path):
+                        continue
+                    os.rmdir(entry.path)
+                    result["staging_removed"].append(entry.path)
+                except OSError as exc:
+                    result["errors"].append({"path": entry.path, "reason": self._sanitize_error(exc)})
+            with contextlib.suppress(OSError):
+                os.rmdir(staging_parent)
+
+        batch_pattern = re.compile(r"^百度网盘_\d{8}_\d{6}(?: \(\d+\))?$")
+        if os.path.isdir(root):
+            for current_root, dirs, _files in os.walk(root, topdown=True):
+                dirs[:] = [name for name in dirs if name != ".baidu-netdisk-staging"]
+                for name in list(dirs):
+                    if not batch_pattern.fullmatch(name):
+                        continue
+                    path = os.path.join(current_root, name)
+                    try:
+                        if now - os.path.getmtime(path) < min_age_seconds:
+                            continue
+                        if self._directory_has_files(path):
+                            continue
+                        shutil.rmtree(path)
+                        result["batch_removed"].append(path)
+                        dirs.remove(name)
+                    except OSError as exc:
+                        result["errors"].append({"path": path, "reason": self._sanitize_error(exc)})
+        return result
 
     async def _finalize_cancelled_download_task(
         self,
@@ -5908,6 +6108,30 @@ class BaiduNetdiskService:
                 return reason
         return ""
 
+    def _record_retry_state(
+        self,
+        task,
+        *,
+        failed_files: Optional[List[Dict[str, Any]]] = None,
+        reason: str = "",
+        retry_available: Optional[bool] = None,
+    ) -> None:
+        """失败后保留任务的重试入口；本地临时目录是否清理由调用方单独决定。"""
+        rows = [dict(row) for row in (failed_files or []) if isinstance(row, dict)]
+        metadata = task.task_metadata if isinstance(task.task_metadata, dict) else {}
+        if failed_files is not None:
+            metadata["failed_files"] = rows
+        available = bool(rows) if retry_available is None else bool(retry_available)
+        metadata["retry_available"] = available
+        metadata["retry_reason"] = str(reason or "").strip()
+        metadata["retry_entry"] = {
+            "available": available,
+            "failed_count": len(rows),
+            "staging_dir": str(metadata.get("staging_dir") or ""),
+            "message": "可重试失败文件" if available else "没有可重试文件",
+        }
+        task.task_metadata = metadata
+
     def _sanitize_error(self, value: Any) -> str:
         text = str(value or "")
         if not text:
@@ -5979,6 +6203,14 @@ class BaiduNetdiskService:
         task.task_metadata["download_files"] = []
         task.task_metadata["download_runtime"] = {}
         task.task_metadata["failed_files"] = []
+        task.task_metadata["retry_available"] = False
+        task.task_metadata["retry_reason"] = ""
+        task.task_metadata["retry_entry"] = {
+            "available": False,
+            "failed_count": 0,
+            "staging_dir": str(task.task_metadata.get("staging_dir") or ""),
+            "message": "重试任务已入队",
+        }
         task.task_metadata["performance_metrics"] = {}
         task.task_metadata["failure_reason"] = ""
         task.task_metadata["output_finalize_status"] = "pending"

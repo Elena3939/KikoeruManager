@@ -20,6 +20,7 @@ from app.models.database import (
     LibraryIndexMutationLedger,
     LibraryIndexMutationOperation,
     LibraryIndexPendingMask,
+    LibraryIndexRJEntry,
     LibraryIndexStatus,
     get_local_now,
 )
@@ -334,6 +335,89 @@ def _add_index_entry(
         db.close()
 
 
+@pytest.mark.parametrize("scope,mask_path", [
+    ("exact", "circle/RJ01570953"),
+    ("subtree", "circle"),
+    ("subtree", ""),
+])
+def test_rj_index_survives_refresh_under_pending_mask(generation_env, scope, mask_path):
+    env = generation_env
+    library_id = "masked-rj-library"
+    path = "circle/RJ01570953"
+    _seed_active(env, library_id)
+    _add_index_entry(
+        env, library_id=library_id, generation=1,
+        relative_path=path, rjcode="RJ01570953",
+    )
+    with env.Session() as db:
+        env.store._sync_rj_entries_in_session(db, library_id, 1)
+        db.add(LibraryIndexMutationOperation(
+            operation_id="masked-rj-op", idempotency_key="masked-rj-key",
+            request_fingerprint="masked-rj-fingerprint", kind="reconcile",
+            state="committed", planned_scopes=[], actual_result={},
+        ))
+        db.flush()
+        db.add(LibraryIndexPendingMask(
+            operation_id="masked-rj-op", library_id=library_id,
+            effect_no=0, ledger_seq=1, kind="reconcile",
+            relative_path=mask_path, scope=scope,
+        ))
+        db.commit()
+
+    assert env.service.find_by_rjcode("RJ01570953", library_id) == []
+    assert env.service.find_by_rjcodes(["RJ01570953"], library_id) == []
+    with env.Session() as db:
+        env.store._refresh_derived_paths_in_session(
+            db, {(library_id, 1): {path}},
+            materialized_seq_by_library={library_id: 0},
+        )
+        db.commit()
+        assert db.query(LibraryIndexRJEntry).filter_by(
+            library_id=library_id, generation=1, rjcode="RJ01570953",
+        ).count() == 1
+        db.query(LibraryIndexPendingMask).filter_by(
+            operation_id="masked-rj-op",
+        ).delete(synchronize_session=False)
+        db.commit()
+
+    assert [row.relative_path for row in env.service.find_by_rjcode(
+        "RJ01570953", library_id,
+    )] == [path]
+    assert [row.relative_path for row in env.service.find_by_rjcodes(
+        ["RJ01570953"], library_id,
+    )] == [path]
+
+
+def test_building_rj_index_survives_mask_removed_at_cutover(generation_env):
+    env = generation_env
+    library_id = "building-rj-library"
+    path = "RJ01570953"
+    _seed_active(env, library_id)
+    (env.root / path).mkdir()
+    generation, base_seq = env.service._create_building_generation(library_id, str(env.root))
+    with env.Session() as db:
+        db.add(LibraryIndexMutationOperation(
+            operation_id="building-rj-op", idempotency_key="building-rj-key",
+            request_fingerprint="building-rj-fingerprint", kind="reconcile",
+            state="committed", planned_scopes=[], actual_result={},
+        ))
+        db.flush()
+        db.add(LibraryIndexPendingMask(
+            operation_id="building-rj-op", library_id=library_id,
+            effect_no=0, ledger_seq=base_seq, kind="reconcile",
+            relative_path=path, scope="subtree",
+        ))
+        db.commit()
+    stats = env.service._scan_building_generation(
+        library_id, str(env.root), generation, base_seq, 2,
+    )
+    assert env.service.find_by_rjcodes(["RJ01570953"], library_id) == []
+    env.service._cutover_building_generation(library_id, generation, base_seq, stats)
+    hits = env.service.find_by_rjcodes(["RJ01570953"], library_id)
+    assert [row.relative_path for row in hits] == [path]
+    assert hits[0].generation == generation
+
+
 def test_find_by_rjcode_repairs_legacy_row_and_bumps_view_revision(generation_env):
     env = generation_env
     library_id = "legacy-rjcode-library"
@@ -510,3 +594,115 @@ def test_repair_status_statistics_recounts_only_stable_active_view(generation_en
     skipped = env.service.repair_status_statistics()
     assert skipped["repaired"] == 0
     assert env.store.get_status(library_id).total_entries == 0
+
+def test_rjcode_backfill_advances_past_plain_directories_and_remembers_empty_scan(generation_env, monkeypatch):
+    env = generation_env
+    _seed_active(env, 'incremental')
+    for path in ['plain-a', 'plain-b', 'RJ00000021']:
+        _add_index_entry(env, library_id='incremental', generation=1, relative_path=path)
+    first = env.store.backfill_missing_rjcodes(limit=2)
+    assert first['scanned'] == 2
+    assert first['repaired'] == 0
+    assert first['has_more']
+    second = env.store.backfill_missing_rjcodes(limit=2)
+    assert second['repaired'] == 1
+    assert not second['has_more']
+    original_query = env.store._active_view_query
+    monkeypatch.setattr(env.store, '_active_view_query', lambda *_a, **_k: pytest.fail('完成水位不应重扫候选'))
+    assert env.store.backfill_missing_rjcodes(limit=2)['scanned'] == 0
+    monkeypatch.setattr(env.store, '_active_view_query', original_query)
+
+
+def test_rjcode_backfill_empty_candidates_do_not_acquire_write_transaction(generation_env, monkeypatch):
+    env = generation_env
+    _seed_active(env, 'empty-lock')
+    _add_index_entry(env, library_id='empty-lock', generation=1, relative_path='plain')
+    monkeypatch.setattr(env.store, '_write_session', lambda **_k: pytest.fail('空候选不得获取写事务或状态行锁'))
+    batch = env.store.backfill_missing_rjcodes()
+    assert batch['scanned'] == 1
+    assert not batch['has_more']
+    assert env.store.backfill_missing_rjcodes()['scanned'] == 0
+
+
+@pytest.mark.parametrize('change', ['insert', 'rename', 'generation', 'materialized'])
+def test_rjcode_backfill_restarts_when_visible_version_changes(generation_env, change):
+    env = generation_env
+    library_id = 'changed-' + change
+    _seed_active(env, library_id)
+    _add_index_entry(env, library_id=library_id, generation=1, relative_path='plain')
+    assert env.store.backfill_missing_rjcodes()['repaired'] == 0
+    with env.Session() as db:
+        status = db.query(LibraryIndexStatus).filter_by(library_id=library_id).one()
+        if change == 'rename':
+            row = db.query(LibraryIndexEntry).filter_by(library_id=library_id, relative_path='plain').one()
+            row.relative_path = row.name = 'RJ00000022'
+            status.view_revision += 1
+        elif change == 'generation':
+            status.active_generation = 2
+        elif change == 'materialized':
+            status.accepted_seq = status.materialized_seq = 1
+        else:
+            status.state_revision += 1
+        db.commit()
+    if change != 'rename':
+        _add_index_entry(env, library_id=library_id, generation=2 if change == 'generation' else 1,
+                         relative_path='RJ00000022', materialized_seq=1 if change == 'materialized' else 0)
+    assert env.store.backfill_missing_rjcodes()['repaired'] == 1
+
+
+def test_rjcode_backfill_local_legacy_write_invalidates_completed_watermark(generation_env):
+    env = generation_env
+    _seed_active(env, 'legacy')
+    assert env.store.backfill_missing_rjcodes()['scanned'] == 0
+    with env.store._write_session() as db:
+        row = db.query(LibraryIndexEntry).filter_by(library_id='legacy').one()
+        row.entry_type = 'dir'
+        row.name = row.relative_path = 'RJ00000023'
+    assert env.store.backfill_missing_rjcodes()['repaired'] == 1
+
+
+def test_rjcode_backfill_rechecks_mask_between_scan_and_publish(generation_env, monkeypatch):
+    from contextlib import contextmanager
+    env = generation_env
+    library_id = 'concurrent-mask'
+    _seed_active(env, library_id)
+    _add_index_entry(env, library_id=library_id, generation=1, relative_path='RJ00000024')
+    original_write = env.store._write_session
+    injected = False
+
+    @contextmanager
+    def add_mask_before_publish(**kwargs):
+        nonlocal injected
+        if not injected:
+            injected = True
+            with env.Session() as db:
+                db.add(LibraryIndexMutationOperation(
+                    operation_id='backfill-mask', idempotency_key='backfill-mask',
+                    request_fingerprint='backfill-mask', kind='reconcile', state='prepared',
+                    planned_scopes=[], actual_result={},
+                ))
+                db.flush()
+                db.add(LibraryIndexPendingMask(
+                    operation_id='backfill-mask', library_id=library_id, effect_no=0,
+                    kind='reconcile', relative_path='RJ00000024', scope='exact',
+                ))
+                db.query(LibraryIndexStatus).filter_by(library_id=library_id).update({
+                    LibraryIndexStatus.view_revision: LibraryIndexStatus.view_revision + 1,
+                })
+                db.commit()
+        with original_write(**kwargs) as db:
+            yield db
+
+    monkeypatch.setattr(env.store, '_write_session', add_mask_before_publish)
+    batch = env.store.backfill_missing_rjcodes()
+    assert batch['repaired'] == 0
+    assert batch['has_more']
+    assert env.store.backfill_missing_rjcodes()['repaired'] == 0
+    with env.Session() as db:
+        assert db.query(LibraryIndexEntry).filter_by(library_id=library_id, name='RJ00000024').one().rjcode is None
+        db.query(LibraryIndexPendingMask).filter_by(operation_id='backfill-mask').delete()
+        db.query(LibraryIndexStatus).filter_by(library_id=library_id).update({
+            LibraryIndexStatus.view_revision: LibraryIndexStatus.view_revision + 1,
+        })
+        db.commit()
+    assert env.store.backfill_missing_rjcodes()['repaired'] == 1

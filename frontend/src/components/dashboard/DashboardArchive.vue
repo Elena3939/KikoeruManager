@@ -8,29 +8,51 @@
       <div class="flex min-w-0 items-center gap-2.5">
         <Archive :size="20" :stroke-width="2" class="flex-shrink-0 text-slate-700" />
         <div class="min-w-0 leading-tight">
-          <h2 class="m-0 text-[14px] font-bold tracking-tight text-slate-900">最近归档</h2>
+          <h2 class="m-0 text-[14px] font-bold tracking-tight text-slate-900">归档中心</h2>
           <p class="m-0 mt-0.5 text-[11.5px] text-slate-500">
-            {{ archives.length ? `共 ${archives.length} 条记录` : '暂无归档记录' }}
+            {{ listType === 'queue' ? queueSummary : archives.length ? `共 ${archives.length} 条记录` : '暂无归档记录' }}
           </p>
         </div>
       </div>
-      <button
-        type="button"
+      <StatefulButton
+        unstyled
         class="dash-archive-refresh-btn group"
-        :disabled="archivesLoading"
-        title="刷新归档记录"
-        @click="$emit('refresh')"
+        :show-default-icons="false"
+        :disabled="currentLoading"
+        :title="listType === 'queue' ? '刷新压缩包队列' : '刷新任务归档'"
+        :aria-label="listType === 'queue' ? '刷新压缩包队列' : '刷新任务归档'"
+        @click="refreshCurrentList"
       >
-        <RefreshCw
-          :size="14"
-          :stroke-width="2.2"
-          :class="archivesLoading ? 'animate-spin' : 'transition-transform duration-300 group-hover:rotate-180 group-hover:scale-110'"
-        />
-      </button>
+        <template #prefix="{ state }">
+          <component
+            :is="state === 'success' ? Check : state === 'error' ? AlertCircle : RefreshCw"
+            :size="14"
+            :stroke-width="2.2"
+            :class="state === 'loading' || currentLoading ? 'animate-spin' : 'transition-transform duration-300 group-hover:rotate-180 group-hover:scale-110'"
+          />
+        </template>
+      </StatefulButton>
     </header>
 
+    <div class="dash-archive-list-types mt-3" role="group" aria-label="归档列表类型">
+      <button
+        v-for="type in listTypes"
+        :key="type.key"
+        type="button"
+        class="dash-archive-list-type"
+        :class="{ 'is-active': listType === type.key }"
+        :aria-pressed="listType === type.key"
+        @click="listType = type.key"
+      >
+        <component :is="type.icon" :size="14" />
+        {{ type.label }}
+      </button>
+    </div>
+
+    <DeferredArchiveQueue v-show="listType === 'queue'" ref="queueRef" embedded />
+
     <!-- 搜索 + 类型筛选：合成一个紧凑筛选条，减少最近归档面板的纵向占用 -->
-    <div class="dash-archive-filterbar mt-2">
+    <div v-show="listType === 'history'" class="dash-archive-filterbar mt-2">
       <div class="dash-archive-search">
         <AppDropdown
           :model-value="domainFilter"
@@ -88,8 +110,9 @@
     <!-- 归档列表（前端分页切片，pageSize 按容器高度动态计算） -->
     <div
       v-if="filteredArchives.length"
+      v-show="listType === 'history'"
       ref="listRef"
-      class="mt-2 flex min-h-0 flex-1 flex-col gap-2 overflow-hidden"
+      class="mt-2 flex min-h-0 flex-1 flex-col gap-2 overflow-auto"
     >
       <article
         v-for="(archive, index) in pagedArchives"
@@ -162,12 +185,12 @@
       </article>
     </div>
 
-    <div v-else class="mt-3 flex flex-1 items-center justify-center">
+    <div v-else v-show="listType === 'history'" class="mt-3 flex flex-1 items-center justify-center">
       <AppEmptyState description="暂无归档记录" size="default" />
     </div>
 
     <div
-      v-if="showPager"
+      v-if="listType === 'history' && showPager"
       class="dash-archive-pager mt-2.5 flex flex-shrink-0 items-center justify-between gap-2 border-t border-slate-100 pt-2.5"
     >
       <span class="text-[11px] font-medium tracking-wide text-slate-400">
@@ -210,9 +233,11 @@ import {
   AlertCircle,
   Archive,
   Activity,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  FileArchive,
   MinusCircle,
   PauseCircle,
   RefreshCw,
@@ -224,6 +249,8 @@ import {
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppDropdown from '../common/AppDropdown.vue'
 import AppEmptyState from '../common/AppEmptyState.vue'
+import StatefulButton from '../ui/stateful-button.vue'
+import DeferredArchiveQueue from './DeferredArchiveQueue.vue'
 
 const props = defineProps({
   archives: { type: Array, default: () => [] },
@@ -240,9 +267,26 @@ const props = defineProps({
   getStatusMeta: { type: Function, required: true },
   formatDate: { type: Function, required: true },
   formatFileSize: { type: Function, required: true },
+  refreshArchives: { type: Function, required: true },
 })
 
-defineEmits(['refresh', 'reprocess', 'change-page', 'update:searchQuery', 'update:domainFilter'])
+defineEmits(['reprocess', 'change-page', 'update:searchQuery', 'update:domainFilter'])
+
+const listType = ref('queue')
+const queueRef = ref(null)
+const listTypes = [
+  { key: 'queue', label: '压缩包队列', icon: FileArchive },
+  { key: 'history', label: '任务归档', icon: Archive },
+]
+const queueSummary = computed(() => {
+  const data = queueRef.value?.data
+  return `${data?.pending_count || 0} 项待归档 · ${data?.counts_by_status?.waiting_retry || 0} 项等待重试`
+})
+const currentLoading = computed(() => listType.value === 'queue' ? queueRef.value?.loading : props.archivesLoading)
+
+function refreshCurrentList() {
+  return listType.value === 'queue' ? queueRef.value?.refresh() : props.refreshArchives()
+}
 
 const DEFAULT_PAGE_SIZE = 6
 const MIN_PAGE_SIZE = 3
@@ -326,7 +370,7 @@ const internalPage = ref(1)
 
 // 数据 / 过滤 / 当前页变化后重新测行高，避免不同标题换行导致页容量偏差。
 watch(
-  () => [props.filteredArchives.length, internalPage.value],
+  () => [props.filteredArchives.length, internalPage.value, listType.value],
   () => nextTick(scheduleMeasurePanel),
   { flush: 'post' },
 )
@@ -404,6 +448,64 @@ function statusIconColor(key) {
 </script>
 
 <style scoped>
+.dash-archive-list-types {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  flex-shrink: 0;
+  gap: 12px;
+}
+.dash-archive-list-type {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 4px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: rgb(100 116 139);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.dash-archive-list-type::after {
+  position: absolute;
+  bottom: 0;
+  left: calc(50% - 12px);
+  width: 24px;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+  content: '';
+  opacity: 0;
+  transform: scaleX(0.5);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.dash-archive-list-type.is-active {
+  color: rgb(15 23 42);
+}
+.dash-archive-list-type.is-active::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+.dash-archive-list-type:hover {
+  transform: translateY(-2px) scale(1.02);
+  color: rgb(15 23 42);
+}
+.dash-archive-list-type:active {
+  transform: scale(0.96);
+}
+.dash-archive-list-type svg {
+  flex-shrink: 0;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.dash-archive-list-type:hover svg {
+  transform: rotate(-6deg);
+}
 .dash-fade-up {
   animation: dash-fade-up 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
@@ -844,22 +946,22 @@ function statusIconColor(key) {
   border-radius: 3px;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-refresh-btn,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-pager-btn {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-refresh-btn,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-pager-btn {
   background: var(--km-dark-surface-soft) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text-strong) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-refresh-btn:hover,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-pager-btn:hover {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-refresh-btn:hover,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-pager-btn:hover {
   background: var(--km-dark-surface-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
   color: #ffffff !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-filterbar {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-filterbar {
   background: rgba(255, 255, 255, 0.045) !important;
   border-color: var(--km-dark-border) !important;
   box-shadow:
@@ -868,71 +970,71 @@ function statusIconColor(key) {
   color-scheme: dark;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-filterbar:focus-within {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-filterbar:focus-within {
   border-color: var(--km-dark-border-strong) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.07),
     0 0 0 2px rgba(255, 255, 255, 0.055) !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-search {
   background: transparent !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-input {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-search-input {
   background: transparent !important;
   color: var(--km-dark-text-strong) !important;
   box-shadow: none !important;
   -webkit-text-fill-color: var(--km-dark-text-strong) !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-input::placeholder {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-search-input::placeholder {
   color: rgba(255, 255, 255, 0.48) !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-clear {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-search-clear {
   color: var(--km-dark-text-muted) !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-clear:hover {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-search-clear:hover {
   background: var(--km-dark-surface-hover) !important;
   color: var(--km-dark-text-strong) !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-search-filter-trigger {
   color: var(--km-dark-text-muted) !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger:hover,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger.is-open {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-search-filter-trigger:hover,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-search-filter-trigger.is-open {
   background: transparent !important;
   border-color: transparent !important;
   color: var(--km-dark-text-strong) !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger.is-filtered {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-search-filter-trigger.is-filtered {
   color: var(--km-dark-text-strong) !important;
 }
 
-:global(html.dark) .dashboard-archive .dash-archive-search-filter-trigger,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger {
+html.dark .dashboard-archive .dash-archive-search-filter-trigger,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-search-filter-trigger {
   color: rgba(226, 232, 240, 0.78) !important;
 }
 
-:global(html.dark) .dashboard-archive .dash-archive-search-filter-trigger:hover,
-:global(html.dark) .dashboard-archive .dash-archive-search-filter-trigger.is-open,
-:global(html.dark) .dashboard-archive .dash-archive-search-filter-trigger.is-filtered,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger:hover,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger.is-open,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger.is-filtered {
+html.dark .dashboard-archive .dash-archive-search-filter-trigger:hover,
+html.dark .dashboard-archive .dash-archive-search-filter-trigger.is-open,
+html.dark .dashboard-archive .dash-archive-search-filter-trigger.is-filtered,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-search-filter-trigger:hover,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-search-filter-trigger.is-open,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-search-filter-trigger.is-filtered {
   background: transparent !important;
   border-color: transparent !important;
   color: #f8fafc !important;
 }
 
-:global(html.dark) .dashboard-archive .dash-archive-search-filter-trigger.is-filtered::after,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger.is-filtered::after {
+html.dark .dashboard-archive .dash-archive-search-filter-trigger.is-filtered::after,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-search-filter-trigger.is-filtered::after {
   background: #93c5fd !important;
   box-shadow: 0 0 0 2px rgba(24, 25, 29, 0.98) !important;
 }
@@ -963,98 +1065,98 @@ function statusIconColor(key) {
 }
 
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-volume-chip {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-domain-chip,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-volume-chip {
   background: rgba(255, 255, 255, 0.07) !important;
   border-color: rgba(255, 255, 255, 0.1) !important;
   color: #f8fafc !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip--import {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-domain-chip--import {
   background: rgba(245, 158, 11, 0.16) !important;
   border-color: rgba(245, 158, 11, 0.22) !important;
   color: #fde68a !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip--existing_folder,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip--rj_subtitle {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-domain-chip--existing_folder,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-domain-chip--rj_subtitle {
   background: rgba(20, 184, 166, 0.14) !important;
   border-color: rgba(45, 212, 191, 0.2) !important;
   color: #ccfbf1 !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip--subtitle_import {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-domain-chip--subtitle_import {
   background: rgba(168, 85, 247, 0.14) !important;
   border-color: rgba(196, 181, 253, 0.2) !important;
   color: #ede9fe !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip--asmr_sync,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip--circle_completion {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-domain-chip--asmr_sync,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-domain-chip--circle_completion {
   background: rgba(16, 185, 129, 0.14) !important;
   border-color: rgba(110, 231, 183, 0.2) !important;
   color: #d1fae5 !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip--http_download {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-domain-chip--http_download {
   background: rgba(249, 115, 22, 0.16) !important;
   border-color: rgba(251, 146, 60, 0.22) !important;
   color: #fed7aa !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-status-chip {
   background: rgba(255, 255, 255, 0.06) !important;
   color: #cbd5e1 !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--completed,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--success,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--finished {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-status-chip--completed,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-status-chip--success,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-status-chip--finished {
   background: rgba(16, 185, 129, 0.14) !important;
   color: #d1fae5 !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--partial_failed {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-status-chip--partial_failed {
   background: rgba(245, 158, 11, 0.14) !important;
   color: #fde68a !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--failed {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-status-chip--failed {
   background: rgba(244, 63, 94, 0.14) !important;
   color: #fecdd3 !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--pending,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--waiting_manual,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--waiting_retry {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-status-chip--pending,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-status-chip--waiting_manual,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-status-chip--waiting_retry {
   background: rgba(255, 255, 255, 0.08) !important;
   color: #e2e8f0 !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-meta-rj,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-meta-time,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-meta-size {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-meta-rj,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-meta-time,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-meta-size {
   color: #ffffff !important;
   -webkit-text-fill-color: #ffffff !important;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.22);
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-pager {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-pager {
   border-color: var(--km-dark-border) !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-pager-indicator {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-pager-indicator {
   background: var(--km-dark-surface-soft) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text-strong) !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-pager-current,
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-pager-total {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-pager-current,
+html.kikoerumanager-dark .dashboard-archive .dash-archive-pager-total {
   color: #ffffff !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-pager-divider {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-pager-divider {
   color: rgba(255, 255, 255, 0.48) !important;
 }
 </style>

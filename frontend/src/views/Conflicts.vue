@@ -179,7 +179,7 @@
                 <div class="conflicts-list-card-main">
                   <div class="conflicts-list-card-row">
                     <strong class="conflicts-list-card-title">
-                      {{ conflict.rjcode || conflict.new_metadata?.work_name || conflict.new_path || '未识别项目' }}
+                      {{ formatConflictLabel(conflict) }}
                       <ChevronRight class="w-3.5 h-3.5 opacity-0 -translate-x-2 transition-all duration-300 group-hover:opacity-100 group-hover:translate-x-0 text-indigo-500" />
                     </strong>
                   </div>
@@ -242,7 +242,7 @@
             <div class="conflicts-detail-header-inner">
               <div class="conflicts-detail-title-block">
                 <div class="flex items-center gap-3">
-                  <h2 class="conflicts-detail-title">{{ activeConflict.rjcode || '未识别项目' }}</h2>
+                  <h2 class="conflicts-detail-title">{{ formatConflictLabel(activeConflict) }}</h2>
                   <span v-if="isConflictSelected(activeConflict.id)" class="lib-chip lib-chip-info">
                     <CheckSquare :size="12" :stroke-width="2.4" />已选入批量
                   </span>
@@ -525,6 +525,10 @@
                   <div v-if="activeConflict.new_metadata" class="conflicts-info-block">
                     <span class="conflicts-info-label">{{ isProblemConflict(activeConflict) ? '附带信息' : '作品信息' }}</span>
                     <div class="conflicts-info-meta-list">
+                      <div v-if="aggregateConflictRjcodes(activeConflict).length" class="conflicts-info-meta-row">
+                        <span class="conflicts-info-meta-key">包含作品</span>
+                        <span class="conflicts-info-meta-val break-all">{{ aggregateConflictRjcodes(activeConflict).join(' / ') }}</span>
+                      </div>
                       <div v-if="activeConflict.new_metadata.work_name" class="conflicts-info-meta-row">
                         <span class="conflicts-info-meta-key">名称</span>
                         <span class="conflicts-info-meta-val break-all">{{ activeConflict.new_metadata.work_name }}</span>
@@ -603,13 +607,19 @@
       v-model="mergeDialogVisible"
       :conflict="mergeConflict"
       :preview="mergePreview"
+      :target-candidates="mergeTargetCandidates"
       :decisions="mergeDecisions"
       :loading="mergeLoading"
       :loading-progress="mergePreviewProgress"
       :submitting="mergeSubmitting"
+      :submit-error="mergeSubmitError"
+      :canceling="mergePreviewCanceling"
       :submit-action="submitMerge"
+      :cancel-action="cancelMergePreview"
       @update:decisions="handleDecisionUpdate"
       @refresh="refreshMergePreview"
+      @select-target="selectMergeTarget"
+      @minimize="minimizeMergeWorkbench"
       @close="cancelMergePreviewPolling"
     />
 
@@ -755,6 +765,8 @@
 
 <script setup>
 import { computed, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { aggregateConflictRjcodes, formatConflictLabel } from '../utils/conflictLabel'
+import { useBackgroundWorkbenchManager } from '../composables/useBackgroundWorkbenchManager'
 import { ElMessage } from 'element-plus'
 import {
   RefreshCw, AlertCircle, CheckCircle2, Cloud, HardDrive,
@@ -802,22 +814,49 @@ const batchRunning = ref(false)
 const batchActionLabel = ref('')
 
 const mergeDialogVisible = ref(false)
+const mergeWorkbenchManager = useBackgroundWorkbenchManager()
+const mergeWorkbenchId = 'conflict-merge-workbench'
+mergeWorkbenchManager.removeWorkbench(mergeWorkbenchId)
+mergeWorkbenchManager.registerWorkbench({
+  id: mergeWorkbenchId,
+  title: '问题作品合并',
+  type: 'conflict-merge',
+  actions: ['resume'],
+  closable: false,
+})
+const mergeWorkbenchState = mergeWorkbenchManager.getWorkbenchState(mergeWorkbenchId)
+watch(() => mergeWorkbenchState.value?.visible, visible => {
+  mergeDialogVisible.value = Boolean(visible)
+})
+watch(mergeDialogVisible, visible => {
+  mergeWorkbenchManager.patchWorkbenchState(mergeWorkbenchId, { visible })
+})
+
+function minimizeMergeWorkbench() {
+  mergeDialogVisible.value = false
+  mergeWorkbenchManager.backgroundWorkbench(mergeWorkbenchId)
+}
 const mergeLoading = ref(false)
 const mergeSubmitting = ref(false)
+const mergeSubmitError = ref('')
 const mergeConflictId = ref('')
 const mergePreview = ref(null)
+const mergeTargetCandidates = ref([])
 const mergeDecisions = ref({})
 const mergePreviewCache = reactive({})
 const mergeDecisionCache = reactive({})
 // 合并预览异步 job 实时进度：来自 GET /api/conflicts/{id}/preview-job/{job_id}，
 // loading 卡片直接渲染 stage_label / message / percent，不再靠前端计时器估算。
 const mergePreviewProgress = ref({
-  status: 'idle',          // idle | running | completed | failed
+  status: 'idle',          // idle | running | completed | failed | cancelled
   stage: '',
   stage_label: '',
   message: '',
   percent: 0,
 })
+const mergePreviewJobId = ref('')
+const mergePreviewCanceling = ref(false)
+let mergePreviewRunToken = 0
 // 取消正在 polling 的 job：关弹窗 / 切换 conflict 时调用，避免后端 worker 完成后 stale 写状态。
 let mergePreviewPollingAbort = null
 const conflictFilter = ref('all')
@@ -825,6 +864,7 @@ const retryPollers = new Map()
 const processingPollers = new Map()
 const localRetryingConflictIds = reactive({})
 const handledTerminalTaskEvents = new Set()
+const pendingSkipConflictIds = new Set()
 const filenamePreviewState = reactive({})
 
 const batchRetryDialogVisible = ref(false)
@@ -1054,6 +1094,19 @@ const filenameEncodingOptions = [
 
 const activeConflict = computed(() => conflicts.value.find(conflict => conflict.id === activeConflictId.value) || null)
 const mergeConflict = computed(() => conflicts.value.find(conflict => conflict.id === mergeConflictId.value) || null)
+watch([mergePreviewProgress, mergeSubmitting, mergeConflictId, mergeSubmitError], () => {
+  const progress = mergePreviewProgress.value
+  const failed = progress.status === 'failed' || Boolean(mergeSubmitError.value)
+  mergeWorkbenchManager.patchWorkbenchState(mergeWorkbenchId, {
+    summary: { subtitle: formatConflictLabel(mergeConflict.value), text: mergeSubmitError.value || progress.message },
+    progress: { percentage: failed ? 0 : mergeSubmitting.value ? 99 : progress.percent, label: progress.stage_label },
+    status: {
+      key: failed ? 'failed' : mergeSubmitting.value ? 'running' : progress.status,
+      label: failed ? '合并失败，请查看原因' : mergeSubmitting.value ? '正在提交合并结果' : progress.stage_label,
+      tone: failed ? 'danger' : progress.status === 'completed' ? 'success' : 'neutral',
+    },
+  })
+}, { deep: true })
 const pendingConflicts = computed(() => conflicts.value.filter(conflict => !isConflictProcessing(conflict)))
 const retryingConflicts = computed(() => conflicts.value.filter(conflict => isConflictRetrying(conflict)))
 const processingConflicts = computed(() => conflicts.value.filter(conflict => isConflictProcessing(conflict) && !isConflictRetrying(conflict)))
@@ -1102,6 +1155,8 @@ onActivated(() => {
 })
 
 onUnmounted(() => {
+  cancelMergePreviewPolling()
+  mergeWorkbenchManager.removeWorkbench(mergeWorkbenchId)
   window.removeEventListener('keydown', _onFpDlgKeydown)
   window.removeEventListener('kikoerumanager:events:message', handleConflictRealtimeEvent)
   for (const timerId of retryPollers.values()) {
@@ -1684,9 +1739,6 @@ function resolveErrorMessage(error, fallback) {
   return error?.response?.data?.detail || error?.message || fallback
 }
 
-function formatConflictLabel(conflict) {
-  return conflict?.rjcode || conflict?.new_metadata?.work_name || conflict?.new_path || '未识别问题项'
-}
 
 function getConflictSourcePath(conflict) {
   return conflict?.context?.source?.resolved_path || conflict?.context?.source?.path || conflict?.new_path || '-'
@@ -1772,7 +1824,10 @@ function handleConflictTaskPayload(payload) {
 
   const conflict = conflicts.value.find(item => getConflictTaskId(item) === taskId)
   if (!conflict) return
-  const action = getConflictResolutionAction(conflict) || (isConflictRetrying(conflict) ? 'RETRY' : 'KEEP_NEW')
+  // 跳过由 HTTP 请求统一提示；它也会完成原任务，不能当成异步保留新版。
+  if (pendingSkipConflictIds.has(conflict.id)) return
+  const action = getConflictResolutionAction(conflict) || (isConflictRetrying(conflict) ? 'RETRY' : '')
+  if (!action || action === 'SKIP') return
   updateConflictLinkedTask(conflict.id, {
     engine_task_id: taskId,
     entity_id: taskId,
@@ -1865,10 +1920,15 @@ async function resolveKeepNew(conflict, preview = null, options = {}) {
 }
 
 async function resolveSkip(conflict) {
-  await conflictApi.resolve(conflict.id, {
-    action: 'SKIP'
-  })
-  removeConflict(conflict.id)
+  pendingSkipConflictIds.add(conflict.id)
+  try {
+    await conflictApi.resolve(conflict.id, {
+      action: 'SKIP'
+    })
+    removeConflict(conflict.id)
+  } finally {
+    pendingSkipConflictIds.delete(conflict.id)
+  }
 }
 
 async function startRetry(conflict, payload = {}) {
@@ -1937,7 +1997,7 @@ async function askRetryPassword(conflict, batchCount = 1) {
   }
 
   // 单条场景：用新版多密码 dialog 收集 1~N 个密码
-  const title = `重试 ${conflict.rjcode || '当前问题项'}`
+  const title = `重试 ${formatConflictLabel(conflict)}`
   const description = isGarbledConflict
     ? `可填多个密码（按顺序依次尝试）。当前编码：${getEncodingLabel(getFilenamePreviewEncoding(conflict))}，下一步会用首个密码预览压缩包目录确认是否仍然乱码。`
     : '可填多个密码，按顺序依次尝试，任一命中即成功。当前问题项不是文件名乱码错误，无需指定 ZIP 文件名编码。'
@@ -2038,14 +2098,32 @@ async function handleFilenamePreview(conflict) {
   }
 }
 
-async function getMergePreview(conflict, forceRefresh = false, onProgress = null) {
+async function getMergePreview(conflict, forceRefresh = false, onProgress = null, runToken = mergePreviewRunToken, mergeTarget = null) {
   let preview = mergePreviewCache[conflict.id]
   if (preview && !forceRefresh) return preview
   // 后端 POST /preview 在 action=MERGE 时立即返回 {async: true, job_id, status: 'running', ...}，
   // KEEP_NEW 仍然同步返回 preview。这里兼容两种返回：
   // - 老 sync 路径：直接拿 preview 缓存
   // - 新 async 路径：轮询 /preview-job/{job_id} 直到 status=completed/failed
-  const initial = await conflictApi.preview(conflict.id, 'MERGE')
+  const initial = await conflictApi.preview(conflict.id, 'MERGE', mergeTarget)
+  if (runToken !== mergePreviewRunToken) {
+    if (initial?.async && initial?.job_id) {
+      try {
+        await conflictApi.cancelMergePreviewJob(conflict.id, initial.job_id)
+      } catch (error) {
+        if (error?.response?.status !== 404) {
+          console.warn('清理已失效的合并预览任务失败:', error)
+        }
+      }
+    }
+    const err = new Error('合并预览已取消')
+    err.code = 'MERGE_PREVIEW_CANCELLED'
+    throw err
+  }
+  if (initial?.requires_target_selection) {
+    mergeTargetCandidates.value = initial.target_candidates || []
+    return null
+  }
   if (!initial?.async || !initial?.job_id) {
     // 兼容老接口（或后端未启用 async）：当成完整 preview 处理
     preview = initial
@@ -2053,6 +2131,11 @@ async function getMergePreview(conflict, forceRefresh = false, onProgress = null
     return preview
   }
   // 先把首帧 progress 推给 caller，让弹窗的 loading 卡立刻有内容
+  if (runToken !== mergePreviewRunToken) {
+    const err = new Error('合并预览已取消')
+    err.code = 'MERGE_PREVIEW_CANCELLED'
+    throw err
+  }
   if (typeof onProgress === 'function') {
     onProgress({
       status: initial.status || 'running',
@@ -2070,17 +2153,15 @@ async function getMergePreview(conflict, forceRefresh = false, onProgress = null
   let cancelled = false
   mergePreviewPollingAbort = () => { cancelled = true }
   const jobId = initial.job_id
+  mergePreviewJobId.value = jobId
   const startedAt = Date.now()
-  // 自适应轮询节奏：前 6s 每 600ms；之后 1.2s。总等待上限 15min（大压缩包 + 嵌套）。
-  const MAX_WAIT_MS = 15 * 60 * 1000
+  let consecutivePollErrors = 0
+  // 持续跟踪后端真实终态，大包解压不因前端等待时长而被判失败。
   while (true) {
     if (cancelled) {
       const err = new Error('合并预览已取消')
       err.code = 'MERGE_PREVIEW_CANCELLED'
       throw err
-    }
-    if (Date.now() - startedAt > MAX_WAIT_MS) {
-      throw new Error('合并预览超时（已等待 15 分钟）。后端 worker 可能仍在跑，可重新打开窗口查看。')
     }
     const interval = (Date.now() - startedAt < 6000) ? 600 : 1200
     await new Promise(resolve => setTimeout(resolve, interval))
@@ -2088,12 +2169,16 @@ async function getMergePreview(conflict, forceRefresh = false, onProgress = null
     let snapshot
     try {
       snapshot = await conflictApi.mergePreviewJob(conflict.id, jobId)
+      consecutivePollErrors = 0
     } catch (error) {
       // 单次轮询失败不致命（可能网络抖动），但 404 表示 job 过期，直接抛错让 UI 处理
       if (error?.response?.status === 404) {
         throw new Error('合并预览任务已过期，请重新发起合并')
       }
-      // 其它错误（网络抖动）静默重试
+      consecutivePollErrors += 1
+      if (consecutivePollErrors >= 5) {
+        throw new Error('连续 5 次无法获取合并进度，请检查连接后重新生成预览以接续后台任务。')
+      }
       continue
     }
     if (typeof onProgress === 'function') {
@@ -2105,14 +2190,23 @@ async function getMergePreview(conflict, forceRefresh = false, onProgress = null
         percent: Math.max(0, Math.min(100, Number(snapshot.percent) || 0)),
       })
     }
+    if (snapshot.status === 'cancelled') {
+      mergePreviewPollingAbort = null
+      mergePreviewJobId.value = ''
+      const err = new Error(snapshot.message || '合并预览已终止')
+      err.code = 'MERGE_PREVIEW_CANCELLED'
+      throw err
+    }
     if (snapshot.status === 'completed' && snapshot.result) {
       preview = snapshot.result
       mergePreviewCache[conflict.id] = preview
       mergePreviewPollingAbort = null
+      mergePreviewJobId.value = ''
       return preview
     }
     if (snapshot.status === 'failed') {
       mergePreviewPollingAbort = null
+      mergePreviewJobId.value = ''
       const err = new Error(snapshot.error || snapshot.message || '合并预览失败')
       err.code = 'MERGE_PREVIEW_FAILED'
       err.stage = snapshot.stage
@@ -2245,6 +2339,41 @@ async function handleKeepNew(conflict) {
     }
   } finally {
     markAction(conflict.id, 'KEEP_NEW', false)
+  }
+}
+
+async function cancelMergePreview() {
+  const conflict = mergeConflict.value
+  const jobId = mergePreviewJobId.value
+  mergePreviewCanceling.value = true
+  try {
+    if (conflict?.id && jobId) {
+      try {
+        await conflictApi.cancelMergePreviewJob(conflict.id, jobId)
+      } catch (error) {
+        if (error?.response?.status !== 404) throw error
+      }
+    }
+    // 后端确认终止后再丢弃结果；取消请求失败时继续跟踪原任务。
+    mergePreviewRunToken += 1
+    cancelMergePreviewPolling()
+    mergePreviewJobId.value = ''
+    mergeLoading.value = false
+    mergeDialogVisible.value = false
+    mergeWorkbenchManager.closeWorkbench(mergeWorkbenchId)
+    mergePreviewProgress.value = {
+      status: 'cancelled',
+      stage: 'cancelled',
+      stage_label: '已终止',
+      message: '合并预览已终止',
+      percent: mergePreviewProgress.value.percent || 0,
+    }
+    ElMessage.info('已终止合并预览')
+  } catch (error) {
+    console.error('终止合并预览失败:', error)
+    ElMessage.error(resolveErrorMessage(error, '终止合并预览失败'))
+  } finally {
+    mergePreviewCanceling.value = false
   }
 }
 
@@ -2634,10 +2763,22 @@ function retryDispatchLabel(conflict) {
   return '重试'
 }
 
-async function openMergeWorkbench(conflict, forceRefresh = false) {
+async function openMergeWorkbench(conflict, forceRefresh = false, mergeTarget = null) {
+  if (mergeLoading.value || mergeSubmitting.value) {
+    mergeWorkbenchManager.resumeWorkbench(mergeWorkbenchId)
+    if (mergeConflictId.value !== conflict.id) ElMessage.info('请先完成或终止当前合并，再处理其他作品')
+    return
+  }
+  mergeWorkbenchManager.openWorkbench(mergeWorkbenchId)
+  const runToken = ++mergePreviewRunToken
   mergeConflictId.value = conflict.id
+  mergePreviewJobId.value = ''
+  mergePreviewCanceling.value = false
   mergeDialogVisible.value = true
   mergeLoading.value = true
+  mergePreview.value = null
+  mergeTargetCandidates.value = []
+  mergeSubmitError.value = ''
   // 重置 progress，让弹窗 loading 卡从"初始化"开始而不是上一次的残值
   resetMergePreviewProgress()
   mergePreviewProgress.value = {
@@ -2650,8 +2791,15 @@ async function openMergeWorkbench(conflict, forceRefresh = false) {
   try {
     // 把后端 job 实时进度写到 mergePreviewProgress.value，工作台 loading panel 监听这个 state
     const preview = await getMergePreview(conflict, forceRefresh, (snapshot) => {
-      mergePreviewProgress.value = snapshot
-    })
+      if (runToken === mergePreviewRunToken) {
+        mergePreviewProgress.value = snapshot
+      }
+    }, runToken, mergeTarget)
+    if (runToken !== mergePreviewRunToken) return
+    if (!preview) {
+      mergePreviewProgress.value = { status: 'idle', stage: 'select_target', stage_label: '选择合并目标', message: '', percent: 0 }
+      return
+    }
     mergePreview.value = preview
     mergeDecisions.value = {
       ...(mergeDecisionCache[conflict.id] || preview.default_decisions || {})
@@ -2665,14 +2813,22 @@ async function openMergeWorkbench(conflict, forceRefresh = false) {
     }
   } catch (error) {
     // 用户主动取消（关闭弹窗 / 重新打开触发上一个 abort）不弹错
-    if (error?.code === 'MERGE_PREVIEW_CANCELLED') {
+    if (error?.code === 'MERGE_PREVIEW_CANCELLED' || runToken !== mergePreviewRunToken) {
       return
     }
     console.error('生成合并预览失败:', error)
     ElMessage.error(resolveErrorMessage(error, '生成合并预览失败'))
-    mergeDialogVisible.value = false
+    mergePreviewProgress.value = {
+      status: 'failed',
+      stage: error.stage || 'failed',
+      stage_label: '合并预览失败',
+      message: resolveErrorMessage(error, '生成合并预览失败'),
+      percent: mergePreviewProgress.value.percent || 0,
+    }
   } finally {
-    mergeLoading.value = false
+    if (runToken === mergePreviewRunToken) {
+      mergeLoading.value = false
+    }
   }
 }
 
@@ -2690,15 +2846,24 @@ function refreshMergePreview() {
   openMergeWorkbench(mergeConflict.value, true)
 }
 
+function selectMergeTarget(target) {
+  if (!mergeConflict.value) return
+  delete mergePreviewCache[mergeConflict.value.id]
+  delete mergeDecisionCache[mergeConflict.value.id]
+  return openMergeWorkbench(mergeConflict.value, true, target)
+}
+
 async function submitMerge() {
   if (!mergeConflict.value || !mergePreview.value) {
     return false
   }
 
   mergeSubmitting.value = true
+  mergeSubmitError.value = ''
   try {
     await resolveMerge(mergeConflict.value, mergePreview.value, mergeDecisions.value)
     ElMessage.success('合并结果已提交')
+    mergeWorkbenchManager.closeWorkbench(mergeWorkbenchId)
     mergeDialogVisible.value = false
     mergePreview.value = null
     mergeConflictId.value = ''
@@ -2706,6 +2871,7 @@ async function submitMerge() {
     return true
   } catch (error) {
     console.error('提交合并失败:', error)
+    mergeSubmitError.value = resolveErrorMessage(error, '提交合并失败')
     ElMessage.error(resolveErrorMessage(error, '提交合并失败'))
     return false
   } finally {

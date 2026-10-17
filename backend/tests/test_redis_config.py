@@ -948,6 +948,7 @@ def test_library_index_watcher_degrades_cleanly_when_inotify_limit_is_reached(mo
 
 def test_library_index_watcher_uses_one_recursive_observer_per_library(monkeypatch, tmp_path):
     root = tmp_path / "library"
+    root.mkdir()
     schedules = []
 
     class FakeManager:
@@ -1005,6 +1006,88 @@ def test_library_index_watcher_coalesces_deep_events_to_second_level(tmp_path):
         str(root),
         str(deep_file),
     ) == str(root / "circle" / "RJ00000001")
+
+
+def test_library_index_watcher_parent_modified_does_not_expand_move(tmp_path):
+    from watchdog.events import DirModifiedEvent, DirMovedEvent, FileModifiedEvent
+
+    root = tmp_path / "library"
+    circle = root / "circle"
+    source = circle / "RJ00000001"
+    target = circle / "RJ00000002"
+    marked = []
+    owner = SimpleNamespace(
+        mark_dirty=lambda *args, coalesce=False: marked.append(
+            LibraryIndexWatcherDriver._coalesce_event_path(args[1], args[2])
+            if coalesce else args[2]
+        ),
+        _coalesce_event_path=LibraryIndexWatcherDriver._coalesce_event_path,
+    )
+    handler = watcher_module._InventoryEventHandler(owner, "library", str(root))
+    handler.on_any_event(DirMovedEvent(str(source), str(target)))
+    handler.on_any_event(DirModifiedEvent(str(circle)))
+    handler.on_any_event(DirModifiedEvent(str(root)))
+    assert marked == [str(source), str(target)]
+
+    handler.on_any_event(FileModifiedEvent(str(target / "wav" / "track.wav")))
+    assert marked[-1] == str(target)
+
+
+def test_library_index_watcher_checks_raw_move_scope_before_coalescing(monkeypatch, tmp_path):
+    from watchdog.events import DirMovedEvent, FileModifiedEvent
+
+    root = tmp_path / "library"
+    source = root / "circle" / "RJ00000001" / "source"
+    target = root / "circle" / "RJ00000002" / "target"
+    checked = []
+    writes = []
+
+    def suppress(_library_id, relative_path):
+        checked.append(relative_path)
+        return relative_path.startswith("circle/RJ00000001/source") or relative_path.startswith(
+            "circle/RJ00000002/target"
+        )
+
+    monkeypatch.setattr(watcher_module, "get_library_index_mutation_service", lambda: SimpleNamespace(
+        should_suppress_watcher=suppress,
+    ))
+    monkeypatch.setattr(watcher_module, "get_redis_service", lambda: SimpleNamespace(
+        upsert_library_index_dirty_paths_sync=lambda *args, **kwargs: writes.append(args),
+    ))
+    driver = LibraryIndexWatcherDriver()
+    handler = watcher_module._InventoryEventHandler(driver, "library", str(root))
+    handler.on_any_event(DirMovedEvent(str(source), str(target)))
+    handler.on_any_event(FileModifiedEvent(str(target / "track.wav")))
+
+    assert checked == [
+        "circle/RJ00000001/source",
+        "circle/RJ00000002/target",
+        "circle/RJ00000002/target/track.wav",
+    ]
+    assert driver.diagnostics()["dirty_paths"] == {}
+    assert writes == []
+
+
+def test_library_index_watcher_external_directory_move_keeps_actual_subtrees(monkeypatch, tmp_path):
+    from watchdog.events import DirMovedEvent, FileMovedEvent
+
+    root = tmp_path / "library"
+    source = root / "circle" / "RJ00000001" / "source"
+    target = root / "circle" / "RJ00000002" / "target"
+    monkeypatch.setattr(watcher_module, "get_library_index_mutation_service", lambda: SimpleNamespace(
+        should_suppress_watcher=lambda *_args: False,
+    ))
+    monkeypatch.setattr(watcher_module, "get_redis_service", lambda: SimpleNamespace(
+        upsert_library_index_dirty_paths_sync=lambda *_args, **_kwargs: None,
+    ))
+    driver = LibraryIndexWatcherDriver()
+    handler = watcher_module._InventoryEventHandler(driver, "library", str(root))
+    handler.on_any_event(DirMovedEvent(str(source), str(target)))
+    handler.on_any_event(FileMovedEvent(
+        str(source / "track.wav"), str(target / "track.wav"), is_synthetic=True,
+    ))
+
+    assert set(driver._dirty["library"]) == {str(source), str(target)}
 
 
 def test_library_index_dirty_zset_and_channel_diagnostics(monkeypatch):

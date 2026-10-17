@@ -4462,6 +4462,8 @@ const subtitleOptions = ref({
 
   skipIfExistingSubtitles: false,
 
+  subtitleIndexQueryMode: 'exact',
+
   namingStrategy: 'audio',
 
   useFilterRules: false,
@@ -5092,6 +5094,7 @@ function filterRowsByIndexTombstones (rows, fallbackLibraryId = selectedLibraryI
 
 function invalidateDirectoryViewRequests () {
   directoryRequestGate.invalidate()
+  directoryRefreshInFlight.clear()
   suppressSelectionChange.value = false
   listPolling.value = false
   loading.value = false
@@ -8717,6 +8720,8 @@ function normalizeRJSubtitleOptions (source = {}) {
 
     skipIfExistingSubtitles: source?.skipIfExistingSubtitles ?? source?.skip_if_existing_subtitles ?? false,
 
+    subtitleIndexQueryMode: source?.subtitleIndexQueryMode === 'linked' || source?.subtitle_index_query_mode === 'linked' ? 'linked' : 'exact',
+
     namingStrategy: ['audio', 'subtitle'].includes(namingStrategy) ? namingStrategy : 'audio',
 
     useFilterRules: source?.useFilterRules ?? source?.use_filter_rules ?? false,
@@ -8756,6 +8761,8 @@ function buildRJSubtitleConfigPayload (options = subtitleOptions.value) {
     enable_metadata_match: options.enableMetadataMatch !== false,
 
     skip_if_existing_subtitles: Boolean(options.skipIfExistingSubtitles),
+
+    subtitle_index_query_mode: options.subtitleIndexQueryMode === 'linked' ? 'linked' : 'exact',
 
     naming_strategy: options.namingStrategy === 'subtitle' ? 'subtitle' : 'audio',
 
@@ -9011,7 +9018,9 @@ function handleLibraryIndexStatusChange (status, source = 'store') {
     circleAbortController?.abort()
     circleAbortController = null
     if (String(selectedLibraryId.value || '') === libraryId) {
+      const interrupted = directoryRequestGate.diagnostics().requestInFlight
       invalidateDirectoryViewRequests()
+      if (interrupted) scheduleListPoll(files.value, { index_refresh_pending: true })
     }
   }
   flushPendingIndexFenceRefreshes()
@@ -9291,7 +9300,10 @@ async function refreshLibraryInternal (options = {}) {
     if (String(selectedLibraryId.value) !== requestLibraryId || String(currentPath.value || '') !== requestPath) return
     if (Number(currentPage.value || 1) !== requestPage || Number(pageSize.value || DEFAULT_PAGE_SIZE) !== requestPageSize) return
     if (String(sortBy.value || DEFAULT_SORT_BY) !== requestSortBy || String(sortOrder.value || DEFAULT_SORT_ORDER) !== requestSortOrder) return
-    if (!libraryIndexStateStore.isIndexViewResponseCurrent(data)) return
+    if (!libraryIndexStateStore.isIndexViewResponseCurrent(data)) {
+      scheduleListPoll(files.value, { index_refresh_pending: true })
+      return
+    }
     libraryIndexStateStore.recordIndexViews(data)
 
     files.value = filterRowsByIndexTombstones(applyRecentRenameRows(data.files || []), requestLibraryId)
@@ -9471,6 +9483,7 @@ async function navigateToIndexEntry (entry) {
   currentPath.value = targetPath
 
   currentPage.value = 1
+  await refreshLibrary()
 
 }
 
@@ -16786,6 +16799,7 @@ async function submitRJSubtitleTasks (items, options = {}) {
       enableMetadataMatch: subtitleOptions.value.enableMetadataMatch,
 
       skipIfExistingSubtitles: effectiveSkipIfExistingSubtitles,
+      subtitleIndexQueryMode: subtitleOptions.value.subtitleIndexQueryMode,
 
       forceRerun,
 
@@ -18375,7 +18389,7 @@ async function applySubtitleManualPairs () {
     }
 
     const phaseOneBuckets = groupByLibrary(phaseOne)
-    for (const [operationLibraryId, bucketPairs] of phaseOneBuckets) {
+    await Promise.all([...phaseOneBuckets].map(async ([operationLibraryId, bucketPairs]) => {
       const items = bucketPairs.map(pair => ({ path: pair.source_path, new_name: pair.temp_name }))
       const result = await libraryApi.browserBatchRename(operationLibraryId, items, {
         skipActivityLog: true,
@@ -18395,10 +18409,10 @@ async function applySubtitleManualPairs () {
       if (missingTempPath) {
         throw new Error(`重命名为临时名失败：后端未返回新路径（${missingTempPath.source_path || missingTempPath.current_name || ''}）`)
       }
-    }
+    }))
 
     const phaseTwoBuckets = groupByLibrary(phaseOne)
-    for (const [operationLibraryId, bucketPairs] of phaseTwoBuckets) {
+    await Promise.all([...phaseTwoBuckets].map(async ([operationLibraryId, bucketPairs]) => {
       const items = bucketPairs.map(pair => ({ path: pair.temp_path, new_name: pair.target_name }))
       const result = await libraryApi.browserBatchRename(operationLibraryId, items, {
         skipActivityLog: true,
@@ -18418,7 +18432,7 @@ async function applySubtitleManualPairs () {
       if (missingFinalPath) {
         throw new Error(`重命名为目标名失败：后端未返回新路径（${missingFinalPath.temp_path || missingFinalPath.target_name || ''}）`)
       }
-    }
+    }))
 
     if (unusedSubtitleRows.length) {
       const deleteResult = await libraryApi.browserBatchDelete(
@@ -18510,29 +18524,20 @@ async function applySubtitleManualPairs () {
 
 
 
-      await refreshRJSubtitleStatus(false, { silent: true })
-
-
-
-      if (isLinkedImport) {
-
-        const refreshedTask = subtitleTasks.value.find(task => task.id === effectiveTaskId)
-
-        if (refreshedTask?.subtitle_dir) {
-
-          await inspectSubtitleTask(refreshedTask, { force: true })
-
-        } else {
-
-          clearSubtitleInspectorState()
-
+      void (async () => {
+        try {
+          await refreshRJSubtitleStatus(false, { silent: true })
+          if (isLinkedImport) {
+            const refreshedTask = subtitleTasks.value.find(task => task.id === effectiveTaskId)
+            if (refreshedTask?.subtitle_dir) await inspectSubtitleTask(refreshedTask, { force: true })
+            else clearSubtitleInspectorState()
+          } else {
+            await reloadSubtitleInspector()
+          }
+        } catch (refreshError) {
+          console.warn('字幕配对完成后刷新工作台失败', refreshError)
         }
-
-      } else {
-
-        await reloadSubtitleInspector()
-
-      }
+      })()
 
     } else {
 
@@ -18558,20 +18563,26 @@ async function applySubtitleManualPairs () {
 
       }
 
-      await reloadSubtitleInspector()
-
-      await refreshRJSubtitleStatus(false, { silent: true })
+      void Promise.all([
+        reloadSubtitleInspector(),
+        refreshRJSubtitleStatus(false, { silent: true })
+      ]).catch(refreshError => {
+        console.warn('字幕配对完成后刷新工作台失败', refreshError)
+      })
 
     }
 
 
 
-    await scheduleFinalIndexMoves(phaseTwoCompleted)
-    subtitleIndexMutations.forEach(mutation => libraryIndexStateStore.registerMutationResponse(mutation, {
-      libraryId: subtitleLibraryId,
-      deletedPaths: [],
-    }))
-    refreshAfterIndexFencesInBackground(subtitleIndexMutations, '字幕配对已完成')
+    void scheduleFinalIndexMoves(phaseTwoCompleted).then(() => {
+      subtitleIndexMutations.forEach(mutation => libraryIndexStateStore.registerMutationResponse(mutation, {
+        libraryId: subtitleLibraryId,
+        deletedPaths: [],
+      }))
+      refreshAfterIndexFencesInBackground(subtitleIndexMutations, '字幕配对已完成')
+    }).catch(indexError => {
+      console.warn('字幕配对最终索引移动调度失败', indexError)
+    })
 
     ElMessage.success(`${isLinkedImport ? '已重命名并导入' : '已应用'} ${appliedPairCount} 组配对${unusedSubtitleRows.length ? `，并删除 ${unusedSubtitleRows.length} 个未使用字幕` : ''}。当前目录已标记为已执行过配对，可继续调整后再次应用。`)
 
@@ -23172,11 +23183,11 @@ let pendingFenceRefreshInFlight = false
 let pendingFenceRefreshNeedsFlush = false
 
 function refreshMaterializedLibraryViews (messagePrefix = '操作已完成') {
+  pendingFenceRefreshInFlight = true
   const jobs = [refreshLibrary({ silent: true, forceRefresh: true })]
   if (folderDialogVisible.value && folderDialogRef.value?.reload) {
     jobs.push(folderDialogRef.value.reload())
   }
-  pendingFenceRefreshInFlight = true
   Promise.all(jobs).catch(error => {
     ElMessage.warning(`${messagePrefix}，但索引物化后的刷新失败：${error?.response?.data?.detail || error?.message || '未知错误'}`)
   }).finally(() => {
@@ -23240,6 +23251,15 @@ function pendingFenceAffectsCurrentDirectory (pending) {
   const currentRelativePath = normalizeLibraryPathKey(
     libraryIndexStateStore.relativePathFor(libraryId, currentPath.value),
   )
+  // Fence 路径使用库存根下的相对路径；当前位于库存根时 relativePathFor 返回空串。
+  // 根目录列表会受根下任意移动影响，不能因为绝对路径与相对路径无法直接比较而跳过刷新。
+  const libraryRootPath = normalizeLibraryPathKey(libraryIndexStateStore.libraryRootById?.[libraryId])
+  if (
+    currentDirectoryPath &&
+    libraryRootPath &&
+    currentDirectoryPath === libraryRootPath &&
+    !currentRelativePath
+  ) return true
   const currentPaths = [...new Set([currentDirectoryPath, currentRelativePath].filter(Boolean))]
   if (!currentPaths.length) return true
   return paths.some(path => {
@@ -23263,15 +23283,15 @@ function flushPendingIndexFenceRefreshes () {
       clearPendingIndexFence(pending)
       continue
     }
+    if (pendingFenceRefreshInFlight) {
+      pendingFenceRefreshNeedsFlush = true
+      continue
+    }
     pendingIndexFenceRefreshes.delete(key)
     clearPendingIndexFence(pending)
     readyPending = readyPending || pending
   }
   if (readyPending) {
-    if (pendingFenceRefreshInFlight) {
-      pendingFenceRefreshNeedsFlush = true
-      return
-    }
     refreshMaterializedLibraryViews(readyPending.messagePrefix || '操作已完成')
   }
 }
@@ -32203,7 +32223,7 @@ function statsStatusTextDisplay (stats) {
   --baidu-upload-file: rgba(214, 214, 220, 0.78);
 }
 
-:global(html.kikoerumanager-dark .baidu-upload-modal) :is(
+:global(html.kikoerumanager-dark .baidu-upload-modal :is(
   .baidu-upload-window,
   .baidu-upload-header,
   .baidu-upload-footer,
@@ -32222,8 +32242,8 @@ function statsStatusTextDisplay (stats) {
   .baidu-upload-cleanup,
   .baidu-upload-direct-note,
   [class*="shadow"]
-),
-:global(html.dark .baidu-upload-modal) :is(
+)),
+:global(html.dark .baidu-upload-modal :is(
   .baidu-upload-window,
   .baidu-upload-header,
   .baidu-upload-footer,
@@ -32242,7 +32262,7 @@ function statsStatusTextDisplay (stats) {
   .baidu-upload-cleanup,
   .baidu-upload-direct-note,
   [class*="shadow"]
-) {
+)) {
   box-shadow: none !important;
   text-shadow: none !important;
   filter: none !important;
@@ -32256,19 +32276,19 @@ function statsStatusTextDisplay (stats) {
   -webkit-backdrop-filter: none !important;
 }
 
-:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-header, .baidu-upload-footer),
-:global(html.dark .baidu-upload-modal) :is(.baidu-upload-header, .baidu-upload-footer) {
+:global(html.kikoerumanager-dark .baidu-upload-modal :is(.baidu-upload-header, .baidu-upload-footer)),
+:global(html.dark .baidu-upload-modal :is(.baidu-upload-header, .baidu-upload-footer)) {
   border-color: var(--baidu-upload-border) !important;
   background: var(--baidu-upload-header) !important;
 }
 
-:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-content, .baidu-upload-settings-card-panel, .baidu-upload-tree-panel),
-:global(html.dark .baidu-upload-modal) :is(.baidu-upload-content, .baidu-upload-settings-card-panel, .baidu-upload-tree-panel) {
+:global(html.kikoerumanager-dark .baidu-upload-modal :is(.baidu-upload-content, .baidu-upload-settings-card-panel, .baidu-upload-tree-panel)),
+:global(html.dark .baidu-upload-modal :is(.baidu-upload-content, .baidu-upload-settings-card-panel, .baidu-upload-tree-panel)) {
   background: var(--baidu-upload-panel) !important;
 }
 
-:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-dd .app-dd-trigger, .baidu-upload-input, .baidu-upload-stepper, .baidu-upload-cleanup, .baidu-upload-direct-note),
-:global(html.dark .baidu-upload-modal) :is(.baidu-upload-dd .app-dd-trigger, .baidu-upload-input, .baidu-upload-stepper, .baidu-upload-cleanup, .baidu-upload-direct-note) {
+:global(html.kikoerumanager-dark .baidu-upload-modal :is(.baidu-upload-dd .app-dd-trigger, .baidu-upload-input, .baidu-upload-stepper, .baidu-upload-cleanup, .baidu-upload-direct-note)),
+:global(html.dark .baidu-upload-modal :is(.baidu-upload-dd .app-dd-trigger, .baidu-upload-input, .baidu-upload-stepper, .baidu-upload-cleanup, .baidu-upload-direct-note)) {
   border-color: var(--baidu-upload-border) !important;
   background: var(--baidu-upload-field) !important;
   color: var(--baidu-upload-text) !important;
@@ -32276,8 +32296,8 @@ function statsStatusTextDisplay (stats) {
   -webkit-backdrop-filter: none !important;
 }
 
-:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-dd .app-dd-trigger:hover, .baidu-upload-dd .app-dd-trigger.is-open, .baidu-upload-input:hover:not(:disabled), .baidu-upload-input:focus, .baidu-upload-cleanup:hover),
-:global(html.dark .baidu-upload-modal) :is(.baidu-upload-dd .app-dd-trigger:hover, .baidu-upload-dd .app-dd-trigger.is-open, .baidu-upload-input:hover:not(:disabled), .baidu-upload-input:focus, .baidu-upload-cleanup:hover) {
+:global(html.kikoerumanager-dark .baidu-upload-modal :is(.baidu-upload-dd .app-dd-trigger:hover, .baidu-upload-dd .app-dd-trigger.is-open, .baidu-upload-input:hover:not(:disabled), .baidu-upload-input:focus, .baidu-upload-cleanup:hover)),
+:global(html.dark .baidu-upload-modal :is(.baidu-upload-dd .app-dd-trigger:hover, .baidu-upload-dd .app-dd-trigger.is-open, .baidu-upload-input:hover:not(:disabled), .baidu-upload-input:focus, .baidu-upload-cleanup:hover)) {
   border-color: var(--baidu-upload-border-strong) !important;
   background: var(--baidu-upload-field-hover) !important;
 }
@@ -32340,8 +32360,8 @@ function statsStatusTextDisplay (stats) {
   -webkit-backdrop-filter: blur(12px) saturate(108%) !important;
 }
 
-:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-header, .baidu-upload-footer, .baidu-upload-content),
-:global(html.dark .baidu-upload-modal) :is(.baidu-upload-header, .baidu-upload-footer, .baidu-upload-content) {
+:global(html.kikoerumanager-dark .baidu-upload-modal :is(.baidu-upload-header, .baidu-upload-footer, .baidu-upload-content)),
+:global(html.dark .baidu-upload-modal :is(.baidu-upload-header, .baidu-upload-footer, .baidu-upload-content)) {
   background: transparent !important;
   background-color: transparent !important;
   background-image: none !important;
@@ -32349,31 +32369,31 @@ function statsStatusTextDisplay (stats) {
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-settings-card-panel, .baidu-upload-tree-panel),
-:global(html.dark .baidu-upload-modal) :is(.baidu-upload-settings-card-panel, .baidu-upload-tree-panel) {
+:global(html.kikoerumanager-dark .baidu-upload-modal :is(.baidu-upload-settings-card-panel, .baidu-upload-tree-panel)),
+:global(html.dark .baidu-upload-modal :is(.baidu-upload-settings-card-panel, .baidu-upload-tree-panel)) {
   background: var(--baidu-upload-panel) !important;
   background-image: none !important;
   border-color: var(--baidu-upload-border) !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-tree-row.tree-row-selected, .baidu-upload-tree-row.tree-row-selected:hover),
-:global(html.dark .baidu-upload-modal) :is(.baidu-upload-tree-row.tree-row-selected, .baidu-upload-tree-row.tree-row-selected:hover) {
+:global(html.kikoerumanager-dark .baidu-upload-modal :is(.baidu-upload-tree-row.tree-row-selected, .baidu-upload-tree-row.tree-row-selected:hover)),
+:global(html.dark .baidu-upload-modal :is(.baidu-upload-tree-row.tree-row-selected, .baidu-upload-tree-row.tree-row-selected:hover)) {
   background: var(--baidu-upload-row-selected) !important;
   border-color: var(--baidu-upload-border) !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-tree-toggle, .baidu-upload-dd .app-dd-trigger, .baidu-upload-input, .baidu-upload-stepper, .baidu-upload-cleanup, .baidu-upload-direct-note),
-:global(html.dark .baidu-upload-modal) :is(.baidu-upload-tree-toggle, .baidu-upload-dd .app-dd-trigger, .baidu-upload-input, .baidu-upload-stepper, .baidu-upload-cleanup, .baidu-upload-direct-note) {
+:global(html.kikoerumanager-dark .baidu-upload-modal :is(.baidu-upload-tree-toggle, .baidu-upload-dd .app-dd-trigger, .baidu-upload-input, .baidu-upload-stepper, .baidu-upload-cleanup, .baidu-upload-direct-note)),
+:global(html.dark .baidu-upload-modal :is(.baidu-upload-tree-toggle, .baidu-upload-dd .app-dd-trigger, .baidu-upload-input, .baidu-upload-stepper, .baidu-upload-cleanup, .baidu-upload-direct-note)) {
   background: var(--baidu-upload-field) !important;
   background-image: none !important;
   border-color: var(--baidu-upload-border) !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark .baidu-upload-modal) .baidu-upload-password-control :deep(.animated-password-input__field),
-:global(html.dark .baidu-upload-modal) .baidu-upload-password-control :deep(.animated-password-input__field) {
+:global(html.kikoerumanager-dark .baidu-upload-modal .baidu-upload-password-control .animated-password-input__field),
+:global(html.dark .baidu-upload-modal .baidu-upload-password-control .animated-password-input__field) {
   background: var(--baidu-upload-field) !important;
   background-image: none !important;
   border-color: var(--baidu-upload-border) !important;

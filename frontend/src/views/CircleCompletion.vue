@@ -1105,7 +1105,7 @@
 </template>
 
 <script setup>
-import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onMounted, provide, reactive, ref, shallowReactive, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import celebrateImg from '../assets/celebrate.png'
@@ -1271,6 +1271,11 @@ const EXTERNAL_SEARCH_CACHE_VERSION = 'south-plus-browser-headers-v1'
 const circleDetailCache = new Map()
 const circleWorksPageCache = new Map()
 const externalSearchWorkCache = new Map()
+// 外搜运行态独立于作品实体，按键订阅，避免结果批次重建整页作品和虚拟分组。
+const externalSearchResults = shallowReactive(new Map())
+provide('circleExternalSearchResult', canonical => externalSearchResults.get(
+  externalSearchWorkKey(activeCircleId.value, canonical),
+))
 let circleDetailRequestSeq = 0
 let circleDetailAbortController = null
 let externalSearchRequestSeq = 0
@@ -1285,6 +1290,7 @@ let circleSearchFetchTimer = null
 let heroWorkSearchFetchTimer = null
 let heroWorkSearchAbortController = null
 let lastAppliedRouteCircleKey = ''
+let applyingRouteCircleKey = ''
 let suppressCircleWorksRefresh = false
 const filters = reactive({
   onlyMissing: false,
@@ -1356,6 +1362,7 @@ function normalizeStatusFilters(next, previous = []) {
 }
 
 function resetCircleDetail() {
+  externalSearchRequestSeq += 1
   circleDetailRequestSeq += 1
   if (circleDetailAbortController) {
     circleDetailAbortController.abort()
@@ -1803,12 +1810,15 @@ function applyCircleWorksPayload(payload = {}) {
 }
 
 function mergeExternalSearchResults(items = {}) {
-  const resultMap = items && typeof items === 'object' ? items : {}
-  detail.works = (Array.isArray(detail.works) ? detail.works : []).map(item => {
-    const canonical = normalizeRjcode(item?.canonical_rjcode)
-    if (!canonical || isBonusDisplayWork(item)) return item
-    return { ...item, external_search: resultMap[canonical] || {} }
-  })
+  for (const [canonical, payload] of Object.entries(items || {})) {
+    const key = externalSearchWorkKey(activeCircleId.value, canonical)
+    if (JSON.stringify(externalSearchResults.get(key)) !== JSON.stringify(payload)) {
+      externalSearchResults.set(key, payload)
+    }
+  }
+  while (externalSearchResults.size > EXTERNAL_SEARCH_RESULT_CACHE_MAX) {
+    externalSearchResults.delete(externalSearchResults.keys().next().value)
+  }
 }
 
 function externalSearchWorkKey(circleId, canonical) {
@@ -1886,6 +1896,10 @@ function buildExternalSearchFailure(canonical) {
 }
 
 async function refreshExternalSearchForPage() {
+  // 即使目标页为空或全部命中缓存，也必须隔离上一页尚未返回的请求。
+  const requestSeq = ++externalSearchRequestSeq
+  if (externalSearchAbortController) externalSearchAbortController.abort()
+  externalSearchAbortController = null
   const circleId = String(activeCircleId.value || '').trim()
   const items = Array.isArray(detail.works) ? detail.works : []
   const codes = [...new Set(items
@@ -1904,8 +1918,6 @@ async function refreshExternalSearchForPage() {
   mergeExternalSearchResults(resultMap)
   if (!pendingCodes.length) return
 
-  const requestSeq = ++externalSearchRequestSeq
-  if (externalSearchAbortController) externalSearchAbortController.abort()
   externalSearchAbortController = new AbortController()
   try {
     for (let offset = 0; offset < pendingCodes.length; offset += EXTERNAL_SEARCH_BATCH_SIZE) {
@@ -1919,19 +1931,19 @@ async function refreshExternalSearchForPage() {
         resultMap[canonical] = responseItems[canonical]
         setExternalSearchWorkCache(circleId, canonical, responseItems[canonical])
       }
-      mergeExternalSearchResults(resultMap)
+      mergeExternalSearchResults(responseItems)
     }
-    for (const canonical of pendingCodes) {
-      if (!resultMap[canonical]) resultMap[canonical] = buildExternalSearchFailure(canonical)
-    }
-    mergeExternalSearchResults(resultMap)
+    const missingItems = Object.fromEntries(pendingCodes
+      .filter(canonical => !resultMap[canonical])
+      .map(canonical => [canonical, buildExternalSearchFailure(canonical)]))
+    mergeExternalSearchResults(missingItems)
   } catch (error) {
-    if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return
+    if (requestSeq !== externalSearchRequestSeq || activeCircleId.value !== circleId) return
+    if (error?.name === 'AbortError' || error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return
     const failedItems = Object.fromEntries(pendingCodes
       .filter(canonical => !resultMap[canonical])
       .map(canonical => [canonical, buildExternalSearchFailure(canonical)]))
-    Object.assign(resultMap, failedItems)
-    mergeExternalSearchResults(resultMap)
+    mergeExternalSearchResults(failedItems)
     console.debug('[CircleCompletion] 外部搜索探测失败', error)
   } finally {
     if (requestSeq === externalSearchRequestSeq) externalSearchAbortController = null
@@ -2517,32 +2529,42 @@ async function jumpToRouteRjcode(rjcode, circleName = '') {
 async function applyRouteCircleTarget(options = {}) {
   const target = getRouteCircleTarget()
   const routeKey = getRouteCircleTargetKey(target)
-  if (!routeKey || (!options.force && routeKey === lastAppliedRouteCircleKey)) return false
+  if (!routeKey || routeKey === applyingRouteCircleKey || (!options.force && routeKey === lastAppliedRouteCircleKey)) return false
+  applyingRouteCircleKey = routeKey
   lastAppliedRouteCircleKey = routeKey
-
-  const candidate = await resolveRouteCircleCandidate(target.circleId, target.circleName)
-  const circleId = String(candidate?.circle_id || target.circleId || '').trim()
-  const circleName = String(candidate?.circle_name || target.circleName || circleId).trim()
-
-  if (target.rjcode) {
-    if (circleId) {
-      await jumpToHeroWorkSearchResult({
-        circle_id: circleId,
-        circle_name: circleName,
-        canonical_rjcode: target.rjcode,
-        display_rjcode: target.rjcode,
-        owned: false
-      })
-    } else {
-      await jumpToRouteRjcode(target.rjcode, circleName)
+  try {
+    // 已有社团 ID 可直接读作品，不等待 recent 或名称搜索。
+    const candidate = target.circleId
+      ? findRouteCircleCandidate(target.circleId, target.circleName)
+      : await resolveRouteCircleCandidate(target.circleId, target.circleName)
+    const circleId = String(candidate?.circle_id || target.circleId || '').trim()
+    const circleName = String(candidate?.circle_name || target.circleName || circleId).trim()
+    if (circleId && !findRouteCircleCandidate(circleId, '')) {
+      circleList.value = [buildHeroSearchCircleListItem({ circle_id: circleId, circle_name: circleName }), ...circleList.value]
     }
-    return true
-  }
 
-  if (!circleId) return false
-  await ensureHeroSearchCircleVisible({ circle_id: circleId, circle_name: circleName }, { syncActive: false })
-  await selectCircle(circleId)
-  return true
+    if (target.rjcode) {
+      if (circleId) {
+        await jumpToHeroWorkSearchResult({
+          circle_id: circleId,
+          circle_name: circleName,
+          canonical_rjcode: target.rjcode,
+          display_rjcode: target.rjcode,
+          owned: false
+        })
+      } else {
+        await jumpToRouteRjcode(target.rjcode, circleName)
+      }
+      return true
+    }
+
+    if (!circleId) return false
+    await ensureHeroSearchCircleVisible({ circle_id: circleId, circle_name: circleName }, { syncActive: false })
+    await selectCircle(circleId)
+    return true
+  } finally {
+    if (applyingRouteCircleKey === routeKey) applyingRouteCircleKey = ''
+  }
 }
 
 function inferCanonicalRjcodesFromUploadTask(task) {
@@ -2934,8 +2956,8 @@ onMounted(async () => {
   hydrateDownloadWorkbenchState()
   restoreUploadWorkbenchState()
   loadCachedTargetSubdirs()
-  await Promise.all([loadRecentCircles(), loadLibraries()])
-  await applyRouteCircleTarget()
+  void loadLibraries()
+  await initializeCircleView()
   if (trackedDownloadTaskIds.value.length) await refreshDownloadWorkbench()
   if (trackedUploadTaskIds.value.length) await refreshUploadWorkbench({ silent: true })
   if (indexJob.job_id && ['pending', 'processing'].includes(String(indexJob.status || ''))) {
@@ -4665,10 +4687,28 @@ async function cancelBonusProbeJob() {
   }
 }
 
-async function loadRecentCircles() {
+async function initializeCircleView() {
+  const hasRouteTarget = Boolean(getRouteCircleTargetKey(getRouteCircleTarget()))
+  // 路由直达立即启动；recent 只补侧栏，不能抢先选择默认社团。
+  const recent = loadRecentCircles({ selectDefault: !hasRouteTarget })
+  if (hasRouteTarget) {
+    void recent.catch(error => console.debug('[CircleCompletion] 最近社团加载失败', error))
+    await applyRouteCircleTarget()
+  } else {
+    await recent
+  }
+}
+
+async function loadRecentCircles(options = {}) {
   const result = await circleCompletionApi.listRecentIndexes(24)
-  circleList.value = result.circles || []
-  await syncActiveCircleWithList()
+  const circles = result.circles || []
+  // 请求期间选中的直达社团可能不在 recent 内，保留它及其作品视图。
+  const active = circleList.value.find(circle => circle.circle_id === activeCircleId.value)
+  circleList.value = active && !circles.some(circle => circle.circle_id === active.circle_id)
+    ? [active, ...circles]
+    : circles
+  if (options.selectDefault !== false && !activeCircleId.value
+      && !getRouteCircleTargetKey(getRouteCircleTarget())) await syncActiveCircleWithList()
 }
 
 async function loadLibraries() {
@@ -6374,8 +6414,8 @@ function getUploadBackgroundTargetLabel(task) {
 
 }
 
-:global(html.kikoerumanager-dark) .circle-works-page-loading,
-:global(body.kikoerumanager-dark) .circle-works-page-loading {
+html.kikoerumanager-dark .circle-works-page-loading,
+body.kikoerumanager-dark .circle-works-page-loading {
   background: transparent;
   box-shadow: none;
 
@@ -6387,14 +6427,14 @@ function getUploadBackgroundTargetLabel(task) {
 
 }
 
-:global(html.kikoerumanager-dark) .circle-works-loading-state :deep(.app-loading-animation__label),
-:global(body.kikoerumanager-dark) .circle-works-loading-state :deep(.app-loading-animation__label) {
+html.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animation__label),
+body.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animation__label) {
   color: rgba(244, 247, 255, 0.95);
   text-shadow: 0 1px 10px rgba(0, 0, 0, 0.26);
 }
 
-:global(html.kikoerumanager-dark) .circle-works-loading-state :deep(.app-loading-animation__description),
-:global(body.kikoerumanager-dark) .circle-works-loading-state :deep(.app-loading-animation__description) {
+html.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animation__description),
+body.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animation__description) {
   color: rgba(192, 206, 235, 0.84);
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.22);
 }

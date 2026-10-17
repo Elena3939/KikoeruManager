@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 from .linked_subtitle_import_service import get_linked_subtitle_import_service
 from .task_engine import Task, TaskStatus, TaskType, get_task_engine
 from .json_safety import safe_json_value, safe_text
+from .archive_identity import aggregate_archive_title, aggregate_rjcodes
 from .http_download_service import (
     build_http_download_batch_title,
     http_download_platform_label,
@@ -826,13 +827,18 @@ class TaskCenterService:
             except Exception:
                 linked_engine_task = None
         title = self._normalize_rjcode(getattr(conflict, "rjcode", "")) or self._basename(getattr(conflict, "new_path", "")) or "问题作品"
+        aggregate_title = aggregate_archive_title(metadata, getattr(conflict, "new_path", ""))
+        title = aggregate_title or title
         stored_error_message = self._safe_text(metadata.get("error_message"))
         error_message = "" if is_retrying else stored_error_message
         subtitle = error_message or self._basename(getattr(conflict, "new_path", ""))
         metrics: List[Dict[str, str]] = []
         self._append_metric(metrics, "问题类型", self._conflict_type_label(conflict_type))
         self._append_metric(metrics, "来源", "压缩包" if os.path.isfile(str(getattr(conflict, "new_path", "") or "")) else "目录")
-        self._append_metric(metrics, "目标 RJ", self._normalize_rjcode(getattr(conflict, "rjcode", "")))
+        if aggregate_title:
+            self._append_metric(metrics, "包含作品", "、".join(aggregate_rjcodes(metadata)))
+        else:
+            self._append_metric(metrics, "目标 RJ", self._normalize_rjcode(getattr(conflict, "rjcode", "")))
 
         if is_retrying:
             current_step = self._safe_text(getattr(linked_engine_task, "current_step", "")) or "正在按问题作品重试"
@@ -870,7 +876,7 @@ class TaskCenterService:
             "error_message": error_message,
             "source_path": self._safe_text(getattr(conflict, "new_path", "")),
             "target_path": self._safe_text(getattr(conflict, "existing_path", "")),
-            "rjcode": self._normalize_rjcode(getattr(conflict, "rjcode", "")),
+            "rjcode": "" if aggregate_title else self._normalize_rjcode(getattr(conflict, "rjcode", "")),
             "created_at": self._safe_iso(getattr(conflict, "created_at", None)),
             "started_at": None,
             "completed_at": None,
@@ -1578,6 +1584,13 @@ class TaskCenterService:
             source_page = source_page or "tasks"
             self._append_metric(metrics, "类型", task.type.value)
             self._append_metric(metrics, "RJ", rjcode)
+
+        aggregate_title = aggregate_archive_title(metadata, source_path)
+        if aggregate_title:
+            title = aggregate_title
+            rjcode = ""
+            metrics = [metric for metric in metrics if metric.get("label") != "RJ"]
+            self._append_metric(metrics, "包含作品", "、".join(aggregate_rjcodes(metadata)))
 
         recovered_notice = self._safe_text(metadata.get("recovered_notice"))
         recovered_failure_count = int(metadata.get("recovered_failure_count") or 0)

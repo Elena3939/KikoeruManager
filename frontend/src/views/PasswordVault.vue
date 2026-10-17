@@ -1055,8 +1055,8 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
   background: transparent;
 }
 
-:global(html.kikoerumanager-dark body #app .password-vault)
-  :is(.vault-row-action, .vault-mobile-action, .vault-row-action:hover, .vault-mobile-action:hover, .vault-row-action:focus, .vault-mobile-action:focus, .vault-row-action:focus-visible, .vault-mobile-action:focus-visible, .vault-row-action:active, .vault-mobile-action:active) {
+:global(html.kikoerumanager-dark body #app .password-vault
+  :is(.vault-row-action, .vault-mobile-action, .vault-row-action:hover, .vault-mobile-action:hover, .vault-row-action:focus, .vault-mobile-action:focus, .vault-row-action:focus-visible, .vault-mobile-action:focus-visible, .vault-row-action:active, .vault-mobile-action:active)) {
   border-color: transparent !important;
   background: transparent !important;
   background-image: none !important;

@@ -1,24 +1,22 @@
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+import pytest
+
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.api import routes
 from app.core.activity_log_rollup_service import ActivityLogRollupService
 from app.core.activity_log_writer import ActivityLogWriter
-from app.models.database import ActivityLog, ActivityLogRollup, Base
+from app.models.database import ActivityLog, ActivityLogRollup
+from tests.postgres_test_utils import truncate_all_tables
 
 
-def _testing_session():
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(bind=engine)
-    return sessionmaker(autocommit=False, autoflush=False, bind=engine)
+@pytest.fixture
+def rollup_sessions(db_engine):
+    # 与运行态一致使用 PostgreSQL；writer 和回填会各自打开并提交会话。
+    truncate_all_tables(db_engine)
+    return sessionmaker(autocommit=False, autoflush=False, bind=db_engine)
 
 
 def _payload(
@@ -45,8 +43,8 @@ def _payload(
     }
 
 
-def test_activity_log_writer_updates_rollups(monkeypatch):
-    SessionLocal = _testing_session()
+def test_activity_log_writer_updates_rollups(monkeypatch, rollup_sessions):
+    SessionLocal = rollup_sessions
 
     import app.models.database as database_module
     import app.core.activity_log_rollup_service as rollup_module
@@ -75,8 +73,8 @@ def test_activity_log_writer_updates_rollups(monkeypatch):
         db.close()
 
 
-def test_activity_log_writer_uses_sqlite_write_budget(monkeypatch):
-    SessionLocal = _testing_session()
+def test_activity_log_writer_uses_database_write_budget(monkeypatch, rollup_sessions):
+    SessionLocal = rollup_sessions
 
     import app.models.database as database_module
     import app.core.activity_log_rollup_service as rollup_module
@@ -99,11 +97,11 @@ def test_activity_log_writer_uses_sqlite_write_budget(monkeypatch):
         _payload("budgeted", status="success", created_at=datetime(2026, 1, 1, 8, 0, 0)),
     ])
 
-    assert calls == [("sqlite_write", 1, "activity_log.flush")]
+    assert calls == [("database_write", 1, "activity_log.flush")]
 
 
-def test_activity_log_rollup_backfill_and_diff(monkeypatch):
-    SessionLocal = _testing_session()
+def test_activity_log_rollup_backfill_and_diff(monkeypatch, rollup_sessions):
+    SessionLocal = rollup_sessions
 
     import app.models.database as database_module
     import app.core.activity_log_rollup_service as rollup_module
@@ -139,8 +137,8 @@ def test_activity_log_rollup_backfill_and_diff(monkeypatch):
     assert diff["diff_count"] >= 1
 
 
-def test_activity_lite_batch_summary_uses_rollup(monkeypatch):
-    SessionLocal = _testing_session()
+def test_activity_lite_batch_summary_uses_rollup(monkeypatch, rollup_sessions):
+    SessionLocal = rollup_sessions
 
     import app.models.database as database_module
     import app.core.activity_log_rollup_service as rollup_module

@@ -53,7 +53,8 @@ function formatTime(value) {
 
 <style scoped>
 .blocked-page {
-  min-height: 100vh;
+  width: 100%;
+  min-height: 100%;
   display: grid;
   place-items: center;
   padding: 24px;

@@ -13,6 +13,7 @@ import pytest
 import app.core.library_index.service as service_module
 from app.core.library_index.service import LibraryIndexService
 from app.core.library_index.types import IndexStatus
+from app.core.library_index.snapshot_store import SnapshotRebuildWriter
 
 
 class _NonReentrantBudget:
@@ -102,3 +103,38 @@ async def test_schedule_rebuild_local_offloads_status_write_from_event_loop(monk
     assert len(status_write_threads) == 1
     assert status_write_threads[0] != event_loop_thread
     rebuild_local.assert_called_once_with("library-1", "/library")
+
+
+def test_periodic_rjcode_backfill_continues_after_plain_directory_batch(monkeypatch):
+    store = Mock()
+    store.backfill_missing_rjcodes.side_effect = [
+        {"scanned": 2, "repaired": 0, "repaired_by_library": {}, "has_more": True},
+        {"scanned": 1, "repaired": 1, "repaired_by_library": {"library-1": 1}, "has_more": False},
+    ]
+    service = LibraryIndexService(store=store)
+    monkeypatch.setattr(service, "cleanup_retired_generations", Mock(return_value=0))
+    monkeypatch.setattr(service, "repair_status_statistics", Mock(return_value={"repaired": 0, "libraries": {}}))
+    result = service.run_periodic_maintenance(rjcode_limit=2, rjcode_max_batches=3)
+    assert store.backfill_missing_rjcodes.call_count == 2
+    assert result["rjcodes"] == {
+        "scanned": 3, "repaired": 1, "repaired_by_library": {"library-1": 1}, "batches": 2,
+    }
+
+
+@pytest.mark.parametrize("changes", [(1, 0, 0), (0, 4999, 0), (0, 0, 5000), (2000, 2000, 1000), (0, 0, 0)])
+def test_staging_maintenance_uses_actual_changed_rows(changes):
+    writer = object.__new__(SnapshotRebuildWriter)
+    writer._store = Mock()
+    writer.library_id = "library-1"
+    writer.chunk_size = 5000
+    # 十万条扫描结果只有少量变化时，不应全表维护；删除也计入变化量。
+    results = [{"total_entries": 100000}, *sum(([count, 0] if count else [0] for count in changes), [])]
+    if any(changes):
+        results.append(None)
+    writer._execute_write = Mock(side_effect=results)
+
+    result = writer.finish()
+
+    assert (result["inserted"], result["updated"], result["deleted"]) == changes
+    assert writer._store.analyze_entries_for_query_planner.call_count == int(sum(changes) >= 5000)
+    assert writer._store._invalidate_children_total_cache.call_count == int(any(changes))

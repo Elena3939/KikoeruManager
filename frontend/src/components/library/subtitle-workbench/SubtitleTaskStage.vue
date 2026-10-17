@@ -896,39 +896,39 @@ function getTaskMetaItems(task) {
   background-image: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep([class*="bg-white"]),
-:global(html.dark) .subtitle-task-stage-root :deep([class*="bg-white"]) {
+html.kikoerumanager-dark .subtitle-task-stage-root :deep([class*="bg-white"]),
+html.dark .subtitle-task-stage-root :deep([class*="bg-white"]) {
   background-color: #242529 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.15) !important;
   color: rgba(246, 246, 248, 0.88) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep(.bg-slate-50),
-:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep(.bg-slate-50\/60),
-:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep(.bg-slate-100),
-:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep(.bg-slate-100\/90),
-:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep(.bg-slate-100\/95),
-:global(html.dark) .subtitle-task-stage-root :deep(.bg-slate-50),
-:global(html.dark) .subtitle-task-stage-root :deep(.bg-slate-50\/60),
-:global(html.dark) .subtitle-task-stage-root :deep(.bg-slate-100),
-:global(html.dark) .subtitle-task-stage-root :deep(.bg-slate-100\/90),
-:global(html.dark) .subtitle-task-stage-root :deep(.bg-slate-100\/95) {
+html.kikoerumanager-dark .subtitle-task-stage-root :deep(.bg-slate-50),
+html.kikoerumanager-dark .subtitle-task-stage-root :deep(.bg-slate-50\/60),
+html.kikoerumanager-dark .subtitle-task-stage-root :deep(.bg-slate-100),
+html.kikoerumanager-dark .subtitle-task-stage-root :deep(.bg-slate-100\/90),
+html.kikoerumanager-dark .subtitle-task-stage-root :deep(.bg-slate-100\/95),
+html.dark .subtitle-task-stage-root :deep(.bg-slate-50),
+html.dark .subtitle-task-stage-root :deep(.bg-slate-50\/60),
+html.dark .subtitle-task-stage-root :deep(.bg-slate-100),
+html.dark .subtitle-task-stage-root :deep(.bg-slate-100\/90),
+html.dark .subtitle-task-stage-root :deep(.bg-slate-100\/95) {
   background-color: #2b2c30 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.15) !important;
   color: rgba(218, 218, 224, 0.72) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep(.bg-slate-900),
-:global(html.dark) .subtitle-task-stage-root :deep(.bg-slate-900) {
+html.kikoerumanager-dark .subtitle-task-stage-root :deep(.bg-slate-900),
+html.dark .subtitle-task-stage-root :deep(.bg-slate-900) {
   background-color: #020617 !important;
   color: #ffffff !important;
   border-color: rgba(255, 255, 255, 0.24) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep(.bg-gradient-to-b),
-:global(html.dark) .subtitle-task-stage-root :deep(.bg-gradient-to-b) {
+html.kikoerumanager-dark .subtitle-task-stage-root :deep(.bg-gradient-to-b),
+html.dark .subtitle-task-stage-root :deep(.bg-gradient-to-b) {
   background-color: #242529 !important;
   background-image: none !important;
   box-shadow: none !important;
@@ -1029,45 +1029,45 @@ function getTaskMetaItems(task) {
   --status-text: #be123c;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-active-status-pill,
-:global(html.dark) .subtitle-active-status-pill {
+html.kikoerumanager-dark .subtitle-active-status-pill,
+html.dark .subtitle-active-status-pill {
   --status-bg: rgba(39, 40, 45, 0.96);
   --status-border: rgba(255, 255, 255, 0.18);
   --status-text: rgba(244, 244, 245, 0.9);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-active-status-pill.is-success,
-:global(html.dark) .subtitle-active-status-pill.is-success {
+html.kikoerumanager-dark .subtitle-active-status-pill.is-success,
+html.dark .subtitle-active-status-pill.is-success {
   --status-bg: rgba(16, 185, 129, 0.18);
   --status-border: rgba(52, 211, 153, 0.48);
   --status-text: #a7f3d0;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-active-status-pill.is-manual-completed,
-:global(html.dark) .subtitle-active-status-pill.is-manual-completed {
+html.kikoerumanager-dark .subtitle-active-status-pill.is-manual-completed,
+html.dark .subtitle-active-status-pill.is-manual-completed {
   --status-bg: linear-gradient(135deg, #16a34a, #059669);
   --status-border: rgba(74, 222, 128, 0.76);
   --status-text: #ffffff;
   box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.18), 0 10px 24px rgba(16, 185, 129, 0.28);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-active-status-pill.is-info,
-:global(html.dark) .subtitle-active-status-pill.is-info {
+html.kikoerumanager-dark .subtitle-active-status-pill.is-info,
+html.dark .subtitle-active-status-pill.is-info {
   --status-bg: rgba(14, 165, 233, 0.18);
   --status-border: rgba(56, 189, 248, 0.46);
   --status-text: #bae6fd;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-active-status-pill.is-warning,
-:global(html.dark) .subtitle-active-status-pill.is-warning {
+html.kikoerumanager-dark .subtitle-active-status-pill.is-warning,
+html.dark .subtitle-active-status-pill.is-warning {
   --status-bg: rgba(245, 158, 11, 0.28);
   --status-border: rgba(251, 191, 36, 0.68);
   --status-text: #fde68a;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-active-status-pill.is-violet,
-:global(html.dark) .subtitle-active-status-pill.is-violet {
+html.kikoerumanager-dark .subtitle-active-status-pill.is-violet,
+html.dark .subtitle-active-status-pill.is-violet {
   --status-bg: rgba(139, 92, 246, 0.2);
   --status-border: rgba(167, 139, 250, 0.46);
   --status-text: #ddd6fe;

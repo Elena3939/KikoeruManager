@@ -948,7 +948,7 @@ onBeforeUnmount(() => {
   border-radius: inherit;
   background: linear-gradient(90deg, #22d3ee, #34d399);
   box-shadow: 0 0 16px rgba(34, 211, 238, 0.22);
-  transition: width 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: width 0.25s linear;
 }
 
 .terminal-line.is-progress-processing .terminal-inline-progress-bar span::after,
@@ -956,8 +956,8 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0;
   content: "";
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
-  animation: terminal-progress-sheen 1.45s linear infinite;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+  animation: terminal-progress-sheen 1.1s linear infinite;
 }
 
 .terminal-line.is-progress-success .terminal-progress,

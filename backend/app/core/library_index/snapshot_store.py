@@ -16,6 +16,7 @@ import base64
 import json
 import logging
 import re
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import replace
@@ -46,6 +47,7 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 _RJ_PREFIX_RE = re.compile(r"^(?:RJ)?\d{0,12}$", re.IGNORECASE)
+REBUILD_ANALYZE_CHANGED_ROWS_THRESHOLD = 5000
 
 _BULK_UPSERT_SQL = """
 INSERT INTO library_index_entries (
@@ -618,6 +620,10 @@ class SnapshotStore:
 
     def __init__(self, session_factory=SessionLocal):
         self._session_factory = session_factory
+        self._rjcode_backfill_lock = threading.Lock()
+        self._rjcode_backfill_state_lock = threading.Lock()
+        self._rjcode_backfill_epoch = 0
+        self._rjcode_backfill_progress = {}
         self._children_total_cache = TTLCache(
             max_size=DIRECT_CHILD_TOTAL_CACHE_MAX_SIZE,
             ttl_seconds=DIRECT_CHILD_TOTAL_CACHE_TTL_SECONDS,
@@ -634,6 +640,7 @@ class SnapshotStore:
         *,
         relaxed_commit: bool = False,
         invalidate_children_total_cache: bool = True,
+        invalidate_rjcode_backfill: bool = True,
         before_commit=None,
     ) -> Iterator[Session]:
         with get_resource_budget_service().acquire_sync("library_index_write", reason="library_index.write"):
@@ -645,6 +652,10 @@ class SnapshotStore:
                 if before_commit is not None:
                     before_commit(db)
                 db.commit()
+                if invalidate_rjcode_backfill:
+                    with self._rjcode_backfill_state_lock:
+                        self._rjcode_backfill_epoch += 1
+                        self._rjcode_backfill_progress.clear()
                 if invalidate_children_total_cache:
                     self._invalidate_children_total_cache()
                 pending_broadcasts = db.info.pop("library_index_status_broadcasts", {})
@@ -895,7 +906,7 @@ class SnapshotStore:
         *,
         materialized_seq: Optional[int] = None,
     ) -> None:
-        """同步受影响的 RJ 关联行；路径为 None 时重建当前 generation。"""
+        """同步受影响的 RJ 关联行；临时遮罩只在查询时应用，不能丢弃关联数据。"""
         if getattr(getattr(db, "bind", None), "dialect", None) is not None and db.bind.dialect.name != "postgresql":
             return
         normalized_generation = max(1, int(generation or 1))
@@ -960,19 +971,6 @@ class SnapshotStore:
                AND e.generation = :generation
                AND NULLIF(e.rjcode, '') IS NOT NULL
                AND (:materialized_seq IS NULL OR e.materialized_seq <= :materialized_seq)
-               AND NOT EXISTS (
-                   SELECT 1
-                     FROM library_index_pending_masks mask
-                    WHERE mask.library_id = e.library_id
-                      AND (
-                          (mask.scope = 'exact' AND e.relative_path = mask.relative_path)
-                          OR (mask.scope = 'subtree'
-                              AND (mask.relative_path = ''
-                                   OR e.relative_path = mask.relative_path
-                                   OR (e.relative_path >= (mask.relative_path || '/')
-                                       AND e.relative_path < (mask.relative_path || '0'))))
-                      )
-               )
                {path_filter}
             ON CONFLICT (library_id, generation, rjcode, relative_path) DO UPDATE SET
                 absolute_path = EXCLUDED.absolute_path,
@@ -3180,19 +3178,15 @@ class SnapshotStore:
             if entry_type:
                 filters.append(LibraryIndexEntry.entry_type == entry_type)
             try:
-                q = db.query(LibraryIndexEntry).join(
+                q = self._active_view_query(db, db.query(LibraryIndexEntry).join(
                     LibraryIndexRJEntry,
                     and_(
                         LibraryIndexRJEntry.library_id == LibraryIndexEntry.library_id,
                         LibraryIndexRJEntry.generation == LibraryIndexEntry.generation,
                         LibraryIndexRJEntry.relative_path == LibraryIndexEntry.relative_path,
+                        LibraryIndexRJEntry.rjcode == LibraryIndexEntry.rjcode,
                     ),
-                ).join(
-                    LibraryIndexStatus,
-                    LibraryIndexStatus.library_id == LibraryIndexEntry.library_id,
-                ).filter(
-                    LibraryIndexEntry.generation == LibraryIndexStatus.active_generation,
-                    LibraryIndexEntry.materialized_seq <= LibraryIndexStatus.materialized_seq,
+                ), library_ids=scope_ids).filter(
                     LibraryIndexRJEntry.generation == LibraryIndexStatus.active_generation,
                     *filters,
                 ).order_by(
@@ -3273,19 +3267,15 @@ class SnapshotStore:
             if entry_type:
                 filters.append(LibraryIndexEntry.entry_type == entry_type)
             try:
-                rows = db.query(LibraryIndexEntry).join(
+                rows = self._active_view_query(db, db.query(LibraryIndexEntry).join(
                     LibraryIndexRJEntry,
                     and_(
                         LibraryIndexRJEntry.library_id == LibraryIndexEntry.library_id,
                         LibraryIndexRJEntry.generation == LibraryIndexEntry.generation,
                         LibraryIndexRJEntry.relative_path == LibraryIndexEntry.relative_path,
+                        LibraryIndexRJEntry.rjcode == LibraryIndexEntry.rjcode,
                     ),
-                ).join(
-                    LibraryIndexStatus,
-                    LibraryIndexStatus.library_id == LibraryIndexEntry.library_id,
-                ).filter(
-                    LibraryIndexEntry.generation == LibraryIndexStatus.active_generation,
-                    LibraryIndexEntry.materialized_seq <= LibraryIndexStatus.materialized_seq,
+                ), library_ids=scope_ids).filter(
                     LibraryIndexRJEntry.generation == LibraryIndexStatus.active_generation,
                     *filters,
                 ).order_by(
@@ -3392,97 +3382,132 @@ class SnapshotStore:
             logger.info("[索引] 修复缺失 RJ 字段 rjcode=%s rows=%s", rjcode.upper(), repaired)
         return repaired
 
+    @staticmethod
+    def _rjcode_backfill_versions(db: Session, library_ids, *, for_update=False):
+        query = db.query(LibraryIndexStatus)
+        if library_ids:
+            query = query.filter(LibraryIndexStatus.library_id.in_(library_ids))
+        query = query.order_by(LibraryIndexStatus.library_id.asc())
+        if for_update:
+            query = query.with_for_update()
+        return query.all()
+
+    @staticmethod
+    def _rjcode_backfill_version(rows):
+        return tuple((
+            row.library_id, int(row.active_generation or 1),
+            int(row.accepted_seq or 0), int(row.materialized_seq or 0),
+            int(row.state_revision or 0), int(row.view_revision or 0),
+        ) for row in rows)
+
     def backfill_missing_rjcodes(
         self,
         *,
         limit: int = 1000,
         library_ids: Optional[Sequence[str]] = None,
     ) -> dict[str, object]:
-        """分批修复 active view 中旧索引遗漏的目录 RJ 字段。
+        """锁外有界扫描候选，按可见版本保存进度，再以短事务发布回填。
 
-        只挑路径文本里真实含 RJ 的缺失目录，避免每轮反复取到无法修复的普通目录。
-        每次提交一个有上限的小批次，交给周期维护继续追赶，不在请求线程里扫完整库。
+        水位仅在进程内保留；重启会重新扫描，不改变 generation/seq/mask 协议。
+        无法提取 RJ 的普通目录也推进游标，避免每批重复做全范围 SQL 正则。
         """
+        with self._rjcode_backfill_lock:
+            return self._backfill_missing_rjcodes_batch(limit=limit, library_ids=library_ids)
+
+    def _backfill_missing_rjcodes_batch(self, *, limit, library_ids):
         capped_limit = max(1, min(int(limit or 1000), 5000))
-        normalized_ids = [
-            str(item or "").strip()
-            for item in (library_ids or [])
-            if str(item or "").strip()
-        ]
-        repaired_by_library: dict[str, int] = {}
-        scanned = 0
-        with self._write_session(invalidate_children_total_cache=False) as db:
-            query = self._active_view_query(
-                db,
-                db.query(LibraryIndexEntry),
-                library_ids=normalized_ids or None,
+        normalized_ids = tuple(sorted({str(item or '').strip() for item in (library_ids or [])
+                                       if str(item or '').strip()}))
+        result = {"scanned": 0, "repaired": 0, "repaired_by_library": {}, "has_more": False}
+        with self._rjcode_backfill_state_lock:
+            epoch = self._rjcode_backfill_epoch
+            progress = self._rjcode_backfill_progress.get(normalized_ids)
+        with self._read_session() as db:
+            version = self._rjcode_backfill_version(self._rjcode_backfill_versions(db, normalized_ids))
+            token = (epoch, version)
+            cursor = 0
+            if progress and progress[0] == token:
+                if progress[2]:
+                    return result
+                cursor = progress[1]
+            rows = self._active_view_query(
+                db, db.query(LibraryIndexEntry), library_ids=normalized_ids or None,
             ).filter(
+                LibraryIndexEntry.id > cursor,
                 LibraryIndexEntry.entry_type == "dir",
                 or_(LibraryIndexEntry.rjcode.is_(None), LibraryIndexEntry.rjcode == ""),
-                text(
-                    """
-                    (COALESCE(name, '') || ' ' ||
-                     COALESCE(relative_path, '') || ' ' ||
-                     COALESCE(rjcode, '') || ' ' ||
-                     COALESCE(parent_path, '')) ~*
-                    :missing_rjcode_regex
-                    """
-                ).bindparams(
-                    missing_rjcode_regex=r"(^|[^A-Z0-9])[RVB]J([0-9]{8}|[0-9]{6})([^0-9]|$)"
-                ),
-            )
-            if normalized_ids:
-                query = query.filter(LibraryIndexEntry.library_id.in_(normalized_ids))
-            rows = (
-                query
-                .order_by(LibraryIndexEntry.id.asc())
-                .limit(capped_limit)
-                .with_for_update(skip_locked=True, of=LibraryIndexEntry)
-                .all()
-            )
-            scanned = len(rows)
-            for row in rows:
-                detected = _extract_rjcode(" ".join([
-                    str(row.name or ""),
-                    str(row.relative_path or ""),
-                    str(row.absolute_path or ""),
-                ]))
-                if not detected:
-                    continue
-                row.rjcode = detected.upper()
-                library_id = str(row.library_id or "")
-                repaired_by_library[library_id] = repaired_by_library.get(library_id, 0) + 1
+            ).order_by(LibraryIndexEntry.id.asc()).limit(capped_limit).all()
+            candidates = {row.id for row in rows if _extract_rjcode(" ".join([
+                str(row.name or ''), str(row.relative_path or ''), str(row.absolute_path or ''),
+            ]))}
+            next_cursor = int(rows[-1].id) if rows else cursor
+            result["scanned"] = len(rows)
+            result["has_more"] = len(rows) == capped_limit
 
-            for library_id in sorted(repaired_by_library):
-                status = db.query(LibraryIndexStatus).filter(
-                    LibraryIndexStatus.library_id == library_id
-                ).with_for_update().first()
-                if status is None:
+        repaired_by_library = result["repaired_by_library"]
+        if not candidates:
+            # 空批次只保存读水位，避免普通目录和空库存争用全部状态行。
+            with self._read_session() as db:
+                current_version = self._rjcode_backfill_version(
+                    self._rjcode_backfill_versions(db, normalized_ids)
+                )
+            if current_version != version:
+                result["has_more"] = True
+                return result
+            with self._rjcode_backfill_state_lock:
+                if self._rjcode_backfill_epoch == epoch:
+                    if len(self._rjcode_backfill_progress) >= 128:
+                        self._rjcode_backfill_progress.clear()
+                    self._rjcode_backfill_progress[normalized_ids] = (
+                        token, next_cursor, not result["has_more"],
+                    )
+            return result
+        # 扫描时不锁状态行；提交时统一 status -> entry，匹配 mutation 的锁顺序。
+        with self._write_session(
+            invalidate_children_total_cache=False, invalidate_rjcode_backfill=False,
+        ) as db:
+            statuses = self._rjcode_backfill_versions(db, normalized_ids, for_update=True)
+            if self._rjcode_backfill_version(statuses) != version:
+                result["has_more"] = True
+                return result
+            if candidates:
+                current_rows = self._active_view_query(
+                    db, db.query(LibraryIndexEntry), library_ids=normalized_ids or None,
+                ).filter(
+                    LibraryIndexEntry.id.in_(candidates),
+                    LibraryIndexEntry.entry_type == "dir",
+                    or_(LibraryIndexEntry.rjcode.is_(None), LibraryIndexEntry.rjcode == ""),
+                ).order_by(LibraryIndexEntry.id.asc()).with_for_update(of=LibraryIndexEntry).all()
+                for row in current_rows:
+                    detected = _extract_rjcode(" ".join([
+                        str(row.name or ''), str(row.relative_path or ''), str(row.absolute_path or ''),
+                    ]))
+                    if detected:
+                        row.rjcode = detected.upper()
+                        repaired_by_library[row.library_id] = repaired_by_library.get(row.library_id, 0) + 1
+            for status in statuses:
+                if status.library_id not in repaired_by_library:
                     continue
                 status.state_revision = int(status.state_revision or 0) + 1
                 status.view_revision = int(status.view_revision or 0) + 1
                 status.updated_at = _now_ms()
-                self._queue_status_broadcast(
-                    db,
-                    self._row_to_status(status),
-                    reason="library_index_rjcode_backfill",
-                )
-            if repaired_by_library:
-                db.flush()
+                self._queue_status_broadcast(db, self._row_to_status(status),
+                                             reason="library_index_rjcode_backfill")
+            published_version = self._rjcode_backfill_version(statuses)
 
-        repaired = sum(repaired_by_library.values())
-        if repaired:
-            logger.info(
-                "[索引维护] 缺失 RJ 字段回填完成 scanned=%s repaired=%s libraries=%s",
-                scanned,
-                repaired,
-                repaired_by_library,
-            )
-        return {
-            "scanned": scanned,
-            "repaired": repaired,
-            "repaired_by_library": repaired_by_library,
-        }
+        with self._rjcode_backfill_state_lock:
+            if self._rjcode_backfill_epoch == epoch:
+                # 有界状态缓存；淘汰只导致重扫，不会漏修。
+                if len(self._rjcode_backfill_progress) >= 128:
+                    self._rjcode_backfill_progress.clear()
+                self._rjcode_backfill_progress[normalized_ids] = (
+                    (epoch, published_version), next_cursor, not result["has_more"],
+                )
+        result["repaired"] = sum(repaired_by_library.values())
+        if result["repaired"]:
+            logger.info("[索引维护] 缺失 RJ 字段回填 scanned=%s repaired=%s libraries=%s",
+                        result["scanned"], result["repaired"], repaired_by_library)
+        return result
 
     def find_by_name(
         self,
@@ -4547,6 +4572,8 @@ class SnapshotRebuildWriter:
             self._execute_write(_refresh_derived)
         if inserted_total or updated_total or deleted_total:
             self._store._invalidate_children_total_cache(self.library_id)
+        # 全表统计和 GIN 清理按实际写入量触发，扫描量不代表数据库变更量。
+        if inserted_total + updated_total + deleted_total >= REBUILD_ANALYZE_CHANGED_ROWS_THRESHOLD:
             self._store.analyze_entries_for_query_planner(clean_trigram_pending=True)
         result["inserted"] = inserted_total
         result["updated"] = updated_total

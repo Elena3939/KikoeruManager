@@ -123,6 +123,17 @@
                           {{ isTaskRetrying(task) ? '重试中' : '重试失败项' }}
                         </button>
                       </template>
+                      <button
+                        v-if="enableFailedCancel && ['failed', 'partial_failed'].includes(String(task?.display_status || task?.status || ''))"
+                        type="button"
+                        class="v1-inline-action danger"
+                        aria-label="取消任务"
+                        @click="emit('cancel-task', task)"
+                        title="取消"
+                      >
+                        <XCircle :size="13" />
+                        取消
+                      </button>
                     </div>
                   </div>
 
@@ -327,6 +338,7 @@ import uploadToCloudAnimation from '../../assets/anime/Uploading to cloud.lottie
 import successConfettiAnimation from '../../assets/anime/success confetti.lottie'
 import AppLottieProgressBar from '../common/AppLottieProgressBar.vue'
 import AppEmptyState from '../common/AppEmptyState.vue'
+import { getDownloadBatchPercent } from '../../utils/downloadProgress.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -345,6 +357,7 @@ const props = defineProps({
   mergeTasks: { type: Boolean, default: true },
   compact: { type: Boolean, default: false },
   enableFileRetry: { type: Boolean, default: false },
+  enableFailedCancel: { type: Boolean, default: false },
 })
 
 const emit = defineEmits([
@@ -1210,6 +1223,9 @@ function getTaskStageLabel(task) {
 }
 
 function getTaskOverallPercent(task) {
+  if (!isUploadMode.value && ['baidu_netdisk', 'baidu_netdisk_download'].includes(getDownloadTaskDomain(task))) {
+    return getDownloadBatchPercent([task])
+  }
   const status = String(task?.display_status || task?.status || '')
   if (status === 'completed') return 100
   const transferTotal = getTaskTransferBytes(task)

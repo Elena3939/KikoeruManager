@@ -1103,25 +1103,25 @@ async function copyText(value) {
   box-shadow: 0 14px 28px rgba(15, 23, 42, 0.22);
 }
 
-:global(html.kikoerumanager-dark) .detail-body {
+html.kikoerumanager-dark .detail-body {
   background: #0b0c10;
   background-image: none;
   color: #f4f4f5;
 }
 
-:global(html.kikoerumanager-dark) .detail-head,
-:global(html.kikoerumanager-dark) .detail-foot {
+html.kikoerumanager-dark .detail-head,
+html.kikoerumanager-dark .detail-foot {
   border-color: rgba(255, 255, 255, 0.08);
   background: #0b0c10;
   background-image: none;
 }
 
-:global(html.kikoerumanager-dark) .detail-scroll {
+html.kikoerumanager-dark .detail-scroll {
   background: #0b0c10;
 }
 
-:global(html.kikoerumanager-dark) .detail-close,
-:global(html.kikoerumanager-dark) .foot-btn {
+html.kikoerumanager-dark .detail-close,
+html.kikoerumanager-dark .foot-btn {
   border-color: rgba(255, 255, 255, 0.12);
   background: #17181d;
   background-image: none;
@@ -1129,44 +1129,44 @@ async function copyText(value) {
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .detail-close:hover,
-:global(html.kikoerumanager-dark) .foot-btn:hover {
+html.kikoerumanager-dark .detail-close:hover,
+html.kikoerumanager-dark .foot-btn:hover {
   border-color: rgba(255, 255, 255, 0.18);
   background: #202126;
   color: #f4f4f5;
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .foot-btn.primary {
+html.kikoerumanager-dark .foot-btn.primary {
   border-color: rgba(255, 255, 255, 0.26);
   background: #e7e7eb;
   background-image: none;
   color: #111116;
 }
 
-:global(html.kikoerumanager-dark) .foot-btn.primary:hover {
+html.kikoerumanager-dark .foot-btn.primary:hover {
   background: #ffffff;
   color: #0e0e12;
 }
 
-:global(html.kikoerumanager-dark) .detail-title,
-:global(html.kikoerumanager-dark) .summary-text,
-:global(html.kikoerumanager-dark) .meta-row dd,
-:global(html.kikoerumanager-dark) .child-rel {
+html.kikoerumanager-dark .detail-title,
+html.kikoerumanager-dark .summary-text,
+html.kikoerumanager-dark .meta-row dd,
+html.kikoerumanager-dark .child-rel {
   color: #f4f4f5;
 }
 
-:global(html.kikoerumanager-dark) .eyebrow-cat,
-:global(html.kikoerumanager-dark) .detail-subtitle,
-:global(html.kikoerumanager-dark) .panel-head,
-:global(html.kikoerumanager-dark) .meta-row dt,
-:global(html.kikoerumanager-dark) .child-time,
-:global(html.kikoerumanager-dark) .child-summary,
-:global(html.kikoerumanager-dark) .child-chevron {
+html.kikoerumanager-dark .eyebrow-cat,
+html.kikoerumanager-dark .detail-subtitle,
+html.kikoerumanager-dark .panel-head,
+html.kikoerumanager-dark .meta-row dt,
+html.kikoerumanager-dark .child-time,
+html.kikoerumanager-dark .child-summary,
+html.kikoerumanager-dark .child-chevron {
   color: rgba(212, 212, 216, 0.66);
 }
 
-:global(html.kikoerumanager-dark) .panel {
+html.kikoerumanager-dark .panel {
   border-color: rgba(255, 255, 255, 0.08);
   background: #111216;
   background-image: none;
@@ -1174,52 +1174,52 @@ async function copyText(value) {
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .panel-head.clickable:hover {
+html.kikoerumanager-dark .panel-head.clickable:hover {
   color: #f4f4f5;
 }
 
-:global(html.kikoerumanager-dark) .panel-toggle,
-:global(html.kikoerumanager-dark) .copy-btn {
+html.kikoerumanager-dark .panel-toggle,
+html.kikoerumanager-dark .copy-btn {
   border-color: rgba(255, 255, 255, 0.12);
   background: #202126;
   background-image: none;
   color: #d7dde7;
 }
 
-:global(html.kikoerumanager-dark) .panel-toggle:hover,
-:global(html.kikoerumanager-dark) .copy-btn:hover,
-:global(html.kikoerumanager-dark) .child-jump-btn:hover {
+html.kikoerumanager-dark .panel-toggle:hover,
+html.kikoerumanager-dark .copy-btn:hover,
+html.kikoerumanager-dark .child-jump-btn:hover {
   border-color: rgba(255, 255, 255, 0.18);
   background: #2b2c31;
   color: #f4f4f5;
 }
 
-:global(html.kikoerumanager-dark) .detail-icon {
+html.kikoerumanager-dark .detail-icon {
   background: #17181d !important;
   border-color: rgba(255, 255, 255, 0.1) !important;
   color: #d7dde7 !important;
 }
 
-:global(html.kikoerumanager-dark) .child-item:hover,
-:global(html.kikoerumanager-dark) .child-item.is-expanded {
+html.kikoerumanager-dark .child-item:hover,
+html.kikoerumanager-dark .child-item.is-expanded {
   background: #17181d;
   border-color: rgba(255, 255, 255, 0.1);
 }
 
-:global(html.kikoerumanager-dark) .child-jump-btn {
+html.kikoerumanager-dark .child-jump-btn {
   color: rgba(212, 212, 216, 0.58);
 }
 
-:global(html.kikoerumanager-dark) .raw-json-wrap {
+html.kikoerumanager-dark .raw-json-wrap {
   background: #08090c;
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-:global(html.kikoerumanager-dark) .raw-json {
+html.kikoerumanager-dark .raw-json {
   color: #d7dde7;
 }
 
-:global(html.kikoerumanager-dark) .detail-scroll::-webkit-scrollbar-thumb {
+html.kikoerumanager-dark .detail-scroll::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.18);
 }
 

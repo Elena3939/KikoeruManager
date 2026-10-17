@@ -198,11 +198,11 @@ function normalizePath (path) {
 
 .nav-row-meta-error { color: #b91c1c; font-style: normal; }
 
-:global(html.kikoerumanager-dark) .lib-move-modal .nav-row {
+html.kikoerumanager-dark .lib-move-modal .nav-row {
   color: var(--km-dark-text) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-move-modal .nav-row:hover {
+html.kikoerumanager-dark .lib-move-modal .nav-row:hover {
   background: #2b2c30 !important;
   background-image: none !important;
   color: var(--km-dark-text-strong) !important;
@@ -210,15 +210,15 @@ function normalizePath (path) {
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-move-modal .nav-row-active,
-:global(html.kikoerumanager-dark) .lib-move-modal .nav-row-active:hover {
+html.kikoerumanager-dark .lib-move-modal .nav-row-active,
+html.kikoerumanager-dark .lib-move-modal .nav-row-active:hover {
   background: #333438 !important;
   background-image: none !important;
   color: var(--km-dark-text-strong) !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-move-modal .nav-row-meta {
+html.kikoerumanager-dark .lib-move-modal .nav-row-meta {
   color: var(--km-dark-text-muted) !important;
 }
 </style>

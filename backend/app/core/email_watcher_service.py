@@ -24,6 +24,8 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set
 
+from .imap_proxy import create_imap_client
+
 logger = logging.getLogger(__name__)
 
 IMAP_CONNECT_TIMEOUT_SECONDS = 15
@@ -490,6 +492,9 @@ class EmailWatcherService:
         config = get_config()
         if not config.email_watcher.enabled:
             logger.info("[邮件监听] 已禁用，跳过启动")
+            return
+
+        if self._task and not self._task.done():
             return
 
         # dedup 暖启动：从最近 24h 的 fetch_check 活动日志恢复 message_id / RJ 缓存。
@@ -1129,11 +1134,11 @@ class EmailWatcherService:
 
         return result_payload
 
-    async def test_connection(self, host: str, port: int, ssl: bool, username: str, password: str, mailbox: str) -> Dict:
+    async def test_connection(self, host: str, port: int, ssl: bool, username: str, password: str, mailbox: str, proxy_url: str = "") -> Dict:
         """测试 IMAP 连接。"""
         try:
             result = await asyncio.to_thread(
-                self._do_test_connection, host, port, ssl, username, password, mailbox
+                self._do_test_connection, host, port, ssl, username, password, mailbox, proxy_url
             )
             return result
         except Exception as exc:
@@ -1204,7 +1209,7 @@ class EmailWatcherService:
         imap_ssl = config.email_watcher.imap_ssl
         idle_timeout = config.email_watcher.idle_timeout_minutes * 60
 
-        with IMAPClient(host=imap_host, port=imap_port, ssl=imap_ssl, timeout=IMAP_CONNECT_TIMEOUT_SECONDS) as client:
+        with create_imap_client(host=imap_host, port=imap_port, ssl=imap_ssl, timeout=IMAP_CONNECT_TIMEOUT_SECONDS, proxy_url=config.email_watcher.proxy_url) as client:
             client.login(config.email_watcher.username, config.email_watcher.password)
             client.select_folder(config.email_watcher.mailbox)
             logger.info("[邮件监听] IMAP 登录成功，进入 IDLE 模式")
@@ -1216,7 +1221,15 @@ class EmailWatcherService:
                 client.idle()
                 try:
                     # 阻塞等待服务器 pushback，超时后重新 IDLE（RFC 要求不超过 29 分钟）
-                    responses = client.idle_check(timeout=idle_timeout)
+                    deadline = time.monotonic() + idle_timeout
+                    while True:
+                        responses = client.idle_check(timeout=min(30, max(0, deadline - time.monotonic())))
+                        from ..config.settings import get_config
+                        if self._stop_event.is_set() or get_config().email_watcher != config.email_watcher:
+                            # 保存代理或账号后及时断开旧连接，由外层读取新配置重连。
+                            return
+                        if responses or time.monotonic() >= deadline:
+                            break
                 finally:
                     client.idle_done()
 
@@ -1248,7 +1261,7 @@ class EmailWatcherService:
         imap_port = config.email_watcher.imap_port
         imap_ssl = config.email_watcher.imap_ssl
 
-        with IMAPClient(host=imap_host, port=imap_port, ssl=imap_ssl, timeout=IMAP_CONNECT_TIMEOUT_SECONDS) as client:
+        with create_imap_client(host=imap_host, port=imap_port, ssl=imap_ssl, timeout=IMAP_CONNECT_TIMEOUT_SECONDS, proxy_url=config.email_watcher.proxy_url) as client:
             client.login(config.email_watcher.username, config.email_watcher.password)
             client.select_folder(config.email_watcher.mailbox)
             result = self._fetch_and_process(client, config)
@@ -1815,7 +1828,7 @@ class EmailWatcherService:
     # 连接测试
     # ------------------------------------------------------------------
 
-    def _do_test_connection(self, host: str, port: int, ssl: bool, username: str, password: str, mailbox: str) -> Dict:
+    def _do_test_connection(self, host: str, port: int, ssl: bool, username: str, password: str, mailbox: str, proxy_url: str = "") -> Dict:
         """执行 IMAP 连接测试（同步，在 thread 中调用）。"""
         try:
             from imapclient import IMAPClient
@@ -1823,7 +1836,7 @@ class EmailWatcherService:
             return {"success": False, "message": "imapclient 未安装，请执行: pip install imapclient>=3.0.1"}
 
         try:
-            with IMAPClient(host=host, port=port, ssl=ssl, timeout=IMAP_CONNECT_TIMEOUT_SECONDS) as client:
+            with create_imap_client(host=host, port=port, ssl=ssl, timeout=IMAP_CONNECT_TIMEOUT_SECONDS, proxy_url=proxy_url) as client:
                 client.login(username, password)
                 client.select_folder(mailbox)
                 unseen = client.search(['UNSEEN'])

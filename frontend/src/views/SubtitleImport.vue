@@ -2136,7 +2136,7 @@ button:disabled { cursor: not-allowed; }
   opacity: 0;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-page {
+html.kikoerumanager-dark .subtitle-page {
   --subtitle-panel: var(--km-dark-surface);
   --subtitle-panel-soft: #15161b;
   --subtitle-panel-muted: #1c1d22;
@@ -2169,8 +2169,8 @@ button:disabled { cursor: not-allowed; }
   --subtitle-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-shell,
-:global(html.kikoerumanager-dark) .subtitle-dashboard-item,
+html.kikoerumanager-dark .subtitle-shell,
+html.kikoerumanager-dark .subtitle-dashboard-item,
 :global(body.kikoerumanager-dark .subtitle-shell),
 :global(body.kikoerumanager-dark .subtitle-dashboard-item) {
   background: var(--subtitle-panel);
@@ -2178,14 +2178,14 @@ button:disabled { cursor: not-allowed; }
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-dashboard-icon,
-:global(html.kikoerumanager-dark) .subtitle-segmented,
-:global(html.kikoerumanager-dark) .subtitle-list-header,
-:global(html.kikoerumanager-dark) .subtitle-detail-header,
-:global(html.kikoerumanager-dark) .subtitle-info-card-header,
-:global(html.kikoerumanager-dark) .subtitle-meta-item,
-:global(html.kikoerumanager-dark) .subtitle-tree,
-:global(html.kikoerumanager-dark) .subtitle-form-hint-card,
+html.kikoerumanager-dark .subtitle-dashboard-icon,
+html.kikoerumanager-dark .subtitle-segmented,
+html.kikoerumanager-dark .subtitle-list-header,
+html.kikoerumanager-dark .subtitle-detail-header,
+html.kikoerumanager-dark .subtitle-info-card-header,
+html.kikoerumanager-dark .subtitle-meta-item,
+html.kikoerumanager-dark .subtitle-tree,
+html.kikoerumanager-dark .subtitle-form-hint-card,
 :global(body.kikoerumanager-dark .subtitle-dashboard-icon),
 :global(body.kikoerumanager-dark .subtitle-segmented),
 :global(body.kikoerumanager-dark .subtitle-list-header),
@@ -2198,32 +2198,32 @@ button:disabled { cursor: not-allowed; }
   border-color: var(--subtitle-border);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-dashboard-item.is-pending .subtitle-dashboard-icon {
+html.kikoerumanager-dark .subtitle-dashboard-item.is-pending .subtitle-dashboard-icon {
   background: transparent;
   border-color: rgba(244, 206, 117, 0.26);
   color: var(--km-dark-amber);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-dashboard-item.is-running .subtitle-dashboard-icon {
+html.kikoerumanager-dark .subtitle-dashboard-item.is-running .subtitle-dashboard-icon {
   background: transparent;
   border-color: var(--km-dark-border);
   color: var(--km-dark-info);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-dashboard-item.is-total .subtitle-dashboard-icon {
+html.kikoerumanager-dark .subtitle-dashboard-item.is-total .subtitle-dashboard-icon {
   background: transparent;
   border-color: rgba(141, 223, 187, 0.26);
   color: var(--km-dark-green);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-list-pane,
-:global(html.kikoerumanager-dark) .subtitle-detail-pane,
-:global(html.kikoerumanager-dark) .subtitle-info-card,
-:global(html.kikoerumanager-dark) .subtitle-candidate-card,
-:global(html.kikoerumanager-dark) .subtitle-refresh-btn,
-:global(html.kikoerumanager-dark) .subtitle-action-btn,
-:global(html.kikoerumanager-dark) .subtitle-mini-btn,
-:global(html.kikoerumanager-dark) .subtitle-form-input-wrap,
+html.kikoerumanager-dark .subtitle-list-pane,
+html.kikoerumanager-dark .subtitle-detail-pane,
+html.kikoerumanager-dark .subtitle-info-card,
+html.kikoerumanager-dark .subtitle-candidate-card,
+html.kikoerumanager-dark .subtitle-refresh-btn,
+html.kikoerumanager-dark .subtitle-action-btn,
+html.kikoerumanager-dark .subtitle-mini-btn,
+html.kikoerumanager-dark .subtitle-form-input-wrap,
 :global(body.kikoerumanager-dark .subtitle-list-pane),
 :global(body.kikoerumanager-dark .subtitle-detail-pane),
 :global(body.kikoerumanager-dark .subtitle-info-card),
@@ -2238,20 +2238,20 @@ button:disabled { cursor: not-allowed; }
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-segmented-item.is-active,
-:global(html.kikoerumanager-dark) .subtitle-list-card.is-active,
-:global(html.kikoerumanager-dark) .subtitle-candidate-card.is-selected {
+html.kikoerumanager-dark .subtitle-segmented-item.is-active,
+html.kikoerumanager-dark .subtitle-list-card.is-active,
+html.kikoerumanager-dark .subtitle-candidate-card.is-selected {
   background: var(--subtitle-panel-muted);
   border-color: var(--subtitle-border-strong);
   color: var(--subtitle-text);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-refresh-btn:hover,
-:global(html.kikoerumanager-dark) .subtitle-action-btn:hover,
-:global(html.kikoerumanager-dark) .subtitle-mini-btn:hover,
-:global(html.kikoerumanager-dark) .subtitle-list-page-btn:hover,
-:global(html.kikoerumanager-dark) .subtitle-list-card:hover,
-:global(html.kikoerumanager-dark) .subtitle-candidate-card:hover {
+html.kikoerumanager-dark .subtitle-refresh-btn:hover,
+html.kikoerumanager-dark .subtitle-action-btn:hover,
+html.kikoerumanager-dark .subtitle-mini-btn:hover,
+html.kikoerumanager-dark .subtitle-list-page-btn:hover,
+html.kikoerumanager-dark .subtitle-list-card:hover,
+html.kikoerumanager-dark .subtitle-candidate-card:hover {
   background: var(--km-dark-surface-hover);
   border-color: var(--subtitle-border-strong);
   box-shadow: none;
@@ -2274,49 +2274,49 @@ button:disabled { cursor: not-allowed; }
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-list-pager,
-:global(html.kikoerumanager-dark) .subtitle-list-page-btn {
+html.kikoerumanager-dark .subtitle-list-pager,
+html.kikoerumanager-dark .subtitle-list-page-btn {
   background: var(--subtitle-panel);
   border-color: var(--subtitle-border);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-list-page-indicator {
+html.kikoerumanager-dark .subtitle-list-page-indicator {
   background: var(--subtitle-primary-soft);
   border-color: var(--subtitle-border);
   color: var(--subtitle-text-muted);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-action-btn.is-primary {
+html.kikoerumanager-dark .subtitle-action-btn.is-primary {
   background: var(--km-dark-primary-button-bg);
   color: var(--km-dark-primary-button-text);
   border-color: transparent;
 }
 
-:global(html.kikoerumanager-dark) .lib-chip-info {
+html.kikoerumanager-dark .lib-chip-info {
   background: var(--km-dark-info-bg);
   color: var(--km-dark-info);
   border-color: var(--km-dark-border);
 }
 
-:global(html.kikoerumanager-dark) .lib-chip-success {
+html.kikoerumanager-dark .lib-chip-success {
   background: var(--km-dark-green-bg);
   color: var(--km-dark-green);
   border-color: rgba(141, 223, 187, 0.28);
 }
 
-:global(html.kikoerumanager-dark) .lib-chip-warning {
+html.kikoerumanager-dark .lib-chip-warning {
   background: var(--km-dark-amber-bg);
   color: var(--km-dark-amber);
   border-color: rgba(244, 206, 117, 0.28);
 }
 
-:global(html.kikoerumanager-dark) .lib-chip-danger {
+html.kikoerumanager-dark .lib-chip-danger {
   background: var(--km-dark-red-bg);
   color: var(--km-dark-red);
   border-color: rgba(243, 162, 168, 0.28);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-detail-alert.is-info {
+html.kikoerumanager-dark .subtitle-detail-alert.is-info {
   background: transparent !important;
   border-color: var(--subtitle-border);
   color: var(--km-dark-text-muted);
@@ -2333,19 +2333,19 @@ button:disabled { cursor: not-allowed; }
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-detail-alert.is-warning {
+html.kikoerumanager-dark .subtitle-detail-alert.is-warning {
   background: transparent !important;
   border-color: rgba(244, 206, 117, 0.28);
   color: var(--km-dark-amber);
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-detail-pane,
+html.kikoerumanager-dark .subtitle-detail-pane,
 :global(body.kikoerumanager-dark .subtitle-detail-pane) {
   background: transparent;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-detail-header,
+html.kikoerumanager-dark .subtitle-detail-header,
 :global(body.kikoerumanager-dark .subtitle-detail-header) {
   overflow: visible;
 }
@@ -2355,11 +2355,11 @@ button:disabled { cursor: not-allowed; }
   display: none;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-info-card,
-:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-info-card-header,
-:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-meta-item,
-:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-tree,
-:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-card,
+html.kikoerumanager-dark .subtitle-detail-body .subtitle-info-card,
+html.kikoerumanager-dark .subtitle-detail-body .subtitle-info-card-header,
+html.kikoerumanager-dark .subtitle-detail-body .subtitle-meta-item,
+html.kikoerumanager-dark .subtitle-detail-body .subtitle-tree,
+html.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-card,
 :global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-info-card),
 :global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-info-card-header),
 :global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-meta-item),
@@ -2369,24 +2369,24 @@ button:disabled { cursor: not-allowed; }
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-info-card {
+html.kikoerumanager-dark .subtitle-detail-body .subtitle-info-card {
   border-color: var(--subtitle-border);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-meta-grid,
-:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-list,
+html.kikoerumanager-dark .subtitle-detail-body .subtitle-meta-grid,
+html.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-list,
 :global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-meta-grid),
 :global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-list) {
   background: transparent;
   border-color: var(--subtitle-border);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-card:hover,
+html.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-card:hover,
 :global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-card:hover) {
   background: var(--km-dark-surface-hover) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-card.is-selected,
+html.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-card.is-selected,
 :global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-card.is-selected),
 :global(html.kikoerumanager-dark body #app .subtitle-page .subtitle-detail-body .subtitle-candidate-card.is-selected),
 :global(body.kikoerumanager-dark #app .subtitle-page .subtitle-detail-body .subtitle-candidate-card.is-selected) {
@@ -2394,25 +2394,25 @@ button:disabled { cursor: not-allowed; }
   border-color: rgba(141, 223, 187, 0.34) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-radio,
+html.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-radio,
 :global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-radio) {
   background: var(--km-dark-bg);
   border-color: var(--subtitle-border-strong);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-radio.is-checked,
+html.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-radio.is-checked,
 :global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-radio.is-checked) {
   background: #34d399;
   border-color: #34d399;
   box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-radio-dot,
+html.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-radio-dot,
 :global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-radio-dot) {
   background: #06291f;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-import-workbench-overlay {
+html.kikoerumanager-dark .subtitle-import-workbench-overlay {
   background: transparent !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;

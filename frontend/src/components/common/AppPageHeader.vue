@@ -89,18 +89,18 @@ defineProps({
   line-height: 1.45;
 }
 
-:global(html.kikoerumanager-dark) .app-page-title {
+html.kikoerumanager-dark .app-page-title {
   color: #ffffff !important;
   opacity: 1 !important;
   text-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .app-page-subtitle {
+html.kikoerumanager-dark .app-page-subtitle {
   color: #cbd5e1 !important;
   opacity: 1 !important;
 }
 
-:global(html.kikoerumanager-dark) .app-page-icon {
+html.kikoerumanager-dark .app-page-icon {
   opacity: 1 !important;
   filter: none !important;
 }

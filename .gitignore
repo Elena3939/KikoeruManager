@@ -115,6 +115,7 @@ frontend/vite.config.js.timestamp-*.mjs
 backend/tempView/
 backend/_conflicts/
 backend/pytest_tmp*/
+backend/.codex-index-*-tmp/
 
 # Local runtime helper scripts output
 .runtime/
@@ -134,3 +135,10 @@ backend/tests/test_library_index_fts.py
 backend/tests/test_library_index_snapshot_store.py
 backend/tests/test_library_index_performance_behavior.py
 backend/scripts/view.txt
+AGENTS.md
+
+# 个人生产静态与联合发布脚本
+tools/deploy-production-frontend-static.ps1
+tools/deploy-production-frontend-static-remote.sh
+tools/deploy-production-local-build.ps1
+tools/deploy-production-local-build-remote.sh

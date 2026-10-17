@@ -1,6 +1,10 @@
 <template>
-  <section class="deferred-archive-queue flex min-h-0 flex-col rounded-[14px] border border-slate-200 bg-white p-3.5" data-section="deferred-archive-queue">
-    <header class="flex shrink-0 items-center justify-between gap-2">
+  <section
+    class="deferred-archive-queue flex min-h-0 flex-col"
+    :class="embedded ? 'flex-1' : 'rounded-[14px] border border-slate-200 bg-white p-3.5'"
+    data-section="deferred-archive-queue"
+  >
+    <header v-if="!embedded" class="flex shrink-0 items-center justify-between gap-2">
       <div class="flex min-w-0 items-center gap-2.5">
         <Archive :size="20" :stroke-width="2" class="queue-muted shrink-0 text-slate-700" />
         <div class="min-w-0 leading-tight">
@@ -65,6 +69,8 @@ import AppDropdown from '../common/AppDropdown.vue'
 import StatefulButton from '../ui/stateful-button.vue'
 import { useRealtimeEvents } from '../../composables/useRealtimeEvents'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
+
+defineProps({ embedded: { type: Boolean, default: false } })
 
 const labels = { pending: '待归档', processing: '归档中', waiting_retry: '等待重试', failed: '失败', completed: '已完成', cancelled: '已取消' }
 const statusOptions = [{ value: '', label: '全部状态' }, ...Object.entries(labels).map(([value, label]) => ({ value, label }))]
@@ -167,6 +173,8 @@ onMounted(activate)
 onActivated(activate)
 onDeactivated(deactivate)
 onUnmounted(deactivate)
+
+defineExpose({ refresh, loading, data })
 </script>
 
 <style scoped>

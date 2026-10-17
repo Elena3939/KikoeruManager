@@ -2137,7 +2137,7 @@ function getConflictTypeLabel(conflictType) {
 }
 .option-row:hover .ef-switch-thumb { transform: scale(1.04); }
 .ef-switch.checked .ef-switch-thumb { background: #ffffff; }
-:global(html.kikoerumanager-dark) .ef-switch.checked .ef-switch-thumb { background: #111827; }
+html.kikoerumanager-dark .ef-switch.checked .ef-switch-thumb { background: #111827; }
 
 /* ============================================================
  * 侧边栏按钮（应用防闪烁规则）
@@ -2930,13 +2930,13 @@ function getConflictTypeLabel(conflictType) {
   .action-summary { grid-column: 1 / -1; }
 }
 
-:global(html.kikoerumanager-dark) .ef-result-overlay,
-:global(html.dark) .ef-result-overlay {
+html.kikoerumanager-dark .ef-result-overlay,
+html.dark .ef-result-overlay {
   background: rgba(0, 0, 0, 0.52);
 }
 
-:global(html.kikoerumanager-dark) .ef-result-dialog,
-:global(html.dark) .ef-result-dialog {
+html.kikoerumanager-dark .ef-result-dialog,
+html.dark .ef-result-dialog {
   border-color: rgba(148, 163, 184, 0.2);
   background:
     linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(2, 6, 23, 0.94)),
@@ -2944,8 +2944,8 @@ function getConflictTypeLabel(conflictType) {
   box-shadow: 0 28px 76px rgba(0, 0, 0, 0.42), 0 10px 26px rgba(0, 0, 0, 0.26);
 }
 
-:global(html.kikoerumanager-dark) .ef-result-header,
-:global(html.dark) .ef-result-header {
+html.kikoerumanager-dark .ef-result-header,
+html.dark .ef-result-header {
   border-bottom-color: rgba(148, 163, 184, 0.16);
 }
 </style>

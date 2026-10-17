@@ -355,8 +355,8 @@ defineExpose({ close: () => (open.value = false) })
   --app-dd-check-text: rgb(71 85 105);
 }
 
-:global(html.kikoerumanager-dark) .app-dd-root,
-:global(html.kikoerumanager-dark) .app-dd-menu {
+html.kikoerumanager-dark .app-dd-root,
+html.kikoerumanager-dark .app-dd-menu {
   --app-dd-trigger-bg: #17181d;
   --app-dd-trigger-bg-hover: #1d1e23;
   --app-dd-trigger-bg-open: #1d1e23;

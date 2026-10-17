@@ -116,9 +116,3 @@ body > :is(
 ) :is(button, input) {
   font: inherit;
 }
-
-:where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"]),
-:where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] *) {
-  box-sizing: content-box !important;
-  font-family: Arial, Helvetica, sans-serif !important;
-}

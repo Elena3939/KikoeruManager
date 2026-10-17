@@ -844,26 +844,26 @@ function formatRJ(value) {
   }
 }
 
-:global(html.kikoerumanager-dark) .dash-task-icon-box {
+html.kikoerumanager-dark .dash-task-icon-box {
   background: transparent !important;
   border: 0 !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-menu-trigger {
+html.kikoerumanager-dark .dash-task-menu-trigger {
   background: rgba(255, 255, 255, 0.04) !important;
   border-color: rgba(255, 255, 255, 0.08) !important;
   color: rgba(255, 255, 255, 0.82) !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-menu-trigger:hover {
+html.kikoerumanager-dark .dash-task-menu-trigger:hover {
   background: rgba(255, 255, 255, 0.08) !important;
   border-color: rgba(255, 255, 255, 0.12) !important;
   color: #ffffff !important;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-pager {
+html.kikoerumanager-dark .dash-task-pager {
   position: relative;
   z-index: 1;
   margin-bottom: 0 !important;
@@ -875,12 +875,12 @@ function formatRJ(value) {
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-pager b {
+html.kikoerumanager-dark .dash-task-pager b {
   color: #f8fafc !important;
   -webkit-text-fill-color: #f8fafc !important;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-pager-indicator {
+html.kikoerumanager-dark .dash-task-pager-indicator {
   align-items: center;
   background: var(--km-dark-surface-soft) !important;
   background-color: var(--km-dark-surface-soft) !important;
@@ -890,17 +890,17 @@ function formatRJ(value) {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-pager-current,
-:global(html.kikoerumanager-dark) .dash-task-pager-total {
+html.kikoerumanager-dark .dash-task-pager-current,
+html.kikoerumanager-dark .dash-task-pager-total {
   color: #f8fafc !important;
   -webkit-text-fill-color: #f8fafc !important;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-pager-divider {
+html.kikoerumanager-dark .dash-task-pager-divider {
   color: rgba(255, 255, 255, 0.48) !important;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-pager-btn {
+html.kikoerumanager-dark .dash-task-pager-btn {
   background: var(--km-dark-surface-soft) !important;
   background-color: var(--km-dark-surface-soft) !important;
   background-image: none !important;
@@ -909,14 +909,14 @@ function formatRJ(value) {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-pager-btn:hover {
+html.kikoerumanager-dark .dash-task-pager-btn:hover {
   background: var(--km-dark-surface-hover) !important;
   background-color: var(--km-dark-surface-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
   color: #ffffff !important;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-pager-btn:disabled {
+html.kikoerumanager-dark .dash-task-pager-btn:disabled {
   background: rgba(255, 255, 255, 0.04) !important;
   background-color: rgba(255, 255, 255, 0.04) !important;
   border-color: rgba(255, 255, 255, 0.08) !important;
@@ -924,31 +924,31 @@ function formatRJ(value) {
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-action-menu {
+html.kikoerumanager-dark .dash-task-action-menu {
   background: rgba(15, 23, 42, 0.96) !important;
   border-color: rgba(148, 163, 184, 0.18) !important;
   box-shadow: 0 22px 58px rgba(0, 0, 0, 0.56) !important;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-action-menu-header span {
+html.kikoerumanager-dark .dash-task-action-menu-header span {
   color: #e2e8f0 !important;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-action-menu-item {
+html.kikoerumanager-dark .dash-task-action-menu-item {
   color: #cbd5e1 !important;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-action-menu-item:hover {
+html.kikoerumanager-dark .dash-task-action-menu-item:hover {
   background: rgba(255, 255, 255, 0.06) !important;
   color: #ffffff !important;
   box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.14) !important;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-action-menu-item--danger {
+html.kikoerumanager-dark .dash-task-action-menu-item--danger {
   color: #fda4af;
 }
 
-:global(html.kikoerumanager-dark) .dash-task-action-menu-item--danger:hover {
+html.kikoerumanager-dark .dash-task-action-menu-item--danger:hover {
   background: rgba(244, 63, 94, 0.16);
   color: #fecdd3;
   box-shadow: inset 0 0 0 1px rgba(253, 164, 175, 0.28);

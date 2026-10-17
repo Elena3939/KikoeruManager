@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
+from sqlalchemy import select
+
 from ..config.settings import get_config
 from ..models.database import ASMRDownloadSession, ASMRResourceRecord, ASMRWork, SessionLocal
 from .fs_utils import move_path_efficient
@@ -579,6 +581,14 @@ class ASMRResourceService:
             "speed_sample_at": now.isoformat(),
             "speed_sample_transferred_bytes": transferred_bytes,
         }
+        if stage in {"download", "download_reused"}:
+            # 下载阶段的任务进度必须来自真实字节量，否则日志会一直停在准备阶段。
+            task_progress = min(91, 5 + int(aggregate_progress * 0.86))
+            task_progress = max(int(task.progress or 0), task_progress)
+            task.update_progress(
+                task_progress,
+                f"下载中 {completed_files}/{total_files}: {file_name}",
+            )
 
     def _finalize_download_runtime(self, task, status: str = "completed") -> None:
         runtime = dict(task.task_metadata.get("download_runtime") or {})
@@ -979,6 +989,9 @@ class ASMRResourceService:
 
     def _match_score(self, local_item: Dict[str, Any], remote_item: Dict[str, Any]) -> Tuple[int, List[str]]:
         if local_item.get("resource_type") != remote_item.get("resource_type"):
+            return 0, []
+        # 空壳文件不能仅凭同名被当作已有资源，否则补全会漏掉真正缺失的内容。
+        if int(local_item.get("size_bytes") or 0) <= 0:
             return 0, []
 
         duration_tolerance, size_tolerance = self._match_tolerances()
@@ -1656,16 +1669,43 @@ class ASMRResourceService:
         finally:
             db.close()
 
-    def list_sessions(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def list_sessions(self, limit: int = 50, *, request_id: str = "") -> List[Dict[str, Any]]:
+        # 列表只读标量；资源、筛选、统计和失败详情由 get_session_detail 提供。
+        fields = (
+            "id", "rjcode", "task_id", "source_provider", "source_page", "source_action",
+            "source_label", "status", "queue_priority", "folder_path", "target_path",
+            "upload_mode", "local_download_ready", "local_download_root",
+            "local_downloaded_count", "started_at", "completed_at", "created_at", "updated_at",
+        )
+        statement = (
+            select(*(getattr(ASMRDownloadSession, name) for name in fields))
+            .order_by(ASMRDownloadSession.queue_priority.asc(), ASMRDownloadSession.updated_at.desc())
+            .limit(max(1, int(limit)))
+        )
+        started = time.perf_counter()
         db = SessionLocal()
         try:
-            rows = (
-                db.query(ASMRDownloadSession)
-                .order_by(ASMRDownloadSession.queue_priority.asc(), ASMRDownloadSession.updated_at.desc())
-                .limit(max(1, int(limit)))
-                .all()
+            db.connection()
+            connected = time.perf_counter()
+            result = db.execute(statement)
+            executed = time.perf_counter()
+            rows = result.mappings().all()
+            fetched = time.perf_counter()
+            sessions = []
+            for row in rows:
+                item = dict(row)
+                item["local_download_ready"] = bool(item["local_download_ready"])
+                item["local_downloaded_count"] = int(item["local_downloaded_count"] or 0)
+                for name in ("started_at", "completed_at", "created_at", "updated_at"):
+                    item[name] = item[name].isoformat() if item[name] else None
+                sessions.append(item)
+            logger.info(
+                "[ASMR会话列表] request_id=%s count=%s connection_wait_ms=%.1f query_ms=%.1f fetch_ms=%.1f convert_ms=%.1f",
+                request_id, len(sessions), (connected - started) * 1000,
+                (executed - connected) * 1000, (fetched - executed) * 1000,
+                (time.perf_counter() - fetched) * 1000,
             )
-            return [row.to_dict() for row in rows]
+            return sessions
         finally:
             db.close()
 

@@ -943,7 +943,7 @@ class LibraryIndexService:
             for library_id, count in (batch.get("repaired_by_library") or {}).items():
                 repaired_by_library = rjcodes["repaired_by_library"]
                 repaired_by_library[library_id] = repaired_by_library.get(library_id, 0) + int(count or 0)
-            if not int(batch.get("repaired") or 0):
+            if not bool(batch.get("has_more", bool(batch.get("repaired")))):
                 break
         status_stats = self.repair_status_statistics()
         return {

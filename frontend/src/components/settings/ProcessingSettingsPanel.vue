@@ -636,21 +636,21 @@ function formatDurationMs(value) {
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .storage-chip.tone-emerald {
+html.kikoerumanager-dark .storage-chip.tone-emerald {
   background: rgba(16, 185, 129, 0.12);
   border-color: rgba(52, 211, 153, 0.22);
   color: #7dd3ae;
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .storage-chip.tone-amber {
+html.kikoerumanager-dark .storage-chip.tone-amber {
   background: rgba(217, 119, 6, 0.14);
   border-color: rgba(251, 191, 36, 0.24);
   color: #d7ba7d;
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .storage-chip.tone-slate {
+html.kikoerumanager-dark .storage-chip.tone-slate {
   background: rgba(148, 163, 184, 0.09);
   border-color: rgba(148, 163, 184, 0.16);
   color: rgba(203, 213, 225, 0.78);

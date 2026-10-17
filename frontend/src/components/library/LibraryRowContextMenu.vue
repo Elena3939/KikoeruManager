@@ -458,23 +458,23 @@ onBeforeUnmount(() => {
   50% { opacity: 1; transform: scale(1.15); }
 }
 
-:global(html.kikoerumanager-dark) .menu-panel {
+html.kikoerumanager-dark .menu-panel {
   border-color: rgba(255, 255, 255, 0.14) !important;
   background: #0d0e12 !important;
   box-shadow: 0 22px 60px rgba(0, 0, 0, 0.38) !important;
 }
 
-:global(html.kikoerumanager-dark) .menu-item-api-running {
+html.kikoerumanager-dark .menu-item-api-running {
   background: rgba(245, 158, 11, 0.12) !important;
   color: #f4ce75 !important;
   box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.26) !important;
 }
 
-:global(html.kikoerumanager-dark) .menu-item-running::before {
+html.kikoerumanager-dark .menu-item-running::before {
   background: linear-gradient(90deg, transparent, rgba(245, 158, 11, 0.24), transparent) !important;
 }
 
-:global(html.kikoerumanager-dark) .menu-running-badge {
+html.kikoerumanager-dark .menu-running-badge {
   background: rgba(245, 158, 11, 0.16) !important;
   color: #f4ce75 !important;
 }

@@ -437,21 +437,45 @@ class LinkedSubtitleImportService:
                 }
 
             stage_dir = self._create_archive_stage_dir(archive_path)
-            staged_subtitles: List[Dict[str, Any]] = []
+            copy_plans: List[Tuple[str, str, Dict[str, Any]]] = []
             for item in extracted_subtitles:
                 relative_path = str(item.get("relative_path") or item.get("name") or "").strip().replace("\\", "/")
                 if not relative_path:
                     continue
                 destination = os.path.join(stage_dir, *relative_path.split("/"))
                 os.makedirs(os.path.dirname(destination), exist_ok=True)
-                await asyncio.to_thread(shutil.copy2, item.get("path") or "", destination)
-                staged_subtitles.append({
-                    "name": os.path.basename(destination),
-                    "path": destination,
-                    "relative_path": relative_path,
-                    "source_name": item.get("source_name") or item.get("name") or os.path.basename(destination),
-                    "display_name": item.get("display_name") or os.path.basename(destination),
-                })
+                copy_plans.append((
+                    str(item.get("path") or ""),
+                    destination,
+                    {
+                        "name": os.path.basename(destination),
+                        "path": destination,
+                        "relative_path": relative_path,
+                        "source_name": item.get("source_name") or item.get("name") or os.path.basename(destination),
+                        "display_name": item.get("display_name") or os.path.basename(destination),
+                    },
+                ))
+
+            def copy_one(plan: Tuple[str, str, Dict[str, Any]]) -> Dict[str, Any]:
+                source_path, destination_path, metadata = plan
+                shutil.copy2(source_path, destination_path)
+                return metadata
+
+            def copy_all() -> List[Dict[str, Any]]:
+                copy_workers = min(8, len(copy_plans))
+                if copy_workers == 1:
+                    return [copy_one(copy_plans[0])] if copy_plans else []
+                if not copy_workers:
+                    return []
+                with ThreadPoolExecutor(
+                    max_workers=copy_workers,
+                    thread_name_prefix="subtitle-archive-stage",
+                ) as executor:
+                    return list(executor.map(copy_one, copy_plans))
+
+            # ThreadPoolExecutor 本身虽然并发，但不能在 async 协程里直接 with；
+            # 否则 executor.map 会阻塞事件循环，拖慢同一时间的删除和任务状态请求。
+            staged_subtitles = await asyncio.to_thread(copy_all)
 
             logger.info(
                 "[字幕补配预检] 临时解包扫描到字幕并已复制到工作区: source=%s extracted_dir=%s stage_dir=%s subtitle_count=%s",

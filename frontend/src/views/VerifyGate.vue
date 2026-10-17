@@ -1,6 +1,6 @@
 <template>
   <main class="gate-page relative min-h-screen flex items-center justify-center px-6 overflow-hidden">
-    <section class="glass-card relative w-full max-w-[680px] rounded-[46px] px-10 sm:px-14 py-16 sm:py-20">
+  <section class="gate-content relative w-full max-w-[680px] px-10 sm:px-14 py-16 sm:py-20">
       <div class="relative z-10 w-full max-w-[520px] mx-auto">
         <header class="text-center mb-10">
           <div class="icon-glass mx-auto w-[70px] h-[70px] rounded-[24px] flex items-center justify-center mb-7">
@@ -287,12 +287,10 @@ async function copySecret() {
 
 <style scoped>
 .gate-page {
+  width: 100%;
+  min-height: 100%;
   --gate-page-bg:
     linear-gradient(180deg, #f6f7f9 0%, #eef1f5 100%);
-  --gate-card-bg: rgba(255, 255, 255, 0.62);
-  --gate-card-border: rgba(255, 255, 255, 0.82);
-  --gate-card-inner-border: rgba(255, 255, 255, 0.58);
-  --gate-card-shadow: none;
   --gate-text: #101114;
   --gate-text-muted: rgba(39, 44, 52, 0.64);
   --gate-text-subtle: rgba(39, 44, 52, 0.48);
@@ -319,10 +317,6 @@ async function copySecret() {
 :global(.kikoerumanager-dark .gate-page) {
   --gate-page-bg:
     linear-gradient(180deg, #090a0d 0%, #050609 100%);
-  --gate-card-bg: rgba(12, 13, 17, 0.62);
-  --gate-card-border: rgba(255, 255, 255, 0.20);
-  --gate-card-inner-border: rgba(255, 255, 255, 0.10);
-  --gate-card-shadow: none;
   --gate-text: #f7f7f8;
   --gate-text-muted: rgba(235, 235, 238, 0.64);
   --gate-text-subtle: rgba(235, 235, 238, 0.46);
@@ -342,41 +336,9 @@ async function copySecret() {
   --gate-check-border: rgba(255, 255, 255, 0.28);
 }
 
-.glass-card {
+.gate-content {
   position: relative;
-  overflow: hidden;
-  isolation: isolate;
-  background: var(--gate-card-bg);
-  backdrop-filter: blur(34px) saturate(1.12);
-  -webkit-backdrop-filter: blur(34px) saturate(1.12);
-  border: 1px solid var(--gate-card-border);
-  box-shadow: var(--gate-card-shadow);
   animation: panelIn 520ms cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.glass-card::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  border-radius: inherit;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.24), transparent 44%);
-  pointer-events: none;
-}
-
-:global(html.kikoerumanager-dark .glass-card::before),
-:global(body.kikoerumanager-dark .glass-card::before),
-:global(.kikoerumanager-dark .glass-card::before) {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 46%);
-}
-
-.glass-card::after {
-  content: "";
-  position: absolute;
-  inset: 1px;
-  border-radius: inherit;
-  border: 1px solid var(--gate-card-inner-border);
-  pointer-events: none;
 }
 
 .icon-glass {
@@ -705,8 +667,7 @@ async function copySecret() {
     padding: 18px 14px;
     align-items: start;
   }
-  .glass-card {
-    border-radius: 30px;
+  .gate-content {
     padding: 48px 24px;
   }
   .otp-grid {

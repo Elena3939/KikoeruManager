@@ -2128,6 +2128,12 @@ async def test_baidu_start_download_records_failed_phase_metric_when_all_files_f
     with pytest.raises(BaiduNetdiskError, match="HTTP 403"):
         await service.start_download_task(task)
 
+    assert not (tmp_path / "downloads" / ".baidu-netdisk-staging" / "baidu-failed-metric-test").exists()
+    assert task.task_metadata["staging_cleanup"]["success"] is True
+    assert task.task_metadata["staging_cleanup"]["cleaned"] is True
+    assert task.task_metadata["staging_cleanup"]["retained_for_retry"] is False
+    assert task.task_metadata["retry_available"] is True
+    assert task.task_metadata["retry_entry"]["failed_count"] == 1
     assert task.task_metadata["download_runtime"]["status"] == "failed"
     assert task.task_metadata["performance_metrics"]["success_count"] == 0
     assert task.task_metadata["performance_metrics"]["failed_count"] == 1
@@ -2157,6 +2163,45 @@ def test_baidu_completed_staging_cleanup_rejects_non_task_path(tmp_path):
     assert result["success"] is False
     assert result["reason"] == "outside_staging_parent"
     assert user_file.read_text(encoding="utf-8") == "keep"
+
+
+def test_baidu_finalize_output_rejects_empty_download(tmp_path):
+    service = BaiduNetdiskService()
+    staging_dir = tmp_path / "staging"
+    final_dir = tmp_path / "downloads" / "百度网盘_20261001_120000"
+    staging_dir.mkdir(parents=True)
+
+    with pytest.raises(BaiduNetdiskError, match="没有可落地文件"):
+        service._finalize_output(str(staging_dir), str(final_dir), "resume", 1)
+
+    assert not final_dir.exists()
+
+
+def test_baidu_cleanup_orphaned_empty_dirs_only_removes_old_empty_outputs(tmp_path, monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.baidu_netdisk.download_root = str(tmp_path / "downloads")
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    root = Path(config.baidu_netdisk.download_root)
+    old_staging = root / ".baidu-netdisk-staging" / "orphan-task"
+    old_batch = root / "百度网盘_20261001_120000" / "空目录"
+    valid_batch = root / "百度网盘_20261001_120001"
+    old_staging.mkdir(parents=True)
+    old_batch.mkdir(parents=True)
+    valid_batch.mkdir(parents=True)
+    (valid_batch / "keep.zip").write_bytes(b"keep")
+    old_time = time.time() - 7200
+    for path in (old_staging, old_batch.parent, valid_batch):
+        os.utime(path, (old_time, old_time))
+
+    result = service.cleanup_orphaned_empty_dirs(min_age_seconds=3600)
+
+    assert str(old_staging) in result["staging_removed"]
+    assert str(old_batch.parent) in result["batch_removed"]
+    assert not old_staging.exists()
+    assert not old_batch.parent.exists()
+    assert valid_batch.exists()
 
 
 def test_baidu_download_file_concurrency_respects_network_budget(monkeypatch):

@@ -866,7 +866,7 @@ const healthText = computed(() => {
       return `百度登录态可用${accountText}${svip}`
     }
     const pikpak = health.value.pikpak_enabled ? (health.value.pikpak_ready ? ' · PikPak 已配置' : ' · PikPak 缺配置') : ''
-    const gofile = health.value.gofile_ready ? ` · ${health.value.gofile_token_configured ? 'Gofile Token 已配置' : 'Gofile 临时账号'}` : ''
+    const gofile = health.value.gofile_ready ? ' · Gofile 临时账号' : ''
     return `aria2 可用${health.value.version?.version ? ` · ${health.value.version.version}` : ''}${gofile}${pikpak}`
   }
   return health.value.message || (isBaidu.value ? '百度登录态不可用' : 'aria2 不可用')

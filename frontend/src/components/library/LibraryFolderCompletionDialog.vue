@@ -3,24 +3,24 @@
     <Transition name="folder-completion-fade">
       <div
         v-if="modelValue"
-        class="custom-preview-overlay folder-completion-overlay"
+        class="el-overlay folder-completion-overlay"
         @click.self="handleBackdropClick"
       >
         <section
-          class="custom-preview-modal folder-completion-modal"
+          class="folder-completion-modal"
           role="dialog"
           aria-modal="true"
           aria-labelledby="folder-completion-title"
         >
-          <div class="window panel-enter glass-shell folder-completion-window">
-            <div class="window-header folder-completion-header">
+          <div class="panel-enter folder-completion-window">
+            <div class="folder-completion-header">
               <div class="folder-completion-heading">
                 <h1 id="folder-completion-title" class="title">补全文件夹</h1>
                 <p>检查已选目录缺失文件，并按 ASMR.one 可用资源创建补全任务</p>
               </div>
               <button
                 type="button"
-                class="interactive-chip close-button folder-completion-close"
+                class="folder-completion-close"
                 :disabled="submitting"
                 aria-label="关闭"
                 @click="closeDialog"
@@ -38,7 +38,7 @@
               </div>
 
               <div v-if="!loading || items.length || skipped.length || errorMessage" class="folder-completion-summary">
-                <div class="folder-completion-metric is-ready">
+                <div class="folder-completion-metric">
                   <span class="folder-completion-metric-icon">
                     <CheckCircle2 :size="15" :stroke-width="2.4" />
                   </span>
@@ -47,7 +47,7 @@
                     <em>可补全</em>
                   </span>
                 </div>
-                <div class="folder-completion-metric is-missing">
+                <div class="folder-completion-metric">
                   <span class="folder-completion-metric-icon">
                     <FileSearch :size="15" :stroke-width="2.4" />
                   </span>
@@ -56,7 +56,7 @@
                     <em>缺失文件</em>
                   </span>
                 </div>
-                <div class="folder-completion-metric is-size">
+                <div class="folder-completion-metric">
                   <span class="folder-completion-metric-icon">
                     <Download :size="15" :stroke-width="2.4" />
                   </span>
@@ -65,7 +65,7 @@
                     <em>预计下载</em>
                   </span>
                 </div>
-                <div class="folder-completion-metric is-skipped">
+                <div class="folder-completion-metric">
                   <span class="folder-completion-metric-icon">
                     <Ban :size="15" :stroke-width="2.4" />
                   </span>
@@ -95,11 +95,15 @@
                     >
                     <span class="folder-completion-row-main">
                       <span class="folder-completion-row-title">
-                        <b>{{ item.rjcode }}</b>
-                        <span v-if="item.actual_rjcode && item.actual_rjcode !== item.rjcode">下载 {{ item.actual_rjcode }}</span>
+                        <b>{{ item.actual_rjcode || item.rjcode }}</b>
                         <em>{{ item.mode === 'full_download' ? '空目录全量补全' : '只补缺失' }}</em>
                       </span>
-                      <span class="folder-completion-row-sub" :title="item.folder_path">{{ item.folder_name || item.folder_path }}</span>
+                      <span
+                        v-if="item.actual_rjcode && item.actual_rjcode !== item.rjcode"
+                        class="folder-completion-row-sub folder-completion-original-rj"
+                      >
+                        原作 {{ item.rjcode }}
+                      </span>
                       <span class="folder-completion-row-work" :title="item.work_title">{{ item.work_title || '-' }}</span>
                     </span>
                     <span class="folder-completion-row-stats">
@@ -125,8 +129,8 @@
                         :key="`${item.key}-${resource.relative_path || resource.file_name || resourceIndex}`"
                         class="folder-completion-file-row"
                       >
-                        <span class="folder-completion-file-icon" :class="resourceIconClass(resource)" aria-hidden="true">
-                          <component :is="resourceIcon(resource)" :size="15" :stroke-width="2.2" />
+                        <span class="folder-completion-file-icon" :style="{ color: resourceMeta(resource).color }" aria-hidden="true">
+                          <component :is="resourceMeta(resource).icon" :size="18" :stroke-width="2" />
                         </span>
                         <span class="folder-completion-file-name" :title="resource.relative_path || resource.file_name">
                           {{ displayResourceName(resource) }}
@@ -169,7 +173,7 @@
                 已选 <span class="summary-strong">{{ selectedItems.length }}</span> / {{ items.length }} 项
               </p>
               <div class="footer-actions">
-                <button type="button" class="secondary-cta folder-completion-cancel" :disabled="submitting" @click="closeDialog">取消</button>
+                <button type="button" class="folder-completion-cancel" :disabled="submitting" @click="closeDialog">取消</button>
                 <StatefulButton
                   unstyled
                   class="folder-completion-submit"
@@ -189,12 +193,13 @@
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { Ban, CheckCircle2, ChevronDown, Download, File, FileArchive, FileAudio, FileImage, FileSearch, FileText, FileVideo, Subtitles, X } from 'lucide-vue-next'
+import { Ban, CheckCircle2, ChevronDown, Download, FileSearch, X } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { libraryApi } from '../../api'
 import AppEmptyState from '../common/AppEmptyState.vue'
 import AppLoadingAnimation from '../common/AppLoadingAnimation.vue'
 import StatefulButton from '../ui/stateful-button.vue'
+import { libraryEntryMetaFor } from './_libraryFileKind'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -409,20 +414,8 @@ function formatResourceType (resource) {
   return labels[type] || type
 }
 
-function resourceIcon (resource) {
-  const type = String(resource?.resource_type || '').trim()
-  if (type === 'audio') return FileAudio
-  if (type === 'image') return FileImage
-  if (type === 'text') return FileText
-  if (type === 'subtitle') return Subtitles
-  if (type === 'archive') return FileArchive
-  if (type === 'video') return FileVideo
-  return File
-}
-
-function resourceIconClass (resource) {
-  const type = String(resource?.resource_type || 'other').trim() || 'other'
-  return `is-${type}`
+function resourceMeta (resource) {
+  return libraryEntryMetaFor({ type: 'file', name: resource?.file_name || resource?.relative_path })
 }
 
 async function submitSelected () {
@@ -476,6 +469,8 @@ function formatSize (bytes) {
 }
 
 .folder-completion-window {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   max-height: calc(100vh - 48px);
   border-radius: 24px;
@@ -488,6 +483,7 @@ function formatSize (bytes) {
 }
 
 .folder-completion-header {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -539,6 +535,7 @@ function formatSize (bytes) {
 }
 
 .folder-completion-body {
+  flex: 1 1 auto;
   position: relative;
   min-height: 260px;
   overflow: hidden auto;
@@ -614,9 +611,7 @@ function formatSize (bytes) {
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  border-radius: 9px;
-  background: rgba(14, 165, 233, 0.12);
-  color: #0284c7;
+  color: #71717a;
 }
 
 .folder-completion-metric-copy {
@@ -643,26 +638,6 @@ function formatSize (bytes) {
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.folder-completion-metric.is-ready .folder-completion-metric-icon {
-  background: rgba(16, 185, 129, 0.12);
-  color: #059669;
-}
-
-.folder-completion-metric.is-missing .folder-completion-metric-icon {
-  background: rgba(99, 102, 241, 0.12);
-  color: #4f46e5;
-}
-
-.folder-completion-metric.is-size .folder-completion-metric-icon {
-  background: rgba(14, 165, 233, 0.12);
-  color: #0284c7;
-}
-
-.folder-completion-metric.is-skipped .folder-completion-metric-icon {
-  background: rgba(245, 158, 11, 0.14);
-  color: #b45309;
 }
 
 .folder-completion-error,
@@ -895,35 +870,6 @@ function formatSize (bytes) {
   height: 24px;
   align-items: center;
   justify-content: center;
-  border-radius: 7px;
-  background: rgba(100, 116, 139, 0.1);
-  color: #64748b;
-}
-
-.folder-completion-file-icon.is-audio {
-  background: rgba(14, 165, 233, 0.12);
-  color: #0284c7;
-}
-
-.folder-completion-file-icon.is-image {
-  background: rgba(16, 185, 129, 0.12);
-  color: #059669;
-}
-
-.folder-completion-file-icon.is-text,
-.folder-completion-file-icon.is-subtitle {
-  background: rgba(99, 102, 241, 0.12);
-  color: #4f46e5;
-}
-
-.folder-completion-file-icon.is-archive {
-  background: rgba(245, 158, 11, 0.14);
-  color: #b45309;
-}
-
-.folder-completion-file-icon.is-video {
-  background: rgba(244, 63, 94, 0.12);
-  color: #e11d48;
 }
 
 .folder-completion-file-name {
@@ -1026,6 +972,7 @@ function formatSize (bytes) {
 }
 
 .folder-completion-footer {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1306,30 +1253,6 @@ function formatSize (bytes) {
   color: rgba(212, 212, 216, 0.72) !important;
 }
 
-:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-metric.is-ready .folder-completion-metric-icon),
-:global(html.dark .folder-completion-modal .folder-completion-metric.is-ready .folder-completion-metric-icon) {
-  background: rgba(16, 185, 129, 0.16) !important;
-  color: #86efac !important;
-}
-
-:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-metric.is-missing .folder-completion-metric-icon),
-:global(html.dark .folder-completion-modal .folder-completion-metric.is-missing .folder-completion-metric-icon) {
-  background: rgba(129, 140, 248, 0.16) !important;
-  color: #c4b5fd !important;
-}
-
-:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-metric.is-size .folder-completion-metric-icon),
-:global(html.dark .folder-completion-modal .folder-completion-metric.is-size .folder-completion-metric-icon) {
-  background: rgba(14, 165, 233, 0.16) !important;
-  color: #7dd3fc !important;
-}
-
-:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-metric.is-skipped .folder-completion-metric-icon),
-:global(html.dark .folder-completion-modal .folder-completion-metric.is-skipped .folder-completion-metric-icon) {
-  background: rgba(245, 158, 11, 0.16) !important;
-  color: #fcd34d !important;
-}
-
 :global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-metric strong),
 :global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-row-title),
 :global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-row-stats strong),
@@ -1402,40 +1325,7 @@ function formatSize (bytes) {
 
 :global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-file-icon),
 :global(html.dark .folder-completion-modal .folder-completion-file-icon) {
-  background: rgba(255, 255, 255, 0.06) !important;
-  color: rgba(212, 212, 216, 0.78) !important;
-}
-
-:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-file-icon.is-audio),
-:global(html.dark .folder-completion-modal .folder-completion-file-icon.is-audio) {
-  background: rgba(14, 165, 233, 0.16) !important;
-  color: #7dd3fc !important;
-}
-
-:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-file-icon.is-image),
-:global(html.dark .folder-completion-modal .folder-completion-file-icon.is-image) {
-  background: rgba(16, 185, 129, 0.16) !important;
-  color: #86efac !important;
-}
-
-:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-file-icon.is-text),
-:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-file-icon.is-subtitle),
-:global(html.dark .folder-completion-modal .folder-completion-file-icon.is-text),
-:global(html.dark .folder-completion-modal .folder-completion-file-icon.is-subtitle) {
-  background: rgba(129, 140, 248, 0.16) !important;
-  color: #c4b5fd !important;
-}
-
-:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-file-icon.is-archive),
-:global(html.dark .folder-completion-modal .folder-completion-file-icon.is-archive) {
-  background: rgba(245, 158, 11, 0.16) !important;
-  color: #fcd34d !important;
-}
-
-:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-file-icon.is-video),
-:global(html.dark .folder-completion-modal .folder-completion-file-icon.is-video) {
-  background: rgba(244, 63, 94, 0.16) !important;
-  color: #000000 !important;
+  background: transparent !important;
 }
 
 :global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-row-work),
@@ -1474,5 +1364,344 @@ function formatSize (bytes) {
   background: rgba(4, 6, 10, 0.3) !important;
   color: rgba(244, 244, 245, 0.42) !important;
   box-shadow: none !important;
+}
+/* 补全弹窗与系统工作台统一：平面窗口、细边框、固定底栏。 */
+.folder-completion-overlay {
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.folder-completion-window {
+  border-radius: 14px;
+  background: #f8fafc;
+  border: 1px solid #dbe3ec;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.24);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.folder-completion-header {
+  min-height: 78px;
+  padding: 18px 22px 16px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #ffffff;
+}
+
+.folder-completion-heading .title {
+  font-size: 20px;
+  margin: 0;
+  font-weight: 600;
+  color: #18181b;
+  line-height: 1.4;
+}
+
+.folder-completion-heading p {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.folder-completion-close {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+}
+
+.folder-completion-body {
+  padding: 16px 22px 18px;
+  background: #f8fafc;
+}
+
+.folder-completion-loading {
+  border-radius: 0;
+  background: rgba(248, 250, 252, 0.9);
+  backdrop-filter: none;
+}
+
+.folder-completion-summary {
+  margin-bottom: 14px;
+  border-radius: 8px;
+  border-color: #dbe3ec;
+  background: #ffffff;
+  padding: 4px;
+}
+
+.folder-completion-metric {
+  padding: 8px 12px;
+}
+
+.folder-completion-metric-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+}
+
+.folder-completion-row {
+  border-radius: 8px;
+  border-color: #dbe3ec;
+  background: #ffffff;
+  padding: 11px 12px;
+  box-shadow: none;
+}
+
+.folder-completion-row:hover {
+  border-color: #d4d4d8;
+  background: #fafafa;
+  box-shadow: none;
+}
+
+.folder-completion-row.is-selected {
+  border-color: #a1a1aa;
+  background: #f4f4f5;
+  box-shadow: none;
+}
+
+.folder-completion-row input {
+  accent-color: #52525b;
+}
+
+.folder-completion-row-title span,
+.folder-completion-row-title em {
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+
+.folder-completion-files-toggle {
+  border-radius: 6px;
+  background: #e0f2fe;
+}
+
+.folder-completion-files {
+  border-radius: 0;
+  border: 0;
+  border-left: 1px solid #dbe3ec;
+  background: transparent;
+  margin-left: 20px;
+}
+
+.folder-completion-file-row,
+.folder-completion-skipped-row {
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.folder-completion-footer {
+  min-height: 68px;
+  padding: 14px 22px;
+  border-top-color: #dbe3ec;
+  background: #ffffff;
+}
+
+.folder-completion-cancel,
+.folder-completion-submit {
+  min-height: 36px;
+  border-radius: 7px;
+  box-shadow: none;
+}
+
+.folder-completion-submit {
+  background: #18181b;
+}
+
+.folder-completion-submit:hover:not(:disabled) {
+  background: #3f3f46;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-window),
+:global(html.dark .folder-completion-modal .folder-completion-window) {
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
+  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.46) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-header),
+:global(html.dark .folder-completion-modal .folder-completion-header),
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-footer),
+:global(html.dark .folder-completion-modal .folder-completion-footer) {
+  background: var(--km-dark-elevated) !important;
+  border-color: var(--km-dark-border-soft) !important;
+}
+
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-body),
+:global(html.dark .folder-completion-modal .folder-completion-body) {
+  background: var(--km-dark-surface) !important;
+}
+
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-summary),
+:global(html.dark .folder-completion-modal .folder-completion-summary) {
+  border-color: var(--km-dark-border-soft) !important;
+  background: var(--km-dark-elevated) !important;
+}
+
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-row),
+:global(html.dark .folder-completion-modal .folder-completion-row) {
+  border-color: var(--km-dark-border-soft) !important;
+  background: var(--km-dark-elevated) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-row:hover),
+:global(html.dark .folder-completion-modal .folder-completion-row:hover) {
+  border-color: var(--km-dark-border-strong) !important;
+  background: rgba(255, 255, 255, 0.025) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-row.is-selected),
+:global(html.dark .folder-completion-modal .folder-completion-row.is-selected) {
+  border-color: var(--km-dark-border-strong) !important;
+  background: rgba(255, 255, 255, 0.035) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-row input),
+:global(html.dark .folder-completion-modal .folder-completion-row input) {
+  accent-color: #a1a1aa;
+  color-scheme: dark;
+}
+
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-metric-icon),
+:global(html.dark .folder-completion-modal .folder-completion-metric-icon) {
+  color: var(--km-dark-text-muted);
+}
+
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-files),
+:global(html.dark .folder-completion-modal .folder-completion-files) {
+  border-color: var(--km-dark-border-soft) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-file-row),
+:global(html.dark .folder-completion-modal .folder-completion-file-row),
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-skipped-row),
+:global(html.dark .folder-completion-modal .folder-completion-skipped-row) {
+  background: var(--km-dark-elevated) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-cancel),
+:global(html.dark .folder-completion-modal .folder-completion-cancel) {
+  border-color: var(--km-dark-border);
+  background: var(--km-dark-button-bg);
+  color: var(--km-dark-text);
+}
+
+.folder-completion-modal :is(button, input, [tabindex]):is(:focus, :focus-visible) {
+  outline: none;
+  box-shadow: none;
+}
+
+.folder-completion-modal button {
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.folder-completion-modal button:disabled {
+  cursor: not-allowed;
+}
+
+.folder-completion-modal button:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+}
+
+.folder-completion-modal button:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.folder-completion-modal button:hover:not(:disabled) svg:not(.is-open) {
+  transform: rotate(5deg);
+}
+
+.folder-completion-close {
+  background: transparent;
+  cursor: pointer;
+}
+
+.folder-completion-footer .summary {
+  margin: 0;
+  font-size: 12px;
+  color: #71717a;
+}
+
+.folder-completion-footer .summary-strong {
+  font-weight: 600;
+}
+
+.folder-completion-footer .footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.folder-completion-cancel {
+  background: #f4f4f5;
+  color: #3f3f46;
+  border: 1px solid #e4e4e7;
+  cursor: pointer;
+}
+
+.folder-completion-modal :is(.folder-completion-file-name, .folder-completion-metric em,
+  .folder-completion-row-stats, .folder-completion-files-toggle,
+  .folder-completion-cancel, .folder-completion-submit, .folder-completion-skipped-toggle) {
+  font-weight: 500;
+}
+
+.folder-completion-metric strong {
+  font-weight: 600;
+}
+
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-loading) {
+  background: var(--km-dark-surface) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-submit:not(:disabled)),
+:global(html.dark .folder-completion-modal .folder-completion-submit:not(:disabled)) {
+  border: 1px solid var(--km-dark-border);
+  background: var(--km-dark-button-bg);
+  color: var(--km-dark-text-strong);
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-submit:hover:not(:disabled)),
+:global(html.dark .folder-completion-modal .folder-completion-submit:hover:not(:disabled)) {
+  border-color: var(--km-dark-border-strong);
+  background: var(--km-dark-button-bg-hover);
+}
+
+@media (max-width: 640px) {
+  .folder-completion-window {
+    height: 100dvh;
+    min-height: 0;
+    max-height: 100dvh;
+    border-radius: 0;
+  }
+
+  .folder-completion-modal {
+    min-height: 0;
+    max-height: 100dvh;
+  }
+
+  .folder-completion-header,
+  .folder-completion-body,
+  .folder-completion-footer {
+    padding-inline: 16px;
+  }
+
+  .folder-completion-body {
+    min-height: 0;
+    max-height: none;
+  }
+
+  .folder-completion-list {
+    max-height: none;
+  }
+
+  .folder-completion-metric + .folder-completion-metric {
+    border-left: 0;
+  }
 }
 </style>

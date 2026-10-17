@@ -952,32 +952,32 @@ function getSubtitlePairRenamePreview(pair = {}) {
   background-color: #ffffff !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep([class*="bg-white"]),
-:global(html.dark) .subtitle-inspector-workbench-root :deep([class*="bg-white"]) {
+html.kikoerumanager-dark .subtitle-inspector-workbench-root :deep([class*="bg-white"]),
+html.dark .subtitle-inspector-workbench-root :deep([class*="bg-white"]) {
   background-color: #242529 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.15) !important;
   color: rgba(246, 246, 248, 0.88) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50),
-:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50\/30),
-:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50\/40),
-:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50\/60),
-:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-slate-100),
-:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50),
-:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50\/30),
-:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50\/40),
-:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50\/60),
-:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-slate-100) {
+html.kikoerumanager-dark .subtitle-inspector-workbench-root :deep(.bg-slate-50),
+html.kikoerumanager-dark .subtitle-inspector-workbench-root :deep(.bg-slate-50\/30),
+html.kikoerumanager-dark .subtitle-inspector-workbench-root :deep(.bg-slate-50\/40),
+html.kikoerumanager-dark .subtitle-inspector-workbench-root :deep(.bg-slate-50\/60),
+html.kikoerumanager-dark .subtitle-inspector-workbench-root :deep(.bg-slate-100),
+html.dark .subtitle-inspector-workbench-root :deep(.bg-slate-50),
+html.dark .subtitle-inspector-workbench-root :deep(.bg-slate-50\/30),
+html.dark .subtitle-inspector-workbench-root :deep(.bg-slate-50\/40),
+html.dark .subtitle-inspector-workbench-root :deep(.bg-slate-50\/60),
+html.dark .subtitle-inspector-workbench-root :deep(.bg-slate-100) {
   background-color: #2b2c30 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.15) !important;
   color: rgba(218, 218, 224, 0.72) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-slate-900),
-:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-slate-900) {
+html.kikoerumanager-dark .subtitle-inspector-workbench-root :deep(.bg-slate-900),
+html.dark .subtitle-inspector-workbench-root :deep(.bg-slate-900) {
   background-color: #020617 !important;
   color: #ffffff !important;
   border-color: rgba(255, 255, 255, 0.24) !important;
@@ -1515,12 +1515,12 @@ function getSubtitlePairRenamePreview(pair = {}) {
   font-weight: 700 !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-gradient-to-r),
-:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-gradient-to-br),
-:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-gradient-to-b),
-:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-gradient-to-r),
-:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-gradient-to-br),
-:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-gradient-to-b) {
+html.kikoerumanager-dark .subtitle-inspector-workbench-root :deep(.bg-gradient-to-r),
+html.kikoerumanager-dark .subtitle-inspector-workbench-root :deep(.bg-gradient-to-br),
+html.kikoerumanager-dark .subtitle-inspector-workbench-root :deep(.bg-gradient-to-b),
+html.dark .subtitle-inspector-workbench-root :deep(.bg-gradient-to-r),
+html.dark .subtitle-inspector-workbench-root :deep(.bg-gradient-to-br),
+html.dark .subtitle-inspector-workbench-root :deep(.bg-gradient-to-b) {
   background-color: #242529 !important;
   background-image: none !important;
   box-shadow: none !important;
@@ -1566,15 +1566,15 @@ function getSubtitlePairRenamePreview(pair = {}) {
   transform: rotate(-8deg) scale(1.12);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-folder-mark,
-:global(html.dark) .subtitle-folder-mark {
+html.kikoerumanager-dark .subtitle-folder-mark,
+html.dark .subtitle-folder-mark {
   background: transparent;
   color: #38bdf8;
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-folder-mark:hover,
-:global(html.dark) .subtitle-folder-mark:hover {
+html.kikoerumanager-dark .subtitle-folder-mark:hover,
+html.dark .subtitle-folder-mark:hover {
   background: transparent;
   color: #7dd3fc;
 }

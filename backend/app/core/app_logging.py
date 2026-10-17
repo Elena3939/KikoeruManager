@@ -59,6 +59,22 @@ _queue_listener: Optional[logging.handlers.QueueListener] = None
 _log_queue: Optional[queue.Queue] = None
 
 
+class _BoundedRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """保留零份备份时仍限制主日志大小；标准 handler 的零备份模式不会截断。"""
+
+    def doRollover(self) -> None:
+        if self.backupCount > 0:
+            super().doRollover()
+            return
+        if self.stream is not None:
+            self.stream.close()
+            self.stream = None
+        with open(self.baseFilename, "w", encoding=self.encoding, errors=self.errors):
+            pass
+        if not self.delay:
+            self.stream = self._open()
+
+
 class _RecentFirstQueueHandler(logging.handlers.QueueHandler):
     """队列满时淘汰最旧日志，业务线程始终不等待磁盘。"""
 
@@ -184,6 +200,8 @@ def get_app_logging_status() -> dict:
         "queue_capacity": log_queue.maxsize if log_queue is not None else 0,
         "dropped_count": int(getattr(handler, "dropped_count", 0) or 0),
         "listener_alive": bool(listener_thread and listener_thread.is_alive()),
+        "rotation_max_bytes": int(getattr(_rotating_handler, "maxBytes", 0) or 0),
+        "rotation_backup_count": int(getattr(_rotating_handler, "backupCount", 0) or 0),
     }
 
 
@@ -252,7 +270,7 @@ def configure_app_logging(
             root.removeHandler(handler)
 
         try:
-            file_handler = logging.handlers.RotatingFileHandler(
+            file_handler = _BoundedRotatingFileHandler(
                 log_path,
                 maxBytes=int(effective_max_mb) * 1024 * 1024,
                 backupCount=int(effective_backups),
@@ -261,7 +279,7 @@ def configure_app_logging(
             )
         except OSError:
             log_path = os.path.join(resolved_dir, f"app.{os.getpid()}.log")
-            file_handler = logging.handlers.RotatingFileHandler(
+            file_handler = _BoundedRotatingFileHandler(
                 log_path,
                 maxBytes=int(effective_max_mb) * 1024 * 1024,
                 backupCount=int(effective_backups),

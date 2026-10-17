@@ -58,6 +58,54 @@ def create_service():
     return ASMRResourceService(asmr_service=FakeASMRService())
 
 
+@pytest.mark.parametrize("resource_type, filename", [
+    ("audio", "01.mp3"),
+    ("cover", "Folder.jpg"),
+    ("text", "Readme.txt"),
+])
+def test_empty_local_resource_is_missing_despite_matching_name(resource_type, filename):
+    service = create_service()
+    resource = {
+        "resource_type": resource_type,
+        "file_name": filename,
+        "relative_path": filename,
+        "normalized_name": service.normalize_name(filename),
+        "track_number": 1,
+        "language": "ja",
+    }
+    local = {**resource, "size_bytes": 0}
+    remote = {**resource, "size_bytes": 1024}
+
+    matched, missing, local_only, conflicts = service._match_remote_with_local([local], [remote])
+
+    assert matched == []
+    assert [item["relative_path"] for item in missing] == [filename]
+    assert local_only == [local]
+    assert conflicts == []
+
+
+def test_nonempty_local_resource_still_matches_alongside_empty_placeholder():
+    service = create_service()
+    resource = {
+        "resource_type": "audio",
+        "file_name": "01.mp3",
+        "relative_path": "01.mp3",
+        "normalized_name": service.normalize_name("01.mp3"),
+        "size_bytes": 1024,
+    }
+    placeholder = {**resource, "size_bytes": 0}
+
+    matched, missing, local_only, conflicts = service._match_remote_with_local(
+        [placeholder, resource], [resource],
+    )
+
+    assert len(matched) == 1
+    assert matched[0]["local"]["size_bytes"] == 1024
+    assert missing == []
+    assert local_only == [placeholder]
+    assert conflicts == []
+
+
 @pytest.mark.anyio
 async def test_file_download_scheduler_prioritizes_same_rj_and_spills_free_slots():
     scheduler = ASMRFileDownloadScheduler()
@@ -552,6 +600,12 @@ def test_download_runtime_keeps_full_selected_resource_total():
     service = create_service()
 
     class RuntimeTask:
+        progress = 0
+
+        def update_progress(self, progress, message):
+            self.progress = progress
+            self.current_step = message
+
         task_metadata = {
             "download_runtime": {
                 "expected_total_bytes": 1000,
@@ -578,6 +632,7 @@ def test_download_runtime_keeps_full_selected_resource_total():
     assert runtime["total_bytes"] == 1000
     assert runtime["transferred_bytes"] == 100
     assert runtime["progress"] == 10
+    assert task.progress == 13
 
 
 def test_download_runtime_clamps_oversized_failed_file():
@@ -636,6 +691,12 @@ def test_download_runtime_updates_existing_rows_without_rebuilding_file_list():
     }
 
     class RuntimeTask:
+        progress = 0
+
+        def update_progress(self, progress, message):
+            self.progress = progress
+            self.current_step = message
+
         task_metadata = {
             "download_files": [first_row, second_row],
             "download_runtime": {
@@ -670,6 +731,7 @@ def test_download_runtime_updates_existing_rows_without_rebuilding_file_list():
     assert second_row["downloaded"] == 50
     assert task.task_metadata["download_runtime"]["transferred_bytes"] == 50
     assert task.task_metadata["download_runtime"]["active_file_count"] == 1
+    assert task.progress == 18
 
     service._update_download_runtime(
         task,

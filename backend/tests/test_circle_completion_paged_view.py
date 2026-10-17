@@ -29,6 +29,9 @@ class _FakeRedisClient:
     def get(self, key):
         return self.store.get(key)
 
+    def mget(self, keys):
+        return [self.store.get(key) for key in keys]
+
     def set(self, key, value, ex=None, nx=False):
         if nx and key in self.store:
             return False
@@ -53,6 +56,11 @@ class _FakeRedisClient:
         existed = key in self.store
         self.store.pop(key, None)
         return 1 if existed else 0
+
+    def eval(self, script, count, key, token):
+        if self.get(key) == token:
+            return self.delete(key)
+        return 0
 
 
 class _FakeRedisService:
@@ -94,11 +102,17 @@ def _disable_real_redis(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture
-def service(db_session, monkeypatch: pytest.MonkeyPatch) -> CircleCompletionService:
+def service(db_session, monkeypatch: pytest.MonkeyPatch, tmp_path) -> CircleCompletionService:
     monkeypatch.setattr(circle_module, "SessionLocal", lambda: db_session)
     monkeypatch.setattr(bonus_probe_module, "SessionLocal", lambda: db_session)
     monkeypatch.setattr(bonus_probe_module, "_dlsite_bonus_probe_service", None)
-    return CircleCompletionService()
+    image_cache = CircleImageCacheService()
+    image_cache._cache_dir = tmp_path / "images"
+    image_cache._cache_dir.mkdir()
+    monkeypatch.setattr(circle_module, "get_circle_image_cache_service", lambda: image_cache)
+    service = CircleCompletionService()
+    monkeypatch.setattr(service, "_schedule_view_cover_cache", lambda *args: None)
+    return service
 
 
 def _add_work(

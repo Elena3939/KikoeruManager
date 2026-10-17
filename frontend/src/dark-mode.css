@@ -1,3 +1,15 @@
+html.kikoerumanager-dark .dash-archive-list-type {
+  color: var(--km-dark-text-muted);
+}
+
+html.kikoerumanager-dark .dash-archive-list-type.is-active {
+  color: var(--km-dark-text);
+}
+
+html.kikoerumanager-dark .dash-archive-list-type:hover {
+  color: var(--km-dark-text);
+}
+
 html.kikoerumanager-dark .deferred-archive-queue {
   background: var(--km-dark-surface);
   border-color: var(--km-dark-border);
@@ -2264,8 +2276,13 @@ html.kikoerumanager-dark :is(
   color: var(--km-dark-text) !important;
 }
 
+html.kikoerumanager-dark .cmw-shell {
+  background: var(--km-dark-elevated) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text) !important;
+}
+
 html.kikoerumanager-dark :is(
-  .cmw-shell,
   .cmw-card,
   .cmw-toolbar,
   .cmw-pane,
@@ -4911,6 +4928,44 @@ html.kikoerumanager-dark body #app .library .lib-index-chip-error {
   border-color: rgba(251, 113, 133, 0.38) !important;
 }
 
+/* 库存搜索框文件类型菜单位于搜索框自身层级，必须单独覆盖浅色渐变。 */
+html.kikoerumanager-dark body #app .library .lib-search-box .lib-filter-menu {
+  background: #0f1116 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: rgba(241, 245, 249, 0.92) !important;
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.46) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html.kikoerumanager-dark body #app .library .lib-search-box .lib-filter-menu .lib-filter-menu-head {
+  background: #181b22 !important;
+  background-image: none !important;
+  border-bottom-color: rgba(255, 255, 255, 0.12) !important;
+  color: rgba(203, 213, 225, 0.78) !important;
+}
+
+html.kikoerumanager-dark body #app .library .lib-search-box .lib-filter-menu .lib-filter-menu-row {
+  background: transparent !important;
+  color: rgba(226, 232, 240, 0.82) !important;
+}
+
+html.kikoerumanager-dark body #app .library .lib-search-box .lib-filter-menu .lib-filter-menu-row:hover,
+html.kikoerumanager-dark body #app .library .lib-search-box .lib-filter-menu .lib-filter-menu-row.is-active {
+  background: #292d36 !important;
+  color: #f8fafc !important;
+}
+
+html.kikoerumanager-dark body #app .library .lib-search-box .lib-filter-menu .lib-filter-menu-label {
+  color: currentColor !important;
+}
+
+html.kikoerumanager-dark body #app .library .lib-search-box .lib-filter-menu .lib-filter-menu-check {
+  color: #60a5fa !important;
+  stroke: currentColor !important;
+}
+
 html.kikoerumanager-dark body #app .library .lib-search-box .lib-search-filter {
   color: var(--lib-search-filter-color, rgba(226, 232, 240, 0.9)) !important;
 }
@@ -5280,69 +5335,6 @@ html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-arch
   background: rgba(255, 255, 255, 0.035) !important;
   border-color: rgba(255, 255, 255, 0.08) !important;
   color: rgba(255, 255, 255, 0.42) !important;
-}
-
-/* 外部油猴 VoiceLinks 弹窗挂在 body 下，不属于 KikoeruManager。
-   暗色兜底里有 body / :is(...) 级规则，这里恢复脚本自己的文字填充和 tag 配色。 */
-html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"]),
-html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] *) {
-  box-sizing: content-box !important;
-  font-family: Arial, Helvetica, sans-serif !important;
-  font-weight: 400 !important;
-  text-shadow: none !important;
-  filter: none !important;
-  opacity: 1 !important;
-}
-
-html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"]) {
-  color: #f6f6f6 !important;
-  -webkit-text-fill-color: #f6f6f6 !important;
-}
-
-html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_voice-title"]),
-html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_ignored"]) {
-  font-weight: 700 !important;
-}
-
-html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] a) {
-  color: pink !important;
-  -webkit-text-fill-color: pink !important;
-}
-
-html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_tag-yellow"]) {
-  background-color: #fff8e1 !important;
-  color: #f57f17 !important;
-  -webkit-text-fill-color: #f57f17 !important;
-}
-
-html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_tag-orange"]) {
-  background-color: #ffebcc !important;
-  color: #f04000 !important;
-  -webkit-text-fill-color: #f04000 !important;
-}
-
-html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_tag-green"]) {
-  background-color: #dcf5e4 !important;
-  color: #34a853 !important;
-  -webkit-text-fill-color: #34a853 !important;
-}
-
-html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_tag-pink"]) {
-  background-color: #ffd9e7 !important;
-  color: #f032a7 !important;
-  -webkit-text-fill-color: #f032a7 !important;
-}
-
-html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_tag-darkblue"]) {
-  background-color: #d2e7fa !important;
-  color: #0d47a1 !important;
-  -webkit-text-fill-color: #0d47a1 !important;
-}
-
-html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_tag-gray"]) {
-  background-color: #e0e0e0 !important;
-  color: #424242 !important;
-  -webkit-text-fill-color: #424242 !important;
 }
 
 html.kikoerumanager-dark .server-upload-preview-modal .baidu-upload-dd .app-dd-trigger,
@@ -5775,4 +5767,43 @@ html.kikoerumanager-dark body #app .library .lib-search-box :is(
   .metric-value-v
 ) {
   color: #f5f7fb !important;
+}
+
+/* 库存搜索筛选菜单最终配色，与文件右键菜单保持同一套黑灰层级。 */
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) #app .library .lib-search-box .lib-filter-menu {
+  background: #0b0c10 !important;
+  background-color: #0b0c10 !important;
+  background-image: none !important;
+  border: 1px solid #30323a !important;
+  color: #f1f5f9 !important;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.52) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) #app .library .lib-search-box .lib-filter-menu-head {
+  background: #111218 !important;
+  background-color: #111218 !important;
+  background-image: none !important;
+  border-bottom: 1px solid #292c34 !important;
+  color: #aeb6c4 !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) #app .library .lib-search-box .lib-filter-menu-row {
+  background: transparent !important;
+  background-color: transparent !important;
+  border: 0 !important;
+  color: #d7dce5 !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) #app .library .lib-search-box .lib-filter-menu-row:hover,
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) #app .library .lib-search-box .lib-filter-menu-row.is-active {
+  background: #242832 !important;
+  background-color: #242832 !important;
+  color: #ffffff !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.dark, body.kikoerumanager-dark) #app .library .lib-search-box .lib-filter-menu-check {
+  color: #60a5fa !important;
+  stroke: currentColor !important;
 }

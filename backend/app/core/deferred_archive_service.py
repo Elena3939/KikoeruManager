@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import socket
+import stat
 import sys
 import threading
 import time
@@ -951,40 +952,67 @@ class DeferredArchiveService:
         index: int,
         checksum: str,
     ) -> None:
-        """在同一行锁内验证已发布副本、删除源文件并收口成员状态。
+        """锁外验证内容，锁内复核身份并删除；published 是崩溃恢复的持久化依据。"""
+        source, target = self._owned_member_sync(job_id, epoch, index)
+        if target.get("state") != "published" or not target.get("sha256"):
+            raise RuntimeError("归档成员尚未持久化发布记录，拒绝删除源文件")
+        source_path = str(source.get("source_path") or "")
+        target_path = str(target.get("target_path") or "")
+        expected_checksum = str(target["sha256"])
+        if checksum and checksum != expected_checksum:
+            raise RuntimeError("归档发布校验信息已变化")
 
-        文件系统与数据库不能组成真正的跨资源事务。这里把唯一破坏性操作放在
-        lease owner 的行锁里执行，并要求目标已持久化的 hash 可验证；即使进程在
-        删除源后提交前中断，下一任 owner 也只能把这份已验证目标收口为 completed。
-        """
+        def identity(path: str) -> tuple[int, ...]:
+            value = os.stat(path, follow_symlinks=False)
+            if not stat.S_ISREG(value.st_mode):
+                raise RuntimeError(f"归档路径不是普通文件: {path}")
+            return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+        def should_abort(force_database: bool = False) -> str:
+            return self._copy_abort_reason(job_id, epoch, check_database=force_database)
+
+        # 每个哈希前后都冻结身份，防止校验期间替换路径、原地改写或恢复 mtime。
+        # 此处不持有事务；续租、取消与新 owner 接管不再等待完整文件读取。
+        target_identity = identity(target_path)
+        if target_identity[2] != int(source.get("size") or 0):
+            raise RuntimeError(f"归档已发布目标大小错误: {target_path}")
+        if self._hash_file(target_path, should_abort) != expected_checksum:
+            raise RuntimeError(f"归档已发布目标校验失败: {target_path}")
+        if identity(target_path) != target_identity:
+            raise RuntimeError(f"归档已发布目标在校验期间发生变化: {target_path}")
+
+        source_identity = None
+        if os.path.lexists(source_path):
+            source_identity = identity(source_path)
+            if not self._matches_source_identity(source_path, source):
+                raise RuntimeError(f"归档源文件在发布后发生变化，拒绝删除: {source_path}")
+            if self._hash_file(source_path, should_abort) != expected_checksum:
+                raise RuntimeError(f"归档源文件内容与已发布目标不匹配: {source_path}")
+            if identity(source_path) != source_identity:
+                raise RuntimeError(f"归档源文件在校验期间发生变化: {source_path}")
+
         db = SessionLocal()
         try:
             job = db.query(DeferredArchiveJob).filter(DeferredArchiveJob.id == job_id).with_for_update().one()
-            self._assert_owned(job, epoch, allow_cancel=True)
+            self._assert_owned(job, epoch)
             sources = [dict(item or {}) for item in list(job.source_manifest or [])]
             targets = [dict(item or {}) for item in list(job.target_manifest or [])]
             if index >= len(sources) or index >= len(targets):
                 raise RuntimeError("归档分卷索引越界")
-            source = sources[index]
-            target = targets[index]
-            source_path = str(source.get("source_path") or "")
-            target_path = str(target.get("target_path") or "")
-            expected_size = int(source.get("size") or 0)
-            expected_checksum = str(target.get("sha256") or checksum or "")
-            if not target_path or not expected_checksum:
-                raise RuntimeError("归档已发布成员缺少校验信息")
-            if not os.path.isfile(target_path) or os.path.getsize(target_path) != expected_size:
-                raise RuntimeError(f"归档已发布目标缺失或大小错误: {target_path}")
-            if self._hash_file(target_path, lambda _force: "") != expected_checksum:
-                raise RuntimeError(f"归档已发布目标校验失败: {target_path}")
-
-            if os.path.exists(source_path):
-                if not self._matches_source_identity(source_path, source):
-                    raise RuntimeError(f"归档源文件在发布后发生变化，拒绝删除: {source_path}")
-                if self._hash_file(source_path, lambda _force: "") != expected_checksum:
-                    raise RuntimeError(f"归档源文件内容与已发布目标不匹配: {source_path}")
+            if sources[index] != source or targets[index] != target:
+                raise RuntimeError("归档成员清单在校验期间发生变化")
+            if identity(target_path) != target_identity:
+                raise RuntimeError(f"归档已发布目标在校验后发生变化: {target_path}")
+            if source_identity is not None:
+                if identity(source_path) != source_identity:
+                    raise RuntimeError(f"归档源文件在校验后发生变化，拒绝删除: {source_path}")
                 os.remove(source_path)
                 self._fsync_directory(os.path.dirname(source_path))
+            elif os.path.lexists(source_path):
+                raise RuntimeError(f"归档源路径在恢复期间被重新创建，拒绝完成: {source_path}")
+
+            # 仅删除仍受本次行锁 fencing 保护；取消与接管不能穿过删除临界区。
+            # 删除后提交前崩溃，DB 仍为 published；下一任重新完整校验目标后收口。
 
             now = self._database_now(db)
             targets[index].update({
@@ -1042,8 +1070,7 @@ class DeferredArchiveService:
                 self._fsync_published_target(target_path)
                 self._record_member_published_sync(job_id, epoch, index, checksum)
             else:
-                if self._hash_file(target_path, should_abort) != checksum:
-                    raise RuntimeError(f"归档已发布目标校验失败: {target_path}")
+                # 收口阶段统一校验 hash 与身份，恢复路径无需重复完整读取目标。
                 self._fsync_published_target(target_path)
             self._finalize_published_member_sync(job_id, epoch, index, checksum)
             return

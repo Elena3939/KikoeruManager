@@ -372,11 +372,20 @@
             <input v-model="config.email_watcher.imap_host" class="field-input" type="text" placeholder="例如 imap.gmail.com">
           </SettingsFieldCard>
           <SettingsToggleRow v-model="config.email_watcher.imap_ssl" title="使用 SSL" subtitle="绝大多数 IMAP 服务器需要 SSL（推荐开启）。" />
+          <SettingsFieldCard label="邮件连接代理" hint="留空直连。支持 HTTP CONNECT、socks5://、socks5h://（推荐，由代理解析域名），可带账号密码。Docker 中请填写容器能访问的代理地址，127.0.0.1 指向容器自身。">
+            <input v-model="config.email_watcher.proxy_url" class="field-input" type="text" placeholder="例如 socks5h://192.168.1.10:7890" autocomplete="off">
+          </SettingsFieldCard>
           <SettingsFieldCard label="邮箱账号">
             <input v-model="config.email_watcher.username" class="field-input" type="text" placeholder="例如 yourname@gmail.com" autocomplete="username">
           </SettingsFieldCard>
           <SettingsFieldCard label="密码 / 授权码">
-            <AnimatedPasswordInput v-model="config.email_watcher.password" placeholder="Gmail 填应用专用密码；QQ/163 填 IMAP 授权码" autocomplete="new-password" />
+            <AnimatedPasswordInput
+              v-model="config.email_watcher.password"
+              :reveal-value="emailWatcherRevealedPassword"
+              placeholder="Gmail 填应用专用密码；QQ/163 填 IMAP 授权码"
+              autocomplete="new-password"
+              @visibility-change="handleEmailWatcherPasswordVisibility"
+            />
           </SettingsFieldCard>
           <div v-if="emailImapPasswordHint" class="email-watcher-hint">
             <span>{{ emailImapPasswordHint }}</span>
@@ -933,6 +942,35 @@ async function handleSouthPlusCookieVisibility(visible) {
 }
 
 // ---- 邮件监听 ----
+const emailWatcherRevealedPassword = ref('')
+const emailWatcherRevealLoading = ref(false)
+let emailWatcherSecretRevision = 0
+
+watch(
+  () => [props.config.email_watcher, props.config.email_watcher?.username, props.config.email_watcher?.password],
+  () => {
+    emailWatcherSecretRevision += 1
+    emailWatcherRevealedPassword.value = ''
+  },
+  { flush: 'sync' }
+)
+
+async function handleEmailWatcherPasswordVisibility(visible) {
+  if (!visible || props.config.email_watcher?.password !== '********' || emailWatcherRevealLoading.value) return
+  const revision = emailWatcherSecretRevision
+  emailWatcherRevealLoading.value = true
+  try {
+    const result = await configApi.revealEmailWatcherSecret({ key: 'password' })
+    if (revision !== emailWatcherSecretRevision) return
+    emailWatcherRevealedPassword.value = String(result?.value || '')
+    if (!emailWatcherRevealedPassword.value) ElMessage.warning('配置文件里没有可显示的原始授权码')
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '读取已保存授权码失败')
+  } finally {
+    emailWatcherRevealLoading.value = false
+  }
+}
+
 const emailWatcherBusy = ref(false)
 const emailWatcherMessage = ref('')
 const emailWatcherStatus = ref(null)
@@ -962,6 +1000,7 @@ async function testEmailWatcherConnection() {
       imap_host: props.config.email_watcher.imap_host,
       imap_port: props.config.email_watcher.imap_port,
       imap_ssl: props.config.email_watcher.imap_ssl,
+      proxy_url: props.config.email_watcher.proxy_url,
       username: props.config.email_watcher.username,
       password: props.config.email_watcher.password,
       mailbox: props.config.email_watcher.mailbox

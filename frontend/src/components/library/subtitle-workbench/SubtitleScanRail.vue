@@ -1687,8 +1687,8 @@ function getScanResultIcon(status) {
   min-height: 0;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root,
-:global(html.dark) .subtitle-scan-rail-root {
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root),
+:global(html.dark .subtitle-scan-rail-root) {
   color: rgba(245, 245, 247, 0.9);
   scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
 }
@@ -1740,54 +1740,54 @@ function getScanResultIcon(status) {
   color: rgba(203, 213, 225, 0.48) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root .scan-rail-card,
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root .scan-rail-card:hover,
-:global(html.dark) .subtitle-scan-rail-root .scan-rail-card,
-:global(html.dark) .subtitle-scan-rail-root .scan-rail-card:hover {
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-card),
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-card:hover),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-card),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-card:hover) {
   border-color: rgba(255, 255, 255, 0.16) !important;
   background: #333438 !important;
   background-image: none !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root .scan-rail-card:hover,
-:global(html.dark) .subtitle-scan-rail-root .scan-rail-card:hover {
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-card:hover),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-card:hover) {
   border-color: rgba(255, 255, 255, 0.24) !important;
   background: #3a3b40 !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root .scan-rail-card-title,
-:global(html.dark) .subtitle-scan-rail-root .scan-rail-card-title {
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-card-title),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-card-title) {
   color: rgba(248, 250, 252, 0.96) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root .scan-rail-card-source,
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root .scan-rail-card-message,
-:global(html.dark) .subtitle-scan-rail-root .scan-rail-card-source,
-:global(html.dark) .subtitle-scan-rail-root .scan-rail-card-message {
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-card-source),
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-card-message),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-card-source),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-card-message) {
   color: rgba(203, 213, 225, 0.68) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-tag),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-chip),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-count-badge),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-segment),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-segment-count),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-filter-pill),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-filter-count),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-toggle),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-btn),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-card-action),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-tag),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-chip),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-count-badge),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-segment),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-segment-count),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-filter-pill),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-filter-count),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-toggle),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-btn),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-card-action) {
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-tag),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-chip),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-count-badge),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-segment),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-segment-count),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-filter-pill),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-filter-count),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-toggle),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-btn),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-card-action),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-tag),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-chip),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-count-badge),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-segment),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-segment-count),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-filter-pill),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-filter-count),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-toggle),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-btn),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-card-action) {
   border-color: rgba(255, 255, 255, 0.14) !important;
   background: rgba(255, 255, 255, 0.06) !important;
   background-image: none !important;
@@ -1795,79 +1795,79 @@ function getScanResultIcon(status) {
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-success),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-chip-success),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-success),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-chip-success) {
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-tag-success),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-chip-success),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-tag-success),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-chip-success) {
   border-color: rgba(74, 222, 128, 0.22) !important;
   background: rgba(34, 197, 94, 0.13) !important;
   color: #bbf7d0 !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-sky),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-filter-pill-sky),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-sky),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-filter-pill-sky) {
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-tag-sky),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-filter-pill-sky),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-tag-sky),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-filter-pill-sky) {
   border-color: rgba(56, 189, 248, 0.22) !important;
   background: rgba(14, 165, 233, 0.12) !important;
   color: #bae6fd !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-amber),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-chip-pending),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-amber),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-chip-pending) {
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-tag-amber),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-chip-pending),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-tag-amber),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-chip-pending) {
   border-color: rgba(251, 191, 36, 0.22) !important;
   background: rgba(245, 158, 11, 0.13) !important;
   color: #fde68a !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-rose),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-chip-failed),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-rose),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-chip-failed) {
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-tag-rose),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-chip-failed),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-tag-rose),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-chip-failed) {
   border-color: rgba(251, 113, 133, 0.24) !important;
   background: rgba(244, 63, 94, 0.13) !important;
   color: #fecdd3 !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-segment:hover),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-toggle:hover),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-btn:hover),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-card-action:hover),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-segment:hover),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-toggle:hover),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-btn:hover),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-card-action:hover) {
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-segment:hover),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-toggle:hover),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-btn:hover),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-card-action:hover),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-segment:hover),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-toggle:hover),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-btn:hover),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-card-action:hover) {
   border-color: rgba(255, 255, 255, 0.24) !important;
   background: rgba(255, 255, 255, 0.1) !important;
   color: #ffffff !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-segment.active),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-segment.active) {
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-segment.active),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-segment.active) {
   border-color: rgba(255, 255, 255, 0.26) !important;
   background: #3f4046 !important;
   color: #ffffff !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-segment.active .scan-rail-segment-count),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-segment.active .scan-rail-segment-count) {
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-segment.active .scan-rail-segment-count),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-segment.active .scan-rail-segment-count) {
   border-color: rgba(255, 255, 255, 0.18) !important;
   background: rgba(255, 255, 255, 0.08) !important;
   color: rgba(245, 245, 247, 0.92) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-tag svg),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-chip svg),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-count-badge svg),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-segment svg),
-:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-card-action svg),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-tag svg),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-chip svg),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-count-badge svg),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-segment svg),
-:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-card-action svg) {
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-tag svg),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-chip svg),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-count-badge svg),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-segment svg),
+html.kikoerumanager-dark .subtitle-scan-rail-root :deep(.scan-rail-card-action svg),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-tag svg),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-chip svg),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-count-badge svg),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-segment svg),
+html.dark .subtitle-scan-rail-root :deep(.scan-rail-card-action svg) {
   color: currentColor !important;
   stroke: currentColor !important;
 }

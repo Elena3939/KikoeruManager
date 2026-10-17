@@ -29,6 +29,32 @@ export function selectTrackedDownloadTasks(taskIds = [], tasks = []) {
     .filter(Boolean)
 }
 
+export function resolveTrackedDownloadBatch(taskIds = [], batchTaskIds = [], tasks = [], batchStartedAt = '') {
+  const normalizedIds = mergeTrackedDownloadTaskIds(taskIds)
+  const batchIds = new Set(mergeTrackedDownloadTaskIds(batchTaskIds))
+  const tasksById = new Map(tasks.map(task => [String(task?.id || ''), task]))
+  const batchTasks = selectTrackedDownloadTasks([...batchIds], tasks)
+  const createdTimes = batchTasks
+    .map(task => Date.parse(task.created_at))
+    .filter(Number.isFinite)
+  const startedTime = Date.parse(batchStartedAt)
+  const boundary = Number.isFinite(startedTime)
+    ? startedTime
+    : createdTimes.length ? Math.min(...createdTimes) : NaN
+
+  // 旧缓存按新任务置顶；只排除本次提交之前已经结束的任务，保留当时仍活跃的任务。
+  if (!Number.isFinite(boundary)) return { taskIds: normalizedIds, batchStartedAt }
+  return {
+    taskIds: normalizedIds.filter(id => {
+      if (batchIds.has(id)) return true
+      const task = tasksById.get(id)
+      if (!task || !['completed', 'failed', 'cancelled', 'canceled'].includes(String(task.status || ''))) return true
+      return Date.parse(task.completed_at) >= boundary
+    }),
+    batchStartedAt: new Date(boundary).toISOString(),
+  }
+}
+
 export function createLatestRequestGuard() {
   let sequence = 0
 

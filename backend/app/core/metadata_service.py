@@ -1124,11 +1124,14 @@ class MetadataService:
                 except Exception as e:
                     logger.warning(f"[{rjcode}] 获取原作 {original_workno} 元数据失败: {e}，继续使用当前作品数据")
 
+            maker_fields = await self._resolve_original_maker_fields(product, rjcode)
             japanese_metadata = {
                 'rjcode': product.get('workno', rjcode),
                 'work_name': product.get('work_name', ''),
-                'maker_id': product.get('maker_id', ''),
-                'maker_name': product.get('maker_name', ''),
+                'maker_id': maker_fields.get('maker_id', ''),
+                'maker_name': maker_fields.get('maker_name', ''),
+                'original_maker_name': maker_fields.get('original_maker_name', ''),
+                'translator_name': maker_fields.get('translator_name', ''),
                 'release_date': self._normalize_release_date(product.get('regist_date')),
                 'series_name': product.get('series_name'),
                 'series_id': product.get('series_id'),
