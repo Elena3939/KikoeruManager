@@ -49,6 +49,7 @@ const activeImageSignatures = new Map()
 let imagePumpFrame = null
 const activeBonusDetail = ref(null)
 const failedBonusImageKeys = ref(new Set())
+const failedBonusCoverCodes = ref(new Set())
 const viewportScrolling = ref(false)
 
 let resizeObserver = null
@@ -194,7 +195,7 @@ function shouldDimBonusCard(bonusViewModel) {
 }
 
 function openBonusDetail(bonus, event = null) {
-  activeBonusDetail.value = bonus
+  activeBonusDetail.value = preferredBonusCollection(bonus)
   const target = bonusActionItem(bonus, 'select')
   emit('select', target, event)
 }
@@ -429,7 +430,7 @@ function aggregateBonusWorks(bonuses = []) {
 
 function bonusCollectionViewModel(viewModel) {
   const bonuses = Array.isArray(viewModel?.bonuses) ? viewModel.bonuses : []
-  const members = bonuses.flatMap(bonus => bonusMembers(bonus)).filter(bonus => bonus && shouldDisplayBonus(bonus))
+  const members = sortBonusMembers(bonuses.flatMap(bonus => bonusMembers(bonus)).filter(bonus => bonus && shouldDisplayBonus(bonus)))
   const first = members[0] || null
   if (!first) return null
   const owned = members.some(isCompletionOwned)
@@ -448,6 +449,38 @@ function bonusCollectionViewModel(viewModel) {
     selected: members.some(member => isItemSelected(member)),
     flashed: members.some(member => matchesWorkCodeSet(member, props.flashedCodes)),
     located: members.some(member => matchesWorkCodeSet(member, props.locatedCodes)),
+  }
+}
+
+function sortBonusMembers(members) {
+  const coverPriority = member => {
+    if (coverOverrideFor(member)) return 3
+    if (failedBonusCoverCodes.value.has(bonusCode(member))) return -1
+    if (member?.cover_available === false || member?.dlsite_cover_available === false || member?.cover_confirmed_missing === true) return 0
+    if (member?.cover_available === true || member?.dlsite_cover_available === true) return 2
+    return bonusCoverUrl(member) ? 1 : 0
+  }
+  return [...members].sort((a, b) => coverPriority(b) - coverPriority(a))
+}
+
+function preferredBonusCollection(item) {
+  const members = sortBonusMembers(bonusMembers(item))
+  const first = members[0]
+  if (!first || members.length < 2) return item
+  return {
+    ...first,
+    _bonus_display_title: bonusDisplayTitle(first),
+    _bonus_members: members,
+    linked_rjcodes: bonusCodeList({ _bonus_members: members }),
+  }
+}
+
+function markBonusCoverFailed(item) {
+  const first = bonusMembers(item)[0] || item
+  failedBonusCoverCodes.value = new Set([...failedBonusCoverCodes.value, bonusCode(first)])
+  emit('cover-failed', first)
+  if (activeBonusDetail.value && isActiveBonus(item)) {
+    activeBonusDetail.value = preferredBonusCollection(activeBonusDetail.value)
   }
 }
 
@@ -512,7 +545,10 @@ watch(groupedItems, groups => {
   for (const group of groups) {
     for (const bonus of group.bonuses || []) {
       if (bonusCodeList(bonus).some(code => activeCodes.has(code))) {
-        if (activeBonusDetail.value !== bonus) activeBonusDetail.value = bonus
+        const refreshed = bonusMembers(activeBonusDetail.value).length > 1
+          ? bonusCollectionViewModel(group)?.item || bonus
+          : bonus
+        activeBonusDetail.value = preferredBonusCollection(refreshed)
         return
       }
     }
@@ -764,13 +800,17 @@ function onBonusCoverError(event, item, key) {
     return
   }
 
+  markBonusCoverFailed(item)
+  if (bonusCode(preferredBonusCollection(item)) !== bonusCode(item)) {
+    markImageSettled(key)
+    return
+  }
   const normalizedKey = String(key || '')
   if (normalizedKey) {
     const failed = new Set(failedBonusImageKeys.value)
     failed.add(normalizedKey)
     failedBonusImageKeys.value = failed
   }
-  emit('cover-failed', bonusActionItem(item, 'select'))
   markImageSettled(key)
 }
 
@@ -819,7 +859,7 @@ function bonusMainCoverUrl(item) {
 }
 
 function handleActiveBonusDetailCoverError() {
-  if (activeBonusDetail.value) emit('cover-failed', bonusActionItem(activeBonusDetail.value, 'select'))
+  if (activeBonusDetail.value) markBonusCoverFailed(activeBonusDetail.value)
 }
 
 function getRowItems(rowIndex) {

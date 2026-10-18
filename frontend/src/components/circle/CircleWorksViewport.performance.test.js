@@ -24,6 +24,43 @@ afterEach(() => {
 })
 
 describe('社团封面结果在两种渲染布局复用', () => {
+  it.each([false, true])('特典合集优先显示有图成员，未知封面失败后切换：%s', async unknownCover => {
+    vi.stubGlobal('requestAnimationFrame', () => 1)
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback) { this.callback = callback }
+      observe(target) {
+        Object.defineProperty(target, 'clientWidth', { value: 480, configurable: true })
+        this.callback()
+      }
+      disconnect() {}
+    })
+    const bonus = (code, cover) => ({
+      canonical_rjcode: code, display_rjcode: code, title: `特典 ${code}`,
+      is_bonus_work: true, cover_available: cover, image_url: `/${code}.jpg`,
+    })
+    const wrapper = shallowMount(CircleWorksViewport, {
+      props: {
+        items: [{
+          canonical_rjcode: 'RJ01726963', title: '原作',
+          bonus_works: [bonus('RJ01739773', unknownCover ? undefined : false), bonus('RJ01739774', unknownCover ? undefined : true)],
+        }],
+        mode: 'card', serverPaging: true, totalItems: 1,
+      },
+      global: { stubs: { ElPagination: true, ElDialog: true } },
+    })
+    await nextTick()
+    await wrapper.find('.circle-bonus-gift').trigger('click')
+    if (unknownCover) {
+      expect(wrapper.find('.circle-bonus-detail-title').text()).toContain('RJ01739773')
+      await wrapper.find('.circle-bonus-detail-cover img').trigger('error')
+    }
+    expect(wrapper.find('.circle-bonus-detail-title').text()).toContain('RJ01739774')
+    expect(wrapper.find('.circle-bonus-detail-cover img').attributes('src')).toBe('/RJ01739774.jpg')
+    expect(wrapper.text()).toContain('等 2 个')
+    wrapper.unmount()
+  })
+
   it.each([
     ['移动端卡片', 480, 'card', WorkCard],
     ['桌面虚拟卡片', 1200, 'card', WorkCard],
