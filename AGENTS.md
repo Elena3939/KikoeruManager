@@ -25,6 +25,18 @@
 - 线上排查顺序：先验证 `hostname`，再查看容器镜像/运行态/健康状态，然后查 `docker logs` 和 PostgreSQL；未经用户明确要求，不停止、删除、重建容器，不改线上数据。
 - 群晖 Docker 导入 JSON 使用 `/docker`、`/ASMR` 等 DSM 虚拟共享路径；Docker CLI inspect 显示的是 `/volume1`、`/volume4`、`/volume5` 真实 bind path。禁止把导入 JSON 的虚拟路径直接拼成 `docker run -v`。
 
+#### 0.1.1 本机改动同步生产
+
+- 用户说“上传到服务器”“同步本机改动到线上”或同义要求时，目标只能是生产容器 `elena39-kikoerumanager`，绝不操作服务器上的 `kikoerumanager-dev`。
+- 发布前先用 `git diff --name-only`、`git diff --check` 和实际文件内容确认真实改动；不因工作区换行符、索引状态或未改动的前端源码做无意义覆盖。
+- 禁止把本机源码目录、`node_modules`、Python venv 或开发环境挂载到生产；生产运行必须只依赖已上传的源码 / 构建产物与线上已有运行环境。
+- 单个后端 Python 源码热修复仅允许使用 `tools/deploy-production-file-hotfix.ps1`，例如：`./tools/deploy-production-file-hotfix.ps1 -LocalFile 'backend/app/core/xxx.py' -ContainerPath '/app/app/core/xxx.py'`。该脚本只允许写入 `/app/app/**/*.py`，不得用 `docker cp`、手写 SSH 命令绕过它。
+- 后端热补丁脚本必须依次校验生产主机 `hostname=Elena`、本地上传文件 SHA-256、容器内 SHA-256、`task_center_items` 中 `processing=0`、重启后容器 `healthy` 与 `http://127.0.0.1:5555/api/health`；任一失败则恢复备份文件并重启容器。
+- 后端热补丁备份固定保存到生产 `/app/data` 挂载源的 `.deploy/file-hotfix-backups/<release-id>/`，含 `original.py` 和 `manifest.txt`；每次成功后按版本号倒序只保留最近 3 份，较早备份必须清理。`release-id` 必须可追溯且使用 `file-hotfix-YYYYMMDD-HHMMSS` 格式。
+- 只有 `frontend/src` 或前端构建相关文件存在真实改动时，才在本机执行 `npm --prefix frontend run build`；上传本机构建出的 `frontend/dist` 静态产物到容器 `/app/static`，不在生产容器构建前端，也不上传前端源码或 `node_modules`。发布时同样必须先备份现有静态产物、上传后校验文件完整性、重启并确认 health；前端产物备份也只保留最近 3 份。
+- 当前生产镜像基线为 `v1.6.123` 时，前后端一起同步使用 `tools/deploy-production-local-build.ps1 -BaseTag v1.6.123`；该脚本在本机完成前端构建，收集基线之后的 `backend/app` 源码，上传清单和 SHA-256 后再由生产容器应用。生产基线变化时必须先更新 `-BaseTag`，不得默认把所有后端文件覆盖到线上。
+- Dockerfile、后端 `requirements.txt`、前端依赖锁文件、操作系统依赖、入口脚本、数据库 / Redis 架构或需要新运行时依赖的改动，不适用文件热补丁或静态产物发布，必须走可追溯的完整镜像发布流程；当前 `tools/deploy-production-build.ps1` 仅用于该类发布，生产服务器无法拉取构建基础镜像时不得强行切换容器。
+
 ## 1. 项目基线
 
 - 产品名统一为 `KikoeruManager`；技术命名统一小写 `kikoerumanager`。
@@ -462,6 +474,7 @@
 
 ## 10. 最低验证
 
+- 后端测试必须优先使用项目自带的 `backend/venv` 虚拟环境，例如在仓库根目录执行 `& .\backend\venv\Scripts\python.exe -m pytest ...`；不要因为全局 Python 缺少依赖就改用全局环境或直接判定测试不可用。
 - 改前端：至少在 `frontend` 跑 `npm run build`。
 - 改前端依赖：再跑 `npm ls <新增包> --depth=0`，并确认 `package.json`、`package-lock.json`、`pnpm-lock.yaml` 都同步。
 - 改后端核心：至少跑 `py_compile` 覆盖相关文件。
@@ -478,6 +491,44 @@
 - 改安全网关：跑相关 `routes.py` / `security_gate_service.py` `py_compile`，并手动验证 `/verify`、`/blocked`、正常业务页跳转。
 - 改数据库维护 / FTS：跑 `backend/tests/test_routes_maintenance_config.py backend/tests/test_activity_log_rollup_service.py -q`，前端设置页改动再跑 `npm run build`。
 - 改发布流程：检查 `.github/workflows/ghcr.yml` 和 semver tag。
+
+## 10.1 CodeGraph 检索约束
+
+- 本仓库已接入 CodeGraph，索引数据库固定为 `.codegraph/codegraph.db`。开始修改前，先用 CodeGraph 确认目标符号、调用方、导入关系和测试覆盖；不能只按文件名或目录名猜调用链。
+- CodeGraph 当前索引状态应为 `project_metadata.index_state=complete`，并检查 `index_files_discovered` 与 `index_files_accounted` 一致。若索引不是 complete、文件数不一致或目标文件不在 `files` 表中，先说明索引失效，再用 `rg`/实际源码补证，不得把过期图谱当事实。
+- 优先按符号检索：`nodes` 表查 `name` / `qualified_name`，`edges` 表查 `kind in ('calls','imports','references','instantiates','extends')`；需要文件级覆盖时查 `files` 表。不要直接把 `nodes_fts` 当结构化关系表使用。
+- CodeGraph 查询必须带文件路径、行号和边类型；报告调用链时同时回到源码确认参数、状态和副作用，图谱只负责定位，不能替代代码阅读。
+- 典型查询（在仓库根目录用 `python` 或项目已配置的 Python 执行）：
+  ```python
+  import sqlite3
+  db = sqlite3.connect('.codegraph/codegraph.db')
+  symbol = 'get_deferred_archive_service'
+  print(db.execute(
+      "SELECT kind, name, qualified_name, file_path, start_line, end_line "
+      "FROM nodes WHERE name=? OR qualified_name=?",
+      (symbol, symbol),
+  ).fetchall())
+  print(db.execute(
+      "SELECT e.kind, n.file_path, n.name, e.line "
+      "FROM edges e JOIN nodes n ON n.id=e.target "
+      "WHERE e.source IN (SELECT id FROM nodes WHERE name=? OR qualified_name=?)",
+      (symbol, symbol),
+  ).fetchall())
+  ```
+- 修改后涉及入口、服务或公共组件时，重新用 CodeGraph 查反向调用方，并把新增/变更测试纳入验证；若 `.codegraph/codegraph.db` 没有随源码更新，必须在结论中标明图谱时间点（当前仓库元数据为 extraction version 24、索引版本 1.5.0），不能声称已验证最新调用关系。
+- 不要提交 `.codegraph/codegraph.db` 的重建产物或把本地绝对路径、数据库内容、敏感配置写入文档；只保留检索规则和稳定入口。
+
+## 10.2 当前代码事实（以 2026-09-30 源码为准）
+
+- 后端启动与生命周期在 `backend/app/api/routes.py`：除任务引擎、Redis、统一 SSE、库存索引 watcher 外，还会启动 `circle_external_search_service`、`deferred_archive_service` 和 `email_watcher_service`；停止路径必须同步处理这些 worker，不能只改启动逻辑。
+- 延迟归档已是正式业务链路：核心为 `backend/app/core/deferred_archive_service.py`，API 为 `/api/deferred-archive-jobs`、`/{job_id}/cancel`、`/{job_id}/retry`，前端为 `frontend/src/components/dashboard/DeferredArchiveQueue.vue` 与 `frontend/src/api/index.js`。它有幂等入队、卷组完整性、租约/epoch 回收、取消释放 claim 和前台任务抢占规则。
+- 社团外部搜索已落库并有运行态服务：核心为 `backend/app/core/circle_external_search_service.py`，配置/脱敏/secret reveal 在 `routes.py` 与 `settings.py`，前端入口包含 `ExternalSearchSourceChips.vue`；南+ cookie 等秘密必须沿现有磁盘回填和脱敏流程，搜索来源不可只存在前端状态。
+- 邮件监听已进入正式任务和审计链路：核心为 `backend/app/core/email_watcher_service.py`，路由提供 status/test/poll-now，操作历史类别为 `email_watcher`，新作事件由 `useSystemPrompt.js`、`CircleCompletion.vue` 和 ActivityLog 聚合处理。改主题过滤、RJ 去重或新作通知时要同时看这些路径。
+- DLsite 元数据已有可信度与修复边界：`dlsite_metadata_trust.py` 负责验证标记，`dlsite_metadata_repair_service.py` 负责污染修复，相关模型/迁移包括 `work_metadata_verification`、`work_metadata_maker_roles`、`work_canonical_link_evidence`。不能把未验证字段当成 canonical 数据覆盖，也不能绕过 repair service 直接批量改元数据。
+- 库存索引不只是 `library_index_entries`：还包括 status、mutation operations/ledger/effects、pending masks、generations。`LibraryIndexService` 支持 generation contract；启用该契约时必须先通过 `library_index_generation_contract_status()`，写操作继续走 mutation service 和 self_mutation，不能直接改索引表。
+- 数据库已有慢 SQL 观测：`models/database.py` 的 slow SQL hooks 只记录 SQL 形状/参数形状，不记录参数值；调整阈值、日志字段或维护流程时要保留脱敏边界，并检查 `backend/tests/test_database_observability.py`。
+- 字幕补配仍是独立工作台链路：后端 `linked_subtitle_import_service.py` 与 `rj_subtitle_service.py`，前端 `SubtitleImportWorkbench.vue` 及 `components/library/subtitle-workbench/*`；`pending_execute` 仍是预检/工作台状态，只有真正落盘才写完成历史。
+- 当前发布基线最近已到 `v1.6.124`（提交 `aa19038`）；涉及生产同步时不能继续套用旧的 `v1.6.123` 基线假设，必须先读取实际镜像/tag，再选择部署脚本。
 
 ## 11. 常用排查路径
 
