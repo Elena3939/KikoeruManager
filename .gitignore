@@ -121,6 +121,7 @@ backend/.codex-index-*-tmp/
 .runtime/
 output/
 tools/baidupcs-go/
+tools/unar/
 tools/7zz-*/
 .tmp-baidupcs-*/
 .tmp_existing_folder_demo_data.py

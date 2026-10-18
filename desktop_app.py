@@ -14,6 +14,8 @@ from PIL import Image
 import uvicorn
 import logging
 import signal
+from pathlib import Path
+import urllib.request
 
 def configure_stdio():
     """Force UTF-8 stdio on Windows so DLsite metadata logs render correctly."""
@@ -50,6 +52,9 @@ class DesktopApp:
         self.lock_socket = None
         self.backend_error = None
         self.server = None
+        self.runtime = None
+        self.app_mutex = None
+        self.smoke_test_dir = None
         
         # 查找图标路径
         self.icon_path = self._find_icon()
@@ -72,14 +77,14 @@ class DesktopApp:
         if getattr(sys, 'frozen', False):
             base_path = sys._MEIPASS
             candidate_paths.extend([
-                os.path.join(base_path, "backend", "appIcon.png"),
+                os.path.join(base_path, "backend", "webIcon.png"),
                 os.path.join(base_path, "backend", "app.ico"),
                 os.path.join(base_path, "app.ico"),
             ])
         else:
             project_root = os.path.dirname(os.path.abspath(__file__))
             candidate_paths.extend([
-                os.path.join(project_root, "frontend", "src", "assets", "icon", "appIcon.png"),
+                os.path.join(project_root, "frontend", "src", "assets", "icon", "webIcon.png"),
                 os.path.join(project_root, "backend", "app.ico"),
                 os.path.join(project_root, "app.ico"),
             ])
@@ -121,9 +126,10 @@ class DesktopApp:
             if self.backend_thread and not self.backend_thread.is_alive():
                 return False
             try:
-                with socket.create_connection((self.host, self.port), timeout=1):
-                    return True
-            except OSError:
+                with urllib.request.urlopen(self.url + '/api/health', timeout=2) as response:
+                    if response.status == 200:
+                        return True
+            except (OSError, urllib.error.URLError):
                 time.sleep(0.3)
         return False
 
@@ -139,14 +145,19 @@ class DesktopApp:
     def on_quit(self, icon, item):
         """优雅退出应用"""
         logger.info("正在退出应用...")
+        if self.server:
+            self.server.should_exit = True
+        if self.backend_thread:
+            self.backend_thread.join(timeout=30)
+        if self.backend_thread and self.backend_thread.is_alive():
+            logger.error("后端尚未退出，为保护数据库暂不关闭内置运行环境")
+            return
+        if self.runtime:
+            self.runtime.stop()
         if self.icon:
             self.icon.stop()
-        
-        # 释放锁定端口
         if self.lock_socket:
             self.lock_socket.close()
-            
-        # 强制退出，确保所有线程结束
         os._exit(0)
 
     def setup_tray(self):
@@ -193,6 +204,9 @@ class DesktopApp:
                 time.sleep(1)
 
     def run(self):
+        if self.smoke_test_dir:
+            from desktop_runtime import available_port
+            self.lock_port = available_port(0)
         # 1. 检查单实例
         if not self.check_single_instance():
             import tkinter as tk
@@ -210,7 +224,26 @@ class DesktopApp:
             base_dir = os.path.dirname(os.path.abspath(__file__))
             bundle_dir = base_dir
 
-        data_dir = os.path.join(base_dir, 'data')
+        installed = os.path.isfile(os.path.join(base_dir, 'desktop-install.json'))
+        if installed:
+            import ctypes
+            from ctypes import wintypes
+            create_mutex = ctypes.windll.kernel32.CreateMutexW
+            create_mutex.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+            create_mutex.restype = wintypes.HANDLE
+            self.app_mutex = create_mutex(None, False, 'KikoeruManagerDesktop')
+            if not self.app_mutex:
+                raise ctypes.WinError()
+        data_dir = (os.path.join(os.environ['LOCALAPPDATA'], 'KikoeruManager')
+                    if installed else os.path.join(base_dir, 'data'))
+        location_file = Path(base_dir) / 'data-location.txt'
+        if installed and location_file.is_file():
+            configured_dir = location_file.read_text(encoding='utf-8-sig').strip()
+            if not configured_dir or not Path(configured_dir).is_absolute():
+                raise RuntimeError('data-location.txt 必须填写完整的数据目录路径')
+            data_dir = configured_dir
+        if self.smoke_test_dir:
+            data_dir = str(self.smoke_test_dir)
         os.environ['DATA_PATH'] = data_dir
 
         config_dir = os.path.join(data_dir, 'config')
@@ -225,9 +258,13 @@ class DesktopApp:
 
         logger.info(f"当前数据目录: {data_dir}")
         logger.info(f"当前配置文件: {config_path}")
+        if self.smoke_test_dir:
+            import faulthandler
+            self.smoke_trace = open(Path(data_dir) / 'smoke-threads.log', 'w', encoding='utf-8')
+            faulthandler.dump_traceback_later(25, file=self.smoke_trace)
 
         # 如果外部配置文件不存在，则从包内复制
-        if not os.path.exists(config_path):
+        if not installed and not os.path.exists(config_path):
             import shutil
             bundled_config = os.path.join(bundle_dir, 'backend', 'config', 'config.yaml')
             if os.path.exists(bundled_config):
@@ -235,14 +272,47 @@ class DesktopApp:
                 shutil.copy2(bundled_config, config_path)
                 logger.info(f"已从包内复制默认配置到: {config_path}")
 
+        if installed:
+            from desktop_runtime import DesktopRuntime, available_port, contain_child_processes
+            self.runtime = DesktopRuntime(Path(base_dir), Path(data_dir))
+            try:
+                self.runtime_job = contain_child_processes()
+                self.runtime.start()
+                self.port = available_port(5555)
+                self.url = f"http://{self.host}:{self.port}"
+                # 相对缓存路径也落入用户数据目录，程序目录始终只读。
+                os.chdir(data_dir)
+            except Exception as exc:
+                logger.exception("内置运行环境启动失败")
+                try:
+                    self.runtime.stop()
+                finally:
+                    import ctypes
+                    ctypes.windll.user32.MessageBoxW(0, f"启动失败：{exc}\n\n日志目录：{data_dir}", "KikoeruManager", 16)
+                return
+
         # 3. 启动后端线程
         self.backend_thread = threading.Thread(target=self.run_backend, daemon=True)
         self.backend_thread.start()
 
         # 4. 等待后端启动完成，默认不主动抢占浏览器焦点
-        if self.wait_for_backend():
+        if self.wait_for_backend(timeout_seconds=180 if installed else 20):
+            if self.smoke_test_dir:
+                import json
+                with urllib.request.urlopen(self.url, timeout=10) as page:
+                    if page.status != 200 or b'<html' not in page.read().lower():
+                        raise RuntimeError('冒烟测试：前端页面加载失败')
+                self.server.should_exit = True
+                self.backend_thread.join(timeout=60)
+                if self.backend_thread.is_alive():
+                    raise RuntimeError('冒烟测试：后端退出超时')
+                self.runtime.stop()
+                faulthandler.cancel_dump_traceback_later()
+                Path(data_dir, 'smoke-result.json').write_text(
+                    json.dumps({'health': 'ok', 'frontend': 'ok', 'shutdown': 'ok', 'url': self.url}), encoding='utf-8')
+                return
             auto_open_browser = os.environ.get('KIKOERUMANAGER_AUTO_OPEN_BROWSER', '').strip().lower()
-            if auto_open_browser in {'1', 'true', 'yes', 'on'}:
+            if auto_open_browser in {'1', 'true', 'yes', 'on'} or (installed and not auto_open_browser):
                 self.open_browser()
             else:
                 logger.info(f"后端已启动，浏览器自动打开已禁用，可通过托盘菜单访问: {self.url}")
@@ -250,10 +320,37 @@ class DesktopApp:
             logger.error("后端未在预期时间内启动")
             if self.backend_error:
                 logger.error(f"后端错误信息: {self.backend_error}")
+            if installed:
+                if self.server:
+                    self.server.should_exit = True
+                self.backend_thread.join(timeout=30)
+                if not self.backend_thread.is_alive():
+                    self.runtime.stop()
+                if self.smoke_test_dir:
+                    raise RuntimeError(f'冒烟测试：后端启动失败：{self.backend_error}')
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(0, f"后端启动失败，请查看日志：{data_dir}", "KikoeruManager", 16)
+                return
 
         # 5. 启动托盘图标 (阻塞主线程)
         self.setup_tray()
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--smoke-test-data-dir')
+    parser.add_argument('--smoke-test-config')
+    args = parser.parse_args()
     app_instance = DesktopApp()
+    if args.smoke_test_data_dir:
+        app_instance.smoke_test_dir = Path(args.smoke_test_data_dir).resolve()
+        if app_instance.smoke_test_dir.exists():
+            raise RuntimeError('冒烟测试目录必须不存在')
+        if args.smoke_test_config:
+            import shutil
+            config_dir = app_instance.smoke_test_dir / 'config'
+            config_dir.mkdir(parents=True)
+            shutil.copyfile(Path(args.smoke_test_config).resolve(), config_dir / 'config.yaml')
+    elif args.smoke_test_config:
+        parser.error('--smoke-test-config 必须与 --smoke-test-data-dir 一起使用')
     app_instance.run()
