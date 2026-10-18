@@ -143,3 +143,4 @@ tools/deploy-production-frontend-static.ps1
 tools/deploy-production-frontend-static-remote.sh
 tools/deploy-production-local-build.ps1
 tools/deploy-production-local-build-remote.sh
+!/packaging/windows/app.spec
