@@ -11,6 +11,7 @@ from app.core.http_download_service import (
     GOOGLE_DRIVE_STREAM_CHUNK_BYTES,
     HttpDownloadError,
     HttpDownloadService,
+    HttpDownloadRpcError,
     Aria2Daemon,
     sanitize_http_download_error,
     sanitize_http_download_item,
@@ -37,6 +38,140 @@ async def test_rpc_timeout_identifies_control_interface_without_exposing_secret(
     assert "本机 aria2 控制接口 aria2.tellStatus" in str(captured.value)
     assert "timed out" in str(captured.value)
     assert daemon.secret not in str(captured.value)
+
+
+@pytest.mark.asyncio
+async def test_rpc_diagnostics_throttle_failures_and_report_recovery(monkeypatch, caplog):
+    service = HttpDownloadService()
+    daemon = Aria2Daemon(process=None, endpoint="http://127.0.0.1:6800/jsonrpc", secret="private-rpc-secret")
+    snapshots = []
+
+    def snapshot(current):
+        snapshots.append(current)
+        return {"pid": 123, "State": "D (disk sleep)"}
+
+    def unavailable(*args, **kwargs):
+        raise TimeoutError("https://example.com/private?token=private-download-token")
+
+    monkeypatch.setattr(service, "_aria2_process_snapshot", snapshot)
+    monkeypatch.setattr("app.core.http_download_service.urlopen", unavailable)
+    with caplog.at_level("INFO", logger="app.core.http_download_service"):
+        for _ in range(2):
+            with pytest.raises(HttpDownloadRpcError):
+                await service._rpc_call_raw(daemon, "aria2.tellStatus", ["gid-1"])
+        assert len(snapshots) == 1
+        assert daemon.rpc_failure_count == 2
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def read(self):
+                return b'{"result": {"status": "active"}}'
+
+        monkeypatch.setattr("app.core.http_download_service.urlopen", lambda *a, **kw: Response())
+        assert await service._rpc_call_raw(daemon, "aria2.tellStatus", ["gid-1"]) == {"status": "active"}
+    assert caplog.text.count("aria2 控制请求失败") == 1
+    assert "aria2 控制请求恢复" in caplog.text
+    assert "累计异常=2" in caplog.text
+    assert "private-rpc-secret" not in caplog.text
+    assert "private-download-token" not in caplog.text
+    assert daemon.rpc_failure_since is None
+    assert daemon.rpc_failure_count == 0
+
+
+def test_aria2_process_snapshot_reads_only_kernel_whitelist(monkeypatch):
+    service = HttpDownloadService()
+    daemon = Aria2Daemon(
+        process=types.SimpleNamespace(pid=123, poll=lambda: None), endpoint="", secret="secret",
+    )
+    files = {
+        "/proc/123/status": "State:\tD (disk sleep)\nVmRSS:\t4096 kB\nName:\tprivate-name\n",
+        "/proc/123/io": "write_bytes: 4096\nsyscw: 2\n",
+        "/proc/meminfo": "Dirty: 128 kB\nWriteback: 0 kB\nMemAvailable: 4096 kB\n",
+        "/proc/123/wchan": "wait_on_page_bit\n",
+    }
+    monkeypatch.setattr("app.core.http_download_service.os", types.SimpleNamespace(name="posix"))
+    monkeypatch.setattr(Path, "read_text", lambda path: files[path.as_posix()])
+    snapshot = service._aria2_process_snapshot(daemon)
+    assert snapshot["State"] == "D (disk sleep)"
+    assert snapshot["wchan"] == "wait_on_page_bit"
+    assert snapshot["Dirty"] == "128 kB"
+    assert snapshot["write_bytes"] == "4096"
+    assert "Name" not in snapshot
+
+
+@pytest.mark.asyncio
+async def test_rpc_slow_diagnostics_are_throttled(monkeypatch, caplog):
+    service = HttpDownloadService()
+    daemon = Aria2Daemon(process=None, endpoint="http://127.0.0.1:6800/jsonrpc", secret="secret")
+    ticks = iter([0, 3, 4, 7, 65, 68])
+    snapshots = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self):
+            return b'{"result": "ok"}'
+
+    monkeypatch.setattr("app.core.http_download_service.time", types.SimpleNamespace(monotonic=lambda: next(ticks)))
+    monkeypatch.setattr("app.core.http_download_service.urlopen", lambda *a, **kw: Response())
+    monkeypatch.setattr(service, "_aria2_process_snapshot", lambda current: snapshots.append(current) or {})
+    with caplog.at_level("WARNING", logger="app.core.http_download_service"):
+        for _ in range(3):
+            assert await service._rpc_call_raw(daemon, "aria2.tellStatus", ["gid-1"]) == "ok"
+    assert len(snapshots) == 2
+    assert caplog.text.count("aria2 控制请求缓慢") == 2
+    assert daemon.rpc_failure_count == 0
+
+
+@pytest.mark.asyncio
+async def test_control_timeout_preserves_download_and_recovers(monkeypatch):
+    service = HttpDownloadService()
+    row = {"gid": "a", "status": "downloading", "downloaded": 123, "total": 1000}
+
+    async def unavailable(gid):
+        raise HttpDownloadRpcError("控制接口超时")
+
+    monkeypatch.setattr(service, "_tell_status", unavailable)
+    rows, runtime, done, failed = await service._poll_task(["a"], [row])
+    assert not done
+    assert failed == 0
+    assert rows[0]["status"] == "downloading"
+    assert runtime["transferred_bytes"] == 123
+    assert runtime["control_error"] == "控制接口超时"
+
+    async def recovered(gid):
+        return {"status": "complete", "completedLength": "1000", "totalLength": "1000"}
+
+    monkeypatch.setattr(service, "_tell_status", recovered)
+    rows, runtime, done, failed = await service._poll_task(["a"], rows)
+    assert done and failed == 0
+    assert rows[0]["status"] == "completed"
+    assert "control_error" not in rows[0]
+    assert "control_error" not in runtime
+
+
+@pytest.mark.asyncio
+async def test_control_timeout_does_not_query_stopped_again(monkeypatch):
+    service = HttpDownloadService()
+    calls = []
+
+    async def unavailable(method, params):
+        calls.append(method)
+        raise HttpDownloadRpcError("控制接口超时")
+
+    monkeypatch.setattr(service, "_rpc_call", unavailable)
+    with pytest.raises(HttpDownloadRpcError):
+        await service._tell_status("a")
+    assert calls == ["aria2.tellStatus"]
 
 
 class DummyStorage:
@@ -98,6 +233,42 @@ def bind_config(monkeypatch, tmp_path, **overrides):
             setattr(cfg.http_downloader, key, value)
     monkeypatch.setattr("app.core.http_download_service.get_config", lambda: cfg)
     return cfg
+
+
+@pytest.mark.asyncio
+async def test_aria2_daemon_uses_shared_write_cache_and_throttled_checkpoints(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    commands = []
+    process = types.SimpleNamespace(poll=lambda: None)
+
+    def start(command, **kwargs):
+        commands.append(command)
+        return process
+
+    async def ready(daemon, method, params):
+        assert method == "aria2.getVersion"
+        return {"version": "1.37.0"}
+
+    monkeypatch.setattr("app.core.http_download_service.subprocess.Popen", start)
+    monkeypatch.setattr(service, "_rpc_call_raw", ready)
+    daemon = await service._ensure_daemon()
+    assert await service._ensure_daemon() is daemon
+    assert len(commands) == 1
+    assert "--disk-cache=64M" in commands[0]
+    assert "--auto-save-interval=30" in commands[0]
+    assert "--save-session-interval=30" in commands[0]
+
+
+@pytest.mark.parametrize("source", ["http", "gofile", "pikpak", "google_drive", "onedrive", "transferit"])
+def test_aria2_disk_policy_preserves_resume_and_connection_limits(monkeypatch, tmp_path, source):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    options = service._aria2_options({"source": source, "filename": "voice.zip"}, str(tmp_path))
+    assert options["file-allocation"] == "none"
+    assert options["stream-piece-selector"] == "inorder"
+    assert options["continue"] == "true"
+    assert options["split"] == ("5" if source == "gofile" else "8")
 
 
 @pytest.mark.asyncio
