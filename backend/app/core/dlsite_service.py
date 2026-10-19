@@ -17,12 +17,27 @@ import unicodedata
 from typing import Any, Dict, List, Optional, Set
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from functools import lru_cache
+from functools import lru_cache, wraps
+from contextvars import ContextVar
 from urllib.parse import parse_qs, urlparse
 
 from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
+
+_index_api_snapshot = ContextVar("dlsite_index_api_snapshot", default=None)
+
+
+def with_dlsite_api_snapshot(method):
+    """一次社团索引内保留成功响应，跨阶段复用；退出即释放，禁止全库常驻。"""
+    @wraps(method)
+    async def wrapped(self, *args, **kwargs):
+        token = _index_api_snapshot.set((id(self.dlsite_service), {}))
+        try:
+            return await method(self, *args, **kwargs)
+        finally:
+            _index_api_snapshot.reset(token)
+    return wrapped
 
 _DLSITE_HTTP_CIRCUIT_FAILURE_THRESHOLD = 6
 _DLSITE_HTTP_CIRCUIT_OPEN_SECONDS = 45.0
@@ -2193,28 +2208,68 @@ class DLsiteApiService:
                     raise
         raise RuntimeError("unreachable")
 
+    async def fetch_product_makers(self, rjcodes: List[str]) -> Dict[str, str]:
+        """批量确认关联译作归属；失败或缺项只保留未知，不扩成逐作品补查。"""
+        makers = {}
+        for offset in range(0, len(rjcodes), 500):
+            payloads = await self._fetch_product_info_ajax_payloads(rjcodes[offset:offset + 500])
+            for code, product in (payloads or {}).items():
+                maker = product.get("maker") if isinstance(product.get("maker"), dict) else {}
+                maker_id = str(product.get("maker_id") or maker.get("id") or "").strip().upper()
+                if re.fullmatch(r"RG\d+", maker_id):
+                    makers[code] = maker_id
+        return makers
+
+    def index_product_makers(self) -> Dict[str, str]:
+        """只读取本次索引已取得的官方作品身份，不触网、不扩大全局缓存。"""
+        scope = _index_api_snapshot.get()
+        if scope is None or scope[0] != id(self):
+            return {}
+        makers = {}
+        for url, data in scope[1].items():
+            if 'product.json' not in url or not isinstance(data, list):
+                continue
+            for product in data:
+                if not isinstance(product, dict):
+                    continue
+                code = self._normalize_workno(product.get('workno'))
+                maker = product.get('maker') if isinstance(product.get('maker'), dict) else {}
+                maker_id = str(product.get('maker_id') or maker.get('id') or '').strip().upper()
+                if code and maker_id:
+                    makers[code] = maker_id
+        return makers
+
     async def _fetch_api(self, url: str) -> Optional[Dict]:
         """从 DLsite API 获取数据，带内存缓存和并发去重（同一 URL 只发一次 HTTP 请求）"""
         cache_key = url
+        scope = _index_api_snapshot.get()
+        snapshot = scope[1] if scope is not None and scope[0] == id(self) else None
+        if snapshot is not None and cache_key in snapshot:
+            return snapshot[cache_key]
+
+        def remember(data):
+            if snapshot is not None and data is not None and len(snapshot) < 20000:
+                snapshot[cache_key] = data
+            return data
 
         if cache_key in self.cache:
             cached_data = self.cache[cache_key]
             if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
                 logger.debug("[DLsite] 使用缓存数据: %s", url)
-                return cached_data['data']
+                return remember(cached_data['data'])
 
         # 进行中的请求复用：若已有相同 URL 的请求在飞，直接等待其结果，不再新发
         if cache_key in self._inflight:
             logger.debug("[DLsite] 复用进行中的请求: %s", url)
             try:
-                return await asyncio.shield(self._inflight[cache_key])
+                return remember(await asyncio.shield(self._inflight[cache_key]))
             except Exception:
                 return None
 
         task = asyncio.ensure_future(self._do_fetch_api(url))
         self._inflight[cache_key] = task
         try:
-            return await task
+            return remember(await task)
         finally:
             self._inflight.pop(cache_key, None)
 

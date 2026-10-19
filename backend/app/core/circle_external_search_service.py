@@ -120,6 +120,7 @@ class CircleExternalSearchService:
         self._south_plus_next_request_at = 0.0
         self._worker_task: asyncio.Task | None = None
         self._worker_stop_event: asyncio.Event | None = None
+        self._clients = {}
 
     @staticmethod
     def _normalize_rjcode(value: Any) -> str:
@@ -186,25 +187,31 @@ class CircleExternalSearchService:
         headers: Dict[str, str] | None = None,
         proxy: str = "",
     ) -> str:
+        # 与 DLsite / ASMR 的代理输入约定一致：host:port 默认使用 HTTP。
+        proxy = str(proxy or "").strip()
+        if proxy and "://" not in proxy:
+            proxy = f"http://{proxy}"
         async with self._semaphore:
             client_kwargs: Dict[str, Any] = {
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(connect=8.0, read=12.0, write=8.0, pool=8.0),
-                "headers": {
+                "limits": httpx.Limits(max_connections=4, max_keepalive_connections=4, keepalive_expiry=60),
+            }
+            request_headers = {
                     "Accept": "text/html,application/xhtml+xml",
                     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
                     "User-Agent": "KikoeruManager/1.0 external-search",
                     **(headers or {}),
-                },
             }
             if str(proxy or "").strip():
                 client_kwargs["proxy"] = str(proxy).strip()
-            async with httpx.AsyncClient(
-                **client_kwargs,
-            ) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-                return response.text
+            key = (urlparse(url).netloc, str(proxy or "").strip())
+            client = self._clients.get(key)
+            if client is None or client.is_closed:
+                client = self._clients[key] = httpx.AsyncClient(**client_kwargs)
+            response = await client.get(url, headers=request_headers)
+            response.raise_for_status()
+            return response.text
 
     async def _fetch_south_plus_text(
         self,
@@ -345,6 +352,12 @@ class CircleExternalSearchService:
         """批量读取 PostgreSQL 快照；缺失或到期项只入队，绝不在页面请求中访问外站。"""
         if not lookup_keys:
             return {}
+        unavailable = {(source, code): {"status": "unavailable", "results": [],
+                       "search_url": self._source_search_url(source, code)}
+                       for source, code in lookup_keys if not self._source_ready(source)}
+        lookup_keys = [key for key in lookup_keys if key not in unavailable]
+        if not lookup_keys:
+            return unavailable
         now = get_local_now()
         sources = sorted({source for source, _rjcode in lookup_keys})
         rjcodes = sorted({rjcode for _source, rjcode in lookup_keys})
@@ -375,28 +388,29 @@ class CircleExternalSearchService:
                 if record.next_probe_at <= now and (record.lease_until is None or record.lease_until <= now):
                     record.priority = max(int(record.priority or 0), 100)
             db.commit()
-            return {key: self._record_payload(record) for key, record in records.items()}
+            return {**unavailable, **{key: self._record_payload(record) for key, record in records.items()}}
         except Exception:
             db.rollback()
             logger.warning("[社团补全·外部搜索] 读取持久搜索快照失败", exc_info=True)
-            return {
+            return {**unavailable, **{
                 (source, rjcode): {
                     "status": "error",
                     "results": [],
                     "search_url": self._source_search_url(source, rjcode),
                 }
                 for source, rjcode in lookup_keys
-            }
+            }}
         finally:
             db.close()
 
-    def _claim_next_record(self) -> Dict[str, str] | None:
+    def _claim_next_record(self, source: str) -> Dict[str, str] | None:
         now = get_local_now()
         db = SessionLocal()
         try:
             row = (
                 db.query(CircleExternalSearchRecord)
                 .filter(CircleExternalSearchRecord.probe_schema_version == self._PROBE_SCHEMA_VERSION)
+                .filter(CircleExternalSearchRecord.source == source)
                 .filter(CircleExternalSearchRecord.next_probe_at <= now)
                 .filter(or_(CircleExternalSearchRecord.lease_until.is_(None), CircleExternalSearchRecord.lease_until <= now))
                 .order_by(CircleExternalSearchRecord.priority.desc(), CircleExternalSearchRecord.next_probe_at.asc(), CircleExternalSearchRecord.id.asc())
@@ -488,25 +502,39 @@ class CircleExternalSearchService:
         if self._worker_task and not self._worker_task.done():
             return
         self._worker_stop_event = asyncio.Event()
-        self._worker_task = asyncio.create_task(self._worker_loop(), name="circle-external-search-worker")
+        self._worker_task = asyncio.create_task(self._run_workers(), name="circle-external-search-worker")
 
     async def stop(self) -> None:
         task = self._worker_task
-        if task is None:
-            return
         if self._worker_stop_event:
             self._worker_stop_event.set()
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await asyncio.gather(*(client.aclose() for client in self._clients.values()))
+        self._clients.clear()
         self._worker_task = None
         self._worker_stop_event = None
 
-    async def _worker_loop(self) -> None:
+    @staticmethod
+    def _source_ready(source: str) -> bool:
+        config = get_config().circle_external_search
+        return bool(getattr(config, source + "_enabled", True)) and (
+            source != "south_plus" or bool(str(getattr(config, "south_plus_cookie", "") or "").strip()))
+
+    async def _run_workers(self) -> None:
+        tasks = [asyncio.create_task(self._worker_loop(source))
+                 for source in ("anime_share", "anime_share", "south_plus")]
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _worker_loop(self, source: str) -> None:
         while self._worker_stop_event and not self._worker_stop_event.is_set():
-            claimed = await asyncio.to_thread(self._claim_next_record)
+            claimed = await asyncio.to_thread(self._claim_next_record, source) if self._source_ready(source) else None
             if claimed is None:
                 try:
                     await asyncio.wait_for(self._worker_stop_event.wait(), timeout=self._WORKER_IDLE_SECONDS)

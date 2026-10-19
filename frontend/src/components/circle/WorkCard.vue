@@ -343,14 +343,14 @@ function preventNativeShiftSelection(event) {
           <template v-else>
             <span class="tag-chip" :class="item.server_owned ? 'is-primary' : 'is-danger'">{{ item.server_owned ? '已收录' : '未收录' }}</span>
             <span v-if="showOriginalSubtitleState" class="tag-chip" :class="canRepairSubtitle ? 'is-repair' : (item.subtitle_present ? 'is-subtitle' : 'is-subtitle-none')">{{ originalSubtitleLabel }}</span>
-            <span class="tag-chip" :class="item.has_asmr_one ? 'is-success' : 'is-disabled'">{{ item.has_asmr_one ? '可下载' : '无源' }}</span>
+            <span class="tag-chip" :class="(item.has_downloadable_source ?? item.has_asmr_one) ? 'is-success' : 'is-disabled'">{{ (item.has_downloadable_source ?? item.has_asmr_one) ? '可下载' : '无源' }}</span>
             <ExternalSearchSourceChips :item="externalSearchItem" @open="emit('external-search', $event)" />
           </template>
         </div>
       </slot>
 
       <slot name="actions">
-        <div v-if="item.has_asmr_one || item.local_download_ready" class="work-actions">
+        <div v-if="(item.has_downloadable_source ?? item.has_asmr_one) || item.local_download_ready" class="work-actions">
           <button v-if="item.local_download_ready" class="work-action-btn upload" @click.stop="emit('reimport', item)">入库</button>
           <button class="work-action-btn" @click.stop="emit('preview', item.canonical_rjcode)">预览</button>
         </div>

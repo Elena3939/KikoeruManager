@@ -888,10 +888,43 @@ def _enrich_lite_items_with_batch_summary(
     """
     if not items:
         return
+    from ..core.activity_log_relations import IMPORT_CATEGORIES
+
+    import_parents = [it for it in items if it.get("category") in IMPORT_CATEGORIES and it.get("action") == "batch_start"]
+    import_batch_ids = {str(it.get("batch_id") or "") for it in import_parents} - {""}
+    if import_batch_ids:
+        from ..core.activity_log_aggregator import merge_activity_rows_from_dicts
+        from ..core.activity_log_batch_list import compact_import_rows
+
+        # 导入任务按结果统计，不读取把 archive_queued 等事件也算成任务的旧 rollup。
+        # 整页批次一次查询，列表和详情复用同一套聚合口径。
+        batch_rows = compact_import_rows(db, ActivityLog.batch_id.in_(list(import_batch_ids)))
+        # 只取聚合所需字段，避免传输 file_tree_items / filtered_items 等大 JSON。
+        buckets = {}
+        for row in batch_rows:
+            buckets.setdefault((row["category"], row["batch_id"]), []).append(row)
+        aggregated = {
+            str(row.get("id")): row
+            for rows in buckets.values()
+            for row in merge_activity_rows_from_dicts(rows)
+        }
+        for it in import_parents:
+            row = aggregated.get(str(it.get("id")))
+            if row is None:
+                continue
+            detail = row.get("detail") or {}
+            it["status"] = row.get("status")
+            it["summary"] = row.get("summary")
+            it["child_failed_count"] = int(detail.get("failed_child_count") or 0)
+            it["child_success_count"] = int(detail.get("extract_completed_count") or 0)
+            it["child_partial_count"] = int(detail.get("partial_child_count") or 0)
+            it["child_total_count"] = int(detail.get("result_task_count") or 0)
     candidates: List[Dict[str, Any]] = []
     batch_ids: set[str] = set()
     parent_ids_per_batch: Dict[str, set[str]] = {}
     for it in items:
+        if it.get("category") in IMPORT_CATEGORIES:
+            continue
         if not force and not it.get("has_children") and not it.get("has_child_rows"):
             continue
         bid_raw = it.get("batch_id")
@@ -1043,7 +1076,7 @@ def list_activity_logs(
     query = query.filter(ActivityLog.category.in_(list(_ACTIVITY_LOG_VISIBLE_CATEGORIES)))
     if category:
         query = query.filter(ActivityLog.category == category)
-    if status:
+    if status and not (lite and not show_subactions):
         query = query.filter(ActivityLog.status == status)
 
     # Phase 2：精准过滤走新索引列，跳过合并 / FTS 分支
@@ -1137,6 +1170,18 @@ def list_activity_logs(
                 & ~circle_source_action.in_(("bonus_probe", "new_release_bonus_probe"))
             )
         )
+        if not show_subactions:
+            from ..core.activity_log_batch_list import list_batch_lite
+
+            payload = list_batch_lite(db, query, page=page, limit=limit, status=status, searching=bool(search_text))
+            _enrich_lite_items_with_recovery(payload["items"], db)
+            # 导入批次已按完整成员计算；其它业务仍使用原有的状态补全。
+            _enrich_lite_items_with_batch_summary(
+                [it for it in payload["items"] if it.get("category") not in {"auto_import", "process_existing", "extract"}], db,
+            )
+            payload["window"] = {"lite": True, "search_backend": search_backend, "since_days": effective_since_days}
+            query_cache.set(cache_key, writer.last_write_ts, payload)
+            return payload
         # 搜索分支：search_match_count 已是索引命中上限内的总数（≤ _SEARCH_MATCH_CAP），
         # 直接用作 total，跳过 COUNT(*) 全表扫描；hidden actions 过滤的少量误差在 UI 上不显眼。
         # 非搜索分支：维持原 COUNT(*) 逻辑（有 created_at + category 索引保护，开销可接受）。
@@ -1515,9 +1560,22 @@ def get_activity_log_children(
     from ..core.activity_log_aggregator import merge_activity_rows
 
     limit = max(1, min(1000, int(limit or 200)))
+    if log_id.startswith("synthetic-import-batch:"):
+        item = get_activity_log_detail(log_id, db=db)["row"]
+        children = list((item.get("detail") or {}).get("child_rows") or [])
+        return {"parent": item, "total": len(children), "items": children[:limit]}
     parent = db.query(ActivityLog).filter(ActivityLog.id == log_id).first()
     if parent is None:
         raise HTTPException(status_code=404, detail="未找到对应操作记录")
+
+    from ..core.activity_log_relations import IMPORT_CATEGORIES
+    if parent.category in IMPORT_CATEGORIES:
+        # 与详情共用真实子树，禁止再次把 batch_id 下的兄弟行挂回来。
+        item = get_activity_log_detail(log_id, db=db)["row"]
+        detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+        child_items = list(detail.get("child_rows") or [])
+        return {"parent": item, "total": len(child_items), "items": child_items[:limit],
+                "match": {"by_parent_id": parent.id, "by_task_id": parent.task_id}}
 
     children: List[ActivityLog] = []
     seen_ids = {parent.id}
@@ -1586,6 +1644,15 @@ def get_activity_log_detail(
       复用现有 ``/children`` 的关联策略，保证抽屉渲染和旧版一致。
     """
     from ..core.activity_log_aggregator import merge_activity_rows
+    from ..core.activity_log_relations import IMPORT_CATEGORIES, allows_group_relations, find_activity_node
+
+    if log_id.startswith("synthetic-import-batch:"):
+        from ..core.activity_log_batch_list import synthetic_batch_detail
+
+        item = synthetic_batch_detail(db, log_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="未找到对应操作记录")
+        return {"row": item}
 
     parent = db.query(ActivityLog).filter(ActivityLog.id == log_id).first()
     if parent is None:
@@ -1601,13 +1668,15 @@ def get_activity_log_detail(
             seen_ids.add(row.id)
             related_rows.append(row)
 
-    if parent.batch_id:
+    group_relations = allows_group_relations(parent)
+    if parent.batch_id and group_relations:
+        batch_query = db.query(ActivityLog).filter(ActivityLog.batch_id == parent.batch_id).order_by(desc(ActivityLog.created_at))
+        if parent.category in IMPORT_CATEGORIES:
+            batch_query = batch_query.filter(ActivityLog.category == parent.category)
+        else:
+            batch_query = batch_query.limit(500)
         _extend(
-            db.query(ActivityLog)
-            .filter(ActivityLog.batch_id == parent.batch_id)
-            .order_by(desc(ActivityLog.created_at))
-            .limit(500)
-            .all()
+            batch_query.all()
         )
     _extend(
         db.query(ActivityLog)
@@ -1616,7 +1685,7 @@ def get_activity_log_detail(
         .limit(500)
         .all()
     )
-    if parent.session_key:
+    if parent.session_key and group_relations and not (parent.category in IMPORT_CATEGORIES and parent.batch_id):
         _extend(
             db.query(ActivityLog)
             .filter(ActivityLog.session_key == parent.session_key)
@@ -1648,7 +1717,7 @@ def get_activity_log_detail(
         or parent_detail.get("execution_key")
         or ""
     ).strip()
-    if related_session_id and len(related_session_id) >= 8:
+    if related_session_id and len(related_session_id) >= 8 and group_relations and not (parent.category in IMPORT_CATEGORIES and parent.batch_id):
         try:
             session_rows = (
                 db.query(ActivityLog)
@@ -1665,6 +1734,15 @@ def get_activity_log_detail(
             _extend(session_rows)
         except Exception:
             logger.debug("[操作记录] 按 session_id 反查关联行失败", exc_info=True)
+
+    if parent.category in IMPORT_CATEGORIES and parent.task_id and int(parent_detail.get("multi_rj_subtask_count") or 0) > 0:
+        _extend(
+            db.query(ActivityLog)
+            .filter(ActivityLog.detail.op("->>")("parent_task_id") == parent.task_id)
+            .order_by(desc(ActivityLog.created_at))
+            .limit(500)
+            .all()
+        )
 
     merged = merge_activity_rows([parent] + related_rows)
 
@@ -1699,6 +1777,9 @@ def get_activity_log_detail(
         main_row = container_root
     if main_row is None:
         main_row = parent.to_dict()
+
+    if parent.category in IMPORT_CATEGORIES:
+        main_row = find_activity_node(merged, parent.id) or parent.to_dict()
 
     # 复用 list 接口的"批次父行子任务状态聚合"，保证抽屉头部状态徽章和列表行口径一致。
     # aggregator 已经在 main_row 是 batch_start 时跑过一次 partial_success/failed 升级，
@@ -2534,6 +2615,9 @@ async def startup_event():
     from ..core.redis_service import get_redis_service
     redis_service = get_redis_service()
     redis_service.startup_check()
+    from ..core.resource_source_service import get_resource_source_service
+    if redis_service.is_enabled():
+        get_resource_source_service().start()
     if redis_service.is_enabled():
         from ..core.dlsite_bonus_probe_service import get_dlsite_bonus_probe_service
         get_dlsite_bonus_probe_service().start_cache_flush_worker()
@@ -2622,6 +2706,8 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """应用关闭时执行"""
+    from ..core.resource_source_service import get_resource_source_service
+    await get_resource_source_service().stop()
     try:
         await asyncio.to_thread(stop_library_index_watcher_driver)
     except Exception:
@@ -6793,6 +6879,7 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             existing_task.task_metadata["conflict_resolution_action"] = "RETRY"
             if conflict.conflict_type == "EXTRACT_FAILED":
                 existing_task.task_metadata["skip_retry_precheck"] = True
+                existing_task.task_metadata["retry_linked_subtitle_import"] = bool(conflict_metadata.get("retry_linked_subtitle_import"))
             if specified_passwords:
                 # 落 list（新消费路径）+ 单字段（老消费路径兜底）
                 existing_task.task_metadata["manual_retry_passwords"] = list(specified_passwords)
@@ -6858,6 +6945,7 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
         task.task_metadata["retry_from_conflicts"] = True
         if conflict.conflict_type == "EXTRACT_FAILED":
             task.task_metadata["skip_retry_precheck"] = True
+            task.task_metadata["retry_linked_subtitle_import"] = bool(conflict_metadata.get("retry_linked_subtitle_import"))
         task.task_metadata["conflict_resolution_conflict_id"] = conflict.id
         task.task_metadata["conflict_resolution_action"] = "RETRY"
         if specified_passwords:
@@ -17643,6 +17731,7 @@ class ASMRSyncEnhancedPlanRequest(BaseModel):
     subtitle_languages: List[str] = []
     include_existing: bool = False
     refresh: bool = False
+    include_resource_sources: bool = False
 
 
 class ASMRSyncEnhancedStartRequest(BaseModel):
@@ -17688,6 +17777,7 @@ class CircleCompletionDownloadPreviewRequest(BaseModel):
     circle_id: str
     canonical_rjcodes: List[str]
     requested_rjcodes: Dict[str, List[str]] = {}
+    include_resource_sources: bool = False
 
 
 class CircleCompletionRefreshSelectedRequest(BaseModel):
@@ -18153,6 +18243,9 @@ def _serialize_asmr_sync_task_status(task, session_map: Dict[str, dict], *, comp
         "session_id": session_id,
         "queue_priority": metadata.get("queue_priority", metadata.get("priority", 100)),
         "task_metadata": {
+            "resource_source": metadata.get("resource_source", ""),
+            "resource_group_id": metadata.get("resource_group_id", ""),
+            "requested_rjcode": metadata.get("requested_rjcode", ""),
             "retry_reason": metadata.get("retry_reason", ""),
             "retry_count": metadata.get("retry_count", 0),
             "retry_after": metadata.get("retry_after", ""),
@@ -19766,12 +19859,19 @@ async def asmr_sync_enhanced_plan(request: ASMRSyncEnhancedPlanRequest):
         if not normalized_rjcode:
             continue
         try:
-            plan = await service.build_download_plan(
-                rjcode=normalized_rjcode,
-                folder_path=str(request.folder_path or "").strip(),
-                filters=filters,
-                refresh=bool(request.refresh),
-            )
+            async def asmr_builder():
+                return await service.build_download_plan(
+                    rjcode=normalized_rjcode,
+                    folder_path=str(request.folder_path or "").strip(),
+                    filters=filters,
+                    refresh=bool(request.refresh),
+                )
+            if request.include_resource_sources:
+                from ..core.resource_source_service import get_resource_source_service
+                plan = await get_resource_source_service().combine_plan(
+                    normalized_rjcode, asmr_builder, refresh=request.refresh)
+            else:
+                plan = await asmr_builder()
             plans.append(plan)
         except Exception as exc:
             logger.warning("构建增强下载计划失败: %s (%s)", normalized_rjcode, exc)
@@ -19798,10 +19898,24 @@ async def asmr_sync_enhanced_start(request: ASMRSyncEnhancedStartRequest):
     if not request.items:
         raise HTTPException(status_code=400, detail="没有可启动的增强下载任务")
 
+    from ..core.resource_source_service import get_resource_source_service
+    try:
+        validated_sources = await get_resource_source_service().validate_batch(request.items)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     engine = get_task_engine()
     service = get_asmr_resource_service()
     created_tasks = []
-    for item in request.items:
+    for index, item in enumerate(request.items):
+        if item.get("source_provider") == "imoutoheaven":
+            from ..core.resource_source_service import get_resource_source_service
+            try:
+                created_tasks.extend(await get_resource_source_service().submit(
+                    item, "asmr-sync", validated=validated_sources[index]))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            continue
         rjcode = str(item.get("rjcode") or "").strip().upper()
         session_id = str(item.get("session_id") or "").strip()
         selected_resources = list(item.get("selected_resources") or [])
@@ -20926,6 +21040,7 @@ async def circle_completion_download_preview(
             payload.circle_id,
             payload.canonical_rjcodes,
             payload.requested_rjcodes,
+            include_resource_sources=payload.include_resource_sources,
         )
         return {"success": True, **result}
     except ValueError as exc:
@@ -20953,6 +21068,7 @@ async def circle_completion_download_preview_start(
             payload.circle_id,
             payload.canonical_rjcodes,
             payload.requested_rjcodes,
+            include_resource_sources=payload.include_resource_sources,
         )
         return {"success": True, **result}
     except ValueError as exc:
@@ -21160,6 +21276,12 @@ async def circle_completion_download_start(request: CircleCompletionDownloadStar
     if not request.items:
         raise HTTPException(status_code=400, detail="没有可创建的下载项")
 
+    from ..core.resource_source_service import get_resource_source_service
+    try:
+        validated_sources = await get_resource_source_service().validate_batch(request.items)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     batch_id = str(uuid.uuid4())
     engine = get_task_engine()
     session_service = get_asmr_resource_service()
@@ -21178,7 +21300,20 @@ async def circle_completion_download_start(request: CircleCompletionDownloadStar
         naming_mode = "preserve"
         classify_mode = "none"
 
-    for item in request.items:
+    for index, item in enumerate(request.items):
+        provider = str(item.get('source_provider') or 'asmr.one')
+        if provider == 'imoutoheaven':
+            from ..core.resource_source_service import get_resource_source_service
+            try:
+                created_tasks.extend(await get_resource_source_service().submit(item, 'circle-completion', {
+                    'circle_id': request.circle_id, 'circle_name': request.circle_name,
+                    'canonical_rjcode': item.get('canonical_rjcode'), 'parent_session_id': batch_id,
+                }, validated=validated_sources[index]))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            continue
+        if provider != 'asmr.one':
+            raise HTTPException(status_code=400, detail='未知下载来源')
         rjcode = str(item.get("rjcode") or "").strip().upper()
         session_id = str(item.get("session_id") or "").strip()
         selected_resources = list(item.get("selected_resources") or [])
@@ -21464,7 +21599,8 @@ async def asmr_sync_status(task_ids: str = "", compact: bool = False):
         ))
 
         # 过滤出 ASMR 同步任务
-        asmr_tasks = [t for t in all_tasks if t.type == TaskType.ASMR_SYNC_DOWNLOAD]
+        asmr_tasks = [t for t in all_tasks if t.type == TaskType.ASMR_SYNC_DOWNLOAD or (
+            t.type == TaskType.HTTP_DOWNLOAD and t.task_metadata.get('resource_source') == 'imoutoheaven')]
         if requested_ids:
             task_map = {str(task.id): task for task in asmr_tasks}
             asmr_tasks = [task_map[task_id] for task_id in requested_ids if task_id in task_map]

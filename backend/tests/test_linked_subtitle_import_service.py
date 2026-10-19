@@ -9,6 +9,7 @@ from app.core.classifier import SmartClassifier
 from app.core.task_engine import Task, TaskEngine, TaskStatus, TaskType
 from app.core.linked_subtitle_import_service import (
     LinkedSubtitleArchivePrecheckTimeout,
+    LinkedSubtitleExtractFailed,
     LinkedSubtitleImportAlreadyRunning,
     LinkedSubtitleImportService,
 )
@@ -1148,7 +1149,7 @@ def test_refresh_preview_execution_state_keeps_timeout_archive_executable(tmp_pa
     assert "重新解包" in preview["execute_reason"]
 
 
-def test_refresh_preview_execution_state_keeps_extract_failure_archive_executable(tmp_path):
+def test_refresh_preview_execution_state_blocks_extract_failure_archive(tmp_path):
     archive_path = tmp_path / "RJ01649862.rar"
     archive_path.write_bytes(b"placeholder")
     service = object.__new__(LinkedSubtitleImportService)
@@ -1178,7 +1179,7 @@ def test_refresh_preview_execution_state_keeps_extract_failure_archive_executabl
     })
 
     assert preview["can_stage_pending"] is True
-    assert preview["can_execute"] is True
+    assert preview["can_execute"] is False
     assert "执行时" in preview["execute_reason"]
 
 
@@ -1331,7 +1332,11 @@ async def test_queue_pending_archive_import_preserves_timeout_as_pending(db_sess
 
 
 @pytest.mark.asyncio
-async def test_queue_pending_archive_import_preserves_extract_failure_as_pending(db_session, monkeypatch, tmp_path):
+@pytest.mark.parametrize("probe_status", ["missing_password", "extract_failed", "nested_extract_failed"])
+@pytest.mark.parametrize("fail_during_stage", [False, True])
+async def test_queue_pending_archive_import_returns_extract_failure_to_problem_flow(
+    db_session, monkeypatch, tmp_path, probe_status, fail_during_stage,
+):
     def fake_get_db():
         yield db_session
 
@@ -1390,6 +1395,13 @@ async def test_queue_pending_archive_import_preserves_extract_failure_as_pending
     service._stage_archive_subtitles_for_preview = AsyncMock(
         side_effect=AssertionError("预检失败的待处理单不应立刻重新解包")
     )
+    preview = service.preview_archive_import.return_value
+    preview["source_subtitle_probe_status"] = probe_status
+    if fail_during_stage:
+        failure_preview = dict(preview)
+        preview["source_subtitle_probe_status"] = "ok"
+        preview["subtitle_count"] = 1
+        service._stage_archive_subtitles_for_preview = AsyncMock(return_value=failure_preview)
 
     task = SimpleNamespace(
         id="task-extract-failed",
@@ -1400,17 +1412,19 @@ async def test_queue_pending_archive_import_preserves_extract_failure_as_pending
 
     result = await service.queue_pending_archive_import(task, "RJ01649862")
 
-    assert result["handled"] is True
-    assert result["preview"]["source_subtitle_probe_status"] == "missing_password"
-    assert result["preview"]["can_execute"] is True
-    service._stage_archive_subtitles_for_preview.assert_not_awaited()
+    assert result["handled"] is False
+    assert result["preview"]["source_subtitle_probe_status"] == probe_status
+    assert result["preview"]["fatal_extract_error"] == "解压失败：无正确密码"
+    if fail_during_stage:
+        service._stage_archive_subtitles_for_preview.assert_awaited_once()
+    else:
+        service._stage_archive_subtitles_for_preview.assert_not_awaited()
 
     row = db_session.query(ConflictWork).filter(
         ConflictWork.conflict_type == LinkedSubtitleImportService.PENDING_CONFLICT_TYPE,
         ConflictWork.task_id == "task-extract-failed",
-    ).one()
-    assert row.rjcode == "RJ01638438"
-    assert row.new_metadata["source_subtitle_probe_status"] == "missing_password"
+    ).first()
+    assert row is None
 
 
 @pytest.mark.asyncio
@@ -1552,6 +1566,86 @@ async def test_execute_pending_import_resets_status_when_long_io_fails(db_sessio
     assert refreshed.status == "PENDING"
     assert refreshed.analysis_info["execution_status"] == "failed"
     assert "模拟解压失败" in refreshed.analysis_info["execution_error"]
+    assert refreshed.analysis_info["auto_import_blocked"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("probe_status", ["missing_password", "extract_failed", "nested_extract_failed"])
+async def test_execute_pending_import_moves_extract_failure_to_problem(db_session, monkeypatch, probe_status):
+    monkeypatch.setattr(linked_subtitle_module, "get_db", lambda: iter([db_session]))
+    service = object.__new__(LinkedSubtitleImportService)
+    preview = {"source_rjcode": "RJ01620917", "target_rjcode": "RJ01608823"}
+    service._repair_cached_preview_rj_fields = AsyncMock(return_value=preview)
+    service._refresh_pending_preview_candidates = AsyncMock(return_value=preview)
+    service.execute_archive_import = AsyncMock(side_effect=LinkedSubtitleExtractFailed({
+        **preview,
+        "source_subtitle_probe_status": probe_status,
+        "source_subtitle_probe_reason": "解压失败：测试错误",
+    }))
+    db_session.add(ConflictWork(
+        id="pending-extract-failure", rjcode="RJ01608823",
+        conflict_type=service.PENDING_CONFLICT_TYPE, status="PENDING",
+        new_path="D:/input/RJ01620917.rar", existing_path="D:/library/RJ01608823",
+        analysis_info={"preview": preview}, new_metadata={"source_label": "来源包"},
+    ))
+    db_session.commit()
+
+    with pytest.raises(LinkedSubtitleExtractFailed, match="测试错误"):
+        await service.execute_pending_import("pending-extract-failure")
+
+    row = db_session.query(ConflictWork).filter_by(id="pending-extract-failure").one()
+    assert row.conflict_type == "EXTRACT_FAILED"
+    assert row.status == "PENDING"
+    assert row.rjcode == "RJ01620917"
+    assert row.existing_path == ""
+    assert row.new_path == "D:/input/RJ01620917.rar"
+    assert row.new_metadata["retry_linked_subtitle_import"] is True
+    assert row.new_metadata["source_label"] == "来源包"
+    assert row.analysis_info["preview"]["source_subtitle_probe_status"] == probe_status
+    assert row.analysis_info["auto_import_blocked"] is True
+    assert row.analysis_info["execution_owner_id"] == ""
+    with pytest.raises(ValueError, match="不存在"):
+        await service.execute_pending_import(row.id)
+    service.execute_archive_import.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entrypoint", ["list", "execute"])
+async def test_old_extract_failure_pending_converts_without_unpacking(db_session, monkeypatch, entrypoint):
+    monkeypatch.setattr(linked_subtitle_module, "get_db", lambda: iter([db_session]))
+    service = object.__new__(LinkedSubtitleImportService)
+    service.library_manager = SimpleNamespace(inventory_index_view_token=lambda: "test")
+    service._repair_cached_preview_rj_fields = AsyncMock()
+    service.execute_archive_import = AsyncMock()
+    db_session.add(ConflictWork(
+        id="old-extract-failure", rjcode="RJ01608823",
+        conflict_type=service.PENDING_CONFLICT_TYPE, status="PENDING",
+        new_path="D:/input/RJ01620917.rar", new_metadata={},
+        analysis_info={"preview": {
+            "source_rjcode": "RJ01620917", "target_rjcode": "RJ01608823",
+            "source_subtitle_probe_status": "missing_password",
+            "source_subtitle_probe_reason": "无正确密码",
+        }},
+    ))
+    db_session.commit()
+    if entrypoint == "list":
+        assert await service.list_pending_imports() == []
+    else:
+        with pytest.raises(LinkedSubtitleExtractFailed):
+            await service.execute_pending_import("old-extract-failure")
+    row = db_session.query(ConflictWork).filter_by(id="old-extract-failure").one()
+    assert row.conflict_type == "EXTRACT_FAILED"
+    assert row.rjcode == "RJ01620917"
+    service._repair_cached_preview_rj_fields.assert_not_awaited()
+    service.execute_archive_import.assert_not_awaited()
+
+
+def test_problem_retry_keeps_linked_subtitle_precheck():
+    engine = object.__new__(TaskEngine)
+    task = SimpleNamespace(task_metadata={"skip_retry_precheck": True, "retry_from_conflicts": True})
+    assert engine._should_skip_conflict_retry_precheck(task) is True
+    task.task_metadata["retry_linked_subtitle_import"] = True
+    assert engine._should_skip_conflict_retry_precheck(task) is False
 
 
 @pytest.mark.asyncio

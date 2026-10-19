@@ -625,7 +625,7 @@ async def test_load_public_worknos_for_date_uses_same_maker_date_page_boundaries
 
 def test_completed_probe_date_row_reuses_current_strategy() -> None:
     service = _service()
-    row = _DateRow(status="completed", mode="deep:date-range-v4", probe_count=160)
+    row = _DateRow(status="completed", mode="deep:date-range-v5", probe_count=160)
 
     assert service._can_reuse_completed_date_row(row, mode="deep")
 
@@ -659,7 +659,7 @@ def test_split_reusable_release_dates_uses_current_strategy(db_session, monkeypa
             maker_id="RG62878",
             release_date="2025-06-28",
             gap_limit=500,
-            mode="deep:date-range-v4",
+            mode="deep:date-range-v5",
             status="completed",
             probe_count=5800,
         )
@@ -696,7 +696,7 @@ def test_split_reusable_release_dates_keeps_date_when_original_state_pending(db_
             circle_id="circle-pending-state",
             release_date="2025-06-28",
             gap_limit=500,
-            mode="deep:date-range-v4",
+            mode="deep:date-range-v5",
             status="completed",
             probe_count=5800,
         )
@@ -990,6 +990,7 @@ def test_selected_target_cache_reuse_allows_same_release_date_far_hit(db_session
             is_oly=True,
             wishlist_count=0,
             is_hidden_bonus_audio=True,
+            raw_summary_json={"raw_dl_count": 0},
             title="同发售日远距离特典",
         )
     )
@@ -2212,7 +2213,7 @@ async def test_probe_date_selected_rj_scope_runs_full_over_limit_range_before_no
     date_row = db_session.query(DLsiteBonusProbeDate).first()
     assert result["selected_scope"] is True
     assert result["budget_reached"] is False
-    assert "incomplete" not in result
+    assert not result.get("incomplete")
     assert result["date_page_range_limit"] is None
     assert result["date_page_range_unbounded"] is True
     assert result["date_page_range_count"] == 6
@@ -2446,6 +2447,7 @@ async def test_probe_date_selected_scope_continues_after_cached_bonus_cover(
             is_oly=True,
             wishlist_count=0,
             is_hidden_bonus_audio=True,
+            raw_summary_json={"raw_dl_count": 0},
             title="【早期購入限定500大特典】_01",
         )
     )
@@ -2654,6 +2656,7 @@ async def test_probe_date_reused_hit_index_keeps_scanning_selected_scope_when_ca
             is_oly=True,
             wishlist_count=0,
             is_hidden_bonus_audio=True,
+            raw_summary_json={"raw_dl_count": 0},
             title="早期特典 1",
         )
     )
@@ -2781,6 +2784,7 @@ async def test_probe_date_counts_cached_hidden_bonus_candidate(db_session, monke
             is_oly=True,
             wishlist_count=0,
             is_hidden_bonus_audio=True,
+            raw_summary_json={"raw_dl_count": 0},
             title="28日間限定早期特典",
         )
     )

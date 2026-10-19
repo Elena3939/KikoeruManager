@@ -68,6 +68,7 @@ _HEALTH_CACHE_TTL_SECONDS = 30.0
 GOOGLE_DRIVE_PROBE_BYTES = 1024
 GOOGLE_DRIVE_STREAM_CHUNK_BYTES = 1024 * 1024
 HTTP_DOWNLOAD_PLATFORM_LABELS = {
+    "imoutoheaven": "YAAS",
     "http": "HTTP",
     "gofile": "Gofile",
     "transferit": "Transfer.it",
@@ -82,6 +83,8 @@ def normalize_http_download_platform(value: Any) -> str:
     text = str(value or "").strip().lower()
     if not text:
         return "http"
+    if text == "imoutoheaven" or "imoutoheaven.org" in text:
+        return "imoutoheaven"
     normalized = re.sub(r"[^a-z0-9._-]+", "_", text)
     if normalized in {"http", "https", "direct", "direct_link"}:
         return "http"
@@ -4594,6 +4597,8 @@ class HttpDownloadService:
         *,
         conflict_policy: str = "",
     ) -> Dict[str, Any]:
+        if item.get("source") == "imoutoheaven":
+            return item
         custom_name = str(item.get("custom_name") or item.get("custom_filename") or "").strip()
         custom_password = str(item.get("custom_extract_password") or item.get("extract_password") or "").strip()
         if not custom_name and not custom_password:
@@ -5262,6 +5267,9 @@ class HttpDownloadService:
             "auto-file-renaming": "false",
             "allow-overwrite": "true",
         }
+        if source == "imoutoheaven":
+            options.update({"split": "1", "max-connection-per-server": "1",
+                            "max-tries": "1", "max-download-limit": "8M"})
         if source == "pikpak":
             options["user-agent"] = _GOFILE_USER_AGENT
             retry_attempt = min(4, max(0, int(item.get("pikpak_retry_attempt") or 0)))
@@ -5305,7 +5313,7 @@ class HttpDownloadService:
 
     def _prepare_existing_aria2_target(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         source = str(item.get("source") or "").strip().lower()
-        if source not in {"gofile", "pikpak"}:
+        if source not in {"gofile", "pikpak", "imoutoheaven"}:
             return None
         final_path = str(item.get("final_path") or "").strip()
         expected_size = int(item.get("size_bytes") or 0)
@@ -5325,7 +5333,7 @@ class HttpDownloadService:
                 "relative_path": item.get("relative_path") or "",
                 "local_path": final_path,
                 "url": item.get("masked_url") or self._mask_url(str(item.get("url") or "")),
-                "original_url": item.get("url") or "",
+                "original_url": item.get("public_url") or item.get("url") or "",
                 "source": source,
                 "status": "completed",
                 "progress": 100,
@@ -6025,7 +6033,23 @@ class HttpDownloadService:
         if task_id and current_task is not None:
             self._active_download_tasks[task_id] = current_task
         try:
+            if (task.task_metadata or {}).get("resource_source") == "imoutoheaven":
+                from .resource_source_service import get_resource_source_service
+                service = get_resource_source_service()
+                async with service.lease('download', slots=2):
+                    await service.pace('download', interval=1)
+                    await task.wait_if_paused()
+                    if task.is_cancelled():
+                        raise asyncio.CancelledError()
+                    return await self._start_download_task_inner(task)
             return await self._start_download_task_inner(task)
+        except Exception as exc:
+            if (task.task_metadata or {}).get("resource_source") == "imoutoheaven":
+                if isinstance(exc, HttpDownloadError):
+                    message = re.sub(r"https?://[^\s\"'<>]+", "[YAAS 下载地址]", str(exc))
+                    raise HttpDownloadError(message) from None
+                raise HttpDownloadError("YAAS 传输异常，请重试以刷新下载地址") from None
+            raise
         finally:
             # 任务异常、取消或预览阶段失败时也必须回收已转存的 PikPak 文件，
             # 否则只要下载失败一次就会永久占用账号空间。
@@ -6066,18 +6090,32 @@ class HttpDownloadService:
         # 旧版重试标记会导致先转存整份分享、再筛掉已完成分卷，从而泄漏空间。
         # 分享仍重新读取，但转存必须使用原始文件选择。
         task.task_metadata.pop("pikpak_retry_rebuild_share", None)
-        preview = await self.preview_urls(
-            raw_urls,
-            target_subdir=target_subdir,
-            conflict_policy=conflict_policy,
-            materialize_sources=True,
-            selected_items=selected_items,
-        )
-        preview = self.filter_preview_selection(
-            preview,
-            selected_keys=list(metadata.get("selected_keys") or []),
-            selected_items=selected_items,
-        )
+        if metadata.get("resource_source") == "imoutoheaven":
+            from .resource_source_service import ARCHIVE_PASSWORD, get_resource_source_service
+            resolved = await get_resource_source_service().resolve_file(metadata.get("yaas_path"))
+            await self.validate_url(resolved['url'])
+            expected = int(metadata.get("yaas_size") or 0)
+            if expected <= 0 or resolved['size_bytes'] != expected:
+                raise HttpDownloadError("YAAS 文件大小已变化，请重新查询资源")
+            stem, ext = self._split_custom_archive_filename(resolved['filename'])
+            filename = self._filename_with_extract_password(stem, ARCHIVE_PASSWORD, ext)
+            target = self._resolve_target(filename, '', conflict_policy)
+            preview = {"items": [{**resolved, **target, "ok": True, "source": "imoutoheaven",
+                "public_url": raw_urls[0], "masked_url": raw_urls[0], "resumable": True}],
+                "source_modes": ["imoutoheaven"], "resolved_urls": [], "source_items": []}
+        else:
+            preview = await self.preview_urls(
+                raw_urls,
+                target_subdir=target_subdir,
+                conflict_policy=conflict_policy,
+                materialize_sources=True,
+                selected_items=selected_items,
+            )
+            preview = self.filter_preview_selection(
+                preview,
+                selected_keys=list(metadata.get("selected_keys") or []),
+                selected_items=selected_items,
+            )
         # 预览阶段可能已经完成 PikPak 转存；无论后续校验是否通过，都把
         # source_items 保存到任务元数据，异常收口时才能找到并清理这些文件。
         task.task_metadata["source_items"] = [
@@ -6187,7 +6225,7 @@ class HttpDownloadService:
                 "relative_path": item["relative_path"],
                 "local_path": item["final_path"],
                 "url": item["masked_url"],
-                "original_url": item["url"],
+                "original_url": item.get("public_url") or item["url"],
                 "source": "google_drive",
                 "status": "pending",
                 "progress": 0,
@@ -6234,7 +6272,7 @@ class HttpDownloadService:
                 "relative_path": item["relative_path"],
                 "local_path": item["final_path"],
                 "url": item["masked_url"],
-                "original_url": item["url"],
+                "original_url": item.get("public_url") or item["url"],
                 "source": item.get("source", "http"),
                 "status": "pending",
                 "progress": min(99, int(resume_bytes / max(1, int(item.get("size_bytes") or 0)) * 100)),
@@ -6785,6 +6823,8 @@ class HttpDownloadService:
                 status = await self._tell_status(gid)
             except HttpDownloadRpcError as exc:
                 rpc_error = str(exc)
+                if any(row.get("source") == "imoutoheaven" for row in rows):
+                    rpc_error = re.sub(r"https?://[^\s\"'<>]+", "[YAAS 下载地址]", rpc_error)
                 # 不因一次控制请求超时终止真实下载或重新创建下载任务。
                 # 保留已知进度，下一轮重新查询；取消仍由任务外层处理。
                 for pending_gid in gids[gids.index(gid):]:
@@ -6807,7 +6847,8 @@ class HttpDownloadService:
                 row = row_by_gid.get(str(gid))
                 if row and str(row.get("status") or "") != "completed":
                     row["status"] = "failed"
-                    row["failure_reason"] = str(exc)
+                    row["failure_reason"] = (re.sub(r"https?://[^\s\"'<>]+", "[YAAS 下载地址]", str(exc))
+                                             if row.get("source") == "imoutoheaven" else str(exc))
                     failed_count += 1
                 continue
             row = row_by_gid.get(str(gid))
@@ -6834,19 +6875,25 @@ class HttpDownloadService:
             if aria_status == "complete":
                 self._aria2_progress_state.pop(str(gid), None)
                 expected_size = int(row.get("expected_size_bytes") or 0)
+                if row.get("source") == "imoutoheaven":
+                    try:
+                        done = os.path.getsize(str(row.get("local_path") or ""))
+                    except OSError:
+                        done = -1
                 if (
-                    str(row.get("source") or "").strip().lower() == "gofile"
+                    str(row.get("source") or "").strip().lower() in {"gofile", "imoutoheaven"}
                     and expected_size > 0
-                    and done < expected_size
+                    and (done != expected_size if row.get("source") == "imoutoheaven" else done < expected_size)
                 ):
                     row["status"] = "failed"
                     row["failure_reason"] = (
-                        f"Gofile 下载结果大小异常: 实际 {done} bytes，小于 API 文件大小 {expected_size} bytes，"
+                        f"{'YAAS' if row.get('source') == 'imoutoheaven' else 'Gofile'} 下载结果大小异常: "
+                        f"实际 {done} bytes，API 文件大小 {expected_size} bytes，"
                         "可能下载到了源站错误页"
                     )
                     row["total"] = expected_size
                     row["size"] = expected_size
-                    row["progress"] = min(99, int(done / expected_size * 100)) if expected_size else 0
+                    row["progress"] = max(0, min(99, int(done / expected_size * 100))) if expected_size else 0
                     failed_count += 1
                     local_path = str(row.get("local_path") or "").strip()
                     if local_path and done <= max(64 * 1024, int(expected_size * 0.01)):
@@ -6859,6 +6906,10 @@ class HttpDownloadService:
                 self._aria2_progress_state.pop(str(gid), None)
                 row["status"] = "failed"
                 failure_reason = str(status.get("errorMessage") or aria_status)
+                if row.get('source') == 'imoutoheaven':
+                    from .resource_source_service import get_resource_source_service
+                    await get_resource_source_service().cooldown(30 if any(code in failure_reason for code in ('429', '503')) else 5)
+                    failure_reason = 'YAAS 下载失败，断点已保留；重试将重新取得下载地址'
                 if str(row.get("source") or "").strip().lower() == "pikpak":
                     host = urlparse(str(row.get("original_url") or row.get("url") or "")).hostname or "未知节点"
                     path = str(row.get("local_path") or "")

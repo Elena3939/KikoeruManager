@@ -42,7 +42,7 @@
                   <span>{{ item.circle_name || item.circle_id }}</span>
                 </div>
               </div>
-              <span class="hero-work-search-status" :class="{ owned: item.owned }">{{ item.owned ? '已收录' : (item.has_asmr_one ? '可下载' : '未收录') }}</span>
+              <span class="hero-work-search-status" :class="{ owned: item.owned }">{{ item.owned ? '已收录' : ((item.has_downloadable_source ?? item.has_asmr_one) ? '可下载' : '未收录') }}</span>
             </button>
           </template>
         </div>
@@ -782,6 +782,13 @@
                     </div>
                   </div>
                   <div class="compare-stat-item">
+                    <div class="compare-stat-icon is-yaas"><FileArchive :size="14" stroke-width="2.5" /></div>
+                    <div class="flex flex-col">
+                      <span class="compare-stat-label">YAAS</span>
+                      <span class="compare-stat-value">{{ compareWorksStats.yaas }}</span>
+                    </div>
+                  </div>
+                  <div class="compare-stat-item">
                     <div class="compare-stat-icon is-missing">
                       <XCircle :size="14" stroke-width="2.5" />
                     </div>
@@ -799,6 +806,7 @@
                   <button type="button" class="compare-filter-chip" :class="{ 'is-active': compareSourceFilter === 'all' }" @click="compareSourceFilter = 'all'; comparePage = 1">全部</button>
                   <button type="button" class="compare-filter-chip is-kikoeru" :class="{ 'is-active': compareSourceFilter === 'kikoeru' }" @click="compareSourceFilter = 'kikoeru'; comparePage = 1">库存已收录</button>
                   <button type="button" class="compare-filter-chip is-asmr" :class="{ 'is-active': compareSourceFilter === 'asmr_one' }" @click="compareSourceFilter = 'asmr_one'; comparePage = 1">可下载(ASMR.ONE)</button>
+                  <button type="button" class="compare-filter-chip is-yaas" :class="{ 'is-active': compareSourceFilter === 'yaas' }" @click="compareSourceFilter = 'yaas'; comparePage = 1">可下载(YAAS)</button>
                 </div>
 
                 <div class="flex items-center gap-3">
@@ -849,6 +857,8 @@
                   <div class="compare-source-col">DLsite</div>
                   <div class="compare-source-divider is-transparent"></div>
                   <div class="compare-source-col">ASMR.ONE</div>
+                  <div class="compare-source-divider is-transparent"></div>
+                  <div class="compare-source-col">YAAS</div>
                 </div>
               </div>
 
@@ -924,6 +934,12 @@
                         </div>
                         <span v-else class="compare-source-empty">—</span>
                       </div>
+                      <div class="compare-source-divider"></div>
+                      <div class="flex flex-col items-center gap-1 w-20">
+                        <span v-for="code in item.sourceCompare.yaas?.all_rjcodes || []" :key="`y-${item.workRjcode}-${code}`" class="compare-source-code">{{ code }}</span>
+                        <span v-if="!item.sourceCompare.yaas?.all_rjcodes?.length" class="compare-source-empty">{{ item.sourceCompare.yaas?.status === 'error' ? '探测失败' : item.sourceCompare.yaas?.status === 'missing' ? '—' : '待探测' }}</span>
+                      </div>
+
                     </div>
                   </div>
                 </div>
@@ -1110,9 +1126,9 @@ import { useRoute } from 'vue-router'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import celebrateImg from '../assets/celebrate.png'
 import confettiAnimation from '../assets/anime/Confetti.lottie'
-import { Check, CheckCircle2, ChevronDown, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown, Mail, Calendar, Gift, RefreshCw, ImageDown, BarChart3, Timer, Upload, ExternalLink } from 'lucide-vue-next'
+import { FileArchive, Check, CheckCircle2, ChevronDown, Tags, MessageSquareText, Search, LibraryBig, Languages, PlayCircle, Subtitles, X, FileText, XCircle, AlertCircle, MinusCircle, Server, Clock, HardDrive, Globe, List, LayoutGrid, Download, Headphones, Hash, Shuffle, Layers, Info, ArrowUpDown, ArrowUp, ArrowDown, Mail, Calendar, Gift, RefreshCw, ImageDown, BarChart3, Timer, Upload, ExternalLink } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
-import api, { asmrSyncApi, circleCompletionApi, emailWatcherApi, libraryApi, localUploadApi, taskApi, taskCenterApi } from '../api'
+import api, { asmrSyncApi, httpDownloadApi, circleCompletionApi, emailWatcherApi, libraryApi, localUploadApi, taskApi, taskCenterApi } from '../api'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
 import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
 import ServerUploadPreviewDialog from '../components/common/ServerUploadPreviewDialog.vue'
@@ -2075,11 +2091,11 @@ function itemMatchesStatusFilter(item, key) {
     case 'repairable':
       return Boolean(item?.subtitle_repairable)
     case 'downloadable':
-      return Boolean(item?.has_asmr_one) && !isWorkUnreleased(item)
+      return Boolean((item?.has_downloadable_source ?? item?.has_asmr_one)) && !isWorkUnreleased(item)
     case 'missing':
       return !Boolean(item?.owned)
     case 'no_source':
-      return !Boolean(item?.owned) && !Boolean(item?.has_asmr_one)
+      return !Boolean(item?.owned) && !Boolean((item?.has_downloadable_source ?? item?.has_asmr_one))
     case 'has_early_bonus':
       return String(item?.early_bonus_status || '').trim() === 'has_bonus'
     case 'no_early_bonus':
@@ -2349,7 +2365,7 @@ watch(showMissingWorksCompleteState, value => {
 const ownedWorksSearchQuery = ref('')
 const ownedWorksFilterType = ref('all') // 'all', 'original', 'simplified', 'traditional', 'subtitle', 'bonus'
 const compareSearchQuery = ref('')
-const compareSourceFilter = ref('all') // 'all', 'kikoeru', 'dlsite', 'asmr_one', 'missing'
+const compareSourceFilter = ref('all') // 'all', 'kikoeru', 'dlsite', 'asmr_one', 'yaas', 'missing'
 const compareAutoAnimateOptions = {
   duration: 240,
   easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
@@ -2626,7 +2642,7 @@ function applyOptimisticOwnedStateForUploadTask(task) {
       status_tags: [
         ...(item.local_owned ? ['库存已收录'] : []),
         '库存已收录',
-        ...(item.has_asmr_one ? ['可下载'] : ['暂不可下载']),
+        ...((item.has_downloadable_source ?? item.has_asmr_one) ? ['可下载'] : ['暂不可下载']),
       ]
     }
   })
@@ -2710,6 +2726,7 @@ const compareWorksStats = computed(() => {
     kikoeru: Number(detail.compare_stats?.kikoeru || 0),
     dlsite: Number(detail.compare_stats?.dlsite || 0),
     asmr_one: Number(detail.compare_stats?.asmr_one || 0),
+    yaas: Number(detail.compare_stats?.yaas || 0),
     missing: Number(detail.compare_stats?.missing || 0)
   }
 })
@@ -3955,7 +3972,7 @@ async function retryDownloadTask(task) {
       nextTaskId = String(response?.session?.task_id || '').trim()
       replaceTrackedDownloadTaskForSession(sessionId, nextTaskId)
     }
-    else if (taskId) await asmrSyncApi.retry(taskId)
+    else if (taskId) await (task?.task_metadata?.resource_source === 'imoutoheaven' ? httpDownloadApi : asmrSyncApi).retry(taskId)
     else throw new Error('缺少任务标识')
     ElMessage.success('已提交重试')
     await refreshDownloadWorkbench({ silent: true })
@@ -3995,6 +4012,13 @@ async function retryWaitingDownloadTask(task) {
 }
 
 async function retrySingleFailedFile(task, file) {
+  if (task?.task_metadata?.resource_source === 'imoutoheaven') {
+    try {
+      await httpDownloadApi.retry(task.id)
+      await refreshDownloadWorkbench({ silent: true })
+    } catch (error) { ElMessage.error(error.response?.data?.detail || error.message || '重试失败') }
+    return
+  }
   const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
   const relativePath = String(file?.relative_path || '').trim()
   const key = `${task?.id}:${relativePath || file?.name || 'file'}`
@@ -4028,7 +4052,7 @@ async function handlePauseDownloadTask(task) {
       await asmrSyncApi.pauseSession(sessionId)
     } else {
       const taskId = String(task?.active_task_id || task?.id || '').trim()
-      if (taskId) await taskApi.pause(taskId)
+      if (taskId) await (task?.task_metadata?.resource_source === 'imoutoheaven' ? httpDownloadApi : taskApi).pause(taskId)
     }
     ElMessage.success('已暂停')
     await refreshDownloadWorkbench({ silent: true })
@@ -4044,7 +4068,7 @@ async function handleResumeDownloadTask(task) {
       await asmrSyncApi.resumeSession(sessionId)
     } else {
       const taskId = String(task?.active_task_id || task?.id || '').trim()
-      if (taskId) await taskApi.resume(taskId)
+      if (taskId) await (task?.task_metadata?.resource_source === 'imoutoheaven' ? httpDownloadApi : taskApi).resume(taskId)
     }
     ElMessage.success('已恢复')
     await refreshDownloadWorkbench({ silent: true })
@@ -4375,6 +4399,10 @@ function isTerminalTaskStatus(status) {
 
 function handleCircleTaskRealtimeEvent(event) {
   const detail = event?.detail || {}
+  if (detail.type === 'circle.resource_source.changed' && detail.payload?.circle_id === activeCircleId.value) {
+    invalidateCircleDetailCache(activeCircleId.value)
+    scheduleCircleWorksRefresh(500)
+  }
   if (detail?.type === 'circle.external_search.changed') {
     scheduleExternalSearchRealtimeRefresh()
   }
@@ -5684,7 +5712,7 @@ function applySelectedCodes(codes) {
   const nextRequested = {}
   for (const code of next) {
     const item = activeSelectableWorksByCanonical.value.get(code) || detailWorksByCanonical.value.get(code)
-    if (selectedDownloadableCanonicals.value.has(code) || item?.has_asmr_one) nextDownloadable.add(code)
+    if (selectedDownloadableCanonicals.value.has(code) || (item?.has_downloadable_source ?? item?.has_asmr_one)) nextDownloadable.add(code)
     const existing = selectedRequestedRjcodes.value?.[code]
     const candidates = Array.isArray(existing) && existing.length ? existing : requestedRjcodesForItem(item)
     if (candidates.length) nextRequested[code] = candidates
@@ -5920,6 +5948,7 @@ async function openBatchPreview(singleCanonical = '') {
     const result = await requestBatchDownloadPreview({
       circle_id: detail.circle_id,
       canonical_rjcodes: codes,
+      include_resource_sources: true,
       requested_rjcodes: getPreviewRequestedRjcodes(codes)
     }, codes.length)
     previewPlans.value = result.plans || []
@@ -8578,6 +8607,15 @@ body.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animatio
 }
 .owned-stat-icon.is-traditional,
 .owned-stat-icon.is-bonus,
+.compare-stat-icon.is-yaas {
+  color: #d97706;
+  background: rgba(245, 158, 11, 0.12);
+}
+.compare-filter-chip.is-yaas.is-active {
+  color: #d97706;
+  border-color: rgba(245, 158, 11, 0.5);
+  background: rgba(245, 158, 11, 0.12);
+}
 .compare-stat-icon.is-asmr {
   background: var(--circle-tag-violet-soft, #faf5ff);
   color: var(--circle-tag-violet, #7e22ce);
@@ -9256,13 +9294,14 @@ body.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animatio
     max-width: 100%;
     min-width: 0;
     display: grid !important;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 6px !important;
     overflow: hidden;
   }
   .compare-source-cols > div {
     min-width: 0;
   }
+  .compare-source-cols > .compare-source-divider,
   .compare-source-cols > div[class*="w-px"] {
     display: none !important;
   }

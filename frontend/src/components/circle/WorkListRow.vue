@@ -305,8 +305,8 @@ function onImgLoad(event) {
         <span v-if="showOriginalSubtitleState" class="wlr-pill" :class="canRepairSubtitle ? 'pill-repair' : (item.subtitle_present ? 'pill-subtitle' : 'pill-subtitle-none')">
           <FileText :size="10" />{{ originalSubtitleLabel }}
         </span>
-        <span class="wlr-pill" :class="item.has_asmr_one ? 'pill-ok' : 'pill-none'">
-          <LibraryBig :size="10" />{{ item.has_asmr_one ? '可下载' : '无源' }}
+        <span class="wlr-pill" :class="(item.has_downloadable_source ?? item.has_asmr_one) ? 'pill-ok' : 'pill-none'">
+          <LibraryBig :size="10" />{{ (item.has_downloadable_source ?? item.has_asmr_one) ? '可下载' : '无源' }}
         </span>
         <ExternalSearchSourceChips :item="externalSearchItem" @open="emit('external-search', $event)" />
       </slot>
@@ -324,7 +324,7 @@ function onImgLoad(event) {
           <PackageCheck :size="13" />入库
         </button>
         <button
-          v-if="item.has_asmr_one || item.local_download_ready"
+          v-if="(item.has_downloadable_source ?? item.has_asmr_one) || item.local_download_ready"
           class="wlr-btn"
           title="下载"
           @click="emit('preview', item.canonical_rjcode)"

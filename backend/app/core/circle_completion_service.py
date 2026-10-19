@@ -45,7 +45,8 @@ from .asmr_download_service import (
 )
 from .asmr_resource_service import get_asmr_resource_service
 from .circle_image_cache_service import get_circle_image_cache_service
-from .dlsite_service import DLsiteWorkSummary, get_dlsite_service
+from .dlsite_service import DLsiteWorkSummary, get_dlsite_service, with_dlsite_api_snapshot
+from .dlsite_bonus_probe_service import DLsiteBonusProbeService
 from .metadata_service import MetadataService
 from .ttl_cache import TTLCache
 
@@ -216,9 +217,8 @@ class CircleCompletionService:
     _COMPLETION_RECENT_REDIS_TTL_SECONDS = 30
     _COMPLETION_BUILD_LOCK_SECONDS = 12
     _COMPLETION_ALIAS_REDIS_TTL_SECONDS = 86400
-    # 封面缓存键从展示 RJ 统一为图片 URL 中的真实 RJ；升级版本让 Redis / L1
-    # 中仍指向旧文件名的社团视图立即失效并按新键重建。
-    _COMPLETION_CACHE_SCHEMA_VERSION = 16
+    # 同名特典保留待验证候选，并按真实封面选择代表项；升级后重建历史视图缓存。
+    _COMPLETION_CACHE_SCHEMA_VERSION = 20
 
     def __init__(self):
         self.metadata_service = MetadataService()
@@ -636,7 +636,11 @@ class CircleCompletionService:
                     self._completion_l1_l2_set, self._completion_state_cache, "state", cache_key, state,
                     ttl_seconds=self._COMPLETION_STATE_REDIS_TTL_SECONDS,
                 )
-                self._schedule_view_cover_cache(state["catalog"]["circle_id"], state["items"], get_circle_image_cache_service())
+                self._schedule_view_cover_cache(
+                    state["catalog"]["circle_id"],
+                    [*state["items"], *state.get("bonus_cover_candidates", [])],
+                    get_circle_image_cache_service(),
+                )
                 return state
             finally:
                 await asyncio.to_thread(self._completion_release_build_lock, lock_key)
@@ -2027,11 +2031,11 @@ class CircleCompletionService:
         if key == "repairable":
             return bool(item.get("subtitle_repairable"))
         if key == "downloadable":
-            return bool(item.get("has_asmr_one")) and not bool(item.get("is_unreleased"))
+            return bool(item.get("has_downloadable_source", item.get("has_asmr_one"))) and not bool(item.get("is_unreleased"))
         if key == "missing":
             return not bool(item.get("owned"))
         if key == "no_source":
-            return not bool(item.get("owned")) and not bool(item.get("has_asmr_one"))
+            return not bool(item.get("owned")) and not bool(item.get("has_downloadable_source", item.get("has_asmr_one")))
         if key == "has_early_bonus":
             return str(item.get("early_bonus_status") or "").strip() == "has_bonus"
         if key == "no_early_bonus":
@@ -2159,7 +2163,7 @@ class CircleCompletionService:
 
     @classmethod
     def _completion_select_bonus_variants(cls, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """同一特典组优先保留无后缀项；整组只有编号时保留最小编号。"""
+        """优先使用已缓存的真实封面；未验证的同名 RJ 保留供后台验证。"""
         groups: Dict[str, List[Dict[str, Any]]] = {}
         order: List[str] = []
         for item in items:
@@ -2180,10 +2184,11 @@ class CircleCompletionService:
                 if item.get("cover_available") is not False
                 and not bool(item.get("cover_confirmed_missing"))
             ]
-            pool = candidates_with_cover or candidates
+            confirmed = [item for item in candidates_with_cover if item.get("cover_confirmed_available") is True]
+            pool = confirmed or candidates_with_cover or candidates
             plain = [item for item in pool if cls._completion_bonus_numbered_suffix(item) is None]
             if plain:
-                selected.extend(plain[:1])
+                selected.extend(plain)
                 continue
             min_suffix = min(
                 cls._completion_bonus_numbered_suffix(item)
@@ -2299,7 +2304,7 @@ class CircleCompletionService:
         source_visible_items = [
             dict(item)
             for item in items
-            if include_dl_only or item.get("owned") or item.get("has_asmr_one")
+            if include_dl_only or item.get("owned") or item.get("has_downloadable_source", item.get("has_asmr_one"))
         ]
         if tab_key == "missing":
             # 缺失页只展示真正缺失的作品卡。原作已入库、只有特典缺失时，
@@ -2685,10 +2690,10 @@ class CircleCompletionService:
         dlsite_cover_available = None
         if is_bonus_work and isinstance(metadata_entry, dict):
             verification_status = str(metadata_entry.get("metadata_verification_status") or "").strip().lower()
-            # 只有已验证的 DLsite 元数据明确没有封面时，才判定为无封面。
-            # 未验证/旧缓存的空 cover_url 不能当成官方无封面，否则会把有效特典全部删掉。
+            # 隐藏特典的 product/info 即便已验证，也可能不返回 cover_url；
+            # 字段为空不能证明官方 CDN 无图，必须交给封面缓存实际验证。
             if verification_status == "verified":
-                dlsite_cover_available = bool(metadata_cover_url)
+                dlsite_cover_available = True if metadata_cover_url else None
         if is_bonus_work:
             # 历史索引会把原作封面残留在特典行；没有特典 cover_url 时由自身 RJ
             # 推导 CDN 地址，不能继续沿用原作图。
@@ -2700,6 +2705,7 @@ class CircleCompletionService:
         )
         local_cover_url = ""
         local_thumb_url = ""
+        cover_confirmed_available = False
         cover_known_missing = False
         if image_cache_service is not None:
             cover_cache_rjcode = image_cache_service.cache_rjcode_for_url(
@@ -2726,6 +2732,10 @@ class CircleCompletionService:
                 cover_cache_rjcode,
                 variant="list",
                 allow_missing=True,
+            )
+            cover_confirmed_available = is_bonus_work and bool(
+                image_cache_service.get_local_url(cover_cache_rjcode)
+                or image_cache_service.get_local_url(cover_cache_rjcode, variant="list")
             )
             cover_known_missing = (
                 image_cache_service.has_known_missing(cover_cache_rjcode)
@@ -2755,12 +2765,23 @@ class CircleCompletionService:
             "source_mask": row.source_mask or "",
             "linked_rjcodes": linked_rjcodes,
             "has_dlsite": True,
+            "resource_probe_rjcodes": list(dict.fromkeys([
+                row.canonical_rjcode,
+                *[
+                    variant["rjcode"]
+                    for variant in self._sort_linked_variants(view_canonical_info, stored_display_rjcode)
+                    if self._is_displayable_variant(variant.get("link_type"), variant.get("lang"))
+                    and self._variant_group(variant.get("link_type"), variant.get("lang"))["key"] != "original"
+                    and str((metadata_map.get(variant["rjcode"]) or {}).get("work_name") or "").strip()
+                ],
+            ])),
             "has_asmr_one": bool(row.has_asmr_one),
             "asmr_available_rjcode": row.asmr_available_rjcode,
             "image_url": local_cover_url or local_thumb_url or (normalized_remote_cover if cover_available else ""),
             "cover_available": cover_available,
+            "cover_confirmed_available": cover_confirmed_available,
             "cover_confirmed_missing": bool(is_bonus_work and cover_known_missing),
-            # 特典是否有 DLsite 官方封面只看元数据，不能被本地缓存或网络结果覆盖。
+            # 元数据缺字段保持未知；真实 CDN 的验证结果由独立字段表达。
             "dlsite_cover_available": dlsite_cover_available if is_bonus_work else True,
             "remote_image_url": normalized_remote_cover,
             "thumb_image_url": local_thumb_url or local_cover_url or (
@@ -2824,21 +2845,26 @@ class CircleCompletionService:
         return item
 
     def _build_completion_compare_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        yaas = next((source for source in item.get("resource_sources", []) if source.get("id") == "imoutoheaven"), {})
         source_compare = item.get("source_compare") if isinstance(item.get("source_compare"), dict) else {}
         kikoeru = source_compare.get("kikoeru") if isinstance(source_compare.get("kikoeru"), dict) else {}
         dlsite = source_compare.get("dlsite") if isinstance(source_compare.get("dlsite"), dict) else {}
         asmr_one = source_compare.get("asmr_one") if isinstance(source_compare.get("asmr_one"), dict) else {}
-        status_key = "owned" if item.get("server_owned") else ("downloadable" if item.get("has_asmr_one") else "dl_only")
+        status_key = "owned" if item.get("server_owned") else ("downloadable" if item.get("has_downloadable_source", item.get("has_asmr_one")) else "dl_only")
         return {
             "canonical_rjcode": item.get("canonical_rjcode"),
             "workRjcode": str(source_compare.get("work_rjcode") or item.get("canonical_rjcode") or "").strip(),
             "title": str(item.get("title") or "").strip(),
             "preferredVariantLabel": str((item.get("preferred_variant") or {}).get("group_short_label") or (item.get("preferred_variant") or {}).get("label") or "").strip(),
-            "statusLabel": "库存已收录" if item.get("server_owned") else ("可下载" if item.get("has_asmr_one") else "暂无来源"),
+            "statusLabel": "库存已收录" if item.get("server_owned") else ("可下载" if item.get("has_downloadable_source", item.get("has_asmr_one")) else "暂无来源"),
             "statusKey": status_key,
             "__releaseTimestamp": int(item.get("__release_timestamp") or 0),
             "__releaseDate": str(item.get("release_date") or "").strip(),
             "sourceCompare": {
+                "yaas": {
+                    "all_rjcodes": list(yaas.get("rjcodes") or []),
+                    "status": item.get("yaas_probe_status") or "pending",
+                },
                 "kikoeru": {
                     "primary_rjcode": str(kikoeru.get("primary_rjcode") or "").strip(),
                     "primaryBadge": str(kikoeru.get("primary_badge") or "").strip(),
@@ -2921,7 +2947,7 @@ class CircleCompletionService:
                     .filter(
                         DLsiteBonusOriginalProbeState.circle_id == catalog.circle_id,
                         DLsiteBonusOriginalProbeState.original_rjcode.in_(work_canonical_rjcodes),
-                        DLsiteBonusOriginalProbeState.strategy_version == "date-range-v4",
+                        DLsiteBonusOriginalProbeState.strategy_version == DLsiteBonusProbeService.PROBE_STRATEGY_VERSION,
                         DLsiteBonusOriginalProbeState.status.in_(("no_bonus", "has_bonus")),
                     )
                     .all()
@@ -2977,8 +3003,16 @@ class CircleCompletionService:
             for row in works
         ]
         items = self._completion_apply_explicit_bonus_parent_codes(items, link_rows)
+        from .resource_source_service import get_resource_source_service
+        with SessionLocal() as source_db:
+            get_resource_source_service().decorate_items(source_db, items)
         items = self._completion_attach_bonus_parent_codes(items)
         self._completion_apply_early_bonus_status(items, early_bonus_state_map)
+        # 去重前仅保存探测需要的 RJ，避免在 Redis state 内重复序列化完整作品。
+        bonus_cover_candidates = [
+            {"display_rjcode": item["display_rjcode"], "is_bonus_work": True}
+            for item in items if item.get("is_bonus_work")
+        ]
         items = self._completion_prune_bonus_items(items)
         catalog_payload = {
             "circle_id": catalog.circle_id,
@@ -2986,7 +3020,7 @@ class CircleCompletionService:
             "source_mask": catalog.source_mask or "",
             "last_indexed_at": catalog.last_indexed_at.isoformat() if catalog.last_indexed_at else None,
         }
-        state = {"catalog": catalog_payload, "items": items}
+        state = {"catalog": catalog_payload, "items": items, "bonus_cover_candidates": bonus_cover_candidates}
         return state
 
     def _completion_summary_from_items(self, catalog: Any, items: List[Dict[str, Any]], *, visible_items: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
@@ -2994,7 +3028,7 @@ class CircleCompletionService:
         owned_items = [item for item in items if item.get("owned")]
         compare_missing = [
             item for item in items
-            if not item.get("server_owned") and not item.get("has_dlsite") and not item.get("has_asmr_one")
+            if not item.get("server_owned") and not item.get("has_dlsite") and not item.get("has_downloadable_source", item.get("has_asmr_one"))
         ]
         circle_id = catalog.get("circle_id") if isinstance(catalog, dict) else catalog.circle_id
         circle_name = catalog.get("circle_name") if isinstance(catalog, dict) else catalog.circle_name
@@ -3013,8 +3047,8 @@ class CircleCompletionService:
             "server_owned_count": sum(1 for item in items if item.get("server_owned")),
             "owned_count": sum(1 for item in items if item.get("owned")),
             "missing_count": sum(1 for item in items if not item.get("owned")),
-            "downloadable_count": sum(1 for item in items if not item.get("owned") and item.get("has_asmr_one")),
-            "dl_only_count": sum(1 for item in items if not item.get("owned") and not item.get("has_asmr_one")),
+            "downloadable_count": sum(1 for item in items if not item.get("owned") and item.get("has_downloadable_source", item.get("has_asmr_one"))),
+            "dl_only_count": sum(1 for item in items if not item.get("owned") and not item.get("has_downloadable_source", item.get("has_asmr_one"))),
             "dl_count": sum(1 for item in items if item.get("has_dlsite")),
             "filtered_count": len(visible),
             "total_works": len(items),
@@ -3034,6 +3068,7 @@ class CircleCompletionService:
                 "kikoeru": sum(1 for item in items if item.get("server_owned")),
                 "dlsite": sum(1 for item in items if item.get("has_dlsite")),
                 "asmr_one": sum(1 for item in items if item.get("has_asmr_one")),
+                "yaas": sum(1 for item in items if any(source.get("id") == "imoutoheaven" for source in item.get("resource_sources", []))),
                 "missing": len(compare_missing),
             },
             "status_filter_counts": {
@@ -3053,7 +3088,7 @@ class CircleCompletionService:
             return False
         # 没有任何可下载来源的缺失作品仍是用户需要处理的缺失项，
         # 不能因为版本分组为 other / 未标记就从列表中隐藏。
-        if not item.get("has_asmr_one"):
+        if not item.get("has_downloadable_source", item.get("has_asmr_one")):
             return True
         preferred_variant = item.get("preferred_variant")
         if not isinstance(preferred_variant, dict):
@@ -3077,7 +3112,7 @@ class CircleCompletionService:
         tab_key = str(tab or "missing").strip().lower()
         source_visible_items = []
         for item in items:
-            if not (include_dl_only or item.get("owned") or item.get("has_asmr_one")):
+            if not (include_dl_only or item.get("owned") or item.get("has_downloadable_source", item.get("has_asmr_one"))):
                 continue
             bonuses = item.get("bonus_works")
             if isinstance(bonuses, list):
@@ -3119,8 +3154,10 @@ class CircleCompletionService:
                         return bool(dlsite.get("all_rjcodes"))
                     if compare_filter == "asmr_one":
                         return bool(asmr_one.get("primary_rjcode"))
+                    if compare_filter == "yaas":
+                        return any(source.get("id") == "imoutoheaven" for source in item.get("resource_sources", []))
                     if compare_filter == "missing":
-                        return not item.get("server_owned") and not dlsite.get("all_rjcodes") and not asmr_one.get("primary_rjcode")
+                        return not item.get("server_owned") and not dlsite.get("all_rjcodes") and not item.get("has_downloadable_source", item.get("has_asmr_one"))
                     return True
                 rows = [item for item in rows if _compare_match(item)]
         else:
@@ -3148,6 +3185,9 @@ class CircleCompletionService:
 
         cache_enabled = not self._completion_state_builder_overridden()
         scope = await self._resolve_completion_scope(circle_id_or_query) if cache_enabled else circle_id_or_query
+        if cache_enabled:
+            from .resource_source_service import get_resource_source_service
+            get_resource_source_service().schedule_circle(scope)
         while True:
             version = await asyncio.to_thread(self._completion_version_tag, scope)
             state = await self._get_completion_view_state(scope, readonly=True)
@@ -3176,7 +3216,7 @@ class CircleCompletionService:
         items = self._completion_prune_bonus_items(items)
         visible_items = [
             item for item in items
-            if include_dl_only or item.get("owned") or item.get("has_asmr_one")
+            if include_dl_only or item.get("owned") or item.get("has_downloadable_source", item.get("has_asmr_one"))
         ]
         result = self._completion_summary_from_items(catalog, items, visible_items=visible_items)
         if cache_enabled:
@@ -3206,6 +3246,9 @@ class CircleCompletionService:
     ) -> Dict[str, Any]:
         cache_enabled = not self._completion_state_builder_overridden()
         scope = await self._resolve_completion_scope(circle_id_or_query) if cache_enabled else circle_id_or_query
+        if cache_enabled:
+            from .resource_source_service import get_resource_source_service
+            get_resource_source_service().schedule_circle(scope)
         while True:
             version = await asyncio.to_thread(self._completion_version_tag, scope)
             state = await self._get_completion_view_state(scope, readonly=True)
@@ -3399,7 +3442,7 @@ class CircleCompletionService:
         downloadable_rjcodes = [
             str(item.get("canonical_rjcode") or "").strip()
             for item in filtered
-            if str(item.get("canonical_rjcode") or "").strip() and item.get("has_asmr_one")
+            if str(item.get("canonical_rjcode") or "").strip() and item.get("has_downloadable_source", item.get("has_asmr_one"))
         ]
         if selection_only:
             result = {
@@ -3444,7 +3487,7 @@ class CircleCompletionService:
                             catalog.get("circle_id") if isinstance(catalog, dict) else catalog.circle_id
                         ),
                         DLsiteBonusOriginalProbeState.original_rjcode.in_(canonical_rjcodes),
-                        DLsiteBonusOriginalProbeState.strategy_version == "date-range-v4",
+                        DLsiteBonusOriginalProbeState.strategy_version == DLsiteBonusProbeService.PROBE_STRATEGY_VERSION,
                         DLsiteBonusOriginalProbeState.status == "no_bonus",
                     )
                     .all()
@@ -3813,8 +3856,8 @@ class CircleCompletionService:
             {"key": "dlsite", "label": "DLsite", "count": sum(1 for item in works if item.get("has_dlsite"))},
             {"key": "asmr_one", "label": "asmr.one", "count": sum(1 for item in works if item.get("has_asmr_one"))},
             {"key": "local_downloaded", "label": "本地已下载", "count": sum(1 for item in works if item.get("local_download_ready"))},
-            {"key": "downloadable", "label": "可下载", "count": sum(1 for item in works if not item.get("server_owned") and item.get("has_asmr_one"))},
-            {"key": "dl_only", "label": "暂无来源", "count": sum(1 for item in works if not item.get("server_owned") and item.get("has_dlsite") and not item.get("has_asmr_one"))},
+            {"key": "downloadable", "label": "可下载", "count": sum(1 for item in works if not item.get("server_owned") and item.get("has_downloadable_source", item.get("has_asmr_one")))},
+            {"key": "dl_only", "label": "暂无来源", "count": sum(1 for item in works if not item.get("server_owned") and item.get("has_dlsite") and not item.get("has_downloadable_source", item.get("has_asmr_one")))},
         ]
         section_meta = {
             "simplified": {"label": "简体优先", "description": "优先命中简体中文版本"},
@@ -3837,8 +3880,8 @@ class CircleCompletionService:
                 "has_bonus": bool(item.get("has_bonus")),
                 "original_subtitle_present": bool(item.get("subtitle_present")),
                 "preferred_variant_label": preferred_variant.get("label") or "优先版本 未标记",
-                "status_label": "本地已下载" if item.get("local_download_ready") else ("库存已收录" if item.get("server_owned") else ("可下载" if item.get("has_asmr_one") else "暂无来源")),
-                "status_key": "local" if item.get("local_download_ready") else ("owned" if item.get("server_owned") else ("downloadable" if item.get("has_asmr_one") else "dl_only")),
+                "status_label": "本地已下载" if item.get("local_download_ready") else ("库存已收录" if item.get("server_owned") else ("可下载" if item.get("has_downloadable_source", item.get("has_asmr_one")) else "暂无来源")),
+                "status_key": "local" if item.get("local_download_ready") else ("owned" if item.get("server_owned") else ("downloadable" if item.get("has_downloadable_source", item.get("has_asmr_one")) else "dl_only")),
                 "source_compare": source_compare,
             })
         work_sections = []
@@ -5091,10 +5134,12 @@ class CircleCompletionService:
         self,
         candidate_rjcodes: List[str],
         *,
+        maker_id: str = "",
         force_refresh: bool = False,
         progress_callback: Optional[Callable[[int, str], None]] = None,
         cancel_callback: Optional[Callable[[], bool]] = None,
         perf: Optional[CircleIndexPerfTracker] = None,
+        discovery_catalogs: Optional[Dict[str, Dict[str, Dict]]] = None,
     ) -> CircleCompletionSnapshot:
         """Phase 1：一次性批量预取所有外部数据，Phase 2 纯本地聚合不再触网。
 
@@ -5107,9 +5152,9 @@ class CircleCompletionService:
 
         - **Wave 2** —— **两组并发同时跑**：
 
-          - **Wave 2a / ASMR.one 核对**：对 ``all_rjcodes`` 里每个 RJ 拉
-            ``fetch_work_info`` + ``fetch_track_list``。ASMR.one 没有内部 cache，
-            必须自建 snapshot；写入 ``snapshot.asmr_*_by_rj``。
+          - **Wave 2a / ASMR.one 核对**：官方社团身份配合完整分页目录批量核对；
+            身份未知或目录不完整时逐 RJ 查作品信息。命中仍逐作品查音轨，
+            写入 ``snapshot.asmr_*_by_rj``。
           - 本地拥有 / 字幕状态由 ready 库存索引在聚合阶段批量投影，不在这里打
             Kikoeru HTTP，也不触发扫盘 fallback。
 
@@ -5335,6 +5380,38 @@ class CircleCompletionService:
 
         unique_canonicals = sorted(canonical_to_chain.keys())
 
+        # 用本次官方 product 响应确认作品归属；只有归属明确且目录完整，才允许目录缺失短路。
+        maker_reader = getattr(self.dlsite_service, "index_product_makers", None)
+        product_makers = maker_reader() if callable(maker_reader) else {}
+        catalog_reader = getattr(self.asmr_service, "fetch_circle_work_catalog", None)
+        missing_makers = [rj for rj in snapshot.all_rjcodes if rj not in product_makers]
+        bulk_maker_reader = getattr(self.dlsite_service, "fetch_product_makers", None)
+        if maker_id and product_makers and len(missing_makers) >= 10 and callable(bulk_maker_reader):
+            try:
+                product_makers.update(await bulk_maker_reader(missing_makers))
+            except Exception:
+                logger.warning("[社团补全·snapshot] 批量社团身份未取得，保留逐作品核对", exc_info=True)
+            ensure_not_cancelled()
+        asmr_catalogs = dict(discovery_catalogs or {})
+        maker_counts = {}
+        for rj in snapshot.all_rjcodes:
+            product_maker = product_makers.get(rj)
+            if product_maker:
+                maker_counts[product_maker] = maker_counts.get(product_maker, 0) + 1
+        if callable(catalog_reader):
+            catalog_ctx = perf.timed("stage_snapshot_asmr_catalog") if perf else contextlib.nullcontext()
+            with catalog_ctx:
+                for product_maker, count in sorted(maker_counts.items(), key=lambda item: -item[1]):
+                    if product_maker in asmr_catalogs:
+                        continue
+                    if count < 10:
+                        continue
+                    catalog = await catalog_reader(product_maker, request_budget=count)
+                    if catalog is not None:
+                        asmr_catalogs[product_maker] = catalog
+                    ensure_not_cancelled()
+            ensure_not_cancelled()
+
         safe_progress(
             50,
             f"展开翻译 / 重制版后共 {len(snapshot.all_rjcodes)} 个 RJ、"
@@ -5356,13 +5433,8 @@ class CircleCompletionService:
         # 翻译版全部 miss、最后只命中原作）的探测次数等于链路长度；正常情况只打 1-2 次。
         # 整体能压到链路数 ~= 10-15，比旧实现省 70-80% 的 ASMR.one HTTP。
         #
-        # ⚠ 性能调优历史：
-        # - 30（最初）：稳定但 322 件社团需 15 分钟（chain 内部串行 + ASMR.one 单次 5-10s）
-        # - 64（一次尝试）：**触发 ASMR.one 限流 / connection pool 打爆**，单次社团索引超过
-        #   1 小时还没出 snapshot 阶段（进度卡在 8%）。回退。
-        # - 30（当前保守值）：维持原值，ASMR.one 稳定吞吐对外暴露的就是 ~30 并发上限。
-        # 真正能进一步压榨的方向是：让 chain 内部 probe 并发（``probe_order`` 短列表内并发，
-        # 命中即停），而不是无脑提升 chain-level 并发。如果未来要再优化，从这个方向走。
+        # 并发槽限制同时处理的 RJ 数；实际出网节奏由 ASMR 服务统一的 2 QPS 控制。
+        # 批量目录减少作品存在性请求，音轨仍按原优先级逐个核验。
         wave2_asmr_sem = asyncio.Semaphore(30)
         asmr_completed = 0
         # 进度按链路推进而不是按 RJ，避免跳跃
@@ -5393,17 +5465,22 @@ class CircleCompletionService:
                     return asmr_probe_once[normalized]
                 if perf:
                     perf.inc("asmr_probe_once_misses")
-                    perf.inc("asmr_work_info_calls")
-                # ⚠ 性能修复：``wave2_asmr_sem`` 移到这里（RJ-level 并发上限），
-                # 配合 ``prefetch_asmr_chain`` 的 chain 内并发改造，sem 真正控制的就是
-                # 同时打 ASMR.one 的请求数（≤ 30），不再是 chain 级并发数。
+                # 每个 RJ 占一个并发槽；同一链路内部保持串行和命中即停。
                 work_info: Optional[Dict[str, Any]] = None
                 tracks: Optional[List[Any]] = None
                 async with wave2_asmr_sem:
-                    try:
-                        work_info = await self.asmr_service.fetch_work_info(normalized)
-                    except Exception:
-                        logger.debug("[社团补全·snapshot] ASMR fetch_work_info 失败 rj=%s", normalized, exc_info=True)
+                    product_maker = product_makers.get(normalized)
+                    if product_maker in asmr_catalogs:
+                        work_info = asmr_catalogs[product_maker].get(normalized)
+                        if perf:
+                            perf.inc("asmr_catalog_lookup_count")
+                    else:
+                        if perf:
+                            perf.inc("asmr_work_info_calls")
+                        try:
+                            work_info = await self.asmr_service.fetch_work_info(normalized)
+                        except Exception:
+                            logger.debug("[社团补全·snapshot] ASMR fetch_work_info 失败 rj=%s", normalized, exc_info=True)
                     if work_info:
                         if perf:
                             perf.inc("asmr_track_list_calls")
@@ -5437,22 +5514,7 @@ class CircleCompletionService:
             return order
 
         async def prefetch_asmr_chain(canonical: str) -> List[Tuple[str, Optional[Dict[str, Any]], Optional[List[Any]]]]:
-            """对一条 canonical 链路按 preferred 优先级**串行**探 ASMR.one，命中即停。
-
-            ⚠ 性能修复（27.80 分钟 → 预期 2-3 分钟）：旧实现在这里 ``async with wave2_asmr_sem``
-            把 sem 锁在整个 chain 探测过程，导致 sem=30 实际限制的是 **chain 级并发**：
-            150 条 chain / 30 = 5 批 × 平均 5.7 RJ × 1.94s/call = 55s/批 → 总 27.8 分钟。
-
-            新实现：sem 已移到 ``probe_asmr_once`` 内部（RJ-level 并发上限），这里**不再**
-            在 chain 层加 sem，让所有 chain（典型 150 个）真正并发起来；每个 chain 内仍
-            **串行命中即停**，保留旧合约（preferred 命中后不再对原作 / 其他翻译版打 ASMR.one HTTP）。
-            预期：
-            - 命中（273/304 ≈ 89%）：每 chain 只打 1 次 ASMR.one ≈ 1.94s
-            - miss（31/304）：每 chain 打满 ~5.7 RJ ≈ 11s
-            - 上层 150 chain 同时跑，RJ-level sem=30 是真实瓶颈：
-              总 calls ≈ 273×1 + 31×5.7 = 450 → 450 / 30 = 15 批 × 1.94s ≈ 30s（理论）
-            实际受 ASMR.one 单次延时波动影响，预估 2-3 分钟稳定下限。
-            """
+            """不同链路可并行；链内按语言优先级串行核对，作品和音轨都命中才停止。"""
             chain_rjs: Set[str] = set(canonical_to_chain.get(canonical) or {canonical})
             probe_order = _build_chain_probe_order(canonical, chain_rjs)
             results: List[Tuple[str, Optional[Dict[str, Any]], Optional[List[Any]]]] = []
@@ -7021,6 +7083,47 @@ class CircleCompletionService:
         finally:
             db.close()
 
+    async def _collect_archived_circle_candidates(
+        self, maker_id: str, known_rjcodes: set[str],
+    ) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Dict]]]:
+        """从资源目录发现停售候选，最终收录仍以官方商品身份和类型为准。"""
+        maker_id = self._normalize_maker_id(maker_id)
+        if not maker_id:
+            return [], None
+        try:
+            catalog = await self.asmr_service.fetch_circle_work_catalog(maker_id)
+        except Exception:
+            logger.warning("[社团补全] 社团历史作品目录读取失败 maker=%s", maker_id, exc_info=True)
+            return [], None
+        if catalog is None:
+            return [], None
+        semaphore = asyncio.Semaphore(10)
+
+        async def verify(rjcode):
+            async with semaphore:
+                try:
+                    info = await self.dlsite_service.get_product_info(rjcode)
+                except Exception:
+                    logger.warning("[社团补全] 历史候选官方校验失败 RJ=%s", rjcode, exc_info=True)
+                    return None
+                product = (info or {}).get("product") or {}
+                if (self._normalize_maker_id(product.get("maker_id")) != maker_id
+                        or self.normalize_rjcode(product.get("workno")) != rjcode
+                        or str(product.get("work_type") or "").upper() != "SOU"):
+                    return None
+                return {
+                    "rjcode": rjcode,
+                    "title": product.get("work_name") or "",
+                    "maker_id": maker_id,
+                    "maker_name": product.get("maker_name") or "",
+                    "source": "dlsite",
+                }
+
+        codes = [code for code in catalog
+                 if code not in known_rjcodes and self.normalize_rjcode(code) == code]
+        candidates = await asyncio.gather(*(verify(code) for code in codes))
+        return [item for item in candidates if item is not None], catalog
+
     def _owned_sync_row_target_canonical(
         self,
         related: Any,
@@ -7202,12 +7305,14 @@ class CircleCompletionService:
         circle_id: str,
         cover_pairs: List[Tuple[str, str]],
         thumb_pairs: List[Tuple[str, str]],
+        *,
+        bonus_codes: Optional[List[str]] = None,
     ) -> Optional[asyncio.Task]:
         """把封面下载挪到后台。同 circle_id 同时只跑一个任务；上次还没完成时复用现有 Task。
 
         返回新建（或已有）的后台任务对象，方便测试 / 调试 await。主流程不应 await。
         """
-        if not cover_pairs and not thumb_pairs:
+        if not cover_pairs and not thumb_pairs and not bonus_codes:
             return None
 
         existing = self._cover_cache_tasks.get(circle_id)
@@ -7215,19 +7320,47 @@ class CircleCompletionService:
             logger.debug("[社团补全] circle_id=%s 已有封面缓存后台任务，跳过新建", circle_id)
             return existing
 
+        image_cache_service = get_circle_image_cache_service()
+        # 只跟踪特典的确定性结论，避免为整个社团的普通作品重复 stat 文件。
+        tracked = [(code, variant) for code in bonus_codes or [] for variant in ("card", "list")]
+
+        def cover_state():
+            return tuple(
+                (image_cache_service.has_local(code, variant=variant), image_cache_service.has_known_missing(code, variant=variant))
+                for code, variant in tracked
+            )
+
+        previous_cover_state = cover_state()
+
         async def _runner() -> None:
+            normal_cover_changed = False
             try:
-                image_cache_service = get_circle_image_cache_service()
+                # 隐藏特典没有可靠的图片 URL。复用按需下载的完整候选验证，
+                # 404 穷尽才标无图，网络异常仍保持未知；限制为四个后台 worker。
+                pending_bonus_codes = iter(bonus_codes or [])
+
+                async def cache_bonus_worker() -> None:
+                    for code in pending_bonus_codes:
+                        await image_cache_service.ensure_local_for_filename(f"{code}.jpg", log_failure=False)
+                        if not image_cache_service.has_local(code):
+                            await image_cache_service.ensure_local_for_filename(f"{code}_sam.jpg", log_failure=False)
+
+                if bonus_codes:
+                    await asyncio.gather(*(cache_bonus_worker() for _ in range(min(4, len(bonus_codes)))))
                 if cover_pairs:
-                    await image_cache_service.download_many(cover_pairs)
+                    results = await image_cache_service.download_many(cover_pairs)
+                    normal_cover_changed = any(results.values())
                 if thumb_pairs:
-                    await image_cache_service.download_many(thumb_pairs, variant="list")
+                    results = await image_cache_service.download_many(thumb_pairs, variant="list")
+                    normal_cover_changed = normal_cover_changed or any(results.values())
             except Exception:
                 logger.warning("[社团补全] 后台封面缓存失败 circle_id=%s", circle_id, exc_info=True)
             finally:
                 # 任务结束后从字典清除，避免长期占用内存
                 self._cover_cache_tasks.pop(circle_id, None)
-                self.invalidate_completion_view_cache(circle_id)
+                # 网络异常/短冷却没有新结论，不反复清空整社团的分页缓存。
+                if normal_cover_changed or cover_state() != previous_cover_state:
+                    self.invalidate_completion_view_cache(circle_id)
 
         try:
             task = asyncio.create_task(_runner(), name=f"circle-cover-cache:{circle_id}")
@@ -7254,9 +7387,23 @@ class CircleCompletionService:
         cover_pairs: List[Tuple[str, str]] = []
         thumb_pairs: List[Tuple[str, str]] = []
         seen: Set[Tuple[str, str]] = set()
+        bonus_codes: List[str] = []
 
         def add_item(item: Any) -> None:
-            if not isinstance(item, dict) or item.get("cover_available") is False:
+            if not isinstance(item, dict):
+                return
+            if item.get("is_bonus_work"):
+                code = self.normalize_rjcode(item.get("display_rjcode") or item.get("canonical_rjcode"))
+                if not code or (code, "bonus") in seen:
+                    return
+                seen.add((code, "bonus"))
+                if image_cache_service.has_local(code) or image_cache_service.has_local(code, variant="list"):
+                    return
+                if image_cache_service.has_known_missing(code) and image_cache_service.has_known_missing(code, variant="list"):
+                    return
+                bonus_codes.append(code)
+                return
+            if item.get("cover_available") is False:
                 return
             remote_url = str(item.get("remote_image_url") or "").strip()
             if not remote_url.startswith(("http://", "https://")):
@@ -7271,13 +7418,18 @@ class CircleCompletionService:
             if key in seen:
                 return
             seen.add(key)
-            cover_pairs.append(key)
+            if not image_cache_service.has_local(cache_rjcode) and not image_cache_service.has_known_missing(cache_rjcode):
+                cover_pairs.append(key)
             thumb_url = self._normalize_dlsite_thumb_url(
                 remote_url,
                 display_rjcode or cache_rjcode,
                 is_unreleased=self._is_future_release_date(item.get("release_date")),
             )
-            if thumb_url.startswith(("http://", "https://")):
+            if (
+                thumb_url.startswith(("http://", "https://"))
+                and not image_cache_service.has_local(cache_rjcode, variant="list")
+                and not image_cache_service.has_known_missing(cache_rjcode, variant="list")
+            ):
                 thumb_pairs.append((cache_rjcode, thumb_url))
 
         def walk(item: Any) -> None:
@@ -7289,7 +7441,7 @@ class CircleCompletionService:
 
         for item in items or []:
             walk(item)
-        return self._schedule_circle_cover_cache(circle_id, cover_pairs, thumb_pairs)
+        return self._schedule_circle_cover_cache(circle_id, cover_pairs, thumb_pairs, bonus_codes=bonus_codes)
 
     def _queue_circle_cover_alias_restore(
         self,
@@ -7516,6 +7668,7 @@ class CircleCompletionService:
             self.invalidate_completion_view_cache(circle_id)
         return bonus_updates
 
+    @with_dlsite_api_snapshot
     async def index_circle_catalog(
         self,
         circle_query: str,
@@ -7611,6 +7764,7 @@ class CircleCompletionService:
             maker_id=identity_seed["maker_id"],
         )
         dlsite_candidates: List[Dict[str, Any]] = []
+        discovery_catalogs: Dict[str, Dict[str, Dict]] = {}
         if include_dlsite:
             with perf.timed("stage_dlsite_candidates"):
                 dlsite_candidates = await self._collect_dlsite_circle_candidates(
@@ -7639,6 +7793,21 @@ class CircleCompletionService:
                     f"已回补缓存中的 DLsite 社团作品 {len(cached_maker_candidates)} 件",
                     dlsite_cached_maker_candidates=len(cached_maker_candidates),
                 )
+            discovery_maker_id = identity_seed["maker_id"] or next(
+                (item.get("maker_id") for item in dlsite_candidates if item.get("maker_id")), ""
+            )
+            with perf.timed("stage_archived_circle_discovery"):
+                archived_candidates, discovery_catalog = await self._collect_archived_circle_candidates(
+                    discovery_maker_id,
+                    {self.normalize_rjcode(item.get("rjcode")) for item in dlsite_candidates},
+                )
+            ensure_not_cancelled()
+            if discovery_catalog is not None:
+                discovery_catalogs[discovery_maker_id] = discovery_catalog
+            dlsite_candidates.extend(archived_candidates)
+            perf.inc("dlsite_archived_candidates", len(archived_candidates))
+            report(47, f"已通过官方接口验证并补充历史作品 {len(archived_candidates)} 件",
+                   dlsite_archived_candidates=len(archived_candidates))
         ensure_not_cancelled()
 
         combined_candidates = local_candidates + kikoeru_candidates + dlsite_candidates
@@ -7754,10 +7923,12 @@ class CircleCompletionService:
             with perf.timed("stage_external_snapshot"):
                 external_snapshot = await self._collect_external_snapshot(
                     snapshot_candidates,
+                    maker_id=str(identity.get("maker_id") or ""),
                     force_refresh=force_refresh,
                     progress_callback=_snapshot_progress,
                     cancel_callback=cancel_callback,
                     perf=perf,
+                    discovery_catalogs=discovery_catalogs,
                 )
         else:
             external_snapshot = CircleCompletionSnapshot()
@@ -8995,16 +9166,29 @@ class CircleCompletionService:
                     *(["可下载"] if row.has_asmr_one else ["暂不可下载"]),
                 ]
                 item["download_plan"] = {"rjcode": row.asmr_available_rjcode or row.display_rjcode} if row.has_asmr_one else None
+                item["resource_probe_rjcodes"] = list(dict.fromkeys([
+                    row.canonical_rjcode,
+                    *[
+                        variant["rjcode"]
+                        for variant in self._sort_linked_variants(view_canonical_info, stored_display_rjcode)
+                        if self._is_displayable_variant(variant.get("link_type"), variant.get("lang"))
+                        and self._variant_group(variant.get("link_type"), variant.get("lang"))["key"] != "original"
+                        and str((metadata_map.get(variant["rjcode"]) or {}).get("work_name") or "").strip()
+                    ],
+                ]))
                 items.append(item)
 
+            from .resource_source_service import get_resource_source_service
+            get_resource_source_service().decorate_items(db, items)
+            get_resource_source_service().schedule_circle(catalog.circle_id)
             self._schedule_view_cover_cache(catalog.circle_id, items, image_cache_service)
 
             visible_items = []
             for item in items:
-                is_unavailable = not bool(item["owned"]) and not bool(item["has_asmr_one"])
+                is_unavailable = not bool(item["owned"]) and not bool(item["has_downloadable_source"])
                 if only_missing and bool(item["owned"]):
                     continue
-                if only_downloadable and not bool(item["has_asmr_one"]):
+                if only_downloadable and not bool(item["has_downloadable_source"]):
                     continue
                 if not include_dl_only and is_unavailable:
                     continue
@@ -9019,8 +9203,8 @@ class CircleCompletionService:
                 "server_owned_count": sum(1 for item in items if item["server_owned"]),
                 "owned_count": sum(1 for item in items if item["owned"]),
                 "missing_count": sum(1 for item in items if not item["owned"]),
-                "downloadable_count": sum(1 for item in items if not item["owned"] and item["has_asmr_one"]),
-                "dl_only_count": sum(1 for item in items if not item["owned"] and not item["has_asmr_one"]),
+                "downloadable_count": sum(1 for item in items if not item["owned"] and item["has_downloadable_source"]),
+                "dl_only_count": sum(1 for item in items if not item["owned"] and not item["has_downloadable_source"]),
                 "dl_count": sum(1 for item in items if item["has_dlsite"]),
                 "filtered_count": len(visible_items),
                 "works": visible_items,
@@ -9058,6 +9242,7 @@ class CircleCompletionService:
         circle_id: str,
         canonical_rjcodes: List[str],
         requested_rjcodes: Optional[Dict[str, List[str]]] = None,
+        include_resource_sources: bool = False,
     ) -> Dict[str, Any]:
         from ..config.settings import get_config
         from .library_manager import get_library_manager
@@ -9086,7 +9271,7 @@ class CircleCompletionService:
         }
 
         async def build_row_plan(row: CircleWork) -> Optional[Dict[str, Any]]:
-            if not row.has_asmr_one:
+            if not row.has_asmr_one and not include_resource_sources:
                 return None
             explicit_candidates = []
             for candidate in requested_rjcodes.get(str(row.canonical_rjcode or "").strip(), []) or []:
@@ -9094,14 +9279,16 @@ class CircleCompletionService:
                 if normalized and normalized not in explicit_candidates:
                     explicit_candidates.append(normalized)
 
-            resolved_rjcode = next((candidate for candidate in explicit_candidates if candidate), "") or self.normalize_rjcode(row.asmr_available_rjcode)
+            fallback_rjcode = self.normalize_rjcode(row.asmr_available_rjcode) or next((candidate for candidate in explicit_candidates if candidate), "")
+            resolved_rjcode = fallback_rjcode
             probe_candidates: List[str] = []
             for candidate in [*explicit_candidates, resolved_rjcode, row.asmr_available_rjcode, row.display_rjcode, row.canonical_rjcode, *(row.linked_rjcodes or [])]:
                 normalized = self.normalize_rjcode(candidate)
                 if normalized and normalized not in probe_candidates:
                     probe_candidates.append(normalized)
 
-            if not resolved_rjcode:
+            if include_resource_sources or not resolved_rjcode:
+                resolved_rjcode = ""
                 for probe_rjcode in probe_candidates:
                     try:
                         actual_rjcode, work_info = await self.asmr_service.find_best_available_work(probe_rjcode)
@@ -9110,9 +9297,21 @@ class CircleCompletionService:
                     if actual_rjcode and work_info:
                         resolved_rjcode = self.normalize_rjcode(actual_rjcode)
                         break
+            if not resolved_rjcode:
+                resolved_rjcode = fallback_rjcode
 
             if not resolved_rjcode:
                 raise ValueError(f"未找到可下载作品 {row.display_rjcode or row.canonical_rjcode}")
+
+            available_versions = []
+            finder = getattr(self.asmr_service, "find_available_works", None)
+            # 单元测试和旧扩展服务只实现 find_best_available_work，继续兼容它们。
+            if include_resource_sources and finder is not None and getattr(
+                    getattr(self.asmr_service, "find_best_available_work", None), "__func__", None) is not None:
+                try:
+                    available_versions = await finder(probe_candidates[0] if probe_candidates else resolved_rjcode)
+                except Exception:
+                    available_versions = []
 
             async with plan_sem:
                 plan_started = time.perf_counter()
@@ -9153,10 +9352,48 @@ class CircleCompletionService:
             plan["requested_rjcode"] = row.display_rjcode or row.canonical_rjcode
             plan["resolved_rjcode"] = resolved_rjcode
             plan["display_rjcodes"] = row.linked_rjcodes or [row.display_rjcode]
+            version_options = []
+            for version in available_versions:
+                version_code = self.normalize_rjcode(version.get("rjcode"))
+                if not version_code or version_code == resolved_rjcode:
+                    continue
+                try:
+                    version_plan = await self.asmr_resource_service.build_download_plan(
+                        rjcode=version_code, folder_path="", filters={}, refresh=False,
+                        emit_activity_log=False)
+                except Exception:
+                    continue
+                version_plan.update({
+                    "rjcode": version_code,
+                    "resolved_rjcode": version_code,
+                    "language": version.get("language"),
+                    "language_label": version.get("language_label") or version.get("language") or "未知语言",
+                    "work_type": version.get("work_type"),
+                })
+                version_options.append(version_plan)
+            current_language = next((item.get("language_label") for item in available_versions
+                                     if self.normalize_rjcode(item.get("rjcode")) == resolved_rjcode), "")
+            plan["language_label"] = current_language or "未知语言"
+            primary_version = {key: value for key, value in plan.items() if key != "version_options"}
+            plan["version_options"] = [primary_version, *version_options]
             stage_stats["postprocess_ms"] += int((time.perf_counter() - post_started) * 1000)
             return plan
 
-        plan_results = await asyncio.gather(*(build_row_plan(row) for row in rows))
+        async def build_sources(row):
+            if not include_resource_sources:
+                return await build_row_plan(row)
+            from .resource_source_service import get_resource_source_service
+            plan = await get_resource_source_service().combine_plan(
+                row.display_rjcode or row.canonical_rjcode, lambda: build_row_plan(row))
+            context = dict(circle_id=circle_id, circle_name=catalog.circle_name,
+                           canonical_rjcode=row.canonical_rjcode,
+                           display_rjcodes=row.linked_rjcodes or [row.display_rjcode])
+            plan.update(context)
+            for option in plan['source_options']:
+                option.update(context)
+            return plan
+
+        plan_results = await asyncio.gather(*(build_sources(row) for row in rows))
         plans = [plan for plan in plan_results if plan]
 
         manager = get_library_manager()
@@ -9204,6 +9441,7 @@ class CircleCompletionService:
         circle_id: str,
         canonical_rjcodes: List[str],
         requested_rjcodes: Optional[Dict[str, List[str]]] = None,
+        include_resource_sources: bool = False,
     ) -> Dict[str, Any]:
         job_id = uuid.uuid4().hex
         started_at = datetime.now()
@@ -9231,6 +9469,7 @@ class CircleCompletionService:
                     circle_id,
                     canonical_rjcodes,
                     requested_rjcodes,
+                    include_resource_sources=include_resource_sources,
                 )
                 payload["status"] = "completed"
                 payload["progress"] = 100

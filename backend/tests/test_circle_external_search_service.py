@@ -110,6 +110,45 @@ def test_south_plus_requests_are_serialized(monkeypatch):
     assert max_active == 1
 
 
+def test_south_plus_keeps_ten_second_cooldown_after_success_and_failure(monkeypatch):
+    """从响应结束计时；失败请求同样占用冷却，不能紧接着重试。"""
+    service = CircleExternalSearchService()
+    assert service._SOUTH_PLUS_REQUEST_INTERVAL_SECONDS == 10.0
+    clock = [100.0]
+    starts = []
+    waits = []
+
+    async def fake_sleep(seconds):
+        waits.append(seconds)
+        clock[0] += seconds
+
+    async def fake_fetch(*args, **kwargs):
+        starts.append(clock[0])
+        clock[0] += 2.5
+        if len(starts) == 2:
+            raise RuntimeError("模拟远端失败")
+        return "ok"
+
+    monkeypatch.setattr(external_search_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(external_search_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(service, "_fetch_text", fake_fetch)
+
+    async def run_requests():
+        assert await service._fetch_south_plus_text("https://bbs.white-plus.net/search.php") == "ok"
+        try:
+            await service._fetch_south_plus_text("https://bbs.white-plus.net/search.php")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("失败请求应传播异常")
+        assert await service._fetch_south_plus_text("https://bbs.white-plus.net/search.php") == "ok"
+
+    asyncio.run(run_requests())
+    assert starts == [100.0, 112.5, 125.0]
+    assert waits == [10.0, 10.0]
+    assert service._south_plus_next_request_at == 137.5
+
+
 def test_hit_result_uses_long_persistent_refresh_interval():
     service = CircleExternalSearchService()
     from datetime import timedelta

@@ -126,7 +126,7 @@ function bonusParentCode(item, availableCodes = new Set()) {
 function canDownloadBonus(bonus) {
   const members = bonusMembers(bonus)
   if (members.length > 1) return members.some(canDownloadBonus)
-  return isStrictTrue(bonus?.has_asmr_one) || Boolean(bonus?.download_plan?.rjcode || bonus?.asmr_available_rjcode)
+  return isStrictTrue(bonus?.has_downloadable_source ?? bonus?.has_asmr_one) || Boolean(bonus?.download_plan?.rjcode || bonus?.asmr_available_rjcode)
 }
 
 const activeBonusDetailCover = computed(() => activeBonusDetail.value ? bonusMainCoverUrl(activeBonusDetail.value) : '')
@@ -313,10 +313,11 @@ function selectBonusVariants(bonuses) {
     const withCover = candidates.filter(candidate => (
       candidate?.cover_available !== false && candidate?.cover_confirmed_missing !== true
     ))
-    const pool = withCover.length ? withCover : candidates
+    const confirmed = withCover.filter(candidate => candidate?.cover_confirmed_available === true)
+    const pool = confirmed.length ? confirmed : withCover.length ? withCover : candidates
     const plain = pool.filter(candidate => bonusNumberedSuffix(candidate) === null)
     if (plain.length) {
-      selected.push(plain[0])
+      selected.push(...plain)
       continue
     }
     const numbered = pool.filter(candidate => bonusNumberedSuffix(candidate) !== null)
@@ -417,6 +418,7 @@ function aggregateBonusWorks(bonuses = []) {
     bucket.linked_rjcodes = bonusCodeList(bucket)
     bucket.local_download_ready = hasLocalDownloadReadyBonus(bucket)
     bucket.has_asmr_one = bucket.has_asmr_one || bonus.has_asmr_one
+    bucket.has_downloadable_source = Boolean(bucket.has_downloadable_source || bucket.has_asmr_one || bonus.has_downloadable_source)
     bucket.owned = isCompletionOwned(bucket)
     bucket.server_owned = bucket.server_owned || bonus.server_owned
     bucket.completion_owned = bucket.completion_owned || bonus.completion_owned
@@ -454,9 +456,10 @@ function bonusCollectionViewModel(viewModel) {
 
 function sortBonusMembers(members) {
   const coverPriority = member => {
-    if (coverOverrideFor(member)) return 3
+    if (coverOverrideFor(member)) return 4
     if (failedBonusCoverCodes.value.has(bonusCode(member))) return -1
     if (member?.cover_available === false || member?.dlsite_cover_available === false || member?.cover_confirmed_missing === true) return 0
+    if (member?.cover_confirmed_available === true) return 3
     if (member?.cover_available === true || member?.dlsite_cover_available === true) return 2
     return bonusCoverUrl(member) ? 1 : 0
   }

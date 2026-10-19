@@ -39,6 +39,14 @@ class LinkedSubtitleImportAlreadyRunning(RuntimeError):
     """同一条字幕补配预检单已经在执行中。"""
 
 
+class LinkedSubtitleExtractFailed(ValueError):
+    """保留解压失败类型，避免被当作普通表单错误重新自动执行。"""
+
+    def __init__(self, preview: Dict[str, Any]):
+        self.preview = dict(preview)
+        super().__init__(preview.get("source_subtitle_probe_reason") or "来源压缩包解压失败")
+
+
 class LinkedSubtitleImportService:
     """Handle automatic linked-subtitle staging and manual subtitle-folder import."""
 
@@ -47,6 +55,7 @@ class LinkedSubtitleImportService:
     PENDING_SOURCE_MODE = "linked_translation_archive_pending"
     EXISTING_SUBTITLE_SOURCE_MODE = "linked_translation_archive_existing_subtitle_conflict"
     PENDING_EXECUTING_STATUS = "PROCESSING"
+    TERMINAL_PROBE_STATUSES = {"missing_password", "extract_failed", "nested_extract_failed"}
     PENDING_EXECUTION_LEASE_SECONDS = max(
         60,
         int(os.getenv("KIKOERUMANAGER_LINKED_SUBTITLE_EXECUTION_LEASE_SECONDS", "600") or 600),
@@ -1322,16 +1331,14 @@ class LinkedSubtitleImportService:
         can_execute = can_stage_pending and len(ready_candidates) > 0 and (
             subtitle_count > 0 or can_probe_later
         )
+        if source_subtitle_probe_status in self.TERMINAL_PROBE_STATUSES:
+            can_execute = False
 
         execute_reason = ""
         if stage_reason:
             execute_reason = stage_reason
-        elif can_probe_later and source_subtitle_probe_status in {
-            "missing_password",
-            "extract_failed",
-            "nested_extract_failed",
-        }:
-            execute_reason = source_subtitle_probe_reason or "执行时将重新走解压入库链路扫描字幕"
+        elif source_subtitle_probe_status in self.TERMINAL_PROBE_STATUSES:
+            execute_reason = source_subtitle_probe_reason or "来源压缩包解压失败，请在问题作品中处理"
         elif candidate_search_status == "pending_remote":
             execute_reason = candidate_search_reason or self.REMOTE_PENDING_REASON
         elif source_subtitle_probe_status == "timeout":
@@ -3016,8 +3023,12 @@ class LinkedSubtitleImportService:
         preview = dict(prepared_preview or {})
         if not preview:
             preview = await self.preview_archive_import(archive_path, preferred_library_id=preferred_library_id)
+        if preview.get("source_subtitle_probe_status") in self.TERMINAL_PROBE_STATUSES:
+            raise LinkedSubtitleExtractFailed(preview)
         if not (preview.get("source_subtitle_dir") or preview.get("staged_subtitle_dir")):
             preview = await self._stage_archive_subtitles_for_preview(archive_path, preview)
+        if preview.get("source_subtitle_probe_status") in self.TERMINAL_PROBE_STATUSES:
+            raise LinkedSubtitleExtractFailed(preview)
         if int(preview.get("subtitle_count") or 0) <= 0:
             raise ValueError(
                 str(
@@ -3034,6 +3045,7 @@ class LinkedSubtitleImportService:
 
         source_subtitles: List[Dict[str, Any]] = []
         temp_dir = None
+        _probe_result: Dict[str, Any] = {}
         try:
             source_dir = str(preview.get("source_subtitle_dir") or preview.get("staged_subtitle_dir") or "").strip()
             if source_dir and os.path.isdir(source_dir):
@@ -3047,6 +3059,12 @@ class LinkedSubtitleImportService:
                     temp_dir, source_subtitles, _probe_result = await self._collect_archive_subtitles_to_stage(archive_path)
             else:
                 temp_dir, source_subtitles, _probe_result = await self._collect_archive_subtitles_to_stage(archive_path)
+            if not source_subtitles and _probe_result.get("status") in self.TERMINAL_PROBE_STATUSES:
+                raise LinkedSubtitleExtractFailed({
+                    **preview,
+                    "source_subtitle_probe_status": _probe_result["status"],
+                    "source_subtitle_probe_reason": _probe_result.get("reason"),
+                })
             if self._should_direct_import_to_empty_candidate(preview, target_candidate):
                 import_result = await self._direct_import_source_subtitles_to_target(
                     source_subtitles=source_subtitles,
@@ -3378,7 +3396,7 @@ class LinkedSubtitleImportService:
         task_id: Optional[str] = None,
         queue_origin: str = "auto_process",
     ) -> Dict[str, Any]:
-        if not self._is_existing_subtitle_duplicate_preview(preview):
+        if preview.get("source_subtitle_probe_status") in self.TERMINAL_PROBE_STATUSES or not self._is_existing_subtitle_duplicate_preview(preview):
             return {
                 "handled": False,
                 "reason": "",
@@ -3553,6 +3571,7 @@ class LinkedSubtitleImportService:
             "source_path": conflict.new_path,
             "source_mode": analysis_info.get("source_mode") or self.PENDING_SOURCE_MODE,
             "preview": preview,
+            "auto_import_blocked": bool(analysis_info.get("auto_import_blocked") or analysis_info.get("execution_status") == "failed"),
             "can_execute": status == "PENDING" and self._can_execute_pending_import(preview),
         }
 
@@ -3607,6 +3626,7 @@ class LinkedSubtitleImportService:
         fallback_analysis_info: Optional[Dict[str, Any]] = None,
         reason: str = "",
         execution_owner_id: Optional[str] = None,
+        extract_preview: Optional[Dict[str, Any]] = None,
     ) -> None:
         db = next(get_db())
         try:
@@ -3614,7 +3634,7 @@ class LinkedSubtitleImportService:
                 ConflictWork.id == record_id,
                 ConflictWork.conflict_type == self.PENDING_CONFLICT_TYPE,
                 ConflictWork.status == self.PENDING_EXECUTING_STATUS,
-            ).first()
+            ).with_for_update().first()
             if not row:
                 return
             analysis_info = dict(row.analysis_info or fallback_analysis_info or {})
@@ -3624,7 +3644,7 @@ class LinkedSubtitleImportService:
                     record_id,
                 )
                 return
-            preview = dict(analysis_info.get("preview") or {})
+            preview = dict(extract_preview or analysis_info.get("preview") or {})
             reason_text = str(reason or "字幕补配导入失败，请重试").strip()
             if reason_text:
                 preview["execute_reason"] = reason_text
@@ -3636,16 +3656,45 @@ class LinkedSubtitleImportService:
                 "execution_status": "failed",
                 "execution_failed_at": datetime.now().isoformat(),
                 "execution_error": reason_text,
+                "auto_import_blocked": True,
                 "execution_owner_id": "",
                 "execution_heartbeat_at": "",
                 "execution_lease_until": "",
             }
+            if extract_preview is not None:
+                self._convert_pending_extract_problem(row, preview)
             db.commit()
         except Exception:
             db.rollback()
             logger.warning("[字幕补配] 回滚执行中预检单状态失败: record_id=%s", record_id, exc_info=True)
         finally:
             db.close()
+
+    def _convert_pending_extract_problem(self, row: ConflictWork, preview: Dict[str, Any]) -> None:
+        """原地转为解压问题，保留来源和补配上下文，不再留在自动导入队列。"""
+        reason = str(preview.get("source_subtitle_probe_reason") or "来源压缩包解压失败")
+        row.conflict_type = "EXTRACT_FAILED"
+        row.status = "PENDING"
+        row.rjcode = preview.get("source_rjcode") or row.rjcode
+        row.existing_path = ""
+        row.new_metadata = {
+            **(row.new_metadata or {}),
+            "failure_stage": "extract",
+            "error_message": reason,
+            "extract_failure_reason": preview.get("source_subtitle_probe_status"),
+            "available_actions": ["RETRY", "SKIP"],
+            "retry_linked_subtitle_import": True,
+        }
+        row.analysis_info = {
+            **(row.analysis_info or {}),
+            "preview": dict(preview),
+            "execution_status": "failed",
+            "execution_error": reason,
+            "auto_import_blocked": True,
+            "execution_owner_id": "",
+            "execution_heartbeat_at": "",
+            "execution_lease_until": "",
+        }
 
     @staticmethod
     def _parse_pending_execution_time(value: Any) -> Optional[datetime]:
@@ -3883,6 +3932,9 @@ class LinkedSubtitleImportService:
                 preview.get("reason", "") or "字幕补配预检超时",
             )
         task.update_progress(5, "预检中（确认字幕候选...）")
+        if preview.get("source_subtitle_probe_status") in self.TERMINAL_PROBE_STATUSES:
+            preview["fatal_extract_error"] = preview.get("source_subtitle_probe_reason") or "来源压缩包解压失败"
+            return {"handled": False, "preview": preview, "reason": preview["fatal_extract_error"]}
         should_create_pending = self._should_create_pending_import(preview)
         if should_create_pending and str(preview.get("source_subtitle_probe_status") or "").strip().lower() != "timeout":
             source_path_exists = bool(task.source_path) and os.path.exists(task.source_path)
@@ -3891,6 +3943,9 @@ class LinkedSubtitleImportService:
                 preview = self._refresh_preview_execution_state(dict(preview or {}))
             else:
                 preview = await self._stage_archive_subtitles_for_preview(task.source_path, preview, hint_password=hint_password)
+            if preview.get("source_subtitle_probe_status") in self.TERMINAL_PROBE_STATUSES:
+                preview["fatal_extract_error"] = preview.get("source_subtitle_probe_reason") or "来源压缩包解压失败"
+                return {"handled": False, "preview": preview, "reason": preview["fatal_extract_error"]}
             should_create_pending = self._should_create_pending_import(preview)
         logger.info(
             "[字幕补配预检] source=%s source_rj=%s target_rj=%s is_translation_work=%s is_manual_subtitle_source=%s subtitle_count=%s candidate_count=%s ready_candidate_count=%s kikoeru_has_work=%s stage_reason=%s execute_reason=%s handled=%s can_execute=%s",
@@ -4069,6 +4124,9 @@ class LinkedSubtitleImportService:
                     continue
 
                 original_preview = dict((row.analysis_info or {}).get("preview") or {})
+                if original_preview.get("source_subtitle_probe_status") in self.TERMINAL_PROBE_STATUSES:
+                    decisions.append({"record_id": str(row.id), "action": "convert_extract_failure", "preview": original_preview})
+                    continue
                 preview = await self._repair_cached_preview_rj_fields(
                     original_preview,
                     source_path=str(row.new_path or ""),
@@ -4180,11 +4238,16 @@ class LinkedSubtitleImportService:
                     record_id = decision["record_id"]
                     fresh = write_db.query(ConflictWork).filter(
                         ConflictWork.id == record_id,
-                    ).first()
+                    ).with_for_update().first()
                     if not fresh:
                         continue  # 期间已被并发清理
                     action = decision["action"]
-                    if action == "refresh_preview":
+                    if fresh.conflict_type != self.PENDING_CONFLICT_TYPE:
+                        continue
+                    if action == "convert_extract_failure":
+                        if str(fresh.status or "").upper() == "PENDING":
+                            self._convert_pending_extract_problem(fresh, decision["preview"])
+                    elif action == "refresh_preview":
                         fresh.analysis_info = decision["next_analysis_info"]
                         fresh.linked_works_info = decision["linked_works_info"]
                     elif action == "recover_execution":
@@ -4404,6 +4467,11 @@ class LinkedSubtitleImportService:
                 current_status = "PENDING"
             if current_status != "PENDING":
                 raise ValueError("字幕补配预检单当前状态不可执行")
+            previous_preview = dict((record.analysis_info or {}).get("preview") or {})
+            if previous_preview.get("source_subtitle_probe_status") in self.TERMINAL_PROBE_STATUSES:
+                self._convert_pending_extract_problem(record, previous_preview)
+                db.commit()
+                raise LinkedSubtitleExtractFailed(previous_preview)
             cached_analysis_info = dict(record.analysis_info or {})
             record_new_path = str(record.new_path or "")
             record.analysis_info = self._claim_pending_execution(cached_analysis_info, execution_owner_id)
@@ -4454,6 +4522,7 @@ class LinkedSubtitleImportService:
                 fallback_analysis_info=cached_analysis_info,
                 reason=str(exc),
                 execution_owner_id=execution_owner_id,
+                extract_preview=exc.preview if isinstance(exc, LinkedSubtitleExtractFailed) else None,
             )
             raise
         finally:
@@ -4483,6 +4552,7 @@ class LinkedSubtitleImportService:
                     "execution_status": "failed",
                     "execution_failed_at": datetime.now().isoformat(),
                     "execution_error": str((result.get("import_result") or {}).get("error") or "字幕补配导入失败"),
+                    "auto_import_blocked": True,
                     "execution_owner_id": "",
                     "execution_heartbeat_at": "",
                     "execution_lease_until": "",

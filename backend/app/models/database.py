@@ -308,6 +308,20 @@ class WorkLinkage(Base):
     )
 
 
+class ResourceSourceProbe(Base):
+    """资源站 RJ 探测事实与可恢复队列，不保存签名下载直链。"""
+    __tablename__ = 'resource_source_probes'
+
+    source = Column(String(40), primary_key=True)
+    rjcode = Column(String(20), primary_key=True)
+    probe_version = Column(Integer, primary_key=True, default=1)
+    status = Column(String(20), nullable=False, default='pending', index=True)
+    candidates = Column(JSONB, nullable=False, default=list)
+    error = Column(Text, nullable=False, default='')
+    checked_at = Column(DateTime)
+    expires_at = Column(DateTime, index=True)
+
+
 class CircleCatalog(Base):
     """社团索引表"""
     __tablename__ = 'circle_catalogs'
@@ -449,6 +463,7 @@ class CircleExternalSearchRecord(Base):
     __table_args__ = (
         Index('idx_circle_external_search_record_unique', 'source', 'rjcode', 'probe_schema_version', unique=True),
         Index('idx_circle_external_search_record_ready', 'next_probe_at', 'priority', 'id'),
+        Index('idx_circle_external_search_record_source_ready', 'source', 'probe_schema_version', priority.desc(), 'next_probe_at', 'id'),
         Index('idx_circle_external_search_record_lease', 'lease_until', 'id'),
     )
 
@@ -4360,6 +4375,13 @@ def _migrate_compat_schema(conn) -> None:
             _index_specs_for_table(_POSTGRES_COMPAT_INDEX_SPECS, "task_phase_metrics"),
             compat_index_definitions,
         )
+    if "circle_external_search_records" in existing_tables:
+        _ensure_index_exists(conn, {
+            "name": "idx_circle_external_search_record_source_ready",
+            "sql": "CREATE INDEX IF NOT EXISTS idx_circle_external_search_record_source_ready "
+                   "ON circle_external_search_records "
+                   "(source, probe_schema_version, priority DESC, next_probe_at, id)",
+        })
     _migrate_library_index_entries_schema(conn, existing_tables)
     _migrate_library_index_status_schema(conn, existing_tables)
     _migrate_library_index_derived_tables(conn)

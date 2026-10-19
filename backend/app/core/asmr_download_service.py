@@ -9,6 +9,8 @@ import aiohttp
 import asyncio
 import logging
 import time
+import math
+from email.utils import parsedate_to_datetime
 from typing import Any, Optional, List, Dict, Callable, Tuple
 from pathlib import Path
 from datetime import datetime
@@ -75,6 +77,9 @@ class ASMRDownloadService:
         self._api_failure_count = 0
         self._api_circuit_open_until = 0.0
         self._api_circuit_reason = ""
+        self._metadata_pace_lock = asyncio.Lock()
+        self._metadata_next_request = 0.0
+        self._rate_limit_until = 0.0
         # linked_* 关联作品信息缓存：key=f"linked_{workno}"；TTL+LRU 控上限
         self._cache: TTLCache = TTLCache(max_size=1024, ttl_seconds=300, name="asmr_download.linked")
         self._cache_ttl = 300  # 5分钟缓存（给现有内层 TTL 判定用，兼容）
@@ -101,7 +106,7 @@ class ASMRDownloadService:
         logger.info(f"切换 API 服务器到: {self._get_api_base()}")
 
     def _asmr_api_circuit_remaining(self) -> int:
-        remaining = int(max(0.0, self._api_circuit_open_until - time.monotonic()))
+        remaining = math.ceil(max(0.0, max(self._api_circuit_open_until, self._rate_limit_until) - time.monotonic()))
         return remaining
 
     def _asmr_api_circuit_open(self) -> bool:
@@ -111,6 +116,27 @@ class ASMRDownloadService:
         self._api_failure_count = 0
         self._api_circuit_open_until = 0.0
         self._api_circuit_reason = ""
+
+    async def _pace_metadata(self) -> bool:
+        """所有作品/音轨请求共用 2 QPS；下载数据流不占此调度器。"""
+        async with self._metadata_pace_lock:
+            delay = self._metadata_next_request - time.monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            if self._asmr_api_circuit_open():
+                return False
+            self._metadata_next_request = time.monotonic() + .5
+            return True
+
+    def _record_rate_limit(self, response) -> None:
+        retry = str(getattr(response, 'headers', {}).get('Retry-After', ''))
+        try:
+            seconds = float(retry) if retry.replace('.', '', 1).isdigit() else parsedate_to_datetime(retry).timestamp() - time.time()
+        except (ValueError, TypeError, OverflowError):
+            seconds = 60
+        cooldown = max(1, min(seconds, 3600))
+        self._rate_limit_until = max(self._rate_limit_until, time.monotonic() + cooldown)
+        logger.warning("[ASMR] 收到 HTTP 429，元数据探测冷却 %.1f 秒", cooldown)
 
     def _record_asmr_api_failure(self, reason: str) -> None:
         self._api_failure_count += 1
@@ -405,6 +431,77 @@ class ASMRDownloadService:
         logger.info(f"[DLsite] 找到 {len(works)} 个关联版本: {[(w.workno, w.lang) for w in works]}")
         return works
 
+    async def fetch_circle_work_catalog(self, maker_id: str, *, request_budget: int = 1000) -> Optional[Dict[str, Dict]]:
+        """完整读取同一 DLsite 社团目录；身份或分页不完整时不提供缺失结论。"""
+        if not re.fullmatch(r'RG\d+', str(maker_id or '')):
+            return None
+        circle_id = int(maker_id[2:])
+        api_base = self._get_api_base()
+        session = await self._get_session()
+
+        async def page(number):
+            if not await self._pace_metadata():
+                return None
+            url = f'{api_base}/circles/{circle_id}/works'
+            async with session.get(url, params={'page': number, 'pageSize': 100,
+                                   'order': 'id', 'sort': 'desc'}, **self._proxy_request_kwargs()) as response:
+                if response.status == 429:
+                    self._record_rate_limit(response)
+                    return None
+                if response.status != 200:
+                    return None
+                payload = await response.json()
+                return payload if isinstance(payload, dict) else None
+
+        try:
+            first = await page(1)
+            if not first:
+                return None
+            pagination = first.get('pagination') or {}
+            total = pagination.get('totalCount')
+            size = pagination.get('pageSize')
+            if type(total) is not int or not 0 < total <= 100000 or size != 100:
+                return None
+            pages = math.ceil(total / size)
+            # 包括首页稳定性复核；批量请求比逐作品核对更贵时停止翻页。
+            if pages + 1 >= request_budget:
+                return None
+            result = {}
+            ids = set()
+            for number in range(1, pages + 1):
+                payload = first if number == 1 else await page(number)
+                if not payload:
+                    return None
+                info = payload.get('pagination') or {}
+                rows = payload.get('works')
+                expected = min(size, total - (number - 1) * size)
+                if (info.get('totalCount') != total or info.get('currentPage') != number
+                        or info.get('pageSize') != size or not isinstance(rows, list) or len(rows) != expected):
+                    return None
+                for work in rows:
+                    if not isinstance(work, dict):
+                        return None
+                    circle = work.get('circle') or {}
+                    code = str(work.get('source_id') or '').upper()
+                    if (circle.get('source_id') != maker_id or circle.get('source_type') != 'DLSITE'
+                            or circle.get('id') != circle_id or work.get('circle_id') != circle_id
+                            or not re.fullmatch(r'RJ\d{6,8}', code) or work.get('id') != int(code[2:])
+                            or code in result or work['id'] in ids):
+                        return None
+                    result[code] = work
+                    ids.add(work['id'])
+            # 目录变化会导致翻页移动；再核对第一页，避免把丢页当不存在。
+            check = await page(1)
+            if (not check or check.get('pagination') != first.get('pagination')
+                    or [row.get('source_id') for row in check.get('works', [])]
+                    != [row.get('source_id') for row in first['works']]):
+                return None
+            logger.info('[ASMR] 社团目录核对完成 maker=%s works=%s pages=%s', maker_id, len(result), pages)
+            return result
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError, AttributeError):
+            logger.warning('[ASMR] 社团目录未取得完整稳定结果 maker=%s', maker_id, exc_info=True)
+            return None
+
     async def fetch_work_info_with_status(self, rjcode: str) -> Tuple[Optional[Dict], str]:
         """
         从 asmr.one API 获取作品信息
@@ -427,11 +524,14 @@ class ASMRDownloadService:
         request_kwargs = self._proxy_request_kwargs()
 
         # 尝试所有 API 服务器
+        start_index = self._current_api_index
         for attempt in range(len(self.API_BASE_URLS)):
-            api_base = self._get_api_base()
+            api_base = self.API_BASE_URLS[(start_index + attempt) % len(self.API_BASE_URLS)]
             url = f"{api_base}/workInfo/{rjcode_num}"
 
             try:
+                if not await self._pace_metadata():
+                    return None, ASMR_PROBE_STATUS_UNAVAILABLE
                 logger.info(f"[ASMR] 获取作品信息: {url}")
                 async with session.get(url, **request_kwargs) as response:
                     if response.status == 200:
@@ -439,6 +539,9 @@ class ASMRDownloadService:
                         self._record_asmr_api_success()
                         logger.info(f"[ASMR] 成功获取作品信息: {data.get('title', '未知标题')}")
                         return data, ASMR_PROBE_STATUS_AVAILABLE if data else ASMR_PROBE_STATUS_MISSING
+                    elif response.status == 429:
+                        self._record_rate_limit(response)
+                        return None, ASMR_PROBE_STATUS_UNAVAILABLE
                     elif response.status == 404:
                         self._record_asmr_api_success()
                         logger.warning(f"[ASMR] 作品不存在: {rjcode}")
@@ -498,6 +601,34 @@ class ASMRDownloadService:
         logger.warning(f"[搜索] 未找到任何可用版本: {rjcode}")
         return None, None
 
+    async def find_available_works(self, rjcode: str) -> List[Dict[str, Any]]:
+        """返回关联链中所有实际存在文件的版本，供下载预览让用户选择。"""
+        available: List[Dict[str, Any]] = []
+        for work in await self.get_linked_works_from_dlsite(rjcode):
+            work_info = await self.fetch_work_info(work.workno)
+            tracks = await self.fetch_track_list(work.workno) if work_info else None
+            if work_info and tracks:
+                available.append({
+                    "rjcode": work.workno,
+                    "language": work.lang,
+                    "language_label": self._language_label(work.lang),
+                    "work_type": work.work_type,
+                    "work_info": work_info,
+                })
+            await asyncio.sleep(0.5)
+        return available
+
+    @staticmethod
+    def _language_label(value: Any) -> str:
+        return {
+            "CHI_HANS": "简体中文", "CHI_SIMP": "简体中文", "CHS": "简体中文",
+            "CHI_HANT": "繁体中文", "CHI_TRAD": "繁体中文", "CHT": "繁体中文",
+            "JPN": "日文原版", "JAP": "日文原版", "ENG": "英文",
+            "KOR": "韩文", "SPA": "西班牙文", "FRE": "法文", "FRA": "法文",
+            "GER": "德文", "DEU": "德文", "ITA": "意大利文", "POR": "葡萄牙文",
+            "RUS": "俄文", "THA": "泰文", "VIE": "越南文", "IND": "印尼文",
+        }.get(str(value or "").strip().upper(), str(value or "未知语言"))
+
     async def fetch_track_list_with_status(self, rjcode: str) -> Tuple[Optional[List[Dict]], str]:
         """
         获取作品的音轨/文件列表
@@ -519,11 +650,14 @@ class ASMRDownloadService:
         session = await self._get_session()
         request_kwargs = self._proxy_request_kwargs()
 
+        start_index = self._current_api_index
         for attempt in range(len(self.API_BASE_URLS)):
-            api_base = self._get_api_base()
+            api_base = self.API_BASE_URLS[(start_index + attempt) % len(self.API_BASE_URLS)]
             url = f"{api_base}/tracks/{rjcode_num}"
 
             try:
+                if not await self._pace_metadata():
+                    return None, ASMR_PROBE_STATUS_UNAVAILABLE
                 logger.debug("[ASMR] 获取文件列表: %s", mask_url_for_log(url))
                 async with session.get(url, **request_kwargs) as response:
                     if response.status == 200:
@@ -556,6 +690,9 @@ class ASMRDownloadService:
                                 )
 
                         return data, ASMR_PROBE_STATUS_AVAILABLE if data else ASMR_PROBE_STATUS_MISSING
+                    elif response.status == 429:
+                        self._record_rate_limit(response)
+                        return None, ASMR_PROBE_STATUS_UNAVAILABLE
                     elif response.status == 404:
                         self._record_asmr_api_success()
                         logger.warning(f"[ASMR] 文件列表不存在: {rjcode}")

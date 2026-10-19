@@ -221,7 +221,8 @@ def test_completion_bonus_uses_own_rj_before_same_day_grouping():
     assert "bonus_works" not in unrelated_item
 
 
-def test_completion_bonus_item_uses_own_date_and_cached_cover():
+@pytest.mark.parametrize("cached_cover", [False, True])
+def test_completion_bonus_item_uses_own_date_and_cached_cover(cached_cover):
     """历史特典行残留原作封面时，读取路径也必须立即纠正。"""
     service = CircleCompletionService()
 
@@ -238,6 +239,8 @@ def test_completion_bonus_item_uses_own_date_and_cached_cover():
 
         def get_local_url(self, rjcode, variant="card", **_kwargs):
             assert rjcode == "RJ01576811"
+            if not cached_cover and not _kwargs.get("allow_missing"):
+                return ""
             return (
                 "/api/circle-completion/cover/RJ01576811_sam.jpg"
                 if variant == "list"
@@ -295,9 +298,105 @@ def test_completion_bonus_item_uses_own_date_and_cached_cover():
 
     assert item["display_rjcode"] == "RJ01576811"
     assert item["release_date"] == "2026-03-22"
-    assert item["dlsite_cover_available"] is False
+    assert item["dlsite_cover_available"] is None
+    assert item["cover_confirmed_available"] is cached_cover
     assert item["image_url"].endswith("RJ01576811.jpg")
     assert item["thumb_image_url"].endswith("RJ01576811_sam.jpg")
+
+
+def test_same_title_bonus_keeps_unknown_candidates_and_prefers_verified_image():
+    service = CircleCompletionService()
+    candidates = [_work(code, bonus=True) for code in ("RJ01739773", "RJ01739750")]
+    for candidate in candidates:
+        candidate.update(title="早期購入特典", bonus_parent_rjcode="RJ01726963", cover_available=True)
+
+    assert service._completion_prune_bonus_items(candidates) == candidates
+    candidates[1]["cover_confirmed_available"] = True
+    assert service._completion_prune_bonus_items(candidates) == [candidates[1]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("network_error", [False, True])
+async def test_old_bonus_images_are_verified_in_background(tmp_path, monkeypatch, network_error):
+    import asyncio
+
+    from app.core import circle_completion_service as module
+    from app.core.circle_image_cache_service import CircleImageCacheService
+
+    service = CircleCompletionService()
+    cache = CircleImageCacheService()
+    cache._cache_dir = tmp_path
+    monkeypatch.setattr(module, "get_circle_image_cache_service", lambda: cache)
+    invalidated = []
+    monkeypatch.setattr(service, "invalidate_completion_view_cache", invalidated.append)
+    requests = []
+
+    async def download(code, url, *, variant="card"):
+        requests.append((code, url))
+        await asyncio.sleep(0)
+        if network_error:
+            return False, "status=429", True
+        if code == "RJ01739750":
+            cache.get_local_path(code, variant).write_bytes(b"official-image")
+            return True, "", False
+        return False, "status=404", False
+
+    monkeypatch.setattr(cache, "_download_with_outcome", download)
+    candidates = [_work(code, bonus=True) for code in ("RJ01739773", "RJ01739750")]
+    for candidate in candidates:
+        candidate.update(title="早期購入特典", bonus_parent_rjcode="RJ01726963", cover_available=True)
+
+    task = service._schedule_view_cover_cache("RG01043639", candidates, cache)
+    assert requests == []  # 列表调用不等待也不发起网络请求。
+    assert service._schedule_view_cover_cache("RG01043639", candidates, cache) is task
+    await task
+
+    if network_error:
+        assert not cache.has_known_missing("RJ01739773")
+        assert not cache.has_known_missing("RJ01739750")
+        assert invalidated == []
+        assert service._completion_prune_bonus_items(candidates) == candidates
+    else:
+        assert cache.has_local("RJ01739750")
+        assert cache.has_known_missing("RJ01739773")
+        assert cache.has_known_missing("RJ01739773", variant="list")
+        assert invalidated == ["RG01043639"]
+        candidates[0]["cover_confirmed_missing"] = True
+        candidates[1]["cover_confirmed_available"] = True
+        assert service._completion_prune_bonus_items(candidates) == [candidates[1]]
+        assert service._schedule_view_cover_cache("RG01043639", candidates, cache) is None
+
+
+@pytest.mark.asyncio
+async def test_bonus_cover_background_limits_workers(tmp_path, monkeypatch):
+    import asyncio
+
+    from app.core import circle_completion_service as module
+    from app.core.circle_image_cache_service import CircleImageCacheService
+
+    service = CircleCompletionService()
+    cache = CircleImageCacheService()
+    cache._cache_dir = tmp_path
+    monkeypatch.setattr(module, "get_circle_image_cache_service", lambda: cache)
+    monkeypatch.setattr(service, "invalidate_completion_view_cache", lambda _circle: None)
+    active = peak = 0
+    visited = []
+
+    async def ensure(filename, **_kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0)
+        visited.append(filename)
+        active -= 1
+
+    monkeypatch.setattr(cache, "ensure_local_for_filename", ensure)
+    candidates = [_work(f"RJ{1739700 + index:08d}", bonus=True) for index in range(20)]
+    task = service._schedule_view_cover_cache("RG01043639", candidates, cache)
+    assert visited == []
+    await task
+    assert peak == 4
+    assert len(set(visited)) == 40
 
 
 @pytest.mark.asyncio

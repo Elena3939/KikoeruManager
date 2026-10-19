@@ -1310,7 +1310,8 @@ const buildEnhancedPlans = async () => {
       resource_types: ['audio', 'subtitle', 'cover'],
       audio_formats: [],
       subtitle_languages: [],
-      include_existing: false
+      include_existing: false,
+      include_resource_sources: true
     })
     enhancedPlans.value = (result.plans || []).map(plan => ({
       ...plan,
@@ -2139,7 +2140,7 @@ async function retryEnhancedDownloadTask(task) {
         ElMessage.success('已提交重试')
       }
     } else if (taskId) {
-      await asmrSyncApi.retry(taskId)
+      await (task?.task_metadata?.resource_source === 'imoutoheaven' ? httpDownloadApi : asmrSyncApi).retry(taskId)
       ElMessage.success('已提交重试')
     }
     await refreshEnhancedDownloadWorkbench({ silent: true })
@@ -2151,6 +2152,13 @@ async function retryEnhancedDownloadTask(task) {
 }
 
 async function retryEnhancedDownloadFile(payload) {
+  if (payload?.task?.task_metadata?.resource_source === 'imoutoheaven') {
+    try {
+      await httpDownloadApi.retry(payload?.task.id)
+      await refreshEnhancedDownloadWorkbench({ silent: true })
+    } catch (error) { ElMessage.error(error.response?.data?.detail || error.message || '重试失败') }
+    return
+  }
   const task = payload?.task || {}
   const file = payload?.file || {}
   const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
@@ -2199,7 +2207,7 @@ async function handlePauseEnhancedDownloadTask(task) {
     if (sessionId) {
       await asmrSyncApi.pauseSession(sessionId)
     } else if (taskId) {
-      await taskApi.pause(taskId)
+      await (task?.task_metadata?.resource_source === 'imoutoheaven' ? httpDownloadApi : taskApi).pause(taskId)
     } else {
       return ElMessage.warning('无法识别任务，缺少会话或任务 ID')
     }
@@ -2218,7 +2226,7 @@ async function handleResumeEnhancedDownloadTask(task) {
     if (sessionId) {
       await asmrSyncApi.resumeSession(sessionId)
     } else if (taskId) {
-      await taskApi.resume(taskId)
+      await (task?.task_metadata?.resource_source === 'imoutoheaven' ? httpDownloadApi : taskApi).resume(taskId)
     } else {
       return ElMessage.warning('无法识别任务，缺少会话或任务 ID')
     }
@@ -2372,7 +2380,7 @@ const retryFailed = async (taskId) => {
       )
       await refreshEnhancedDownloadWorkbench({ silent: true })
     } else {
-      const result = await asmrSyncApi.retry(taskId)
+      const result = await (task?.task_metadata?.resource_source === 'imoutoheaven' ? httpDownloadApi : asmrSyncApi).retry(taskId)
       ElMessage.success(result.message)
     }
     await refreshStatus()

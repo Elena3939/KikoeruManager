@@ -1025,6 +1025,8 @@ class TaskEngine:
     def _should_skip_conflict_retry_precheck(self, task: Task) -> bool:
         """问题作品页发起的处理任务不再重复跑解压前预检 / 重复预检。"""
         metadata = dict(task.task_metadata or {})
+        if metadata.get("retry_linked_subtitle_import"):
+            return False
         action = str(metadata.get("conflict_resolution_action") or "").strip().upper()
         return bool(
             metadata.get("skip_retry_precheck")
@@ -2860,7 +2862,7 @@ class TaskEngine:
                                     f"[{rjcode}] 多 RJ 合集跳过整包字幕补配预检，"
                                     "解压后按独立作品分别处理"
                                 )
-                            elif getattr(config.auto_process, 'import_linked_translation_subtitles', False):
+                            elif getattr(config.auto_process, 'import_linked_translation_subtitles', False) or task.task_metadata.get("retry_linked_subtitle_import"):
                                 from .linked_subtitle_import_service import get_linked_subtitle_import_service
 
                                 linked_import_service = get_linked_subtitle_import_service()
@@ -2945,6 +2947,11 @@ class TaskEngine:
                             preview = linked_result.get("preview") or {}
                             fatal_extract_error = str(preview.get("fatal_extract_error") or "").strip()
                             if fatal_extract_error:
+                                task.task_metadata.update({
+                                    "retry_linked_subtitle_import": True,
+                                    "extract_failure_reason": preview.get("source_subtitle_probe_status"),
+                                    "linked_subtitle_preview": preview,
+                                })
                                 task.fail(fatal_extract_error)
                                 self._record_problem_work_for_extract_failure(
                                     task,

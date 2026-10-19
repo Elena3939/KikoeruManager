@@ -252,7 +252,7 @@ export function useSubtitleImportArchive({
         await loadPendingImports({ silent: true })
         const refreshed = pendingItems.value.find(item => String(item.id || '') === normalizedId)
         if (!refreshed) {
-          return { recovered: true, taskId: '' }
+          return { recovered: false, removed: true }
         }
 
         const status = String(refreshed.status || '').trim().toUpperCase()
@@ -295,6 +295,7 @@ export function useSubtitleImportArchive({
   function findNextAutoImportItem() {
     return (pendingItems.value || []).find(item => (
       item?.can_execute &&
+      !item.auto_import_blocked &&
       getSelectedArchiveCandidateForItem(item) &&
       !autoImportBlockedIds.value.has(String(item.id || ''))
     )) || null
@@ -450,6 +451,10 @@ export function useSubtitleImportArchive({
           }
           if (recovered.timedOut) {
             ElMessage.warning('字幕补配仍在后端执行，请稍后刷新工作台状态')
+            return false
+          }
+          if (recovered.removed) {
+            ElMessage.warning('补配记录已离开待处理列表，请在问题作品或工作台确认处理结果')
             return false
           }
         } catch (recoveryError) {

@@ -50,7 +50,7 @@ class DLsiteBonusProbeService:
     DEFAULT_CACHE_WRITE_BATCH_SIZE = 100
     DEFAULT_TEMP_TABLE_LOOKUP_THRESHOLD = 3000
     DEFAULT_TEMP_TABLE_INSERT_BATCH_SIZE = 5000
-    PROBE_STRATEGY_VERSION = "date-range-v4"
+    PROBE_STRATEGY_VERSION = "date-range-v5"
 
     def __init__(self) -> None:
         self.dlsite_service = get_dlsite_service()
@@ -734,6 +734,8 @@ class DLsiteBonusProbeService:
         return merged
 
     def _ensure_active_probe_state(self) -> None:
+        if not hasattr(self, "_active_probe_results"):
+            self._active_probe_results = {}
         if not hasattr(self, "_active_probe_rjcodes"):
             self._active_probe_rjcodes = set()
         if not hasattr(self, "_active_probe_lock"):
@@ -745,9 +747,13 @@ class DLsiteBonusProbeService:
         *,
         shard_size: int,
         cached_features: Optional[Dict[str, DLsiteProductProbeFeature]] = None,
+        waiters: Optional[Dict[str, asyncio.Future]] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
         self._ensure_active_probe_state()
         async with self._active_probe_lock:
+            if waiters is not None:
+                waiters.update({code: self._active_probe_results[code] for code in candidates
+                                if code in self._active_probe_results})
             selected, stats = await asyncio.to_thread(
                 self._exclude_unprobeable_candidates,
                 candidates,
@@ -757,6 +763,8 @@ class DLsiteBonusProbeService:
             shards = self._split_candidate_shards(selected, shard_size)
             leased = self._merge_candidate_shards(shards)
             self._active_probe_rjcodes.update(leased)
+            for code in leased:
+                self._active_probe_results[code] = asyncio.get_running_loop().create_future()
             stats["leased"] = len(leased)
             return shards, stats
 
@@ -767,6 +775,18 @@ class DLsiteBonusProbeService:
             return
         async with self._active_probe_lock:
             self._active_probe_rjcodes.difference_update(leased)
+            for code in leased:
+                future = self._active_probe_results.pop(code, None)
+                if future is not None and not future.done():
+                    future.set_result(None)
+
+    def _publish_candidate_features(self, features: Dict[str, DLsiteProductProbeFeature]) -> None:
+        """先发布结果再释放租约，让重叠日期复用同一批实际请求。"""
+        self._ensure_active_probe_state()
+        for code, feature in features.items():
+            future = self._active_probe_results.get(code)
+            if future is not None and not future.done():
+                future.set_result(feature)
 
     def _feature_from_cache_row(self, row: DLsiteBonusProbeCache) -> DLsiteProductProbeFeature:
         raw_summary = dict(row.raw_summary_json or {})
@@ -1468,8 +1488,8 @@ class DLsiteBonusProbeService:
         if row_mode != (str(mode or "normal").strip() or "normal"):
             return False
 
-        # v4 改为扫描当天公开 RJ 的完整编号范围。旧 deep/v2/v3 完成记录可能
-        # 没有扫到 RJ01314197 -> RJ01315736 这种同日远距离特典，必须重新跑。
+        # v5 要求重叠区间也取得完整稳定结果；旧版本可能在其它 worker
+        # 尚未返回时提前完成，不能复用旧完成记录。
         return False
 
     def _completed_date_row_result(
@@ -1526,7 +1546,7 @@ class DLsiteBonusProbeService:
         )
         result["inserted_count"] = inserted_count
 
-        if not bool(result.get("budget_reached")):
+        if not bool(result.get("budget_reached") or result.get("incomplete")):
             self._mark_original_probe_states_after_scan(
                 circle_id=circle_id,
                 maker_id=maker_id,
@@ -1559,6 +1579,8 @@ class DLsiteBonusProbeService:
             result["error_message"] = (
                 f"发售日 {release_date} 的 RJ 探测范围超出预算，已沉淀命中线索但不产出无特典结论"
             )
+        elif result.get("incomplete"):
+            result["error_message"] = "候选 RJ 未全部取得稳定结果，保留命中线索但不产出无特典结论"
         elif original_summary["pending_count"] != 0:
             raise RuntimeError(
                 f"发售日 {release_date} 仍有 {original_summary['pending_count']} 个原作未形成特典结论"
@@ -2542,7 +2564,8 @@ class DLsiteBonusProbeService:
                     "probe_count": int(total_count or 0),
                 })
 
-            candidate_features: Dict[str, DLsiteProductProbeFeature] = {}
+            candidate_features: Dict[str, DLsiteProductProbeFeature] = dict(cached_candidate_features)
+            candidate_waiters: Dict[str, asyncio.Future] = {}
             cached_hits = 0
             requests = 0
             candidate_shards: List[Dict[str, Any]] = []
@@ -2554,6 +2577,7 @@ class DLsiteBonusProbeService:
                     raw_probe_candidates,
                     shard_size=batch_size,
                     cached_features=cached_candidate_features,
+                    waiters=candidate_waiters,
                 )
                 leased_probe_candidates = self._merge_candidate_shards(candidate_shards)
                 emit_probe_progress(0, len(leased_probe_candidates))
@@ -2573,12 +2597,28 @@ class DLsiteBonusProbeService:
                             ),
                         )
                         candidate_features.update(shard_features)
+                        self._publish_candidate_features(shard_features)
                         cached_hits += shard_cached_hits
                         requests += shard_requests
                         checked_before += len(shard_candidates)
                         remember_hidden_hits(shard_features.values(), enforce_selected_relevance=True)
                 finally:
                     await self._release_candidate_shards(candidate_shards)
+                # 必须先释放自己领取的全部区间，再等待其它日期，避免交叉等待死锁。
+                if candidate_waiters:
+                    try:
+                        shared = await asyncio.wait_for(asyncio.gather(
+                            *(asyncio.shield(future) for future in candidate_waiters.values())
+                        ), timeout=600)
+                        candidate_features.update({code: feature for code, feature in
+                            zip(candidate_waiters, shared) if feature is not None})
+                    except asyncio.TimeoutError:
+                        pass
+                    remember_hidden_hits(candidate_features.values(), enforce_selected_relevance=True)
+            uncovered = [code for code in raw_probe_candidates if
+                code not in candidate_features or
+                candidate_features[code].probe_status not in {"ok", "missing"} or
+                self._needs_dl_count_refresh(candidate_features[code])]
             cached_hit_count += cached_hits
             request_count += requests
             has_errors, error_samples = self._probe_features_block_conclusion(candidate_features.values())
@@ -2631,6 +2671,8 @@ class DLsiteBonusProbeService:
                 "hit_count": len(hidden_hits),
                 "inserted_count": inserted_count,
                 "budget_reached": bool(budget_reached),
+                "incomplete": bool(should_probe_candidates and uncovered),
+                "uncovered_candidate_count": len(uncovered),
                 "hit_rjcodes": [feature.workno for feature in hidden_hits],
                 "reused_hit_index": bool(reusable_hidden_hits),
             }

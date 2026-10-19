@@ -3,6 +3,8 @@ import { flushPromises, mount } from '@vue/test-utils'
 import CircleWorksViewport from './CircleWorksViewport.vue'
 
 const originalResizeObserver = globalThis.ResizeObserver
+const originalRequestAnimationFrame = globalThis.requestAnimationFrame
+const originalCancelAnimationFrame = globalThis.cancelAnimationFrame
 const originalClientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth')
 const originalClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
 let mockClientWidth = 600
@@ -10,6 +12,20 @@ let mockClientHeight = 600
 
 describe('CircleWorksViewport', () => {
   beforeAll(() => {
+    // 确定性执行图片调度帧，避免 flushPromises 早于浏览器的下一帧。
+    let frameId = 0
+    const frames = new Map()
+    globalThis.requestAnimationFrame = callback => {
+      const id = ++frameId
+      frames.set(id, callback)
+      queueMicrotask(() => {
+        if (!frames.has(id)) return
+        frames.delete(id)
+        callback(0)
+      })
+      return id
+    }
+    globalThis.cancelAnimationFrame = id => frames.delete(id)
     globalThis.ResizeObserver = class {
       constructor(callback) {
         this.callback = callback
@@ -35,6 +51,8 @@ describe('CircleWorksViewport', () => {
   })
 
   afterAll(() => {
+    globalThis.requestAnimationFrame = originalRequestAnimationFrame
+    globalThis.cancelAnimationFrame = originalCancelAnimationFrame
     globalThis.ResizeObserver = originalResizeObserver
     if (originalClientWidth) {
       Object.defineProperty(HTMLElement.prototype, 'clientWidth', originalClientWidth)
@@ -184,6 +202,47 @@ describe('CircleWorksViewport', () => {
     expect(wrapper.find('.circle-bonus-gift').exists()).toBe(true)
     expect(wrapper.get('.circle-bonus-gift').attributes('title')).toBe('期间限定特典')
 
+    wrapper.unmount()
+  })
+
+  it.each([true, false])('同名特典保留有图 RJ，封面已验证：%s', async (confirmed) => {
+    mockClientWidth = 600
+    mockClientHeight = 600
+    const bonuses = ['RJ01739773', 'RJ01739750'].map(code => ({
+      canonical_rjcode: code,
+      display_rjcode: code,
+      title: '早期購入特典',
+      is_bonus_work: true,
+      cover_available: true,
+      cover_confirmed_available: confirmed && code === 'RJ01739750',
+      image_url: `/api/circle-completion/cover/${code}.jpg`,
+      thumb_image_url: `/api/circle-completion/cover/${code}_sam.jpg`,
+    }))
+    const wrapper = mount(CircleWorksViewport, {
+      props: {
+        imageField: 'thumb_image_url',
+        items: [{ canonical_rjcode: 'RJ01726963', title: '原作', bonus_works: bonuses }],
+      },
+      global: {
+        stubs: {
+          WorkCard: { template: '<div />' },
+          WorkListRow: { template: '<div />' },
+          ElPagination: { template: '<div />' },
+        },
+      },
+    })
+    await flushPromises()
+    if (!confirmed) {
+      const image = wrapper.get('.circle-bonus-gift-cover img')
+      expect(image.attributes('src')).toContain('RJ01739773')
+      await image.trigger('error')
+      await image.trigger('error')
+      await flushPromises()
+    }
+    expect(wrapper.get('.circle-bonus-gift-cover img').attributes('src')).toContain('RJ01739750')
+    await wrapper.get('.circle-bonus-gift').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.circle-bonus-detail-cover img').attributes('src')).toContain('RJ01739750')
     wrapper.unmount()
   })
 

@@ -505,7 +505,7 @@ async def test_paged_missing_works_and_work_codes(service: CircleCompletionServi
             maker_id="RGPAGE",
             release_date="2025-03-31",
             gap_limit=500,
-            mode="deep:date-range-v4",
+            mode="deep:date-range-v5",
             status="completed",
         )
     )
@@ -516,7 +516,7 @@ async def test_paged_missing_works_and_work_codes(service: CircleCompletionServi
             original_rjcode="RJ01000003",
             release_date="2025-03-31",
             status="no_bonus",
-            strategy_version="date-range-v4",
+            strategy_version="date-range-v5",
         )
     )
     db_session.commit()
@@ -653,6 +653,33 @@ async def test_preview_batch_download_falls_back_to_asmr_code_without_requested_
     assert requested_codes == ["RJ01000002"]
     assert result["planned_count"] == 1
     assert result["plans"][0]["resolved_rjcode"] == "RJ01000002"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cached_available', [False, True])
+async def test_preview_sources_resolves_asmr_translation_even_with_stale_cache(service, db_session, monkeypatch, cached_available):
+    from unittest.mock import AsyncMock
+    from app.core.resource_source_service import ResourceSourceService
+    circle_id = _seed_circle(db_session)
+    work = db_session.query(CircleWork).filter(CircleWork.canonical_rjcode == 'RJ01000003').one()
+    work.has_asmr_one = cached_available
+    work.asmr_available_rjcode = 'RJ01000003' if cached_available else None
+    db_session.commit()
+    resolve = AsyncMock(return_value=('RJ01444384', {'title': '关联翻译'}))
+    build = AsyncMock(return_value={'session_id': 'asmr-session', 'selectable_resources': [
+        {'id': 'audio', 'relative_path': 'a.wav', 'selected': True}], 'summary': {}})
+    monkeypatch.setattr(service.asmr_service, 'find_best_available_work', resolve)
+    monkeypatch.setattr(service.asmr_resource_service, 'build_download_plan', build)
+    sources = ResourceSourceService()
+    monkeypatch.setattr(sources, 'plan', AsyncMock(return_value={
+        'selectable_resources': [{'id': 'package', 'complete': True}]}))
+    monkeypatch.setattr('app.core.resource_source_service.get_resource_source_service', lambda: sources)
+    monkeypatch.setattr('app.core.library_manager.get_library_manager', lambda: type('Manager', (), {'list_libraries': lambda self: []})())
+    result = await service.preview_batch_download(circle_id, ['RJ01000003'],
+        requested_rjcodes={'RJ01000003': ['RJ01000003']}, include_resource_sources=True)
+    assert build.call_args.kwargs['rjcode'] == 'RJ01444384'
+    assert [p['source_provider'] for p in result['plans'][0]['source_options']] == ['asmr.one', 'imoutoheaven']
+    assert result['plans'][0]['source_selection_required']
 
 
 @pytest.mark.asyncio
@@ -1039,3 +1066,23 @@ async def test_missing_work_keeps_translation_variant_priority(
     assert item["preferred_variant"]["rjcode"] == "RJ01625472"
     assert item["preferred_variant"]["group_key"] == "simplified"
     assert item["download_plan"]["rjcode"] == "RJ01625472"
+
+
+def test_yaas_source_compare_stats_filter_and_linked_codes():
+    service = CircleCompletionService()
+    yaas_item = {
+        "canonical_rjcode": "RJ123456", "has_dlsite": False,
+        "has_asmr_one": False, "has_downloadable_source": True,
+        "resource_sources": [{"id": "imoutoheaven", "rjcodes": ["RJ234567", "RJ345678"]}],
+        "yaas_probe_status": "hit",
+    }
+    missing_item = {"canonical_rjcode": "RJ456789", "has_downloadable_source": False}
+    items = [yaas_item, missing_item]
+    stats = service._completion_summary_from_items({"circle_id": "test", "circle_name": "测试"}, items)["compare_stats"]
+    assert stats["yaas"] == 1
+    assert stats["asmr_one"] == 0
+    assert stats["missing"] == 1
+    compare = service._build_completion_compare_item(yaas_item)
+    assert compare["sourceCompare"]["yaas"] == {"all_rjcodes": ["RJ234567", "RJ345678"], "status": "hit"}
+    assert service._filter_completion_items_for_tab(items, tab="compare", include_dl_only=True, compare_filter="yaas") == [yaas_item]
+    assert service._filter_completion_items_for_tab(items, tab="compare", include_dl_only=True, compare_filter="missing") == [missing_item]
