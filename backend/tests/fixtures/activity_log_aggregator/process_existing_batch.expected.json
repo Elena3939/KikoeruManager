@@ -9,7 +9,7 @@
       "aggregate_archive_size_bytes": 0,
       "aggregate_extract_output_bytes": 0,
       "archive_count": 0,
-      "batch_duration_ms": 5900,
+      "batch_duration_ms": 10000,
       "batch_id": "batch-pe-001",
       "child_row_count": 2,
       "child_rows": [
@@ -62,7 +62,9 @@
       "failed_child_count": 1,
       "latest_activity_at": "2026-04-23T13:10:10",
       "partial_child_count": 0,
-      "requested_count": 2
+      "participating_archive_count": 0,
+      "requested_count": 2,
+      "result_task_count": 2
     },
     "has_child_rows": true,
     "id": "pe-batch-start",
@@ -72,7 +74,7 @@
     "session_key": null,
     "source_path": null,
     "status": "partial_success",
-    "summary": "批量创建已有目录处理任务，候选 2 个，压缩包 2 个，已提交解压 1 个，失败 1 个，耗时 6 秒",
+    "summary": "批量创建已有目录处理任务，候选 2 个，已完成 1 个，失败 1 个，耗时 10 秒",
     "task_id": "batch-pe-001"
   }
 ]

@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from sqlalchemy import func
 
 from .json_safety import safe_text
+from .activity_log_relations import IMPORT_CATEGORIES, IMPORT_RESULT_ACTIONS, latest_import_results
 from ..models.database import ActivityLog, ActivityLogRollup, SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,18 @@ def _payload_groups(payload: Dict[str, Any]) -> List[tuple[str, str]]:
     return groups
 
 
+def _counting_rows(rows):
+    """导入统计以任务结果为单位，旁路事件与重复完成日志不贡献任务数。"""
+    if rows and all(row.category in IMPORT_CATEGORIES for row in rows):
+        results = latest_import_results([
+            {"id": row.id, "category": row.category, "task_id": row.task_id, "created_at": row.created_at}
+            for row in rows if row.action in IMPORT_RESULT_ACTIONS
+        ])
+        result_ids = {row["id"] for row in results}
+        return [row for row in rows if row.id in result_ids], len(results)
+    return (rows[1:] if len(rows) > 1 else rows), max(0, len(rows) - 1)
+
+
 class ActivityLogRollupService:
     """操作历史轻量 rollup 维护。
 
@@ -136,9 +149,8 @@ class ActivityLogRollupService:
             return None
 
         latest = rows[-1]
-        parent = rows[0]
-        child_rows = rows[1:] if len(rows) > 1 else []
-        count_rows = child_rows or rows
+        parent = next((row for row in rows if row.action == "batch_start"), rows[0])
+        count_rows, child_count = _counting_rows(rows)
         success = failed = partial = waiting = 0
         categories: Dict[str, int] = {}
         for row in rows:
@@ -170,7 +182,7 @@ class ActivityLogRollupService:
         record.category = category
         record.parent_log_id = safe_text(parent.id, strip=True)
         record.latest_log_id = safe_text(latest.id, strip=True)
-        record.child_count = len(child_rows)
+        record.child_count = child_count
         record.success_count = success
         record.failed_count = failed
         record.partial_count = partial
@@ -301,7 +313,7 @@ class ActivityLogRollupService:
                 else:
                     continue
                 raw_rows = query.order_by(ActivityLog.created_at.asc()).all()
-                count_rows = raw_rows[1:] if len(raw_rows) > 1 else raw_rows
+                count_rows, child_count = _counting_rows(raw_rows)
                 success = failed = partial = waiting = 0
                 for raw in count_rows:
                     bucket = _status_bucket(raw.status)
@@ -310,7 +322,7 @@ class ActivityLogRollupService:
                     partial += 1 if bucket == "partial" else 0
                     waiting += 1 if bucket == "waiting" else 0
                 expected = {
-                    "child_count": max(0, len(raw_rows) - 1),
+                    "child_count": child_count,
                     "success_count": success,
                     "failed_count": failed,
                     "partial_count": partial,

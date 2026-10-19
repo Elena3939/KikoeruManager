@@ -550,6 +550,8 @@ const HIGHLIGHT_LABELS = {
   filtered_size: '过滤体积', final_file_count: '最终文件数', record_id: '记录 ID',
   import_final_file_count: '导入文件数', recovered_failure_count: '修复失败数',
   duration_ms: '耗时', selected_count: '命中数量', selected_size: '命中体积',
+  extract_phase_duration_ms: '解包阶段（含等待）',
+  task_started_at: '任务开始时间', task_completed_at: '任务结束时间',
   success_count: '成功数量', failed_count: '失败数量', deleted_bytes: '删除体积',
   retry_target_count: '重试目标数', retry_success_count: '重试成功数',
   retry_failed_count: '重试失败数', retry_recovered_item_count: '重试补回项数',
@@ -567,6 +569,7 @@ const HIGHLIGHT_LABELS = {
   skipped_existing: '已存在跳过', skipped_duplicate: '重复跳过',
   skipped_no_subtitle: '无字幕跳过', batch_duration_ms: '批量总耗时',
   archive_count: '压缩包总数', requested_count: '候选数量',
+  participating_archive_count: '参与解压包数', result_task_count: '结果任务数',
   extract_completed_count: '完成解压数', failed_child_count: '失败项数',
   partial_child_count: '部分成功项数',
   aggregate_archive_size_bytes: '批量压缩包大小',
@@ -621,7 +624,7 @@ const CONFLICT_RESOLUTION_HIGHLIGHT_KEYS = [
 ]
 
 function normalizeHighlightValue(key, value) {
-  if (key === 'duration_ms' || key === 'batch_duration_ms') return formatDurationMs(value)
+  if (key === 'duration_ms' || key === 'batch_duration_ms' || key === 'extract_phase_duration_ms') return formatDurationMs(value)
   if (key === 'awaiting_manual_match') return value ? '是' : '否'
   if (key === 'manual_match_completed') return value ? '是' : '否'
   if (key === 'naming_strategy') {
@@ -658,7 +661,10 @@ function detailHighlights(row) {
   if (!d || typeof d !== 'object') return []
   const out = []
   const category = String(row?.category || '').trim()
-  const keys = category === 'subtitle_import'
+  const keys = row?.action === 'batch_start' && ['auto_import', 'process_existing', 'extract'].includes(category)
+    ? ['participating_archive_count', 'aggregate_archive_size_bytes', 'aggregate_extract_output_bytes',
+      'batch_duration_ms', 'result_task_count', ...Object.keys(HIGHLIGHT_LABELS)]
+    : category === 'subtitle_import'
     ? [...SUBTITLE_IMPORT_HIGHLIGHT_KEYS, ...Object.keys(HIGHLIGHT_LABELS)]
     : category === 'conflict_resolution'
       ? [...CONFLICT_RESOLUTION_HIGHLIGHT_KEYS, ...Object.keys(HIGHLIGHT_LABELS)]
@@ -667,7 +673,10 @@ function detailHighlights(row) {
   const pushedLabels = new Set()
   for (const k of keys) {
     if (pushed.has(k)) continue
-    const label = HIGHLIGHT_LABELS[k] || k
+    const label = k === 'duration_ms' && ['auto_import', 'process_existing', 'extract'].includes(category)
+      ? '任务总耗时'
+      : k === 'archive_count' && ['auto_import', 'extract'].includes(category)
+        ? '候选压缩包数' : HIGHLIGHT_LABELS[k] || k
     if (pushedLabels.has(label)) continue
     let value = d[k]
     if ((value === undefined || value === null || value === '') && k === 'rjcode') value = row?.rjcode

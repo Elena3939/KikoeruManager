@@ -466,6 +466,29 @@ def _duration_ms_for_task(task: Any) -> int:
         return 0
 
 
+def _import_timing_snapshot(task: Any, meta: Dict[str, Any]) -> Dict[str, Any]:
+    """保留任务与解包阶段边界；解包阶段包含稳定性检查和资源等待。"""
+    result = {}
+    for name, value in (
+        ("task_started_at", getattr(task, "started_at", None) or getattr(task, "created_at", None)),
+        ("task_completed_at", getattr(task, "completed_at", None)),
+        ("extract_started_at", meta.get("extract_started_at")),
+        ("extract_finished_at", meta.get("extract_finished_at")),
+    ):
+        if isinstance(value, datetime):
+            result[name] = value.isoformat()
+        elif isinstance(value, str) and value:
+            result[name] = value
+    try:
+        start = datetime.fromisoformat(result["extract_started_at"])
+        end = datetime.fromisoformat(result["extract_finished_at"])
+        if end >= start:
+            result["extract_phase_duration_ms"] = int((end - start).total_seconds() * 1000)
+    except (KeyError, TypeError, ValueError):
+        pass
+    return result
+
+
 def _looks_like_archive_path(path: Any) -> bool:
     try:
         name = str(path or "").strip().lower()
@@ -1299,7 +1322,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
                 f"{summary or '解压入库完成'}，"
                 f"压缩包 {_format_bytes(archive_size_bytes)}，"
                 f"{extract_label} {_format_bytes(extract_output_bytes)}，"
-                f"耗时 {_format_duration_ms(duration_ms)}"
+                f"总耗时 {_format_duration_ms(duration_ms)}"
             )[:4000]
         detail = {
             "output_path": task.output_path,
@@ -1325,6 +1348,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "filtered_items": _build_filter_delete_items(meta.get("filtered_items"), limit=240),
             "multi_rj_subtask_count": int(meta.get("multi_rj_subtask_count") or 0) or None,
             "multi_rj_dispatch_failed": len(list(meta.get("multi_rj_dispatch_failures") or [])) or None,
+            **_import_timing_snapshot(task, meta),
         }
 
     if tt in {

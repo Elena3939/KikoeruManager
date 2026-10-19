@@ -28,6 +28,8 @@ def test_auto_process_lifecycle_uses_extract_payload_total_bytes_when_output_pat
         "task_metadata": {
             "extract_payload_total_bytes": 123456789,
             "multi_rj_subtask_count": 2,
+            "extract_started_at": "2026-05-25T15:00:10",
+            "extract_finished_at": "2026-05-25T15:00:40",
         },
         "source_path": str(archive_path),
         "output_path": "",
@@ -42,6 +44,11 @@ def test_auto_process_lifecycle_uses_extract_payload_total_bytes_when_output_pat
     detail = captured[0]["detail"]
     assert detail["extract_output_bytes"] == 123456789
     assert detail["multi_rj_subtask_count"] == 2
+    assert detail["duration_ms"] == 60000
+    assert detail["extract_phase_duration_ms"] == 30000
+    assert detail["task_started_at"] == "2026-05-25T15:00:00"
+    assert detail["task_completed_at"] == "2026-05-25T15:01:00"
+    assert "总耗时" in captured[0]["summary"]
     assert "解压产物 117.74 MB" in captured[0]["summary"]
 
 

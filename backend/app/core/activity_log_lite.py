@@ -5,7 +5,8 @@
 - 默认列表接口要把最多 5000 行 ``activity_logs`` 拉回来跑 1700+ 行的合并算法，
   其中大头是 ``detail`` JSON 反序列化（单条最高 660KB）。即便加了多层缓存，
   首次进入页面 / 高频写入场景仍然会拉到几 MB JSON 慢得人发指。
-- "lite" 模式不再做合并、不再回前端整段 detail，只挑出每条记录前端展示需要的
+- "lite" 模式先在数据库按批次分页，再对当前页的紧凑字段做后端汇总，不回传整段 detail。
+  只挑出每条记录前端展示需要的
   少量字段：摘要、状态、时间、RJ、source_path，以及从 detail 里提取出的 1~4 个
   关键 metric chip（如 "成功 12 / 失败 3"、"耗时 1m20s"、"3.2 GB"）。
 - 这样列表请求体可以从 ~5MB 压到 ~150KB，TTFB 也跟着下来。详细业务面板还是走
@@ -133,7 +134,10 @@ def _chips_for_extract_like(detail: Dict[str, Any]) -> List[Dict[str, str]]:
     if out:
         chips.append(_chip("产物", out, "info"))
     if dur:
-        chips.append(_chip("耗时", dur, "neutral"))
+        chips.append(_chip("总耗时", dur, "neutral"))
+    phase = format_duration_short(detail.get("extract_phase_duration_ms"))
+    if phase:
+        chips.append(_chip("解包阶段（含等待）", phase, "neutral"))
     return chips
 
 
@@ -299,7 +303,19 @@ def extract_metric_chips(
     elif cat == "subtitle_import":
         chips = _chips_for_subtitle_import(detail)
     elif cat in {"extract", "auto_import", "process_existing"}:
-        chips = _chips_for_extract_like(detail)
+        if act == "batch_start":
+            count = _int(detail.get("created_count") or detail.get("result_task_count")) if cat == "process_existing" else _int(
+                detail.get("participating_archive_count", detail.get("created_count") or detail.get("result_task_count")))
+            chips = [_chip("任务数" if cat == "process_existing" else "压缩包数", str(count), "info")]
+            for label, value in (
+                ("压缩包总大小", format_bytes_short(detail.get("aggregate_archive_size_bytes"))),
+                ("产物总大小", format_bytes_short(detail.get("aggregate_extract_output_bytes"))),
+                ("批次耗时", format_duration_short(detail.get("batch_duration_ms"))),
+            ):
+                if value:
+                    chips.append(_chip(label, value))
+        else:
+            chips = _chips_for_extract_like(detail)
     elif cat == "pipeline_filter":
         chips = _chips_for_pipeline_filter(act, detail)
     elif cat == "pipeline_rename":
@@ -366,6 +382,7 @@ def _has_potential_children(detail: Dict[str, Any], action: str = "") -> bool:
         "paired_child_count",
         "unpaired_child_count",
         "created_count",
+        "multi_rj_subtask_count",
         "triggered",
     ):
         try:
@@ -400,6 +417,8 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
     - has_children: 是否可以展开
     - batch_id / session_key / parent_id（前端发 /children 用）
     """
+    from .activity_log_relations import normalize_import_summary
+
     detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
     category = row.get("category")
     action = row.get("action")
@@ -410,7 +429,7 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
         "category_label": CATEGORY_LABELS.get(category, category),
         "action": action,
         "status": status,
-        "summary": _safe_summary(row.get("summary")),
+        "summary": _safe_summary(normalize_import_summary(row)),
         "rjcode": row.get("rjcode"),
         "task_id": row.get("task_id"),
         "source_path": row.get("source_path"),
@@ -424,6 +443,17 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
         "rerun": bool(detail.get("rerun_linked") or detail.get("rerun_count")),
         "compacted": bool(detail.get("__compacted")),
     }
+    if category in {"auto_import", "process_existing", "extract"} and action == "batch_start":
+        item.update({
+            "child_failed_count": _int(detail.get("failed_child_count")),
+            "child_success_count": _int(detail.get("extract_completed_count")),
+            "child_partial_count": _int(detail.get("partial_child_count")),
+            "child_total_count": _int(detail.get("result_task_count")),
+            "detail": {key: detail[key] for key in (
+                "archive_count", "participating_archive_count", "created_count", "result_task_count", "aggregate_archive_size_bytes",
+                "aggregate_extract_output_bytes", "batch_duration_ms",
+            ) if key in detail},
+        })
 
     if category == "http_download":
         platforms = http_download_platforms_from_metadata(detail)

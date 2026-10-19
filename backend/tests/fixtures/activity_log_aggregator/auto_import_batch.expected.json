@@ -8,7 +8,7 @@
       "aggregate_archive_size_bytes": 262144000,
       "aggregate_extract_output_bytes": 859832320,
       "archive_count": 0,
-      "batch_duration_ms": 5200,
+      "batch_duration_ms": 3200,
       "batch_id": "batch-2026-04-23-001",
       "child_row_count": 3,
       "child_rows": [
@@ -32,7 +32,7 @@
           "rjcode": "RJ111111",
           "source_path": "D:/incoming/RJ111111.zip",
           "status": "failed",
-          "summary": "解压入库失败：RJ111111.zip，压缩包 50.0 MB，耗时 1.0s",
+          "summary": "解压入库失败：RJ111111.zip，压缩包 50.0 MB，总耗时 1.0s",
           "task_id": "task-1"
         },
         {
@@ -56,7 +56,7 @@
           "rjcode": "RJ222222",
           "source_path": "D:/incoming/RJ222222.zip",
           "status": "success",
-          "summary": "解压入库完成：RJ222222.zip，压缩包 80.0 MB，解压产物 320.0 MB，耗时 2.1s",
+          "summary": "解压入库完成：RJ222222.zip，压缩包 80.0 MB，解压产物 320.0 MB，总耗时 2.1s",
           "task_id": "task-2"
         },
         {
@@ -80,7 +80,7 @@
           "rjcode": "RJ333333",
           "source_path": "D:/incoming/RJ333333.zip",
           "status": "success",
-          "summary": "解压入库完成：RJ333333.zip，压缩包 120.0 MB，解压产物 500.0 MB，耗时 3.2s",
+          "summary": "解压入库完成：RJ333333.zip，压缩包 120.0 MB，解压产物 500.0 MB，总耗时 3.2s",
           "task_id": "task-3"
         }
       ],
@@ -92,7 +92,9 @@
       "latest_activity_at": "2026-04-23T10:05:03",
       "mode": "import_batch_start_synthetic",
       "partial_child_count": 0,
+      "participating_archive_count": 3,
       "requested_count": 0,
+      "result_task_count": 3,
       "source_action": null,
       "source_label": null,
       "source_page": null,
@@ -105,7 +107,7 @@
     "rjcode": null,
     "source_path": "D:/incoming/RJ333333.zip",
     "status": "partial_success",
-    "summary": "批量创建解压任务，候选 3 个，压缩包 3 个，已提交解压 2 个，失败 1 个，耗时 5 秒",
+    "summary": "批量创建解压任务，候选 3 个，压缩包 3 个，已完成 2 个，失败 1 个，耗时 3 秒",
     "task_id": "batch-2026-04-23-001"
   }
 ]

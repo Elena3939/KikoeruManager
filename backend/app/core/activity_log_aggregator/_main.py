@@ -31,6 +31,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from ..activity_log_service import CATEGORY_LABELS
+from ..activity_log_relations import IMPORT_RESULT_ACTIONS, latest_import_results, normalize_import_summary
 from ._helpers import (
     _coerce_dt,
     _format_bytes_short,
@@ -71,7 +72,14 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
     """
     rows = [dict(row) for row in rows]
     for row in rows:
+        if row.get("category") in {"auto_import", "process_existing", "extract"}:
+            detail = dict(row.get("detail") or {})
+            bid = row.get("batch_id") or detail.get("batch_id") or detail.get("session_id")
+            if bid:
+                detail["batch_id"] = bid
+            row["detail"] = detail
         row["category_label"] = CATEGORY_LABELS.get(row.get("category"), row.get("category"))
+        row["summary"] = normalize_import_summary(row)
 
     crawl_by_task: dict[str, dict[str, Any]] = {}
     crawl_rows_by_task: dict[str, list[dict[str, Any]]] = {}
@@ -275,7 +283,7 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
     for row in rows:
         if row.get("action") != "batch_start":
             continue
-        if row.get("category") not in {"auto_import", "process_existing"}:
+        if row.get("category") not in {"auto_import", "process_existing", "extract"}:
             continue
         detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
         batch_id = str(detail.get("batch_id") or row.get("task_id") or "").strip()
@@ -285,7 +293,7 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
     synthetic_import_batch_keys: set[tuple[str, str]] = set()
     for row in rows:
         category_key = str(row.get("category") or "").strip()
-        if category_key not in {"auto_import", "process_existing"}:
+        if category_key not in {"auto_import", "process_existing", "extract"}:
             continue
         if str(row.get("action") or "").strip() == "batch_start":
             continue
@@ -303,7 +311,8 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
         batch_key = (category_key, batch_id)
         if batch_key in import_batch_rows_by_key:
             continue
-        if category_key == "auto_import" and int(detail.get("multi_rj_subtask_count") or 0) > 0:
+        if (category_key == "auto_import" and int(detail.get("multi_rj_subtask_count") or 0) > 0
+                and str(row.get("task_id") or "") == batch_id):
             import_batch_rows_by_key[batch_key] = row
             continue
 
@@ -369,6 +378,8 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
             for path in (batch_detail.get("source_paths") or [])
             if str(path).strip()
         }
+        if batch_row.get("action") == "batch_start" and int(batch_detail.get("created_count") or 0) > 0:
+            batch_row["status"] = "incomplete"
         for row in rows:
             row_id = str(row.get("id") or "")
             if row_id == str(batch_row.get("id") or ""):
@@ -384,7 +395,12 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
             )
             if row_category != category_key and not is_cross_multi_rj_child:
                 continue
+            # 归档排队等旁路事件不是另一份解压任务，也不应贡献成功数和容量。
+            if str(row.get("action") or "") not in IMPORT_RESULT_ACTIONS:
+                continue
             row_batch_id = str(detail.get("batch_id") or "").strip()
+            if row_batch_id and row_batch_id != batch_id and not is_cross_multi_rj_child:
+                continue
             row_task_id = str(row.get("task_id") or "").strip()
             row_source_path = str(row.get("source_path") or "").strip()
             row_created_at = _coerce_dt(row.get("created_at")) or datetime.min
@@ -422,35 +438,41 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
             )
             child_rows.append(child_row)
             import_batch_child_rows_by_source_id[row_id] = child_rows[-1]
-            if str(row.get("status") or "").strip() in {"success", "completed"}:
-                extract_completed_count += 1
-            extract_output_total += int(detail.get("extract_output_bytes") or 0)
-            archive_size_total += int(detail.get("archive_size_bytes") or 0)
             latest_activity = max(
                 latest_activity,
                 _coerce_dt(row.get("latest_activity_at") or row.get("created_at")) or datetime.min,
             )
         if child_rows:
             child_rows = _coalesce_import_batch_rows(child_rows)
-            extract_completed_count = sum(1 for item in child_rows if _is_success_status(item.get("status")))
+            result_rows = latest_import_results(child_rows)
+            extract_completed_count = sum(1 for item in result_rows if _is_success_status(item.get("status")))
             failed_child_count = sum(
-                1 for item in child_rows
+                1 for item in result_rows
                 if _is_failed_status(item.get("status"))
                 and not bool(((item.get("detail") if isinstance(item.get("detail"), dict) else {}) or {}).get("recovered_by_success"))
             )
-            partial_child_count = sum(1 for item in child_rows if str(item.get("status") or "").strip() == "partial_success")
+            partial_child_count = sum(1 for item in result_rows if str(item.get("status") or "").strip() == "partial_success")
+            archive_size_total = sum(int(item.get("detail", {}).get("archive_size_bytes") or 0) for item in result_rows)
+            extract_output_total = sum(int(item.get("detail", {}).get("extract_output_bytes") or 0) for item in result_rows)
             latest_activity = _coerce_dt(batch_row.get("created_at")) or datetime.min
             earliest_child_activity = datetime.max
             max_child_duration_ms = 0
             latest_child_completed_at = datetime.min
-            for item in child_rows:
+            for item in result_rows:
                 item_created_at = _coerce_dt(item.get("created_at"))
                 item_latest_at = _coerce_dt(item.get("latest_activity_at") or item.get("created_at")) or datetime.min
                 latest_activity = max(latest_activity, item_latest_at)
-                if item_created_at:
-                    earliest_child_activity = min(earliest_child_activity, item_created_at)
                 item_detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
                 item_duration_ms = int(item_detail.get("duration_ms") or 0)
+                # task_finished.created_at 是结束时刻；旧记录没有开始时间时向前减耗时。
+                item_completed_at = _coerce_dt(item_detail.get("task_completed_at")) or item_created_at
+                item_started_at = _coerce_dt(item_detail.get("task_started_at"))
+                if item_started_at is None and item_completed_at:
+                    item_started_at = item_completed_at - timedelta(milliseconds=item_duration_ms)
+                if item_started_at:
+                    earliest_child_activity = min(earliest_child_activity, item_started_at)
+                if item_completed_at:
+                    latest_child_completed_at = max(latest_child_completed_at, item_completed_at)
                 try:
                     filtered_count_total += int(item_detail.get("filtered_count") or 0)
                 except Exception:
@@ -460,14 +482,13 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                 except Exception:
                     pass
                 max_child_duration_ms = max(max_child_duration_ms, item_duration_ms)
-                if item_created_at and item_duration_ms > 0:
-                    item_completed_at = item_created_at + timedelta(milliseconds=item_duration_ms)
-                    latest_child_completed_at = max(latest_child_completed_at, item_completed_at)
             batch_duration_ms = 0
             duration_end_at = latest_child_completed_at if latest_child_completed_at != datetime.min else latest_activity
             if earliest_child_activity != datetime.max and duration_end_at != datetime.min and duration_end_at >= earliest_child_activity:
                 batch_duration_ms = int((duration_end_at - earliest_child_activity).total_seconds() * 1000)
             batch_duration_ms = max(batch_duration_ms, max_child_duration_ms)
+            if (category_key, batch_id) not in synthetic_import_batch_keys and batch_created_at != datetime.min:
+                batch_duration_ms = max(0, int((duration_end_at - batch_created_at).total_seconds() * 1000))
 
             if failed_child_count > 0 and extract_completed_count > 0:
                 batch_row["status"] = "partial_success"
@@ -475,21 +496,27 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                 batch_row["status"] = "failed"
             elif partial_child_count > 0:
                 batch_row["status"] = "partial_success"
+            elif (len(result_rows) < int(batch_detail.get("created_count") or batch_detail.get("multi_rj_subtask_count") or 0)
+                  or any(item.get("status") not in {"success", "completed", "failed", "error", "partial_success"} for item in result_rows)):
+                batch_row["status"] = "incomplete"
             else:
                 batch_row["status"] = "success"
 
             summary_parts = []
-            requested_count = int(batch_detail.get("requested_count") or len(child_rows) or 0)
-            archive_count = int(batch_detail.get("archive_count") or requested_count or 0)
+            requested_count = int(batch_detail.get("requested_count") or len(result_rows) or 0)
+            archive_count = int(batch_detail.get("archive_count") or 0)
             if (category_key, batch_id) in synthetic_import_batch_keys:
-                requested_count = max(requested_count, len(child_rows))
-                archive_count = max(archive_count, len(child_rows))
+                requested_count = max(requested_count, len(result_rows))
+                archive_count = sum(1 for item in result_rows if item.get("detail", {}).get("archive_input") or item.get("detail", {}).get("archive_size_bytes"))
+            if category_key in {"auto_import", "extract"}:
+                # archive_count 原字段包含被跳过的候选包；主统计只算实际参与任务的包。
+                archive_count = max(int(batch_detail.get("created_count") or 0), len(result_rows))
             if requested_count > 0:
                 summary_parts.append(f"候选 {requested_count} 个")
             if archive_count > 0:
                 summary_parts.append(f"压缩包 {archive_count} 个")
             if extract_completed_count > 0:
-                summary_parts.append(f"已提交解压 {extract_completed_count} 个")
+                summary_parts.append(f"已完成 {extract_completed_count} 个")
             if failed_child_count > 0:
                 summary_parts.append(f"失败 {failed_child_count} 个")
             if batch_duration_ms > 0:
@@ -497,7 +524,8 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                 minutes = total_seconds // 60
                 seconds = total_seconds % 60
                 summary_parts.append(f"耗时 {minutes} 分 {seconds} 秒" if minutes else f"耗时 {seconds} 秒")
-            batch_row["summary"] = f"{'批量创建解压任务' if category_key == 'auto_import' else '批量创建已有目录处理任务'}，{'，'.join(summary_parts)}"
+            if batch_row.get("action") == "batch_start":
+                batch_row["summary"] = f"{'批量创建解压任务' if category_key == 'auto_import' else '批量创建已有目录处理任务'}，{'，'.join(summary_parts)}"
             next_detail = {
                 **batch_detail,
                 "child_rows": sorted(
@@ -508,6 +536,8 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                 "extract_completed_count": extract_completed_count,
                 "failed_child_count": failed_child_count,
                 "partial_child_count": partial_child_count,
+                "result_task_count": len(result_rows),
+                "participating_archive_count": archive_count if category_key in {"auto_import", "extract"} else 0,
                 "aggregate_extract_output_bytes": extract_output_total,
                 "aggregate_archive_size_bytes": archive_size_total,
                 "batch_duration_ms": batch_duration_ms,

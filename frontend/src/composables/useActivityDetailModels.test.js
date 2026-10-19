@@ -2,6 +2,30 @@ import { describe, expect, it } from 'vitest'
 import { ref } from 'vue'
 import { useActivityDetailModels } from './useActivityDetailModels.js'
 
+it('解压历史区分任务总耗时和包含等待的解包阶段', () => {
+  const model = useActivityDetailModels(ref({
+    category: 'auto_import',
+    detail: { duration_ms: 120000, extract_phase_duration_ms: 30000 },
+  }))
+  expect(model.highlights.value.map(item => item.k)).toContain('任务总耗时')
+  expect(model.highlights.value.map(item => item.k)).toContain('解包阶段（含等待）')
+})
+
+it('批次优先展示后端汇总容量并区分候选和实际参与数量', () => {
+  const model = useActivityDetailModels(ref({
+    category: 'auto_import', action: 'batch_start',
+    detail: {
+      participating_archive_count: 600, archive_count: 650, result_task_count: 600,
+      aggregate_archive_size_bytes: 1024, aggregate_extract_output_bytes: 2048,
+      batch_duration_ms: 30000,
+    },
+  }))
+  const highlights = model.highlights.value
+  expect(highlights[0]).toEqual({ k: '参与解压包数', v: '600' })
+  expect(highlights.map(item => item.k)).toContain('批量压缩包大小')
+  expect(highlights).toContainEqual({ k: '候选压缩包数', v: '650' })
+})
+
 function createBaiduRow(downloadFiles, failedFiles) {
   return {
     category: 'baidu_netdisk',
