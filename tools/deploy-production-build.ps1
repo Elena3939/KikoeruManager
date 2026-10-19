@@ -36,7 +36,7 @@ if ($LASTEXITCODE -ne 0 -or -not $sourceRevision) {
     throw '无法读取当前 Git revision，拒绝发布。'
 }
 
-$sourceFiles = @(& git -C $repoRoot ls-files -co --exclude-standard)
+$sourceFiles = @(& git -C $repoRoot -c core.quotepath=false ls-files -co --exclude-standard)
 if ($LASTEXITCODE -ne 0 -or $sourceFiles.Count -eq 0) {
     throw '无法列出源码快照文件，拒绝发布。'
 }
@@ -48,6 +48,7 @@ foreach ($requiredFile in @('Dockerfile', '.dockerignore', 'backend/requirements
 }
 
 $fileList = Join-Path ([System.IO.Path]::GetTempPath()) "kikoerumanager-release-$ReleaseId-files.txt"
+$localArchive = Join-Path ([System.IO.Path]::GetTempPath()) "kikoerumanager-release-$ReleaseId.tar.gz"
 $remoteArchive = "/tmp/kikoerumanager-release-$ReleaseId.tar.gz"
 $remoteScript = "/tmp/kikoerumanager-deploy-$ReleaseId.sh"
 $forceValue = if ($Force) { '1' } else { '0' }
@@ -74,8 +75,12 @@ try {
     }
 
     Write-Host '上传当前工作区源码快照...' -ForegroundColor Yellow
-    & tar.exe -C $repoRoot -czf - -T $fileList |
-        & $pwshExecutable -NoProfile -File $connectScript "umask 077; cat > '$remoteArchive'"
+    & tar.exe -C $repoRoot -czf $localArchive -T $fileList
+    if ($LASTEXITCODE -ne 0) {
+        throw '源码快照打包失败，拒绝上传不完整的发布包。'
+    }
+    & tar.exe -C ([System.IO.Path]::GetTempPath()) -cf - ([System.IO.Path]::GetFileName($localArchive)) |
+        & $pwshExecutable -NoProfile -File $connectScript "umask 077; tar -xf - -C /tmp"
     if ($LASTEXITCODE -ne 0) {
         throw '源码快照上传失败。'
     }
@@ -90,4 +95,5 @@ try {
 }
 finally {
     Remove-Item -LiteralPath $fileList -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $localArchive -Force -ErrorAction SilentlyContinue
 }

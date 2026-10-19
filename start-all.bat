@@ -99,7 +99,7 @@ if exist "%FRONTEND_PID_FILE%" (
     )
     del /q "%FRONTEND_PID_FILE%" >nul 2>&1
 )
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$currentPid = $PID; $root = '%~dp0'.TrimEnd('\'); $backend = Join-Path $root 'backend'; $frontend = Join-Path $root 'frontend'; $targets = Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $currentPid -and $_.ParentProcessId -ne $currentPid -and $_.Name -in @('cmd.exe','powershell.exe','pwsh.exe') -and ($_.CommandLine -like '*KikoeruManager Backend*' -or $_.CommandLine -like '*KikoeruManager Frontend*' -or ($_.CommandLine -like ('*' + $backend + '*') -and $_.CommandLine -like '*venv\Scripts\python.exe -m app.main*') -or ($_.CommandLine -like ('*' + $frontend + '*') -and $_.CommandLine -like '*npm run dev*')) }; foreach ($target in $targets) { Write-Host ('[INFO] Close terminal tree: PID ' + $target.ProcessId + ' ' + $target.Name); taskkill /PID $($target.ProcessId) /T /F | Out-Null }"
+pwsh -NoProfile -ExecutionPolicy Bypass -Command "$currentPid = $PID; $root = '%~dp0'.TrimEnd('\'); $backend = Join-Path $root 'backend'; $frontend = Join-Path $root 'frontend'; $targets = Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $currentPid -and $_.ParentProcessId -ne $currentPid -and $_.Name -in @('cmd.exe','powershell.exe','pwsh.exe') -and ($_.CommandLine -like '*KikoeruManager Backend*' -or $_.CommandLine -like '*KikoeruManager Frontend*' -or ($_.CommandLine -like ('*' + $backend + '*') -and $_.CommandLine -like '*venv\Scripts\python.exe -m app.main*') -or ($_.CommandLine -like ('*' + $frontend + '*') -and $_.CommandLine -like '*npm run dev*')) }; foreach ($target in $targets) { Write-Host ('[INFO] Close terminal tree: PID ' + $target.ProcessId + ' ' + $target.Name); taskkill /PID $($target.ProcessId) /T /F | Out-Null }"
 timeout /t 1 /nobreak >nul
 
 set "BAIDUPCS_GO_DIR=%~dp0tools\baidupcs-go"
@@ -110,7 +110,7 @@ if exist "%BAIDUPCS_GO_EXE%" (
     echo [OK] BaiduPCS-Go found: %BAIDUPCS_GO_EXE%
 ) else (
     echo [INFO] BaiduPCS-Go not found in tools\baidupcs-go
-    echo [INFO] Run: powershell -ExecutionPolicy Bypass -File scripts\install-baidupcs-go.ps1
+    echo [INFO] Run: pwsh -ExecutionPolicy Bypass -File scripts\install-baidupcs-go.ps1
 )
 
 if not exist "data\config" mkdir "data\config"
@@ -120,7 +120,7 @@ if not exist "%CONFIG_PATH%" (
 )
 
 echo [INFO] Checking PostgreSQL...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-postgresql.ps1" -StartOnly
+pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-postgresql.ps1" -StartOnly
 if errorlevel 1 (
     echo [ERROR] PostgreSQL is not ready.
     echo [INFO] Run setup.bat to install and initialize PostgreSQL.
@@ -129,7 +129,7 @@ if errorlevel 1 (
 )
 
 echo [INFO] Starting Redis...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-redis.ps1"
+pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-redis.ps1"
 if errorlevel 1 (
     echo [ERROR] Redis auto-start failed.
     echo [INFO] Check data\config\config.yaml redis.url or D:\softApp\redis installation.
@@ -137,7 +137,7 @@ if errorlevel 1 (
     exit /b 1
 )
 echo [INFO] Checking Redis...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\check-redis.ps1"
+pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\check-redis.ps1"
 if errorlevel 1 (
     echo [ERROR] Redis is not ready.
     echo [INFO] Start Redis at the configured URL, or disable redis.required in data\config\config.yaml for local development only.
@@ -154,7 +154,7 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5556" ^| findstr "LISTENING
     taskkill /PID %%P /T /F >nul 2>&1
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:PYTHONUTF8 = '1'; $env:PYTHONIOENCODING = 'utf-8'; $env:CONFIG_PATH = '%CONFIG_PATH%'; $env:DATA_PATH = '%~dp0data'; $env:BAIDUPCS_GO_PATH = '%BAIDUPCS_GO_PATH%'; $env:PATH = '%BAIDUPCS_GO_DIR%;' + $env:PATH; $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/k', 'title KikoeruManager Backend && chcp 65001 >nul && venv\Scripts\python.exe -m app.main' -WorkingDirectory '%~dp0backend' -PassThru; Set-Content -LiteralPath '%BACKEND_PID_FILE%' -Value $p.Id -Encoding ASCII"
+pwsh -NoProfile -ExecutionPolicy Bypass -Command "$env:PYTHONUTF8 = '1'; $env:PYTHONIOENCODING = 'utf-8'; $env:CONFIG_PATH = '%CONFIG_PATH%'; $env:DATA_PATH = '%~dp0data'; $env:BAIDUPCS_GO_PATH = '%BAIDUPCS_GO_PATH%'; $env:PATH = '%BAIDUPCS_GO_DIR%;' + $env:PATH; $p = Start-Process -WindowStyle Hidden -FilePath 'cmd.exe' -ArgumentList '/k', 'title KikoeruManager Backend && chcp 65001 >nul && venv\Scripts\python.exe -m app.main' -WorkingDirectory '%~dp0backend' -PassThru; Set-Content -LiteralPath '%BACKEND_PID_FILE%' -Value $p.Id -Encoding ASCII"
 
 timeout /t 3 /nobreak >nul
 
@@ -181,7 +181,7 @@ if errorlevel 1 (
 )
 
 set "FRONTEND_CMD=title KikoeruManager Frontend && cd /d "%~dp0frontend" && npm run dev"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/k', $env:FRONTEND_CMD -PassThru; Set-Content -LiteralPath $env:FRONTEND_PID_FILE -Value $p.Id -Encoding ASCII"
+pwsh -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -WindowStyle Hidden -FilePath 'cmd.exe' -ArgumentList '/k', $env:FRONTEND_CMD -PassThru; Set-Content -LiteralPath $env:FRONTEND_PID_FILE -Value $p.Id -Encoding ASCII"
 
 echo ========================================
 echo Services started!
