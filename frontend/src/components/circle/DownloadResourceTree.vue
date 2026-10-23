@@ -13,7 +13,7 @@
   </div>
   <template v-else>
   <div class="download-resource-tree">
-    <div v-if="!isArchive" class="tree-row plan-node-header flex items-center gap-2 px-2 py-2 rounded-md cursor-pointer" @click.stop="emit('toggle-root')">
+    <div v-if="!isArchive && !hideRoot" class="tree-row plan-node-header flex items-center gap-2 px-2 py-2 rounded-md cursor-pointer" @click.stop="emit('toggle-root')">
       <ChevronRight v-if="plan.rootExpanded === false" :size="16" class="text-blue-400" />
       <ChevronDown v-else :size="16" class="text-blue-400" />
       <slot name="root-select" />
@@ -31,7 +31,7 @@
     <div v-for="row in !isArchive && plan.rootExpanded === false ? [] : plan.flatRows" :key="row.id" class="tree-node">
       <div class="tree-row resource-file-row flex items-center gap-2 px-2 py-2 rounded-md"
         :class="{ 'tree-row-selected': !readonly && sourceSelected && (row.checked || row.indeterminate), 'is-unavailable': row.resource?.complete === false }"
-        :style="{ paddingLeft: `${(row.depth + (isArchive ? 0 : 1)) * 16 + 8}px` }"
+        :style="{ paddingLeft: `${(row.depth + (isArchive || hideRoot ? 0 : 1)) * 16 + 8}px` }"
         @click="row.type === 'dir' ? emit('toggle-expand', row) : !readonly && row.resource?.complete !== false && emit('toggle-row', row)">
         <button v-if="row.type === 'dir'" type="button" class="tree-expander" aria-label="展开目录" @click.stop="emit('toggle-expand', row)"><ChevronDown v-if="plan.expandedIds.has(row.id)" :size="16" /><ChevronRight v-else :size="16" /></button>
         <slot v-if="isArchive && row.depth === 0" name="root-select" :row="row" />
@@ -43,8 +43,9 @@
         <div class="min-w-0 flex-1">
           <span class="tree-name block truncate text-sm font-medium" :title="row.name">{{ row.name }}</span>
           <span v-if="isArchive" class="resource-file-meta"><span class="version-tag">{{ archiveLanguage(row) }}</span> {{ row.resource.rjcode }} · {{ row.resource.files?.length || 0 }} 个文件{{ row.resource.complete ? '' : ' · 分卷不完整' }}</span>
+          <slot name="row-detail" :row="row" />
         </div>
-        <span class="tree-size text-xs shrink-0">{{ formatSize(row.size_bytes) }}</span>
+        <slot name="row-action" :row="row"><span class="tree-size text-xs shrink-0">{{ formatSize(row.size_bytes) }}</span></slot>
         <slot v-if="isArchive && row.depth === 0" name="root-action" />
       </div>
     </div>
@@ -57,7 +58,7 @@ import { computed } from 'vue'
 import { Check, ChevronDown, ChevronRight, Folder } from 'lucide-vue-next'
 import { LIBRARY_ENTRY_KIND_META, libraryEntryMetaFor } from '../library/_libraryFileKind'
 
-const props = defineProps({ plan: { type: Object, default: null }, plans: { type: Array, default: null }, readonly: Boolean, sourceSelected: { type: Boolean, default: true } })
+const props = defineProps({ plan: { type: Object, default: null }, plans: { type: Array, default: null }, readonly: Boolean, hideRoot: Boolean, sourceSelected: { type: Boolean, default: true } })
 const emit = defineEmits(['toggle-root', 'toggle-all', 'toggle-expand', 'toggle-row', 'change-source'])
 const isArchive = computed(() => props.plan?.source_provider === 'imoutoheaven')
 const allSelected = computed(() => props.plan?.selectable_resources?.length > 0
