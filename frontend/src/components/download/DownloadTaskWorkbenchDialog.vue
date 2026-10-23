@@ -543,7 +543,8 @@ const aggregatedTransferEta = computed(() => {
 const remainingTaskSummary = computed(() => {
   const remaining = processingTasks.value.length + pendingTasks.value.length
   if (remaining) return `${remaining} 个`
-  if (partialFailedTasks.value.length > 0) return '有失败'
+  if (mergedTasks.value.some(task => ['warning', 'danger'].includes(getTaskTone(task)))) return '有失败'
+  if (mergedTasks.value.some(task => String(task?.display_status || task?.status) === 'cancelled')) return '已取消，已完成文件保留'
   return '已全部完成'
 })
 
