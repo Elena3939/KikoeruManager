@@ -172,6 +172,12 @@ def request(method, path, payload=None):
 source = json.loads(request("GET", f"/v1.41/containers/{quote(source_name, safe='')}/json"))
 config = dict(source["Config"])
 config["Image"] = target_image
+image = json.loads(request("GET", f"/v1.41/images/{quote(target_image, safe='')}/json"))
+# 应用版本来自新镜像，不能把旧容器烘焙的版本号当成用户配置继承。
+version = next((entry for entry in image["Config"].get("Env", []) if entry.startswith("KIKOERUMANAGER_VERSION=")), None)
+if version is not None:
+    config["Env"] = [entry for entry in config.get("Env", []) if not entry.startswith("KIKOERUMANAGER_VERSION=")] + [version]
+config["Labels"] = {**(config.get("Labels") or {}), **(image["Config"].get("Labels") or {})}
 
 allowed_endpoint_keys = {"IPAMConfig", "Links", "Aliases", "DriverOpts", "GwPriority"}
 endpoints = {}
