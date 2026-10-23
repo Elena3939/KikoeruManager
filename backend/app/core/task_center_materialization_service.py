@@ -2,7 +2,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
-from sqlalchemy import func
+from sqlalchemy import case, func
 
 from .task_engine import TaskStatus
 from .json_safety import safe_text
@@ -14,11 +14,6 @@ logger = logging.getLogger(__name__)
 
 def _escape_ilike_pattern(value: str) -> str:
     return str(value or "").replace("!", "!!").replace("%", "!%").replace("_", "!_")
-
-
-def _normalize_task_center_search(value: Optional[str]) -> str:
-    text = safe_text(value, strip=True).lower()
-    return text if len(text) >= 2 else ""
 
 
 class TaskCenterMaterializationService:
@@ -37,6 +32,7 @@ class TaskCenterMaterializationService:
             item.get("entity_id"),
             item.get("engine_task_id"),
             item.get("record_id"),
+            item.get("subtype_label"),
             item.get("title"),
             item.get("subtitle"),
             item.get("source_label"),
@@ -266,26 +262,49 @@ class TaskCenterMaterializationService:
         search: Optional[str] = None,
         limit: int = 200,
         offset: int = 0,
+        subtype: Optional[str] = None,
+        ordered_ids: Optional[List[str]] = None,
+        overrides: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         safe_limit = max(1, min(int(limit or 200), 5000))
         safe_offset = max(0, int(offset or 0))
         normalized_domain = safe_text(domain, strip=True)
         normalized_status = safe_text(status, strip=True)
-        normalized_search = _normalize_task_center_search(search)
+        normalized_search = safe_text(search, strip=True).lower()
 
         db = SessionLocal()
         try:
             query = db.query(TaskCenterItem)
+            def field(key, default):
+                replacements = {item_id: safe_text(item.get(key)) for item_id, item in (overrides or {}).items()}
+                return case(replacements, value=TaskCenterItem.item_id, else_=default) if replacements else default
+
+            if ordered_ids is not None:
+                query = query.filter(TaskCenterItem.item_id.in_(ordered_ids))
+            if subtype and subtype != "all":
+                query = query.filter(field("subtype", TaskCenterItem.payload_json["subtype"].as_string()) == subtype)
             if normalized_domain and normalized_domain != "all":
-                query = query.filter(TaskCenterItem.domain == normalized_domain)
+                query = query.filter(field("domain", TaskCenterItem.domain) == normalized_domain)
             if normalized_status and normalized_status != "all":
-                query = query.filter(TaskCenterItem.status == normalized_status)
+                query = query.filter(field("status", TaskCenterItem.status) == normalized_status)
             if normalized_search:
                 like = f"%{_escape_ilike_pattern(normalized_search)}%"
-                query = query.filter(TaskCenterItem.searchable_text.ilike(like, escape="!"))
+                if ordered_ids is None:
+                    query = query.filter(TaskCenterItem.searchable_text.ilike(like, escape="!"))
+                else:
+                    # 正式摘要与旧聚合器使用相同字段，支持单字及字面量通配符搜索。
+                    parts = [func.coalesce(field(key, TaskCenterItem.payload_json[key].as_string()), "")
+                             for key in ("subtype_label", "title", "subtitle", "source_path", "rjcode", "current_step")]
+                    text = parts[0]
+                    for part in parts[1:]:
+                        text = text + " " + part
+                    query = query.filter(text.ilike(like, escape="!"))
             total = query.count()
+            order = ([case({item_id: position for position, item_id in enumerate(ordered_ids)},
+                           value=TaskCenterItem.item_id, else_=len(ordered_ids))]
+                     if ordered_ids else [TaskCenterItem.updated_at.desc(), TaskCenterItem.created_at.desc()])
             rows = (
-                query.order_by(TaskCenterItem.updated_at.desc(), TaskCenterItem.created_at.desc())
+                query.order_by(*order)
                 .offset(safe_offset)
                 .limit(safe_limit)
                 .all()
@@ -301,6 +320,27 @@ class TaskCenterMaterializationService:
                 "offset": safe_offset,
                 "limit": safe_limit,
             }
+        finally:
+            db.close()
+
+    def list_identity_projection(self) -> List[Dict[str, Any]]:
+        """仅取去重/排序依赖；大 payload 只在 SQL 分页后读取。"""
+        fields = ("id", "entity_id", "engine_task_id", "domain", "status", "kind", "subtype",
+                  "source_path", "created_at", "started_at", "completed_at")
+        metadata_keys = ("retry_failed_task_id", "superseded_by_task_id", "recovered_failure_ids")
+        payload = TaskCenterItem.payload_json
+        db = SessionLocal()
+        try:
+            columns = [payload[key].as_string() for key in fields]
+            columns.extend(payload["details"]["metadata"][key] for key in metadata_keys)
+            rows = (db.query(*columns)
+                    .order_by(TaskCenterItem.updated_at.desc(), TaskCenterItem.created_at.desc()).all())
+            items = []
+            for row in rows:
+                item = {key: value for key, value in zip(fields, row) if value is not None}
+                item["details"] = {"metadata": dict(zip(metadata_keys, row[len(fields):]))}
+                items.append(item)
+            return items
         finally:
             db.close()
 

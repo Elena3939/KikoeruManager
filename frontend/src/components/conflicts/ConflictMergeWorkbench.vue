@@ -130,7 +130,7 @@
             <p class="my-4 max-w-3xl whitespace-pre-wrap break-words px-6 text-sm">{{ progressMessage }}</p>
             <button type="button" class="cmw-action-btn is-slate" @click="emit('refresh')">重新生成预览</button>
           </div>
-          <div v-else-if="loading" class="cmw-loading-panel">
+          <div v-else-if="loading || submitting" class="cmw-loading-panel">
             <AppLoadingAnimation
               :label="loadingLabel"
               :description="loadingDescription"
@@ -160,9 +160,10 @@
                 </div>
               </div>
 
-              <div class="cmw-split-list">
+              <div ref="listViewport" class="cmw-split-list" @scroll="listScrollTop = $event.target.scrollTop">
+                <div :style="{ height: `${rowWindow.start * rowHeight}px` }" />
                 <article
-                  v-for="row in displayRows"
+                  v-for="row in rowWindow.rows"
                   :key="row.node_key"
                   class="cmw-split-row"
                   :class="rowToneClass(row)"
@@ -241,6 +242,7 @@
                     </div>
                   </section>
                 </article>
+                <div :style="{ height: `${(displayRows.length - rowWindow.end) * rowHeight}px` }" />
 
                 <div v-if="!displayRows.length" class="cmw-diff-empty">
                   <Search class="h-10 w-10 mx-auto mb-2 opacity-20" />
@@ -303,7 +305,8 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { useElementSize } from '@vueuse/core'
 import {
   GitMerge, Search, RotateCcw, RefreshCw, X, Upload, Minimize2,
   CheckCircle2, XCircle,
@@ -553,9 +556,8 @@ function buildTree(items) {
       return
     }
     const parentNode = ensureNode(parentPath, 'dir')
-    if (!parentNode.children.some(child => child.node_key === node.node_key)) {
-      parentNode.children.push(node)
-    }
+    // nodeMap 的每个路径只遍历一次，无需对大目录逐行线性去重。
+    parentNode.children.push(node)
   })
 
   return sortNodes(roots)
@@ -848,6 +850,20 @@ function flattenTree(nodes, depth = 0) {
 }
 
 const displayRows = computed(() => flattenTree(filteredTreeData.value))
+const listViewport = ref(null)
+const listScrollTop = ref(0)
+const { height: listHeight } = useElementSize(listViewport)
+const rowHeight = 48
+const rowWindow = computed(() => {
+  const count = displayRows.value.length
+  const start = Math.min(Math.max(0, count - 1), Math.max(0, Math.floor(listScrollTop.value / rowHeight) - 8))
+  const end = Math.min(count, start + Math.ceil((listHeight.value || 640) / rowHeight) + 16)
+  return { start, end, rows: displayRows.value.slice(start, end) }
+})
+watch(displayRows, () => {
+  listScrollTop.value = 0
+  if (listViewport.value) listViewport.value.scrollTop = 0
+})
 
 function close() {
   // 隐藏运行中的窗口只缩小，只有“终止生成”可以取消后端任务。
@@ -1469,7 +1485,9 @@ function formatDate(value) {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 6px;
   align-items: stretch;
-  min-height: 38px;
+  height: 48px;
+  box-sizing: border-box;
+  overflow: hidden;
   border-bottom: 1px solid rgba(219, 226, 235, 0.62);
 }
 

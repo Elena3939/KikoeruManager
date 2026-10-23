@@ -1,5 +1,8 @@
 import {
   Activity,
+  RefreshCw,
+  HardDrive,
+  ScanSearch,
   Captions,
   CloudDownload,
   Database,
@@ -187,4 +190,17 @@ export const KPI_META = {
 
 export function getKpiMeta(key) {
   return KPI_META[key] || TASK_DOMAIN_META.system
+}
+
+// 社团任务共用类型展示，平台标识保留在副标题。
+export const TASK_SUBTYPE_META = {
+  circle_index: { label: '社团索引', icon: Database },
+  work_refresh: { label: '作品状态刷新', icon: RefreshCw },
+  owned_check: { label: '本地收录核对', icon: HardDrive },
+  bonus_probe: { label: '特典探测', icon: ScanSearch },
+  work_download: { label: '作品下载', icon: Download },
+}
+
+export function getTaskSubtypeMeta(item) {
+  return TASK_SUBTYPE_META[item?.subtype] || null
 }

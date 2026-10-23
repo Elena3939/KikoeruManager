@@ -120,9 +120,10 @@ def test_task_center_materialized_summary_dedupes_retry_chain(monkeypatch):
         "details": {"metadata": {"retry_failed_task_id": "old-task"}},
     }
     materialized_service = Mock()
+    materialized_service.list_identity_projection.return_value = [old_item, retry_item]
     materialized_service.list_items.return_value = {
-        "items": [old_item, retry_item],
-        "total": 2,
+        "items": [retry_item],
+        "total": 1,
     }
     monkeypatch.setattr(
         materialization_module,
@@ -136,6 +137,7 @@ def test_task_center_materialized_summary_dedupes_retry_chain(monkeypatch):
     assert result["total"] == 1
     assert result["counts_by_status"][TaskStatus.WAITING_MANUAL.value] == 1
     assert result["highlight_counts"]["waiting_manual"] == 1
+    assert materialized_service.list_items.call_args.kwargs["ordered_ids"] == ["engine:retry-task"]
 
 
 def test_task_center_materialized_item_snapshot_skips_unchanged_payload():

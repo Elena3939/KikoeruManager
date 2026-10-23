@@ -58,18 +58,21 @@
         "pe-task-1",
         "pe-task-2"
       ],
+      "duplicate_child_count": 0,
       "extract_completed_count": 1,
       "failed_child_count": 1,
       "latest_activity_at": "2026-04-23T13:10:10",
       "partial_child_count": 0,
       "participating_archive_count": 0,
       "requested_count": 2,
-      "result_task_count": 2
+      "result_task_count": 2,
+      "subtitle_pending_count": 0
     },
     "has_child_rows": true,
     "id": "pe-batch-start",
     "latest_activity_at": "2026-04-23T13:10:10",
     "parent_id": null,
+    "result_status": "partial_success",
     "rjcode": null,
     "session_key": null,
     "source_path": null,

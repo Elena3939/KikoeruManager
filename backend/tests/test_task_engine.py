@@ -151,39 +151,18 @@ class TestTaskEngine:
         record_problem.assert_called_once_with(task, "RJ01606254", "DLsite 关联链结果不完整")
         remove_waiting.assert_called_once_with("RJ01606254")
 
-    def test_uncertain_dlsite_retry_uses_fixed_schedule_and_business_key(
-        self,
-        engine,
-    ):
-        expected_delays = [
-            timedelta(minutes=15),
-            timedelta(hours=1),
-            timedelta(hours=6),
-        ]
-        for completed_count, expected_delay in enumerate(expected_delays):
-            task = Task(
-                task_type=TaskType.AUTO_PROCESS,
-                source_path=f"/test/RJ0160625{completed_count}.7z",
-                rjcode=f"RJ0160625{completed_count}",
-                metadata={"retry_count": completed_count},
-            )
-            before = datetime.now()
-
-            retry_after = engine._schedule_dlsite_linkage_retry(
-                task,
-                "DLsite 关联链结果不完整",
-            )
-
-            assert retry_after is not None
-            assert expected_delay - timedelta(seconds=1) <= retry_after - before
-            assert retry_after - before <= expected_delay + timedelta(seconds=1)
-            assert task.task_metadata["retry_count"] == completed_count + 1
-            assert task.task_metadata["business_key"] == (
-                f"{task.rjcode}:dlsite_linkage"
-            )
-            history = task.task_metadata["dlsite_linkage_attempt_history"]
-            assert history[-1]["attempt"] == completed_count + 1
-            assert task.status == TaskStatus.WAITING_RETRY
+    def test_uncertain_dlsite_linkage_immediately_becomes_problem_work(self, engine, monkeypatch):
+        record_problem = Mock()
+        monkeypatch.setattr(engine, "_record_problem_work_for_task_failure", record_problem)
+        monkeypatch.setattr(engine, "_remove_waiting_retry_task", Mock())
+        task = Task(task_type=TaskType.AUTO_PROCESS, source_path="/test/RJ01606254.7z", rjcode="RJ01606254")
+        result = engine._schedule_dlsite_linkage_retry(task, "关联数据查询失败")
+        assert result is None
+        assert task.status == TaskStatus.WAITING_MANUAL
+        assert task.task_metadata["failure_stage"] == "linkage"
+        assert task.task_metadata["retry_linkage_required"] is True
+        assert engine._should_skip_conflict_retry_precheck(task) is False
+        record_problem.assert_called_once_with(task, task.rjcode, "关联数据查询失败")
 
     @pytest.mark.asyncio
     async def test_retry_scheduler_respects_retry_after(

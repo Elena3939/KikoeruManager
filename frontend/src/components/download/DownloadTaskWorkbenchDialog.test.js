@@ -7,6 +7,28 @@ vi.mock('../../assets/anime/success confetti.lottie', () => ({ default: 'success
 vi.mock('../common/AppLottieProgressBar.vue', () => ({ default: { template: '<div />' } }))
 vi.mock('../common/AppEmptyState.vue', () => ({ default: { template: '<div />' } }))
 
+describe('下载任务 RJ 展示', () => {
+  it.each([
+    ['标题已是 RJ', { work_title: 'RJ01715445', rjcode: 'RJ01715445' }, ''],
+    ['标题含 RJ 但字段为空', { work_title: 'RJ01715445' }, ''],
+    ['压缩包文件名含 RJ', { download_files: [{ name: 'RJ01715445(south-plus).rar' }] }, 'RJ01715445'],
+    ['分卷和小写编号', { task_metadata: { selected_resources: [{ file_name: '[rj123456].part1.rar' }, { relative_path: '[rj123456].part2.rar' }] } }, 'RJ123456'],
+    ['多个不同 RJ 的合集', { download_files: [{ name: 'RJ01715445.rar' }, { name: 'RJ01434247.rar' }] }, ''],
+    ['显式编号优先', { rjcode: 'RJ01715445', download_files: [{ name: 'RJ01434247.rar' }] }, 'RJ01715445'],
+    ['没有编号', {}, ''],
+    ['超长数字不截断为 RJ', { download_files: [{ name: 'RJ123456789.rar' }] }, ''],
+  ])('%s', (_, fields, expected) => {
+    const wrapper = shallowMount(DownloadTaskWorkbenchDialog, {
+      props: { visible: true, tasks: [{ id: 'download', status: 'processing', work_title: '下载作品', ...fields }], mergeTasks: false },
+      global: { stubs: { Teleport: true } },
+    })
+    expect(wrapper.find('.v1-task-rj').exists()).toBe(Boolean(expected))
+    if (expected) expect(wrapper.get('.v1-task-rj').text()).toBe(expected)
+    expect(wrapper.text()).not.toContain('未知 RJ')
+    wrapper.unmount()
+  })
+})
+
 describe('HTTP 下载失败任务取消', () => {
   it.each(['failed', 'partial_failed'])('%s 状态即使没有文件明细也能取消', async (status) => {
     const task = { id: 'http-failed', status, task_domain: 'http_download', task_metadata: {} }

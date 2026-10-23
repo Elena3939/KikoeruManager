@@ -1940,7 +1940,8 @@ class ExtractService:
             return
 
         try:
-            yield True
+            async with self._measure_extract_execution(task, enabled=budget_resource == "archive_cpu"):
+                yield True
         finally:
             if budget_entered and budget_cm is not None:
                 await budget_cm.__aexit__(None, None, None)
@@ -2312,8 +2313,25 @@ class ExtractService:
         await self._rollback_zip_numeric_remap(task)
         await self._rollback_part_exe_remap(task)
 
+    @contextlib.asynccontextmanager
+    async def _measure_extract_execution(self, task: Optional[Task], *, enabled: bool = True):
+        """取得资源后按单任务累计实际解包执行时间，包含失败尝试，不包含槽位等待。"""
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            if enabled and task is not None:
+                elapsed = max(0, round((time.monotonic() - started) * 1000))
+                metadata = dict(task.task_metadata or {})
+                metadata["extract_execution_duration_ms"] = int(metadata.get("extract_execution_duration_ms") or 0) + elapsed
+                task.task_metadata = metadata
+
     async def extract(self, task: Task) -> Optional[str]:
         """统一清理标准卷名视图，包括预读失败和取消的提前退出。"""
+        metadata = dict(task.task_metadata or {})
+        for key in ("extract_execution_duration_ms", "extract_started_at", "extract_finished_at"):
+            metadata.pop(key, None)
+        task.task_metadata = metadata
         try:
             return await self._extract(task)
         finally:
@@ -2367,7 +2385,9 @@ class ExtractService:
         if embedded_zip_direct_path:
             archive_path = embedded_zip_direct_path
         else:
-            archive_path = await self._repair_extension(archive_path)
+            # 合并预览只读原包；7zz 按内容识别格式，不修正用户源文件名。
+            if not (task.task_metadata or {}).get("preserve_archive_source"):
+                archive_path = await self._repair_extension(archive_path)
 
             # 更新任务的 source_path，确保归档时使用正确的路径。伪装 ZIP 的临时视图
             # 不写回 source_path，否则后续归档会搬走临时文件而不是用户原始文件。
@@ -3156,8 +3176,13 @@ class ExtractService:
         # 字幕小包、分卷非首卷、已处理文件等仍按原规则就地跳过。
         pending: List[Dict[str, object]] = []
         stop_scan = False
+        walk = os.walk(directory)
         try:
-            for root, dirs, files in os.walk(directory):
+            while True:
+                entry = await asyncio.to_thread(next, walk, None)
+                if entry is None:
+                    break
+                root, dirs, files = entry
                 dirs[:] = [
                     item for item in dirs
                     if item.lower() not in self.NESTED_SKIP_DIRS
@@ -3180,7 +3205,7 @@ class ExtractService:
                     file_path = os.path.join(root, filename)
 
                     # 检查是否已经处理过（防止循环）
-                    file_real_path = os.path.realpath(file_path)
+                    file_real_path = await asyncio.to_thread(os.path.realpath, file_path)
                     if file_real_path in processed_paths:
                         logger.debug(f"跳过已处理的文件: {filename}")
                         continue
@@ -3226,7 +3251,7 @@ class ExtractService:
                     #   - 其他一切（命名不规范 / peek 失败 / 含媒体 / 含说明 .txt）
                     #     → non_subtitle，走常规解压让密码列表逐个尝试，保证不漏奖励
                     try:
-                        nested_archive_size = os.path.getsize(file_path)
+                        nested_archive_size = await asyncio.to_thread(os.path.getsize, file_path)
                     except OSError:
                         nested_archive_size = 0
 
@@ -4852,7 +4877,11 @@ class ExtractService:
         except Exception as exc:
             logger.warning(f"[残缺后缀修复] 扫描目录失败: {directory}, {exc}")
             return rename_map
-        for root, dirs, files in walk_iter:
+        while True:
+            entry = await asyncio.to_thread(next, walk_iter, None)
+            if entry is None:
+                break
+            root, dirs, files = entry
             dirs[:] = [
                 d for d in dirs
                 if d.lower() not in self.NESTED_SKIP_DIRS
@@ -5038,11 +5067,10 @@ class ExtractService:
         max_retries = 3
         for retry in range(max_retries):
             try:
-                with open(file_path, 'rb') as f:
-                    header = f.read(8)
-                    for magic, file_type in magic_bytes.items():
-                        if header.startswith(magic):
-                            return file_type
+                header = await asyncio.to_thread(self._read_magic_header, file_path)
+                for magic, file_type in magic_bytes.items():
+                    if header.startswith(magic):
+                        return file_type
                 break
             except PermissionError:
                 if retry < max_retries - 1:
@@ -5055,6 +5083,12 @@ class ExtractService:
                 break
 
         return None
+
+    @staticmethod
+    def _read_magic_header(file_path: str) -> bytes:
+        """文件打开、读取和关闭全部在线程中执行，避免慢卷阻塞主事件循环。"""
+        with open(file_path, 'rb') as stream:
+            return stream.read(8)
 
     def _get_correct_extension(self, file_type: str) -> str:
         """获取正确的后缀名"""
@@ -7956,7 +7990,7 @@ class ExtractService:
                     max(40, int(task.progress or 0)),
                     f"等待解压槽位（当前并发上限 {self.__class__._seven_zip_semaphore_limit or 1}）",
                 )
-            async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.path_remap_entry"):
+            async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.path_remap_entry"), self._measure_extract_execution(task):
                 kwargs = {
                     "stdout": subprocess.PIPE,
                     "stderr": subprocess.PIPE,
@@ -10886,7 +10920,7 @@ class ExtractService:
                     max(31, int(task.progress or 0)),
                     f"等待解压槽位（当前并发上限 {self.__class__._seven_zip_semaphore_limit or 1}）",
                 )
-            async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.subprocess"):
+            async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.subprocess"), self._measure_extract_execution(task):
                 if task is not None and running_step:
                     task.update_progress(max(40, int(task.progress or 0)), running_step)
                 kwargs = {

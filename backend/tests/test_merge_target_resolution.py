@@ -90,6 +90,35 @@ def test_stale_index_hit_does_not_become_target(context, tmp_path):
     assert service.describe_conflict(conflict())["existing"]["path"] == ""
 
 
+def test_inherited_children_only_check_each_work_root_once(context, tmp_path):
+    service, manager = context
+    root = tmp_path / 'RJ01731933'
+    root.mkdir()
+    manager.find_rj_in_ready_index.return_value = {
+        'RJ01731933': [{'path': str(root / f'child{i}')} for i in range(50)],
+    }
+    with patch('app.core.conflict_resolution_service.os.path.isdir', return_value=True) as isdir:
+        existing = service._existing_conflict_context(conflict())
+    assert existing['path'] == str(root)
+    assert isdir.call_count == 1
+    manager.find_rj_in_ready_index.reset_mock()
+    assert 'MERGE' in service.get_available_actions(conflict(), existing)
+    manager.find_rj_in_ready_index.assert_not_called()
+
+
+def test_single_large_directory_obeys_stats_budget(context, tmp_path):
+    service, _ = context
+    service._LOCAL_STAT_MAX_FILES = 3
+    with patch('app.core.conflict_resolution_service.os.walk', return_value=[(str(tmp_path), [], ['a'] * 100)]), patch(
+        'app.core.conflict_resolution_service.os.path.getsize', return_value=10,
+    ) as getsize:
+        stats = service._describe_local_path_stats(str(tmp_path))
+    assert stats['truncated'] is True
+    assert stats['file_count'] == 3
+    assert stats['size'] == 30
+    assert getsize.call_count == 3
+
+
 @pytest.mark.parametrize("include_root", [True, False])
 def test_inherited_rj_subdirectories_resolve_to_one_work_root(context, tmp_path, include_root):
     service, manager = context

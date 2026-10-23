@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+from functools import lru_cache
 import re
 import threading
 import time
@@ -29,10 +31,14 @@ from ..models.database import (
 )
 from .library_manager import get_library_manager
 from .library_index.snapshot_store import get_snapshot_store
+from .request_performance import measure_stage, request_metrics, timed_stage
+
+logger = logging.getLogger(__name__)
 
 UNKNOWN_CIRCLE_ID = "__unknown__"
 UNKNOWN_CIRCLE_NAME = "未识别社团"
 _RJ_RE = re.compile(r"RJ\d{4,12}", re.IGNORECASE)
+_BRACKETS_RE = re.compile(r"\[([^\[\]]+)\]")
 _CIRCLE_ROOT_PATH = "circle:/"
 _SNAPSHOT_TTL_SECONDS = 300.0
 
@@ -75,35 +81,35 @@ def _top_category(relative_path: Any) -> str:
     return normalized.split("/", 1)[0]
 
 
-def _infer_circle_name_from_bracketed_folder(value: Any, rjcode: Any) -> str:
+def _infer_circle_name_from_bracketed_folder(value: Any, rjcode: Any, normalize=_normalize_rjcode) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    normalized_rjcode = _normalize_rjcode(rjcode)
-    matches = re.findall(r"\[([^\[\]]+)\]", text)
+    normalized_rjcode = normalize(rjcode)
+    matches = _BRACKETS_RE.findall(text)
     if len(matches) < 2:
         return ""
     for index in range(len(matches) - 1):
-        if _normalize_rjcode(matches[index + 1]) == normalized_rjcode:
+        if normalize(matches[index + 1]) == normalized_rjcode:
             return str(matches[index] or "").strip()
     return ""
 
 
-def _infer_circle_name_from_any_bracketed_work_folder(value: Any) -> str:
+def _infer_circle_name_from_any_bracketed_work_folder(value: Any, normalize=_normalize_rjcode) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    matches = re.findall(r"\[([^\[\]]+)\]", text)
+    matches = _BRACKETS_RE.findall(text)
     if len(matches) < 2:
         return ""
     for index in range(len(matches) - 1):
-        if _normalize_rjcode(matches[index + 1]):
+        if normalize(matches[index + 1]):
             return str(matches[index] or "").strip()
     return ""
 
 
-def _infer_circle_name_from_index_path(relative_path: Any, rjcode: Any, folder_name: Any = "") -> str:
-    name_circle = _infer_circle_name_from_bracketed_folder(folder_name, rjcode)
+def _infer_circle_name_from_index_path(relative_path: Any, rjcode: Any, folder_name: Any = "", normalize=_normalize_rjcode) -> str:
+    name_circle = _infer_circle_name_from_bracketed_folder(folder_name, rjcode, normalize)
     if name_circle:
         return name_circle
 
@@ -111,18 +117,18 @@ def _infer_circle_name_from_index_path(relative_path: Any, rjcode: Any, folder_n
     if len(parts) < 2:
         return ""
 
-    normalized_rjcode = _normalize_rjcode(rjcode)
+    normalized_rjcode = normalize(rjcode)
     for index, part in enumerate(parts):
-        matched_rjcode = _normalize_rjcode(part)
+        matched_rjcode = normalize(part)
         if not matched_rjcode:
             continue
         if normalized_rjcode and matched_rjcode != normalized_rjcode:
             continue
-        path_circle = _infer_circle_name_from_bracketed_folder(part, normalized_rjcode)
+        path_circle = _infer_circle_name_from_bracketed_folder(part, normalized_rjcode, normalize)
         if path_circle:
             return path_circle
         for parent_part in reversed(parts[:index]):
-            parent_circle = _infer_circle_name_from_any_bracketed_work_folder(parent_part)
+            parent_circle = _infer_circle_name_from_any_bracketed_work_folder(parent_part, normalize)
             if parent_circle:
                 return parent_circle
         return ""
@@ -445,6 +451,7 @@ class LibraryCircleAggregationService:
     def should_thread_browse(self, current_path: str = _CIRCLE_ROOT_PATH) -> bool:
         return _decode_circle_virtual_path(current_path).type in {"unknown", "root", "group"}
 
+    @timed_stage("circle_listing_ms")
     def browse_circle_listing(
         self,
         *,
@@ -514,9 +521,16 @@ class LibraryCircleAggregationService:
             view_token=view_token,
         )
         if cached_payload is not None:
+            metrics = request_metrics.get()
+            if metrics is not None:
+                metrics["circle_cache_hit"] = True
             return cached_payload
 
+        wait_started = time.perf_counter()
         with self._snapshot_lock:
+            metrics = request_metrics.get()
+            if metrics is not None:
+                metrics["circle_lock_wait_ms"] = round((time.perf_counter() - wait_started) * 1000, 2)
             now = time.monotonic()
             index_views, view_token = self._load_index_views()
             cached_payload = self._get_cached_snapshot(
@@ -525,8 +539,19 @@ class LibraryCircleAggregationService:
                 view_token=view_token,
             )
             if cached_payload is not None:
+                if metrics is not None:
+                    metrics["circle_cache_hit"] = True
                 return cached_payload
-            return self._build_snapshot(now=now, index_views=index_views, view_token=view_token)
+            previous = self._snapshot_cache
+            reason = ("force" if force_refresh else "cold" if not previous else
+                      "index_version" if previous.get("view_token") != view_token else "ttl")
+            if metrics is not None:
+                metrics.update(circle_cache_hit=False, circle_cache_reason=reason, circle_view_token=view_token)
+            with measure_stage("circle_build_ms"):
+                payload = self._build_snapshot(now=now, index_views=index_views, view_token=view_token)
+            logger.info("[社团聚合] 快照重建 reason=%s view_token=%s locations=%s stages=%s",
+                        reason, view_token, payload["summary"]["folder_count"], request_metrics.get())
+            return payload
 
     def _get_cached_snapshot(
         self,
@@ -550,24 +575,37 @@ class LibraryCircleAggregationService:
         index_views: list[dict[str, Any]],
         view_token: str,
     ) -> dict[str, Any]:
-        rows = self._load_index_work_rows()
+        with measure_stage("circle_index_read_ms"):
+            rows = self._load_index_work_rows()
         library_summary_items = self._load_active_library_summary_items()
         path_identities: dict[int, _CircleIdentity] = {}
         metadata_rjcodes: set[str] = set()
+        normalize = lru_cache(maxsize=8192)(_normalize_rjcode)
+        identities_by_name = {}
+        unknown_identity = self._unknown_identity()
+        parse_started = time.perf_counter()
         for index, row in enumerate(rows):
-            path_identity = self._identity_from_index_path(row)
+            name = _infer_circle_name_from_index_path(row.get("relative_path"), row.get("rjcode"), row.get("name"), normalize)
+            path_identity = identities_by_name.get(name)
+            if name and path_identity is None:
+                path_identity = identities_by_name[name] = self._identity_from_values("", name)
             if path_identity:
                 path_identities[index] = path_identity
             else:
                 metadata_rjcodes.add(row["rjcode"])
-        identities = self._load_circle_identities(metadata_rjcodes)
+        metrics = request_metrics.get()
+        if metrics is not None:
+            metrics["circle_identity_ms"] = round((time.perf_counter() - parse_started) * 1000, 2)
+        with measure_stage("circle_metadata_ms"):
+            identities = self._load_circle_identities(metadata_rjcodes)
         builders: dict[str, dict[str, Any]] = {}
         rows_by_group: dict[str, list[dict[str, Any]]] = {}
+        aggregate_started = time.perf_counter()
         for index, row in enumerate(rows):
-            identity = path_identities.get(index) or identities.get(row["rjcode"]) or self._unknown_identity()
-            builder = builders.setdefault(
-                identity.key,
-                {
+            identity = path_identities.get(index) or identities.get(row["rjcode"]) or unknown_identity
+            builder = builders.get(identity.key)
+            if builder is None:
+                builder = builders[identity.key] = {
                     "circle_key": identity.key,
                     "circle_id": identity.circle_id,
                     "circle_name": identity.circle_name,
@@ -578,8 +616,7 @@ class LibraryCircleAggregationService:
                     "folder_count": 0,
                     "total_size": 0,
                     "modified_time": None,
-                },
-            )
+                }
             rjcode = row["rjcode"]
             builder["_rjcodes"].add(rjcode)
             builder["_paths_by_rj"].setdefault(rjcode, set()).add((row["library_id"], row["relative_path"]))
@@ -652,6 +689,9 @@ class LibraryCircleAggregationService:
             "view_token": view_token,
             "payload": payload,
         }
+        if metrics is not None:
+            metrics["circle_aggregate_ms"] = round((time.perf_counter() - aggregate_started) * 1000, 2)
+            metrics["circle_locations"] = len(rows)
         return payload
 
     @staticmethod
@@ -1304,8 +1344,18 @@ class LibraryCircleAggregationService:
                 if not library:
                     continue
                 relative_path = str(entry.relative_path or "")
-                key = (str(entry.library_id or ""), relative_path, rjcode)
+                normalized_path = _normalize_path(relative_path)
+                library_id = str(entry.library_id or "")
+                key = (library_id, normalized_path, rjcode)
                 if key in seen:
+                    continue
+                # 查询按同库、同 RJ、深度排序；祖先作品已包含子目录的大小和文件数。
+                # 索引子目录继承的 RJ 只能用于检索，不能作为独立收录位置。
+                parts = normalized_path.split("/") if normalized_path else []
+                if any(
+                    (library_id, "/".join(parts[:depth]), rjcode) in seen
+                    for depth in range(len(parts))
+                ):
                     continue
                 seen.add(key)
                 rows.append({
@@ -1329,6 +1379,7 @@ class LibraryCircleAggregationService:
         normalized = sorted({_normalize_rjcode(code) for code in rjcodes if _normalize_rjcode(code)})
         if not normalized:
             return {}
+        requested_codes = set(normalized)
         result: dict[str, _CircleIdentity] = {}
         db = SessionLocal()
         try:
@@ -1351,6 +1402,11 @@ class LibraryCircleAggregationService:
                     alias_to_canonical[canonical] = canonical
                 if linked and canonical:
                     alias_to_canonical[linked] = canonical
+            # 预建反向索引，避免每个作品都遍历全库关联链。
+            aliases_by_canonical: dict[str, set[str]] = {}
+            for alias, canonical in alias_to_canonical.items():
+                if alias in requested_codes:
+                    aliases_by_canonical.setdefault(canonical, set()).add(alias)
             canonical_candidates = sorted({
                 alias_to_canonical.get(code, code)
                 for code in normalized
@@ -1382,12 +1438,10 @@ class LibraryCircleAggregationService:
                 for linked in row.linked_rjcodes or []:
                     codes.add(_normalize_rjcode(linked))
                 canonical = _normalize_rjcode(row.canonical_rjcode)
-                for alias, mapped in alias_to_canonical.items():
-                    if mapped == canonical:
-                        codes.add(alias)
+                codes.update(aliases_by_canonical.get(canonical, ()))
                 identity = self._identity_from_values(row.circle_id, row.circle_name or row.maker_name)
                 for code in codes:
-                    if code and code in normalized and code not in result:
+                    if code and code in requested_codes and code not in result:
                         result[code] = identity
 
             missing = [code for code in normalized if code not in result]
@@ -1528,6 +1582,7 @@ class LibraryCircleAggregationService:
         )
 
     @staticmethod
+    @timed_stage("circle_paginate_ms")
     def _paginate(items: list[dict[str, Any]], *, page: int, page_size: int, extra: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         normalized_page = max(1, int(page or 1))
         normalized_page_size = max(1, min(int(page_size or 50), 200))

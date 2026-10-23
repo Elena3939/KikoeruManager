@@ -755,6 +755,8 @@ def test_download_runtime_updates_existing_rows_without_rebuilding_file_list():
 @pytest.mark.anyio
 async def test_build_download_plan_marks_existing_and_missing_resources(monkeypatch):
     service = create_service()
+    monkeypatch.setattr(service, '_create_download_session', lambda **kwargs: 'preview-session')
+    monkeypatch.setattr(service, '_upsert_work_record', lambda *args, **kwargs: None)
     monkeypatch.setattr(service, "_upsert_resource_records", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         service,

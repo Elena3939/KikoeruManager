@@ -150,7 +150,7 @@ function isCompletionOwned(item) {
 }
 
 function bonusOwnedLabel(bonus) {
-  return isCompletionOwned(bonus) ? '已收录' : '未收录'
+  return bonus?.bonus_owned_label || (isCompletionOwned(bonus) ? '已收录' : '未收录')
 }
 
 function bonusOwnedTagClass(bonus) {
@@ -158,7 +158,7 @@ function bonusOwnedTagClass(bonus) {
 }
 
 function bonusDownloadLabel(bonus) {
-  return hasLocalDownloadReadyBonus(bonus) || canDownloadBonus(bonus) ? '可下载' : '无源'
+  return bonus?.bonus_download_label || (hasLocalDownloadReadyBonus(bonus) || canDownloadBonus(bonus) ? '可下载' : '无源')
 }
 
 function bonusDownloadTagClass(bonus) {
@@ -209,8 +209,7 @@ function handleBonusAction(bonus) {
 }
 
 function previewBonus(bonus) {
-  const target = bonusActionItem(bonus, 'preview')
-  emit('preview', target?.canonical_rjcode || bonusCode(target))
+  emit('preview', bonus)
 }
 
 function forwardRowSelect(item, event) {
@@ -241,40 +240,6 @@ function forwardRowExternalSearch(payload) {
   emit('external-search', payload)
 }
 
-function normalizeBonusGroupTitle(value) {
-  return String(value || '')
-    .trim()
-    .replace(/[＿_][\s　]*(?:\d+|[０-９]+)\s*$/u, '')
-    .trim()
-}
-
-function normalizeBonusTitleForComparison(value) {
-  return normalizeBonusGroupTitle(value)
-    .replace(/[\s　]+/gu, ' ')
-    .trim()
-}
-
-function bonusThemeKey(value) {
-  const title = normalizeBonusTitleForComparison(value)
-  const match = title.match(/(\d+)\s*大特典/u)
-  return match ? `${match[1]}大特典` : ''
-}
-
-function isEmbeddedBonusTitleVariant(item, candidates) {
-  const title = normalizeBonusTitleForComparison(bonusDisplayTitle(item))
-  if (!title || !/特典/u.test(title)) return false
-  return candidates.some((candidate) => {
-    if (!candidate || candidate === item) return false
-    const candidateTitle = normalizeBonusTitleForComparison(bonusDisplayTitle(candidate))
-    const theme = bonusThemeKey(title)
-    const candidateTheme = bonusThemeKey(candidateTitle)
-    if (theme && theme === candidateTheme && candidateTitle.length < title.length) return true
-    if (!candidateTitle || candidateTitle.length >= title.length || !title.includes(candidateTitle)) return false
-    // 只压掉“纯特典标题 + 完整作品描述”的变体，避免误伤两个真实不同的特典。
-    return /^【[^】]+】$/u.test(candidateTitle) || !candidateTitle.includes('】')
-  })
-}
-
 function bonusDisplayTitle(item) {
   return String(item?._bonus_display_title || item?.title || '未命名特典').trim()
 }
@@ -293,38 +258,6 @@ function shouldDisplayBonus(item) {
   if (item?.dlsite_cover_available === false) return false
   if (item?.cover_confirmed_missing === true) return false
   return true
-}
-
-function bonusNumberedSuffix(item) {
-  const match = String(item?.title || '').trim().match(/[_＿]\s*([0-9０-９]+)\s*$/u)
-  if (!match) return null
-  return Number(match[1].replace(/[０-９]/gu, digit => String('０１２３４５６７８９'.indexOf(digit))))
-}
-
-function selectBonusVariants(bonuses) {
-  const groups = new Map()
-  for (const bonus of bonuses) {
-    const key = normalizeBonusGroupTitle(bonusDisplayTitle(bonus)) || bonusCode(bonus)
-    if (!groups.has(key)) groups.set(key, [])
-    groups.get(key).push(bonus)
-  }
-  const selected = []
-  for (const candidates of groups.values()) {
-    const withCover = candidates.filter(candidate => (
-      candidate?.cover_available !== false && candidate?.cover_confirmed_missing !== true
-    ))
-    const confirmed = withCover.filter(candidate => candidate?.cover_confirmed_available === true)
-    const pool = confirmed.length ? confirmed : withCover.length ? withCover : candidates
-    const plain = pool.filter(candidate => bonusNumberedSuffix(candidate) === null)
-    if (plain.length) {
-      selected.push(...plain)
-      continue
-    }
-    const numbered = pool.filter(candidate => bonusNumberedSuffix(candidate) !== null)
-    const minSuffix = Math.min(...numbered.map(candidate => bonusNumberedSuffix(candidate)))
-    selected.push(...numbered.filter(candidate => bonusNumberedSuffix(candidate) === minSuffix))
-  }
-  return selected
 }
 
 function bonusCodeList(item) {
@@ -348,10 +281,13 @@ function workStateCodeList(item) {
 }
 
 function matchesWorkCodeSet(item, codeSet) {
+  if (!codeSet?.size) return false
   return workStateCodeList(item).some(code => codeSet?.has?.(code))
 }
 
+const hasCoverOverrides = computed(() => Object.keys(props.coverOverrides || {}).length > 0)
 function coverOverrideFor(item) {
+  if (!hasCoverOverrides.value) return ''
   for (const code of workStateCodeList(item)) {
     const override = String(props.coverOverrides?.[code] || '').trim()
     if (override) return override
@@ -370,64 +306,10 @@ function hasLocalDownloadReadyBonus(item) {
 function bonusActionItem(item, action = '') {
   const members = bonusMembers(item)
   if (action === 'import') return members.find(member => member?.local_download_ready) || members[0] || item
-  if (action === 'preview') return members.find(canDownloadBonus) || members[0] || item
+  if (action === 'preview') return members[0] || item
   if (action === 'select') return members.find(member => !isItemSelected(member)) || members[0] || item
   if (action === 'deselect') return members.find(isItemSelected) || members[0] || item
   return members[0] || item
-}
-
-function aggregateBonusWorks(bonuses = []) {
-  if (!Array.isArray(bonuses)) return []
-  bonuses = bonuses.filter(shouldDisplayBonus)
-  bonuses = selectBonusVariants(bonuses)
-  bonuses = bonuses.filter((bonus) => !isEmbeddedBonusTitleVariant(bonus, bonuses))
-  if (bonuses.length <= 1) return bonuses
-  const seenCodes = new Set()
-  const uniqueBonuses = bonuses.filter((bonus) => {
-    if (!bonus) return false
-    const codes = bonusCodeList(bonus)
-    const key = codes[0] || `${bonusDisplayTitle(bonus)}:${bonus?.canonical_rjcode || ''}`
-    if (!key || seenCodes.has(key)) return false
-    seenCodes.add(key)
-    return true
-  })
-  const buckets = new Map()
-  const result = []
-  for (const bonus of uniqueBonuses) {
-    if (!bonus) continue
-    const title = bonusDisplayTitle(bonus)
-    const baseTitle = normalizeBonusGroupTitle(title)
-    const key = baseTitle || title || bonusCode(bonus)
-    if (!key) {
-      result.push(bonus)
-      continue
-    }
-    let bucket = buckets.get(key)
-    if (!bucket) {
-      bucket = {
-        ...bonus,
-        title: baseTitle || title,
-        _bonus_display_title: baseTitle || title,
-        _bonus_members: [bonus],
-      }
-      buckets.set(key, bucket)
-      result.push(bucket)
-      continue
-    }
-    bucket._bonus_members.push(bonus)
-    bucket.linked_rjcodes = bonusCodeList(bucket)
-    bucket.local_download_ready = hasLocalDownloadReadyBonus(bucket)
-    bucket.has_asmr_one = bucket.has_asmr_one || bonus.has_asmr_one
-    bucket.has_downloadable_source = Boolean(bucket.has_downloadable_source || bucket.has_asmr_one || bonus.has_downloadable_source)
-    bucket.owned = isCompletionOwned(bucket)
-    bucket.server_owned = bucket.server_owned || bonus.server_owned
-    bucket.completion_owned = bucket.completion_owned || bonus.completion_owned
-    bucket.local_owned = bucket.local_owned || bonus.local_owned
-    bucket.cover_available = bucket.cover_available || bonus.cover_available !== false
-    if (!bucket.image_url && bonus.image_url) bucket.image_url = bonus.image_url
-    if (!bucket.thumb_image_url && bonus.thumb_image_url) bucket.thumb_image_url = bonus.thumb_image_url
-  }
-  return result
 }
 
 function bonusCollectionViewModel(viewModel) {
@@ -463,7 +345,8 @@ function sortBonusMembers(members) {
     if (member?.cover_available === true || member?.dlsite_cover_available === true) return 2
     return bonusCoverUrl(member) ? 1 : 0
   }
-  return [...members].sort((a, b) => coverPriority(b) - coverPriority(a))
+  return members.map(member => ({ member, priority: coverPriority(member) }))
+    .sort((a, b) => b.priority - a.priority).map(entry => entry.member)
 }
 
 function preferredBonusCollection(item) {
@@ -487,59 +370,12 @@ function markBonusCoverFailed(item) {
   }
 }
 
-const groupedItems = computed(() => {
-  const items = safeItems.value
-  const directGroups = items.map((item, index) => {
-    const bonuses = aggregateBonusWorks(Array.isArray(item?.bonus_works) ? item.bonus_works : [])
-      .filter(shouldDisplayBonus)
-    return { item, bonuses, sourceIndex: index }
-  })
-  if (directGroups.some(group => group.bonuses.length)) {
-    const attachedBonusCodes = new Set()
-    for (const group of directGroups) {
-      for (const bonus of group.bonuses || []) {
-        for (const code of bonusCodeList(bonus)) {
-          if (code) attachedBonusCodes.add(code)
-        }
-      }
-    }
-    return directGroups.filter(group => {
-      if (!isStrictTrue(group.item?.is_bonus_work)) return true
-      const code = bonusCode(group.item)
-      return !code || !attachedBonusCodes.has(code)
-    })
-  }
-
-  const codeToItem = new Map()
-  for (const item of items) {
-    for (const code of itemCodes(item)) {
-      const existing = codeToItem.get(code)
-      if (!existing || (isStrictTrue(existing?.is_bonus_work) && !isStrictTrue(item?.is_bonus_work))) {
-        codeToItem.set(code, item)
-      }
-    }
-  }
-
-  const availableCodes = new Set(codeToItem.keys())
-  const bonusBuckets = new Map()
-  const hiddenBonusItems = new Set()
-  for (const item of items) {
-    const parentCode = bonusParentCode(item, availableCodes)
-    const parentItem = parentCode ? codeToItem.get(parentCode) : null
-    if (!parentItem || parentItem === item || isStrictTrue(parentItem?.is_bonus_work)) continue
-    const parentKey = itemKey(parentItem, items.indexOf(parentItem))
-    if (!bonusBuckets.has(parentKey)) bonusBuckets.set(parentKey, [])
-    if (shouldDisplayBonus(item)) bonusBuckets.get(parentKey).push(item)
-    hiddenBonusItems.add(item)
-  }
-
-  return items
-    .filter(item => !hiddenBonusItems.has(item))
-    .map((item, index) => {
-      const key = itemKey(item, index)
-      return { item, bonuses: aggregateBonusWorks(bonusBuckets.get(key) || []), sourceIndex: index }
-    })
-})
+// 归组、去重与业务标签由后端在分页前计算，视口只处理布局和交互。
+const groupedItems = computed(() => safeItems.value.map((item, sourceIndex) => ({
+  item,
+  bonuses: Array.isArray(item.bonus_display_works) ? item.bonus_display_works : [],
+  sourceIndex,
+})))
 
 watch(groupedItems, groups => {
   failedBonusImageKeys.value = new Set()
@@ -620,27 +456,9 @@ const itemViewModels = computed(() => pagedGroups.value.map((group, index) => {
   const completionDimmed = props.mode === 'card' && bonuses.length
     ? groupOwned && !itemOwned
     : isStrictTrue(item?.completion_card_dimmed)
-  const bonusViewModels = bonuses.map((bonus, bonusIndex) => {
-    const bonusKey = itemKey(bonus, `${key}:bonus:${bonusIndex}`)
-    const bonusCodes = bonusCodeList(bonus)
-    const bonusCodeValue = bonusCodes[0] || ''
-    const bonusOwned = isCompletionOwned(bonus)
-    return {
-      item: bonus,
-      index: bonusIndex,
-      key: bonusKey,
-      code: bonusCodeValue,
-      owned: bonusOwned,
-      dimmed: groupOwned && !bonusOwned,
-      selected: matchesWorkCodeSet(bonus, props.selectedCodes),
-      flashed: matchesWorkCodeSet(bonus, props.flashedCodes),
-      located: matchesWorkCodeSet(bonus, props.locatedCodes),
-    }
-  })
   return {
     item,
     bonuses,
-    bonusViewModels,
     index,
     key,
     code,
@@ -882,8 +700,10 @@ function bonusCollectionKey(viewModel) {
 
 const imageSignatures = computed(() => {
   const result = new Map()
-  for (const viewModel of itemViewModels.value) {
-    for (const model of [viewModel, ...viewModel.bonusViewModels]) {
+  const renderedModels = usePlainRender.value ? itemViewModels.value
+    : virtualRows.value.flatMap(row => getRowItems(row.index))
+  for (const viewModel of renderedModels) {
+    for (const model of [viewModel]) {
       const item = model.item || {}
       result.set(model.key, JSON.stringify([
         props.mode, item[props.imageField], item.remote_image_url,

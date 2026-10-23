@@ -87,7 +87,9 @@ class EnhancedDuplicateService:
         if check_linked_works:
             try:
                 # 获取作品的完整关联链
-                linked_works = await self.dlsite_service.get_full_linkage(rjcode, cue_languages)
+                linked_works = await self.dlsite_service.get_full_linkage(rjcode, cue_languages, require_verified=True)
+                from .import_validation import require_complete_linkage
+                require_complete_linkage(linked_works)
                 
                 if len(linked_works) > 1:
                     logger.info(f"发现关联作品链 {rjcode}: {list(linked_works.keys())}")
@@ -131,7 +133,8 @@ class EnhancedDuplicateService:
                         )
             
             except Exception as e:
-                logger.error(f"检查关联作品失败 {rjcode}: {e}")
+                from .import_validation import ImportDataError
+                raise ImportDataError(f"DLsite 关联数据获取失败 {rjcode}: {e}", "linkage") from e
         
         return result
     

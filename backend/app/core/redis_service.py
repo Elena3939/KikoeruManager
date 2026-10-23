@@ -435,6 +435,28 @@ class RedisService:
             return payload
         return self._memory_runtime_get(str(task_id or ''))
 
+    def get_task_runtimes_sync(self, task_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """一次读取本次响应需要的运行态，缺失项沿用现有内存运行态。"""
+        ids = list(dict.fromkeys(str(value) for value in task_ids if value))
+        if not ids:
+            return {}
+        values = [None] * len(ids)
+        client = self.client(required=False)
+        if client is not None:
+            try:
+                values = client.mget([self.key('task', 'runtime', value) for value in ids])
+            except Exception as exc:
+                self._last_error = str(exc)
+                logger.debug('[Redis] 批量读取任务运行态失败', exc_info=True)
+        result = {}
+        for task_id, raw in zip(ids, values):
+            try:
+                payload = _json_loads(raw) if raw else None
+            except (ValueError, TypeError):
+                payload = None
+            result[task_id] = payload if isinstance(payload, dict) else (self._memory_runtime_get(task_id) or {})
+        return result
+
     def write_task_runtime_sync(self, task: Any, *, reason: str = 'progress') -> None:
         buffer_cfg = self._runtime_buffer_config()
         if not buffer_cfg['enabled']:

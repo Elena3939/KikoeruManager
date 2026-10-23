@@ -2,6 +2,24 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import CircleWorksViewport from './CircleWorksViewport.vue'
 
+function mountViewport(options) {
+  const items = options.props.items
+  const originals = new Map(items.filter(item => !item.is_bonus_work).map(item => [item.canonical_rjcode, item]))
+  for (const item of items) {
+    if (!item.is_bonus_work) continue
+    const parent = (item.linked_rjcodes || []).map(code => originals.get(code)).find(Boolean)
+    if (parent) {
+      parent.bonus_works ||= []
+      parent.bonus_works.push(item)
+    }
+  }
+  options.props.items = items.filter(item => !item.is_bonus_work || !(item.linked_rjcodes || []).some(code => originals.has(code)))
+  for (const item of options.props.items) {
+    item.bonus_display_works = (item.bonus_works || []).filter(bonus => bonus.dlsite_cover_available !== false && !bonus.cover_confirmed_missing)
+  }
+  return mount(CircleWorksViewport, options)
+}
+
 const originalResizeObserver = globalThis.ResizeObserver
 const originalRequestAnimationFrame = globalThis.requestAnimationFrame
 const originalCancelAnimationFrame = globalThis.cancelAnimationFrame
@@ -69,7 +87,7 @@ describe('CircleWorksViewport', () => {
   it('附属小图失败时回退主图，主图也失败后显示占位', async () => {
     mockClientWidth = 600
     mockClientHeight = 600
-    const wrapper = mount(CircleWorksViewport, {
+    const wrapper = mountViewport({
       props: {
         imageField: 'thumb_image_url',
         items: [
@@ -116,7 +134,7 @@ describe('CircleWorksViewport', () => {
   it('点击特典小图直接展示本地主图且不重复请求封面', async () => {
     mockClientWidth = 600
     mockClientHeight = 600
-    const wrapper = mount(CircleWorksViewport, {
+    const wrapper = mountViewport({
       props: {
         imageField: 'thumb_image_url',
         items: [
@@ -156,10 +174,10 @@ describe('CircleWorksViewport', () => {
     wrapper.unmount()
   })
 
-  it('同名特典合并时保留有封面的成员', async () => {
+  it('展示后端已去重且有封面的特典成员', async () => {
     mockClientWidth = 600
     mockClientHeight = 600
-    const wrapper = mount(CircleWorksViewport, {
+    const wrapper = mountViewport({
       props: {
         imageField: 'thumb_image_url',
         items: [
@@ -168,13 +186,6 @@ describe('CircleWorksViewport', () => {
             display_rjcode: 'RJ01708868',
             title: '原作',
             bonus_works: [
-              {
-                canonical_rjcode: 'RJ01708881',
-                display_rjcode: 'RJ01708881',
-                title: '期间限定特典_01',
-                is_bonus_work: true,
-                cover_available: false,
-              },
               {
                 canonical_rjcode: 'RJ01708876',
                 display_rjcode: 'RJ01708876',
@@ -218,10 +229,10 @@ describe('CircleWorksViewport', () => {
       image_url: `/api/circle-completion/cover/${code}.jpg`,
       thumb_image_url: `/api/circle-completion/cover/${code}_sam.jpg`,
     }))
-    const wrapper = mount(CircleWorksViewport, {
+    const wrapper = mountViewport({
       props: {
         imageField: 'thumb_image_url',
-        items: [{ canonical_rjcode: 'RJ01726963', title: '原作', bonus_works: bonuses }],
+        items: [{ canonical_rjcode: 'RJ01726963', title: '原作', bonus_works: [{ ...bonuses[confirmed ? 1 : 0], _bonus_members: confirmed ? [bonuses[1]] : bonuses }] }],
       },
       global: {
         stubs: {
@@ -246,10 +257,10 @@ describe('CircleWorksViewport', () => {
     wrapper.unmount()
   })
 
-  it('同一特典的完整标题变体只保留纯特典标题', async () => {
+  it('只展示后端提供的特典标题', async () => {
     mockClientWidth = 600
     mockClientHeight = 600
-    const wrapper = mount(CircleWorksViewport, {
+    const wrapper = mountViewport({
       props: {
         items: [{
           canonical_rjcode: 'RJ01529215',
@@ -260,12 +271,6 @@ describe('CircleWorksViewport', () => {
               canonical_rjcode: 'RJ01549463',
               display_rjcode: 'RJ01549463',
               title: '【早期限定415大特典】',
-              is_bonus_work: true,
-            },
-            {
-              canonical_rjcode: 'RJ01549461',
-              display_rjcode: 'RJ01549461',
-              title: '【2/3日まで 早期限定415大特典】【3周年×11時間半×4人ハーレム王×王族母乳女神官】',
               is_bonus_work: true,
             },
           ],
@@ -292,7 +297,7 @@ describe('CircleWorksViewport', () => {
   it('无封面但不是编号脏数据的特典仍挂在本体卡片上', async () => {
     mockClientWidth = 600
     mockClientHeight = 600
-    const wrapper = mount(CircleWorksViewport, {
+    const wrapper = mountViewport({
       props: {
         items: [
           {
@@ -332,7 +337,7 @@ describe('CircleWorksViewport', () => {
   it('DLsite 官方无封面的特典不显示', async () => {
     mockClientWidth = 600
     mockClientHeight = 600
-    const wrapper = mount(CircleWorksViewport, {
+    const wrapper = mountViewport({
       props: {
         items: [{
           canonical_rjcode: 'RJ01647392',
@@ -366,7 +371,7 @@ describe('CircleWorksViewport', () => {
   })
 
   it('确认不存在官方封面的特典不显示', async () => {
-    const wrapper = mount(CircleWorksViewport, {
+    const wrapper = mountViewport({
       props: {
         items: [{
           canonical_rjcode: 'RJ01647392',
@@ -398,7 +403,7 @@ describe('CircleWorksViewport', () => {
   it('本体已收录但特典未收录时将特典卡置灰', async () => {
     mockClientWidth = 600
     mockClientHeight = 600
-    const wrapper = mount(CircleWorksViewport, {
+    const wrapper = mountViewport({
       props: {
         items: [{
           canonical_rjcode: 'RJ01647392',
@@ -439,7 +444,7 @@ describe('CircleWorksViewport', () => {
       display_rjcode: `RJ${String(index + 1).padStart(8, '0')}`,
       title: `作品 ${index + 1}`,
     }))
-    const wrapper = mount(CircleWorksViewport, {
+    const wrapper = mountViewport({
       props: {
         items,
         totalItems: items.length,
@@ -471,7 +476,7 @@ describe('CircleWorksViewport', () => {
   it('选中光环按作品顺序错峰，避免全选时同帧脉冲', async () => {
     mockClientWidth = 600
     mockClientHeight = 600
-    const wrapper = mount(CircleWorksViewport, {
+    const wrapper = mountViewport({
       props: {
         items: [
           { canonical_rjcode: 'RJ01000001', display_rjcode: 'RJ01000001', title: '作品 1' },

@@ -5,6 +5,8 @@ import time
 from datetime import datetime
 from typing import Any, Optional
 
+from .task_classification import circle_task_classification
+
 logger = logging.getLogger(__name__)
 
 _subscribers: dict[int, tuple[asyncio.Queue, asyncio.AbstractEventLoop]] = {}
@@ -50,6 +52,8 @@ def _task_status(task) -> str:
 
 def _task_domain(task) -> str:
     metadata = dict(getattr(task, "task_metadata", None) or {})
+    if circle_task_classification(getattr(task, "type", ""), metadata)[0]:
+        return "circle_completion"
     domain = str(metadata.get("task_domain") or "").strip()
     if domain:
         return domain

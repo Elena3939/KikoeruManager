@@ -1,14 +1,34 @@
 import { describe, expect, it } from 'vitest'
 import { ref } from 'vue'
-import { useActivityDetailModels } from './useActivityDetailModels.js'
+import { useActivityDetailModels, humanAction } from './useActivityDetailModels.js'
+
+it('聚合母任务按解压结果展示，不再描述为部分提交', () => {
+  expect(humanAction({ category: 'auto_import', action: 'batch_start', result_status: 'partial_success' })).toBe('部分解压成功')
+  expect(humanAction({ category: 'auto_import', action: 'batch_start', result_status: 'success' })).toBe('解压成功')
+})
+
+it('批删详情直接使用后端文件树，不拿首个文件代表整批路径', () => {
+  const sections = [{ key: 'delete-succeeded-items', title: '已删除（2 项）', rows: [
+    { key: 'root', label: '作品', type: 'dir', children: [
+      { key: 'nested', label: '作品', type: 'dir', children: [] },
+    ] },
+  ] }]
+  const model = useActivityDetailModels(ref({
+    category: 'pipeline_delete', action: 'batch_api_delete', source_path: '/作品/first.vtt',
+    detail: { delete_tree_sections: sections, results: [{ path: '/wrong', success: true }] },
+  }))
+  expect(model.entrySections.value).toEqual(sections)
+  expect(model.pathCompare.value).toBeNull()
+})
 
 it('解压历史区分任务总耗时和包含等待的解包阶段', () => {
   const model = useActivityDetailModels(ref({
     category: 'auto_import',
-    detail: { duration_ms: 120000, extract_phase_duration_ms: 30000 },
+    detail: { duration_ms: 120000, extract_phase_duration_ms: 30000, extract_execution_duration_ms: 12000 },
   }))
   expect(model.highlights.value.map(item => item.k)).toContain('任务总耗时')
   expect(model.highlights.value.map(item => item.k)).toContain('解包阶段（含等待）')
+  expect(model.highlights.value.map(item => item.k)).toContain('解压耗时（不含等待）')
 })
 
 it('批次优先展示后端汇总容量并区分候选和实际参与数量', () => {

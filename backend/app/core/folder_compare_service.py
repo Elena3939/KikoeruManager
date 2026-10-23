@@ -119,6 +119,10 @@ class FolderCompareService:
         decisions: Dict[str, str],
         target_path: str,
     ) -> str:
+        from .merge_execution_service import merge_progress
+        progress = merge_progress.get()
+        if progress:
+            progress("重新核对源目录与库存目录", 5)
         compare_items = self.build_compare_items(new_root, existing_root)
         summary = self.build_summary(compare_items)
         decision_counts: Dict[str, int] = {}
@@ -136,6 +140,8 @@ class FolderCompareService:
         )
         merged_dir = self._build_merged_directory(new_root, existing_root, compare_items, decisions)
         try:
+            if progress:
+                progress("替换目标目录并清理旧目录备份", 90)
             return self.safe_replace_directory(merged_dir, target_path)
         except Exception:
             if os.path.isdir(merged_dir):
@@ -204,6 +210,18 @@ class FolderCompareService:
         temp_root = get_config().storage.temp_path
         os.makedirs(temp_root, exist_ok=True)
         merge_root = tempfile.mkdtemp(prefix="existing_folder_merge_", dir=temp_root)
+        try:
+            return self._populate_merged_directory(merge_root, compare_items, decisions)
+        except BaseException:
+            # 写入失败只清理未提交的合并目录，保留库存和已解压来源供重试。
+            shutil.rmtree(merge_root, ignore_errors=True)
+            raise
+
+    def _populate_merged_directory(self, merge_root, compare_items, decisions) -> str:
+        from .merge_execution_service import merge_progress
+        progress = merge_progress.get()
+        total_files = sum(item.get("type") == "file" for item in compare_items)
+        processed_files = 0
 
         for item in compare_items:
             if item.get("type") != "dir":
@@ -218,6 +236,10 @@ class FolderCompareService:
         for item in compare_items:
             if item.get("type") != "file":
                 continue
+            processed_files += 1
+            if progress:
+                progress(f"生成合并目录：{processed_files}/{total_files} · {item.get('relative_path', '')}",
+                         10 + int(75 * processed_files / max(1, total_files)))
             relative_path = str(item.get("relative_path") or "")
             decision = decisions.get(relative_path) or self._default_decision_for_status(str(item.get("status") or ""))
             if decision == "delete":

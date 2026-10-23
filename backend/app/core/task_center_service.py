@@ -3,13 +3,16 @@ import copy
 import logging
 import os
 import time
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 from .linked_subtitle_import_service import get_linked_subtitle_import_service
 from .task_engine import Task, TaskStatus, TaskType, get_task_engine
+from .task_classification import circle_task_classification
 from .json_safety import safe_json_value, safe_text
+from .request_performance import run_sync_stage
 from .archive_identity import aggregate_archive_title, aggregate_rjcodes
 from .http_download_service import (
     build_http_download_batch_title,
@@ -26,6 +29,7 @@ from .baidu_netdisk_service import (
 from ..models.database import ConflictWork, SessionLocal
 
 logger = logging.getLogger(__name__)
+_runtime_batch = ContextVar("task_center_runtime_batch", default=None)
 
 
 class TaskCenterService:
@@ -107,6 +111,9 @@ class TaskCenterService:
         # 社团补全批量任务：Tasks.vue 详情面板 + Dashboard 任务卡需要这些
         # 字段判断 is_batch 并渲染"批量补全 N 个社团"；缺这些字段会导致
         # summary 模式下 details.metadata 只能看到第一个社团名（错误展示）。
+        "owned_only", "only_new_works", "source_page", "source_action",
+        "refresh_meta", "refresh_result", "refreshed_count", "changed_count", "selected_count",
+        "bonus_probe_summary", "release_dates", "work_title",
         "circle_query",
         "circle_queries",
         "circle_name",
@@ -554,6 +561,8 @@ class TaskCenterService:
             "domain_label": self._safe_text(item.get("domain_label")),
             "kind": self._safe_text(item.get("kind")),
             "kind_label": self._safe_text(item.get("kind_label")),
+            "subtype": self._safe_text(item.get("subtype")),
+            "subtype_label": self._safe_text(item.get("subtype_label")),
             "title": self._safe_text(item.get("title")),
             "subtitle": self._safe_text(item.get("subtitle")),
             "source_label": self._safe_text(item.get("source_label")),
@@ -644,6 +653,9 @@ class TaskCenterService:
     def _redis_runtime_for_task(self, task_id: str) -> Dict[str, Any]:
         if not task_id:
             return {}
+        batch = _runtime_batch.get()
+        if batch is not None:
+            return batch.get(task_id, {})
         try:
             from .redis_service import get_redis_service
 
@@ -1081,12 +1093,20 @@ class TaskCenterService:
 
     def _infer_domain(self, task: Task) -> str:
         metadata = dict(task.task_metadata or {})
+        if circle_task_classification(task.type, metadata)[0]:
+            return "circle_completion"
         explicit = self._safe_text(metadata.get("task_domain"))
         if explicit:
             return explicit
         return self.TASK_TYPE_TO_DOMAIN.get(task.type, "system")
 
+    def _execution_domain(self, task: Task, display_domain: str) -> str:
+        if task.type in {TaskType.HTTP_DOWNLOAD, TaskType.ASMR_SYNC_DOWNLOAD, TaskType.BAIDU_NETDISK_DOWNLOAD}:
+            return self.TASK_TYPE_TO_DOMAIN.get(task.type, display_domain)
+        return display_domain
+
     def _build_engine_actions(self, task: Task, domain: str, *, check_retry_source: bool = True) -> List[str]:
+        domain = self._execution_domain(task, domain)
         actions: List[str] = []
         if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING}:
             actions.extend(["pause", "cancel"])
@@ -1105,6 +1125,7 @@ class TaskCenterService:
         return actions
 
     def _can_retry_engine_task(self, task: Task, domain: str, *, check_source_exists: bool = True) -> bool:
+        domain = self._execution_domain(task, domain)
         if domain in {"http_download", "baidu_netdisk"}:
             return task.status in {TaskStatus.FAILED, TaskStatus.COMPLETED}
         if domain not in {"import", "system"}:
@@ -1117,6 +1138,7 @@ class TaskCenterService:
         return True
 
     def _resolve_display_status(self, task: Task, domain: str, metadata: Dict[str, Any]) -> str:
+        domain = self._execution_domain(task, domain)
         cancel_text = " ".join(
             self._safe_text(value)
             for value in (
@@ -1160,7 +1182,9 @@ class TaskCenterService:
 
     def _serialize_engine_task(self, task: Task, *, mode: str = "detail") -> Dict[str, Any]:
         metadata = dict(task.task_metadata or {})
-        domain = self._infer_domain(task)
+        display_domain = self._infer_domain(task)
+        subtype, subtype_label = circle_task_classification(task.type, metadata)
+        domain = self._execution_domain(task, display_domain)
         if domain in {"http_download", "baidu_netdisk"}:
             if domain == "baidu_netdisk":
                 metadata = sanitize_baidu_netdisk_metadata(metadata)
@@ -1434,13 +1458,20 @@ class TaskCenterService:
                     subtitle = f"排队中，{len(release_dates)} 个发售日" if release_dates else "排队中"
                 else:
                     subtitle = f"写入 {int(bonus_summary.get('inserted_count') or 0)} 个隐藏特典"
-                self._append_metric(metrics, "发售日", len(release_dates) if release_dates else None)
+                self._append_metric(metrics, "发售日", bonus_summary.get("date_count", len(release_dates)))
                 self._append_metric(metrics, "候选筛选", bonus_summary.get("candidate_count"))
                 self._append_metric(metrics, "缓存跳过", bonus_summary.get("cached_candidate_count"))
                 self._append_metric(metrics, "实际探测", bonus_summary.get("probe_count"))
                 self._append_metric(metrics, "命中", bonus_summary.get("hit_count"))
                 self._append_metric(metrics, "写入", bonus_summary.get("inserted_count"))
                 self._append_metric(metrics, "请求", bonus_summary.get("request_count"))
+            elif task.type == TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED:
+                refresh = dict(metadata.get("refresh_meta") or {})
+                title = f"{metadata.get('circle_name') or metadata.get('circle_id') or '社团'} · {subtype_label}"
+                source_action = source_action or ("refresh_owned" if metadata.get("owned_only") else "refresh_selected")
+                self._append_metric(metrics, "选中", metadata.get("selected_count", len(metadata.get("canonical_rjcodes") or [])))
+                self._append_metric(metrics, "已处理", metadata.get("refreshed_count", refresh.get("processed_count", 0)))
+                self._append_metric(metrics, "变化", metadata.get("changed_count", refresh.get("changed_count", 0)))
             else:
                 title = self._safe_text(metadata.get("circle_name")) or self._safe_text(metadata.get("work_title")) or rjcode or "社团补全任务"
                 subtitle = self._safe_text(metadata.get("canonical_rjcode")) or self._safe_text(metadata.get("circle_id"))
@@ -1616,6 +1647,24 @@ class TaskCenterService:
         if task.status == TaskStatus.COMPLETED and recovered_notice:
             current_step = recovered_notice
 
+        if subtype:
+            circle_name = self._safe_text(metadata.get("circle_name")) or self._safe_text(metadata.get("circle_query")) or "社团"
+            if subtype == "circle_index":
+                batch_total = int(metadata.get("batch_total") or len(metadata.get("circle_queries") or []) or 0)
+                title = f"批量索引 {batch_total} 个社团" if metadata.get("is_batch") or metadata.get("is_refresh_all") or batch_total > 1 else f"{circle_name} · 社团索引"
+                index_mode = "仅新作" if metadata.get("only_new_works") else "全部刷新"
+                subtitle = " · ".join(filter(None, [index_mode, subtitle]))
+            elif subtype == "bonus_probe":
+                title = f"{circle_name} · 特典探测"
+                probe = dict(metadata.get("bonus_probe_summary") or {})
+                self._append_metric(metrics, "未完成", probe.get("incomplete_count"))
+            elif subtype == "work_download":
+                title = " · ".join(filter(None, [rjcode, self._safe_text(metadata.get("work_title"))])) or title
+                platform = metadata.get("platform_label") or ("YAAS" if task.type == TaskType.HTTP_DOWNLOAD else "ASMR.one")
+                metadata["platform_label"] = platform
+                subtitle = f"{circle_name} · {platform}"
+            route_hint = self._circle_completion_route_hint(metadata, rjcode)
+
         # 关键优化：summary 模式下只挑几个必要的键，跳过全量深拷贝
         if mode == "detail":
             details_metadata = self._build_detail_metadata(metadata)
@@ -1626,10 +1675,12 @@ class TaskCenterService:
             "id": f"engine:{task.id}",
             "entity_id": task.id,
             "engine_task_id": task.id,
-            "domain": domain,
-            "domain_label": self.DOMAIN_LABELS.get(domain, domain),
+            "domain": display_domain,
+            "domain_label": self.DOMAIN_LABELS.get(display_domain, display_domain),
             "kind": task.type.value,
-            "kind_label": source_label or task.type.value,
+            "kind_label": subtype_label or source_label or task.type.value,
+            "subtype": subtype,
+            "subtype_label": subtype_label,
             "title": title,
             "subtitle": subtitle,
             "source_label": source_label,
@@ -1658,7 +1709,10 @@ class TaskCenterService:
                 "metadata": details_metadata,
             },
         }
-        runtime = self._redis_runtime_for_task(task.id)
+        runtime = (self._redis_runtime_for_task(task.id)
+                   if self._safe_text(item.get("status")) in {
+                       "pending", "processing", "paused", "waiting_manual", "waiting_retry"
+                   } else {})
         return self._merge_redis_runtime_item(item, runtime)
 
     def _is_superseded_failed_item(self, item: Dict[str, Any]) -> bool:
@@ -1724,7 +1778,9 @@ class TaskCenterService:
             if item_id and item_id in {str(value) for value in recovered_failure_ids}:
                 return True
 
-            if source_path and self._same_source_path(source_path, self._safe_text(candidate.get("source_path"))):
+            if (source_path and self._same_source_path(source_path, self._safe_text(candidate.get("source_path")))
+                    and item.get("kind") == candidate.get("kind")
+                    and item.get("subtype") == candidate.get("subtype")):
                 return True
 
         return False
@@ -1798,7 +1854,7 @@ class TaskCenterService:
         else:
             details_metadata = self._build_summary_metadata(metadata)
 
-        return {
+        result = {
             "id": f"waiting-retry:{item.get('id')}",
             "entity_id": self._safe_text(item.get("id")),
             "engine_task_id": self._safe_text(item.get("id")),
@@ -1831,6 +1887,20 @@ class TaskCenterService:
                 "retry_after": retry_after,
             },
         }
+        subtype, subtype_label = circle_task_classification(TaskType.ASMR_SYNC_DOWNLOAD, metadata)
+        result.update(subtype=subtype, subtype_label=subtype_label)
+        if subtype:
+            circle_name = self._safe_text(metadata.get("circle_name")) or "社团"
+            result.update(
+                domain="circle_completion",
+                domain_label=self.DOMAIN_LABELS["circle_completion"],
+                kind_label=subtype_label,
+                title=" · ".join(filter(None, [result["rjcode"], self._safe_text(item.get("work_title"))])),
+                subtitle=f"{circle_name} · ASMR.one",
+                source_page="circle-completion",
+                route_hint=self._circle_completion_route_hint(metadata, result["rjcode"]),
+            )
+        return result
 
     def _dedupe_items(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         deduped: List[Dict[str, Any]] = []
@@ -1844,17 +1914,65 @@ class TaskCenterService:
                 seen_waiting_retry_ids.add(entity_id)
             deduped.append(item)
 
-        deduped = [
-            item for item in deduped
-            if not self._is_superseded_active_engine_item(item, deduped)
-        ]
-        return deduped
+        # 每个替代键只保留最新两个候选，既能排除自身，又避免活跃任务逐条扫描全表。
+        retries, recovered, completed = {}, {}, {}
+
+        def add(index, key, stamp, position):
+            candidates = index.setdefault(key, [])
+            candidates.append((stamp or float("inf"), position))
+            candidates.sort(reverse=True)
+            del candidates[2:]
+
+        def path_key(item):
+            path = self._safe_text(item.get("source_path"))
+            if not path:
+                return None
+            try:
+                path = os.path.abspath(path)
+            except Exception:
+                pass
+            return path, item.get("kind"), item.get("subtype")
+
+        for position, item in enumerate(deduped):
+            if not self._safe_text(item.get("id")).startswith("engine:"):
+                continue
+            metadata = dict((item.get("details") or {}).get("metadata") or {})
+            stamp = self._last_timestamp(item)
+            retry_id = self._safe_text(metadata.get("retry_failed_task_id"))
+            if retry_id:
+                add(retries, retry_id, stamp, position)
+            if self._safe_text(item.get("status")) == TaskStatus.COMPLETED.value:
+                for task_id in metadata.get("recovered_failure_ids") or []:
+                    add(recovered, str(task_id), stamp, position)
+                key = path_key(item)
+                if key is not None:
+                    add(completed, key, stamp, position)
+
+        result = []
+        active = {"pending", "processing", "paused", "waiting_manual", "waiting_retry"}
+        for position, item in enumerate(deduped):
+            if (not self._safe_text(item.get("id")).startswith("engine:")
+                    or self._safe_text(item.get("status")) not in active):
+                result.append(item)
+                continue
+            metadata = dict((item.get("details") or {}).get("metadata") or {})
+            if self._safe_text(metadata.get("superseded_by_task_id")):
+                continue
+            task_id = self._safe_text(item.get("entity_id")) or self._safe_text(item.get("engine_task_id"))
+            stamp = self._last_timestamp(item) or float("-inf")
+            candidates = [*retries.get(task_id, ()), *recovered.get(task_id, ()),
+                          *completed.get(path_key(item), ())]
+            if any(other != position and candidate_stamp >= stamp for candidate_stamp, other in candidates):
+                continue
+            result.append(item)
+        return result
 
     def _filter_items(
         self,
         items: List[Dict[str, Any]],
         *,
         domain: Optional[str] = None,
+        subtype: Optional[str] = None,
         status: Optional[str] = None,
         search: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
@@ -1865,12 +1983,15 @@ class TaskCenterService:
         filtered = items
         if normalized_domain and normalized_domain != "all":
             filtered = [item for item in filtered if item.get("domain") == normalized_domain]
+        if subtype and subtype != "all":
+            filtered = [item for item in filtered if item.get("subtype") == subtype]
         if normalized_status and normalized_status != "all":
             filtered = [item for item in filtered if item.get("status") == normalized_status]
         if normalized_search:
             filtered = [
                 item for item in filtered
                 if normalized_search in " ".join([
+                    self._safe_text(item.get("subtype_label")),
                     self._safe_text(item.get("title")),
                     self._safe_text(item.get("subtitle")),
                     self._safe_text(item.get("source_path")),
@@ -1887,6 +2008,7 @@ class TaskCenterService:
                 self.STATUS_PRIORITY.get(self._safe_text(item.get("status")), 99),
                 self.DOMAIN_PRIORITY.get(self._safe_text(item.get("domain")), 99),
                 -self._last_timestamp(item),
+                self._safe_text(item.get("id")),
             )
         )
 
@@ -2058,14 +2180,22 @@ class TaskCenterService:
             engine_tasks_snapshot = self._engine_tasks_snapshot()
         if is_summary:
             self._prune_summary_engine_item_cache({task.id for task in engine_tasks_snapshot})
-        items: List[Dict[str, Any]] = [
-            serialized
-            for serialized in (
-                self._serialize_engine_task_cached(task, mode=mode)
+        from .redis_service import get_redis_service
+
+        active_ids = [task.id for task in engine_tasks_snapshot
+                      if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED,
+                                         TaskStatus.WAITING_MANUAL, TaskStatus.WAITING_RETRY}]
+        runtimes = await run_sync_stage("task_center_runtime", get_redis_service().get_task_runtimes_sync, active_ids)
+        token = _runtime_batch.set(runtimes)
+        try:
+            items: List[Dict[str, Any]] = [
+                serialized
                 for task in engine_tasks_snapshot
-            )
-            if serialized
-        ]
+                for serialized in [self._serialize_engine_task_cached(task, mode=mode)]
+                if serialized
+            ]
+        finally:
+            _runtime_batch.reset(token)
 
         pending_items_raw = await self._get_pending_items_cached()
         items.extend(
@@ -2169,6 +2299,7 @@ class TaskCenterService:
         self,
         *,
         domain: Optional[str] = None,
+        subtype: Optional[str] = None,
         status: Optional[str] = None,
         search: Optional[str] = None,
         limit: int = 200,
@@ -2178,23 +2309,26 @@ class TaskCenterService:
         from .task_center_materialization_service import get_task_center_materialization_service
 
         service = get_task_center_materialization_service()
-        result = service.list_items(
-            limit=5000,
-            offset=0,
-        )
-        all_items = self._dedupe_items(list(result.get("items") or []))
+        rows = service.list_identity_projection()
+        original_rows = list(rows)
+        rows = self._refresh_legacy_materialized_items(rows)
+        overrides = {item["id"]: item for old, item in zip(original_rows, rows) if old is not item}
+        all_items = self._dedupe_items(rows)
         all_items = [item for item in all_items if not self._is_superseded_failed_item(item)]
         all_items = self._sort_items(all_items)
         counts = self._build_overview_counts(all_items)
-        filtered_items = self._filter_items(all_items, domain=domain, status=status, search=search)
         safe_limit = max(1, min(int(limit or 200), 500))
         safe_offset = max(0, int(offset or 0))
+        result = service.list_items(
+            domain=domain, subtype=subtype, status=status, search=search,
+            limit=safe_limit, offset=safe_offset,
+            ordered_ids=[item["id"] for item in all_items],
+            overrides=overrides,
+        )
+        # 旧分类仅修复本页展示，完整迁移仍由显式 backfill 执行。
+        result["items"] = self._refresh_legacy_materialized_items(result["items"])
         return {
-            "items": filtered_items[safe_offset:safe_offset + safe_limit],
-            "total": len(filtered_items),
-            "offset": safe_offset,
-            "limit": safe_limit,
-            **counts,
+            **result, **counts,
             "mode": "materialized_summary",
             "generated_at": datetime.now().isoformat(),
         }
@@ -2202,6 +2336,41 @@ class TaskCenterService:
     def list_materialized_engine_items(self, **kwargs) -> Dict[str, Any]:
         """兼容旧诊断接口名。"""
         return self.list_materialized_items(**kwargs)
+
+    def _refresh_legacy_materialized_items(self, rows):
+        """旧 summary 未保留分类依据时，批量读取原任务，避免按社团名猜分类。"""
+        candidates = [
+            (index, item) for index, item in enumerate(rows)
+            if "subtype" not in item and item.get("engine_task_id")
+            and (str(item.get("kind") or "").startswith("circle_completion_")
+                 or item.get("kind") in {"http_download", "asmr_sync_download"})
+        ]
+        if not candidates:
+            return rows
+        engine = get_task_engine()
+        tasks = {item["engine_task_id"]: engine.get_task(item["engine_task_id"]) for _, item in candidates}
+        missing = [task_id for task_id, task in tasks.items() if task is None]
+        if missing:
+            from ..models.database import Task as TaskRecord
+
+            db = SessionLocal()
+            try:
+                records = db.query(TaskRecord).filter(TaskRecord.id.in_(missing)).all()
+                for record in records:
+                    task = Task(TaskType(record.type), record.source_path or "", task_id=record.id)
+                    with task._set_state_silent():
+                        task.task_metadata = dict(record.task_metadata or {})
+                        task.status = TaskStatus(record.status)
+                        for field in ("progress", "current_step", "error_message", "output_path", "rjcode", "created_at", "started_at", "completed_at"):
+                            setattr(task, field, getattr(record, field, None))
+                    tasks[record.id] = task
+            finally:
+                db.close()
+        for index, item in candidates:
+            task = tasks.get(item["engine_task_id"])
+            if task:
+                rows[index] = self._serialize_engine_task(task, mode="summary")
+        return rows
 
     async def diagnose_serialization_failures(self) -> Dict[str, Any]:
         engine = get_task_engine()
@@ -2275,6 +2444,7 @@ class TaskCenterService:
         self,
         *,
         domain: Optional[str] = None,
+        subtype: Optional[str] = None,
         status: Optional[str] = None,
         search: Optional[str] = None,
         limit: int = 200,
@@ -2286,15 +2456,15 @@ class TaskCenterService:
         safe_offset = max(0, int(offset or 0))
         if normalized_mode == "summary" and os.getenv("KIKOERUMANAGER_TASK_CENTER_MATERIALIZED_SUMMARY", "").strip().lower() in {"1", "true", "yes", "on"}:
             try:
-                materialized = self.list_materialized_items(
+                materialized = await run_sync_stage("task_center_sql", self.list_materialized_items,
                     domain=domain,
+                    subtype=subtype,
                     status=status,
                     search=search,
                     limit=safe_limit,
                     offset=safe_offset,
                 )
-                if materialized.get("items") or int(materialized.get("total") or 0) > 0:
-                    return materialized
+                return materialized
             except Exception:
                 logger.warning("[任务中心] 物化 summary 读路径失败，回退旧聚合", exc_info=True)
         # 顶层防御：底层任意环节抛错都回退到"空列表 + 200"，避免整个任务中心
@@ -2306,7 +2476,7 @@ class TaskCenterService:
             items = []
         counts = self._build_overview_counts(items)
         try:
-            items = self._filter_items(items, domain=domain, status=status, search=search)
+            items = self._filter_items(items, domain=domain, subtype=subtype, status=status, search=search)
         except Exception:
             logger.exception("[任务中心] _filter_items 异常，跳过过滤步骤")
         total = len(items)
@@ -2377,7 +2547,7 @@ class TaskCenterService:
             return None
         metadata = dict(task.task_metadata or {})
         domain = self._infer_domain(task)
-        if domain == "http_download":
+        if task.type == TaskType.HTTP_DOWNLOAD:
             metadata = sanitize_http_download_metadata(metadata)
         elif domain == "baidu_netdisk":
             metadata = sanitize_baidu_netdisk_metadata(metadata)
@@ -2488,7 +2658,7 @@ class TaskCenterService:
                     return {"success": True, "message": "任务已加入重试队列"}
                 raise ValueError("任务不在等待重试状态")
             if normalized_action == "retry":
-                if self._infer_domain(task) == "http_download":
+                if task.type == TaskType.HTTP_DOWNLOAD:
                     if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}:
                         raise ValueError("任务仍在执行中，不能重试")
                     from .http_download_service import get_http_download_service
@@ -2498,7 +2668,7 @@ class TaskCenterService:
                     return {
                         "success": True,
                         "message": "HTTP 下载任务已加入重试队列",
-                        "route_hint": self.DOMAIN_ROUTE_HINT["http_download"],
+                        "route_hint": self._circle_completion_route_hint(task.task_metadata or {}, task.rjcode) if self._infer_domain(task) == "circle_completion" else self.DOMAIN_ROUTE_HINT["http_download"],
                     }
                 if self._infer_domain(task) == "baidu_netdisk":
                     if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}:
@@ -2524,6 +2694,7 @@ class TaskCenterService:
                     wait_stable=False,
                     is_processed=lambda path: False,
                     mark_processed=None,
+                    manual_retry=True,
                 )
                 if not new_task:
                     raise ValueError("无法重新创建任务")

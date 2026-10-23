@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional
 
 from ..activity_log_service import CATEGORY_LABELS
 from ..activity_log_relations import IMPORT_RESULT_ACTIONS, latest_import_results, normalize_import_summary
+from ..activity_log_outcomes import import_result_status, is_duplicate_result, is_subtitle_handoff
 from ._helpers import (
     _coerce_dt,
     _format_bytes_short,
@@ -445,13 +446,15 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
         if child_rows:
             child_rows = _coalesce_import_batch_rows(child_rows)
             result_rows = latest_import_results(child_rows)
-            extract_completed_count = sum(1 for item in result_rows if _is_success_status(item.get("status")))
+            duplicate_count = sum(is_duplicate_result(item) for item in result_rows)
+            subtitle_pending_count = sum(is_subtitle_handoff(item) for item in result_rows)
+            extract_completed_count = sum(1 for item in result_rows if _is_success_status(import_result_status(item)) and not is_duplicate_result(item) and not is_subtitle_handoff(item))
             failed_child_count = sum(
                 1 for item in result_rows
-                if _is_failed_status(item.get("status"))
+                if _is_failed_status(import_result_status(item))
                 and not bool(((item.get("detail") if isinstance(item.get("detail"), dict) else {}) or {}).get("recovered_by_success"))
             )
-            partial_child_count = sum(1 for item in result_rows if str(item.get("status") or "").strip() == "partial_success")
+            partial_child_count = sum(1 for item in result_rows if import_result_status(item) == "partial_success")
             archive_size_total = sum(int(item.get("detail", {}).get("archive_size_bytes") or 0) for item in result_rows)
             extract_output_total = sum(int(item.get("detail", {}).get("extract_output_bytes") or 0) for item in result_rows)
             latest_activity = _coerce_dt(batch_row.get("created_at")) or datetime.min
@@ -490,17 +493,32 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
             if (category_key, batch_id) not in synthetic_import_batch_keys and batch_created_at != datetime.min:
                 batch_duration_ms = max(0, int((duration_end_at - batch_created_at).total_seconds() * 1000))
 
-            if failed_child_count > 0 and extract_completed_count > 0:
+            if failed_child_count > 0 and (extract_completed_count + duplicate_count + subtitle_pending_count) > 0:
                 batch_row["status"] = "partial_success"
             elif failed_child_count > 0:
                 batch_row["status"] = "failed"
             elif partial_child_count > 0:
                 batch_row["status"] = "partial_success"
             elif (len(result_rows) < int(batch_detail.get("created_count") or batch_detail.get("multi_rj_subtask_count") or 0)
-                  or any(item.get("status") not in {"success", "completed", "failed", "error", "partial_success"} for item in result_rows)):
+                  or any(import_result_status(item) not in {"success", "completed", "failed", "error", "partial_success"} for item in result_rows)):
                 batch_row["status"] = "incomplete"
             else:
                 batch_row["status"] = "success"
+
+            batch_row["result_status"] = batch_row["status"]
+            if duplicate_count:
+                batch_row["outcome_label"] = {
+                    "success": "含重复排除", "partial_success": "部分成功，含重复排除",
+                    "failed": "失败，含重复排除", "incomplete": "未完成，含重复排除",
+                }.get(batch_row["status"], batch_row["status"])
+            if subtitle_pending_count:
+                prefix = batch_row.get("outcome_label") or {
+                    "success": "已处理", "partial_success": "部分成功", "failed": "失败", "incomplete": "未完成",
+                }.get(batch_row["status"], batch_row["status"])
+                batch_row["outcome_label"] = f"{prefix}，含字幕待补配"
+
+            if category_key in {"auto_import", "extract"} and batch_row["status"] == "partial_success":
+                batch_row["outcome_label"] = (batch_row.get("outcome_label") or "部分成功").replace("部分成功", "部分解压成功", 1)
 
             summary_parts = []
             requested_count = int(batch_detail.get("requested_count") or len(result_rows) or 0)
@@ -519,6 +537,10 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                 summary_parts.append(f"已完成 {extract_completed_count} 个")
             if failed_child_count > 0:
                 summary_parts.append(f"失败 {failed_child_count} 个")
+            if duplicate_count > 0:
+                summary_parts.append(f"重复排除 {duplicate_count} 个")
+            if subtitle_pending_count > 0:
+                summary_parts.append(f"待字幕补配 {subtitle_pending_count} 个")
             if batch_duration_ms > 0:
                 total_seconds = max(0, int(round(batch_duration_ms / 1000)))
                 minutes = total_seconds // 60
@@ -536,6 +558,8 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                 "extract_completed_count": extract_completed_count,
                 "failed_child_count": failed_child_count,
                 "partial_child_count": partial_child_count,
+                "duplicate_child_count": duplicate_count,
+                "subtitle_pending_count": subtitle_pending_count,
                 "result_task_count": len(result_rows),
                 "participating_archive_count": archive_count if category_key in {"auto_import", "extract"} else 0,
                 "aggregate_extract_output_bytes": extract_output_total,

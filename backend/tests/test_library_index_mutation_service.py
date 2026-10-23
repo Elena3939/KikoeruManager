@@ -810,6 +810,46 @@ def test_reconcile_staging_handles_220k_entries_with_fixed_bind_count(mutation_e
 
 
 
+def test_fast_path_timeout_rolls_back_and_persists_backoff(mutation_env, monkeypatch):
+    env = mutation_env
+    env.service._fast_path_enabled = True
+    library_id = "fast-timeout-backoff"
+    _seed_entry(env, library_id, "keep.txt")
+    _prepare_and_finalize(env.service, library_id=library_id,
+                          idempotency_key="fast-timeout-backoff",
+                          effect={"kind": "delete", "relative_path": "keep.txt", "scope": "exact"})
+    original = env.service._apply_fast_effect_in_session
+
+    def timeout_after_write(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(env.service, "_apply_fast_effect_in_session", timeout_after_write)
+    assert env.service._process_next(library_id) is False
+    with env.Session() as db:
+        ledger = db.query(LibraryIndexMutationLedger).filter_by(library_id=library_id).one()
+        status = db.query(LibraryIndexStatus).filter_by(library_id=library_id).one()
+        assert ledger.attempt_count == 1
+        assert ledger.next_retry_at is not None
+        assert status.catchup_state == "retrying"
+        assert status.materialized_seq == 0
+        assert db.query(LibraryIndexEntry).filter_by(library_id=library_id).count() == 1
+        assert db.query(LibraryIndexPendingMask).filter_by(library_id=library_id).count() == 1
+    assert env.service._process_next(library_id) is False
+    with env.Session() as db:
+        ledger = db.query(LibraryIndexMutationLedger).filter_by(library_id=library_id).one()
+        assert ledger.attempt_count == 1
+        ledger.next_retry_at = None
+        db.commit()
+    monkeypatch.setattr(env.service, "_apply_fast_effect_in_session", original)
+    env.service._last_fast_path_pause_until = 0
+    env.service._fast_path_last_duration_ms = 0
+    assert env.service._process_next(library_id) is True
+    with env.Session() as db:
+        assert db.query(LibraryIndexEntry).filter_by(library_id=library_id).count() == 0
+        assert db.query(LibraryIndexPendingMask).filter_by(library_id=library_id).count() == 0
+
+
 def test_temporary_database_timeout_does_not_increment_ledger_attempt(
     mutation_env,
     monkeypatch,
@@ -1231,6 +1271,124 @@ def test_fast_path_delete_treats_percent_underscore_and_unicode_literally(
         db.close()
 
 
+@pytest.mark.parametrize("count,row_budget,first_checkpoint", [(60, 5000, 49), (4, 3, 1)])
+def test_circle_grouping_large_batch_checkpoints_without_scanning(
+    mutation_env, monkeypatch, tmp_path, count, row_budget, first_checkpoint,
+):
+    env = mutation_env
+    env.service._fast_path_enabled = True
+    library_id = "circle-group-chunks"
+    effects = []
+    monkeypatch.setattr(mutation_module, "FAST_PATH_MAX_ROWS", row_budget)
+    for n in range(count):
+        source, target = f"old{n}", f"circle/new{n}"
+        _seed_entry(env, library_id, source, entry_type="dir")
+        _seed_entry(env, library_id, f"{source}/audio.wav")
+        effects.extend([
+            {"kind": "move", "relative_path": source, "scope": "subtree",
+             "target_library_id": library_id, "target_path": target,
+             "payload": {"old_absolute_path": str(tmp_path / source), "new_absolute_path": str(tmp_path / target)}},
+            {"kind": "reconcile", "relative_path": target, "scope": "subtree"},
+        ])
+
+    def fail_scan(*args, **kwargs):
+        raise AssertionError("大批量纯移动不能退化成文件树扫描")
+
+    monkeypatch.setattr(mutation_module.LocalScanner, "scan_subtree", fail_scan)
+    prepared = env.service.prepare(kind="auto_circle_group", effects_by_library={library_id: effects},
+                                   idempotency_key="circle-large-batch")
+    env.service.finalize(prepared.operation_id, actual_effects_by_library={library_id: effects})
+    assert env.service._process_next(library_id)
+    db = env.Session()
+    try:
+        ledger = db.query(LibraryIndexMutationLedger).filter_by(operation_id=prepared.operation_id).one()
+        assert ledger.payload["fast_path_effect_no"] == first_checkpoint
+        assert ledger.applied_at is None
+        assert db.query(LibraryIndexStatus).filter_by(library_id=library_id).one().materialized_seq == 0
+        assert db.query(LibraryIndexPendingMask).filter_by(operation_id=prepared.operation_id).count() > 0
+    finally:
+        db.close()
+    for _ in range(count):
+        if not env.service._process_next(library_id):
+            break
+    db = env.Session()
+    try:
+        paths = {p[0] for p in db.query(LibraryIndexEntry.relative_path).filter_by(library_id=library_id).all()}
+        assert paths == {p for n in range(count) for p in (f"circle/new{n}", f"circle/new{n}/audio.wav")}
+        assert db.query(LibraryIndexPendingMask).filter_by(operation_id=prepared.operation_id).count() == 0
+        assert db.query(LibraryIndexStatus).filter_by(library_id=library_id).one().materialized_seq == 1
+    finally:
+        db.close()
+
+
+def test_circle_grouping_real_database_and_filesystem(mutation_env, monkeypatch, tmp_path):
+    from unittest.mock import Mock
+    from app.api.routes import _parse_circle_name_from_folder
+    from app.core.library_circle_grouping import group_local_folders
+
+    env = mutation_env
+    env.service._fast_path_enabled = True
+    library = library_manager_module.LibraryDefinition(id="circle-e2e", name="分类集成", type="local", path=str(tmp_path))
+    manager = object.__new__(library_manager_module.LibraryManager)
+    manager._stats_cache = {library.id: {"status": "completed", "scan_mode": "manual_persisted", "folder_count": 100}}
+    manager._persist_stats = Mock()
+    manager._invalidate_local_browse_caches = Mock()
+    manager._append_stats_log = Mock()
+    paths = []
+    for n in range(100):
+        name = f"[社团{n % 5}][RJ{123456 + n}]作品"
+        source = tmp_path / name
+        source.mkdir()
+        (source / "audio.wav").write_bytes(b"audio")
+        paths.append(str(source))
+        _seed_entry(env, library.id, name, entry_type="dir")
+        _seed_entry(env, library.id, f"{name}/audio.wav")
+    db = env.Session()
+    try:
+        for row in db.query(LibraryIndexEntry).filter_by(library_id=library.id).all():
+            row.absolute_path = str(tmp_path / row.relative_path)
+        db.commit()
+    finally:
+        db.close()
+
+    def fail_scan(*args, **kwargs):
+        raise AssertionError("完整索引下普通分类不应扫描目录树")
+
+    monkeypatch.setattr(mutation_module.LocalScanner, "scan_subtree", fail_scan)
+    engine = env.Session.kw["bind"]
+    commits = []
+    record_commit = lambda conn: commits.append(1)
+    event.listen(engine, "commit", record_commit)
+    try:
+        started = time.perf_counter()
+        result = group_local_folders(manager, library, paths, _parse_circle_name_from_folder, env.service)
+        request_ms = (time.perf_counter() - started) * 1000
+        assert len(commits) == 3
+        assert result["success_count"] == 100 and result["failed_count"] == 0
+        manager._persist_stats.assert_called_once()
+        manager._invalidate_local_browse_caches.assert_called_once()
+        started = time.perf_counter()
+        chunks = 0
+        while env.service._process_next(library.id):
+            chunks += 1
+            assert chunks < 20
+        index_ms = (time.perf_counter() - started) * 1000
+        print(f"real_postgresql items=100 request_ms={request_ms:.2f} index_ms={index_ms:.2f} chunks={chunks} request_commits=3")
+        assert chunks == 5
+    finally:
+        event.remove(engine, "commit", record_commit)
+    db = env.Session()
+    try:
+        rows = db.query(LibraryIndexEntry).filter_by(library_id=library.id).all()
+        assert len(rows) == 205
+        assert all(row.relative_path.startswith("社团") for row in rows)
+        assert all(row.absolute_path == str(tmp_path / row.relative_path) for row in rows)
+        assert manager._stats_cache[library.id]["folder_count"] == 5
+        assert db.query(LibraryIndexStatus).filter_by(library_id=library.id).one().materialized_seq == 1
+    finally:
+        db.close()
+
+
 def test_fast_path_same_library_move_skips_reconcile_and_scanner(
     mutation_env,
     monkeypatch,
@@ -1366,10 +1524,12 @@ def test_nested_directory_move_keeps_siblings_visible_without_scanning(
     assert env.store.get_entry(library_id, sibling + "/keep.wav") is not None
 
 
+@pytest.mark.parametrize("timeout_first", [False, True])
 def test_fast_path_cross_library_move_advances_both_ledgers_atomically(
     mutation_env,
     monkeypatch,
     tmp_path,
+    timeout_first,
 ):
     env = mutation_env
     env.service._fast_path_enabled = True
@@ -1418,6 +1578,28 @@ def test_fast_path_cross_library_move_advances_both_ledgers_atomically(
         prepared.operation_id,
         actual_effects_by_library=effects,
     )
+
+    if timeout_first:
+        original = mutation_module.SnapshotStore._move_subtree_between_libraries_in_session
+
+        def timeout_after_move(*args, **kwargs):
+            original(*args, **kwargs)
+            raise RuntimeError("canceling statement due to statement timeout")
+
+        monkeypatch.setattr(mutation_module.SnapshotStore, "_move_subtree_between_libraries_in_session", timeout_after_move)
+        assert env.service._process_next(source_id) is False
+        with env.Session() as db:
+            ledgers = db.query(LibraryIndexMutationLedger).filter_by(operation_id=prepared.operation_id).all()
+            assert len(ledgers) == 2
+            assert all(row.attempt_count == 1 and row.next_retry_at is not None for row in ledgers)
+            assert db.query(LibraryIndexEntry).filter_by(library_id=source_id).count() == 2
+            assert db.query(LibraryIndexEntry).filter_by(library_id=target_id).count() == 1
+            for row in ledgers:
+                row.next_retry_at = None
+            db.commit()
+        monkeypatch.setattr(mutation_module.SnapshotStore, "_move_subtree_between_libraries_in_session", original)
+        env.service._last_fast_path_pause_until = 0
+        env.service._fast_path_last_duration_ms = 0
 
     assert env.service._process_next(source_id) is True
     db = env.Session()

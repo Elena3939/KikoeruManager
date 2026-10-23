@@ -365,8 +365,10 @@
             @click.stop
           >
             <ActivityDetailBody
+              ref="detailBodyRef"
               :row="selectedRow"
               :loading="detailLoading"
+              :can-go-back="canGoBackDetail"
               :category-config="selectedCategoryConfig"
               :status-config="selectedStatusConfig"
               :status-tone="statusTone"
@@ -374,6 +376,7 @@
               :compact-path="compactPath"
               :human-action="humanAction"
               @close="closeDetail"
+              @back="goBackDetail"
               @open-row="openDetailById"
               @navigate="handleDetailNavigate"
             />
@@ -398,7 +401,7 @@
 </template>
 
 <script setup>
-import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import dayjs from 'dayjs'
 import {
@@ -441,6 +444,7 @@ import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import ActivityDetailBody from '../components/activity/ActivityDetailBody.vue'
+import { useActivityDetailNavigation } from '../composables/useActivityDetailNavigation.js'
 import { getHttpDownloadDisplayMeta } from '../components/common/httpDownloadPlatformMeta.js'
 import { splitActivityMetric } from '../utils/activityMetric.js'
 
@@ -448,7 +452,6 @@ const router = useRouter()
 
 const {
   loading,
-  detailLoading,
   items,
   total,
   page,
@@ -787,6 +790,7 @@ function bonusProbeDisplayState(row) {
 
 function effectiveStatus(row) {
   if (!row) return ''
+  if (row.result_status) return row.result_status
   const bonusState = bonusProbeDisplayState(row)
   if (bonusState) return bonusState
 
@@ -904,13 +908,35 @@ function catPaletteColor(idx) {
 
 // ==================== 详情抽屉 ====================
 const detailDrawerVisible = ref(false)
-const selectedRow = ref(null)
-const selectedRowId = ref('')
+const detailBodyRef = ref(null)
+let viewRestoreRevision = 0
+const {
+  row: selectedRow, loading: detailLoading, canGoBack: canGoBackDetail,
+  open: openRootDetail, openChild: openChildDetail, back: goBackDetail,
+  cancel: cancelDetailNavigation, reset: resetDetailNavigation,
+} = useActivityDetailNavigation({
+  loadDetail,
+  captureView: () => detailBodyRef.value?.captureView(),
+  restoreView: (state) => {
+    const revision = ++viewRestoreRevision
+    nextTick(() => {
+      if (revision === viewRestoreRevision) detailBodyRef.value?.restoreView(state)
+    })
+  },
+  onError: (error) => {
+    console.warn('[活动记录] 拉取详情失败', error)
+    ElMessage.warning('拉取完整详情失败，请稍后重试')
+  },
+})
+const selectedRowId = computed(() => String(selectedRow.value?.id || ''))
 
 const selectedCategoryConfig = computed(() => categoryConfig(selectedRow.value?.category))
 // 状态徽章统一走 effectiveStatus，让"已加入问题作品列表"这种特殊 success 也能在详情面板里
 // 显示成"部分成功"，与列表行保持一致。
-const selectedStatusConfig = computed(() => statusConfig(effectiveStatus(selectedRow.value)))
+const selectedStatusConfig = computed(() => ({
+  ...statusConfig(effectiveStatus(selectedRow.value)),
+  ...(selectedRow.value?.outcome_label ? { label: selectedRow.value.outcome_label } : {}),
+}))
 
 // ===== 详情抽屉宽度：用户可拖拽，记忆到 localStorage =====
 const DRAWER_WIDTH_MIN = 480
@@ -1009,40 +1035,18 @@ function onDrawerResizeEnd() {
 
 async function openDetail(row) {
   if (!row || !row.id) return
-  selectedRowId.value = String(row.id)
-  // 先把 lite 数据塞进抽屉，立刻给反馈，再异步拉完整 detail
-  selectedRow.value = { ...row, __isLite: true }
   detailDrawerVisible.value = true
-  try {
-    const fullRow = await loadDetail(row.id)
-    if (fullRow && selectedRowId.value === String(row.id)) {
-      selectedRow.value = fullRow
-    }
-  } catch (err) {
-    console.warn('[活动记录] 拉取详情失败', err)
-    ElMessage.warning('拉取完整详情失败，已显示基础信息')
-    if (selectedRowId.value === String(row.id) && selectedRow.value?.__isLite) {
-      const { __isLite, ...fallback } = selectedRow.value
-      selectedRow.value = fallback
-    }
-  }
+  await openRootDetail(row)
 }
 
 async function openDetailById(id) {
   if (!id) return
-  selectedRowId.value = String(id)
   detailDrawerVisible.value = true
-  try {
-    const fullRow = await loadDetail(id)
-    if (fullRow && selectedRowId.value === String(id)) {
-      selectedRow.value = fullRow
-    }
-  } catch (err) {
-    console.warn('[活动记录] 拉取子任务详情失败', err)
-  }
+  await openChildDetail(id)
 }
 
 function closeDetail() {
+  cancelDetailNavigation()
   detailDrawerVisible.value = false
 }
 
@@ -1164,8 +1168,7 @@ function onDrawerBeforeClose(done) {
 }
 
 function onDrawerClosed() {
-  selectedRow.value = null
-  selectedRowId.value = ''
+  if (!detailDrawerVisible.value) resetDetailNavigation()
 }
 
 // ==================== 概览数据 ====================
@@ -1435,6 +1438,7 @@ function onClearSearch() {
 // 旧版页面有 200+ 行逐 action 翻译；lite 模式后端已经提供 summary，
 // 这里只对常见 status 给个简短标题，兜底用 status 标签。
 function humanAction(row) {
+  if (row?.outcome === 'duplicate' || (row?.outcome === 'pending' && row?.outcome_label === '待字幕补配') || (row?.action === 'batch_start' && row?.outcome_label)) return row.outcome_label
   if (!row) return ''
   const cat = String(row.category || '')
   const action = String(row.action || '')
@@ -1459,9 +1463,9 @@ function humanAction(row) {
   }
   if (cat === 'auto_import') {
     if (action === 'batch_start') {
-      if (status === 'success' || status === 'completed') return '已提交解压'
-      if (status === 'partial_success') return '部分提交解压'
-      if (status === 'failed') return '提交解压失败'
+      if (status === 'success' || status === 'completed') return '解压成功'
+      if (status === 'partial_success') return '部分解压成功'
+      if (status === 'failed') return '解压失败'
       return '创建解压任务'
     }
     if (status === 'success') return '入库完成'
@@ -2418,7 +2422,11 @@ watch(totalPages, (val) => {
 }
 
 .activity-log-row.tone-success { --activity-row-accent: var(--activity-success); }
-.activity-log-row.tone-warn { --activity-row-accent: var(--activity-warn); }
+.activity-log-row.tone-warn {
+  --activity-row-accent: var(--activity-warn);
+  border-color: color-mix(in srgb, var(--activity-warn) 48%, var(--activity-border));
+  background: color-mix(in srgb, var(--activity-surface-raised) 88%, var(--activity-warn) 12%);
+}
 .activity-log-row.tone-danger { --activity-row-accent: var(--activity-danger); }
 .activity-log-row.tone-info { --activity-row-accent: var(--activity-info); }
 .activity-log-row.tone-neutral { --activity-row-accent: var(--activity-subtle); }

@@ -117,8 +117,11 @@ class SmartClassifier:
         try:
             from .dlsite_service import get_dlsite_service
             linked_works = await get_dlsite_service().get_linked_works(normalized_rj)
+            from .import_validation import require_complete_linkage
+            require_complete_linkage(linked_works)
         except Exception as exc:
-            logger.info("[预检] 获取 DLsite 关联链失败，仅查当前 RJ: %s error=%s", normalized_rj, exc)
+            from .import_validation import ImportDataError
+            raise ImportDataError(f"DLsite 关联数据获取失败: {exc}", "linkage") from exc
 
         related_rjcodes = [
             str(candidate or "").strip().upper()
@@ -707,9 +710,13 @@ class SmartClassifier:
             # 否则会把后来的失败直接吞掉，任务中心里看得到失败，但问题作品页里没有。
             existing_conflict = None
             if new_path:
-                existing_conflict = active_query.filter(
-                    ConflictWork.new_path == new_path
-                ).first()
+                path_query = active_query.filter(ConflictWork.new_path == new_path)
+                if metadata.get("source_operation") == "api_rename":
+                    path_query = path_query.filter(
+                        ConflictWork.new_metadata["source_operation"].as_string() == "api_rename",
+                        ConflictWork.new_metadata["library_id"].as_string() == metadata.get("library_id"),
+                    )
+                existing_conflict = path_query.first()
 
             if not existing_conflict and rjcode and conflict_type not in {'EXTRACT_FAILED', 'PROCESS_FAILED'}:
                 existing_conflict = active_query.filter(
@@ -718,6 +725,16 @@ class SmartClassifier:
                 ).first()
             
             if existing_conflict:
+                if metadata.get("source_operation") == "api_rename":
+                    existing_conflict.new_metadata = safe_json_value({
+                        **dict(existing_conflict.new_metadata or {}),
+                        **metadata,
+                        "last_failed_at": datetime.now().isoformat(),
+                    })
+                    db.commit()
+                    from .api_rename_failure_service import notify_api_rename_problem_changed
+                    notify_api_rename_problem_changed()
+                    return
                 logger.info(f"冲突记录已存在，跳过重复添加: {rjcode}")
                 return
             
@@ -754,6 +771,9 @@ class SmartClassifier:
             )
             db.add(conflict)
             db.commit()
+            if metadata.get("source_operation") == "api_rename":
+                from .api_rename_failure_service import notify_api_rename_problem_changed
+                notify_api_rename_problem_changed()
             logger.info(f"添加问题作品记录: {rjcode}")
         except Exception as e:
             logger.error(f"添加问题作品失败: {e}", exc_info=True)

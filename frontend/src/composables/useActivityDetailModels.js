@@ -393,6 +393,7 @@ function isRecoveredFailure(row) {
 }
 
 function finalStatusLabel(row) {
+  if (row?.outcome === 'duplicate' || (row?.outcome === 'pending' && row?.outcome_label === '待字幕补配') || (row?.action === 'batch_start' && row?.outcome_label)) return row.outcome_label
   if (!row || row.is_tree_child || !rowHasChildren(row)) return ''
   if (isSubtitleBatchRootPaired(row)) return '配对✔'
   if (isSubtitleBatchRootPartiallyPaired(row)) return '部分配对✔'
@@ -497,6 +498,7 @@ function pathCompareModel(row) {
     }
   }
   if (row.category === 'pipeline_delete') {
+    if (row.action === 'batch_api_delete') return null
     const beforePath = String(sourcePath || d.path || '').trim()
     const reason = String(d.error || d.reason || '').trim()
     if (!beforePath && !reason) return null
@@ -551,8 +553,11 @@ const HIGHLIGHT_LABELS = {
   import_final_file_count: '导入文件数', recovered_failure_count: '修复失败数',
   duration_ms: '耗时', selected_count: '命中数量', selected_size: '命中体积',
   extract_phase_duration_ms: '解包阶段（含等待）',
+  extract_execution_duration_ms: '解压耗时（不含等待）',
   task_started_at: '任务开始时间', task_completed_at: '任务结束时间',
   success_count: '成功数量', failed_count: '失败数量', deleted_bytes: '删除体积',
+  deleted_file_count: '删除文件数', deleted_folder_count: '删除目录数',
+  unknown_size_count: '大小未知数', unknown_type_count: '类型未知数',
   retry_target_count: '重试目标数', retry_success_count: '重试成功数',
   retry_failed_count: '重试失败数', retry_recovered_item_count: '重试补回项数',
   recovered_item_count: '补回项数', recovered_selected_size: '补回体积',
@@ -624,7 +629,7 @@ const CONFLICT_RESOLUTION_HIGHLIGHT_KEYS = [
 ]
 
 function normalizeHighlightValue(key, value) {
-  if (key === 'duration_ms' || key === 'batch_duration_ms' || key === 'extract_phase_duration_ms') return formatDurationMs(value)
+  if (key === 'duration_ms' || key === 'batch_duration_ms' || key === 'extract_phase_duration_ms' || key === 'extract_execution_duration_ms') return formatDurationMs(value)
   if (key === 'awaiting_manual_match') return value ? '是' : '否'
   if (key === 'manual_match_completed') return value ? '是' : '否'
   if (key === 'naming_strategy') {
@@ -1302,6 +1307,7 @@ function deleteEntrySections(row) {
   const d = row?.detail
   if (!d || typeof d !== 'object') return []
   if (String(row?.category || '').trim() !== 'pipeline_delete') return []
+  if (Array.isArray(d.delete_tree_sections)) return d.delete_tree_sections
   const succeeded = []
   const failed = []
   if (Array.isArray(d.results) && d.results.length) {
@@ -1700,6 +1706,7 @@ function bonusProbeDisplayState(row) {
 
 function effectiveRowStatus(row) {
   if (!row) return ''
+  if (row.result_status) return row.result_status
   const bonusState = bonusProbeDisplayState(row)
   if (bonusState) return bonusState
 
@@ -1737,6 +1744,7 @@ function effectiveRowStatus(row) {
 }
 
 function humanAction(row) {
+  if (row?.outcome === 'duplicate' || (row?.outcome === 'pending' && row?.outcome_label === '待字幕补配') || (row?.action === 'batch_start' && row?.outcome_label)) return row.outcome_label
   const detail = safeDetail(row)
   const sourceAction = String(row?.source_action || detail.source_action || '').trim()
   const isReimport = sourceAction === 'reimport_local_download_root' || sourceAction === 'reimport_downloaded_session'
@@ -1821,9 +1829,9 @@ function humanAction(row) {
   if (cat === 'extract') return status === 'success' ? '压缩包解压完成' : '压缩包解压失败'
   if (cat === 'auto_import') {
     if (action === 'batch_start') {
-      if (status === 'success' || status === 'completed') return '已提交解压任务'
-      if (status === 'partial_success') return '部分提交解压任务'
-      if (status === 'failed') return '提交解压任务失败'
+      if (status === 'success' || status === 'completed') return '解压成功'
+      if (status === 'partial_success') return '部分解压成功'
+      if (status === 'failed') return '解压失败'
       return '创建解压任务'
     }
     if (status === 'success') return '解压入库完成'

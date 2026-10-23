@@ -50,6 +50,9 @@ class RenameService:
         if not metadata:
             raise Exception("缺少元数据，无法重命名")
 
+        from .import_validation import require_import_metadata
+        require_import_metadata(metadata)
+
         fallback_rjcode = str(
             metadata.get('rjcode')
             or metadata.get('inferred_rjcode')
@@ -69,6 +72,9 @@ class RenameService:
         if self.config.rename.use_japanese_metadata:
             task.update_progress(61, "获取日语元数据")
             japanese_metadata = await self._get_japanese_metadata(metadata.get('rjcode'))
+            if not japanese_metadata:
+                from .import_validation import ImportDataError
+                raise ImportDataError("日语元数据获取失败，已停止重命名")
             if japanese_metadata:
                 japanese_maker_name = str(japanese_metadata.get('maker_name') or '').strip()
                 if japanese_maker_name:
@@ -116,7 +122,7 @@ class RenameService:
                     counter += 1
                     if counter > 100:  # 防止无限循环
                         logger.error(f"重命名服务 - 无法找到可用的名称，跳过重命名")
-                        return path
+                        raise RuntimeError("同名目录过多，无法生成可用的重命名目标")
                 logger.info(f"重命名服务 - 使用新名称避免冲突: {new_path.name}")
         
         # 执行重命名
@@ -125,7 +131,7 @@ class RenameService:
 
         return str(new_path)
 
-    async def _get_japanese_metadata(self, rjcode: str) -> Optional[dict]:
+    async def _get_japanese_metadata(self, rjcode: str, *, force_refresh: bool = False) -> Optional[dict]:
         """
         获取日语元数据（带缓存）
 
@@ -136,6 +142,8 @@ class RenameService:
             日语元数据字典
         """
         # 检查缓存
+        if force_refresh:
+            self._japanese_metadata_cache.pop(rjcode, None)
         if rjcode in self._japanese_metadata_cache:
             return self._japanese_metadata_cache[rjcode]
 
@@ -143,10 +151,14 @@ class RenameService:
         from .metadata_service import MetadataService
         metadata_service = MetadataService()
 
-        japanese_metadata = await metadata_service.fetch_japanese_metadata(rjcode)
+        if force_refresh:
+            japanese_metadata = await metadata_service.fetch_japanese_metadata(rjcode, force_refresh=True)
+        else:
+            japanese_metadata = await metadata_service.fetch_japanese_metadata(rjcode)
 
-        # 缓存结果
-        self._japanese_metadata_cache[rjcode] = japanese_metadata
+        # 只缓存成功数据，查询失败后允许同一实例重新请求。
+        if japanese_metadata:
+            self._japanese_metadata_cache[rjcode] = japanese_metadata
 
         return japanese_metadata
 

@@ -36,6 +36,25 @@ function createWorkbench(props = {}) {
 }
 
 describe('合并工作台任务与窗口分离', () => {
+  it('15087 个差异只渲染可见行，滚动和搜索仍能找到末尾文件', async () => {
+    const items = Array.from({ length: 15087 }, (_, index) => {
+      const name = `track-${String(index).padStart(5, '0')}.mp3`
+      return { relative_path: name, name, type: 'file', status: 'new_only', new_path: `/new/${name}` }
+    })
+    const view = createWorkbench({ preview: { items, default_decisions: {} } })
+    expect(view.findAll('.cmw-split-row').length).toBeLessThan(50)
+    const list = view.get('.cmw-split-list')
+    list.element.scrollTop = 15080 * 48
+    await list.trigger('scroll')
+    expect(view.text()).toContain('track-15086.mp3')
+    expect(view.findAll('.cmw-split-row').length).toBeLessThan(50)
+    await view.get('input').setValue('track-15086')
+    expect(view.findAll('.cmw-split-row')).toHaveLength(1)
+    expect(view.text()).toContain('track-15086.mp3')
+    await view.get('.cmw-side-line.is-new').trigger('click')
+    expect(view.emitted('update:decisions')?.[0]?.[0]).toEqual({ 'track-15086.mp3': 'delete' })
+  })
+
   it('点击背景不会关闭或终止，缩小也不会终止任务', async () => {
     const cancelAction = vi.fn()
     const view = createWorkbench({ loading: true, cancelAction })

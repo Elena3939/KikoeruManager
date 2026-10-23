@@ -43,7 +43,7 @@ describe('社团封面结果在两种渲染布局复用', () => {
       props: {
         items: [{
           canonical_rjcode: 'RJ01726963', title: '原作',
-          bonus_works: [bonus('RJ01739773', unknownCover ? undefined : false), bonus('RJ01739774', unknownCover ? undefined : true)],
+          bonus_display_works: [bonus('RJ01739773', unknownCover ? undefined : false), bonus('RJ01739774', unknownCover ? undefined : true)],
         }],
         mode: 'card', serverPaging: true, totalItems: 1,
       },

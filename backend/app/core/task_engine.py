@@ -142,6 +142,11 @@ class Task:
         self._event_hook = hook
 
     def mark_changed(self, reason: str = "status"):
+        if reason in {"progress", "status", "started", "completed", "failed", "cancelled"}:
+            try:
+                self._log_progress_snapshot()
+            except Exception:
+                logger.debug("任务结构化进度日志写入失败", exc_info=True)
         hook = self._event_hook or self.__class__._global_event_hook
         if not hook:
             return
@@ -149,6 +154,32 @@ class Task:
             hook(self, reason)
         except Exception:
             logger.debug("任务事件回调失败", exc_info=True)
+
+    def _log_progress_snapshot(self):
+        """将真实任务状态和进度写入日志，供历史读取和 SSE 使用同一份数据。"""
+        status = self.status.value if hasattr(self.status, "value") else str(self.status)
+        metadata = self.task_metadata or {}
+        if status == "failed" and metadata.get("partial_success"):
+            status = "partial_failed"
+        snapshot = (status, self.progress, self.current_step)
+        if snapshot == getattr(self, "_last_log_progress_snapshot", None):
+            return
+        task_type = self.type.value if hasattr(self.type, "value") else str(self.type)
+        phase = {
+            "extract": "解压", "filter": "过滤", "metadata": "元数据", "rename": "重命名",
+            "asmr_sync_download": "下载", "http_download": "下载", "baidu_netdisk_download": "下载",
+            "baidu_netdisk_upload": "上传", "local_library_upload": "上传",
+            "rj_subtitle_fetch": "字幕", "auto_process": "处理", "process_existing_folder": "处理",
+        }.get(task_type, "任务")
+        payload = {
+            "version": 1, "task_id": self.id, "task_type": task_type,
+            "status": status, "progress": self.progress, "step": self.current_step,
+            "phase": phase, "source_label": self._progress_source_label(), "rjcode": self.rjcode or "",
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+        }
+        logger.info("__KIKOERUMANAGER_TASK_PROGRESS__%s", json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        self._last_log_progress_snapshot = snapshot
 
     def touch_metadata(self, reason: str = "metadata"):
         self._metadata_version = int(getattr(self, "_metadata_version", 0) or 0) + 1
@@ -386,11 +417,6 @@ class Task:
                 "message": text,
                 "level": "info",
             })
-            source_label = self._progress_source_label()
-            if source_label:
-                logger.info("任务 %s【%s】: %s (%d%%)", self.id, source_label, text, normalized_progress)
-            else:
-                logger.info("任务 %s: %s (%d%%)", self.id, text, normalized_progress)
             # 限长 60 条：解压/入库平均 15~20 条，留足余量给重试场景。
             self.task_metadata["progress_log"] = logs[-60:]
             self._metadata_version = int(getattr(self, "_metadata_version", 0) or 0) + 1
@@ -623,6 +649,11 @@ class TaskEngine:
         with self._task_center_version_lock:
             return self._task_center_version
 
+    def get_task_type_version(self, task_type: TaskType):
+        """域事件版本加集合大小，新增/删除任务也会使只读快照失效。"""
+        with self._task_center_version_lock:
+            return (getattr(self, "_task_type_versions", {}).get(task_type, 0), len(self.tasks))
+
     @staticmethod
     def _runtime_buffer_progress_flush_interval_seconds() -> float:
         try:
@@ -652,7 +683,15 @@ class TaskEngine:
             from .task_center_event_service import broadcast_task_center_changed
 
             self._ensure_task_context(task)
+            membership = getattr(self, "_typed_task_membership", None)
+            if membership is not None and membership[2].get(task.id) != (task, task.type):
+                self._typed_task_membership = None
             self._bump_task_center_version()
+            with self._task_center_version_lock:
+                versions = getattr(self, "_task_type_versions", None)
+                if versions is None:
+                    versions = self._task_type_versions = {}
+                versions[task.type] = versions.get(task.type, 0) + 1
             self._write_task_runtime_to_redis(task, reason=reason)
             self.enqueue_task_center_item_snapshot(task)
             broadcast_task_center_changed(task, reason=reason)
@@ -1026,7 +1065,7 @@ class TaskEngine:
     def _should_skip_conflict_retry_precheck(self, task: Task) -> bool:
         """问题作品页发起的处理任务不再重复跑解压前预检 / 重复预检。"""
         metadata = dict(task.task_metadata or {})
-        if metadata.get("retry_linked_subtitle_import"):
+        if metadata.get("retry_linked_subtitle_import") or metadata.get("retry_linkage_required"):
             return False
         action = str(metadata.get("conflict_resolution_action") or "").strip().upper()
         return bool(
@@ -1604,7 +1643,7 @@ class TaskEngine:
         from .classifier import SmartClassifier
 
         source_path = str(task.source_path or "").strip()
-        if not source_path or not os.path.exists(source_path):
+        if not source_path or (not os.path.exists(source_path) and (task.task_metadata or {}).get("source_operation") != "api_rename"):
             return
 
         # 来自问题作品页的重试任务：原 conflict 在 routes.retry_extract_failed_conflict
@@ -1721,13 +1760,15 @@ class TaskEngine:
         archive_enabled: Optional[bool] = None,
         filter_enabled: Optional[bool] = None,
         classify_enabled: Optional[bool] = None,
+        stage: str = "rename",
+        rename_enabled: Optional[bool] = None,
     ) -> None:
-        """保留重命名输入目录，供问题作品重试从重命名阶段继续。"""
+        """保留已解压目录和原流程开关，供查询或重命名失败后断点重试。"""
         checkpoint_path = str(rename_source_path or "").strip()
         metadata = dict(task.task_metadata or {})
         metadata.update({
-            "failure_stage": "rename",
-            "resume_from_stage": "rename",
+            "failure_stage": stage,
+            "resume_from_stage": stage,
             "rename_retry_source_path": checkpoint_path,
             "rename_retry_original_source_path": str(task.source_path or "").strip(),
         })
@@ -1739,6 +1780,8 @@ class TaskEngine:
             metadata["rename_retry_filter_enabled"] = bool(filter_enabled)
         if classify_enabled is not None:
             metadata["rename_retry_classify_enabled"] = bool(classify_enabled)
+        if rename_enabled is not None:
+            metadata["rename_retry_rename_enabled"] = bool(rename_enabled)
         task.task_metadata = metadata
         task.output_path = checkpoint_path or task.output_path
         task.touch_metadata("rename_failure_checkpoint")
@@ -1770,7 +1813,7 @@ class TaskEngine:
         retry_source_path = str(metadata.get("rename_retry_source_path") or "").strip()
         problem_source_path = (
             retry_source_path
-            if failure_stage == "rename" and retry_source_path and os.path.exists(retry_source_path)
+            if failure_stage in {"metadata", "rename", "linkage"} and retry_source_path and os.path.exists(retry_source_path)
             else source_path
         )
         available_actions = ["RETRY", "SKIP"]
@@ -1839,6 +1882,13 @@ class TaskEngine:
                 conflict = query.filter(ConflictWork.id == conflict_id).first()
             if not conflict and source_path:
                 conflict = query.filter(ConflictWork.new_path == source_path).first()
+
+            if (
+                conflict
+                and (conflict.new_metadata or {}).get("source_operation") == "api_rename"
+                and metadata.get("source_operation") != "api_rename"
+            ):
+                conflict = None
 
             if conflict:
                 retry_completed_at = datetime.now().isoformat()
@@ -2100,7 +2150,7 @@ class TaskEngine:
                         task.id,
                     )
                     return
-                if task.status in {TaskStatus.FAILED, TaskStatus.WAITING_MANUAL}:
+                if task.status in {TaskStatus.FAILED, TaskStatus.WAITING_MANUAL, TaskStatus.CANCELLED}:
                     retry_error = str(task.error_message or "").strip()
                     if not retry_error:
                         retry_error = str(task.current_step or "").strip() or "重试失败，仍需人工处理"
@@ -2115,6 +2165,15 @@ class TaskEngine:
                     task_extract_reason = str((task.task_metadata or {}).get("extract_failure_reason") or "").strip()
                     if task_extract_reason:
                         next_metadata["extract_failure_reason"] = task_extract_reason
+                    latest = dict(task.task_metadata or {})
+                    for key, value in latest.items():
+                        if not key.startswith(("resolution_", "retry_", "conflict_resolution_")) and key not in {"failed_task_id", "source_task_type"}:
+                            next_metadata[key] = value
+                    checkpoint = str(latest.get("rename_retry_source_path") or "")
+                    if checkpoint and os.path.exists(checkpoint):
+                        conflict.new_path = checkpoint
+                        next_metadata["retry_source_path"] = checkpoint
+                    next_metadata["error_message"] = retry_error
                     next_metadata = self._sanitize_failure_metadata(next_metadata, retry_error)
                     conflict.new_metadata = next_metadata
                     db.commit()
@@ -2425,6 +2484,9 @@ class TaskEngine:
 
             for conflict in conflicts:
                 next_metadata = dict(conflict.new_metadata or {})
+                # 库存重命名必须由同库同路径的重命名结果关闭，不能被同 RJ 的导入成功覆盖。
+                if next_metadata.get("source_operation") == "api_rename":
+                    continue
                 next_metadata["retry_result"] = "completed"
                 next_metadata["retry_completed_at"] = datetime.now().isoformat()
                 next_metadata["retry_task_id"] = task.id
@@ -2747,7 +2809,10 @@ class TaskEngine:
         try:
             task.start()
             await self._notify_progress(task)
-            
+            if (task.task_metadata or {}).get("retry_linkage_required"):
+                from .dlsite_service import get_dlsite_service
+                get_dlsite_service().invalidate_rj_graph_cache(rjcode)
+
             if task.type == TaskType.AUTO_PROCESS:
                 from ..config.settings import get_config
                 config = get_config()
@@ -3356,7 +3421,18 @@ class TaskEngine:
                         and not skip_retry_precheck
                     ):
                         logger.info(f"[{rjcode}] 解压后进行重复检查")
-                        is_duplicate = await classifier.check_duplicate_before_extract(rjcode, task, self)
+                        try:
+                            is_duplicate = await classifier.check_duplicate_before_extract(rjcode, task, self)
+                        except Exception:
+                            self._mark_rename_failure_checkpoint(
+                                task, extracted_path, stage="linkage",
+                                filter_enabled=bool(config.auto_process.filter),
+                                classify_enabled=bool(config.auto_process.classify),
+                                rename_enabled=bool(config.auto_process.rename),
+                                archive_source_path=task.source_path,
+                                archive_enabled=bool(config.auto_process.archive and not task.skip_archive),
+                            )
+                            raise
                         logger.info(f"[{rjcode}] 解压后重复检查结果: {is_duplicate}")
                         if is_duplicate:
                             logger.info(f"[{rjcode}] 作品已存在或正在处理中，移动到冲突目录")
@@ -3378,7 +3454,20 @@ class TaskEngine:
                 logger.debug(f"[{rjcode}] 步骤2: 获取元数据")
                 if config.auto_process.fetch_metadata:
                     task.update_progress(40, "获取元数据")
-                    metadata = await metadata_service.fetch(extracted_path, task)
+                    try:
+                        metadata = await metadata_service.fetch(extracted_path, task, force_refresh=bool((task.task_metadata or {}).get("retry_from_conflicts")))
+                        from .import_validation import require_import_metadata
+                        require_import_metadata(metadata)
+                    except Exception:
+                        self._mark_rename_failure_checkpoint(
+                            task, extracted_path, stage="metadata",
+                            filter_enabled=bool(config.auto_process.filter),
+                            classify_enabled=bool(config.auto_process.classify),
+                            rename_enabled=bool(config.auto_process.rename),
+                            archive_source_path=task.source_path,
+                            archive_enabled=bool(config.auto_process.archive and not task.skip_archive),
+                        )
+                        raise
                     effective_rjcode = self._get_effective_rjcode(task, extracted_path)
                     if effective_rjcode and not metadata.get('rjcode'):
                         metadata['rjcode'] = effective_rjcode
@@ -3580,7 +3669,8 @@ class TaskEngine:
                 logger.debug(f"[{rjcode}] 处理已存在文件夹: {existing_folder_path}")
                 resume_from_rename = str(
                     (task.task_metadata or {}).get("resume_from_stage") or ""
-                ).strip().lower() == "rename"
+                ).strip().lower() in {"metadata", "rename", "linkage"}
+                refresh_retry_metadata = (task.task_metadata or {}).get("resume_from_stage") in {"metadata", "linkage"}
                 retry_filter_enabled = (
                     bool((task.task_metadata or {}).get("rename_retry_filter_enabled"))
                     if resume_from_rename and "rename_retry_filter_enabled" in (task.task_metadata or {})
@@ -3611,7 +3701,7 @@ class TaskEngine:
                 elif skip_duplicate_precheck:
                     logger.info(f"[{rjcode}] 已有文件夹查重缓存确认无冲突，跳过重复预检")
                     task.update_progress(5, "准备处理")
-                elif config.process_existing.check_duplicate and rjcode and task.auto_classify:
+                elif (config.process_existing.check_duplicate or (task.task_metadata or {}).get("retry_linkage_required")) and rjcode and task.auto_classify:
                     # 步骤0: 预检重复
                     logger.debug(f"[{rjcode}] 步骤0: 预检重复")
                     task.update_progress(5, "预检中")
@@ -3684,13 +3774,30 @@ class TaskEngine:
 
                 # 步骤1: 获取元数据
                 logger.debug(f"[{rjcode}] 步骤1: 获取元数据")
-                if resume_from_rename:
+                if resume_from_rename and not refresh_retry_metadata:
+                    from .import_validation import ImportDataError, require_import_metadata
+                    try:
+                        require_import_metadata(task.task_metadata)
+                    except ImportDataError:
+                        refresh_retry_metadata = True
+                if resume_from_rename and not refresh_retry_metadata:
                     metadata = dict(task.task_metadata or {})
                     task.update_progress(45, "准备重新重命名")
                     logger.info(f"[{rjcode}] 从重命名失败断点继续，复用已获取元数据")
-                elif config.process_existing.fetch_metadata:
+                elif refresh_retry_metadata or config.process_existing.fetch_metadata:
                     task.update_progress(30, "获取元数据")
-                    metadata = await metadata_service.fetch(extracted_path, task)
+                    try:
+                        metadata = await metadata_service.fetch(extracted_path, task, force_refresh=refresh_retry_metadata)
+                        from .import_validation import require_import_metadata
+                        require_import_metadata(metadata)
+                    except Exception:
+                        self._mark_rename_failure_checkpoint(
+                            task, extracted_path, stage="metadata",
+                            filter_enabled=retry_filter_enabled,
+                            classify_enabled=retry_classify_enabled,
+                            rename_enabled=bool((task.task_metadata or {}).get("rename_retry_rename_enabled", config.process_existing.rename)),
+                        )
+                        raise
                     effective_rjcode = self._get_effective_rjcode(task, extracted_path)
                     if effective_rjcode and not metadata.get('rjcode'):
                         metadata['rjcode'] = effective_rjcode
@@ -3716,7 +3823,7 @@ class TaskEngine:
 
                 # 步骤2: 重命名
                 logger.debug(f"[{rjcode}] 步骤2: 重命名")
-                if resume_from_rename or config.process_existing.rename:
+                if (bool((task.task_metadata or {}).get("rename_retry_rename_enabled", True)) if resume_from_rename else config.process_existing.rename):
                     task.update_progress(50, "重命名文件夹")
                     from .rename_service import RenameService
                     rename_service = RenameService()
@@ -3920,8 +4027,12 @@ class TaskEngine:
                     service = MetadataService()
                     task.task_metadata = await service.fetch(task.source_path, task)
                 elif task.type == TaskType.RENAME:
-                    service = RenameService()
-                    await service.rename(task.source_path, task)
+                    if (task.task_metadata or {}).get("source_operation") == "api_rename":
+                        from .api_rename_failure_service import retry_api_rename
+                        task.output_path = await retry_api_rename(task)
+                    else:
+                        service = RenameService()
+                        task.output_path = await service.rename(task.source_path, task)
                 elif task.type == TaskType.ASMR_SYNC_DOWNLOAD:
                     # ASMR 同步下载任务
                     await self._process_asmr_sync_download(task)
@@ -3967,6 +4078,20 @@ class TaskEngine:
                 logger.info(f"[{rjcode}] 任务已取消")
         except Exception as e:
             logger.error(f"[{rjcode}] 任务失败: {e}", exc_info=True)
+            from .import_validation import ImportDataError
+            if isinstance(e, ImportDataError):
+                task.task_metadata = {**(task.task_metadata or {}), "failure_stage": e.stage}
+                if e.stage == "metadata" and (task.task_metadata or {}).get("rename_retry_source_path"):
+                    task.task_metadata["resume_from_stage"] = "metadata"
+                if e.stage == "linkage":
+                    task.task_metadata["retry_linkage_required"] = True
+                    if task.type == TaskType.PROCESS_EXISTING_FOLDER and os.path.isdir(task.source_path):
+                        self._mark_rename_failure_checkpoint(
+                            task, task.source_path, stage="linkage",
+                            filter_enabled=retry_filter_enabled,
+                            classify_enabled=retry_classify_enabled,
+                            rename_enabled=bool((task.task_metadata or {}).get("rename_retry_rename_enabled", config.process_existing.rename)),
+                        )
             failure_stage = self._infer_failure_stage(task, str(e))
             if task.type in {TaskType.EXTRACT, TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:
                 self._record_problem_work_for_task_failure(task, rjcode, str(e))
@@ -4137,24 +4262,26 @@ class TaskEngine:
                 logger.error(f"重试调度器错误: {e}")
                 await asyncio.sleep(60)  # 出错后等待1分钟再重试
 
-    def _mark_dlsite_linkage_retry_exhausted(self, task: Task, reason: str) -> None:
+    def _mark_dlsite_linkage_retry_exhausted(self, task: Task, reason: str, *, exhausted: bool = True) -> None:
         task.task_metadata = {
             **(task.task_metadata or {}),
-            "retry_exhausted": True,
-            "retry_exhausted_at": datetime.now().isoformat(),
+            "retry_exhausted": exhausted,
+            "failure_stage": "linkage",
+            "retry_linkage_required": True,
             "available_actions": ["RETRY", "SKIP"],
         }
         try:
             self._record_problem_work_for_task_failure(task, task.rjcode, reason)
         except Exception:
             logger.warning(
-                "[%s] DLsite 关联链重试耗尽后写入问题作品失败",
+                "[%s] DLsite 关联数据失败写入问题作品失败",
                 task.rjcode or "未知",
                 exc_info=True,
             )
         with task._set_state_silent():
             task.status = TaskStatus.WAITING_MANUAL
-            task.current_step = "等待人工: DLsite 关联链仍不完整，已停止自动重试"
+            task.error_message = reason
+            task.current_step = "等待人工: DLsite 关联链仍不完整，已停止自动重试" if exhausted else "等待人工: DLsite 关联数据获取失败，请在问题作品中重试"
             task.completed_at = datetime.now()
         task.mark_changed("status")
         self._remove_waiting_retry_task(task.rjcode)
@@ -4164,46 +4291,13 @@ class TaskEngine:
         task: Task,
         reason: str,
     ) -> Optional[datetime]:
-        delays = (
-            timedelta(minutes=15),
-            timedelta(hours=1),
-            timedelta(hours=6),
-        )
-        completed_retry_count = max(
-            0,
-            int((task.task_metadata or {}).get("retry_count") or 0),
-        )
-        if completed_retry_count >= len(delays):
-            self._mark_dlsite_linkage_retry_exhausted(task, reason)
-            return None
-
-        retry_after = datetime.now() + delays[completed_retry_count]
-        attempt_number = completed_retry_count + 1
-        attempt_history = [
-            dict(item)
-            for item in list(
-                (task.task_metadata or {}).get("dlsite_linkage_attempt_history") or []
-            )
-            if isinstance(item, dict)
-        ]
-        attempt_history.append({
-            "attempt": attempt_number,
-            "scheduled_at": datetime.now().isoformat(),
-            "retry_after": retry_after.isoformat(),
-            "reason": reason,
-        })
-        normalized_rjcode = str(task.rjcode or "").strip().upper()
         task.task_metadata = {
             **(task.task_metadata or {}),
-            "retry_source": "linked_subtitle_precheck",
-            "retry_kind": "dlsite_linkage_uncertain",
-            "business_key": f"{normalized_rjcode}:dlsite_linkage",
-            "dlsite_linkage_attempt_history": attempt_history,
-            "dlsite_linkage_max_retry_count": len(delays),
+            "failure_stage": "linkage",
+            "retry_linkage_required": True,
         }
-        task.business_key = task.task_metadata["business_key"]
-        task.set_waiting_retry(reason, retry_after)
-        return retry_after
+        self._mark_dlsite_linkage_retry_exhausted(task, reason, exhausted=False)
+        return None
 
     async def _check_retry_tasks(self, *, allow_without_retry_after: bool = True):
         """检查并重试等待中的任务（由cron调度器触发）"""
@@ -4635,6 +4729,29 @@ class TaskEngine:
         if not include_hidden:
             tasks = [t for t in tasks if not self._is_hidden_task(t)]
         return sorted(tasks, key=lambda t: t.created_at, reverse=True)
+
+    def get_tasks_by_type(self, task_type: TaskType) -> list[Task]:
+        """轮询只读入口：按版本复用类型列表，不补写任务上下文。"""
+        signature = self.get_task_type_version(task_type)
+        cache = getattr(self, "_typed_task_read_cache", None)
+        if cache is None:
+            cache = self._typed_task_read_cache = {}
+        cached = cache.get(task_type)
+        if cached is None or cached[0] != signature:
+            # 进度事件只重读本业务域；任务集合变化才重建类型索引。
+            membership = getattr(self, "_typed_task_membership", None)
+            collection = (id(self.tasks), len(self.tasks))
+            if membership is None or membership[0] != collection:
+                groups = {}
+                identities = {}
+                for task in list(self.tasks.values()):
+                    groups.setdefault(task.type, []).append(task)
+                    identities[task.id] = (task, task.type)
+                membership = self._typed_task_membership = (collection, groups, identities)
+            tasks = [task for task in membership[1].get(task_type, ()) if not self._is_hidden_task(task)]
+            tasks.sort(key=lambda task: task.created_at, reverse=True)
+            cached = cache[task_type] = (signature, tasks)
+        return list(cached[1])
     
     def get_pending_tasks(self) -> list[Task]:
         """获取待处理任务，按创建时间倒序排列"""
@@ -5151,15 +5268,18 @@ class TaskEngine:
         config = get_config()
         cleaned_paths = []
 
+        if (task.task_metadata or {}).get("source_operation") == "api_rename":
+            return
+
         if task.type == TaskType.HTTP_DOWNLOAD:
-            logger.info("HTTP 下载任务失败/部分成功不清理下载根目录: %s", task.output_path)
+            logger.info("HTTP 下载任务保留下载根目录: task_id=%s status=%s path=%s", task.id, task.status.value, task.output_path)
             return
 
         metadata = dict(task.task_metadata or {})
         rename_retry_source_path = str(metadata.get("rename_retry_source_path") or "").strip()
         if (
             task.status == TaskStatus.FAILED
-            and str(metadata.get("failure_stage") or "").strip().lower() == "rename"
+            and str(metadata.get("failure_stage") or "").strip().lower() in {"metadata", "rename", "linkage"}
             and rename_retry_source_path
             and os.path.isdir(rename_retry_source_path)
         ):

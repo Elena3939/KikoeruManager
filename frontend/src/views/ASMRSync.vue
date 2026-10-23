@@ -608,6 +608,7 @@
 </template>
 
 <script setup>
+import { getAsmrDownloadSessionId, getDownloadEngineTaskId } from '../utils/downloadTaskIdentity.js'
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -2045,7 +2046,7 @@ async function retryBaiduNetdiskFile(payload) {
 }
 
 function getEnhancedRetrySessionId(task) {
-  return String(task?.task_metadata?.session_id || task?.session_id || '').trim()
+  return getAsmrDownloadSessionId(task)
 }
 
 function isEnhancedRetryTaskBlocked(task) {
@@ -2121,12 +2122,12 @@ function releaseEnhancedRetryScope(scopeKey) {
 
 async function retryEnhancedDownloadTask(task) {
   const sessionId = getEnhancedRetrySessionId(task)
-  const taskId = String(task?.id || '').trim()
+  const taskId = getDownloadEngineTaskId(task)
   if (!taskId) return
   const scopeKey = acquireEnhancedRetryScope({
     sessionId,
     scopeKey: sessionId ? `session:${sessionId}:*` : `task:${taskId}`,
-    visibleKey: taskId,
+    visibleKey: String(task?.id || taskId),
     wholeSession: Boolean(sessionId),
   })
   if (!scopeKey) return
@@ -2154,19 +2155,19 @@ async function retryEnhancedDownloadTask(task) {
 async function retryEnhancedDownloadFile(payload) {
   if (payload?.task?.task_metadata?.resource_source === 'imoutoheaven') {
     try {
-      await httpDownloadApi.retry(payload?.task.id)
+      await httpDownloadApi.retry(getDownloadEngineTaskId(payload?.task))
       await refreshEnhancedDownloadWorkbench({ silent: true })
     } catch (error) { ElMessage.error(error.response?.data?.detail || error.message || '重试失败') }
     return
   }
   const task = payload?.task || {}
   const file = payload?.file || {}
-  const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
-  const taskId = String(task?.id || '').trim()
+  const sessionId = getAsmrDownloadSessionId(task)
+  const taskId = getDownloadEngineTaskId(task)
   const relativePath = String(file?.relative_path || file?.rawFile?.relative_path || file?.rawFile?.name || file?.name || '').trim()
   if (!sessionId || !relativePath) return ElMessage.warning('没有找到可重试的失败文件')
 
-  const retryKey = `${taskId}:${relativePath}`
+  const retryKey = `${task?.id || taskId}:${relativePath}`
   const scopeKey = acquireEnhancedRetryScope({
     sessionId,
     scopeKey: `session:${sessionId}:file:${relativePath}`,
@@ -2201,8 +2202,8 @@ function focusEnhancedRetryWorkbench(nextTaskId, previousTaskId = '') {
 }
 
 async function handlePauseEnhancedDownloadTask(task) {
-  const sessionId = String(task?.session_id || task?.task_metadata?.session_id || '').trim()
-  const taskId = String(task?.id || task?.active_task_id || '').trim()
+  const sessionId = getAsmrDownloadSessionId(task)
+  const taskId = getDownloadEngineTaskId(task)
   try {
     if (sessionId) {
       await asmrSyncApi.pauseSession(sessionId)
@@ -2220,8 +2221,8 @@ async function handlePauseEnhancedDownloadTask(task) {
 }
 
 async function handleResumeEnhancedDownloadTask(task) {
-  const sessionId = String(task?.session_id || task?.task_metadata?.session_id || '').trim()
-  const taskId = String(task?.id || task?.active_task_id || '').trim()
+  const sessionId = getAsmrDownloadSessionId(task)
+  const taskId = getDownloadEngineTaskId(task)
   try {
     if (sessionId) {
       await asmrSyncApi.resumeSession(sessionId)
@@ -2252,13 +2253,13 @@ async function handleCancelEnhancedDownloadTask(task) {
   } catch {
     return
   }
-  const sessionId = String(task?.session_id || task?.task_metadata?.session_id || '').trim()
-  const taskId = String(task?.id || task?.active_task_id || '').trim()
+  const sessionId = getAsmrDownloadSessionId(task)
+  const taskId = getDownloadEngineTaskId(task)
   try {
     if (sessionId) {
       await asmrSyncApi.cancelSession(sessionId, { cleanup: true })
     } else if (taskId) {
-      await taskApi.batchCancelCleanup([taskId])
+      await taskApi.batchCancelCleanup(task?.source_task_ids?.length ? task.source_task_ids : [taskId])
     } else {
       return ElMessage.warning('无法识别任务，缺少会话或任务 ID')
     }

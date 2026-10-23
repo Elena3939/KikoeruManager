@@ -469,6 +469,8 @@ def _duration_ms_for_task(task: Any) -> int:
 def _import_timing_snapshot(task: Any, meta: Dict[str, Any]) -> Dict[str, Any]:
     """保留任务与解包阶段边界；解包阶段包含稳定性检查和资源等待。"""
     result = {}
+    if meta.get("extract_execution_duration_ms") is not None:
+        result["extract_execution_duration_ms"] = max(0, int(meta["extract_execution_duration_ms"]))
     for name, value in (
         ("task_started_at", getattr(task, "started_at", None) or getattr(task, "created_at", None)),
         ("task_completed_at", getattr(task, "completed_at", None)),
@@ -1374,6 +1376,14 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
                 or 0
             ) or None
 
+    # 新记录持久化业务结果，旧记录由读路径按明确证据兼容；不改变任务执行状态。
+    from .activity_log_outcomes import annotate_outcome
+
+    result = {"category": category, "action": action, "status": status, "summary": summary, "detail": detail}
+    annotate_outcome(result)
+    if result.get("outcome"):
+        detail["business_outcome"] = result["outcome"]
+
     write_activity_log(
         category=category,
         action=action,
@@ -1667,7 +1677,16 @@ def log_batch_api_delete_result(
     elif success_count <= 0:
         status = "failed"
 
-    summary = f"批量删除完成，成功 {success_count} 项，失败 {failed_count} 项"
+    from .activity_delete_history import delete_history_detail
+
+    metrics = delete_history_detail(results)
+    summary = (f"批量删除完成，删除 {metrics['deleted_file_count']} 个文件、"
+               f"{metrics['deleted_folder_count']} 个目录，{_format_bytes(metrics['deleted_bytes'])}，"
+               f"成功 {success_count} 项，失败 {failed_count} 项")
+    if metrics["unknown_size_count"]:
+        summary += f"（{metrics['unknown_size_count']} 项大小未知）"
+    if metrics["unknown_type_count"]:
+        summary += f"（{metrics['unknown_type_count']} 项类型未知）"
     write_activity_log(
         category=CATEGORY_PIPELINE_DELETE,
         action="batch_api_delete",
@@ -1679,7 +1698,9 @@ def log_batch_api_delete_result(
             "total_count": int(total_count or 0),
             "success_count": int(success_count or 0),
             "failed_count": int(failed_count or 0),
-            "results": results[:200] if isinstance(results, list) else [],
+            "results": [{k: v for k, v in item.items() if k != "deleted_items"} for item in results],
+            **metrics,
+            "delete_history_version": 1,
         },
         source_path=str(source_path or "").strip() or None,
         task_id=str(batch_id or "").strip() or None,

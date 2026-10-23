@@ -35,6 +35,18 @@
         @update:model-value="$emit('update:currentDomain', $event)"
       />
 
+      <AppDropdown
+        v-if="currentDomain === 'circle_completion'"
+        :model-value="currentSubtype"
+        :options="subtypeOptions"
+        class="tasks-filter-dd"
+        menu-class="tasks-filter-dd-menu"
+        :width="180"
+        :menu-min-width="200"
+        label="任务"
+        @update:model-value="$emit('update:currentSubtype', $event)"
+      />
+
       <!-- 状态 dropdown -->
       <AppDropdown
         :model-value="currentStatus"
@@ -97,11 +109,13 @@
 import { computed } from 'vue'
 import { FilterX, Search, X } from 'lucide-vue-next'
 import AppDropdown from '../common/AppDropdown.vue'
+import { TASK_SUBTYPE_META } from '../common/taskDomainMeta.js'
 
 const props = defineProps({
   domainOptions: { type: Array, default: () => [] },
   statusOptions: { type: Array, default: () => [] },
   currentDomain: { type: String, default: 'all' },
+  currentSubtype: { type: String, default: 'all' },
   currentStatus: { type: String, default: 'all' },
   searchQuery: { type: String, default: '' },
   sortKey: { type: String, default: 'updated_desc' },
@@ -111,12 +125,15 @@ const props = defineProps({
 
 defineEmits([
   'update:currentDomain',
+  'update:currentSubtype',
   'update:currentStatus',
   'update:searchQuery',
   'update:sortKey',
   'update:activeOnly',
   'reset',
 ])
+
+const subtypeOptions = [{ value: 'all', label: '全部任务' }, ...Object.entries(TASK_SUBTYPE_META).map(([value, meta]) => ({ value, label: meta.label }))]
 
 const domainDropdownOptions = computed(() =>
   (props.domainOptions || []).map((opt) => {

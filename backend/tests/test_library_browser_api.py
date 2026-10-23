@@ -5,6 +5,7 @@ import threading
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -2193,7 +2194,15 @@ def test_cross_library_batch_delete_can_skip_index_transaction_and_queue_success
     }
 
 
-def test_api_rename_locks_metadata_to_target_folder_rjcode(monkeypatch):
+@pytest.fixture
+def api_rename_problem_sync(monkeypatch):
+    sync = Mock(return_value=[])
+    monkeypatch.setattr("app.core.api_rename_failure_service.resolve_api_rename_successes", sync)
+    return sync
+
+
+@pytest.mark.parametrize("already_named", [False, True])
+def test_api_rename_locks_metadata_to_target_folder_rjcode(monkeypatch, api_rename_problem_sync, already_named):
     captured = {}
 
     class FakeLibrary:
@@ -2231,7 +2240,8 @@ def test_api_rename_locks_metadata_to_target_folder_rjcode(monkeypatch):
             }
 
     class FakeRenameService:
-        async def _get_japanese_metadata(self, rjcode):
+        async def _get_japanese_metadata(self, rjcode, *, force_refresh=False):
+            assert force_refresh is True
             captured["japanese_rjcode"] = rjcode
             return {"maker_name": "青春", "cvs": []}
 
@@ -2279,7 +2289,7 @@ def test_api_rename_locks_metadata_to_target_folder_rjcode(monkeypatch):
     response = asyncio.run(
         routes_module.api_rename_library_file(_FakeJsonRequest({
             "library_id": "remote-a",
-            "path": "/library_amsr/青春/[青春][RJ01570159]/RJ01572763",
+            "path": "/library_amsr/青春/[青春][RJ01570159]/" + ("[青春][RJ01572763]" if already_named else "RJ01572763"),
         }))
     )
 
@@ -2290,11 +2300,18 @@ def test_api_rename_locks_metadata_to_target_folder_rjcode(monkeypatch):
         "rjcode_lock": True,
     }
     assert captured["japanese_rjcode"] == "RJ01572763"
-    assert captured["rename"]["new_name"] == "[青春][RJ01572763]"
-    assert captured["rename"]["sync_index_mutation"] is True
+    if already_named:
+        assert "rename" not in captured
+    else:
+        assert captured["rename"]["new_name"] == "[青春][RJ01572763]"
+        assert captured["rename"]["sync_index_mutation"] is True
+    item = api_rename_problem_sync.call_args.args[0][0]
+    assert item["library_id"] == "remote-a"
+    assert item["path"] == captured["metadata_path"]
+    assert item["success"] is True
 
 
-def test_local_api_rename_commits_mutation_fence(monkeypatch, tmp_path):
+def test_local_api_rename_commits_mutation_fence(monkeypatch, tmp_path, api_rename_problem_sync):
     captured = {}
     root = tmp_path / "library"
     source = root / "RJ01572763 old"
@@ -2317,7 +2334,7 @@ def test_local_api_rename_commits_mutation_fence(monkeypatch, tmp_path):
 
     class FakeMetadataService:
         async def fetch(self, _path, task, force_refresh=False):
-            assert force_refresh is False
+            assert force_refresh is True
             return {
                 "rjcode": task.rjcode,
                 "work_name": "目标作品",
@@ -2389,6 +2406,10 @@ def test_local_api_rename_commits_mutation_fence(monkeypatch, tmp_path):
     assert captured["prepare"]["idempotency_key"] == "api-rename-key"
     assert captured["rename"]["skip_index_mutation"] is True
     assert captured["rename"]["sync_index_mutation"] is False
+    assert api_rename_problem_sync.call_args.args[0] == [{
+        "library_id": library.id, "path": str(source),
+        "new_path": response["new_path"], "success": True,
+    }]
     assert captured["finalize"]["actual_effects_by_library"][library.id] == [
         {
             "kind": "move",
@@ -2407,6 +2428,8 @@ def test_local_api_rename_commits_mutation_fence(monkeypatch, tmp_path):
 
 def test_api_rename_rejects_minimal_metadata_without_renaming(monkeypatch):
     captured = {}
+    problem_calls = []
+    monkeypatch.setattr("app.core.api_rename_failure_service.record_api_rename_failure", lambda *args, **kwargs: problem_calls.append((args, kwargs)))
 
     class FakeLibrary:
         id = "remote-a"
@@ -2453,11 +2476,16 @@ def test_api_rename_rejects_minimal_metadata_without_renaming(monkeypatch):
     assert payload["metadata_verification_status"] == "unverified"
     assert "元数据" in payload["detail"]
     assert captured["metadata_task_rjcode"] == "RJ01572763"
-    assert captured["force_refresh"] is False
+    assert captured["force_refresh"] is True
     assert "rename_called" not in captured
+
+    assert len(problem_calls) == 1
+    assert problem_calls[0][0][:3] == ("remote-a", "/library_amsr/青春/RJ01572763", "RJ01572763")
+    assert problem_calls[0][1]["stage"] == "metadata"
 
 
 def test_api_rename_normalizes_markdown_rjcode_before_metadata_fetch(monkeypatch):
+    monkeypatch.setattr("app.core.api_rename_failure_service.record_api_rename_failure", lambda *args, **kwargs: None)
     captured = {}
 
     class FakeLibrary:
@@ -2581,6 +2609,8 @@ def test_metadata_service_accepts_null_dlsite_release_date(monkeypatch):
 def test_batch_api_rename_skips_minimal_metadata_without_batch_renaming(monkeypatch):
     routes_module._BATCH_API_RENAME_INFLIGHT.clear()
     captured = {}
+    problem_calls = []
+    monkeypatch.setattr("app.core.api_rename_failure_service.record_api_rename_failure", lambda *args, **kwargs: problem_calls.append((args, kwargs)))
 
     class FakeLibrary:
         id = "remote-a"
@@ -2590,6 +2620,10 @@ def test_batch_api_rename_skips_minimal_metadata_without_batch_renaming(monkeypa
         def get_library_definition(self, library_id):
             captured["library_id"] = library_id
             return FakeLibrary()
+
+        def _resolve_remote_operation_path(self, _library, path, **_kwargs):
+            assert path.startswith("/library_amsr/")
+            return path
 
         async def batch_rename(self, *_args, **_kwargs):
             captured["batch_rename_called"] = True
@@ -2644,8 +2678,14 @@ def test_batch_api_rename_skips_minimal_metadata_without_batch_renaming(monkeypa
     }
     assert "batch_rename_called" not in captured
 
+    assert len(problem_calls) == 1
+    assert problem_calls[0][0][:3] == ("remote-a", "/library_amsr/青春/RJ01572763", "RJ01572763")
+    assert problem_calls[0][1]["stage"] == "metadata"
 
-def test_local_batch_api_rename_fence_contains_only_successful_items(monkeypatch, tmp_path):
+
+@pytest.mark.parametrize("missing_failure_result", [False, True])
+def test_local_batch_api_rename_fence_contains_only_successful_items(monkeypatch, tmp_path, api_rename_problem_sync, missing_failure_result):
+    monkeypatch.setattr("app.core.api_rename_failure_service.record_api_rename_failure", lambda *args, **kwargs: None)
     routes_module._BATCH_API_RENAME_INFLIGHT.clear()
     captured = {}
     root = tmp_path / "library"
@@ -2659,6 +2699,9 @@ def test_local_batch_api_rename_fence_contains_only_successful_items(monkeypatch
         def get_library_definition(self, library_id):
             assert library_id == library.id
             return library
+
+        def _assert_local_path_in_library(self, _library, path):
+            assert root in Path(path).parents
 
         async def batch_rename(self, library_id, items, **kwargs):
             captured["batch_rename"] = {
@@ -2674,7 +2717,7 @@ def test_local_batch_api_rename_fence_contains_only_successful_items(monkeypatch
                     "new_name": items[0]["new_name"],
                     "new_path": str(root / items[0]["new_name"]),
                 }],
-                "failed": [{
+                "failed": [] if missing_failure_result else [{
                     "index": 1,
                     "path": items[1]["path"],
                     "new_name": items[1]["new_name"],
@@ -2764,6 +2807,11 @@ def test_local_batch_api_rename_fence_contains_only_successful_items(monkeypatch
     assert effects[0]["kind"] == "move"
     assert effects[1]["kind"] == "reconcile"
     assert all(second.name not in str(effect) for effect in effects)
+    synced = api_rename_problem_sync.call_args.args[0]
+    assert len(synced) == 1
+    assert synced[0]["library_id"] == library.id
+    assert synced[0]["path"] == str(first)
+    assert synced[0]["success"] is True
 
 
 def test_index_replace_many_records_one_ledger_envelope(monkeypatch):

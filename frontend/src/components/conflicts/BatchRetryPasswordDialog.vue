@@ -12,6 +12,7 @@
             <div class="min-w-0 flex-1">
               <h1 class="brp-title text-2xl font-bold tracking-tight">批量重试</h1>
               <p class="brp-subtitle text-sm m-0 mt-1.5">选中的失败压缩包，可以为每个包单独指定密码和文件名编码</p>
+              <p v-if="apiRenameCount" class="brp-subtitle text-sm m-0 mt-1.5">另有 {{ apiRenameCount }} 项 API 重命名将一并重试，无需密码。</p>
             </div>
             <button
               type="button"
@@ -110,6 +111,7 @@ import AppDropdown from '../common/AppDropdown.vue'
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
   conflicts: { type: Array, default: () => [] },
+  apiRenameCount: { type: Number, default: 0 },
   encodingOptions: { type: Array, default: () => [] },
 })
 

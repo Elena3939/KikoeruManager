@@ -424,7 +424,7 @@ import {
 } from 'lucide-vue-next'
 import AppEmptyState from '../common/AppEmptyState.vue'
 import StatusPill from '../dashboard/StatusPill.vue'
-import { getTaskDomainMeta } from '../common/taskDomainMeta.js'
+import { getTaskDomainMeta, getTaskSubtypeMeta } from '../common/taskDomainMeta.js'
 import { getHttpDownloadDisplayMeta } from '../common/httpDownloadPlatformMeta.js'
 import { classifyLibraryEntryKind, libraryEntryIconFor } from '../library/_libraryFileKind.js'
 import { getFilterRestoreAvailability } from './_filterRecovery.js'
@@ -549,7 +549,7 @@ function domainMeta(domain) {
 }
 
 function isDownloadProviderTask(item) {
-  return ['http_download', 'baidu_netdisk'].includes(String(item?.domain || '').trim())
+  return !item?.subtype && ['http_download', 'baidu_netdisk'].includes(String(item?.domain || '').trim())
 }
 
 function httpDisplayMeta(item) {
@@ -557,6 +557,7 @@ function httpDisplayMeta(item) {
 }
 
 function taskIcon(item) {
+  if (getTaskSubtypeMeta(item)) return getTaskSubtypeMeta(item).icon
   if (isDownloadProviderTask(item)) return httpDisplayMeta(item).icon || domainMeta(item.domain).icon
   return domainMeta(item.domain).icon
 }
@@ -568,6 +569,7 @@ function taskIconClass(item) {
 }
 
 function taskDomainLabel(item) {
+  if (getTaskSubtypeMeta(item)) return getTaskSubtypeMeta(item).label
   if (isDownloadProviderTask(item)) return httpDisplayMeta(item).label || item.domain_label || domainMeta(item.domain).label
   return item.domain_label
 }

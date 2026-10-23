@@ -362,6 +362,7 @@ class BaiduNetdiskService:
         cfg = self._config()
         cookie_digest = hashlib.sha1(str(getattr(cfg, "cookie", "") or "").encode("utf-8", errors="ignore")).hexdigest()
         payload = {
+            "version": 2,
             "urls": [str(url or "").strip() for url in urls or []],
             "target_subdir": str(target_subdir or "").strip(),
             "conflict_policy": str(conflict_policy or "").strip(),
@@ -1444,31 +1445,19 @@ class BaiduNetdiskService:
                 "warning": "分享文件列表为空",
             }
         title = files[0].get("name") or share.get("title") or "百度网盘分享"
-        preview_files = files
-        preview_root_is_folder = False
-        if len(files) == 1 and files[0].get("is_dir") and files[0].get("path"):
-            preview_root_is_folder = True
-            try:
-                child_detail = await self._fetch_share_folder_preview(
-                    tokens,
-                    cookie,
-                    share_list_referer,
-                    feature,
-                    files[0],
-                    timeout=request_timeout,
-                )
-                if child_detail.get("files"):
-                    preview_files = child_detail["files"]
-            except Exception as exc:
-                logger.info("百度网盘分享文件夹预览读取失败: %s", exc)
-        else:
+        preview_root_is_folder = len(files) == 1 and bool(files[0].get("is_dir"))
+        expanded = await self._expand_share_file_list(
+            tokens, cookie, share_list_referer, feature, files, timeout=request_timeout,
+        )
+        preview_files = expanded["files"]
+        if not preview_root_is_folder:
             preview_files = self._strip_virtual_common_parent_from_preview_files(preview_files)
         total_size = sum(_safe_int(item.get("size_bytes")) for item in preview_files)
         return {
             "title": title,
             "files": preview_files,
             "file_count": len(preview_files),
-            "folder_count": len([item for item in preview_files if item.get("is_dir")]),
+            "folder_count": expanded["folder_count"],
             "total_size": total_size,
             "requires_pass_code": False,
             "share_id": str(tokens.get("shareid") or tokens.get("share_id") or "").strip(),
@@ -1609,29 +1598,48 @@ class BaiduNetdiskService:
         *,
         timeout: float = 20,
     ) -> Dict[str, Any]:
-        folder_path = str(folder.get("path") or "").strip()
-        folder_name = str(folder.get("name") or "").strip()
-        if not folder_path:
-            return {"files": []}
-        data = await self._fetch_share_list_payload(
-            tokens,
-            cookie,
-            share_url,
-            feature,
-            dir_path=folder_path,
-            root=False,
-            timeout=timeout,
+        return await self._expand_share_file_list(
+            tokens, cookie, share_url, feature, [folder], timeout=timeout,
         )
-        errno = _safe_int(data.get("errno", data.get("err_no", 0)), 0)
-        if errno:
-            logger.info("百度网盘分享文件夹预览读取失败: %s", data.get("errmsg") or data.get("error_msg") or errno)
-            return {"files": []}
-        return {
-            "files": self._normalize_share_file_list(
-                list(data.get("list") or []),
-                parent_relative_path=folder_name,
-            ),
-        }
+
+    async def _expand_share_file_list(
+        self, tokens: Dict[str, Any], cookie: str, share_url: str, feature: str,
+        entries: List[Dict[str, Any]], *, timeout: float = 20,
+    ) -> Dict[str, Any]:
+        # 只返回真实文件，父目录由 relative_path 重建，避免下载时重复展开。
+        files = [entry for entry in entries if not entry.get("is_dir")]
+        pending = [entry for entry in entries if entry.get("is_dir")]
+        visited: set[str] = set()
+
+        async def read_folder(folder: Dict[str, Any]) -> List[Dict[str, Any]]:
+            path = str(folder.get("path") or "").strip()
+            if not path or path in visited:
+                raise BaiduNetdiskError("百度分享目录路径缺失或重复，无法完整读取文件列表")
+            visited.add(path)
+            data = await self._fetch_share_list_payload(
+                tokens, cookie, share_url, feature, dir_path=path, root=False, timeout=timeout,
+            )
+            errno = _safe_int(data.get("errno", data.get("err_no", 0)))
+            if errno:
+                raise BaiduNetdiskError(self._baidu_api_error_message(data, f"分享文件夹读取失败 {errno}"))
+            return self._normalize_share_file_list(
+                data["list"], parent_relative_path=str(folder.get("relative_path") or folder.get("name") or ""),
+            )
+
+        while pending:
+            batch, pending = pending[:4], pending[4:]
+            tasks = [asyncio.create_task(read_folder(folder)) for folder in batch]
+            try:
+                results = await asyncio.gather(*tasks)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            for children in results:
+                files.extend(child for child in children if not child.get("is_dir"))
+                pending.extend(child for child in children if child.get("is_dir"))
+        return {"files": files, "folder_count": len(visited)}
 
     def _make_share_logid(self, feature: str, cookie: str) -> str:
         source = "|".join([
@@ -1655,6 +1663,38 @@ class BaiduNetdiskService:
         return f"https://pan.baidu.com/share/init?surl={quote(surl)}"
 
     async def _fetch_share_list_payload(
+        self, tokens: Dict[str, Any], cookie: str, share_url: str, feature: str,
+        *, dir_path: str = "/", root: bool = True, timeout: float = 20,
+    ) -> Dict[str, Any]:
+        rows: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        page = 1
+        while True:
+            data = await self._fetch_share_list_page_payload(
+                tokens, cookie, share_url, feature,
+                dir_path=dir_path, root=root, timeout=timeout, page=page,
+            )
+            if _safe_int(data.get("errno", data.get("err_no", 0))):
+                return data
+            page_rows = data.get("list")
+            if not isinstance(page_rows, list) or any(not isinstance(row, dict) for row in page_rows):
+                raise BaiduNetdiskError("百度分享列表响应缺少有效文件列表，请重新解析")
+            for row in page_rows:
+                identity = str(row.get("fs_id") or row.get("fsid") or row.get("path") or "")
+                if not identity or identity in seen:
+                    raise BaiduNetdiskError("百度分享分页返回重复或无效文件，无法确认列表完整性，请重新解析")
+                seen.add(identity)
+            rows.extend(page_rows)
+            total = _safe_int(data.get("total"))
+            has_more = data.get("has_more")
+            more = (has_more is not None and _safe_int(has_more) != 0) or total > len(rows)
+            if not more and (has_more is not None or total > 0 or len(page_rows) < 100):
+                return {**data, "list": rows}
+            if not page_rows:
+                raise BaiduNetdiskError("百度分享分页提前结束，文件列表不完整，请重新解析")
+            page += 1
+
+    async def _fetch_share_list_page_payload(
         self,
         tokens: Dict[str, Any],
         cookie: str,
@@ -1664,6 +1704,7 @@ class BaiduNetdiskService:
         dir_path: str = "/",
         root: bool = True,
         timeout: float = 20,
+        page: int = 1,
     ) -> Dict[str, Any]:
         share_uk = str(tokens.get("share_uk") or tokens.get("uk") or "").strip()
         shareid = str(tokens.get("shareid") or tokens.get("share_id") or "").strip()
@@ -1675,7 +1716,7 @@ class BaiduNetdiskService:
                 "app_id": "250528",
                 "desc": "1",
                 "showempty": "0",
-                "page": "1",
+                "page": str(page),
                 "num": "100",
                 "order": "time",
                 "shorturl": feature_surl,
@@ -1700,7 +1741,7 @@ class BaiduNetdiskService:
                 "shareid": shareid,
                 "sekey": self._baidu_share_sekey(randsk),
                 "shorturl": feature_surl,
-                "page": "1",
+                "page": str(page),
                 "num": "100",
                 "dir": str(dir_path or "/"),
                 "root": "0",
@@ -1727,7 +1768,7 @@ class BaiduNetdiskService:
             except Exception as exc:
                 last_error = str(exc)
                 logger.debug("百度分享文件列表接口失败 referer=%s error=%s", referer, exc)
-        if root:
+        if root and page == 1:
             page_rows = self._extract_share_page_file_rows(tokens.get("_page_payload"))
             if page_rows:
                 logger.info("百度分享文件列表接口失败，已从分享页内嵌数据恢复 %s 项", len(page_rows))

@@ -18,9 +18,25 @@ def latest_import_results(rows):
 
 
 def normalize_import_summary(row):
+    import re
+
     summary = str(row.get("summary") or "")
-    if row.get("category") in IMPORT_CATEGORIES and row.get("action") in IMPORT_RESULT_ACTIONS:
-        summary = summary.replace("，耗时 ", "，总耗时 ")
+    if row.get("category") == "process_existing" and row.get("action") in IMPORT_RESULT_ACTIONS:
+        return summary.replace("，耗时 ", "，总耗时 ")
+    if row.get("category") in {"extract", "auto_import"} and row.get("action") in IMPORT_RESULT_ACTIONS:
+        detail = row.get("detail") or {}
+        summary = summary.removesuffix("，解压耗时未记录")
+        summary = re.sub(r"，(?:总耗时|耗时|解压耗时|解包阶段耗时) [^，]*$", "", summary)
+        if detail.get("extract_execution_duration_ms") is not None:
+            from .activity_log_service import _format_duration_ms
+
+            summary += f"，解压耗时 {_format_duration_ms(detail['extract_execution_duration_ms'])}"
+        elif detail.get("extract_phase_duration_ms") is not None:
+            from .activity_log_service import _format_duration_ms
+
+            summary += f"，解包阶段耗时 {_format_duration_ms(detail['extract_phase_duration_ms'])}（含等待）"
+        elif row.get("category") in {"extract", "auto_import"}:
+            summary += "，解压耗时未记录"
     return summary
 
 

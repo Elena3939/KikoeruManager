@@ -196,7 +196,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { Activity, ArrowRight, CheckCircle2, ChevronLeft, ChevronRight, Clock3, MoreVertical, PauseCircle, PlayCircle, RotateCcw, RotateCw, Trash2, XCircle } from 'lucide-vue-next'
 import AppEmptyState from '../common/AppEmptyState.vue'
 import StatusPill from './StatusPill.vue'
-import { getTaskDomainMeta } from '../common/taskDomainMeta.js'
+import { getTaskDomainMeta, getTaskSubtypeMeta } from '../common/taskDomainMeta.js'
 import { getHttpDownloadDisplayMeta } from '../common/httpDownloadPlatformMeta.js'
 
 const props = defineProps({
@@ -407,7 +407,7 @@ function domainMeta(domain) {
 }
 
 function isDownloadProviderTask(task) {
-  return ['http_download', 'baidu_netdisk'].includes(String(task?.domain || '').trim())
+  return !task?.subtype && ['http_download', 'baidu_netdisk'].includes(String(task?.domain || '').trim())
 }
 
 function httpDisplayMeta(task) {
@@ -415,6 +415,7 @@ function httpDisplayMeta(task) {
 }
 
 function taskIcon(task) {
+  if (getTaskSubtypeMeta(task)) return getTaskSubtypeMeta(task).icon
   if (isDownloadProviderTask(task)) return httpDisplayMeta(task).icon || domainMeta(task.domain).icon
   return domainMeta(task.domain).icon
 }
@@ -432,6 +433,7 @@ function taskChipIconClass(task) {
 }
 
 function taskDomainLabel(task) {
+  if (getTaskSubtypeMeta(task)) return getTaskSubtypeMeta(task).label
   if (isDownloadProviderTask(task)) return httpDisplayMeta(task).label || task.domain_label || domainMeta(task.domain).label
   return task.domain_label
 }

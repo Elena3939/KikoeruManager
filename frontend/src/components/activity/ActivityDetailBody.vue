@@ -2,6 +2,10 @@
   <div class="detail-body">
     <!-- 顶部：分类 / 状态 / 关闭 -->
     <header class="detail-head">
+      <button v-if="canGoBack" class="detail-back" type="button" @click="$emit('back')">
+        <ArrowLeft :size="14" :stroke-width="2.4" />
+        返回上一级
+      </button>
       <button class="detail-close" type="button" @click="$emit('close')">
         <X :size="16" :stroke-width="2.6" />
       </button>
@@ -63,6 +67,7 @@
 
     <!-- 主滚动区 -->
     <div
+      ref="scrollRef"
       class="detail-scroll"
       v-app-loading="{ loading: loading && !hasContent, text: '正在加载详情…', size: 96, minHeight: 240, delay: 80 }"
     >
@@ -152,7 +157,7 @@
           <span>关联事件</span>
           <span class="ml-1 inline-flex items-center px-1.5 py-[1px] rounded text-[10px] font-semibold tabular-nums tracking-tight text-slate-600 bg-slate-100/80 ring-1 ring-inset ring-slate-200/60 normal-case">{{ childRows.length }}</span>
           <button
-            v-if="childRows.length > childPreview.length"
+            v-if="childRows.length > 6"
             class="panel-toggle"
             type="button"
             @click="childExpanded = !childExpanded"
@@ -165,6 +170,17 @@
             {{ childExpanded ? '收起' : `展开全部` }}
           </button>
         </div>
+        <div v-if="childGroups.length" class="child-filters">
+          <button
+            v-for="group in childGroups"
+            :key="group.key"
+            type="button"
+            class="child-filter"
+            :class="{ 'is-active': childFilter === group.key }"
+            :aria-pressed="childFilter === group.key"
+            @click="childFilter = group.key"
+          >{{ group.label }} <span>{{ group.count }}</span></button>
+        </div>
         <ul class="child-list">
           <li
             v-for="child in childPreview"
@@ -173,10 +189,10 @@
             :class="{ 'is-expanded': isChildExpanded(child) }"
           >
             <div class="child-row" @click="toggleChildExpansion(child)">
-              <span class="child-dot" :class="`detail-tone-${statusTone(child.status)}`"></span>
+              <span class="child-dot" :class="`detail-tone-${statusTone(child.result_status || child.status)}`"></span>
               <div class="child-body">
                 <div class="child-head">
-                  <span class="child-rel">{{ humanActionFn(child) || relationLabel(child) }}</span>
+                  <span class="child-rel">{{ child.outcome_label || humanActionFn(child) || relationLabel(child) }}</span>
                   <span
                     v-if="childRj(child)"
                     class="inline-flex items-center px-1.5 py-[1px] rounded text-[10px] font-mono font-semibold leading-none tracking-tight bg-slate-100/80 text-slate-700 ring-1 ring-inset ring-slate-200/60"
@@ -279,10 +295,11 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   ArrowUpRight,
+  ArrowLeft,
   ChevronDown,
   Code2,
   Copy,
@@ -307,6 +324,7 @@ import {
 const props = defineProps({
   row: { type: Object, default: null },
   loading: { type: Boolean, default: false },
+  canGoBack: { type: Boolean, default: false },
   categoryConfig: { type: Object, default: () => ({ icon: null, label: '', tone: 'neutral' }) },
   statusConfig: { type: Object, default: () => ({ icon: null, label: '', tone: 'neutral' }) },
   statusTone: { type: Function, default: () => 'neutral' },
@@ -314,7 +332,7 @@ const props = defineProps({
   compactPath: { type: Function, default: (v) => String(v || '') },
   humanAction: { type: Function, default: () => '' }
 })
-const emit = defineEmits(['close', 'open-row', 'navigate'])
+const emit = defineEmits(['close', 'back', 'open-row', 'navigate'])
 
 // ===== Tailwind tone class 映射 =====
 const SUBTITLE_STATUS_TONE_CLASS = {
@@ -363,14 +381,39 @@ const displayRj = computed(() => {
 })
 
 const childExpanded = ref(false)
+const childFilter = ref('all')
 const rawExpanded = ref(false)
 // 关联事件每一项的内联展开状态：key → 展开 ActivityRichBlock
 const expandedChildIds = ref(new Set())
+const scrollRef = ref(null)
+
+function captureView() {
+  return {
+    scrollTop: scrollRef.value?.scrollTop || 0,
+    childExpanded: childExpanded.value,
+    childFilter: childFilter.value,
+    rawExpanded: rawExpanded.value,
+    expandedChildIds: expandedChildIds.value,
+  }
+}
+
+async function restoreView(state) {
+  childExpanded.value = state?.childExpanded || false
+  childFilter.value = state?.childFilter || 'all'
+  rawExpanded.value = state?.rawExpanded || false
+  expandedChildIds.value = state?.expandedChildIds || new Set()
+  // 先恢复展开内容，再恢复滚动，避免被收起后的内容高度截断。
+  await nextTick()
+  if (scrollRef.value) scrollRef.value.scrollTop = state?.scrollTop || 0
+}
+
+defineExpose({ captureView, restoreView })
 
 watch(
   () => props.row?.id,
   () => {
     childExpanded.value = false
+    childFilter.value = 'all'
     rawExpanded.value = false
     expandedChildIds.value = new Set()
   }
@@ -398,34 +441,15 @@ function childRj(child) {
 }
 
 // ====== 子任务行 ======
-function gatherChildRows(detail) {
-  const out = []
-  const seen = new Set()
-  const walk = (rows, depth = 0) => {
-    if (!Array.isArray(rows)) return
-    for (const r of rows) {
-      if (!r || typeof r !== 'object') continue
-      const key = String(r.id || `${r.relation || ''}-${r.created_at || ''}`)
-      if (seen.has(key)) continue
-      seen.add(key)
-      out.push({ ...r, __depth: depth })
-      const inner = r.detail && typeof r.detail === 'object' ? r.detail : {}
-      if (Array.isArray(inner.child_rows) && inner.child_rows.length) {
-        walk(inner.child_rows, depth + 1)
-      }
-      if (Array.isArray(r.child_rows) && r.child_rows.length) {
-        walk(r.child_rows, depth + 1)
-      }
-    }
-  }
-  if (Array.isArray(detail?.child_rows)) walk(detail.child_rows, 0)
-  return out
-}
-
 const childRows = computed(() => {
   const detail = props.row?.detail && typeof props.row.detail === 'object' ? props.row.detail : {}
-  return gatherChildRows(detail)
+  const group = childGroups.value.find(group => group.key === childFilter.value) || childGroups.value[0]
+  // 后端已完成去重、分类和计数；路径只引用现有节点，不复制完整文件树。
+  if (group) return group.paths.map(path => path.reduce((node, key) => node?.[key], props.row)).filter(Boolean)
+  return detail.child_rows || []
 })
+
+const childGroups = computed(() => props.row?.detail?.related_event_groups || [])
 
 const childPreview = computed(() => {
   if (childExpanded.value) return childRows.value
@@ -616,6 +640,27 @@ async function copyText(value) {
 .detail-close:active {
   transform: scale(0.95);
 }
+
+.detail-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 6px 10px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.detail-back:hover { transform: translateY(-2px) scale(1.02); }
+.detail-back:active { transform: scale(0.96); }
+.detail-back svg { transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.detail-back:hover svg { transform: rotate(-8deg); }
+.detail-back:focus,
+.detail-back:focus-visible { outline: none; box-shadow: none; }
 
 .detail-head-row {
   display: flex;
@@ -890,6 +935,25 @@ async function copyText(value) {
 }
 
 /* ===== 子任务列表 ===== */
+.child-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 16px 12px;
+}
+.child-filter {
+  border: 1px solid var(--km-dark-border, #e2e8f0);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 11px;
+  color: inherit;
+  background: transparent;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.child-filter:hover { transform: translateY(-2px) scale(1.02); }
+.child-filter:active { transform: scale(0.96); }
+.child-filter.is-active { background: var(--km-dark-surface-hover, #e2e8f0); font-weight: 600; }
+.child-filter span { margin-left: 4px; font-variant-numeric: tabular-nums; }
 .child-list {
   margin: 0;
   padding: 0;
@@ -1121,6 +1185,7 @@ html.kikoerumanager-dark .detail-scroll {
 }
 
 html.kikoerumanager-dark .detail-close,
+html.kikoerumanager-dark .detail-back,
 html.kikoerumanager-dark .foot-btn {
   border-color: rgba(255, 255, 255, 0.12);
   background: #17181d;
@@ -1130,6 +1195,7 @@ html.kikoerumanager-dark .foot-btn {
 }
 
 html.kikoerumanager-dark .detail-close:hover,
+html.kikoerumanager-dark .detail-back:hover,
 html.kikoerumanager-dark .foot-btn:hover {
   border-color: rgba(255, 255, 255, 0.18);
   background: #202126;

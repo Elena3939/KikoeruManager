@@ -44,6 +44,7 @@ from .asmr_download_service import (
     get_asmr_download_service,
 )
 from .asmr_resource_service import get_asmr_resource_service
+from .circle_download_preview import CircleDownloadPreviewMixin
 from .circle_image_cache_service import get_circle_image_cache_service
 from .dlsite_service import DLsiteWorkSummary, get_dlsite_service, with_dlsite_api_snapshot
 from .dlsite_bonus_probe_service import DLsiteBonusProbeService
@@ -208,7 +209,7 @@ class CircleCompletionSnapshot:
         return list(self.chain_rjs_by_canonical.get(canonical, ()))
 
 
-class CircleCompletionService:
+class CircleCompletionService(CircleDownloadPreviewMixin):
     DL_SEARCH_URL = "https://www.dlsite.com/maniax/fsr/=/keyword/{keyword}"
     _COMPLETION_STATE_REDIS_TTL_SECONDS = 600
     _COMPLETION_PAGE_REDIS_TTL_SECONDS = 120
@@ -218,7 +219,7 @@ class CircleCompletionService:
     _COMPLETION_BUILD_LOCK_SECONDS = 12
     _COMPLETION_ALIAS_REDIS_TTL_SECONDS = 86400
     # 同名特典保留待验证候选，并按真实封面选择代表项；升级后重建历史视图缓存。
-    _COMPLETION_CACHE_SCHEMA_VERSION = 20
+    _COMPLETION_CACHE_SCHEMA_VERSION = 21
 
     def __init__(self):
         self.metadata_service = MetadataService()
@@ -416,13 +417,64 @@ class CircleCompletionService:
                     logger.debug("[社团补全·缓存] Redis 版本同步失败", exc_info=True)
             return f"s{self._COMPLETION_CACHE_SCHEMA_VERSION}:local:{self._completion_local_namespace}:e{self._completion_local_epoch}:v{self._completion_local_versions.get(scope, 0)}"
 
+    def _completion_resource_version_tag(self, scope):
+        scope = self._completion_cache_scope(scope)
+        service, client = self._completion_redis_client()
+        if service is not None and client is not None:
+            try:
+                return str(client.get(service.key('circle-completion', 'resource-version', scope)) or 0)
+            except Exception:
+                logger.debug('读取资源覆盖层版本失败', exc_info=True)
+        return str(self._completion_local_versions.get('resource:' + scope, 0))
+
+    def invalidate_completion_resource_cache(self, circle_id):
+        """来源变化不失效基础作品、元数据与特典关系。"""
+        with self._completion_version_guard:
+            scopes = self._completion_alias_scopes_for_invalidation(circle_id)
+            for scope in scopes:
+                key = 'resource:' + scope
+                self._completion_local_versions[key] = self._completion_local_versions.get(key, 0) + 1
+                self._completion_redis_incr('resource-version', scope)
+            # 版本键阻止旧结果命中；同时释放本机旧代，避免每次探测留下一整社团副本。
+            prefixes = tuple(f'{scope}|' for scope in scopes)
+            for cache in (self._completion_selection_cache, self._completion_page_cache,
+                          self._completion_summary_cache, self._completion_codes_cache):
+                cache.invalidate_predicate(lambda key: isinstance(key, str) and key.startswith(prefixes))
+            resource_prefixes = tuple(f'{scope}|resources|' for scope in scopes)
+            self._completion_view_cache.invalidate_predicate(
+                lambda key: isinstance(key, str) and key.startswith(resource_prefixes))
+            self._completion_local_versions['recent'] = self._completion_local_versions.get('recent', 0) + 1
+            self._completion_redis_incr('version', 'recent')
+        return self._completion_resource_version_tag(circle_id)
+
+    def _completion_items_with_resources(self, scope, state):
+        if self._completion_state_builder_overridden():
+            return self._completion_prune_bonus_items(deepcopy(state['items']))
+        key = self._completion_query_cache_key('resources', scope, {})
+        cached = self._completion_view_cache.get(key)
+        if cached is None:
+            from .resource_source_service import get_resource_source_service
+            items = self._completion_copy_resource_rows(state['items'])
+            with SessionLocal() as db:
+                get_resource_source_service().decorate_items(db, items)
+            self._completion_view_cache[key] = items
+            cached = items
+        return self._completion_copy_resource_rows(cached)
+
+    @staticmethod
+    def _completion_copy_resource_rows(rows):
+        """只复制覆盖/归组会修改的容器；元数据只读共享，响应出口仍深拷贝隔离。"""
+        return [{**row, 'bonus_works': CircleCompletionService._completion_copy_resource_rows(
+            row.get('bonus_works') or [])} for row in rows]
+
     def _completion_state_cache_key(self, circle_id_or_query: str, version_tag: str) -> str:
         return f"{self._completion_cache_scope(circle_id_or_query)}|state|{version_tag}"
 
     def _completion_query_cache_key(self, kind: str, circle_id_or_query: str, params: Dict[str, Any], *, version_tag: Optional[str] = None) -> str:
         payload = {"scope": self._completion_cache_scope(circle_id_or_query), "params": params}
         version = version_tag if version_tag is not None else self._completion_version_tag(circle_id_or_query)
-        return f"{self._completion_cache_scope(circle_id_or_query)}|{kind}|{version}|{self._completion_hash_payload(payload)}"
+        resource_version = self._completion_resource_version_tag(circle_id_or_query)
+        return f"{self._completion_cache_scope(circle_id_or_query)}|{kind}|{version}:r{resource_version}|{self._completion_hash_payload(payload)}"
 
     def _completion_recent_cache_key(self, keyword: str, limit: int) -> str:
         payload = {
@@ -1351,10 +1403,10 @@ class CircleCompletionService:
         return {"key": "other", "label": "其他语言", "short_label": "其他"}
 
     def get_inventory_translation_search_relation(self, rjcode: str) -> Dict[str, Any]:
-        """把翻译 RJ 展开为同原作、同语言组的库存搜索别名。
+        """只把已验证的同作品、同语言版本展开为库存搜索别名。
 
         这里只读 PostgreSQL 的关联表和本地拥有态快照，不触发 DLsite HTTP，
-        也不扫描库存目录。原作、英文及未知语言保持精确搜索，避免关联范围过宽。
+        也不扫描库存目录。特典、未知语言和身份有歧义的关联保持精确搜索。
         """
         from sqlalchemy import or_ as sa_or
 
@@ -1387,14 +1439,40 @@ class CircleCompletionService:
                 )
                 .all()
             )
+            version_types = {"original", "translation", "child_translation"}
+
+            def search_language(row: Any) -> str:
+                if str(row.link_type or "").strip().lower() not in version_types:
+                    return ""
+                raw_lang = str(row.lang or "").strip().upper().replace("-", "_")
+                # 复合语言是发行信息，不能作为当前版本语言的证据。
+                if not raw_lang or any(separator in raw_lang for separator in (",", ";", "|")):
+                    return ""
+                lang = self._normalize_lang_code(raw_lang)
+                aliases = {
+                    "ZH_HANS": "CHI_HANS", "ZH_CN": "CHI_HANS",
+                    "CHS": "CHI_HANS", "SIMPLIFIED_CHINESE": "CHI_HANS",
+                    "ZH_HANT": "CHI_HANT", "ZH_TW": "CHI_HANT",
+                    "CHT": "CHI_HANT", "TRADITIONAL_CHINESE": "CHI_HANT",
+                    "JA": "JPN", "JP": "JPN", "EN": "ENG",
+                }
+                lang = aliases.get(lang, lang)
+                return "" if lang in {"UNKNOWN", "OTHER", "UND", "NONE"} else lang
+
+            query_rows = [
+                row for row in anchor_rows
+                if self.normalize_rjcode(row.linked_rjcode) == normalized_rj
+            ]
+            query_languages = {search_language(row) for row in query_rows}
             canonical_rjcodes = sorted({
                 self.normalize_rjcode(row.canonical_rjcode)
-                for row in anchor_rows
+                for row in query_rows
                 if self.normalize_rjcode(row.canonical_rjcode)
             })
-            if not canonical_rjcodes:
+            if len(canonical_rjcodes) != 1 or len(query_languages) != 1 or "" in query_languages:
                 self._inventory_translation_search_cache[normalized_rj] = empty_result
                 return deepcopy(empty_result)
+            query_language = next(iter(query_languages))
 
             link_rows = (
                 db.query(WorkCanonicalLink)
@@ -1404,23 +1482,14 @@ class CircleCompletionService:
                 )
                 .all()
             )
-            link_meta_by_rj: Dict[str, Dict[str, Any]] = {}
+            languages_by_rj: Dict[str, Set[str]] = {}
             for row in link_rows:
                 linked_rjcode = self.normalize_rjcode(row.linked_rjcode)
                 if not linked_rjcode:
                     continue
-                link_meta_by_rj[linked_rjcode] = {
-                    "link_type": str(row.link_type or "").strip().lower(),
-                    "lang": self._normalize_lang_code(row.lang),
-                }
+                languages_by_rj.setdefault(linked_rjcode, set()).add(search_language(row))
 
-            query_meta = link_meta_by_rj.get(normalized_rj) or {}
-            if not query_meta and normalized_rj in canonical_rjcodes:
-                query_meta = {"link_type": "original", "lang": "JPN"}
-            query_group = self._variant_group(
-                query_meta.get("link_type"),
-                query_meta.get("lang"),
-            )
+            query_group = self._variant_group("translation", query_language)
             owned_rows = (
                 db.query(LibraryOwnedWork)
                 .filter(LibraryOwnedWork.canonical_rjcode.in_(canonical_rjcodes))
@@ -1428,22 +1497,11 @@ class CircleCompletionService:
             )
 
             group_key = str(query_group.get("key") or "")
-            if group_key in {"simplified", "traditional"}:
-                related_rjcodes = sorted({
-                    linked_rjcode
-                    for linked_rjcode, meta in link_meta_by_rj.items()
-                    if self._variant_group(meta.get("link_type"), meta.get("lang")).get("key") == group_key
-                })
-            else:
-                # 原作查询也要能定位“实际收录的是关联译作”的目录。
-                # 只追加 owned 快照明确记录的 RJ，避免把同社团其它变体混入搜索。
-                related_rjcodes = sorted({
-                    self.normalize_rjcode(candidate)
-                    for owned_row in owned_rows
-                    for candidate in list(owned_row.owned_rjcodes or [])
-                    if self.normalize_rjcode(candidate) and self.normalize_rjcode(candidate) != normalized_rj
-                })
-            search_rjcodes = [normalized_rjcode, *[
+            related_rjcodes = sorted(
+                code for code, languages in languages_by_rj.items()
+                if languages == {query_language}
+            )
+            search_rjcodes = [normalized_rj, *[
                 candidate for candidate in related_rjcodes if candidate != normalized_rj
             ]]
 
@@ -1467,7 +1525,7 @@ class CircleCompletionService:
                         for match in re.findall(r"RJ\d{4,12}", path, re.IGNORECASE)
                     }
                     actual_rjcode = next(iter(sorted(path_rjcodes & related_set)), "")
-                    if not actual_rjcode and len(actual_owned_rjcodes) == 1:
+                    if not path_rjcodes and len(actual_owned_rjcodes) == 1:
                         actual_rjcode = next(iter(actual_owned_rjcodes))
                     if not actual_rjcode:
                         continue
@@ -1980,7 +2038,7 @@ class CircleCompletionService:
             for key in ("regist_date", "release_date", "sales_date", "disp_start_date"):
                 normalized = self._completion_full_release_date(product.get(key))
                 if normalized:
-                    self._completion_persist_precise_release_date(rjcode, normalized)
+                    await asyncio.to_thread(self._completion_persist_precise_release_date, rjcode, normalized)
                     return normalized
 
         for value in fallback_raw_values:
@@ -2262,14 +2320,21 @@ class CircleCompletionService:
 
         available_codes = set(code_to_item.keys())
         hidden_ids: Set[int] = set()
+        attached_codes = {}
         for item in rows:
             parent_code = self._completion_bonus_parent_code(item, available_codes)
             parent_item = code_to_item.get(parent_code) if parent_code else None
             if not parent_item or parent_item is item or bool(parent_item.get("is_bonus_work")):
                 continue
             bonuses = parent_item.setdefault("bonus_works", [])
-            if item not in bonuses:
+            seen = attached_codes.get(id(parent_item))
+            if seen is None:
+                seen = {self.normalize_rjcode(bonus.get('display_rjcode') or bonus.get('canonical_rjcode')) for bonus in bonuses}
+                attached_codes[id(parent_item)] = seen
+            code = self.normalize_rjcode(item.get('display_rjcode') or item.get('canonical_rjcode'))
+            if code not in seen:
                 bonuses.append(item)
+                seen.add(code)
             hidden_ids.add(id(item))
         return [item for item in rows if id(item) not in hidden_ids]
 
@@ -2628,10 +2693,14 @@ class CircleCompletionService:
             normalized_candidate = self.normalize_rjcode(candidate)
             if normalized_candidate and normalized_candidate not in normalized_local_owned_rjcodes:
                 normalized_local_owned_rjcodes.append(normalized_candidate)
+        available_rjcode = self.normalize_rjcode(row.asmr_available_rjcode)
+        if is_bonus_work and available_rjcode != stored_display_rjcode:
+            available_rjcode = ""
+        has_asmr_one = bool(row.has_asmr_one and available_rjcode)
         source_compare_seed = {
             "canonical_rjcode": row.canonical_rjcode,
             "display_rjcode": stored_display_rjcode,
-            "asmr_available_rjcode": row.asmr_available_rjcode,
+            "asmr_available_rjcode": available_rjcode,
             "kikoeru_found_rjcodes": normalized_local_owned_rjcodes if local_owned else [],
             "kikoeru_subtitle_rjcodes": normalized_local_owned_rjcodes if bool(getattr(owned_row, "has_local_subtitles", False)) else [],
             "preferred_variant": {
@@ -2775,8 +2844,8 @@ class CircleCompletionService:
                     and str((metadata_map.get(variant["rjcode"]) or {}).get("work_name") or "").strip()
                 ],
             ])),
-            "has_asmr_one": bool(row.has_asmr_one),
-            "asmr_available_rjcode": row.asmr_available_rjcode,
+            "has_asmr_one": has_asmr_one,
+            "asmr_available_rjcode": available_rjcode,
             "image_url": local_cover_url or local_thumb_url or (normalized_remote_cover if cover_available else ""),
             "cover_available": cover_available,
             "cover_confirmed_available": cover_confirmed_available,
@@ -2832,11 +2901,13 @@ class CircleCompletionService:
                 *(["库存已收录"] if local_owned else []),
                 *(["本地已下载"] if local_download else []),
                 *(["已收录"] if local_owned else ["未收录"]),
-                *(["可下载"] if row.has_asmr_one else ["暂不可下载"]),
+                *(["可下载"] if has_asmr_one else ["暂不可下载"]),
             ],
-            "download_plan": {"rjcode": row.asmr_available_rjcode or row.display_rjcode} if row.has_asmr_one else None,
+            "download_plan": {"rjcode": available_rjcode or stored_display_rjcode} if has_asmr_one else None,
             "__release_timestamp": 0,
         }
+        if is_bonus_work:
+            item["resource_probe_rjcodes"] = [stored_display_rjcode]
         item["__release_timestamp"] = self._completion_release_timestamp(item)
         if include_source_compare:
             item["source_compare"] = source_compare
@@ -3003,9 +3074,6 @@ class CircleCompletionService:
             for row in works
         ]
         items = self._completion_apply_explicit_bonus_parent_codes(items, link_rows)
-        from .resource_source_service import get_resource_source_service
-        with SessionLocal() as source_db:
-            get_resource_source_service().decorate_items(source_db, items)
         items = self._completion_attach_bonus_parent_codes(items)
         self._completion_apply_early_bonus_status(items, early_bonus_state_map)
         # 去重前仅保存探测需要的 RJ，避免在 Redis state 内重复序列化完整作品。
@@ -3212,8 +3280,7 @@ class CircleCompletionService:
                 return cached
 
         catalog = state["catalog"]
-        items = self._completion_attach_bonus_parent_codes(deepcopy(state["items"]))
-        items = self._completion_prune_bonus_items(items)
+        items = self._completion_items_with_resources(circle_id_or_query, state)
         visible_items = [
             item for item in items
             if include_dl_only or item.get("owned") or item.get("has_downloadable_source", item.get("has_asmr_one"))
@@ -3311,8 +3378,7 @@ class CircleCompletionService:
             selection = self._completion_selection_cache.get(selection_key) if cache_enabled else None
             if selection is None:
                 catalog = state["catalog"]
-                items = self._completion_attach_bonus_parent_codes(deepcopy(state["items"]))
-                items = self._completion_prune_bonus_items(items)
+                items = self._completion_items_with_resources(circle_id_or_query, state)
                 if card_mode and tab_key in {"missing", "owned"}:
                     grouped_filtered = self._filter_completion_items_for_card_tab(
                         items,
@@ -3347,6 +3413,8 @@ class CircleCompletionService:
                 summary = self._completion_summary_from_items(catalog, items, visible_items=filtered)
                 if tab_key == "missing":
                     summary["missing_count"] = len(filtered)
+                from .circle_completion_presentation import present_completion_rows
+                present_completion_rows(self, grouped_filtered)
                 selection = {"rows": grouped_filtered, "summary": summary}
                 if cache_enabled:
                     self._completion_selection_cache[selection_key] = selection
@@ -3394,6 +3462,60 @@ class CircleCompletionService:
         sort: str = "updated_desc",
         selection_only: bool = False,
     ) -> Dict[str, Any]:
+        scope = await self._resolve_completion_scope(circle_id_or_query)
+        state = await self._get_completion_view_state(scope, readonly=True)
+        result = await asyncio.to_thread(
+            self._prepare_completion_work_codes, scope, state, tab=tab,
+            include_dl_only=include_dl_only, status_filters=status_filters,
+            owned_filter=owned_filter, compare_filter=compare_filter,
+            search=search, sort=sort, selection_only=selection_only,
+        )
+        date_items = result.pop('_date_items', None)
+        cache_key = result.pop('_cache_key', None)
+        if date_items is None:
+            return result
+        limiter = asyncio.Semaphore(4)
+        async def resolve_date(entry):
+            code, item, candidates = entry
+            async with limiter:
+                return code, await self._completion_resolve_bonus_probe_release_date(item, candidates)
+        dates = await asyncio.gather(*(resolve_date(entry) for entry in date_items))
+        result['release_dates_by_rjcode'] = {code: date for code, date in dates if date}
+        result['completed_bonus_probe_dates'] = await asyncio.to_thread(
+            self._completion_completed_probe_dates, result['circle_id'], list(result['release_dates_by_rjcode'].values()))
+        if cache_key:
+            await asyncio.to_thread(self._completion_l1_l2_set, self._completion_codes_cache,
+                'work-codes', cache_key, result, ttl_seconds=self._COMPLETION_CODES_REDIS_TTL_SECONDS)
+        return result
+
+    def _completion_completed_probe_dates(self, circle_id, dates):
+        if not dates:
+            return []
+        from .dlsite_bonus_probe_service import get_dlsite_bonus_probe_service
+        service = get_dlsite_bonus_probe_service()
+        try:
+            context = service.resolve_circle_context(circle_id)
+            return service.reusable_completed_release_dates(
+                maker_id=str(context.get('maker_id') or '').strip().upper(),
+                release_dates=dates, mode='deep', gap_limit=500)
+        except Exception:
+            logger.debug('查询已完成特典探测日期失败 circle=%s', circle_id, exc_info=True)
+            return []
+
+    def _prepare_completion_work_codes(
+        self,
+        circle_id_or_query: str,
+        state: Dict[str, Any],
+        *,
+        tab: str = "missing",
+        include_dl_only: bool = True,
+        status_filters: Any = None,
+        owned_filter: str = "all",
+        compare_filter: str = "all",
+        search: str = "",
+        sort: str = "updated_desc",
+        selection_only: bool = False,
+    ) -> Dict[str, Any]:
         normalized_filters = self._completion_status_filters(status_filters)
         tab_key = str(tab or "missing").strip().lower()
         query_cache_key = self._completion_query_cache_key(
@@ -3416,9 +3538,8 @@ class CircleCompletionService:
             if isinstance(cached, dict):
                 return cached
 
-        state = await self._get_completion_view_state(circle_id_or_query)
         catalog = state["catalog"]
-        items = state["items"]
+        items = self._completion_items_with_resources(circle_id_or_query, state)
         filtered = self._filter_completion_items_for_tab(
             items,
             tab=tab,
@@ -3501,6 +3622,7 @@ class CircleCompletionService:
                 db.close()
         requested_rjcodes = {}
         release_dates_by_rjcode = {}
+        date_items = []
         for item in filtered:
             code = str(item.get("canonical_rjcode") or "").strip()
             if not code:
@@ -3517,28 +3639,9 @@ class CircleCompletionService:
                 if normalized and normalized not in candidates:
                     candidates.append(normalized)
             if candidates:
-                requested_rjcodes[code] = candidates
-            release_date = await self._completion_resolve_bonus_probe_release_date(item, candidates)
-            if release_date:
-                release_dates_by_rjcode[code] = release_date
+                requested_rjcodes[code] = [self.normalize_rjcode(item.get("display_rjcode")) or code]
+            date_items.append((code, item, candidates))
         completed_bonus_probe_dates = []
-        if release_dates_by_rjcode:
-            try:
-                from .dlsite_bonus_probe_service import get_dlsite_bonus_probe_service
-
-                bonus_service = get_dlsite_bonus_probe_service()
-                context = bonus_service.resolve_circle_context(
-                    str(catalog.get("circle_id") if isinstance(catalog, dict) else catalog.circle_id),
-                )
-                maker_id = str(context.get("maker_id") or "").strip().upper()
-                completed_bonus_probe_dates = bonus_service.reusable_completed_release_dates(
-                    maker_id=maker_id,
-                    release_dates=list(release_dates_by_rjcode.values()),
-                    mode="deep",
-                    gap_limit=500,
-                )
-            except Exception:
-                logger.debug("[社团补全] 查询已完成特典探测日期失败 circle=%s", circle_id_or_query, exc_info=True)
         result = {
             "circle_id": catalog.get("circle_id") if isinstance(catalog, dict) else catalog.circle_id,
             "circle_name": catalog.get("circle_name") if isinstance(catalog, dict) else catalog.circle_name,
@@ -3553,17 +3656,15 @@ class CircleCompletionService:
             "total": len(canonical_rjcodes),
             "downloadable_count": len(downloadable_rjcodes),
         }
-        if cache_enabled:
-            self._completion_l1_l2_set(
-                self._completion_codes_cache,
-                "work-codes",
-                query_cache_key,
-                result,
-                ttl_seconds=self._COMPLETION_CODES_REDIS_TTL_SECONDS,
-            )
-        return deepcopy(result)
+        result['_date_items'] = date_items
+        result['_cache_key'] = query_cache_key if cache_enabled else None
+        return result
 
     async def list_circle_completion_bonus_work_codes(self, circle_id_or_query: str) -> Dict[str, Any]:
+        state = await self._get_completion_view_state(circle_id_or_query, readonly=True)
+        return await asyncio.to_thread(self._prepare_completion_bonus_work_codes, circle_id_or_query, state)
+
+    def _prepare_completion_bonus_work_codes(self, circle_id_or_query, state):
         query_cache_key = self._completion_query_cache_key("bonus-work-codes", circle_id_or_query, {})
         cache_enabled = not self._completion_state_builder_overridden()
         if cache_enabled:
@@ -3571,7 +3672,6 @@ class CircleCompletionService:
             if isinstance(cached, dict):
                 return cached
 
-        state = await self._get_completion_view_state(circle_id_or_query)
         catalog = state["catalog"]
         items = state["items"]
         seen: Set[str] = set()
@@ -3592,7 +3692,7 @@ class CircleCompletionService:
                 add_bonus_item(bonus)
 
         # 兼容展示层把特典挂到原作卡片下的聚合形态；只读内存副本，不污染缓存。
-        for item in self._completion_group_bonus_items([dict(item) for item in items]):
+        for item in self._completion_group_bonus_items(deepcopy(items)):
             for bonus in item.get("bonus_works") or []:
                 add_bonus_item(bonus)
 
@@ -8451,7 +8551,10 @@ class CircleCompletionService:
                 row.kikoeru_subtitle_rjcodes = list(item["kikoeru_subtitle_rjcodes"] or [])
                 row.has_dlsite = bool(item["has_dlsite"] or "dlsite" in item["source_flags"])
                 row.has_asmr_one = bool(item["has_asmr_one"])
-                row.asmr_available_rjcode = item["asmr_available_rjcode"] or None
+                row.asmr_available_rjcode = item["asmr_available_rjcode"]
+                if row.is_bonus_work and self.normalize_rjcode(row.asmr_available_rjcode) != self.normalize_rjcode(row.display_rjcode):
+                    row.asmr_available_rjcode = None
+                    row.has_asmr_one = False
                 row.kikoeru_work_id = item["kikoeru_work_id"]
                 row.dlsite_cached_at = datetime.now() if row.has_dlsite else row.dlsite_cached_at
                 row.asmr_one_cached_at = datetime.now() if row.has_asmr_one else row.asmr_one_cached_at
@@ -9237,190 +9340,6 @@ class CircleCompletionService:
             )
         return result
 
-    async def preview_batch_download(
-        self,
-        circle_id: str,
-        canonical_rjcodes: List[str],
-        requested_rjcodes: Optional[Dict[str, List[str]]] = None,
-        include_resource_sources: bool = False,
-    ) -> Dict[str, Any]:
-        from ..config.settings import get_config
-        from .library_manager import get_library_manager
-
-        db = SessionLocal()
-        try:
-            catalog = db.query(CircleCatalog).filter(CircleCatalog.circle_id == circle_id).first()
-            if catalog is None:
-                raise ValueError("社团不存在")
-            rows = (
-                db.query(CircleWork)
-                .filter(CircleWork.circle_id == circle_id, CircleWork.canonical_rjcode.in_(canonical_rjcodes))
-                .all()
-            )
-        finally:
-            db.close()
-
-        requested_rjcodes = dict(requested_rjcodes or {})
-        started_at = time.perf_counter()
-        plan_sem = asyncio.Semaphore(4)
-        stage_stats = {
-            "selected_count": len(canonical_rjcodes or []),
-            "db_rows": len(rows),
-            "plan_build_ms": 0,
-            "postprocess_ms": 0,
-        }
-
-        async def build_row_plan(row: CircleWork) -> Optional[Dict[str, Any]]:
-            if not row.has_asmr_one and not include_resource_sources:
-                return None
-            explicit_candidates = []
-            for candidate in requested_rjcodes.get(str(row.canonical_rjcode or "").strip(), []) or []:
-                normalized = self.normalize_rjcode(candidate)
-                if normalized and normalized not in explicit_candidates:
-                    explicit_candidates.append(normalized)
-
-            fallback_rjcode = self.normalize_rjcode(row.asmr_available_rjcode) or next((candidate for candidate in explicit_candidates if candidate), "")
-            resolved_rjcode = fallback_rjcode
-            probe_candidates: List[str] = []
-            for candidate in [*explicit_candidates, resolved_rjcode, row.asmr_available_rjcode, row.display_rjcode, row.canonical_rjcode, *(row.linked_rjcodes or [])]:
-                normalized = self.normalize_rjcode(candidate)
-                if normalized and normalized not in probe_candidates:
-                    probe_candidates.append(normalized)
-
-            if include_resource_sources or not resolved_rjcode:
-                resolved_rjcode = ""
-                for probe_rjcode in probe_candidates:
-                    try:
-                        actual_rjcode, work_info = await self.asmr_service.find_best_available_work(probe_rjcode)
-                    except Exception:
-                        continue
-                    if actual_rjcode and work_info:
-                        resolved_rjcode = self.normalize_rjcode(actual_rjcode)
-                        break
-            if not resolved_rjcode:
-                resolved_rjcode = fallback_rjcode
-
-            if not resolved_rjcode:
-                raise ValueError(f"未找到可下载作品 {row.display_rjcode or row.canonical_rjcode}")
-
-            available_versions = []
-            finder = getattr(self.asmr_service, "find_available_works", None)
-            # 单元测试和旧扩展服务只实现 find_best_available_work，继续兼容它们。
-            if include_resource_sources and finder is not None and getattr(
-                    getattr(self.asmr_service, "find_best_available_work", None), "__func__", None) is not None:
-                try:
-                    available_versions = await finder(probe_candidates[0] if probe_candidates else resolved_rjcode)
-                except Exception:
-                    available_versions = []
-
-            async with plan_sem:
-                plan_started = time.perf_counter()
-                plan = await self.asmr_resource_service.build_download_plan(
-                    rjcode=resolved_rjcode,
-                    folder_path="",
-                    filters={},
-                    refresh=False,
-                    emit_activity_log=False,
-                )
-                stage_stats["plan_build_ms"] += int((time.perf_counter() - plan_started) * 1000)
-            post_started = time.perf_counter()
-            skip_reasons = self._build_filter_skip_reasons(plan.get("selectable_resources") or [])
-            kept_resources = []
-            filtered_out_resources = []
-            for item in plan.get("selectable_resources") or []:
-                reasons = list(skip_reasons.get(str(item.get("relative_path") or ""), []))
-                if reasons:
-                    item["selected"] = False
-                    item["recommended_skip_reasons"] = reasons
-                    filtered_out_resources.append(item)
-                    continue
-                kept_resources.append(item)
-            plan["selectable_resources"] = kept_resources
-            plan["filtered_out_resources"] = filtered_out_resources
-            plan["filtered_out_count"] = len(filtered_out_resources)
-            plan["summary"] = {
-                **dict(plan.get("summary") or {}),
-                "selectable_total": len(kept_resources),
-                "selected_total": len([item for item in kept_resources if item.get("selected")]),
-                "filtered_out_total": len(filtered_out_resources),
-            }
-            plan["grouped_resources"] = self.asmr_resource_service._group_resources(kept_resources)
-            plan["selection_presets"] = self.asmr_resource_service._build_selection_presets(kept_resources)
-            plan["circle_id"] = circle_id
-            plan["circle_name"] = catalog.circle_name
-            plan["canonical_rjcode"] = row.canonical_rjcode
-            plan["requested_rjcode"] = row.display_rjcode or row.canonical_rjcode
-            plan["resolved_rjcode"] = resolved_rjcode
-            plan["display_rjcodes"] = row.linked_rjcodes or [row.display_rjcode]
-            version_options = []
-            for version in available_versions:
-                version_code = self.normalize_rjcode(version.get("rjcode"))
-                if not version_code or version_code == resolved_rjcode:
-                    continue
-                try:
-                    version_plan = await self.asmr_resource_service.build_download_plan(
-                        rjcode=version_code, folder_path="", filters={}, refresh=False,
-                        emit_activity_log=False)
-                except Exception:
-                    continue
-                version_plan.update({
-                    "rjcode": version_code,
-                    "resolved_rjcode": version_code,
-                    "language": version.get("language"),
-                    "language_label": version.get("language_label") or version.get("language") or "未知语言",
-                    "work_type": version.get("work_type"),
-                })
-                version_options.append(version_plan)
-            current_language = next((item.get("language_label") for item in available_versions
-                                     if self.normalize_rjcode(item.get("rjcode")) == resolved_rjcode), "")
-            plan["language_label"] = current_language or "未知语言"
-            primary_version = {key: value for key, value in plan.items() if key != "version_options"}
-            plan["version_options"] = [primary_version, *version_options]
-            stage_stats["postprocess_ms"] += int((time.perf_counter() - post_started) * 1000)
-            return plan
-
-        async def build_sources(row):
-            if not include_resource_sources:
-                return await build_row_plan(row)
-            from .resource_source_service import get_resource_source_service
-            plan = await get_resource_source_service().combine_plan(
-                row.display_rjcode or row.canonical_rjcode, lambda: build_row_plan(row))
-            context = dict(circle_id=circle_id, circle_name=catalog.circle_name,
-                           canonical_rjcode=row.canonical_rjcode,
-                           display_rjcodes=row.linked_rjcodes or [row.display_rjcode])
-            plan.update(context)
-            for option in plan['source_options']:
-                option.update(context)
-            return plan
-
-        plan_results = await asyncio.gather(*(build_sources(row) for row in rows))
-        plans = [plan for plan in plan_results if plan]
-
-        manager = get_library_manager()
-        libraries = manager.list_libraries()
-        default_library = next((item for item in libraries if item.get("is_default")), None) or (libraries[0] if libraries else {})
-        download_base_path = os.path.join(get_config().storage.temp_path, "asmr_enhanced")
-        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-        if elapsed_ms >= 500 or len(rows) >= 3:
-            logger.info(
-                "[社团补全·下载预览耗时] circle_id=%s selected=%s plans=%s elapsed=%sms stats=%s",
-                circle_id,
-                len(canonical_rjcodes or []),
-                len(plans),
-                elapsed_ms,
-                stage_stats,
-            )
-
-        return {
-            "circle_id": circle_id,
-            "circle_name": catalog.circle_name,
-            "plans": plans,
-            "planned_count": len(plans),
-            "download_base_path": download_base_path,
-            "default_target_library_id": str(default_library.get("id") or ""),
-            "default_target_subdir": "",
-        }
-
     def _download_preview_job_snapshot(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "job_id": str(payload.get("job_id") or ""),
@@ -9442,6 +9361,8 @@ class CircleCompletionService:
         canonical_rjcodes: List[str],
         requested_rjcodes: Optional[Dict[str, List[str]]] = None,
         include_resource_sources: bool = False,
+        discovery_only: bool = False,
+        refresh: bool = False,
     ) -> Dict[str, Any]:
         job_id = uuid.uuid4().hex
         started_at = datetime.now()
@@ -9470,6 +9391,8 @@ class CircleCompletionService:
                     canonical_rjcodes,
                     requested_rjcodes,
                     include_resource_sources=include_resource_sources,
+                    discovery_only=discovery_only,
+                    refresh=refresh,
                 )
                 payload["status"] = "completed"
                 payload["progress"] = 100
@@ -9937,33 +9860,47 @@ class CircleCompletionService:
                         metadata = fetched_metadata
                 linked_rjcodes = [variant["rjcode"] for variant in allowed_variants if variant.get("rjcode")]
 
-                probe_candidates = await self._build_public_download_probe_candidates(
-                    canonical_info,
-                    canonical or preferred_seed,
-                    metadata_map=metadata_map,
-                    extra_candidates=[preferred_variant.get("rjcode"), canonical, row.asmr_available_rjcode, *linked_rjcodes],
-                )
-                actual_rjcode, _, asmr_probe_status = await self._find_public_downloadable_work_with_status(
-                    canonical_info,
-                    canonical or preferred_seed,
-                    metadata_map=metadata_map,
-                    extra_candidates=probe_candidates,
-                    bypass_cache=True,
-                )
-                actual_norm = self.normalize_rjcode(actual_rjcode)
-                preserved_asmr_norm = self.normalize_rjcode(row.asmr_available_rjcode)
-                resolved_asmr_norm = (
-                    preserved_asmr_norm
-                    if asmr_probe_status == ASMR_PROBE_STATUS_UNAVAILABLE
-                    else actual_norm
-                )
-
                 is_bonus_work = (
                     canonical in verified_bonus_rjcodes
                     or bool(row.is_bonus_work)
                     or bool((metadata_map.get(canonical) or {}).get("is_bonus_work"))
                     or bool((metadata_map.get(self.normalize_rjcode(preferred_variant.get("rjcode"))) or {}).get("is_bonus_work"))
                 )
+                if is_bonus_work:
+                    exact = self._completion_bonus_display_rjcode(canonical, row.display_rjcode, metadata_map)
+                    _, asmr_probe_status = await self.asmr_service.fetch_work_info_with_status(exact)
+                    actual_rjcode = None
+                    if asmr_probe_status == ASMR_PROBE_STATUS_AVAILABLE:
+                        tracks, asmr_probe_status = await self.asmr_service.fetch_track_list_with_status(exact)
+                        if tracks:
+                            actual_rjcode = exact
+                    actual_norm = self.normalize_rjcode(actual_rjcode)
+                    preserved_asmr_norm = self.normalize_rjcode(row.asmr_available_rjcode)
+                    if preserved_asmr_norm != exact:
+                        preserved_asmr_norm = ''
+                    resolved_asmr_norm = preserved_asmr_norm if asmr_probe_status == ASMR_PROBE_STATUS_UNAVAILABLE else actual_norm
+                else:
+                    probe_candidates = await self._build_public_download_probe_candidates(
+                        canonical_info,
+                        canonical or preferred_seed,
+                        metadata_map=metadata_map,
+                        extra_candidates=[preferred_variant.get("rjcode"), canonical, row.asmr_available_rjcode, *linked_rjcodes],
+                    )
+                    actual_rjcode, _, asmr_probe_status = await self._find_public_downloadable_work_with_status(
+                        canonical_info,
+                        canonical or preferred_seed,
+                        metadata_map=metadata_map,
+                        extra_candidates=probe_candidates,
+                        bypass_cache=True,
+                    )
+                    actual_norm = self.normalize_rjcode(actual_rjcode)
+                    preserved_asmr_norm = self.normalize_rjcode(row.asmr_available_rjcode)
+                    resolved_asmr_norm = (
+                        preserved_asmr_norm
+                        if asmr_probe_status == ASMR_PROBE_STATUS_UNAVAILABLE
+                        else actual_norm
+                    )
+
                 owned_lookup_rjcodes = _normalize_code_list(row.kikoeru_found_rjcodes or [])
                 if not is_bonus_work:
                     try:

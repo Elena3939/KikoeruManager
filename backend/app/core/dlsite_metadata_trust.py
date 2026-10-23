@@ -115,6 +115,33 @@ def assess_dlsite_metadata(
     }
 
 
+def is_dlsite_linkage_product_verified(payload: Dict[str, Any], requested_rjcode: Any) -> bool:
+    """只验证官方作品身份与关联证据，不把社团占位名当成关系失效。"""
+    requested = normalize_rjcode(requested_rjcode)
+    product = dict((payload or {}).get("product") or {})
+    resolved = normalize_rjcode(payload.get("resolved_workno") or product.get("workno"))
+    source = str(payload.get("metadata_evidence_source") or "").strip().lower()
+    fallback = str(payload.get("fallback_source") or "").strip().lower()
+    if not requested or not product:
+        return False
+
+    # 页面跳转后的父作品不能冒充请求作品；必须有父作品语言列表的精确命中。
+    if resolved and resolved != requested:
+        edition = payload.get("edition_info") or {}
+        return bool(
+            fallback == "translation_page"
+            and normalize_rjcode(payload.get("parent_workno")) == resolved
+            and normalize_rjcode(edition.get("workno")) == requested
+        )
+
+    if resolved == requested and (
+        fallback == "api" or source in {"dlsite_product", "page_embedded_product"}
+    ):
+        return True
+    # 其它来源沿用既有证据校验；页面标题或父 RJ 推断不能直接获得可信状态。
+    return str(payload.get("metadata_verification_status") or "").lower() == "verified"
+
+
 def attach_dlsite_metadata_verification(
     metadata: Dict[str, Any],
     requested_rjcode: Any,

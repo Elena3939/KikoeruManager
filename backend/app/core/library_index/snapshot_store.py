@@ -38,6 +38,7 @@ from ...models.database import (
 from ..resource_budget_service import get_resource_budget_service
 from ..ttl_cache import TTLCache
 from ._helpers import extract_rjcode as _extract_rjcode
+from ._helpers import RJ_PATTERN_SOURCE
 from .types import (
     IndexEntry,
     IndexStatus,
@@ -760,6 +761,11 @@ class SnapshotStore:
             return
 
         for parent_path in paths:
+            # 分开生成根目录谓词，预编译后的通用计划也能直接使用 parent_path 索引。
+            parent_predicate = (
+                "(parent_path = '' OR parent_path IS NULL)"
+                if not parent_path else "parent_path = :parent_path"
+            )
             db.execute(text("""
                 DELETE FROM library_index_directory_stats
                  WHERE library_id = :library_id
@@ -770,7 +776,7 @@ class SnapshotStore:
                 "generation": normalized_generation,
                 "parent_path": parent_path,
             })
-            db.execute(text("""
+            db.execute(text(f"""
                 INSERT INTO library_index_directory_stats (
                     library_id, generation, parent_path, direct_children,
                     total_size, top_level_dirs, materialized_seq, updated_at
@@ -786,7 +792,7 @@ class SnapshotStore:
                   FROM library_index_entries
                  WHERE library_id = :library_id
                    AND generation = :generation
-                   AND COALESCE(parent_path, '') = :parent_path
+                   AND {parent_predicate}
                     AND (CAST(:materialized_seq AS BIGINT) IS NULL
                          OR materialized_seq <= CAST(:materialized_seq AS BIGINT))
                    AND NOT EXISTS (
@@ -875,9 +881,9 @@ class SnapshotStore:
                   FROM library_index_entries
                  WHERE library_id = :library_id
                    AND generation = :generation
-                   AND (COALESCE(parent_path, '') = :root
-                        OR (COALESCE(parent_path, '') >= :prefix
-                            AND COALESCE(parent_path, '') < :upper_bound))
+                   AND (parent_path = :root
+                        OR (parent_path >= :prefix
+                            AND parent_path < :upper_bound))
                    AND (CAST(:materialized_seq AS BIGINT) IS NULL
                         OR materialized_seq <= CAST(:materialized_seq AS BIGINT))
                    AND NOT EXISTS (
@@ -2375,6 +2381,11 @@ class SnapshotStore:
             absolute_path=next_absolute,
             parent_path=next_parent,
             name=next_name,
+            rjcode=(
+                _extract_rjcode(next_name)
+                or _extract_rjcode(next_relative)
+                or _extract_rjcode(next_absolute)
+            ),
             depth=next_depth,
             indexed_at=indexed_at,
         )
@@ -2466,6 +2477,14 @@ class SnapshotStore:
                            WHEN relative_path = :old_rel THEN :new_name
                            ELSE name
                        END,
+                       rjcode = COALESCE(
+                           upper(substring(CASE WHEN relative_path = :old_rel
+                               THEN :new_name ELSE name END FROM :rj_pattern)),
+                           upper(substring(CASE WHEN relative_path = :old_rel
+                               THEN :new_rel ELSE :new_rel || substr(relative_path, :old_rel_suffix_start) END FROM :rj_pattern)),
+                           upper(substring(CASE WHEN absolute_path = :old_abs
+                               THEN :new_abs ELSE :new_abs || substr(absolute_path, :old_abs_suffix_start) END FROM :rj_pattern))
+                       ),
                        name_sort_key = CASE
                            WHEN relative_path = :old_rel THEN :new_name_sort_key
                            ELSE name_sort_key
@@ -2496,6 +2515,7 @@ class SnapshotStore:
                 "new_parent": new_parent,
                 "new_name": new_name,
                 "new_name_sort_key": new_name_sort_key,
+                "rj_pattern": "(?i)" + RJ_PATTERN_SOURCE,
                 "old_child_lower": f"{old_rel}/",
                 "old_child_upper": f"{old_rel}0",
                 "old_rel_suffix_start": len(old_rel) + 1,
@@ -2741,7 +2761,14 @@ class SnapshotStore:
                         WHEN relative_path = :old_rel THEN :new_name_sort_key
                         ELSE name_sort_key
                     END,
-                    rjcode,
+                    COALESCE(
+                           upper(substring(CASE WHEN relative_path = :old_rel
+                               THEN :new_name ELSE name END FROM :rj_pattern)),
+                           upper(substring(CASE WHEN relative_path = :old_rel
+                               THEN :new_rel ELSE :new_rel || substr(relative_path, :old_rel_suffix_start) END FROM :rj_pattern)),
+                           upper(substring(CASE WHEN absolute_path = :old_abs
+                               THEN :new_abs ELSE :new_abs || substr(absolute_path, :old_abs_suffix_start) END FROM :rj_pattern))
+                       ),
                     CASE
                         WHEN relative_path = :old_rel THEN :new_parent
                         WHEN parent_path = :old_rel THEN :new_rel
@@ -2783,6 +2810,7 @@ class SnapshotStore:
                 "new_parent": new_parent,
                 "new_name": new_name,
                 "new_name_sort_key": new_name_sort_key,
+                "rj_pattern": "(?i)" + RJ_PATTERN_SOURCE,
                 "old_child_lower": f"{old_rel}/",
                 "old_child_upper": f"{old_rel}0",
                 "old_rel_suffix_start": len(old_rel) + 1,

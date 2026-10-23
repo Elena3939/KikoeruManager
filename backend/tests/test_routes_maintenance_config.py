@@ -1046,7 +1046,7 @@ async def test_slow_api_log_includes_query_allowlist_and_resource_budget(monkeyp
 
     assert response.status_code == 200
     output = "\n".join(record.getMessage() for record in caplog.records)
-    assert "慢请求" in output
+    assert "请求耗时告警" in output
     assert "/api/activity-logs" in output
     assert "'lite': 'true'" in output
     assert "'remote_fs': {'active': 2, 'waiting': 1}" in output

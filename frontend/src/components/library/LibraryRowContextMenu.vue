@@ -143,10 +143,10 @@
           @click="emit('action', 'api_rename')"
         >
           <Sparkles :size="14" :stroke-width="2.2" class="menu-item-icon text-amber-600" />
-          <span>{{ batchMode ? '批量 API 重命名' : 'API 重命名' }}</span>
-          <span v-if="apiRenameRunning" class="menu-running-badge">
+          <span>{{ apiRenameAppend && !apiRenameRunning && !apiRenameQueued ? '追加 API 重命名' : (batchMode ? '批量 API 重命名' : 'API 重命名') }}</span>
+          <span v-if="apiRenameRunning || apiRenameQueued" class="menu-running-badge">
             <span class="menu-running-dot"></span>
-            <span>运行中</span>
+            <span>{{ apiRenameQueued ? '排队中' : '运行中' }}</span>
           </span>
         </button>
 
@@ -227,6 +227,8 @@ const props = defineProps({
   disableRename: { type: Boolean, default: false },
   disableApiRename: { type: Boolean, default: false },
   apiRenameRunning: { type: Boolean, default: false },
+  apiRenameQueued: { type: Boolean, default: false },
+  apiRenameAppend: { type: Boolean, default: false },
   apiBatchTarget: { type: Boolean, default: false },
   disableSubtitle: { type: Boolean, default: false },
   disableManage: { type: Boolean, default: false },

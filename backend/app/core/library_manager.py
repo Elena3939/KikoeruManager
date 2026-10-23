@@ -1597,6 +1597,8 @@ class LibraryManager:
 
     def __init__(self):
         self._stats_cache: dict[str, dict[str, Any]] = {}
+        self._health_read_cache = {}
+        self._health_read_lock = threading.RLock()
         self._stats_tasks: dict[str, asyncio.Task] = {}
         # 路径 size 缓存：每查过 size 的目录都会落库 ⇒ 必须有上限 + TTL
         # 4h TTL 配合签名校验（mtime / hash），既保住命中率又不至于无限增长
@@ -2152,6 +2154,24 @@ class LibraryManager:
         return self._active_libraries(cfg)[0].id
 
     def _health_for_library(self, library: LibraryDefinition, warning_free_gb: float) -> dict[str, Any]:
+        with self._health_read_lock:
+            return self._cached_health_for_library(library, warning_free_gb)
+
+    def _cached_health_for_library(self, library: LibraryDefinition, warning_free_gb: float) -> dict[str, Any]:
+        key = (library.id, library.type, library.root_path, warning_free_gb,
+               str(library.synology) if library.type != "local" else "")
+        cache = getattr(self, "_health_read_cache", None)
+        if cache is None:
+            cache = self._health_read_cache = {}
+        now = time.monotonic()
+        cached = cache.get(library.id)
+        if cached and cached[0] == key and now < cached[1]:
+            return copy.deepcopy(cached[2])
+        result = self._collect_library_health(library, warning_free_gb)
+        cache[library.id] = (key, time.monotonic() + 2.0, result)
+        return copy.deepcopy(result)
+
+    def _collect_library_health(self, library: LibraryDefinition, warning_free_gb: float) -> dict[str, Any]:
         if library.type == "local":
             if not library.root_path:
                 return {"status": "error", "warnings": [], "errors": ["Path is not configured"]}
@@ -6757,12 +6777,16 @@ class LibraryManager:
                 "size_disabled": False,
                 "browse_via_index": False,
             }
+        from .activity_delete_history import local_delete_snapshot
+
+        audit_results = []
         success_count = 0
         failed_paths: list[dict[str, str]] = []
         successful_paths: list[str] = []
         successful_scopes: dict[str, str] = {}
         for path in paths:
             try:
+                snapshot = local_delete_snapshot(path)
                 was_top_level_dir = os.path.isdir(path)
                 if was_top_level_dir:
                     _robust_rmtree(path)
@@ -6770,6 +6794,7 @@ class LibraryManager:
                     os.remove(path)
                 if was_top_level_dir:
                     self._local_top_level_delta(library, path, -1)
+                audit_results.append({"path": path, "library_id": library.id, "success": True, "deleted_items": snapshot})
                 success_count += 1
                 successful_paths.append(path)
                 successful_scopes[os.path.normcase(os.path.abspath(path))] = (
@@ -6777,6 +6802,7 @@ class LibraryManager:
                 )
             except Exception as exc:
                 failed_paths.append({"path": path, "error": str(exc)})
+                audit_results.append({"path": path, "library_id": library.id, "success": False, "error": str(exc)})
         if successful_paths:
             self._invalidate_local_browse_caches(library.id)
         # 文件系统批删先返回；索引 mutation 在后台合并入队，避免批删等待索引物化。
@@ -6793,7 +6819,7 @@ class LibraryManager:
             "INFO",
             f"批删完成 success={success_count} failed={len(failed_paths)} total={len(paths)}",
         )
-        result = {"message": "批量删除完成", "success_count": success_count, "failed_paths": failed_paths}
+        result = {"message": "批量删除完成", "success_count": success_count, "failed_paths": failed_paths, "audit_results": audit_results}
         if isinstance(index_mutation, dict):
             result.update({
                 "operation_id": index_mutation.get("operation_id"),
@@ -7783,6 +7809,7 @@ class LibraryManager:
         target_path: Optional[str],
         conflict_strategy: str,
         skip_index_mutation: bool = False,
+        deferred_stats: Optional[list] = None,
     ) -> dict[str, Any]:
         target_root = os.path.abspath(target_library.root_path)
         target_dir = os.path.abspath(target_path) if target_path else target_root
@@ -7807,6 +7834,12 @@ class LibraryManager:
         deleted_index_paths: list[str] = []
         replace_index_paths: dict[str, tuple[LibraryDefinition, set[str]]] = {}
         index_mutations: list[dict[str, Any]] = []
+
+        def record_delta(library, path, delta):
+            if deferred_stats is not None:
+                deferred_stats.append((library, path, delta))
+            else:
+                self._local_top_level_delta(library, path, delta)
 
         def queue_replace_index(library: LibraryDefinition, path: str) -> None:
             if not path:
@@ -7838,7 +7871,7 @@ class LibraryManager:
                         failed.extend(merge_result.get("failed") or [])
                         queue_replace_index(target_library, dest_path)
                         if merge_result.get("removed_source"):
-                            self._local_top_level_delta(source_library, path, -1)
+                            record_delta(source_library, path, -1)
                             deleted_index_paths.append(path)
                             success.append({
                                 "source": path,
@@ -7864,8 +7897,8 @@ class LibraryManager:
 
                 # 顶层判定 / search cache 失效 / folder_count 增减全部由 _local_top_level_delta 内部处理
                 if is_dir:
-                    self._local_top_level_delta(source_library, path, -1)
-                    self._local_top_level_delta(target_library, dest_path, 1)
+                    record_delta(source_library, path, -1)
+                    record_delta(target_library, dest_path, 1)
                 moved_index_items.append({"source": path, "destination": dest_path})
                 success.append({
                     "source": path,
@@ -7876,9 +7909,10 @@ class LibraryManager:
                 failed.append({"path": path, "name": os.path.basename(path), "error": str(exc)})
 
         # 文件级移动不会触发 _local_top_level_delta，这里兜底清一次本地浏览缓存
-        self._invalidate_local_browse_caches(source_library.id)
-        if target_library.id != source_library.id:
-            self._invalidate_local_browse_caches(target_library.id)
+        if deferred_stats is None:
+            self._invalidate_local_browse_caches(source_library.id)
+            if target_library.id != source_library.id:
+                self._invalidate_local_browse_caches(target_library.id)
 
         # 索引同步：普通移动走 fast-path；目录合并会影响已有目标目录，改为 delete 源 + replace 目标。
         if moved_index_items and not skip_index_mutation:
@@ -7910,11 +7944,12 @@ class LibraryManager:
                     exc_info=True,
                 )
 
-        self._append_stats_log(
-            source_library,
-            "INFO",
-            f"批量移动 -> {target_library.id}:{target_dir} success={len(success)} skipped={len(skipped)} failed={len(failed)}",
-        )
+        if deferred_stats is None:
+            self._append_stats_log(
+                source_library,
+                "INFO",
+                f"批量移动 -> {target_library.id}:{target_dir} success={len(success)} skipped={len(skipped)} failed={len(failed)}",
+            )
 
         result = {
             "message": "批量移动完成",
@@ -7977,6 +8012,14 @@ class LibraryManager:
         }
 
     async def ensure_stats(self, force: bool = False, library_id: Optional[str] = None) -> dict[str, Any]:
+        from .request_performance import run_sync_stage
+
+        return await run_sync_stage("inventory_stats", self._ensure_stats_sync, force, library_id)
+
+    def _ensure_stats_sync(self, force: bool = False, library_id: Optional[str] = None) -> dict[str, Any]:
+        if force:
+            with self._health_read_lock:
+                self._health_read_cache.clear()
         cfg = self.load_config()
         libraries = []
         total_folders = 0
@@ -8003,6 +8046,7 @@ class LibraryManager:
                     "scan_mode": "index_required",
                     "warning": "索引未就绪，请先重建索引",
                 }
+            cached = copy.deepcopy(cached)
             cached["health"] = self._health_for_library(library, warning_free_gb)
             self._stats_cache[library.id] = cached
             libraries.append(cached)
@@ -12790,33 +12834,34 @@ class LibraryManager:
             "INFO",
             f"批删开始 total={len(paths)}",
         )
-        previews = await asyncio.gather(
-            *(self._remote_delete_preview(client, path, library) for path in paths),
-            return_exceptions=True,
-        )
+        from .activity_delete_history import remote_delete_snapshot
+
+        audit_results = []
         success_count = 0
         deleted_bytes = 0
         deleted_folder_count = 0
         failed_paths: list[dict[str, str]] = []
         successful_paths: list[str] = []
-        for path, preview in zip(paths, previews):
-            if isinstance(preview, Exception):
-                failed_paths.append({"path": path, "error": str(preview)})
-                self._append_stats_log(library, "ERROR", f"批删预检失败 path={path} error={preview}")
-                continue
+        for path in paths:
+            snapshot = []
             try:
+                snapshot = await remote_delete_snapshot(client, path)
                 await client.delete(path)
+                audit_results.append({"path": path, "library_id": library.id, "success": True, "deleted_items": snapshot})
                 success_count += 1
                 successful_paths.append(path)
-                deleted_bytes += int(preview.get("size") or 0)
-                deleted_folder_count += int(preview.get("folder_count") or 0)
+                item_bytes = sum(int(item.get("size") or 0) for item in snapshot if item["type"] == "file")
+                deleted_bytes += item_bytes
+                deleted_folder_count += sum(item["type"] == "dir" for item in snapshot)
                 self._append_stats_log(
                     library,
                     "INFO",
-                    f"批删单项完成 path={path} size={int(preview.get('size') or 0)} success={success_count}/{len(paths)}",
+                    f"批删单项完成 path={path} size={item_bytes} success={success_count}/{len(paths)}",
                 )
             except Exception as exc:
                 failed_paths.append({"path": path, "error": str(exc)})
+                audit_results.append({"path": path, "library_id": library.id, "success": False,
+                                      "error": str(exc), "deleted_items": snapshot})
                 self._append_stats_log(library, "ERROR", f"批删单项失败 path={path} error={exc}")
         if success_count:
             self._apply_remote_stats_deletion(
@@ -12831,7 +12876,7 @@ class LibraryManager:
             "INFO",
             f"批删结束 success={success_count} failed={len(failed_paths)} bytes={deleted_bytes}",
         )
-        return {"message": "批量删除完成", "success_count": success_count, "failed_paths": failed_paths}
+        return {"message": "批量删除完成", "success_count": success_count, "failed_paths": failed_paths, "audit_results": audit_results}
 
     async def batch_delete(
         self,
@@ -12895,6 +12940,7 @@ class LibraryManager:
         if not ordered_targets:
             raise ValueError("路径列表不能为空")
 
+        audit_results = []
         success_count = 0
         failed_paths: list[dict[str, str]] = []
         success_paths: list[dict[str, str]] = []
@@ -12911,6 +12957,7 @@ class LibraryManager:
                 confirmed=confirmed,
                 skip_index_mutation=skip_index_mutation,
             )
+            audit_results.extend(result.get("audit_results") or [])
             if confirmed and isinstance(result, dict) and result.get("index_fences"):
                 index_mutations.append(result)
             failed_set = {
@@ -12945,6 +12992,7 @@ class LibraryManager:
                 "success_count": success_count,
                 "failed_paths": failed_paths,
                 "success_paths": success_paths,
+                "audit_results": audit_results,
             }
             if index_mutations:
                 response.update({

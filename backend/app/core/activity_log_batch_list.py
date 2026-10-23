@@ -6,6 +6,7 @@ from ..models.database import ActivityLog
 from .activity_log_aggregator import merge_activity_rows_from_dicts
 from .activity_log_lite import build_lite_item
 from .activity_log_relations import IMPORT_CATEGORIES, IMPORT_RESULT_ACTIONS
+from .activity_log_outcomes import sql_import_result_status
 
 
 def import_batch_key():
@@ -20,11 +21,13 @@ def import_batch_key():
 def compact_import_rows(db, condition):
     keys = (
         "batch_id", "session_id", "created_count", "requested_count", "archive_count",
+        "source_mode", "business_outcome", "conflict_resolution_action",
         "created_tasks", "source_paths", "source_action", "source_label", "source_page",
         "batch_source_action", "batch_source_label", "batch_source_page",
         "parent_task_id", "multi_rj_subtask_count", "duration_ms", "task_started_at",
-        "task_completed_at", "extract_phase_duration_ms", "archive_input", "archive_size_bytes", "extract_output_bytes",
-        "filtered_count", "filtered_size",
+        "task_completed_at", "extract_phase_duration_ms", "extract_execution_duration_ms", "archive_input", "archive_size_bytes", "extract_output_bytes",
+        "filtered_count", "filtered_size", "mode", "success_count", "failed_count", "total_count",
+        "deleted_file_count", "deleted_folder_count", "deleted_bytes", "unknown_size_count", "unknown_type_count", "delete_history_version",
     )
     args = [arg for key in keys for arg in (key, ActivityLog.detail[key])]
     rows = db.query(
@@ -33,7 +36,10 @@ def compact_import_rows(db, condition):
         ActivityLog.created_at, ActivityLog.batch_id, ActivityLog.session_key,
         func.json_build_object(*args).label("detail"),
     ).filter(condition).all()
-    return [dict(row._mapping) for row in rows]
+    compact = [dict(row._mapping) for row in rows]
+    for row in compact:
+        row["detail"] = {key: value for key, value in row["detail"].items() if value is not None}
+    return compact
 
 
 def list_batch_lite(db, query, *, page, limit, status=None, searching=False):
@@ -45,7 +51,20 @@ def list_batch_lite(db, query, *, page, limit, status=None, searching=False):
     )
     is_batch = and_(ActivityLog.category.in_(IMPORT_CATEGORIES), batch_key.isnot(None), ~func.coalesce(multi_rj_child, False))
     kind = case((is_batch, "batch"), else_="row")
-    key = case((is_batch, batch_key), else_=ActivityLog.id)
+    delete_parent = aliased(ActivityLog)
+    delete_parent_query = db.query(delete_parent.id).filter(
+        delete_parent.category == "pipeline_delete", delete_parent.action == "batch_api_delete",
+    ).order_by(delete_parent.created_at.desc(), delete_parent.id.desc()).correlate(ActivityLog)
+    # 优先走 category + batch_id 索引；只有索引列缺失的旧数据才读 JSON 批次。
+    indexed_parent_id = delete_parent_query.filter(delete_parent.batch_id == batch_key).limit(1).scalar_subquery()
+    legacy_parent_id = delete_parent_query.filter(
+        or_(delete_parent.batch_id.is_(None), delete_parent.batch_id == ""),
+        delete_parent.detail.op("->>")("batch_id") == batch_key,
+    ).limit(1).scalar_subquery()
+    # 旧逐文件记录映射到真实批次摘要；搜索子文件也返回整个批次，不按时间猜归属。
+    key = case((is_batch, batch_key),
+               (and_(ActivityLog.category == "pipeline_delete", ActivityLog.action == "batch_delete_item"),
+                func.coalesce(indexed_parent_id, legacy_parent_id, ActivityLog.id)), else_=ActivityLog.id)
     # 非结果旁路事件只属于审计明细，不产生另一条主记录。
     query = query.filter(or_(
         ~ActivityLog.category.in_(IMPORT_CATEGORIES),
@@ -65,7 +84,7 @@ def list_batch_lite(db, query, *, page, limit, status=None, searching=False):
     # 回查完整成员不沿用搜索、日期和单包状态条件，避免只汇总命中的半个批次。
     members = db.query(
         kind.label("kind"), ActivityLog.category.label("category"), key.label("key"),
-        ActivityLog.id, ActivityLog.action, ActivityLog.status, ActivityLog.created_at,
+        ActivityLog.id, ActivityLog.action, sql_import_result_status(ActivityLog).label("status"), ActivityLog.created_at,
         case((ActivityLog.action == "batch_start", cast(func.coalesce(
             ActivityLog.detail.op("->>")("created_count"), "0"), Integer)), else_=0).label("expected"),
         func.row_number().over(
@@ -94,7 +113,9 @@ def list_batch_lite(db, query, *, page, limit, status=None, searching=False):
     groups = db.query(
         members.c.kind, members.c.category, members.c.key,
         func.max(members.c.created_at).label("latest"),
-        case((members.c.kind == "batch", batch_status), else_=func.max(members.c.status)).label("status"),
+        case((members.c.kind == "batch", batch_status), else_=func.coalesce(
+            func.max(members.c.status).filter(members.c.action == "batch_api_delete"),
+            func.max(members.c.status))).label("status"),
     ).group_by(members.c.kind, members.c.category, members.c.key).subquery()
     # 无状态筛选时不需要对整张历史表按任务排序、计算状态；只做分组键和时间聚合。
     if not status:
@@ -136,8 +157,9 @@ def list_batch_lite(db, query, *, page, limit, status=None, searching=False):
                 root["source_path"] = None
                 root["rjcode"] = None
                 batch_items[group_key] = build_lite_item(root)
-    import_row_ids = [row.key for row in selected if row.kind == "row" and row.category in IMPORT_CATEGORIES]
-    other_row_ids = [row.key for row in selected if row.kind == "row" and row.category not in IMPORT_CATEGORIES]
+    compact_categories = {*IMPORT_CATEGORIES, "pipeline_delete"}
+    import_row_ids = [row.key for row in selected if row.kind == "row" and row.category in compact_categories]
+    other_row_ids = [row.key for row in selected if row.kind == "row" and row.category not in compact_categories]
     individual = {}
     if import_row_ids:
         individual.update({row["id"]: build_lite_item(row) for row in compact_import_rows(

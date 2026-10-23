@@ -733,14 +733,10 @@ async function deletePaths (paths, options = {}) {
   try {
     if (isMultiRootMode.value) {
       const sourceRows = previewRows.length ? previewRows : (previewRow ? [previewRow] : [])
-      const groups = groupDeleteRowsByLibrary(sourceRows)
-      if (!groups.size) return
-
-      const previews = []
-      for (const [libraryId, rows] of groups.entries()) {
-        previews.push(await libraryApi.browserBatchDelete(libraryId, rows.map(row => resolveNodePath(row)).filter(Boolean), false))
-      }
-      const preview = mergeBatchDeletePreviews(previews, paths.length)
+      const targets = sourceRows.map(row => ({ library_id: resolveNodeLibraryId(row), path: resolveNodePath(row) }))
+        .filter(item => item.library_id && item.path)
+      if (!targets.length) return
+      const preview = await libraryApi.browserBatchDeleteTargets(targets, false)
       await showSystemConfirm({
         title: paths.length > 1 ? '批量删除确认' : '删除确认',
         message: buildBatchDeletePreviewMessage(preview, sourceRows),
@@ -748,28 +744,20 @@ async function deletePaths (paths, options = {}) {
         cancelText: '取消',
         tone: 'danger'
       })
-      const results = []
-      for (const [libraryId, rows] of groups.entries()) {
-        results.push(await libraryApi.browserBatchDelete(libraryId, rows.map(row => resolveNodePath(row)).filter(Boolean), true))
-      }
-      const successfulDeletes = []
-      results.forEach((result, index) => {
-        const libraryId = [...groups.keys()][index]
-        for (const path of normalizeSuccessfulDeletePaths(result)) successfulDeletes.push({ libraryId, path })
-        indexStateStore.registerMutationResponse(result, {
-          libraryId,
-          deletedPaths: normalizeSuccessfulDeletePaths(result).map(path => ({ libraryId, path, scope: 'subtree' })),
-        })
+      const result = await libraryApi.browserBatchDeleteTargets(targets, true)
+      const successfulDeletes = (result.success_paths || []).map(item => ({ libraryId: item.library_id, path: item.path }))
+      indexStateStore.registerMutationResponse(result, {
+        deletedPaths: successfulDeletes.map(item => ({ ...item, scope: 'subtree' })),
       })
       invalidateFolderRequests()
       pruneDeletedRows(successfulDeletes)
-      const successCount = results.reduce((sum, item) => sum + Number(item?.success_count || 0), 0)
-      const failedCount = results.reduce((sum, item) => sum + Number(item?.failed_paths?.length || 0), 0)
+      const successCount = Number(result.success_count || 0)
+      const failedCount = Number(result.failed_paths?.length || 0)
       if (failedCount) ElMessage.warning(`批量删除完成：成功 ${successCount} 项，失败 ${failedCount} 项`)
       else ElMessage.success(`批量删除完成：成功 ${successCount} 项`)
       const previewCounts = getRowsDeleteCounts(sourceRows)
       emit('mutated', {
-        mutations: results,
+        mutations: [result],
         deletedBytes: resolveDeletePreviewSize(preview?.total_size, sourceRows.reduce((sum, row) => sum + Number(row?.size || 0), 0)),
         deletedFolderCount: Number(preview?.total_folder_count ?? previewCounts.folderCount)
       })
@@ -1917,31 +1905,6 @@ function getRowsDeleteCounts (rows = []) {
     result.fileCount += counts.fileCount
     return result
   }, { folderCount: 0, fileCount: 0 })
-}
-
-function groupDeleteRowsByLibrary (rows = []) {
-  const groups = new Map()
-  for (const row of rows || []) {
-    const libraryId = resolveNodeLibraryId(row)
-    const path = resolveNodePath(row)
-    if (!libraryId || !path) continue
-    if (!groups.has(libraryId)) groups.set(libraryId, [])
-    groups.get(libraryId).push(row)
-  }
-  return groups
-}
-
-function mergeBatchDeletePreviews (previews = [], totalCount = 0) {
-  const validPreviews = previews.filter(item => item && typeof item === 'object')
-  const sizeDisabled = validPreviews.some(item => Boolean(item.size_disabled))
-  return {
-    total_count: totalCount,
-    total_size: sizeDisabled
-      ? null
-      : validPreviews.reduce((sum, item) => sum + Number(item.total_size || 0), 0),
-    total_folder_count: validPreviews.reduce((sum, item) => sum + Number(item.total_folder_count || 0), 0),
-    size_disabled: sizeDisabled,
-  }
 }
 
 function resolveDeletePreviewSize (previewSize, fallbackSize = 0) {

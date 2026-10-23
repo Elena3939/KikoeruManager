@@ -9,6 +9,29 @@ from app.core.activity_log_service import (
 from app.core.task_engine import TaskStatus, TaskType
 
 
+def test_extract_failure_waiting_manual_persists_failed_business_outcome(monkeypatch):
+    captured = []
+    monkeypatch.setattr(activity_log_service_module, "write_activity_log", lambda **payload: captured.append(payload))
+    _build_and_write_task_lifecycle_log({
+        "id": "extract-failed-manual",
+        "status": TaskStatus.WAITING_MANUAL,
+        "type": TaskType.AUTO_PROCESS,
+        "current_step": "解压失败，已加入问题作品列表",
+        "error_message": "密码错误",
+        "task_metadata": {},
+        "source_path": "/missing/failed.zip",
+        "output_path": "",
+        "rjcode": "RJ00000001",
+        "is_cancelled": False,
+        "created_at": datetime(2026, 10, 18, 10, 54),
+        "started_at": datetime(2026, 10, 18, 10, 54),
+        "completed_at": datetime(2026, 10, 18, 10, 55),
+    })
+    assert len(captured) == 1
+    assert captured[0]["status"] == "waiting"
+    assert captured[0]["detail"]["business_outcome"] == "failed"
+
+
 def test_auto_process_lifecycle_uses_extract_payload_total_bytes_when_output_path_missing(tmp_path, monkeypatch):
     archive_path = tmp_path / "big.zip"
     archive_path.write_bytes(b"zip")
@@ -26,6 +49,7 @@ def test_auto_process_lifecycle_uses_extract_payload_total_bytes_when_output_pat
         "current_step": "已拆分为 2 个独立入库子任务",
         "error_message": "",
         "task_metadata": {
+            "extract_execution_duration_ms": 12000,
             "extract_payload_total_bytes": 123456789,
             "multi_rj_subtask_count": 2,
             "extract_started_at": "2026-05-25T15:00:10",
@@ -46,6 +70,7 @@ def test_auto_process_lifecycle_uses_extract_payload_total_bytes_when_output_pat
     assert detail["multi_rj_subtask_count"] == 2
     assert detail["duration_ms"] == 60000
     assert detail["extract_phase_duration_ms"] == 30000
+    assert detail["extract_execution_duration_ms"] == 12000
     assert detail["task_started_at"] == "2026-05-25T15:00:00"
     assert detail["task_completed_at"] == "2026-05-25T15:01:00"
     assert "总耗时" in captured[0]["summary"]

@@ -87,6 +87,8 @@ async def test_baidu_preview_reads_share_file_detail(monkeypatch):
             assert "uk=uk" in url
             assert "shareid=share-id" in url
             assert "sekey=randsk" in url
+            if parse_qs(urlparse(url).query)["dir"] == ["/RJ123456 作品本体/subtitles"]:
+                return {"errno": 0, "list": []}
             return {
                 "errno": 0,
                 "list": [
@@ -117,11 +119,11 @@ async def test_baidu_preview_reads_share_file_detail(monkeypatch):
 
     assert item["ok"] is True
     assert item["filename"] == "RJ123456 作品本体"
-    assert item["preview_file_count"] == 2
-    assert item["preview_folder_count"] == 1
+    assert item["preview_file_count"] == 1
+    assert item["preview_folder_count"] == 2
     assert item["preview_files"][0]["name"] == "track01.wav"
     assert item["preview_files"][0]["relative_path"] == "RJ123456 作品本体/track01.wav"
-    assert item["preview_summary"].startswith("包含 2 项")
+    assert item["preview_summary"].startswith("包含 1 项")
     assert item["size_bytes"] == 1048576
 
 

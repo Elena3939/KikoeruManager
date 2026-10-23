@@ -357,6 +357,7 @@ import AppLottieIcon from '../components/common/AppLottieIcon.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import SystemLogTerminal from '../components/common/SystemLogTerminal.vue'
+import { buildTaskProgress, parseTaskProgressPayload } from '../utils/logProgress'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
 const LOG_FLUSH_INTERVAL = 160
@@ -364,7 +365,6 @@ const LOG_STREAM_RECONNECT_MS = 2500
 const MIN_LIVE_HISTORY_BACKFILL_LINES = 50
 const COMPACT_PROCESS_LOGS_KEY = 'kikoerumanager.logs.compact_process_noise'
 const LOG_BLOCK_PREFIX = '__KIKOERUMANAGER_LOG_BLOCK__'
-const TASK_PROGRESS_STALE_MS = 2 * 60 * 1000
 
 const logs = shallowRef([])
 const isPaused = ref(false)
@@ -442,10 +442,6 @@ const filteredLogs = computed(() => {
   // 重新过滤掉，导致出现"X 总计 0 匹配"。这里在全历史模式下放行 keyword，
   // 仅保留级别 / 模块过滤，避免二次过滤造成搜索失效。
   const skipKeywordFilter = isFullSearch.value
-  const taskEndById = collectTaskEndState(logs.value)
-  const taskRjcodeById = collectTaskRjcodeById(logs.value)
-  const taskArchiveLabelById = collectTaskArchiveLabelById(logs.value)
-  const newestLogMs = getNewestLogTimeMs(logs.value)
   const nowMs = progressTicker.value
   const candidates = []
   const latestProgressByTask = new Map()
@@ -454,7 +450,7 @@ const filteredLogs = computed(() => {
   logs.value.forEach((log, index) => {
     if (!lvlSet.has(log.level)) return false
     if (moduleSet && !moduleSet.has(log.module)) return false
-    const taskProgress = parseTaskProgressLog(log, index, taskRjcodeById, taskArchiveLabelById)
+    const taskProgress = parseTaskProgressLog(log, index)
     if (taskProgress) {
       if (taskProgress.timestampMs && !firstProgressMsByTask.has(taskProgress.taskId)) {
         firstProgressMsByTask.set(taskProgress.taskId, taskProgress.timestampMs)
@@ -478,9 +474,8 @@ const filteredLogs = computed(() => {
   })
 
   for (const progress of latestProgressByTask.values()) {
-    const startedMs = firstProgressMsByTask.get(progress.taskId) || progress.timestampMs || 0
-    const isActive = !isTaskProgressEnded(progress, taskEndById) && !isTaskProgressStale(progress, newestLogMs)
-    const endedMs = isActive ? Math.max(nowMs, progress.timestampMs || startedMs) : (progress.timestampMs || startedMs)
+    const startedMs = parseLogTimeMs(progress.startedAt) || firstProgressMsByTask.get(progress.taskId) || progress.timestampMs || 0
+    const endedMs = progress.active ? Math.max(nowMs, progress.timestampMs || startedMs) : (parseLogTimeMs(progress.completedAt) || progress.timestampMs || startedMs)
     progress.startedMs = startedMs
     progress.durationMs = Math.max(0, endedMs - startedMs)
     progress.durationLabel = formatProgressDuration(progress.durationMs)
@@ -491,8 +486,6 @@ const filteredLogs = computed(() => {
 
     const latest = latestProgressByTask.get(entry.taskProgress.taskId)
     if (!latest || latest.order !== entry.taskProgress.order) return []
-    if (isTaskProgressEnded(entry.taskProgress, taskEndById)) return []
-    if (isTaskProgressStale(entry.taskProgress, newestLogMs)) return []
     return [buildTaskProgressTerminalLog(entry.log, entry.taskProgress)]
   })
 })
@@ -503,13 +496,11 @@ const hiddenProcessNoiseCount = computed(() => {
   const moduleSet = selectedModules.value.length
     ? new Set(selectedModules.value)
     : null
-  const taskRjcodeById = collectTaskRjcodeById(logs.value)
-  const taskArchiveLabelById = collectTaskArchiveLabelById(logs.value)
   let count = 0
   for (const log of logs.value) {
     if (!lvlSet.has(log.level)) continue
     if (moduleSet && !moduleSet.has(log.module)) continue
-    if (parseTaskProgressLog(log, 0, taskRjcodeById, taskArchiveLabelById)) continue
+    if (parseTaskProgressLog(log)) continue
     if (isProcessNoiseLog(log)) count += 1
   }
   return count
@@ -584,12 +575,6 @@ function toggleCompactProcessLogs() {
   localStorage.setItem(COMPACT_PROCESS_LOGS_KEY, compactProcessLogs.value ? '1' : '0')
 }
 
-function clampPercent(value) {
-  const numeric = Number(value)
-  if (!Number.isFinite(numeric)) return 0
-  return Math.max(0, Math.min(100, Math.round(numeric)))
-}
-
 function matchesSearchTerms(log, terms) {
   const msg = log.messageLower || ''
   const mod = log.moduleLower || ''
@@ -628,259 +613,15 @@ function parseLogTimeMs(value) {
   return Number.isFinite(ms) ? ms : 0
 }
 
-function getNewestLogTimeMs(list) {
-  let newest = 0
-  for (const log of Array.isArray(list) ? list : []) {
-    const ms = parseLogTimeMs(log?.time)
-    if (ms > newest) newest = ms
-  }
-  return newest
-}
-
-function classifyProgressTone(text, progress, level) {
-  const normalizedLevel = String(level || '').toUpperCase()
-  if (normalizedLevel === 'ERROR' || /失败|错误|异常|Traceback|Exception|RuntimeError/.test(text)) return 'error'
-  if (/暂停|已暂停|等待/.test(text)) return 'waiting'
-  if (/取消|已取消|cancel/i.test(text)) return 'paused'
-  if (progress >= 100 || /完成|成功|已归档|已移动/.test(text)) return 'success'
-  return 'processing'
-}
-
-function classifyProgressPhase(text, moduleName) {
-  if (/解压|7z|unar|压缩包解压/.test(text)) return '解压'
-  if (/归档|已处理目录|processed/i.test(text)) return '归档'
-  if (/移动|搬移|move/i.test(text)) return '移动'
-  if (/上传|写入远端|群晖/.test(text)) return '上传'
-  if (/下载|拉取|同步/.test(text)) return '下载'
-  if (/重命名|改名/.test(text)) return '重命名'
-  if (/分类|整理/.test(text)) return '整理'
-  if (/清理|删除/.test(text)) return '清理'
-  if (/扫描|检查|验证|预检/.test(text)) return '检查'
-  return moduleName || '任务'
-}
-
-function normalizeProgressRjcode(value) {
-  const text = String(value || '').replace(/\s+/g, '').toUpperCase()
-  return /^RJ\d{5,9}$/.test(text) ? text : ''
-}
-
-function extractProgressRjcode(text) {
-  const match = String(text || '').match(/\bRJ\s*\d{5,9}\b/i)
-  return match ? normalizeProgressRjcode(match[0]) : ''
-}
-
-function basenameFromProgressPath(value) {
-  const text = String(value || '').replace(/\\/g, '/').trim()
-  if (!text) return ''
-  return text.split('/').filter(Boolean).pop() || text
-}
-
-function extractProgressArchiveName(step) {
-  const text = String(step || '')
-  const match = text.match(/\b((?:RJ\s*)?\d{5,9}[^()\s]*(?:\.zip|\.7z|\.rar|\.tar|\.gz|\.bz2|\.xz))/i)
-    || text.match(/\b([^\s()]+(?:\.zip|\.7z|\.rar|\.tar|\.gz|\.bz2|\.xz))\b/i)
-  return match ? basenameFromProgressPath(match[1]) : ''
-}
-
-function normalizeProgressArchiveLabel(value) {
-  const label = basenameFromProgressPath(value)
-    .replace(/[，。；;,.]+$/g, '')
-    .trim()
-  if (!label) return ''
-  return label.length > 96 ? `${label.slice(0, 42)}...${label.slice(-42)}` : label
-}
-
-function parseExtractProgressDetail(step) {
-  const text = String(step || '')
-    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  const match = text.match(/^解压中\s+\d{1,3}%\s*-\s*(.+)$/)
-  if (!match) return { currentFile: '', status: '' }
-  const statusMatch = text.match(/[（(]([^()（）]*)[)）]\s*$/)
-  const status = statusMatch && /(剩余|B\/s|KB\/s|MB\/s|GB\/s)/i.test(statusMatch[1])
-    ? statusMatch[1].trim()
-    : ''
-  const currentFile = status
-    ? match[1].slice(0, -statusMatch[0].length).trim()
-    : match[1].trim()
-  if (!currentFile || /^open\b/i.test(currentFile)) return { currentFile: '', status }
+function parseTaskProgressLog(log, order = 0) {
+  const progress = buildTaskProgress(log, order)
+  if (!progress) return null
   return {
-    currentFile,
-    status,
-  }
-}
-
-function collectTaskRjcodeById(list) {
-  const result = new Map()
-  for (const log of Array.isArray(list) ? list : []) {
-    const message = String(log?.message || '')
-    const identityMatches = [
-      message.match(/\[(RJ\s*\d{5,9})\][^\n]*任务ID[:：]\s*([0-9a-fA-F-]{8,36})/i),
-      message.match(/任务ID[:：]\s*([0-9a-fA-F-]{8,36})[^\n]*\b(RJ\s*\d{5,9})\b/i),
-    ]
-
-    for (const match of identityMatches) {
-      if (!match) continue
-      const first = normalizeProgressRjcode(match[1])
-      const second = normalizeProgressRjcode(match[2])
-      const taskId = first ? match[2] : match[1]
-      const rjcode = first || second
-      if (taskId && rjcode) result.set(taskId, rjcode)
-    }
-
-    const progressMatch = message.match(/任务\s+([0-9a-fA-F-]{8,36})(?:\s*【([^】]+)】)?\s*[:：]\s*(.+?)\s*[（(]\s*(\d{1,3})\s*%\s*[)）]\s*$/)
-    if (progressMatch) {
-      const rjcode = extractProgressRjcode(progressMatch[3])
-      if (rjcode) result.set(progressMatch[1], rjcode)
-    }
-  }
-  return result
-}
-
-function collectTaskArchiveLabelById(list) {
-  const result = new Map()
-  for (const log of Array.isArray(list) ? list : []) {
-    const message = String(log?.message || '')
-    const submitMatch = message.match(/任务提交\s*-\s*ID[:：]\s*([0-9a-fA-F-]{8,36})[，,\s]*源文件[:：]\s*(.+)$/)
-    if (submitMatch) {
-      const label = normalizeProgressArchiveLabel(submitMatch[2])
-      if (label) result.set(submitMatch[1], label)
-    }
-
-    const progressMatch = message.match(/任务\s+([0-9a-fA-F-]{8,36})(?:\s*【([^】]+)】)?\s*[:：]\s*(.+?)\s*[（(]\s*(\d{1,3})\s*%\s*[)）]\s*$/)
-    if (progressMatch && !result.has(progressMatch[1])) {
-      const label = normalizeProgressArchiveLabel(progressMatch[2] || extractProgressArchiveName(progressMatch[3]))
-      if (label) result.set(progressMatch[1], label)
-    }
-  }
-  return result
-}
-
-function buildProgressAction(step, phase) {
-  const text = String(step || '')
-  if (/获取.*元数据|元数据/.test(text)) return '获取元数据'
-  if (/重命名|改名/.test(text)) return '重命名'
-  if (/解压|7z|unar|压缩包|伪装 ZIP|路径重映射/.test(text)) return '解压'
-  if (/过滤/.test(text)) return '过滤'
-  if (/扁平化/.test(text)) return '扁平化'
-  if (/字幕繁|字幕.*转换/.test(text)) return '字幕转换'
-  if (/智能分类|分类|整理/.test(text)) return '分类'
-  if (/归档/.test(text)) return '归档'
-  if (/移动|搬移|入库/.test(text)) return '移动'
-  if (/上传|写入远端|群晖/.test(text)) return '上传'
-  if (/下载|拉取|同步/.test(text)) return '下载'
-  if (/清理|删除/.test(text)) return '清理'
-  if (/扫描|检查|验证|预检|检测/.test(text)) return '检查'
-  if (/完成|成功/.test(text)) return '处理完成'
-  return phase && phase !== '任务' ? phase : buildProgressDetail(text)
-}
-
-function buildProgressTitle(step, phase, rjcode, archiveLabel = '') {
-  const action = buildProgressAction(step, phase)
-  if (action === '解压') {
-    const archiveName = extractProgressArchiveName(step)
-    const target = archiveLabel || archiveName || rjcode
-    return target ? `${action} ${target}` : `${action}任务`
-  }
-  return rjcode ? `${action} ${rjcode}` : action
-}
-
-function buildProgressDetail(step) {
-  const text = String(step || '').replace(/\s+/g, ' ').trim()
-  const extractDetail = parseExtractProgressDetail(text)
-  if (extractDetail.currentFile) {
-    return extractDetail.status
-      ? `当前文件: ${extractDetail.currentFile} · ${extractDetail.status}`
-      : `当前文件: ${extractDetail.currentFile}`
-  }
-  return text
-}
-
-function parseTaskProgressLog(log, order = 0, taskRjcodeById = null, taskArchiveLabelById = null) {
-  const message = String(log?.message || '')
-  const match = message.match(/任务\s+([0-9a-fA-F-]{8,36})(?:\s*【([^】]+)】)?\s*[:：]\s*(.+?)\s*[（(]\s*(\d{1,3})\s*%\s*[)）]\s*$/)
-  if (!match) return null
-
-  const taskId = match[1]
-  const inlineArchiveLabel = normalizeProgressArchiveLabel(match[2])
-  const step = match[3].trim()
-  const progress = clampPercent(match[4])
-  const context = `${log?.module || ''} ${step}`
-  const tone = classifyProgressTone(context, progress, log?.level)
-  const phase = classifyProgressPhase(context, log?.module || '')
-  const rjcode = extractProgressRjcode(step) || taskRjcodeById?.get?.(taskId) || ''
-  const archiveLabel = inlineArchiveLabel || taskArchiveLabelById?.get?.(taskId) || normalizeProgressArchiveLabel(extractProgressArchiveName(step))
-
-  return {
-    id: taskId,
-    taskId,
-    shortId: taskId.slice(0, 8),
-    rjcode,
-    archiveLabel,
-    title: buildProgressTitle(step, phase, rjcode, archiveLabel),
-    phase,
-    detail: buildProgressDetail(step),
-    progress,
-    tone,
+    ...progress,
     timestampMs: parseLogTimeMs(log?.time),
     updatedAt: log?.time || '',
     updatedLabel: formatProgressTime(log?.time),
-    order,
   }
-}
-
-function parseTaskEndLog(log, order = 0) {
-  const message = String(log?.message || '')
-  const patterns = [
-    { re: /任务\s+([0-9a-fA-F-]{8,36})\s+已被用户取消/, tone: 'paused' },
-    { re: /任务\s+([0-9a-fA-F-]{8,36}).*(?:已取消|取消完成|被取消)/, tone: 'paused' },
-    { re: /任务\s+([0-9a-fA-F-]{8,36}).*(?:任务失败|处理失败|失败)/, tone: 'error' },
-    { re: /任务\s+([0-9a-fA-F-]{8,36}).*(?:任务完成|处理完成|成功完成)/, tone: 'success' },
-    { re: /任务\s+([0-9a-fA-F-]{8,36})\s+状态更新为:\s*(completed|failed|cancelled|canceled|paused)/i, tone: '' },
-  ]
-  for (const item of patterns) {
-    const match = message.match(item.re)
-    if (!match) continue
-    let tone = item.tone
-    if (!tone) {
-      const status = String(match[2] || '').toLowerCase()
-      if (status === 'completed') tone = 'success'
-      else if (status === 'failed') tone = 'error'
-      else tone = 'paused'
-    }
-    return {
-      taskId: match[1],
-      tone,
-      order,
-      timestampMs: parseLogTimeMs(log?.time),
-    }
-  }
-  return null
-}
-
-function collectTaskEndState(list) {
-  const result = new Map()
-  ;(Array.isArray(list) ? list : []).forEach((log, index) => {
-    const state = parseTaskEndLog(log, index)
-    if (!state) return
-    const previous = result.get(state.taskId)
-    if (!previous || state.order >= previous.order) {
-      result.set(state.taskId, state)
-    }
-  })
-  return result
-}
-
-function isTaskProgressEnded(progress, taskEndById) {
-  const endState = taskEndById.get(progress.taskId)
-  return Boolean(endState && endState.order > progress.order)
-}
-
-function isTaskProgressStale(progress, newestLogMs) {
-  if (!newestLogMs || !progress.timestampMs) return false
-  return newestLogMs - progress.timestampMs > TASK_PROGRESS_STALE_MS
 }
 
 function buildTaskProgressTerminalLog(log, progress) {
@@ -1000,9 +741,11 @@ function parseLogLine(line) {
   // = 几 MB 内存。
   const RAW_LOWER_LIMIT = 1024
   const buildParsed = (time, level, message, extra = {}) => {
+    const taskProgressPayload = parseTaskProgressPayload(message)
+    if (taskProgressPayload) message = taskProgressPayload.step || ''
     const rawSource = extra.rawLine ?? line
     const fullSource = extra.fullMessage ?? ''
-    const mod = parseModule(message, String(rawSource || line || ''))
+    const mod = taskProgressPayload?.phase || parseModule(message, String(rawSource || line || ''))
     const levelUpper = (level || 'INFO').toUpperCase()
     const safeRaw = typeof rawSource === 'string' ? rawSource : String(rawSource || '')
     const rawLower = safeRaw.length && safeRaw.length <= RAW_LOWER_LIMIT ? safeRaw.toLowerCase() : ''
@@ -1013,6 +756,7 @@ function parseLogLine(line) {
       time: time || '',
       level: levelUpper,
       module: mod,
+      taskProgressPayload,
       message,
       messageLower: (message || '').toLowerCase(),
       moduleLower: (mod || '').toLowerCase(),

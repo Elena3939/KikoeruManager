@@ -210,3 +210,55 @@ def test_pages_reuse_filter_sort_and_isolate_responses(perf_service, monkeypatch
     assert snapshot == original
     assert "污染" not in repeated["items"][0]["linked_rjcodes"]
     assert second["items"][0]["canonical_rjcode"] != repeated["items"][0]["canonical_rjcode"]
+
+
+def test_resource_version_preserves_base_and_invalidates_queries(perf_service):
+    before = perf_service._completion_version_tag('A')
+    page_before = perf_service._completion_query_cache_key('page', 'A', {})
+    base_key = perf_service._completion_state_cache_key('A', before)
+    perf_service._completion_view_cache[base_key] = state('A')
+    perf_service._completion_view_cache['A|resources|old'] = ['旧资源']
+    perf_service._completion_selection_cache['A|selection|old'] = {'rows': []}
+    perf_service._completion_selection_cache['B|selection|current'] = {'rows': []}
+    perf_service.invalidate_completion_resource_cache('A')
+    assert perf_service._completion_version_tag('A') == before
+    assert perf_service._completion_query_cache_key('page', 'A', {}) != page_before
+    assert perf_service._completion_view_cache[base_key] == state('A')
+    assert perf_service._completion_view_cache.get('A|resources|old') is None
+    assert perf_service._completion_selection_cache.get('A|selection|old') is None
+    assert perf_service._completion_selection_cache.get('B|selection|current') == {'rows': []}
+
+
+def test_resource_refresh_keeps_nested_metadata_and_page_responses_isolated(perf_service, monkeypatch):
+    from contextlib import nullcontext
+    from app.core.resource_source_service import get_resource_source_service
+    snapshot = {'catalog': dict(circle_id='A', circle_name='A', source_mask='', last_indexed_at=None),
+                'items': [dict(canonical_rjcode='RJ01699055', title='原作', has_dlsite=True,
+                               linked_rjcodes=['RJ01699055'], status_tags=['暂不可下载'],
+                               bonus_works=[dict(canonical_rjcode='RJ01699067', title='特典',
+                                                 is_bonus_work=True, has_dlsite=True)])]}
+    original = deepcopy(snapshot)
+    available = False
+    def decorate(db, items):
+        for item in items:
+            item['has_downloadable_source'] = available
+            item['status_tags'] = ['可下载'] if available else ['暂不可下载']
+    monkeypatch.setattr(module, 'SessionLocal', lambda: nullcontext(None))
+    monkeypatch.setattr(get_resource_source_service(), 'decorate_items', decorate)
+    first = perf_service._list_circle_completion_works_sync('A', snapshot, 'v0')
+    assert first['downloadable_count'] == 0
+    assert perf_service._list_circle_completion_works_sync(
+        'A', snapshot, 'v0', include_dl_only=False)['total'] == 0
+    first['items'][0]['linked_rjcodes'].append('污染')
+    first['items'][0]['bonus_works'][0]['title'] = '污染'
+    available = True
+    perf_service.invalidate_completion_resource_cache('A')
+    second = perf_service._list_circle_completion_works_sync('A', snapshot, 'v0')
+    assert second['items'][0]['has_downloadable_source'] is True
+    assert second['items'][0]['status_tags'] == ['可下载']
+    assert second['items'][0]['linked_rjcodes'] == ['RJ01699055']
+    assert second['items'][0]['bonus_works'][0]['title'] == '特典'
+    assert second['downloadable_count'] == 1
+    assert perf_service._list_circle_completion_works_sync(
+        'A', snapshot, 'v0', include_dl_only=False)['total'] == 1
+    assert snapshot == original

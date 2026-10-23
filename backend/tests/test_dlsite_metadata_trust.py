@@ -228,11 +228,11 @@ async def test_embedded_translation_rejects_mismatched_parent_evidence(monkeypat
     assert result["metadata_verification_status"] == "unverified"
     assert result["metadata_evidence_source"] == "page_embedded_product"
     assert result["product"]["maker_name"] == "大家一起来翻译"
-    assert service.cache["product_info:RJ01670873:"]["ttl_seconds"] == 900
+    assert "product_info:RJ01670873:" not in service.cache
 
 
 @pytest.mark.asyncio
-async def test_product_info_cache_uses_result_specific_ttls(monkeypatch) -> None:
+async def test_product_info_caches_only_verified_results(monkeypatch) -> None:
     service = DLsiteApiService()
 
     async def missing_product(_rjcode, locale=None):
@@ -257,18 +257,14 @@ async def test_product_info_cache_uses_result_specific_ttls(monkeypatch) -> None
     monkeypatch.setattr(service, "_fetch_product_page_metadata", page_metadata)
 
     await service.get_product_info("RJ01610001")
-    page_entry = service.cache["product_info:RJ01610001:"]
-    assert page_entry["ttl_seconds"] == 900
-    assert page_entry["data"]["metadata_verification_status"] == "unverified"
+    assert "product_info:RJ01610001:" not in service.cache
 
     async def no_page_metadata(_rjcode, locale=None):
         return None
 
     monkeypatch.setattr(service, "_fetch_product_page_metadata", no_page_metadata)
     await service.get_product_info("RJ01610002")
-    failure_entry = service.cache["product_info:RJ01610002:"]
-    assert failure_entry["ttl_seconds"] == 300
-    assert failure_entry["data"] is None
+    assert "product_info:RJ01610002:" not in service.cache
 
     async def verified_product(rjcode, locale=None):
         return {

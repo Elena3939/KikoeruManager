@@ -133,6 +133,21 @@ class FileProcessor:
 
     # ========== 公共接口 ==========
 
+    @staticmethod
+    def _path_key(path: str) -> str:
+        return os.path.normcase(os.path.abspath(path)) if path else ""
+
+    @classmethod
+    def _load_unresolved_source_paths(cls) -> Set[str]:
+        """读取持久化人工待办；原包路径不能因问题项已移到暂存目录而丢失。"""
+        from ..models.database import ConflictWork, SessionLocal, Task as TaskRecord
+
+        with SessionLocal() as db:
+            rows = db.query(ConflictWork.new_path, TaskRecord.source_path).outerjoin(
+                TaskRecord, TaskRecord.id == ConflictWork.task_id,
+            ).filter(ConflictWork.status.in_(["PENDING", "PROCESSING"])).all()
+        return {cls._path_key(path) for row in rows for path in row if path}
+
     async def process_file(
         self,
         file_path: str,
@@ -146,6 +161,8 @@ class FileProcessor:
         task_metadata: Optional[dict] = None,
         batch_context: Optional[dict] = None,
         report: Optional[dict] = None,
+        manual_retry: bool = False,
+        unresolved_source_paths: Optional[Set[str]] = None,
     ) -> Optional[Task]:
         """统一的文件处理流程
 
@@ -158,6 +175,8 @@ class FileProcessor:
             mark_processed: 标记文件为已处理的回调
             pause_fn: 暂停文件监听的回调（用于重命名操作）
             resume_fn: 恢复文件监听的回调
+            manual_retry: 是否由用户明确重试，允许重新处理未解决的问题作品
+            unresolved_source_paths: 目录扫描共用的未解决问题源路径快照
 
         Returns:
             创建的任务对象，如果未创建任务则返回 None
@@ -168,6 +187,19 @@ class FileProcessor:
         try:
             if self._has_active_aria2_sidecar(file_path):
                 logger.info("[FileProcessor] 检测到 aria2 未完成标记，跳过处理: %s", file_path)
+                return None
+
+            # 必须在改名、分卷标记和解压之前拦截，且按源路径而不是 RJ 封锁。
+            # 显式重试允许重新执行；目录扫描共用一次数据库快照。
+            blocked_paths = set() if manual_retry else unresolved_source_paths
+            if blocked_paths is None:
+                blocked_paths = await asyncio.to_thread(self._load_unresolved_source_paths)
+            volume_set = self.detect_volume_set(file_path)
+            source_paths = [file_path] + (volume_set.volumes + [volume_set.entry_path] if volume_set else [])
+            if any(self._path_key(path) in blocked_paths for path in source_paths):
+                logger.info("[FileProcessor] 文件有未解决的问题记录，等待人工处理: %s", file_path)
+                if isinstance(report, dict):
+                    report["skipped_unresolved_count"] = int(report.get("skipped_unresolved_count") or 0) + 1
                 return None
 
             # 1. 检查文件是否已处理
@@ -229,6 +261,10 @@ class FileProcessor:
                 mark_processed=mark_processed
             )
             logger.debug(f"[FileProcessor] 规范化后路径: {file_path}")
+            if self._path_key(file_path) in blocked_paths:
+                if isinstance(report, dict):
+                    report["skipped_unresolved_count"] = int(report.get("skipped_unresolved_count") or 0) + 1
+                return None
 
             # 5. 检查是否已在任务队列中
             engine = get_task_engine()
@@ -240,7 +276,9 @@ class FileProcessor:
                     report["skipped_deferred_archive_count"] = int(report.get("skipped_deferred_archive_count") or 0) + 1
                 return None
             existing = any(
-                t.source_path == file_path and t.status.value in ["pending", "processing"]
+                self._path_key(t.source_path) == self._path_key(file_path)
+                and t.status.value in (["pending", "processing", "paused"] if manual_retry else
+                                       ["pending", "processing", "paused", "waiting_manual", "waiting_retry"])
                 for t in engine.get_all_tasks()
             )
             if existing:
@@ -327,6 +365,8 @@ class FileProcessor:
             mark_processed: 标记文件为已处理的回调
             pause_fn: 暂停文件监听的回调（用于重命名操作）
             resume_fn: 恢复文件监听的回调
+            manual_retry: 是否由用户明确重试，允许重新处理未解决的问题作品
+            unresolved_source_paths: 目录扫描共用的未解决问题源路径快照
 
         Returns:
             创建的任务列表
@@ -370,6 +410,7 @@ class FileProcessor:
 
         # 记录已处理的分卷文件，避免重复创建任务
         processed_volumes: Set[str] = set()
+        unresolved_source_paths = await asyncio.to_thread(self._load_unresolved_source_paths)
 
         for file_path in archive_files:
             # 检查是否是已处理的分卷
@@ -396,6 +437,7 @@ class FileProcessor:
                 task_metadata=task_metadata,
                 batch_context=batch_context,
                 report=report,
+                unresolved_source_paths=unresolved_source_paths,
             )
             if task:
                 tasks.append(task)
@@ -766,6 +808,8 @@ class FileProcessor:
             file_path: 文件路径
             pause_fn: 暂停文件监听的回调（用于重命名操作）
             resume_fn: 恢复文件监听的回调
+            manual_retry: 是否由用户明确重试，允许重新处理未解决的问题作品
+            unresolved_source_paths: 目录扫描共用的未解决问题源路径快照
             mark_processed: 标记文件为已处理的回调
 
         Returns:

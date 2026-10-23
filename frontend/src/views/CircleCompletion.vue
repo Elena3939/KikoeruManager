@@ -485,7 +485,7 @@
                     type="button"
                     class="batch-action-button primary ml-2"
                     :class="{ 'is-busy': previewing }"
-                    :disabled="selectedActiveDownloadableRJCodes.length === 0"
+                    :disabled="previewing || selectedActiveDownloadableRJCodes.length === 0"
                     @click="openBatchPreview()"
                   >
                     <Download v-if="!previewing" :size="13" />
@@ -990,6 +990,7 @@
 
     <CircleDownloadPreviewDialog
       v-model:visible="previewDialogVisible"
+      @versions-updated="handlePreviewVersionsUpdated"
       :loading="previewLoading"
       :loading-label="previewProgressLabel"
       :loading-description="previewProgressDescription"
@@ -1121,6 +1122,7 @@
 </template>
 
 <script setup>
+import { getAsmrDownloadSessionId, getDownloadEngineTaskId } from '../utils/downloadTaskIdentity.js'
 import { computed, onActivated, onBeforeUnmount, onMounted, provide, reactive, ref, shallowReactive, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
@@ -2792,13 +2794,7 @@ function getPreviewRequestedRjcodes(canonicalCodes = []) {
     }
     const item = detailWorksByCanonical.value.get(code)
     if (!item) return
-    const candidates = [
-      item.download_plan?.rjcode,
-      item.asmr_available_rjcode,
-      item.display_rjcode,
-      item.canonical_rjcode,
-      ...(Array.isArray(item.linked_rjcodes) ? item.linked_rjcodes : [])
-    ]
+    const candidates = [item.display_rjcode, item.canonical_rjcode]
       .map(value => String(value || '').trim().toUpperCase())
       .filter(Boolean)
       .filter((value, index, array) => array.indexOf(value) === index)
@@ -3086,17 +3082,26 @@ onBeforeUnmount(() => {
   stopUploadWorkbenchPolling()
 })
 
+let circleWorksRefreshRevision = 0
+let circleWorksRefreshRunning = false
+let circleWorksLastRefresh = 0
 function scheduleCircleWorksRefresh(delay = 0) {
-  if (!activeCircleId.value) return
-  if (suppressCircleWorksRefresh) return
-  if (circleWorksFetchTimer) {
-    clearTimeout(circleWorksFetchTimer)
+  if (!activeCircleId.value || suppressCircleWorksRefresh) return
+  circleWorksRefreshRevision += 1
+  if (circleWorksFetchTimer || circleWorksRefreshRunning) return
+  const wait = Math.max(Number(delay || 0), 500 - (Date.now() - circleWorksLastRefresh), 0)
+  circleWorksFetchTimer = setTimeout(async () => {
     circleWorksFetchTimer = null
-  }
-  circleWorksFetchTimer = setTimeout(() => {
-    circleWorksFetchTimer = null
-    refreshActiveCircleWorks({ showLoading: false })
-  }, Math.max(0, Number(delay || 0)))
+    circleWorksRefreshRunning = true
+    circleWorksLastRefresh = Date.now()
+    const revision = circleWorksRefreshRevision
+    try {
+      await refreshActiveCircleWorks({ showLoading: false })
+    } finally {
+      circleWorksRefreshRunning = false
+      if (revision !== circleWorksRefreshRevision) scheduleCircleWorksRefresh()
+    }
+  }, wait)
 }
 
 watch(activeTab, (tab) => {
@@ -3960,10 +3965,11 @@ function canRetryDownloadTask(task) {
 }
 
 async function retryDownloadTask(task) {
-  const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
-  const taskId = String(task?.id || '').trim()
+  const sessionId = getAsmrDownloadSessionId(task)
+  const taskId = getDownloadEngineTaskId(task)
+  const visibleKey = String(task?.id || taskId)
   const next = new Set(retryingTaskIds.value)
-  next.add(taskId)
+  next.add(visibleKey)
   retryingTaskIds.value = next
   try {
     let nextTaskId = ''
@@ -3980,7 +3986,7 @@ async function retryDownloadTask(task) {
     ElMessage.error(error.response?.data?.detail || error.message || '提交重试失败')
   } finally {
     const done = new Set(retryingTaskIds.value)
-    done.delete(taskId)
+    done.delete(visibleKey)
     retryingTaskIds.value = done
   }
 }
@@ -4014,12 +4020,12 @@ async function retryWaitingDownloadTask(task) {
 async function retrySingleFailedFile(task, file) {
   if (task?.task_metadata?.resource_source === 'imoutoheaven') {
     try {
-      await httpDownloadApi.retry(task.id)
+      await httpDownloadApi.retry(getDownloadEngineTaskId(task))
       await refreshDownloadWorkbench({ silent: true })
     } catch (error) { ElMessage.error(error.response?.data?.detail || error.message || '重试失败') }
     return
   }
-  const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
+  const sessionId = getAsmrDownloadSessionId(task)
   const relativePath = String(file?.relative_path || '').trim()
   const key = `${task?.id}:${relativePath || file?.name || 'file'}`
   const next = new Set(retryingTaskIds.value)
@@ -4046,7 +4052,7 @@ function handleRetrySingleFailedFile(payload) {
 }
 
 async function handlePauseDownloadTask(task) {
-  const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
+  const sessionId = getAsmrDownloadSessionId(task)
   try {
     if (sessionId) {
       await asmrSyncApi.pauseSession(sessionId)
@@ -4062,7 +4068,7 @@ async function handlePauseDownloadTask(task) {
 }
 
 async function handleResumeDownloadTask(task) {
-  const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
+  const sessionId = getAsmrDownloadSessionId(task)
   try {
     if (sessionId) {
       await asmrSyncApi.resumeSession(sessionId)
@@ -4091,7 +4097,7 @@ async function handleCancelDownloadTask(task) {
   } catch {
     return
   }
-  const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
+  const sessionId = getAsmrDownloadSessionId(task)
   try {
     if (sessionId) {
       await asmrSyncApi.cancelSession(sessionId, { cleanup: true })
@@ -5648,6 +5654,7 @@ async function refreshActiveCircleWorks(options = {}) {
   const circleId = String(activeCircleId.value || '').trim()
   if (!circleId) return
   const requestSeq = ++circleDetailRequestSeq
+  const refreshRevision = circleWorksRefreshRevision
   if (circleDetailAbortController) {
     circleDetailAbortController.abort()
   }
@@ -5672,7 +5679,7 @@ async function refreshActiveCircleWorks(options = {}) {
     if (requestSeq !== circleDetailRequestSeq || activeCircleId.value !== circleId) return
     applyCircleSummaryPayload(result)
     applyCircleWorksPayload(result)
-    setCachedCircleWorksPage(circleId, worksQuery, result)
+    if (refreshRevision === circleWorksRefreshRevision) setCachedCircleWorksPage(circleId, worksQuery, result)
   } catch (error) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return
     ElMessage.error(error.response?.data?.detail || '加载社团作品失败')
@@ -5687,8 +5694,6 @@ async function refreshActiveCircleWorks(options = {}) {
 
 function requestedRjcodesForItem(item) {
   return [
-    item?.download_plan?.rjcode,
-    item?.asmr_available_rjcode,
     item?.display_rjcode,
     item?.canonical_rjcode,
     ...(Array.isArray(item?.linked_rjcodes) ? item.linked_rjcodes : [])
@@ -5911,7 +5916,7 @@ function waitForPreviewPoll(ms) {
   return new Promise(resolve => window.setTimeout(resolve, ms))
 }
 
-async function requestBatchDownloadPreview(payload, selectedCount) {
+async function requestBatchDownloadPreview(payload, selectedCount, requestId) {
   if (selectedCount <= DOWNLOAD_PREVIEW_JOB_THRESHOLD) {
     previewProgressLabel.value = '正在分析资源结构并生成下载计划...'
     previewProgressDescription.value = '聚合资源分组、语言版本和推荐项'
@@ -5921,11 +5926,14 @@ async function requestBatchDownloadPreview(payload, selectedCount) {
   const started = await circleCompletionApi.startPreviewBatchDownload(payload)
   let job = started
   while (job && ['pending', 'processing'].includes(String(job.status || ''))) {
+    if (requestId !== downloadPreviewRequestId) return {}
     previewProgressLabel.value = `${job.current_step || '正在生成下载预览'} · ${Math.max(0, Math.min(100, Number(job.progress || 0)))}%`
     previewProgressDescription.value = `已提交 ${Number(job.selected_count || selectedCount)} 个作品，耗时 ${formatElapsed(job.elapsed_seconds || 0)}`
     await waitForPreviewPoll(800)
+    if (requestId !== downloadPreviewRequestId) return {}
     job = await circleCompletionApi.getPreviewBatchDownloadJobStatus(started.job_id)
   }
+  if (requestId !== downloadPreviewRequestId) return {}
   if (job?.status === 'completed') {
     previewProgressLabel.value = '下载预览已生成'
     previewProgressDescription.value = `共生成 ${Number(job.result?.planned_count || 0)} 个下载计划`
@@ -5934,24 +5942,57 @@ async function requestBatchDownloadPreview(payload, selectedCount) {
   throw new Error(job?.error_message || '生成下载预览失败')
 }
 
+let downloadPreviewRequestId = 0
+async function handlePreviewVersionsUpdated(circleId) {
+  invalidateCircleDetailCache(circleId)
+  if (String(activeCircleId.value) === String(circleId)) await refreshActiveCircle()
+}
+
+watch(previewDialogVisible, (visible) => {
+  if (!visible) {
+    downloadPreviewRequestId += 1
+    previewing.value = false
+    previewLoading.value = false
+  }
+})
+
 async function openBatchPreview(singleCanonical = '') {
-  const codes = singleCanonical ? [singleCanonical] : selectedActiveDownloadableRJCodes.value
+  if (previewing.value) return
+  const requestId = ++downloadPreviewRequestId
+  const requestCircleId = detail.circle_id
+  const clickedItem = singleCanonical && typeof singleCanonical === 'object' ? singleCanonical : null
+  if (clickedItem) singleCanonical = clickedItem.canonical_rjcode
+  const clickedMembers = clickedItem?._bonus_members?.length ? clickedItem._bonus_members : clickedItem ? [clickedItem] : []
+  const codes = clickedMembers.length ? [...new Set(clickedMembers.map(item => item.canonical_rjcode))] : singleCanonical ? [singleCanonical] : selectedActiveDownloadableRJCodes.value
   if (!codes.length) {
     ElMessage.warning(singleCanonical ? '当前作品没有可下载资源' : '选中的作品里没有可下载项')
     return
   }
   previewing.value = true
-  previewDialogVisible.value = true
   previewLoading.value = true
   previewPlans.value = []
+  previewDialogVisible.value = true
   try {
     const result = await requestBatchDownloadPreview({
-      circle_id: detail.circle_id,
+      circle_id: requestCircleId,
       canonical_rjcodes: codes,
       include_resource_sources: true,
-      requested_rjcodes: getPreviewRequestedRjcodes(codes)
-    }, codes.length)
+      discovery_only: false,
+      refresh: true,
+      requested_rjcodes: clickedItem ? Object.fromEntries(clickedMembers.map(item => [item.canonical_rjcode, [item.display_rjcode || item.canonical_rjcode]])) : getPreviewRequestedRjcodes(codes)
+    }, codes.length, requestId)
+    if (requestId !== downloadPreviewRequestId) return
+    // 关联关系已由预览接口写回，页面刷新不阻塞已就绪的预览。
+    void handlePreviewVersionsUpdated(requestCircleId).catch(() => {
+      ElMessage.warning('下载预览已就绪，社团列表刷新失败，请刷新列表')
+    })
+    if (requestId !== downloadPreviewRequestId) return
+    if (String(activeCircleId.value) !== String(requestCircleId)) {
+      previewDialogVisible.value = false
+      return
+    }
     previewPlans.value = result.plans || []
+    if (!previewPlans.value.length) throw new Error('当前作品的关联语言版本没有可下载资源')
     downloadSettings.downloadBasePath = result.download_base_path || downloadSettings.downloadBasePath || ''
     if (!downloadSettings.targetLibraryId) {
       downloadSettings.targetLibraryId = result.default_target_library_id || downloadSettings.targetLibraryId
@@ -5959,10 +6000,13 @@ async function openBatchPreview(singleCanonical = '') {
     if (!downloadSettings.targetSubdir) {
       downloadSettings.targetSubdir = result.default_target_subdir || ''
     }
+    previewDialogVisible.value = true
   } catch (error) {
+    if (requestId !== downloadPreviewRequestId) return
     previewDialogVisible.value = false
     ElMessage.error(error.response?.data?.detail || error.message || '生成下载预览失败')
   } finally {
+    if (requestId !== downloadPreviewRequestId) return
     previewing.value = false
     previewLoading.value = false
     previewProgressLabel.value = '正在分析资源结构并生成下载计划...'
@@ -7194,6 +7238,7 @@ body.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animatio
   box-shadow: var(--circle-shadow-soft, 0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 16px -10px rgba(15, 23, 42, 0.10));
 }
 .circle-main {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;

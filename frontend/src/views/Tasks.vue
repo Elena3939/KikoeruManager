@@ -8,12 +8,14 @@
       :domain-options="domainOptions"
       :status-options="statusOptions"
       :current-domain="currentDomain"
+      :current-subtype="currentSubtype"
       :current-status="currentStatus"
       :search-query="searchQuery"
       :sort-key="sortKey"
       :active-only="activeOnly"
       :get-domain-count="getDomainCount"
-      @update:current-domain="(v) => (currentDomain = v)"
+      @update:current-domain="(v) => { currentSubtype = 'all'; currentDomain = v }"
+      @update:current-subtype="(v) => (currentSubtype = v)"
       @update:current-status="(v) => (currentStatus = v)"
       @update:search-query="(v) => (searchQuery = v)"
       @update:sort-key="(v) => (sortKey = v)"
@@ -121,6 +123,7 @@ const loadingMoreFiles = ref(false)
 const restoringRecoveryId = ref('')
 const shouldAutoSelectVisibleTask = ref(true)
 const currentDomain = ref('all')
+const currentSubtype = ref('all')
 const currentStatus = ref('all')
 const searchQuery = ref('')
 const debouncedSearchQuery = ref('')
@@ -304,7 +307,9 @@ function shouldRefreshDetail(nextItems) {
   return bySignature || byInterval
 }
 
-watch([currentDomain, currentStatus], () => {
+watch(currentDomain, () => { currentSubtype.value = 'all' }, { flush: 'sync' })
+
+watch([currentDomain, currentSubtype, currentStatus], () => {
   shouldAutoSelectVisibleTask.value = true
   currentOffset.value = 0
   refreshTaskCenter(false, { silent: true }).catch((error) => {
@@ -407,6 +412,7 @@ function handleVisibilityChange() {
 function resetFilters() {
   shouldAutoSelectVisibleTask.value = true
   currentDomain.value = 'all'
+  currentSubtype.value = 'all'
   currentStatus.value = 'all'
   activeOnly.value = false
   searchQuery.value = ''
@@ -419,6 +425,7 @@ function resetFilters() {
 
 function applyQuickFilter(domain, status) {
   shouldAutoSelectVisibleTask.value = true
+  currentSubtype.value = 'all'
   currentDomain.value = domain
   currentStatus.value = status
   currentOffset.value = 0
@@ -552,6 +559,7 @@ async function refreshTaskCenter(showMessage = false, options = {}) {
       _t: Date.now(),
     }
     if (currentDomain.value !== 'all') params.domain = currentDomain.value
+    if (currentDomain.value === 'circle_completion' && currentSubtype.value !== 'all') params.subtype = currentSubtype.value
     if (currentStatus.value !== 'all') params.status = currentStatus.value
     if (debouncedSearchQuery.value) params.search = debouncedSearchQuery.value
 
@@ -1013,6 +1021,13 @@ function getTaskSummary(item) {
   const pieces = []
   const recoveredFailureCount = pickMetricValue(item, '此前失败')
   const recoveredConflictCount = pickMetricValue(item, '问题作品')
+
+  if (item.subtype && item.subtype !== 'circle_index') {
+    const metrics = item.subtype === 'bonus_probe'
+      ? (item.metrics || []).filter(metric => ['发售日', '实际探测', '命中', '写入', '未完成'].includes(metric.label))
+      : (item.metrics || [])
+    return metrics.slice(0, 6).map(metric => `${metric.label} ${metric.value}`)
+  }
 
   if (item.domain === 'import') {
     const targetLibrary = pickMetricValue(item, '目标库')
@@ -1485,7 +1500,8 @@ function getDLsiteFailureReason(item) {
 }
 
 function getCircleIndexMetaEntries(item) {
-  if (item?.kind !== 'circle_completion_index') return []
+  if (item?.domain !== 'circle_completion' || item?.subtype === 'work_download') return []
+  if (item?.kind !== 'circle_completion_index') return (item.metrics || []).map(metric => ({ label: metric.label, value: String(metric.value) }))
   const metadata = item?.details?.metadata || {}
   const indexMeta = metadata.index_meta || {}
   const indexedCounts = metadata.indexed_counts || {}
@@ -1529,7 +1545,7 @@ function getCircleIndexMetaEntries(item) {
 }
 
 function getCircleIndexProgressLog(item) {
-  if (item?.kind !== 'circle_completion_index') return []
+  if (item?.domain !== 'circle_completion' || item?.subtype === 'work_download') return []
   const metadata = item?.details?.metadata || {}
   const logs = Array.isArray(metadata.progress_log) ? metadata.progress_log : []
   return logs.slice().reverse()

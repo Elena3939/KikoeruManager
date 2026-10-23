@@ -56,7 +56,7 @@
         </button>
 
         <!-- 面包屑 -->
-        <div class="path-bar flex items-center gap-0.5 flex-1 min-w-0 overflow-x-auto no-scrollbar">
+        <div ref="pathBarRef" class="path-bar flex items-center gap-0.5 flex-1 min-w-0 overflow-hidden" :title="effectiveAbsolutePath">
           <button
             type="button"
             class="crumb-btn crumb-btn-disk"
@@ -67,13 +67,29 @@
             <HardDrive :size="13" :stroke-width="2.2" class="text-amber-500" />
             <span class="ml-1 truncate crumb-text crumb-text-disk">{{ library?.name || '库存根' }}</span>
           </button>
-          <template v-for="(crumb, idx) in breadcrumbs" :key="crumb.path">
+          <template v-if="breadcrumbLayout.hidden.length">
+            <ChevronRight :size="13" :stroke-width="2.4" class="text-slate-300 shrink-0" />
+            <el-popover placement="bottom-start" trigger="click" :width="320">
+              <template #reference>
+                <button type="button" class="crumb-btn" :disabled="loading || submitting" aria-label="展开中间目录">…</button>
+              </template>
+              <div class="picker-hidden-paths">
+                <button v-for="crumb in breadcrumbLayout.hidden" :key="crumb.path" type="button"
+                  class="picker-hidden-path" :title="crumb.path" :disabled="loading || submitting"
+                  @click="navigateToPath(crumb.path)">
+                  <Folder :size="14" class="shrink-0" />
+                  <span class="truncate">{{ crumb.name }}</span>
+                </button>
+              </div>
+            </el-popover>
+          </template>
+          <template v-for="(crumb, idx) in breadcrumbLayout.visible" :key="crumb.path">
             <ChevronRight :size="13" :stroke-width="2.4" class="text-slate-300 shrink-0" />
             <button
               type="button"
               class="crumb-btn"
               :disabled="loading || submitting"
-              :class="{ 'crumb-btn-current': idx === breadcrumbs.length - 1 }"
+              :class="{ 'crumb-btn-current': idx === breadcrumbLayout.visible.length - 1 }"
               @click="navigateToPath(crumb.path)"
               :title="crumb.path"
             >
@@ -326,23 +342,8 @@
         </section>
       </div>
 
-      <!-- 底部：当前选择 + CTA -->
-      <div class="footer-row flex items-center justify-between gap-4 px-7 py-4">
-        <div class="footer-left flex items-center gap-3 min-w-0 flex-1">
-          <div class="target-chip" :title="effectiveAbsolutePath">
-            <ArrowRight :size="13" :stroke-width="2.4" class="text-slate-400 shrink-0" />
-            <span class="text-[11.5px] text-slate-500 shrink-0">上传到</span>
-            <span class="target-chip-path truncate">{{ effectiveAbsolutePath || '-' }}</span>
-          </div>
-          <div v-if="effectiveRelativePath" class="rel-chip">
-            <span class="rel-chip-label">子目录</span>
-            <span class="rel-chip-value">{{ effectiveRelativePath }}</span>
-          </div>
-          <div v-else class="rel-chip rel-chip-default">
-            <span class="rel-chip-label">默认</span>
-            <span class="rel-chip-value">库存根目录</span>
-          </div>
-        </div>
+      <!-- 底部仅保留操作，目标路径统一由顶部面包屑显示。 -->
+      <div class="footer-row flex items-center justify-end gap-4 px-7 py-4">
         <div class="footer-actions flex items-center gap-2.5 shrink-0">
           <button
             type="button"
@@ -368,9 +369,9 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
+import { useElementSize } from '@vueuse/core'
 import {
   AlertCircle,
-  ArrowRight,
   ArrowUp,
   ChevronDown,
   ChevronRight,
@@ -417,6 +418,8 @@ const selectedFolderPath = ref('')
 const searchKeyword = ref('')
 const listScrollRef = ref(null)
 const navScrollRef = ref(null)
+const pathBarRef = ref(null)
+const { width: pathBarWidth } = useElementSize(pathBarRef)
 
 // 索引搜索状态：keyword 非空时改用全库搜索（索引 + 文件系统兜底）替代当前目录的 folders
 const indexResults = ref([])
@@ -461,14 +464,13 @@ const canGoUp = computed(() => {
 })
 
 const breadcrumbs = computed(() => {
-  if (!currentPath.value || !rootPath.value) return []
-  const root = normalizePath(rootPath.value)
-  const cur = normalizePath(currentPath.value)
+  if (!effectiveAbsolutePath.value || !rootPath.value) return []
+  const rootRaw = stripTrailingSlash(rootPath.value.replace(/\\/g, '/'))
+  const curRaw = stripTrailingSlash(effectiveAbsolutePath.value.replace(/\\/g, '/'))
+  const root = normalizePath(rootRaw)
+  const cur = normalizePath(curRaw)
   if (root === cur) return []
-  // 远程库一律 posix 分隔
-  const rootRaw = stripTrailingSlash(rootPath.value)
-  const curRaw = stripTrailingSlash(currentPath.value)
-  if (!curRaw.startsWith(`${rootRaw}/`)) return []
+  if (!cur.startsWith(`${root}/`)) return []
   const rel = curRaw.slice(rootRaw.length + 1)
   const parts = rel.split('/').filter(Boolean)
   const result = []
@@ -478,6 +480,28 @@ const breadcrumbs = computed(() => {
     result.push({ name: part, path: accum })
   }
   return result
+})
+
+// 与库存面包屑一致：宽度不足时保留根目录和末级目录，中间层级折叠。
+const breadcrumbLayout = computed(() => {
+  const segments = breadcrumbs.value
+  const context = document.createElement('canvas').getContext('2d')
+  const style = pathBarRef.value ? getComputedStyle(pathBarRef.value) : null
+  if (context) context.font = `600 11.5px ${style?.fontFamily || 'sans-serif'}`
+  const textWidth = text => context?.measureText(String(text || '')).width || 0
+  const rootWidth = textWidth(library.value?.name || '库存根') + 42
+  const available = Math.max(0, pathBarWidth.value - rootWidth - 12)
+  const widthOf = item => textWidth(item.name) + 33
+  if (segments.length < 2 || segments.reduce((sum, item, index) => sum + widthOf(item, index), 0) <= available) {
+    return { hidden: [], visible: segments }
+  }
+  let start = segments.length - 1
+  let used = widthOf(segments[start], start) + 42
+  while (start > 1 && used + widthOf(segments[start - 1], start - 1) <= available) {
+    start -= 1
+    used += widthOf(segments[start], start)
+  }
+  return { hidden: segments.slice(0, start), visible: segments.slice(start) }
 })
 
 // 是否处于「索引搜索」模式（搜索框非空）。
@@ -651,6 +675,30 @@ function mapSearchEntry (entry) {
   }
 }
 
+// RJ 会继承到子目录的索引记录；选择目标目录时只保留自身名称命中，
+// 同一命中目录下面的嵌套结果通过双击进入，避免将整棵作品目录平铺出来。
+function filterSearchFolders (entries, keyword) {
+  const query = String(keyword || '').trim().toLowerCase()
+  const rjcode = normalizeExactRjcode(keyword)
+  const rjPattern = rjcode ? new RegExp(`${rjcode}(?!\\d)`, 'i') : null
+  const candidates = entries.filter(item => {
+    if (!item.path || item.is_directory === false || !isPathInsideRoot(item.path)) return false
+    const name = String(item.name || '')
+    return rjPattern ? rjPattern.test(name) : name.toLowerCase().includes(query)
+  })
+  const pathKey = item => normalizePath(item.path.replace(/\\/g, '/'))
+  candidates.sort((a, b) => pathKey(a).length - pathKey(b).length)
+  const roots = []
+  const paths = new Set()
+  for (const item of candidates) {
+    const path = pathKey(item)
+    if (paths.has(path) || roots.some(parent => path.startsWith(`${pathKey(parent)}/`))) continue
+    paths.add(path)
+    roots.push(item)
+  }
+  return roots
+}
+
 // XSS 安全的 HTML 转义：v-html 渲染前必须 escape 原文本，再把 keyword 包成 <mark>。
 function escapeHtml (text) {
   return String(text || '')
@@ -733,7 +781,7 @@ async function runIndexSearch(keyword) {
       })
       if (token !== indexSearchToken) return
       const files = Array.isArray(data?.files) ? data.files : []
-      indexResults.value = files.map(mapBrowseEntry).filter(item => item.path)
+      indexResults.value = filterSearchFolders(files.map(mapBrowseEntry), keyword)
       if (data?.search_truncated) {
         indexSoftHint.value = `结果较多，已仅展示前 ${indexResults.value.length} 条，请输入更精确的关键字`
       }
@@ -763,7 +811,7 @@ async function runIndexSearch(keyword) {
     })
     if (token !== indexSearchToken) return
     const items = Array.isArray(data?.items) ? data.items : []
-    indexResults.value = items.map(mapSearchEntry).filter(item => item.path)
+    indexResults.value = filterSearchFolders(items.map(mapSearchEntry), keyword)
   } catch (err) {
     if (err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED') return
     if (token !== indexSearchToken) return
@@ -1224,16 +1272,16 @@ function joinPosix (base, relative) {
 }
 
 function isPathInsideRoot (path) {
-  const root = stripTrailingSlash(String(rootPath.value || ''))
-  const target = stripTrailingSlash(String(path || ''))
+  const root = normalizePath(String(rootPath.value || '').replace(/\\/g, '/'))
+  const target = normalizePath(String(path || '').replace(/\\/g, '/'))
   if (!root || !target) return false
   if (target === root) return true
   return target.toLowerCase().startsWith(`${root.toLowerCase()}/`)
 }
 
 function toRelativePath (absolutePath, root) {
-  const rootRaw = stripTrailingSlash(String(root || ''))
-  const target = stripTrailingSlash(String(absolutePath || ''))
+  const rootRaw = stripTrailingSlash(String(root || '').replace(/\\/g, '/'))
+  const target = stripTrailingSlash(String(absolutePath || '').replace(/\\/g, '/'))
   if (!rootRaw || !target) return ''
   if (target.toLowerCase() === rootRaw.toLowerCase()) return ''
   if (target.toLowerCase().startsWith(`${rootRaw.toLowerCase()}/`)) {
@@ -1314,15 +1362,10 @@ onBeforeUnmount(() => {
 
 /* 玻璃外壳 -------------------------------------------------------- */
 .glass-shell {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.36)),
-    rgba(255, 255, 255, 0.34);
-  border: 1px solid rgba(255, 255, 255, 0.5);
-  outline: 1px solid rgba(255, 255, 255, 0.52);
-  outline-offset: -2px;
-  box-shadow: none;
-  backdrop-filter: blur(34px) saturate(145%);
-  -webkit-backdrop-filter: blur(34px) saturate(145%);
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  outline: none;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18);
 }
 
 .is-resizing,
@@ -1341,8 +1384,8 @@ onBeforeUnmount(() => {
 }
 
 .window-header {
-  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.4), rgba(255, 255, 255, 0.05));
+  border-bottom: none;
+  background: transparent;
 }
 
 .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
@@ -1418,19 +1461,48 @@ onBeforeUnmount(() => {
   color: #0f172a;
   font-weight: 600;
   background: rgba(15, 23, 42, 0.06);
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .crumb-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .crumb-text {
   display: inline-block;
-  max-width: 280px;
+  min-width: 0;
+  max-width: 100%;
   vertical-align: middle;
 }
 
-.crumb-text-disk { max-width: 260px; }
+.crumb-text-disk { max-width: 100%; }
 
-.crumb-btn-current .crumb-text { max-width: 460px; }
+.crumb-btn-current .crumb-text { max-width: 100%; }
+
+.picker-hidden-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.picker-hidden-path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease-out;
+}
+
+.picker-hidden-path:hover { background: rgba(128, 128, 128, 0.12); }
+.picker-hidden-path:focus-visible { outline: none; box-shadow: none; }
 
 /* 搜索 -------------------------------------------------------- */
 .search-wrap {
@@ -1943,76 +2015,9 @@ onBeforeUnmount(() => {
 /* 底部 footer ---------------------------------------------------- */
 .footer-row {
   border-top: 1px solid rgba(15, 23, 42, 0.06);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.4));
+  background: transparent;
   min-width: 0;
   overflow: hidden;
-}
-
-.footer-left {
-  min-width: 0;
-  overflow: hidden;
-}
-
-/* 目标 chip ------------------------------------------------------ */
-.target-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px 4px 8px;
-  border-radius: 999px;
-  background: rgba(248, 250, 252, 0.92);
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  min-width: 0;
-  max-width: min(520px, 100%);
-  overflow: hidden;
-}
-
-.target-chip-path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11.5px;
-  color: #1e293b;
-  font-weight: 500;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.rel-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(186, 230, 253, 0.45);
-  border: 1px solid rgba(2, 132, 199, 0.18);
-  font-size: 11px;
-  min-width: 0;
-  max-width: min(360px, 100%);
-  overflow: hidden;
-}
-
-.rel-chip-default {
-  background: rgba(241, 245, 249, 0.85);
-  border-color: rgba(15, 23, 42, 0.08);
-}
-
-.rel-chip-label {
-  font-weight: 600;
-  color: #0c4a6e;
-  letter-spacing: 0.3px;
-  flex-shrink: 0;
-}
-
-.rel-chip-default .rel-chip-label { color: #475569; }
-
-.rel-chip-value {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-weight: 500;
-  color: #0f172a;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* 滚动条 --------------------------------------------------------- */

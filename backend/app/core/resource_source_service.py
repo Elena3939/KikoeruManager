@@ -5,11 +5,13 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 import hashlib
+import os
 import posixpath
 import re
 import uuid
 import time
 import logging
+import threading
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote, urljoin, urlsplit
 
@@ -102,6 +104,9 @@ class ResourceSourceService:
         self._enqueued = {}
         self._queue_tasks = set()
         self._client = None
+        self._notification_guard = threading.Lock()
+        self._pending_notifications = {}
+        self._notification_timer = None
 
     def schedule_circle(self, circle_id):
         if self._worker is None or self._worker.done():
@@ -240,12 +245,16 @@ class ResourceSourceService:
 
     def _save(self, rjcode, *, status, candidates, error='', ttl=300):
         with SessionLocal() as db:
+            old = db.get(ResourceSourceProbe, (SOURCE, rjcode, VERSION))
+            changed = old is None or (old.status, old.candidates or [], old.error or "") != (status, candidates or [], error or "")
             values = dict(source=SOURCE, rjcode=rjcode, probe_version=VERSION, status=status,
                           candidates=candidates, error=error, checked_at=datetime.now(),
                           expires_at=datetime.now() + timedelta(seconds=ttl))
             db.execute(insert(ResourceSourceProbe).values(**values).on_conflict_do_update(
                 index_elements=['source', 'rjcode', 'probe_version'], set_=values))
             db.commit()
+        if not changed:
+            return
         try:
             self.notify_circles(rjcode)
         except Exception:
@@ -253,16 +262,36 @@ class ResourceSourceService:
 
     def notify_circles(self, code):
         from ..models.database import CircleWork
-        from .circle_completion_service import get_circle_completion_service
-        from .realtime_event_service import broadcast_event
         with SessionLocal() as db:
             circles = db.query(CircleWork.circle_id).filter(
                 (CircleWork.canonical_rjcode == code) | (CircleWork.display_rjcode == code) |
                 cast(CircleWork.linked_rjcodes, JSONB).contains([code])).distinct().all()
-        for (circle_id,) in circles:
-            get_circle_completion_service().invalidate_completion_view_cache(circle_id)
-            broadcast_event({'type': 'circle.resource_source.changed', 'domain': 'circle_completion',
-                             'payload': {'circle_id': circle_id, 'source': SOURCE}})
+        with self._notification_guard:
+            for (circle_id,) in circles:
+                self._pending_notifications.setdefault(circle_id, set()).add(code)
+            if self._pending_notifications and self._notification_timer is None:
+                self._notification_timer = threading.Timer(.5, self.flush_notifications)
+                self._notification_timer.daemon = True
+                self._notification_timer.start()
+
+    def flush_notifications(self):
+        from .circle_completion_service import get_circle_completion_service
+        from .realtime_event_service import broadcast_event
+        with self._notification_guard:
+            pending = self._pending_notifications
+            self._pending_notifications = {}
+            timer = self._notification_timer
+            self._notification_timer = None
+            if timer is not None:
+                timer.cancel()
+        for circle_id, codes in pending.items():
+            try:
+                version = get_circle_completion_service().invalidate_completion_resource_cache(circle_id)
+                broadcast_event({'type': 'circle.resource_source.changed', 'domain': 'circle_completion',
+                                 'payload': {'circle_id': circle_id, 'source': SOURCE,
+                                             'rjcodes': sorted(codes), 'version': version}})
+            except Exception:
+                logging.getLogger(__name__).exception('合并资源通知失败 circle=%s', circle_id)
 
     async def probe(self, rjcode, refresh=False):
         rjcode = normalize_rj(rjcode)
@@ -333,12 +362,12 @@ class ResourceSourceService:
         info = await service.resolve_canonical_rj(normalize_rj(rjcode))
         return await service._build_public_download_probe_candidates(info, rjcode)
 
-    async def plan(self, rjcode, refresh=False):
+    async def plan(self, rjcode, refresh=False, *, exact=False):
         rjcode = normalize_rj(rjcode)
-        codes = await self.candidates_for(rjcode)
+        codes = [rjcode] if exact else await self.candidates_for(rjcode)
         from .dlsite_service import get_dlsite_service
         from .asmr_download_service import ASMRDownloadService
-        linked_works = await get_dlsite_service().get_linked_works(rjcode)
+        linked_works = {} if exact else await get_dlsite_service().get_linked_works(rjcode)
         resources, states = [], []
         for code in codes:
             state = await self.probe(code, refresh=refresh)
@@ -398,13 +427,19 @@ class ResourceSourceService:
                             'filename': posixpath.basename(path)}
         raise ValueError('YAAS 下载节点跳转或限流次数过多，请稍后重试')
 
-    async def combine_plan(self, rjcode, asmr_builder, refresh=False):
+    async def combine_plan(self, rjcode, asmr_builder, refresh=False, *, exact=False):
         """旧客户端仍可只调原计划；新客户端显式请求两个来源。"""
         options, errors = [], []
-        for source, builder in [('asmr.one', asmr_builder),
-                                 (SOURCE, lambda: self.plan(rjcode, refresh=refresh))]:
+        sources = ['asmr.one', SOURCE]
+        # 两个来源互不依赖，同时查询，仍按固定顺序展示与汇总错误。
+        results = await asyncio.gather(
+            asmr_builder(), self.plan(rjcode, refresh=refresh, exact=exact),
+            return_exceptions=True,
+        )
+        for source, plan in zip(sources, results):
             try:
-                plan = await builder()
+                if isinstance(plan, BaseException):
+                    raise plan
                 if plan and plan.get('selectable_resources') and (source != SOURCE or any(
                         row.get('complete') for row in plan['selectable_resources'])):
                     options.append({**plan, 'source_provider': source})
@@ -424,17 +459,53 @@ class ResourceSourceService:
 
     async def validate_item(self, item):
         """只信任服务端缓存里的完整候选，不接受客户端伪造路径和分卷。"""
+        download_root = str(item.get('download_base_path') or '').strip()
+        if download_root and not os.path.isabs(download_root):
+            raise ValueError('YAAS 保存目录必须是服务器上的绝对路径')
         requested = normalize_rj(item.get('rjcode') or item.get('requested_rjcode'))
-        plan = await self.plan(requested)
+        plan = await self.plan(requested, exact=True)
         selected = {str(row.get('id') or '') for row in item.get('selected_resources') or []}
         groups = [row for row in plan['selectable_resources'] if row['id'] in selected]
-        if len(groups) != 1 or len(selected) != 1 or not groups[0]['complete']:
+        if (len(groups) != 1 or len(selected) != 1 or not groups[0]['complete']
+                or normalize_rj(groups[0].get('rjcode')) != requested):
             raise ValueError(f'{requested} 请选择一个完整资源包或分卷组')
         return requested, groups[0]
+
+    @staticmethod
+    def validate_asmr_session(item):
+        from ..models.database import ASMRDownloadSession
+        requested = normalize_rj(item.get('rjcode'))
+        with SessionLocal() as db:
+            session = db.get(ASMRDownloadSession, item.get('session_id'))
+            if session is None or normalize_rj(session.rjcode) != requested:
+                raise ValueError('下载会话与目标 RJ 不一致')
+            allowed = [row for row in session.selected_resources or [] if row.get('remote_url')]
+        selected = item.get('selected_resources') or []
+        if not selected:
+            raise ValueError('未选择下载文件')
+        for row in selected:
+            matches = [original for original in allowed
+                       if str(row.get('remote_url') or '') == str(original.get('remote_url'))
+                       and row.get('file_name') == original.get('file_name')
+                       and row.get('relative_path') in {original.get('relative_path'), original.get('file_name')}]
+            original = next((candidate for candidate in matches
+                             if candidate.get('relative_path') == row.get('relative_path')), next(iter(matches), None))
+            if original and original.get('source_workno') and normalize_rj(original['source_workno']) != requested:
+                raise ValueError('会话资源与目标 RJ 不一致')
+            if not original or any(row.get(key) != original.get(key) for key in ('checksum_md5', 'size_bytes', 'file_name', 'source_workno')):
+                raise ValueError('选中文件不属于当前 RJ 下载会话')
+            # 允许前端的扁平路径选择，文件来源始终以服务端会话为准。
+            path = row.get('relative_path')
+            if path not in {original.get('relative_path'), original.get('file_name')}:
+                raise ValueError('下载文件路径与预览不一致')
+            row.clear()
+            row.update(original, relative_path=path, selected=True)
 
     async def validate_batch(self, items):
         """整个批次先校验来源与选择，防止后面的非法条目导致前半批已入队。"""
         validated = {}
+        if any((item.get('source_provider') or 'asmr.one') not in {'asmr.one', SOURCE} for item in items):
+            raise ValueError('未知下载来源')
         for index, item in enumerate(items):
             provider = item.get('source_provider') or 'asmr.one'
             if provider not in {'asmr.one', SOURCE}:
@@ -443,6 +514,8 @@ class ResourceSourceService:
                 validated[index] = await self.validate_item(item)
             elif not item.get('rjcode') or not item.get('session_id') or not item.get('selected_resources'):
                 raise ValueError('asmr.one 下载项缺少 RJ、会话或选中资源')
+            else:
+                await asyncio.to_thread(self.validate_asmr_session, item)
         return validated
 
     async def submit(self, item, source_page, context=None, validated=None):
@@ -457,8 +530,9 @@ class ResourceSourceService:
                 'resource_source': SOURCE, 'yaas_path': path, 'yaas_size': file['size_bytes'],
                 'urls': [BASE_URL + '/d' + quote(path, safe='/')],
                 'target_subdir': '',
+                'download_base_path': str(item.get('download_base_path') or '').strip(),
                 'conflict_policy': 'resume', 'download_mode': SOURCE, 'source_modes': [SOURCE],
-                'task_domain': 'http_download', 'task_kind': TaskType.HTTP_DOWNLOAD.value,
+                'task_domain': 'circle_completion' if source_page == 'circle-completion' else 'http_download', 'task_kind': TaskType.HTTP_DOWNLOAD.value,
                 'source_page': source_page, 'source_action': 'yaas_download',
                 'source_label': f"YAAS · {requested} · {file['name']}",
                 'business_key': f"{SOURCE}:{hashlib.sha256(path.encode()).hexdigest()}",
@@ -518,6 +592,7 @@ class ResourceSourceService:
         for task in [*self._queue_tasks, *self._inflight.values()]:
             task.cancel()
         await asyncio.gather(*self._queue_tasks, *self._inflight.values(), return_exceptions=True)
+        await asyncio.to_thread(self.flush_notifications)
         if self._client is not None:
             await self._client.aclose()
             self._client = None

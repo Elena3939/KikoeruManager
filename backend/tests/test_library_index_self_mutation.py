@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlalchemy.orm import sessionmaker
 
 # 让 pytest 直接运行 backend/tests 时也能 import app
@@ -64,6 +64,52 @@ def _create_rj_dir(library_root: Path, rjcode: str, *, content: str = "audio") -
     rj_dir.mkdir(parents=True)
     (rj_dir / f"{rjcode}_track1.mp3").write_text(content, encoding="utf-8")
     return rj_dir
+
+
+@pytest.mark.parametrize("cross_library", [False, True])
+@pytest.mark.parametrize("new_root", ["RJ01570851", "普通目录"])
+def test_move_recomputes_rj_and_search_without_scanning(isolated_index, cross_library, new_root):
+    """改号、去号时更新继承字段，同时保留文件自身的独立作品号。"""
+    store = isolated_index["store"]
+    source, target = "rj_source", "rj_target" if cross_library else "rj_source"
+    _mark_index_ready(store, source)
+    _mark_index_ready(store, target)
+    old = "RJ01571862"
+    entries = [
+        _manual_entry(old, library_id=source, rjcode=old),
+        _manual_entry(f"{old}/audio.mp3", library_id=source, rjcode=old, entry_type="file"),
+        _manual_entry(f"{old}/RJ123456.wav", library_id=source, rjcode="RJ123456", entry_type="file"),
+    ]
+    store.bulk_upsert(entries)
+    kwargs = dict(old_relative_path=old, new_relative_path=new_root,
+                  old_absolute_path=f"/library/{old}", new_absolute_path=f"/library/{new_root}")
+    if cross_library:
+        store.move_subtree_between_libraries(source, target, **kwargs)
+    else:
+        store.move_subtree_same_library(source, **kwargs)
+    expected = new_root if new_root.startswith("RJ") else None
+    assert store.get_entry(target, new_root).rjcode == expected
+    assert store.get_entry(target, f"{new_root}/audio.mp3").rjcode == expected
+    assert store.get_entry(target, f"{new_root}/RJ123456.wav").rjcode == "RJ123456"
+    service = isolated_index["service"]
+    assert service.find_by_rjcode(old, target) == []
+    if expected:
+        assert service.find_by_rjcode(expected, target)
+
+
+def test_targeted_directory_stats_include_null_and_empty_root_parents(isolated_index):
+    store = isolated_index["store"]
+    library_id = "root-null-parent"
+    _mark_index_ready(store, library_id)
+    store.bulk_upsert([
+        _manual_entry("a.mp3", library_id=library_id, rjcode=None, entry_type="file", size=3),
+        _manual_entry("b.mp3", library_id=library_id, rjcode=None, entry_type="file", size=7),
+    ])
+    with store._write_session() as db:
+        db.execute(text("UPDATE library_index_entries SET parent_path = NULL WHERE library_id = :library_id AND name = 'a.mp3'"), {"library_id": library_id})
+        store._refresh_directory_stats_in_session(db, library_id, 1, [""])
+        row = db.execute(text("SELECT direct_children, total_size FROM library_index_directory_stats WHERE library_id = :library_id AND parent_path = ''"), {"library_id": library_id}).one()
+        assert tuple(row) == (2, 10)
 
 
 def _mark_index_ready(store: SnapshotStore, library_id: str) -> None:

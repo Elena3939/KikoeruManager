@@ -11,6 +11,23 @@ from app.core.http_download_service import HttpDownloadService
 from app.config.settings import HttpDownloaderConfig
 
 
+def test_result_notifications_merge_codes_and_bump_only_resource_version(monkeypatch):
+    from app.core import circle_completion_service, realtime_event_service
+    from types import SimpleNamespace
+    service = ResourceSourceService()
+    changed, events = [], []
+    monkeypatch.setattr(circle_completion_service, 'get_circle_completion_service', lambda: SimpleNamespace(
+        invalidate_completion_resource_cache=lambda circle: changed.append(circle) or 'version-2'))
+    monkeypatch.setattr(realtime_event_service, 'broadcast_event', events.append)
+    service._pending_notifications = {'circle': {'RJ01699067', 'RJ01699055'}}
+    service.flush_notifications()
+    service.flush_notifications()
+    assert changed == ['circle']
+    assert len(events) == 1
+    assert events[0]['payload']['rjcodes'] == ['RJ01699055', 'RJ01699067']
+    assert events[0]['payload']['version'] == 'version-2'
+
+
 def row(name, size=10, parent=None):
     return dict(name=name, size=size, parent=parent or ROOTS[0] + '/05/Original', is_dir=False)
 

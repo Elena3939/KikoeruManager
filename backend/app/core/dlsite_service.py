@@ -1208,8 +1208,17 @@ class DLsiteApiService:
             return ''
         return self._decode_json_string(match.group(1))
 
+    @staticmethod
+    def _is_unavailable_product_page(page_html: str) -> bool:
+        # 地区受限页仍可能保留正确 RJ、标题和社团，不能据此当作完整作品详情。
+        return bool(re.search(
+            r'お住(?:い|まい)の国・地域からは本作品は購入できません'
+            r'|<title[^>]*>\s*メンテナンスのお知らせ\s*</title>',
+            page_html or '', re.IGNORECASE,
+        ))
+
     def _parse_product_from_html(self, requested_workno: str, page_url: str, final_url: str, page_html: str) -> Optional[Dict]:
-        if not page_html:
+        if not page_html or self._is_unavailable_product_page(page_html):
             return None
 
         embedded_product = self._extract_embedded_product(page_html, requested_workno) or {}
@@ -1323,7 +1332,9 @@ class DLsiteApiService:
         cache_key = f"page_html_raw:{page_url}"
         if cache_key in self.cache:
             cached_data = self.cache[cache_key]
-            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+            if (datetime.now() - cached_data['timestamp'] < self.cache_ttl
+                    and cached_data.get('data')
+                    and not self._is_unavailable_product_page(str(cached_data['data']))):
                 return (
                     str(cached_data.get('data') or ''),
                     str(cached_data.get('final_url') or page_url),
@@ -1331,7 +1342,10 @@ class DLsiteApiService:
 
         try:
             response = await self._guarded_get(page_url, headers=self._get_browser_headers())
+            response.raise_for_status()
             text = str(response.text or '')
+            if not text.strip() or self._is_unavailable_product_page(text):
+                raise ValueError("DLsite 返回地区受限或维护页面，不能用作作品元数据")
             final_url = str(response.url or page_url)
             self.cache[cache_key] = {
                 'data': text,
@@ -1341,15 +1355,13 @@ class DLsiteApiService:
             return text, final_url
         except Exception as exc:
             logger.warning("[DLsite] 页面 HTML 抓取失败: url=%s error=%s", page_url, exc)
-            # 失败也缓存空串，避免短时间内重复打同一个失败 URL
-            self.cache[cache_key] = {
-                'data': '',
-                'final_url': page_url,
-                'timestamp': datetime.now(),
-            }
+            # 失败不能阻断后续重试，也清理旧版本留下的失败缓存。
+            self.cache.pop(cache_key, None)
             return '', page_url
 
     async def _fetch_product_page_metadata(self, rjcode: str, locale: Optional[str] = None) -> Optional[Dict]:
+        from .dlsite_metadata_trust import assess_dlsite_metadata
+
         workno = self._normalize_workno(rjcode)
         if not workno:
             return None
@@ -1373,12 +1385,13 @@ class DLsiteApiService:
                 cached_data = self.cache[cache_key]
                 if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
                     cached_product = cached_data['data']
-                    if cached_product:
+                    if cached_product and assess_dlsite_metadata(cached_product, workno)['status'] == 'verified':
                         # cache 命中且非空：可以直接 short-circuit，不用再发任何请求
                         cached_hit = cached_product
                         break
-                    # cache 是空 None（之前抓过但没解析到字段）：跳过这个 url
-                    continue
+                    # 空值和未验证结果都不能阻断重新获取结构化证据。
+                    self.cache.pop(cache_key, None)
+                    self.cache.pop(f"page_html_raw:{page_url}", None)
             pending_urls.append(page_url)
 
         if cached_hit is not None:
@@ -1398,15 +1411,22 @@ class DLsiteApiService:
 
         results = await asyncio.gather(*[fetch_one(url) for url in pending_urls])
 
-        # 全部并发结果都写 cache，无论成功失败——避免下次再发请求
+        # 只缓存验证通过的作品数据，解析失败必须允许重新请求。
+        results.sort(key=lambda item: not bool(
+            item[1] and assess_dlsite_metadata(item[1], workno)['status'] == 'verified'
+        ))
         for url, product in results:
             cache_key = f"page_metadata:{url}"
-            self.cache[cache_key] = {
-                'data': product,
-                'timestamp': datetime.now()
-            }
+            if product and assess_dlsite_metadata(product, workno)['status'] == 'verified':
+                self.cache[cache_key] = {
+                    'data': product,
+                    'timestamp': datetime.now()
+                }
+            else:
+                self.cache.pop(cache_key, None)
+                self.cache.pop(f"page_html_raw:{url}", None)
 
-        # 取第一个有效 product 返回（保持原顺序优先级：work 优先于 announce）
+        # 优先返回可信数据；可信等级相同时保持 work、announce 的原顺序。
         for url, product in results:
             if product:
                 logger.info(
@@ -1642,7 +1662,7 @@ class DLsiteApiService:
         cache_key = f"page_fallback:{page_url}"
         if cache_key in self.cache:
             cached_data = self.cache[cache_key]
-            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+            if datetime.now() - cached_data['timestamp'] < self.cache_ttl and cached_data.get('data'):
                 return dict(cached_data['data'] or {})
 
         logger.info("[DLsite] 尝试页面 fallback: %s", page_url)
@@ -1650,11 +1670,7 @@ class DLsiteApiService:
         # 拉过时直接复用字节，不再重复打网络。
         page_text, final_url = await self._fetch_page_html_with_url(page_url)
         if not page_text:
-            # 抓取失败，照样落 cache 防止短时间重试；返回空 dict
-            self.cache[cache_key] = {
-                'data': {},
-                'timestamp': datetime.now(),
-            }
+            self.cache.pop(cache_key, None)
             return {}
 
         final_codes = self._extract_product_codes_from_url(final_url)
@@ -1663,10 +1679,13 @@ class DLsiteApiService:
         else:
             result = self._extract_translation_linkage_from_html(page_text, workno)
 
-        self.cache[cache_key] = {
-            'data': result,
-            'timestamp': datetime.now()
-        }
+        if result:
+            self.cache[cache_key] = {
+                'data': result,
+                'timestamp': datetime.now()
+            }
+        else:
+            self.cache.pop(cache_key, None)
         if result:
             logger.info(
                 "[DLsite] 页面 fallback 命中: requested=%s product=%s translation=%s",
@@ -1686,7 +1705,7 @@ class DLsiteApiService:
         cache_key = f"public_work_available:{workno}:{locale or ''}"
         if cache_key in self.cache:
             cached_data = self.cache[cache_key]
-            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+            if datetime.now() - cached_data['timestamp'] < self.cache_ttl and cached_data.get('data') is True:
                 return bool(cached_data.get('data'))
 
         # ★ 优化（B）：先打 product.json API（带 24h cache + inflight 去重）。
@@ -1713,10 +1732,13 @@ class DLsiteApiService:
             page_product = await self._fetch_product_page_metadata(workno, locale=locale)
             available = bool(page_product and self._normalize_workno(page_product.get('workno') or workno))
 
-        self.cache[cache_key] = {
-            'data': available,
-            'timestamp': datetime.now(),
-        }
+        if available:
+            self.cache[cache_key] = {
+                'data': True,
+                'timestamp': datetime.now(),
+            }
+        else:
+            self.cache.pop(cache_key, None)
         return available
 
     async def get_product_info(
@@ -1731,15 +1753,7 @@ class DLsiteApiService:
         if not requested_workno:
             return None
 
-        # ★ 性能优化：``get_product_info`` 函数级 cache（含失败结果 cache）。
-        # API ``_fetch_product_payload`` 内部已经 cache 成功结果（``self.cache``），
-        # 但**失败（返 None）的 RJ 会重复触发下面两层 HTML fallback**：
-        # ``_resolve_translation_page_fallback`` + ``_fetch_product_page_metadata``。
-        # 一次 33 候选作品的任务里光 HTML 页面 fallback 就被打了 993 次。
-        # ``get_linked_works`` 对 R18 翻译版的 probe loop 是元凶——每个翻译版调
-        # ``get_product_info``、每次都跑完整 fallback 链。
-        # 加函数级 cache 后，同一 RJ 同一任务内的 fallback 链只跑一次；失败也 cache
-        # 一份（沿用 self.cache 的 24h TTL，远超单任务时长）。
+        # 只复用验证成功的数据；并发重复请求仍由 inflight 合并，失败后允许重试。
         cache_key = f"product_info:{requested_workno}:{locale or ''}"
         if not _inflight_owner:
             if refresh:
@@ -1765,8 +1779,9 @@ class DLsiteApiService:
             cached_data = self.cache[cache_key]
             if self._cache_entry_fresh(cached_data):
                 cached_payload = cached_data.get('data')
-                # cached_payload 可能是 None（失败 cache）或正常 dict——都直接返回
-                return cached_payload if cached_payload is not None else None
+                if cached_payload and cached_payload.get('metadata_verification_status') == 'verified':
+                    return cached_payload
+                self.cache.pop(cache_key, None)
 
         product = await self._fetch_product_payload(requested_workno, locale=locale)
         if product:
@@ -1795,11 +1810,14 @@ class DLsiteApiService:
                 "metadata_verification_reason": verification["metadata_verification_reason"],
                 "metadata_evidence_source": verification["metadata_evidence_source"],
             })
-            self.cache[cache_key] = {
-                'data': payload,
-                'timestamp': datetime.now(),
-                'ttl_seconds': 86400,
-            }
+            if payload.get('metadata_verification_status') == 'verified':
+                self.cache[cache_key] = {
+                    'data': payload,
+                    'timestamp': datetime.now(),
+                    'ttl_seconds': 86400,
+                }
+            else:
+                self.cache.pop(cache_key, None)
             return payload
 
         fallback = await self._resolve_translation_page_fallback(requested_workno, locale=locale) or {}
@@ -1879,11 +1897,14 @@ class DLsiteApiService:
                     "metadata_verification_reason": verification["metadata_verification_reason"],
                     "metadata_evidence_source": verification["metadata_evidence_source"],
                 })
-                self.cache[cache_key] = {
-                    'data': payload,
-                    'timestamp': datetime.now(),
-                    'ttl_seconds': 86400 if edition_info else 900,
-                }
+                if payload.get('metadata_verification_status') == 'verified':
+                    self.cache[cache_key] = {
+                        'data': payload,
+                        'timestamp': datetime.now(),
+                        'ttl_seconds': 86400 if edition_info else 900,
+                    }
+                else:
+                    self.cache.pop(cache_key, None)
                 return payload
 
             logger.warning(
@@ -1938,23 +1959,17 @@ class DLsiteApiService:
                 'metadata_verification_reason': verification['metadata_verification_reason'],
                 'metadata_evidence_source': verification['metadata_evidence_source'],
             }
-            self.cache[cache_key] = {
-                'data': payload,
-                'timestamp': datetime.now(),
-                'ttl_seconds': (
-                    86400
-                    if verification['metadata_verification_status'] == 'verified'
-                    else 900
-                ),
-            }
+            if payload.get('metadata_verification_status') == 'verified':
+                self.cache[cache_key] = {
+                    'data': payload,
+                    'timestamp': datetime.now(),
+                    'ttl_seconds': 86400,
+                }
+            else:
+                self.cache.pop(cache_key, None)
             return payload
 
-        # ★ 同样 cache 失败结果（None），防止同一任务内重复跑两层 HTML fallback 链。
-        self.cache[cache_key] = {
-            'data': None,
-            'timestamp': datetime.now(),
-            'ttl_seconds': 300,
-        }
+        self.cache.pop(cache_key, None)
         return None
     
     async def _get_client(self) -> httpx.AsyncClient:
@@ -2339,9 +2354,9 @@ class DLsiteApiService:
             product_evidence_source = str(
                 product_info.get("metadata_evidence_source") or "unknown"
             ).strip()
-            product_verification_status = str(
-                product_info.get("metadata_verification_status") or "unverified"
-            ).strip().lower()
+            from .dlsite_metadata_trust import is_dlsite_linkage_product_verified
+
+            product_linkage_verified = is_dlsite_linkage_product_verified(product_info, workno)
             has_structured_translation_info = bool(translation_info)
             result = TranslationInfo(
                 is_original=translation_info.get('is_original', False),
@@ -2362,7 +2377,7 @@ class DLsiteApiService:
                 ),
                 evidence_status=(
                     "verified"
-                    if product_verification_status == "verified"
+                    if product_linkage_verified
                     and has_structured_translation_info
                     else "unverified"
                 ),
@@ -2442,6 +2457,23 @@ class DLsiteApiService:
         # 历史调用方），这里必须显式传 ``lang=""`` 覆盖，否则下游会误认为是日语原作。
         return TranslationInfo(lang="")
     
+    @staticmethod
+    def _linked_works_cache_ttl(works: Dict[str, LinkedWork]) -> int:
+        """只有整条关联链均已验证，才允许缓存一天。"""
+        values = list((works or {}).values())
+        if values and all(
+            str(getattr(work, "evidence_status", "") or "").strip().lower() == "verified"
+            for work in values
+        ):
+            return 86400
+        if any(
+            str(getattr(work, "evidence_source", "") or "").strip().lower()
+            in {"translation_page", "page_metadata", "page_metadata_unverified"}
+            for work in values
+        ):
+            return 900
+        return 300
+
     async def get_linked_works(self, rjcode: str, *, refresh: bool = False) -> Dict[str, LinkedWork]:
         """获取作品的关联作品（含 cache + inflight 去重，是性能热点入口）。
 
@@ -2487,6 +2519,7 @@ class DLsiteApiService:
         # 1. cache 短路（同一任务内重复调用近乎免费）
         if not refresh and cache_key in self.cache:
             cached_data = self.cache[cache_key]
+            cached_data['ttl_seconds'] = self._linked_works_cache_ttl(cached_data.get('data') or {})
             if self._cache_entry_fresh(cached_data):
                 # 浅拷贝避免上游误改 cache 内 LinkedWork 引用
                 return dict(cached_data['data'] or {})
@@ -2504,21 +2537,10 @@ class DLsiteApiService:
         finally:
             self._linked_works_inflight.pop(normalized_rjcode, None)
 
-        result_values = list((result or {}).values())
-        has_verified = any(
-            str(getattr(item, "evidence_status", "") or "").strip().lower()
-            == "verified"
-            for item in result_values
-        )
-        has_page_evidence = any(
-            str(getattr(item, "evidence_source", "") or "").strip().lower()
-            in {"translation_page", "page_metadata", "page_metadata_unverified"}
-            for item in result_values
-        )
         self.cache[cache_key] = {
             'data': dict(result),
             'timestamp': datetime.now(),
-            'ttl_seconds': 86400 if has_verified else (900 if has_page_evidence else 300),
+            'ttl_seconds': self._linked_works_cache_ttl(result),
         }
         return dict(result)
 
@@ -2573,9 +2595,9 @@ class DLsiteApiService:
             product = dict((product_info or {}).get('product') or {})
             api = product
             result: Dict[str, LinkedWork] = {}
-            product_verified = str(
-                (product_info or {}).get("metadata_verification_status") or ""
-            ).strip().lower() == "verified"
+            from .dlsite_metadata_trust import is_dlsite_linkage_product_verified
+
+            product_verified = is_dlsite_linkage_product_verified(product_info or {}, target_rjcode)
             relation_verified = (
                 str(getattr(trans, "evidence_status", "") or "").strip().lower()
                 == "verified"
@@ -2764,7 +2786,7 @@ class DLsiteApiService:
                 )
             }
     
-    async def get_full_linkage(self, rjcode: str, cue_languages: List[str] = None) -> Dict[str, LinkedWork]:
+    async def get_full_linkage(self, rjcode: str, cue_languages: List[str] = None, *, require_verified: bool = False) -> Dict[str, LinkedWork]:
         """
         获取作品的完整关联链（包括所有语言版本）
         
@@ -2790,7 +2812,11 @@ class DLsiteApiService:
         cache_key = f"{original_rjcode}_{'_'.join(sorted(cue_languages))}"
         if cache_key in self.cache:
             cached_data = self.cache[cache_key]
-            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+            cached_data['ttl_seconds'] = self._linked_works_cache_ttl(cached_data.get('data') or {})
+            if self._cache_entry_fresh(cached_data):
+                if require_verified:
+                    from .import_validation import require_complete_linkage
+                    require_complete_linkage(cached_data['data'])
                 logger.debug(f"使用完整关联链缓存：{original_rjcode}")
                 return cached_data['data']
         
@@ -2801,6 +2827,9 @@ class DLsiteApiService:
             url = f"https://www.dlsite.com/maniax/api/=/product.json?workno={original_rjcode}"
             data = await self._fetch_api(url)
             
+            if require_verified and not (data and isinstance(data, list)):
+                from .import_validation import ImportDataError
+                raise ImportDataError("DLsite 完整关联数据查询失败", "linkage")
             if data and isinstance(data, list) and len(data) > 0:
                 product = data[0]
                 language_editions = product.get('language_editions', [])
@@ -2824,12 +2853,19 @@ class DLsiteApiService:
                 # 保存到缓存
                 self.cache[cache_key] = {
                     'data': result,
-                    'timestamp': datetime.now()
+                    'timestamp': datetime.now(),
+                    'ttl_seconds': self._linked_works_cache_ttl(result),
                 }
         
         except Exception as e:
             logger.error(f"获取完整关联链失败 {rjcode}: {e}")
+            if require_verified:
+                from .import_validation import ImportDataError
+                raise ImportDataError(f"DLsite 完整关联数据查询失败: {e}", "linkage") from e
         
+        if require_verified:
+            from .import_validation import require_complete_linkage
+            require_complete_linkage(result)
         return result
 
     @staticmethod

@@ -1093,7 +1093,7 @@ class LibraryIndexMutationService:
         generation: int,
         expected_seq: int,
         ledger_id: int,
-    ) -> bool:
+    ) -> Optional[bool]:
         if not self._fast_path_enabled:
             return False
         started = time.monotonic()
@@ -1118,7 +1118,12 @@ class LibraryIndexMutationService:
                 effects = db.query(LibraryIndexMutationEffect).filter(
                     LibraryIndexMutationEffect.ledger_id == int(ledger_id)
                 ).order_by(LibraryIndexMutationEffect.effect_no.asc()).all()
-                if not effects or len(effects) > FAST_PATH_MAX_EFFECTS:
+                if not effects:
+                    db.rollback()
+                    return False
+                ledger = db.query(LibraryIndexMutationLedger).filter_by(id=ledger_id).one()
+                chunked = ledger.kind == "auto_circle_group"
+                if len(effects) > FAST_PATH_MAX_EFFECTS and not chunked:
                     db.rollback()
                     return False
                 if any(
@@ -1139,11 +1144,17 @@ class LibraryIndexMutationService:
                     and str(effect.target_library_id or library_id) == library_id
                 }
                 executable_effects: list[LibraryIndexMutationEffect] = []
-                for effect in effects:
+                checkpoint = int((ledger.payload or {}).get("fast_path_effect_no", -1)) if chunked else -1
+                pending_effects = [effect for effect in effects if effect.effect_no > checkpoint]
+                if chunked:
+                    pending_effects = pending_effects[:FAST_PATH_MAX_EFFECTS]
+                last_effect_no = checkpoint
+                for effect in pending_effects:
                     if effect.kind in {"reconcile", "move_target"} and (
                         str(effect.relative_path or ""),
                         str(effect.scope or "exact"),
                     ) in move_targets:
+                        last_effect_no = effect.effect_no
                         continue
                     estimated_rows = self._estimate_fast_effect_rows(
                         db,
@@ -1155,12 +1166,15 @@ class LibraryIndexMutationService:
                     if estimated_rows is None:
                         db.rollback()
                         return False
-                    total_rows += int(estimated_rows)
-                    if total_rows > FAST_PATH_MAX_ROWS:
+                    if total_rows + int(estimated_rows) > FAST_PATH_MAX_ROWS:
+                        if chunked and executable_effects:
+                            break
                         raise _FastPathLimitExceeded(
-                            f"ledger 行数超过 fast-path 限制: {total_rows} > {FAST_PATH_MAX_ROWS}"
+                            f"ledger 行数超过 fast-path 限制: {total_rows + int(estimated_rows)} > {FAST_PATH_MAX_ROWS}"
                         )
+                    total_rows += int(estimated_rows)
                     executable_effects.append(effect)
+                    last_effect_no = effect.effect_no
                 for effect in executable_effects:
                     affected_rows = self._apply_fast_effect_in_session(
                         db,
@@ -1176,6 +1190,11 @@ class LibraryIndexMutationService:
                             "库存索引 fast-path 预估后 effect 变为不可确定"
                         )
                 store._flush_status_deltas(db, status_deltas)
+                if chunked and last_effect_no < effects[-1].effect_no:
+                    # 与索引修改同事务记录检查点；恢复时不会重复移动或重复累加统计。
+                    ledger.payload = {**(ledger.payload or {}), "fast_path_effect_no": last_effect_no}
+                    db.commit()
+                    return None
                 self._complete_seq_without_recompute(
                     db,
                     library_id,
@@ -1454,6 +1473,7 @@ class LibraryIndexMutationService:
                     self._fast_path_last_fallback_reason = (
                         f"cross_library_timeout:{type(exc).__name__}"
                     )
+                    self._record_cross_library_timeout(operation_id, exc)
                     logger.warning(
                         "[索引追赶] 跨库 fast-path 暂时性数据库超时，等待重试 "
                         "operation=%s",
@@ -1463,6 +1483,26 @@ class LibraryIndexMutationService:
                 raise
             finally:
                 db.close()
+
+    def _record_cross_library_timeout(self, operation_id: str, exc: Exception) -> None:
+        """跨库回滚也会撤销租约，重新取得围栏后分别记录队头退避。"""
+        db = self._materializer_session()
+        try:
+            pending = db.query(
+                LibraryIndexMutationLedger.library_id,
+                LibraryIndexMutationLedger.seq,
+                LibraryIndexMutationLedger.id,
+            ).filter(
+                LibraryIndexMutationLedger.operation_id == operation_id,
+                LibraryIndexMutationLedger.applied_at.is_(None),
+            ).order_by(LibraryIndexMutationLedger.library_id.asc()).all()
+        finally:
+            db.close()
+        for library_id, seq, ledger_id in pending:
+            claim = self._claim_next(library_id)
+            if claim is not None:
+                epoch, _generation = claim
+                self._record_failure(library_id, int(seq), int(ledger_id), epoch, exc)
 
     def _delete_effect_in_chunks(
         self,
@@ -1895,8 +1935,12 @@ class LibraryIndexMutationService:
                     expected_seq=expected_seq,
                     ledger_id=ledger_id,
                 )
-            except _FastPathRetryLater:
+            except _FastPathRetryLater as exc:
+                # 回滚后单独持久化退避，避免同一序号无限热重试。
+                self._record_failure(library_id, expected_seq, ledger_id, epoch, exc)
                 return False
+            if fast_path_applied is None:
+                return True
             if fast_path_applied:
                 return True
             if any(

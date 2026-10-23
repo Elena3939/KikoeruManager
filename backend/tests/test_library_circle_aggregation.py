@@ -11,6 +11,8 @@ from app.core.library_circle_aggregation_service import LibraryCircleAggregation
 from app.models.database import (
     LibraryIndexEntry,
     LibraryIndexStatus,
+    WorkCanonicalLink,
+    WorkMetadata,
 )
 
 
@@ -100,17 +102,8 @@ def _add_circle_work(session, *, row_id: str, circle_id: str, rjcode: str, title
 
 
 def _add_work_metadata(session, *, rjcode: str, work_name: str = "", maker_name: str = ""):
-    session.execute(
-        text(
-            "INSERT INTO work_metadata (rjcode, work_name, maker_name) "
-            "VALUES (:rjcode, :work_name, :maker_name)"
-        ),
-        {
-            "rjcode": rjcode,
-            "work_name": work_name,
-            "maker_name": maker_name,
-        },
-    )
+    session.add(WorkMetadata(rjcode=rjcode, work_name=work_name, maker_name=maker_name))
+    session.flush()
 
 
 @pytest.fixture
@@ -178,6 +171,51 @@ def test_circle_aggregation_reports_conflict_locations(circle_service, db_sessio
     assert {loc["library_id"] for loc in work["locations"]} == {"local-a", "local-b"}
 
 
+def test_circle_aggregation_counts_work_root_once_with_inherited_rj_children(circle_service, db_session):
+    root = "音声/[テグラユウキ][RJ439372] (CV 柚木つばめ)"
+    db_session.add(_entry(
+        library_id="local-a", relative_path=root, rjcode="RJ439372", size=2600,
+    ))
+    db_session.add_all([
+        _entry(library_id="local-a", relative_path=f"{root}/{name}", rjcode="RJ439372", size=650)
+        for name in ["EXデータ", "lrc", "台本", "本編", "本編/wav"]
+    ])
+    db_session.commit()
+
+    group = circle_service.list_circle_groups()["items"][0]
+    assert group["work_count"] == 1
+    assert group["folder_count"] == 1
+    assert group["conflict_count"] == 0
+    assert group["total_size"] == 2600
+    work = circle_service.list_circle_works(group["circle_key"])["items"][0]
+    assert work["conflict"] is False
+    assert work["file_count"] == 3
+    assert [loc["relative_path"] for loc in work["locations"]] == [root]
+    targets = circle_service._targets_from_index_rows(circle_service._load_index_work_rows())
+    assert len(targets) == 1
+    assert targets[0]["path"] == f"/local-a/{root}"
+
+
+def test_circle_aggregation_keeps_independent_locations_and_nested_different_rj(circle_service, db_session):
+    db_session.add_all([
+        _entry(library_id="local-a", relative_path="RJ439372", rjcode="RJ439372"),
+        _entry(library_id="local-a", relative_path="RJ439372/lrc", rjcode="RJ439372"),
+        _entry(library_id="local-a", relative_path="RJ439372/RJ439373", rjcode="RJ439373"),
+        _entry(library_id="local-a", relative_path="RJ439372/RJ439373/wav", rjcode="RJ439373"),
+        _entry(library_id="local-a", relative_path="RJ439372副本", rjcode="RJ439372"),
+        _entry(library_id="local-b", relative_path="RJ439372", rjcode="RJ439372"),
+    ])
+    db_session.commit()
+
+    rows = circle_service._load_index_work_rows()
+    works = {work["rjcode"]: work for work in circle_service._build_work_items(rows)}
+    assert len(rows) == 4
+    assert works["RJ439372"]["conflict"] is True
+    assert len(works["RJ439372"]["locations"]) == 3
+    assert works["RJ439373"]["conflict"] is False
+    assert works["RJ439373"]["locations"][0]["relative_path"] == "RJ439372/RJ439373"
+
+
 def test_circle_aggregation_conflict_disappears_after_index_row_removed(circle_service, db_session):
     rows = [
         _entry(library_id="local-a", relative_path="DLsite/RJ01000002", rjcode="RJ01000002"),
@@ -198,6 +236,25 @@ def test_circle_aggregation_conflict_disappears_after_index_row_removed(circle_s
     work = circle_service.list_circle_works(group["circle_key"])["items"][0]
     assert work["conflict"] is False
     assert len(work["locations"]) == 1
+
+
+def test_circle_aggregation_resolves_verified_aliases_to_their_own_circle(circle_service, db_session):
+    for index in range(3):
+        canonical = f"RJ010000{index:02d}"
+        alias = f"RJ020000{index:02d}"
+        circle_id = f"RG{index}"
+        _add_circle_catalog(db_session, circle_id=circle_id, circle_name=f"社团{index}")
+        _add_circle_work(db_session, row_id=f"work-{index}", circle_id=circle_id, rjcode=canonical)
+        db_session.add(WorkCanonicalLink(
+            id=f"link-{index}", canonical_rjcode=canonical, linked_rjcode=alias,
+            evidence_status="verified", link_type="translation",
+        ))
+    db_session.commit()
+
+    identities = circle_service._load_circle_identities(["RJ02000000", "RJ02000002", "RJ01000001"])
+    assert {code: identity.circle_name for code, identity in identities.items()} == {
+        "RJ02000000": "社团0", "RJ01000001": "社团1", "RJ02000002": "社团2",
+    }
 
 
 def test_circle_aggregation_unknown_circle_fallback(circle_service, db_session):

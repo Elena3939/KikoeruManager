@@ -128,13 +128,13 @@ def _chips_for_extract_like(detail: Dict[str, Any]) -> List[Dict[str, str]]:
     chips: List[Dict[str, str]] = []
     arch = format_bytes_short(detail.get("archive_size_bytes"))
     out = format_bytes_short(detail.get("extract_output_bytes") or detail.get("output_size_bytes"))
-    dur = format_duration_short(detail.get("duration_ms"))
     if arch:
         chips.append(_chip("压缩包", arch, "neutral"))
     if out:
         chips.append(_chip("产物", out, "info"))
-    if dur:
-        chips.append(_chip("总耗时", dur, "neutral"))
+    execution = format_duration_short(detail.get("extract_execution_duration_ms"))
+    if execution:
+        chips.append(_chip("解压耗时", execution, "neutral"))
     phase = format_duration_short(detail.get("extract_phase_duration_ms"))
     if phase:
         chips.append(_chip("解包阶段（含等待）", phase, "neutral"))
@@ -184,9 +184,17 @@ def _chips_for_pipeline_rename(detail: Dict[str, Any]) -> List[Dict[str, str]]:
 
 def _chips_for_pipeline_delete(detail: Dict[str, Any]) -> List[Dict[str, str]]:
     chips: List[Dict[str, str]] = []
+    if "deleted_file_count" in detail:
+        chips.append(_chip("删除文件", str(_int(detail.get("deleted_file_count"))), "success"))
+        if _int(detail.get("deleted_folder_count")):
+            chips.append(_chip("删除目录", str(_int(detail.get("deleted_folder_count"))), "success"))
+        size = format_bytes_short(detail.get("deleted_bytes")) or "0 B"
+        if _int(detail.get("unknown_size_count")):
+            size += "（部分未知）"
+        chips.append(_chip("删除大小", size, "info"))
     ok = _int(detail.get("success_count"))
     fail = _int(detail.get("failed_count"))
-    if ok:
+    if ok and "deleted_file_count" not in detail:
         chips.append(_chip("成功", str(ok), "success"))
     if fail:
         chips.append(_chip("失败", str(fail), "danger"))
@@ -418,6 +426,9 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
     - batch_id / session_key / parent_id（前端发 /children 用）
     """
     from .activity_log_relations import normalize_import_summary
+    from .activity_log_outcomes import annotate_outcome
+
+    annotate_outcome(row)
 
     detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
     category = row.get("category")
@@ -451,9 +462,22 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
             "child_total_count": _int(detail.get("result_task_count")),
             "detail": {key: detail[key] for key in (
                 "archive_count", "participating_archive_count", "created_count", "result_task_count", "aggregate_archive_size_bytes",
-                "aggregate_extract_output_bytes", "batch_duration_ms",
+                "aggregate_extract_output_bytes", "batch_duration_ms", "duplicate_child_count", "subtitle_pending_count",
             ) if key in detail},
         })
+
+    for key in ("result_status", "outcome", "outcome_label"):
+        if key in row:
+            item[key] = row[key]
+
+    if category == "pipeline_delete" and action == "batch_api_delete":
+        item["source_path"] = None
+        item["rjcode"] = None
+        item["has_children"] = False  # 文件快照在详情树中展示，不是独立子任务。
+        item["detail"] = {key: detail[key] for key in (
+            "delete_history_version", "success_count", "failed_count", "deleted_file_count",
+            "deleted_folder_count", "deleted_bytes", "unknown_size_count", "unknown_type_count",
+        ) if key in detail}
 
     if category == "http_download":
         platforms = http_download_platforms_from_metadata(detail)

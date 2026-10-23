@@ -76,7 +76,6 @@ export async function redirectIfSecurityGateExpired() {
 }
 
 const FILTER_DELETE_PREVIEW_TIMEOUT = 30 * 60 * 1000
-const CONFLICT_MERGE_TIMEOUT = 30 * 60 * 1000
 const RJ_SUBTITLE_SCAN_TIMEOUT = 0
 const HTTP_DOWNLOAD_START_TIMEOUT = 10 * 60 * 1000
 const asmrRetryRequestGuard = createRequestSingleFlight({ cooldownMs: 2000 })
@@ -683,12 +682,22 @@ export const conflictApi = {
     return response.data
   },
 
-  preview: async (conflictId, action, mergeTarget = null) => {
+  preview: async (conflictId, action, mergeTarget = null, refresh = false) => {
     // 合并预览改成异步 job 模式后，后端立即返回 {async: true, job_id, status: 'running', ...}，
     // HTTP 不再阻塞。KEEP_NEW 仍是同步返回 preview。前端轮询 mergePreviewJob 拿真实进度。
-    const response = await apiClient.post(`/conflicts/${conflictId}/preview`, { action, merge_target: mergeTarget }, {
+    const response = await apiClient.post(`/conflicts/${conflictId}/preview`, { action, merge_target: mergeTarget, refresh }, {
       timeout: 60000,
     })
+    return response.data
+  },
+
+  listMergePreviewJobs: async () => {
+    const response = await apiClient.get('/conflicts/merge-preview-jobs')
+    return response.data
+  },
+
+  mergeExecution: async (conflictId) => {
+    const response = await apiClient.get(`/conflicts/${conflictId}/merge-execution`)
     return response.data
   },
 
@@ -711,8 +720,8 @@ export const conflictApi = {
   resolve: async (conflictId, payload) => {
     const requestPayload = typeof payload === 'string' ? { action: payload } : payload
     const response = await apiClient.post(`/conflicts/${conflictId}/resolve`, requestPayload, {
-      // 本地合并会重建目录；远程合并还会上传差异文件。这里给用户一次完整等待窗口。
-      timeout: requestPayload?.action === 'MERGE' ? CONFLICT_MERGE_TIMEOUT : 60000,
+      // 合并只提交后台执行，不再依赖长连接等待目录写入。
+      timeout: 60000,
     })
     return response.data
   },
@@ -2593,6 +2602,11 @@ export const circleCompletionApi = {
 
   previewBatchDownload: async (payload) => {
     const response = await apiClient.post('/circle-completion/download/preview', payload)
+    return response.data
+  },
+
+  previewDownloadVersion: async (payload) => {
+    const response = await apiClient.post('/circle-completion/download-preview/version', payload)
     return response.data
   },
 

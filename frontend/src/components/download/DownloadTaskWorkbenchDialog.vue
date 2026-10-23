@@ -744,6 +744,23 @@ function getTaskRjcode(task) {
   return String(task?.rjcode || task?.task_metadata?.rjcode || '').trim().toUpperCase()
 }
 
+// 文件名识别仅用于展示，不参与任务合并或业务作品归属。
+function getTaskDisplayRjcode(task) {
+  const explicit = getTaskRjcode(task)
+  if (explicit) return explicit
+  const metadata = task?.task_metadata || {}
+  const files = [task?.download_files, metadata.selected_resources]
+    .flatMap(items => Array.isArray(items) ? items : [])
+  const labels = [
+    task?.work_title, metadata.work_title, task?.source_label, metadata.source_label,
+    ...files.flatMap(file => [file?.name, file?.file_name, file?.relative_path]),
+  ]
+  const codes = new Set(labels.flatMap(label =>
+    Array.from(String(label || '').matchAll(/(?<![a-z0-9])RJ\d{6,8}(?!\d)/gi), match => match[0].toUpperCase())
+  ))
+  return codes.size === 1 ? [...codes][0] : ''
+}
+
 function normalizeLabel(value) {
   return String(value || '').replace(/\s+/g, ' ').trim()
 }
@@ -771,8 +788,7 @@ function getTaskSecondaryLabel(task) {
       task?.task_metadata?.workbench_subtitle,
       task?.task_metadata?.source_label,
       task?.source_label,
-      task?.task_metadata?.rjcode,
-      task?.rjcode,
+      getTaskDisplayRjcode(task),
     ]) || '上传任务'
   }
   const mode = String(task?.task_metadata?.download_mode || task?.download_mode || '').trim()
@@ -781,11 +797,10 @@ function getTaskSecondaryLabel(task) {
       task?.task_metadata?.workbench_subtitle,
       task?.task_metadata?.source_label,
       task?.source_label,
-      task?.task_metadata?.rjcode,
-      task?.rjcode,
+      getTaskDisplayRjcode(task),
     ]) || (mode === 'baidu_netdisk' ? '百度网盘下载' : mode === 'pikpak' ? 'PikPak 下载' : 'HTTP 下载')
   }
-  return pickDistinctLabel([task?.task_metadata?.workbench_subtitle, task?.rjcode, task?.task_metadata?.rjcode]) || '未知 RJ'
+  return pickDistinctLabel([task?.task_metadata?.workbench_subtitle, getTaskDisplayRjcode(task)])
 }
 
 function getTaskSourceAction(task) {

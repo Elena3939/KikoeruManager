@@ -16,6 +16,7 @@ from app.core.task_engine import TaskStatus
 @pytest.fixture
 def watcher_setup(monkeypatch, tmp_path):
     processor = FileProcessor()
+    monkeypatch.setattr(processor, '_load_unresolved_source_paths', lambda: set())
     config = SimpleNamespace(
         storage=SimpleNamespace(input_path=str(tmp_path)),
         watcher=SimpleNamespace(auto_start=True, auto_classify=False, delete_after_process=False),
@@ -59,6 +60,52 @@ async def drain_events():
     ]
     if processing:
         await asyncio.wait_for(asyncio.gather(*processing), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_unresolved_problem_blocks_scan_but_allows_manual_retry(watcher_setup, monkeypatch, tmp_path):
+    _, processor, submitted = watcher_setup
+    source = tmp_path / 'RJ123456.zip'
+    source.write_bytes(b'PK\x03\x04' + b'x' * 1024)
+    blocked = {processor._path_key(str(source))}
+    monkeypatch.setattr(processor, '_load_unresolved_source_paths', lambda: blocked)
+    report = {}
+    for _ in range(2):
+        assert await processor.process_directory(str(tmp_path), report=report) == []
+    assert not submitted
+    assert report['skipped_unresolved_count'] == 2
+    assert await processor.process_file(str(source), wait_stable=False, manual_retry=True)
+    assert len(submitted) == 1
+
+
+@pytest.mark.asyncio
+async def test_unresolved_volume_blocks_other_volume_before_rename(watcher_setup, monkeypatch, tmp_path):
+    _, processor, submitted = watcher_setup
+    first = tmp_path / 'RJ123456.7z.001'
+    tail = tmp_path / 'RJ123456.7z.002'
+    first.write_bytes(b'7z\xbc\xaf\x27\x1c' + b'x' * 1024)
+    tail.write_bytes(b'x' * 1024)
+    monkeypatch.setattr(processor, '_load_unresolved_source_paths', lambda: {processor._path_key(str(first))})
+    normalize = AsyncMock()
+    monkeypatch.setattr(processor, '_normalize_file', normalize)
+    assert await processor.process_file(str(tail), wait_stable=False) is None
+    normalize.assert_not_awaited()
+    assert not submitted
+
+
+@pytest.mark.asyncio
+async def test_same_rj_other_archive_and_resolved_source_remain_scannable(watcher_setup, monkeypatch, tmp_path):
+    _, processor, submitted = watcher_setup
+    source = tmp_path / 'RJ123456.zip'
+    other = tmp_path / 'RJ123456_bonus.zip'
+    for path in (source, other):
+        path.write_bytes(b'PK\x03\x04' + b'x' * 1024)
+    blocked = {processor._path_key(str(source))}
+    monkeypatch.setattr(processor, '_load_unresolved_source_paths', lambda: blocked)
+    assert await processor.process_file(str(other), wait_stable=False)
+    blocked.clear()
+    assert await processor.process_file(str(source), wait_stable=False)
+    assert len(submitted) == 2
 
 
 @pytest.mark.asyncio

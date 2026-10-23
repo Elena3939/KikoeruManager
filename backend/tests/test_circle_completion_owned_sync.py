@@ -237,12 +237,100 @@ def test_inventory_translation_search_relation_only_expands_same_language_group(
     service._inventory_translation_search_cache.clear()
     query_results = iter([link_rows, link_rows, [owned_row]])
     original_relation = service.get_inventory_translation_search_relation(canonical)
-    assert original_relation["search_rjcodes"] == [canonical, simplified_owned]
-    assert original_relation["owned_locations"] == [{
-        "library_id": "default-local",
-        "path": owned_path,
-        "actual_rjcode": simplified_owned,
-    }]
+    assert original_relation["search_rjcodes"] == [canonical]
+    assert original_relation["owned_locations"] == []
+
+
+@pytest.mark.parametrize(
+    "query_type,query_lang,other_type,other_lang,expected_related",
+    [
+        ("bonus", "", "translation", "JPN", False),
+        ("bonus", "JPN", "original", "JPN", False),
+        ("original", "JPN", "bonus", "JPN", False),
+        ("original", "JPN", "translation", "CHI_HANS", False),
+        ("translation", "CHI_HANS", "translation", "CHI_HANT", False),
+        ("translation", "ENG", "translation", "KO_KR", False),
+        ("translation", "", "original", "JPN", False),
+        ("original", "JPN", "translation", "", False),
+        ("translation", "UNKNOWN", "translation", "UNKNOWN", False),
+        ("translation", "JPN,CHI_HANS", "original", "JPN", False),
+        ("linked", "JPN", "original", "JPN", False),
+        ("original", "JPN", "translation", "JPN", True),
+        ("translation", "CHI_HANS", "child_translation", "CHI_SIMP", True),
+        ("translation", "ENG", "translation", "EN", True),
+    ],
+)
+def test_inventory_search_requires_same_work_language_and_version_type(
+    monkeypatch, query_type, query_lang, other_type, other_lang, expected_related,
+):
+    service = CircleCompletionService()
+    query_code, other_code = "RJ01658547", "RJ01647392"
+    query_row = SimpleNamespace(
+        canonical_rjcode=other_code, linked_rjcode=query_code,
+        link_type=query_type, lang=query_lang,
+    )
+    other_row = SimpleNamespace(
+        canonical_rjcode=other_code, linked_rjcode=other_code,
+        link_type=other_type, lang=other_lang,
+    )
+    owned_path = f"/library/[{other_code}]"
+    owned = SimpleNamespace(
+        owned_rjcodes=[other_code], primary_folder_path=owned_path,
+        library_id="local", owned_paths=[owned_path],
+    )
+    results = iter([[query_row], [query_row, other_row], [owned]])
+
+    class Session:
+        def query(self, *_args):
+            return self
+
+        def filter(self, *_args):
+            return self
+
+        def all(self):
+            return next(results)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(circle_module, "SessionLocal", Session)
+    relation = service.get_inventory_translation_search_relation(query_code)
+    assert relation["search_rjcodes"] == ([query_code, other_code] if expected_related else [query_code])
+    assert relation["related_rjcodes"] == ([other_code] if expected_related else [])
+    assert relation["owned_locations"] == ([{
+        "library_id": "local", "path": owned_path, "actual_rjcode": other_code,
+    }] if expected_related else [])
+
+
+def test_inventory_search_ignores_unverified_other_work_and_stale_owned_aliases(monkeypatch, db_session):
+    from uuid import uuid4
+    from app.models.database import WorkCanonicalLink
+
+    query_code = "RJ01700002"
+    same_language_code = "RJ01700003"
+    for canonical, linked, status in [
+        ("RJ01700001", query_code, "verified"),
+        ("RJ01700001", same_language_code, "verified"),
+        ("RJ01700001", "RJ01700004", "legacy_unverified"),
+        ("RJ01800001", "RJ01800003", "verified"),
+    ]:
+        db_session.add(WorkCanonicalLink(
+            id=str(uuid4()), canonical_rjcode=canonical, linked_rjcode=linked,
+            link_type="translation", lang="CHI_HANS", evidence_status=status,
+        ))
+    stale_path = "/library/[RJ01900001]"
+    db_session.add(LibraryOwnedWork(
+        canonical_rjcode="RJ01700001", library_id="local",
+        owned_rjcodes=[same_language_code, "RJ01700004", "RJ01900001"],
+        primary_folder_path=stale_path, owned_paths=[stale_path],
+    ))
+    db_session.commit()
+    monkeypatch.setattr(circle_module, "SessionLocal", lambda: db_session)
+
+    relation = CircleCompletionService().get_inventory_translation_search_relation(query_code)
+
+    assert relation["search_rjcodes"] == [query_code, same_language_code]
+    assert relation["owned_locations"] == []
 
 
 def test_apply_library_index_owned_state_skips_when_ready_index_unavailable(monkeypatch):

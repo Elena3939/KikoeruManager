@@ -12,7 +12,8 @@ import re
 from typing import Optional
 
 # RJ 正则：与 library_manager._extract_rjcode 一致
-_RJ_PATTERN = re.compile(r"[RVB]J(?:\d{6}|\d{8})(?!\d)", re.IGNORECASE)
+RJ_PATTERN_SOURCE = r"[RVB]J(?:\d{6}|\d{8})(?!\d)"
+_RJ_PATTERN = re.compile(RJ_PATTERN_SOURCE, re.IGNORECASE)
 # 跳过的目录 / 文件名（小写）：群晖回收站、索引目录等
 _SKIP_LOWER = {"#recycle", "@eadir", "__macosx"}
 

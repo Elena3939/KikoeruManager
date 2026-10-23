@@ -8,11 +8,7 @@
     modal-class="custom-preview-overlay circle-download-preview-overlay"
     @update:model-value="emit('update:visible', $event)"
   >
-    <div v-if="loading" class="window circle-download-preview-window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden dialog-loading-overlay is-loading">
-      <AppLoadingAnimation :label="loadingLabel" :description="loadingDescription" :size="168" :min-height="260" />
-    </div>
-    
-    <div v-else class="window circle-download-preview-window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden">
+    <div class="window circle-download-preview-window panel-enter glass-shell relative w-full aspect-[16/9] rounded-3xl flex flex-col overflow-hidden">
       <div class="window-header flex items-center justify-between px-8 py-6">
         <h1 class="title text-2xl font-bold text-slate-900 tracking-tight">创建下载任务</h1>
         <button type="button" class="interactive-chip close-button inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700" @click="emit('update:visible', false)">
@@ -20,40 +16,14 @@
         </button>
       </div>
 
-      <div v-if="!pendingSourcePlans.length" class="tabs-row px-8 pt-1 pb-3 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-        <button
-          type="button"
-          class="tab-chip px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center gap-1 border"
-          :class="allPreviewSelectionState === 'all' ? 'tab-chip-active' : (allPreviewSelectionState === 'partial' ? 'tab-chip-partial' : 'tab-chip-idle')"
-          @click="toggleAllPreviewSelection"
-        >
-          <span>全部</span>
-          <span class="tab-count">{{ selectedFileCount }}/{{ previewSelectableResources.length }}</span>
-        </button>
-        <button
-          v-for="chip in previewFileTypeChips"
-          :key="chip.key"
-          type="button"
-          class="tab-chip px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center gap-1 border"
-          :class="chip.state === 'all' ? 'tab-chip-active' : (chip.state === 'partial' ? 'tab-chip-partial' : 'tab-chip-idle')"
-          @click="togglePreviewFileType(chip)"
-        >
-          <span>{{ chip.label }}</span>
-          <span class="tab-count">{{ chip.selected }}/{{ chip.total }}</span>
-        </button>
-        <button
-          type="button"
-          class="tab-chip tab-chip-idle ml-auto px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] border cursor-pointer relative z-10 transition-all duration-200"
-          @click.stop="toggleFilterSelection"
-        >
-          <span>{{ filterApplied ? '过滤文件' : '全部' }}</span>
-        </button>
+      <div v-if="previewLoading" class="flex-1 min-h-0 flex items-center justify-center">
+        <AppLoadingAnimation :label="loading ? loadingLabel : '正在查询下载来源…'" :description="loading ? loadingDescription : '正在获取作品资料与文件列表'" :size="168" :min-height="260" />
       </div>
 
-      <DownloadSourceComparison v-if="pendingSourcePlans.length" :plans="pendingSourcePlans"
-        @choose-source="chooseSource" @toggle-root="togglePlanExpand" @toggle-expand="toggleExpand" />
-      <div v-else class="content-grid flex-1 flex gap-6 px-8 py-2 min-h-0">
-        <div v-if="hasAsmrPlans" class="left-column w-[380px] flex flex-col gap-6">
+
+      <div v-if="!previewLoading" class="content-grid flex-1 flex gap-6 px-8 py-2 min-h-0">
+        <aside class="download-settings-panel left-column">
+          <div v-show="settingsSite === 'asmr.one'" class="source-settings-body flex flex-col gap-4 min-h-0 flex-1">
           <div v-if="enableDirectMode" class="mode-switch flex items-center gap-1 p-1 rounded-xl bg-white/55 border border-slate-200/70">
             <button
               type="button"
@@ -69,9 +39,6 @@
             >直放已有路径</button>
           </div>
 
-          <section v-if="hasYaasPlans" class="glass-panel circle-preview-settings-card rounded-2xl p-4 space-y-2">
-            <h2>YAAS 压缩包保存目录</h2><p v-for="root in yaasDownloadRoots" :key="root" class="source-preview-description break-all">{{ root }}</p>
-          </section>
           <section ref="selectRoot" class="glass-panel glass-card circle-preview-settings-card flex-1 rounded-2xl p-6 overflow-y-auto no-scrollbar">
             <div v-if="!enableDirectMode || settings.mode === 'classify'" class="space-y-6">
               <section class="space-y-4">
@@ -144,36 +111,25 @@
                 </div>
               </section>
 
-              <div class="action-buttons grid grid-cols-3 gap-3">
-                <button
-                  type="button"
-                  class="soft-button mode-classify interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 font-medium text-slate-700"
-                  :class="{ active: settings.classifyMode === 'circle', 'is-disabled': settings.flattenFiles }"
-                  :disabled="settings.flattenFiles"
-                  :title="settings.flattenFiles ? '直放指定目录模式下不再按社团归类' : ''"
-                  @click="toggleClassifyMode"
-                >
-                  按社团归类
-                </button>
-                <button
-                  type="button"
-                  class="soft-button mode-api interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 font-medium text-slate-700"
-                  :class="{ active: settings.namingMode === 'api', 'is-disabled': settings.flattenFiles }"
-                  :disabled="settings.flattenFiles"
-                  :title="settings.flattenFiles ? '直放指定目录模式下不创建作品目录' : ''"
-                  @click="toggleNamingMode"
-                >
-                  API 命名作品目录
-                </button>
-                <button
-                  type="button"
-                  class="soft-button mode-direct interactive-button h-10 rounded-lg border border-slate-200/70 bg-white/55 font-medium text-slate-700"
-                  :class="{ active: settings.flattenFiles }"
-                  title="开启后所有选中的文件直接落到「指定目录」下，不再创建社团目录 / 作品目录，也不保留作品内子目录"
-                  @click="toggleFlattenFiles"
-                >
-                  直放指定目录
-                </button>
+              <div class="action-buttons">
+                <div class="path-option-row">
+                  <span class="option-label">按社团归类</span>
+                  <button type="button" class="path-option-toggle" role="switch" aria-label="按社团归类"
+                    :class="{ active: settings.classifyMode === 'circle' && !settings.flattenFiles }"
+                    :aria-checked="settings.classifyMode === 'circle' && !settings.flattenFiles"
+                    :disabled="settings.flattenFiles" @click="toggleClassifyMode">
+                    <span class="path-toggle-thumb" aria-hidden="true" />
+                  </button>
+                </div>
+                <div class="path-option-row">
+                  <span class="option-label">API 命名作品目录</span>
+                  <button type="button" class="path-option-toggle" role="switch" aria-label="API 命名作品目录"
+                    :class="{ active: settings.namingMode === 'api' && !settings.flattenFiles }"
+                    :aria-checked="settings.namingMode === 'api' && !settings.flattenFiles"
+                    :disabled="settings.flattenFiles" @click="toggleNamingMode">
+                    <span class="path-toggle-thumb" aria-hidden="true" />
+                  </button>
+                </div>
               </div>
 
               <div class="space-y-1.5">
@@ -278,53 +234,57 @@
           </section>
         </div>
 
-        <aside v-if="!hasAsmrPlans" class="left-column w-[300px] flex flex-col gap-4">
-          <section class="glass-panel circle-preview-settings-card rounded-2xl p-6 space-y-4">
-            <div class="section-head space-y-1"><h2>{{ hasYaasPlans ? '压缩包落地设置' : '选择下载来源' }}</h2><p>{{ hasYaasPlans ? '使用 HTTP 下载的默认压缩包目录。' : '右侧同时预览两站资源，选择来源后配置对应的落地位置。' }}</p></div>
-            <template v-if="hasYaasPlans">
-              <div v-for="root in yaasDownloadRoots" :key="root" class="field-group space-y-2"><label>压缩包保存目录</label><input :value="root" readonly class="field-input h-9 w-full rounded-lg px-2.5 text-sm" /></div>
-              <p class="source-preview-description">保留原压缩包，密码按系统模板写入文件名。下载完成后不自动解压。</p>
-            </template>
+          <section v-show="settingsSite === 'imoutoheaven'" class="glass-panel circle-preview-settings-card source-settings-body rounded-2xl p-5 space-y-4">
+            <div class="section-head space-y-1"><h2>YAAS 保存设置</h2><p>本批次的压缩包保存位置</p></div>
+            <div class="field-group space-y-2">
+              <label>压缩包保存目录</label>
+              <input v-model="settings.yaasDownloadBasePath" :placeholder="yaasDownloadRoots[0] || '使用 HTTP 下载默认目录'" class="field-input h-9 w-full rounded-lg px-2.5 text-sm" />
+            </div>
+            <p class="source-preview-description break-all">保存到：{{ settings.yaasDownloadBasePath?.trim() || yaasDownloadRoots[0] || 'HTTP 下载默认目录' }}</p>
+            <p class="source-preview-description">保留原压缩包，密码按系统模板写入文件名。下载完成后不自动解压。</p>
           </section>
         </aside>
 
         <section class="glass-panel glass-card tree-panel flex-1 rounded-2xl flex flex-col overflow-hidden">
           <div class="tree-scroll flex-1 p-4 overflow-auto no-scrollbar">
             <div class="tree-list space-y-1">
-              <template v-for="plan in planStates" :key="plan.session_id">
-                <div v-if="plan.source_options?.length" class="p-2 space-y-2">
-                  <div class="flex flex-wrap items-center gap-2">
-                    <span class="text-xs">{{ plan.rjcode }} · 下载来源</span>
-                    <button v-for="option in plan.source_options" :key="option.source_provider" type="button"
-                      class="tab-chip px-3 py-1 rounded-full text-xs border"
-                      :aria-pressed="plan.source_provider === option.source_provider"
-                      :class="plan.source_provider === option.source_provider ? 'tab-chip-active' : 'tab-chip-idle'"
-                      @click="chooseSource(plan, option)">{{ option.source_provider === 'imoutoheaven' ? 'YAAS' : 'asmr.one' }}</button>
-                    <span v-if="plan.source_selection_required" class="text-xs">请选择来源</span>
+              <div v-if="!sourceComparisonMode && fileTreePlans.length" class="selected-site-columns">
+                <section v-for="site in selectedSiteGroups" :key="site.id" class="selected-site-group">
+                  <header class="selected-site-heading"><strong>{{ site.label }}</strong><span>{{ site.plans.length }} 部作品</span></header>
+                  <div class="unified-file-scroll">
+                    <DownloadResourceTree :plans="site.plans"
+                      @toggle-root="togglePlanExpand" @toggle-all="togglePlanAll"
+                      @toggle-expand="toggleExpand($event.plan, $event.row)"
+                      @toggle-row="toggleTreeRow($event.plan, $event.row)"
+                      @change-source="reselectSource" />
                   </div>
-                  <p v-for="error in plan.source_errors || []" :key="error" class="text-xs">{{ error }}</p>
-                </div>
-                <div v-if="!plan.source_selection_required && plan.source_provider !== 'imoutoheaven' && plan.version_options?.length > 1" class="p-3 pb-0 space-y-2">
-                  <p class="text-xs opacity-70">选择语言版本：</p>
-                  <div class="flex flex-wrap gap-2">
-                    <button v-for="version in plan.version_options" :key="version.rjcode" type="button"
-                      class="version-select-chip" :class="version.rjcode === plan.rjcode ? 'is-selected' : ''"
-                      :aria-pressed="version.rjcode === plan.rjcode" @click="chooseVersion(plan, version)">
-                      <span>{{ version.rjcode }}</span>
-                      <span class="version-tag ml-2">{{ version.language_label || version.language || '未知语言' }}</span>
-                    </button>
-                  </div>
-                </div>
-                <DownloadResourceTree :plan="plan"
-                  @toggle-root="togglePlanExpand(plan)" @toggle-all="togglePlanAll(plan)"
-                  @toggle-expand="toggleExpand(plan, $event)" @toggle-row="toggleTreeRow(plan, $event)" />
-              </template>
+                </section>
+              </div>
+              <DownloadSourceComparison v-if="sourceComparisonMode" v-model="settingsSite" :plans="activePlans" @select-site="selectSite"
+                @choose-source="chooseSource" @choose-row="chooseSourceRow" @toggle-root="togglePlanExpand" @toggle-expand="toggleExpand"
+                @toggle-all="togglePlanAll" @toggle-row="toggleTreeRow">
+                <template #toolbar>
+      <div v-if="!previewLoading && settingsSite === 'asmr.one' && previewSelectableResources.length" class="file-type-toolbar flex flex-wrap items-center gap-1.5">
+        <button
+          v-for="chip in previewFileTypeChips"
+          :key="chip.key"
+          type="button"
+          class="tab-chip px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center gap-1 border"
+          :class="chip.state === 'all' ? 'tab-chip-active' : (chip.state === 'partial' ? 'tab-chip-partial' : 'tab-chip-idle')"
+          @click="togglePreviewFileType(chip)"
+        >
+          <span>{{ chip.label }}</span>
+          <span class="tab-count">{{ chip.selected }}/{{ chip.total }}</span>
+        </button>
+      </div>
+                </template>
+              </DownloadSourceComparison>
             </div>
           </div>
         </section>
       </div>
 
-      <div class="footer-row flex items-center justify-between">
+      <div v-if="!previewLoading" class="footer-row flex items-center justify-between">
         <div v-if="pendingSourcePlans.length" class="summary">还有 {{ pendingSourcePlans.length }} 个作品待选择来源</div>
         <div v-else class="summary"><span class="summary-strong">{{ selectedFileCount }}</span> 已选，共 <span class="summary-strong">{{ formatSize(selectedTotalBytes) }}</span></div>
 
@@ -360,7 +320,7 @@ import {
 import { ElMessage } from 'element-plus'
 import AppLoadingAnimation from '../common/AppLoadingAnimation.vue'
 import RemoteFolderPickerDialog from '../common/RemoteFolderPickerDialog.vue'
-import { configApi, libraryApi } from '../../api'
+import { libraryApi } from '../../api'
 import DownloadResourceTree from './DownloadResourceTree.vue'
 import DownloadSourceComparison from './DownloadSourceComparison.vue'
 
@@ -381,17 +341,51 @@ const props = defineProps({
   directLoading: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['submit', 'update:visible'])
+const emit = defineEmits(['submit', 'update:visible', 'versions-updated'])
 
 const planStates = ref([])
-const filterApplied = ref(false)
-const cachedFilterRules = ref(null)
+const activePlans = computed(() => planStates.value.filter(plan => plan.selected_version !== false))
+const settingsSite = ref('asmr.one')
+const availableSettingsSites = computed(() => {
+  const providers = new Set(activePlans.value.flatMap(plan =>
+    (plan.source_options?.length ? plan.source_options : [plan]).map(option => option.source_provider || 'asmr.one')))
+  return [{ id: 'asmr.one', label: 'asmr.one 路径' }, { id: 'imoutoheaven', label: 'YAAS 路径' }]
+    .filter(site => providers.has(site.id))
+})
+watch(availableSettingsSites, sites => {
+  if (!sites.some(site => site.id === settingsSite.value)) settingsSite.value = sites[0]?.id || 'asmr.one'
+}, { immediate: true })
+const sourceComparisonMode = computed(() => activePlans.value.length > 0)
+const fileTreePlans = computed(() => planStates.value.filter(plan =>
+  !plan.source_selection_required && !plan.discovery_only && !plan.preview_error && plan.selectable_resources?.length))
+const selectedSiteGroups = computed(() => [
+  { id: 'asmr.one', label: 'asmr.one' }, { id: 'imoutoheaven', label: 'YAAS' },
+].map(site => ({ ...site, plans: fileTreePlans.value.filter(plan =>
+  (plan.source_provider || 'asmr.one') === site.id) })).filter(site => site.plans.length))
+const previewLoading = computed(() => props.loading || (
+  activePlans.value.some(plan => plan.version_loading)
+  && activePlans.value.every(plan => plan.discovery_only && !plan.preview_error)
+))
 
 const targetLibraries = computed(() => (props.libraries || []).filter(item => item?.enabled !== false))
 const selectedTargetLibrary = computed(() => targetLibraries.value.find(item => item.id === props.settings.targetLibraryId) || null)
-const selectedFileCount = computed(() => planStates.value.reduce((sum, plan) => sum + Number(plan.selected_resource_count || 0), 0))
-const selectedTotalBytes = computed(() => planStates.value.reduce((sum, plan) => sum + Number(plan.selected_size_bytes || 0), 0))
-const previewSelectableResources = computed(() => planStates.value.flatMap(plan => Array.isArray(plan?.selectable_resources) ? plan.selectable_resources : []))
+const selectedFileCount = computed(() => activePlans.value.reduce((sum, plan) => sum + Number(plan.selected_resource_count || 0), 0))
+const selectedTotalBytes = computed(() => activePlans.value.reduce((sum, plan) => sum + Number(plan.selected_size_bytes || 0), 0))
+const asmrSelectionEntries = computed(() => activePlans.value.flatMap(plan => {
+  const selected = !plan.source_selection_required && (plan.source_provider || 'asmr.one') === 'asmr.one'
+  const option = selected ? plan : plan.sourcePreviews?.find(item => item.source_provider === 'asmr.one')
+  return option ? [{ plan, option, selected }] : []
+}))
+const previewSelectableResources = computed(() => asmrSelectionEntries.value.flatMap(({ option, selected }) =>
+  option.selectable_resources.map(item => selected ? item : { ...item, selected: false })))
+
+function activateAsmrSelection(entry) {
+  if (!entry.selected) {
+    chooseSource(entry.plan, entry.option)
+    entry.plan.selectable_resources.forEach(item => { item.selected = false })
+  }
+  return entry.plan
+}
 
 const previewFileTypeChips = computed(() => {
   const typeOrder = new Map([
@@ -417,15 +411,6 @@ const previewFileTypeChips = computed(() => {
       if (leftOrder !== rightOrder) return leftOrder - rightOrder
       return left.label.localeCompare(right.label, 'zh-CN')
     })
-})
-
-const allPreviewSelectionState = computed(() => {
-  const total = previewSelectableResources.value.length
-  if (!total) return 'none'
-  const selected = previewSelectableResources.value.filter(item => item?.selected).length
-  if (selected === 0) return 'none'
-  if (selected === total) return 'all'
-  return 'partial'
 })
 
 const inventoryLabel = computed(() => {
@@ -499,25 +484,24 @@ function toggleNamingMode() {
   props.settings.namingMode = props.settings.namingMode === 'api' ? 'preserve' : 'api'
 }
 
-function toggleFlattenFiles() {
-  props.settings.flattenFiles = !props.settings.flattenFiles
-}
 const isDirectMode = computed(() => props.enableDirectMode && props.settings?.mode === 'direct')
-const hasAsmrPlans = computed(() => planStates.value.some(plan => plan.source_provider !== 'imoutoheaven' && !plan.source_selection_required))
-const hasYaasPlans = computed(() => planStates.value.some(plan => plan.source_provider === 'imoutoheaven'))
-const yaasDownloadRoots = computed(() => [...new Set(planStates.value.filter(plan => plan.source_provider === 'imoutoheaven').map(plan => plan.download_root).filter(Boolean))])
-const pendingSourcePlans = computed(() => planStates.value.filter(plan => plan.source_selection_required))
-const requiresTargetLibrary = computed(() => hasAsmrPlans.value && !isDirectMode.value)
+const hasAsmrPlans = computed(() => activePlans.value.some(plan => !plan.discovery_only && !plan.preview_error && plan.source_provider !== 'imoutoheaven' && !plan.source_selection_required))
+const hasYaasPlans = computed(() => activePlans.value.some(plan => !plan.discovery_only && !plan.preview_error && plan.source_provider === 'imoutoheaven' && !plan.source_selection_required))
+const yaasDownloadRoots = computed(() => [...new Set(activePlans.value.flatMap(plan => plan.source_options?.length ? plan.source_options : [plan]).filter(plan => plan.source_provider === 'imoutoheaven').map(plan => plan.download_root).filter(Boolean))])
+const pendingSourcePlans = computed(() => activePlans.value.filter(plan => plan.source_selection_required))
+const requiresTargetLibrary = computed(() => activePlans.value.some(plan =>
+  plan.source_provider !== 'imoutoheaven' && !plan.source_selection_required && plan.selected_resource_count > 0) && !isDirectMode.value)
 const primaryActionLabel = computed(() => {
-  if (planStates.value.length && !hasAsmrPlans.value) return '下载原压缩包'
+  if (!activePlans.value.length) return '请选择下载版本'
+  if (pendingSourcePlans.value.length) return '请选择下载来源'
+  if (hasYaasPlans.value && !hasAsmrPlans.value) return '下载原压缩包'
   if (props.actionMode === 'reimport') return '跳过下载直接入库'
   if (isDirectMode.value) return '直接下载到选中的库存路径'
   return '下载'
 })
 const primaryActionDisabled = computed(() => {
-  if (props.starting) return true
-  if (planStates.value.some(plan => plan.source_selection_required)) return true
-  if (planStates.value.some(plan => plan.source_provider === 'imoutoheaven' && !plan.selectable_resources.some(item => item.selected))) return true
+  if (previewLoading.value || props.starting || activePlans.value.some(plan => plan.version_loading || plan.preview_error || plan.discovery_only)) return true
+  if (activePlans.value.some(plan => plan.source_selection_required)) return true
   if (selectedFileCount.value === 0) return true
   if (requiresTargetLibrary.value && !String(props.settings?.targetLibraryId || '').trim()) return true
   if (isDirectMode.value && hasAsmrPlans.value) {
@@ -527,6 +511,7 @@ const primaryActionDisabled = computed(() => {
 })
 
 const openSelect = ref(null)
+watch(settingsSite, () => { openSelect.value = null })
 const selectRoot = ref(null)
 const targetDirectoryDialogVisible = ref(false)
 
@@ -746,20 +731,19 @@ onBeforeUnmount(() => {
 })
 
 watch(() => props.plans, (plans) => {
-  filterApplied.value = false
-  planStates.value = Array.isArray(plans) ? plans.map(buildPlanState) : []
-  // Preload filter rules
-  if (!cachedFilterRules.value) {
-    configApi.get().then(config => {
-      const rules = config?.filter?.rules
-      if (Array.isArray(rules)) cachedFilterRules.value = rules.filter(r => r.enabled !== false && r.action === 'exclude')
-    }).catch(() => {})
-  }
-}, { deep: true, immediate: true })
+  planStates.value = Array.isArray(plans)
+    ? plans.filter(plan => !plan.discovery_only && !plan.preview_error
+      && (plan.selectable_resources?.length || plan.source_selection_required))
+      .map(plan => buildPlanState({ ...plan, selected_version: true,
+        selectable_resources: (plan.selectable_resources || []).map(resource => ({ ...resource,
+          selected: plan.selected_version !== false && resource.selected })) }))
+    : []
+
+}, { immediate: true })
 
 function emitSubmit() {
   if (primaryActionDisabled.value) return
-  if (planStates.value.some(plan => plan.source_selection_required)) {
+  if (activePlans.value.some(plan => plan.source_selection_required)) {
     ElMessage.warning('请为每个作品选择下载来源')
     return
   }
@@ -774,7 +758,7 @@ function emitSubmit() {
   const namingMode = flattenFiles ? 'preserve' : (props.settings.namingMode === 'api' ? 'api' : 'preserve')
   const classifyMode = flattenFiles ? 'none' : (props.settings.classifyMode === 'circle' ? 'circle' : 'none')
 
-  const items = planStates.value
+  const items = activePlans.value
     .map(plan => buildSubmitItem(plan, isDirectMode.value))
     .filter(item => item && item.selected_resources.length > 0)
 
@@ -797,6 +781,7 @@ function emitSubmit() {
 function buildSubmitItem(plan, isDirectMode) {
   if (plan.source_provider === 'imoutoheaven') {
     return { source_provider: plan.source_provider, rjcode: plan.rjcode,
+      download_base_path: String(props.settings.yaasDownloadBasePath || '').trim(),
       canonical_rjcode: plan.canonical_rjcode,
       selected_resources: plan.selectable_resources.filter(item => item.selected).map(item => ({ id: item.id })) }
   }
@@ -908,26 +893,70 @@ function buildPlanState(plan) {
   const tree = buildTree(resources)
   const expandedIds = new Set(tree.map(node => node.id))
   const state = { ...plan, selectable_resources: resources, tree, expandedIds, rootExpanded: true, flatRows: [] }
-  if (plan.source_selection_required) state.sourcePreviews = (plan.source_options || []).map(option => buildPlanState({ ...option, source_selection_required: false, source_options: [] }))
+  if (plan.source_selection_required) state.sourcePreviews = (plan.source_options || []).map(option =>
+    buildPlanState({ ...option, language_label: plan.language_label, source_selection_required: false, source_options: [] }))
   refreshPlanTree(state)
   return state
 }
 
-function chooseSource(plan, option) {
-  Object.assign(plan, buildPlanState({ ...plan, ...option,
-    source_options: plan.source_options, source_errors: plan.source_errors, source_selection_required: false }))
-}
-
-function choosePackage(plan, resource) {
-  plan.selectable_resources.forEach(item => { item.selected = item.id === resource.id && item.complete })
+function chooseSource(plan, option, resource = null) {
+  const previews = plan.sourcePreviews
+  const states = plan.sourceStates || {}
+  if (plan.source_provider) {
+    // 缓存文件选择和展开状态，避免把来源缓存自身递归存进去。
+    const { sourceStates, sourcePreviews, ...currentState } = plan
+    states[plan.source_provider] = currentState
+  }
+  const state = states[option.source_provider] || buildPlanState({ ...plan, ...option,
+    language_label: plan.language_label,
+    source_options: plan.source_options, source_errors: plan.source_errors, source_selection_required: false })
+  Object.assign(plan, state, { sourcePreviews: previews, sourceStates: states, source_selection_required: false })
+  if (plan.source_provider === 'imoutoheaven') {
+    const selected = resource || plan.selectable_resources.find(item => item.selected && item.complete)
+      || plan.selectable_resources.find(item => item.complete)
+    plan.selectable_resources.forEach(item => { item.selected = Boolean(selected && item.id === selected.id && item.complete) })
+  } else if (!plan.selectable_resources.some(item => item.selected)) {
+    plan.selectable_resources.forEach(item => { item.selected = item.complete !== false })
+  }
   refreshPlanTree(plan)
 }
 
-function chooseVersion(plan, version) {
-  Object.assign(plan, buildPlanState({ ...plan, ...version,
-    source_provider: 'asmr.one', source_options: plan.source_options,
-    source_errors: plan.source_errors, source_selection_required: false,
-    version_options: plan.version_options }))
+function chooseSourceRow(plan, option, row) {
+  const selected = !plan.source_selection_required && (plan.source_provider || 'asmr.one') === (option.source_provider || 'asmr.one')
+  if (!selected) {
+    const expandedIds = new Set(option.expandedIds)
+    chooseSource(plan, option)
+    plan.expandedIds = expandedIds
+    plan.selectable_resources.forEach(item => { item.selected = false })
+    refreshPlanTree(plan)
+  }
+  const currentRow = plan.flatRows.find(item => item.id === row.id)
+  if (currentRow) toggleTreeRow(plan, currentRow)
+}
+
+function selectSite(entries, selected) {
+  for (const { plan, option } of entries) {
+    if (!selected) {
+      plan.selectable_resources.forEach(item => { item.selected = false })
+    } else {
+      chooseSource(plan, option)
+      if (plan.source_provider !== 'imoutoheaven') {
+        plan.selectable_resources.forEach(item => { item.selected = item.complete !== false })
+      }
+    }
+    refreshPlanTree(plan)
+  }
+}
+
+function reselectSource(plan) {
+  const states = { ...plan.sourceStates, [plan.source_provider]: { ...plan } }
+  Object.assign(plan, buildPlanState({ ...plan, source_selection_required: true }), { sourceStates: states })
+}
+
+function choosePackage(plan, resource) {
+  const selected = !resource.selected
+  plan.selectable_resources.forEach(item => { item.selected = selected && item.id === resource.id && item.complete })
+  refreshPlanTree(plan)
 }
 
 function buildTree(resources) {
@@ -935,7 +964,7 @@ function buildTree(resources) {
   const dirMap = new Map()
   for (const resource of resources) {
     const path = String(resource.relative_path || resource.file_name || '')
-    const parts = path.split('/').filter(Boolean)
+    const parts = path.replace(/\\/g, '/').split('/').filter(Boolean)
     let children = roots
     let parentPath = ''
     for (let i = 0; i < parts.length; i += 1) {
@@ -1052,23 +1081,12 @@ function getPreviewFileTypeLabel(item) {
   return key === '__no_ext__' ? '无后缀' : key.replace(/^\./, '')
 }
 
-function toggleAllPreviewSelection() {
-  const nextSelected = allPreviewSelectionState.value !== 'all'
-  planStates.value.forEach(plan => {
-    if (plan.source_provider === 'imoutoheaven') return
-    plan.selectable_resources.forEach(item => {
-      item.selected = nextSelected
-    })
-    refreshPlanTree(plan)
-  })
-}
-
 function togglePreviewFileType(chip) {
   const key = String(chip?.key || '').trim()
   if (!key) return
   const nextSelected = String(chip?.state || '') !== 'all'
-  planStates.value.forEach(plan => {
-    if (plan.source_provider === 'imoutoheaven') return
+  asmrSelectionEntries.value.forEach(entry => {
+    const plan = activateAsmrSelection(entry)
     plan.selectable_resources.forEach(item => {
       if (getPreviewFileTypeKey(item) === key) item.selected = nextSelected
     })
@@ -1077,8 +1095,8 @@ function togglePreviewFileType(chip) {
 }
 
 function resetRecommended() {
-  planStates.value.forEach(plan => {
-    if (plan.source_provider === 'imoutoheaven') return
+  asmrSelectionEntries.value.forEach(entry => {
+    const plan = activateAsmrSelection(entry)
     plan.selectable_resources.forEach(item => {
       item.selected = Boolean(item.recommended)
     })
@@ -1086,43 +1104,6 @@ function resetRecommended() {
   })
 }
 
-function toggleFilterSelection() {
-  filterApplied.value = !filterApplied.value
-  const applyFilter = filterApplied.value
-  let compiledRules = null
-  if (applyFilter) {
-    compiledRules = (cachedFilterRules.value || []).map(rule => {
-      try { return { regex: new RegExp(rule.pattern, 'i'), target: rule.target || 'all' } }
-      catch { return null }
-    }).filter(Boolean)
-  }
-  requestAnimationFrame(() => {
-    planStates.value.forEach(plan => {
-      if (plan.source_provider === 'imoutoheaven') return
-      let changed = false
-      plan.selectable_resources.forEach(item => {
-        let newVal
-        if (!applyFilter) {
-          newVal = Boolean(item.recommended)
-        } else {
-          newVal = Boolean(item.recommended)
-          if (newVal && compiledRules.length > 0) {
-            const fileName = String(item.file_name || '')
-            const relativePath = String(item.relative_path || '')
-            const folderPath = relativePath.includes('/') ? relativePath.substring(0, relativePath.lastIndexOf('/')) : ''
-            for (const { regex, target } of compiledRules) {
-              if (target === 'file' && regex.test(fileName)) { newVal = false; break }
-              if (target === 'folder' && folderPath && regex.test(folderPath)) { newVal = false; break }
-              if (target === 'all' && (regex.test(fileName) || regex.test(relativePath))) { newVal = false; break }
-            }
-          }
-        }
-        if (item.selected !== newVal) { item.selected = newVal; changed = true }
-      })
-      if (changed) refreshPlanTree(plan)
-    })
-  })
-}
 
 function formatSize(bytes) {
   const value = Number(bytes || 0)
@@ -1134,13 +1115,28 @@ function formatSize(bytes) {
 </script>
 
 <style>
+.circle-download-preview-modal .circle-download-preview-window {
+  height: min(780px, calc(100dvh - 48px));
+  max-height: calc(100dvh - 48px);
+  aspect-ratio: auto;
+}
+.circle-download-preview-modal .window-header,
+.circle-download-preview-modal .tabs-row,
+.circle-download-preview-modal .footer-row { flex-shrink: 0; }
+.circle-download-preview-modal .tree-panel,
+.circle-download-preview-modal .tree-scroll { min-height: 0; }
+.circle-download-preview-modal .tree-list,
+.circle-download-preview-modal .version-heading { min-width: 0; max-width: 100%; }
+.circle-download-preview-modal .version-heading-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.circle-download-preview-modal .version-work-title { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.65; overflow-wrap: anywhere; white-space: normal; }
 .circle-download-preview-modal .download-source-comparison {
   display: flex;
   flex: 1;
   flex-direction: column;
   min-height: 0;
-  padding: 0 28px 12px;
-  gap: 18px;
+  padding: 0 12px 12px;
+  gap: 12px;
+  flex-shrink: 0;
 }
 .circle-download-preview-modal .source-comparison-intro {
   display: flex;
@@ -1154,18 +1150,13 @@ function formatSize(bytes) {
   opacity: 0.6;
 }
 .circle-download-preview-modal .source-comparison-works {
-  flex: 1;
   min-height: 0;
-  overflow: auto;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
 }
 .circle-download-preview-modal .source-comparison-works::-webkit-scrollbar,
 .circle-download-preview-modal .source-preview-tree::-webkit-scrollbar { display: none; }
 .circle-download-preview-modal .source-comparison-work {
   display: flex;
   flex-direction: column;
-  height: 100%;
   min-height: 0;
   padding-bottom: 8px;
   box-sizing: border-box;
@@ -1231,10 +1222,6 @@ function formatSize(bytes) {
   flex: 1;
   min-height: 0;
   padding: 0 12px 16px;
-  overflow: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
 }
 .circle-download-preview-modal .download-resource-tree { display: flex; flex-direction: column; gap: 6px; }
 .circle-download-preview-modal .resource-file-row { cursor: pointer; transition: background-color 140ms ease; }
@@ -1588,15 +1575,17 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
 }
 
 .circle-download-preview-modal .tree-scroll {
-  height: 100%;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow-y: hidden;
+  overflow-x: hidden;
   padding: 16px;
-  scrollbar-width: thin;
+  scrollbar-width: none;
   scrollbar-color: rgba(119, 129, 141, 0.58) transparent;
 }
 
 .circle-download-preview-modal .tree-scroll::-webkit-scrollbar {
-  width: 8px;
+  display: none;
 }
 
 .circle-download-preview-modal .tree-scroll::-webkit-scrollbar-thumb {
@@ -1607,7 +1596,9 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
 .circle-download-preview-modal .tree-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  flex: 1;
+  min-height: 0;
+  gap: 10px;
 }
 
 .circle-download-preview-modal .tree-row {
@@ -2388,25 +2379,217 @@ html.kikoerumanager-dark .circle-download-preview-modal .archive-package-card.is
   border-color: rgba(148, 163, 184, 0.55);
   background: rgba(15, 23, 42, 0.04);
 }
-.circle-download-preview-modal .version-tag,
-.circle-download-preview-modal .version-select-chip {
+.circle-download-preview-modal .version-tag {
   display: inline-flex; align-items: center; border: 1px solid rgba(59,130,246,.35);
   border-radius: 6px; padding: 3px 8px; font-size: 12px; color: #2563eb;
   background: rgba(59,130,246,.08);
 }
-.circle-download-preview-modal .version-select-chip {
+.circle-download-preview-modal .version-language-card {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+  border: 0;
+  border-radius: 0;
+  padding: 14px 16px;
+  font-size: 12px;
+  text-align: left;
+  color: inherit;
+  background: transparent;
   cursor: pointer;
-  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+  transition: background-color 160ms ease, border-color 160ms ease;
 }
-.circle-download-preview-modal .version-select-chip:hover {
-  color: #1d4ed8;
-  border-color: rgba(37, 99, 235, 0.62);
-  background: rgba(59, 130, 246, 0.14);
+.circle-download-preview-modal .version-language-card:hover {
+  background: rgba(148, 163, 184, 0.12);
+  transform: none;
 }
-.circle-download-preview-modal .version-select-chip:active { background: rgba(59, 130, 246, 0.2); }
-.circle-download-preview-modal .version-select-chip.is-selected { color: white; background: #2563eb; border-color: #2563eb; }
-html.kikoerumanager-dark .circle-download-preview-modal .version-tag,
-html.kikoerumanager-dark .circle-download-preview-modal .version-select-chip { color: #bfdbfe; border-color: rgba(147,197,253,.4); background: rgba(96,165,250,.12); }
-html.kikoerumanager-dark .circle-download-preview-modal .version-select-chip:hover { color: #dbeafe; border-color: rgba(147,197,253,.7); background: rgba(96,165,250,.2); }
-html.kikoerumanager-dark .circle-download-preview-modal .version-select-chip.is-selected { color: white; background: #2563eb; }
+.circle-download-preview-modal .version-language-card:active { background: rgba(148, 163, 184, 0.2); transform: none; }
+.circle-download-preview-modal .version-language-card.is-selected { background: rgba(96, 165, 250, 0.06); }
+.circle-download-preview-modal .version-language-card:disabled { opacity: 0.5; cursor: wait; }
+.circle-download-preview-modal .version-language-card > :not(.version-language-title) { flex-shrink: 0; }
+.circle-download-preview-modal .version-language-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.circle-download-preview-modal .version-section {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 12px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.circle-download-preview-modal .version-section.is-expanded { border-color: rgba(96, 165, 250, 0.4); flex: 1 1 0; min-height: 0; }
+.circle-download-preview-modal .version-heading { flex-shrink: 0; }
+.circle-download-preview-modal .version-file-scroll,
+.circle-download-preview-modal .source-preview-tree { min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; scrollbar-width: thin; }
+.circle-download-preview-modal .version-file-scroll { flex: 1; padding: 0 12px 12px; }
+.circle-download-preview-modal .unified-file-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; scrollbar-width: thin; }
+.circle-download-preview-modal .selected-site-columns { display: flex; gap: 16px; flex: 1; min-height: 0; overflow: hidden; }
+.circle-download-preview-modal .selected-site-group { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.circle-download-preview-modal .selected-site-heading { display: flex; align-items: center; gap: 10px; padding: 8px 8px 14px; font-size: 14px; flex-shrink: 0; }
+.circle-download-preview-modal .selected-site-heading span { font-size: 12px; opacity: .6; }
+.circle-download-preview-modal .resource-tree-entry + .resource-tree-entry { margin-top: 4px; }
+.circle-download-preview-modal .download-source-comparison { flex: 1 1 0; overflow: hidden; }
+.circle-download-preview-modal .source-comparison-intro { flex-shrink: 0; }
+.circle-download-preview-modal .source-comparison-works { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.circle-download-preview-modal .source-comparison-work { flex: 1; overflow: hidden; }
+.circle-download-preview-modal .source-switch-link { align-self: flex-start; padding: 0; border: 0; background: none; color: #60a5fa; font-size: 12px; cursor: pointer; }
+.circle-download-preview-modal .source-switch-link:hover { color: #3b82f6; text-decoration: underline; }
+.circle-download-preview-modal .version-heading-toolbar { padding: 14px 16px 8px; }
+.circle-download-preview-modal .version-work-title { padding: 0 16px 12px; }
+.circle-download-preview-modal .version-details { display: flex; flex-direction: column; gap: 10px; padding: 10px 16px 14px; }
+.circle-download-preview-modal .version-status { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; opacity: 0.7; }
+.circle-download-preview-modal .version-status span + span::before { content: '·'; margin-right: 8px; }
+.circle-download-preview-modal .version-error { padding: 12px; border-radius: 8px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.2); }
+.circle-download-preview-modal .version-error p { margin: 0 0 10px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.circle-download-preview-modal .version-error .stateful-button { align-self: flex-start; }
+@media (max-width: 640px) {
+  .circle-download-preview-modal .version-language-card { flex-wrap: wrap; }
+  .circle-download-preview-modal .version-language-title { flex-basis: 100%; order: 1; }
+}
+html.kikoerumanager-dark .circle-download-preview-modal .version-tag { color: #bfdbfe; border-color: rgba(147,197,253,.4); background: rgba(96,165,250,.12); }
+
+/* 两站并排预览，路径设置保持固定宽度，外缘柔化只作用于弹窗本身。 */
+.custom-preview-modal.circle-download-preview-modal.el-dialog {
+  width: min(1680px, calc(100vw - 64px)) !important;
+  max-width: calc(100vw - 64px) !important;
+  padding: 0;
+  overflow: visible;
+}
+.circle-download-preview-modal .circle-download-preview-window {
+  width: 100%;
+  max-width: none;
+  height: min(760px, calc(100dvh - 96px));
+  max-height: calc(100dvh - 64px);
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: 0 30px 90px #0f172a40, 0 0 24px #64748b26, 0 0 2px #ffffffb3 !important;
+}
+.circle-download-preview-modal .content-grid { gap: 20px; padding: 12px 24px; }
+.circle-download-preview-modal .download-settings-panel {
+  width: 300px;
+  flex: 0 0 300px;
+  gap: 12px;
+  min-height: 0;
+}
+.circle-download-preview-modal .source-settings-body { overflow-y: auto; scrollbar-width: none; }
+.circle-download-preview-modal .source-settings-body::-webkit-scrollbar { display: none; }
+.circle-download-preview-modal .select-grid { grid-template-columns: minmax(0, 1fr); }
+.circle-download-preview-modal .tree-panel { min-width: 0; }
+@media (max-width: 1200px) {
+  .circle-download-preview-modal .download-settings-panel { width: 250px; flex-basis: 250px; }
+  .circle-download-preview-modal .content-grid { padding: 8px 16px; gap: 12px; }
+}
+@media (max-width: 960px) {
+  .circle-download-preview-modal .content-grid { flex-direction: row; }
+  .circle-download-preview-modal .download-settings-panel { width: 220px; flex-basis: 220px; }
+}
+@media (max-width: 640px) {
+  .custom-preview-modal.circle-download-preview-modal.el-dialog { width: calc(100vw - 16px) !important; max-width: calc(100vw - 16px) !important; }
+  .circle-download-preview-modal .circle-download-preview-window { height: calc(100dvh - 24px); max-height: calc(100dvh - 24px); }
+  .circle-download-preview-modal .content-grid { flex-direction: column; }
+  .circle-download-preview-modal .download-settings-panel { width: 100%; flex: 0 0 auto; max-height: 32dvh; }
+  .circle-download-preview-modal .footer-row { padding: 12px 16px; }
+}
+
+/* 交互与状态使用系统灰阶，文件类型图标继续保留各自的辨识色。 */
+.circle-download-preview-modal {
+  --preview-control-text: #3f3f46;
+  --preview-control-bg: #71717a12;
+  --preview-control-border: #71717a40;
+  --preview-selected-bg: #52525b;
+  --preview-selected-text: #fafafa;
+}
+html.kikoerumanager-dark .custom-preview-modal.circle-download-preview-modal {
+  --preview-control-text: #e4e4e7;
+  --preview-control-bg: #ffffff12;
+  --preview-control-border: #ffffff33;
+  --preview-selected-bg: #d4d4d8;
+  --preview-selected-text: #18181b;
+}
+html .custom-preview-modal.circle-download-preview-modal :is(.version-tag, .soft-button.active, .mode-tab-active, .tab-chip-active, .tab-chip-partial),
+html.kikoerumanager-dark .custom-preview-modal.circle-download-preview-modal :is(.version-tag, .soft-button.active, .mode-tab-active, .tab-chip-active, .tab-chip-partial) {
+  color: var(--preview-control-text) !important;
+  background: var(--preview-control-bg) !important;
+  border-color: var(--preview-control-border) !important;
+  box-shadow: none !important;
+}
+html .custom-preview-modal.circle-download-preview-modal :is(.tree-checkbox-on, .tree-checkbox-partial),
+html.kikoerumanager-dark .custom-preview-modal.circle-download-preview-modal :is(.tree-checkbox-on, .tree-checkbox-partial) {
+  background: var(--preview-selected-bg) !important;
+  color: var(--preview-selected-text) !important;
+  border-color: var(--preview-control-border) !important;
+}
+html .custom-preview-modal.circle-download-preview-modal .tree-row-selected,
+html.kikoerumanager-dark .custom-preview-modal.circle-download-preview-modal .tree-row-selected {
+  background: var(--preview-control-bg) !important;
+  box-shadow: inset 0 0 0 1px var(--preview-control-border) !important;
+}
+html .custom-preview-modal.circle-download-preview-modal :is(.primary-cta:not(:disabled), .secondary-cta, .summary-strong, .source-switch-link),
+html.kikoerumanager-dark .custom-preview-modal.circle-download-preview-modal :is(.primary-cta:not(:disabled), .secondary-cta, .summary-strong, .source-switch-link) {
+  color: var(--preview-control-text) !important;
+}
+html .custom-preview-modal.circle-download-preview-modal .primary-cta:not(:disabled),
+html.kikoerumanager-dark .custom-preview-modal.circle-download-preview-modal .primary-cta:not(:disabled) {
+  background: var(--preview-control-bg) !important;
+  border-color: var(--preview-control-border) !important;
+}
+.circle-download-preview-modal .tree-row > .text-blue-400 { color: var(--preview-control-text); }
+html .custom-preview-modal.circle-download-preview-modal .tab-count,
+html.kikoerumanager-dark .custom-preview-modal.circle-download-preview-modal .tab-count {
+  color: var(--preview-control-text) !important;
+  background: var(--preview-control-bg) !important;
+}
+.circle-download-preview-modal .source-settings-body { animation: path-panel-enter 180ms ease; }
+@keyframes path-panel-enter { from { opacity: .4; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+
+<style>
+.circle-download-preview-modal .file-type-toolbar { padding: 0 8px 12px; flex-shrink: 0; }
+/* 说明文字不承担切换操作，交互仅限右侧开关。 */
+.circle-download-preview-modal .action-buttons { grid-template-columns: minmax(0, 1fr); gap: 0; }
+.circle-download-preview-modal .path-option-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 38px;
+  padding: 4px 0;
+  color: var(--preview-control-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.circle-download-preview-modal .path-option-row .option-label { min-width: 0; overflow-wrap: anywhere; cursor: default; }
+html .custom-preview-modal.circle-download-preview-modal .path-option-toggle {
+  position: relative;
+  box-sizing: border-box;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid #a1a1aa;
+  border-radius: 999px;
+  background: transparent !important;
+  box-shadow: none !important;
+  cursor: pointer;
+  transform: none !important;
+  transition: background-color 120ms ease-out, border-color 120ms ease-out;
+}
+.circle-download-preview-modal .path-toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #a1a1aa;
+  transition: transform 120ms ease-out, background-color 120ms ease-out;
+}
+html .custom-preview-modal.circle-download-preview-modal .path-option-toggle.active { background: #52525b !important; border-color: #52525b; }
+.circle-download-preview-modal .path-option-toggle.active .path-toggle-thumb { transform: translateX(14px); background: #fafafa; }
+html.kikoerumanager-dark .custom-preview-modal.circle-download-preview-modal .path-option-toggle.active { background: #27272a !important; border-color: #71717a; }
+html.kikoerumanager-dark .circle-download-preview-modal .path-option-toggle.active .path-toggle-thumb { background: #fafafa; }
+html .custom-preview-modal.circle-download-preview-modal .path-option-toggle:hover:not(:disabled) { border-color: var(--preview-control-text); }
+.circle-download-preview-modal .path-option-toggle:disabled { opacity: .4; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+  .circle-download-preview-modal :is(.path-option-toggle, .path-toggle-thumb) { transition: none; }
+}
 </style>

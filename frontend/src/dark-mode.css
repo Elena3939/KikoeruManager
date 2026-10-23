@@ -5807,3 +5807,28 @@ html.kikoerumanager-dark body #app .library .lib-search-box :is(
   color: #60a5fa !important;
   stroke: currentColor !important;
 }
+
+/* 目录选择器采用统一底色，去掉标题和页脚的厚重灰条。 */
+html.kikoerumanager-dark body .el-dialog.custom-preview-modal.remote-folder-picker-modal .window.glass-shell {
+  background: var(--km-dark-bg) !important;
+  border: 1px solid var(--km-dark-border-soft) !important;
+  outline: none !important;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.36) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html.kikoerumanager-dark body .el-dialog.custom-preview-modal.remote-folder-picker-modal .window.glass-shell :is(.window-header, .footer-row, .explorer-toolbar) {
+  background: transparent !important;
+  border-color: var(--km-dark-border-soft) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body .el-dialog.custom-preview-modal.remote-folder-picker-modal .window.glass-shell .window-header {
+  border-bottom: none !important;
+}
+
+html.kikoerumanager-dark body .el-dialog.custom-preview-modal.remote-folder-picker-modal .window.glass-shell :is(.target-chip, .rel-chip) {
+  background: transparent !important;
+  border-color: transparent !important;
+}

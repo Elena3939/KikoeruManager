@@ -45,5 +45,5 @@ it('预览请求携带用户选定的库存目录', async () => {
     conflictApi: { preview: vi.fn().mockResolvedValue(preview) }
   }
   expect(await handler('getMergePreview', bindings)({ id: 'conflict' }, true, null, 1, target)).toEqual(preview)
-  expect(bindings.conflictApi.preview).toHaveBeenCalledWith('conflict', 'MERGE', target)
+  expect(bindings.conflictApi.preview).toHaveBeenCalledWith('conflict', 'MERGE', target, true)
 })

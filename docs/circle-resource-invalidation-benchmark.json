@@ -1,0 +1,240 @@
+{
+  "dataset": "5000作品，100条分页；100次热读，200次来源变化；纯缓存计算",
+  "baseline": "ec3bc0f6",
+  "rounds": [
+    {
+      "before": {
+        "hot_page": {
+          "median_ms": 0.677,
+          "p95_ms": 0.845
+        },
+        "source_change": {
+          "median_ms": 60.021,
+          "p95_ms": 226.225
+        },
+        "base_builds": 1,
+        "stages": {
+          "_completion_items_with_resources": {
+            "median_ms": 32.141,
+            "p95_ms": 41.695
+          },
+          "_filter_completion_items_for_tab": {
+            "median_ms": 1.537,
+            "p95_ms": 2.075
+          },
+          "_sort_completion_items": {
+            "median_ms": 0.002,
+            "p95_ms": 0.003
+          },
+          "_completion_group_bonus_items": {
+            "median_ms": 14.478,
+            "p95_ms": 16.069
+          },
+          "_completion_summary_from_items": {
+            "median_ms": 7.106,
+            "p95_ms": 7.626
+          }
+        },
+        "gc_collections": [
+          13114,
+          1192,
+          21
+        ]
+      },
+      "after": {
+        "hot_page": {
+          "median_ms": 0.627,
+          "p95_ms": 0.706
+        },
+        "source_change": {
+          "median_ms": 30.098,
+          "p95_ms": 51.424
+        },
+        "base_builds": 1,
+        "stages": {
+          "_completion_items_with_resources": {
+            "median_ms": 2.049,
+            "p95_ms": 22.016
+          },
+          "_filter_completion_items_for_tab": {
+            "median_ms": 1.234,
+            "p95_ms": 18.126
+          },
+          "_sort_completion_items": {
+            "median_ms": 0.001,
+            "p95_ms": 0.002
+          },
+          "_completion_group_bonus_items": {
+            "median_ms": 14.624,
+            "p95_ms": 15.223
+          },
+          "_completion_summary_from_items": {
+            "median_ms": 7.031,
+            "p95_ms": 7.479
+          }
+        },
+        "gc_collections": [
+          10553,
+          959,
+          88
+        ]
+      }
+    },
+    {
+      "after": {
+        "hot_page": {
+          "median_ms": 0.648,
+          "p95_ms": 0.759
+        },
+        "source_change": {
+          "median_ms": 30.581,
+          "p95_ms": 51.31
+        },
+        "base_builds": 1,
+        "stages": {
+          "_completion_items_with_resources": {
+            "median_ms": 2.051,
+            "p95_ms": 20.455
+          },
+          "_filter_completion_items_for_tab": {
+            "median_ms": 1.233,
+            "p95_ms": 18.345
+          },
+          "_sort_completion_items": {
+            "median_ms": 0.001,
+            "p95_ms": 0.002
+          },
+          "_completion_group_bonus_items": {
+            "median_ms": 14.613,
+            "p95_ms": 15.263
+          },
+          "_completion_summary_from_items": {
+            "median_ms": 7.016,
+            "p95_ms": 7.516
+          }
+        },
+        "gc_collections": [
+          10553,
+          959,
+          88
+        ]
+      },
+      "before": {
+        "hot_page": {
+          "median_ms": 0.636,
+          "p95_ms": 0.694
+        },
+        "source_change": {
+          "median_ms": 60.25,
+          "p95_ms": 224.82
+        },
+        "base_builds": 1,
+        "stages": {
+          "_completion_items_with_resources": {
+            "median_ms": 32.266,
+            "p95_ms": 72.829
+          },
+          "_filter_completion_items_for_tab": {
+            "median_ms": 1.535,
+            "p95_ms": 1.892
+          },
+          "_sort_completion_items": {
+            "median_ms": 0.002,
+            "p95_ms": 0.003
+          },
+          "_completion_group_bonus_items": {
+            "median_ms": 14.483,
+            "p95_ms": 15.315
+          },
+          "_completion_summary_from_items": {
+            "median_ms": 7.103,
+            "p95_ms": 8.213
+          }
+        },
+        "gc_collections": [
+          13115,
+          1192,
+          21
+        ]
+      }
+    },
+    {
+      "before": {
+        "hot_page": {
+          "median_ms": 0.629,
+          "p95_ms": 0.715
+        },
+        "source_change": {
+          "median_ms": 60.08,
+          "p95_ms": 228.948
+        },
+        "base_builds": 1,
+        "stages": {
+          "_completion_items_with_resources": {
+            "median_ms": 32.303,
+            "p95_ms": 68.625
+          },
+          "_filter_completion_items_for_tab": {
+            "median_ms": 1.536,
+            "p95_ms": 1.81
+          },
+          "_sort_completion_items": {
+            "median_ms": 0.002,
+            "p95_ms": 0.003
+          },
+          "_completion_group_bonus_items": {
+            "median_ms": 14.432,
+            "p95_ms": 14.985
+          },
+          "_completion_summary_from_items": {
+            "median_ms": 7.118,
+            "p95_ms": 7.451
+          }
+        },
+        "gc_collections": [
+          13115,
+          1192,
+          21
+        ]
+      },
+      "after": {
+        "hot_page": {
+          "median_ms": 0.61,
+          "p95_ms": 0.696
+        },
+        "source_change": {
+          "median_ms": 31.996,
+          "p95_ms": 56.708
+        },
+        "base_builds": 1,
+        "stages": {
+          "_completion_items_with_resources": {
+            "median_ms": 2.134,
+            "p95_ms": 24.626
+          },
+          "_filter_completion_items_for_tab": {
+            "median_ms": 1.254,
+            "p95_ms": 20.018
+          },
+          "_sort_completion_items": {
+            "median_ms": 0.002,
+            "p95_ms": 0.003
+          },
+          "_completion_group_bonus_items": {
+            "median_ms": 14.72,
+            "p95_ms": 16.684
+          },
+          "_completion_summary_from_items": {
+            "median_ms": 7.148,
+            "p95_ms": 8.52
+          }
+        },
+        "gc_collections": [
+          10553,
+          959,
+          88
+        ]
+      }
+    }
+  ]
+}

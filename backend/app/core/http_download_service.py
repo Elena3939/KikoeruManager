@@ -4527,9 +4527,9 @@ class HttpDownloadService:
             index += 1
         return candidate
 
-    def _resolve_target(self, filename: str, target_subdir: str = "", conflict_policy: str = "") -> Dict[str, str]:
+    def _resolve_target(self, filename: str, target_subdir: str = "", conflict_policy: str = "", *, download_root: str = "") -> Dict[str, str]:
         cfg = self._config()
-        root = self._download_root()
+        root = os.path.abspath(download_root) if download_root else self._download_root()
         subdir = self._safe_subdir(target_subdir)
         target_dir = self._safe_join(root, subdir)
         safe_name = self._sanitize_filename(filename)
@@ -6080,6 +6080,14 @@ class HttpDownloadService:
         if str(getattr(cfg, "engine", "aria2") or "aria2").lower() != "aria2":
             raise HttpDownloadError("当前仅支持 aria2 下载引擎")
 
+        download_root = self._download_root()
+        if metadata.get("resource_source") == "imoutoheaven":
+            custom_root = str(metadata.get("download_base_path") or "").strip()
+            if custom_root:
+                if not os.path.isabs(custom_root):
+                    raise HttpDownloadError("YAAS 保存目录必须是服务器上的绝对路径")
+                download_root = os.path.abspath(custom_root)
+
         target_subdir = str(metadata.get("target_subdir") or "").strip()
         conflict_policy = str(metadata.get("conflict_policy") or getattr(cfg, "conflict_policy", "resume") or "resume")
         task.task_metadata.pop("pikpak_cleanup_result", None)
@@ -6099,7 +6107,7 @@ class HttpDownloadService:
                 raise HttpDownloadError("YAAS 文件大小已变化，请重新查询资源")
             stem, ext = self._split_custom_archive_filename(resolved['filename'])
             filename = self._filename_with_extract_password(stem, ARCHIVE_PASSWORD, ext)
-            target = self._resolve_target(filename, '', conflict_policy)
+            target = self._resolve_target(filename, '', conflict_policy, download_root=download_root)
             preview = {"items": [{**resolved, **target, "ok": True, "source": "imoutoheaven",
                 "public_url": raw_urls[0], "masked_url": raw_urls[0], "resumable": True}],
                 "source_modes": ["imoutoheaven"], "resolved_urls": [], "source_items": []}
@@ -6207,7 +6215,7 @@ class HttpDownloadService:
                     gofile_retry_attempt, int(metadata.get("retry_count") or 0)
                 )
 
-        os.makedirs(self._download_root(), exist_ok=True)
+        os.makedirs(download_root, exist_ok=True)
         gids: List[str] = []
         gofile_paused_gids: List[str] = []
         gofile_max_active_files = self._gofile_max_active_files()
@@ -6322,7 +6330,7 @@ class HttpDownloadService:
                 if isinstance(item, dict)
             ],
             "source_modes": source_modes,
-            "download_root": self._download_root(),
+            "download_root": download_root,
             "download_files": download_files,
             "download_runtime": {
                 "status": "downloading",
@@ -6338,11 +6346,11 @@ class HttpDownloadService:
             },
             "failed_files": failed_items,
             "progress_log": list(task.task_metadata.get("progress_log") or []),
-            "final_output_path": self._download_root(),
+            "final_output_path": download_root,
             "cleanup_mode": "files_only",
         })
-        task.output_path = self._download_root()
-        task.task_metadata["final_output_path"] = self._download_root()
+        task.output_path = download_root
+        task.task_metadata["final_output_path"] = download_root
         submit_parts = []
         if google_drive_items:
             submit_parts.append(f"{len(google_drive_items)} 个 Google Drive 下载")
@@ -6578,7 +6586,7 @@ class HttpDownloadService:
         task.task_metadata.update({
             "download_files": download_files,
             "failed_files": [*failed_items, *[row for row in failed_rows if row not in failed_items]],
-            "final_output_path": self._download_root(),
+            "final_output_path": download_root,
             "performance_metrics": {
                 "duration_ms": duration_ms,
                 "downloaded_bytes": downloaded_bytes,
@@ -6670,7 +6678,7 @@ class HttpDownloadService:
             "success": not bool(merged_failed_rows),
             "partial_success": bool(success_files and merged_failed_rows),
             "status": final_status,
-            "download_root": self._download_root(),
+            "download_root": download_root,
             "downloaded_files": success_files,
             "failed_files": merged_failed_rows,
             "pikpak_cleanup_result": pikpak_cleanup_result,

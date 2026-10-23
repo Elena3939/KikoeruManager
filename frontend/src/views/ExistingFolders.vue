@@ -2041,9 +2041,10 @@ function getConflictTypeLabel(conflictType) {
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-.option-stack { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.option-stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .option-row {
   width: 100%;
+  min-width: 0;
   min-height: 58px;
   border: 1px solid var(--ef-border-soft);
   border-radius: 12px;
@@ -2074,6 +2075,7 @@ function getConflictTypeLabel(conflictType) {
   background: var(--ef-surface);
 }
 .option-row-main { min-width: 0; display: flex; align-items: center; gap: 10px; color: var(--ef-muted); }
+.option-row-main > div { min-width: 0; overflow-wrap: anywhere; }
 .option-icon {
   width: 16px;
   height: 16px;
@@ -2772,23 +2774,21 @@ html.kikoerumanager-dark .ef-switch.checked .ef-switch-thumb { background: #1118
 .dialog-ep-btn.primary:hover { box-shadow: 0 10px 22px rgba(15,23,42,0.26); }
 
 .library-target-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: -4px 0 2px 42px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+  margin: -4px 0 2px;
   padding: 9px 10px;
   border: 1px solid var(--ef-border);
   border-radius: 10px;
   background: var(--ef-surface-soft);
 }
-.library-target-label { display: inline-flex; align-items: center; gap: 7px; color: var(--ef-text-soft); font-size: 12px; font-weight: 800; }
-.library-target-select { min-width: 170px; max-width: 55%; height: 30px; border: 1px solid var(--ef-border-strong); border-radius: 8px; background: var(--ef-surface); color: var(--ef-text); padding: 0 9px; font-size: 12px; }
+.library-target-label { display: inline-flex; align-items: center; gap: 7px; color: var(--ef-text-soft); font-size: 12px; font-weight: 800; white-space: nowrap; }
+.library-target-select { min-width: 0; width: 100%; max-width: 100%; height: 30px; border: 1px solid var(--ef-border-strong); border-radius: 8px; background: var(--ef-surface); color: var(--ef-text); padding: 0 9px; font-size: 12px; }
 .library-target-select:focus { outline: none; box-shadow: none; }
 
 @media (max-width: 640px) {
-  .library-target-row { margin-left: 0; align-items: stretch; flex-direction: column; }
-  .library-target-select { max-width: none; width: 100%; }
   .task-row { grid-template-columns: 1fr auto; }
   .task-id { display: none; }
   .task-path { grid-column: 1; }

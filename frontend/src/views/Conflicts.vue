@@ -5,7 +5,7 @@
       :icon="ShieldAlert"
       icon-color="var(--km-nav-conflicts-icon)"
       title="问题作品"
-      subtitle="重复作品、解压失败、处理失败的集中处理站"
+      subtitle="重复作品、解压失败、导入失败与 API 重命名失败的集中处理站"
     >
       <span v-if="batchRunning" class="lib-chip lib-chip-info">
         <AppLoadingAnimation variant="inline" :size="14" />
@@ -185,7 +185,8 @@
                   </div>
                   <div class="conflicts-list-card-meta">
                     <span class="conflicts-list-card-type">
-                      <FileWarning v-if="isProblemConflict(conflict)" :size="13" :stroke-width="2.2" class="text-red-400" />
+                      <FileEdit v-if="isApiRenameConflict(conflict)" :size="13" :stroke-width="2.2" class="conflicts-api-rename-icon" />
+                      <FileWarning v-else-if="isProblemConflict(conflict)" :size="13" :stroke-width="2.2" class="text-red-400" />
                       <Copy v-else :size="13" :stroke-width="2.2" class="text-indigo-400" />
                       {{ getConflictTypeDetail(conflict) }}
                     </span>
@@ -248,7 +249,7 @@
                   </span>
                 </div>
                 <p class="conflicts-detail-subtitle">
-                  <span class="conflicts-detail-dot" :class="isProblemConflict(activeConflict) ? 'is-danger' : 'is-info'"></span>
+                  <span class="conflicts-detail-dot" :class="isApiRenameConflict(activeConflict) ? 'is-api-rename' : isProblemConflict(activeConflict) ? 'is-danger' : 'is-info'"></span>
                   {{ getConflictTypeDetail(activeConflict) }}
                 </p>
               </div>
@@ -298,17 +299,19 @@
                   <FileEdit v-else class="w-4 h-4" />
                   手动重命名分卷
                 </button>
-                <button
+                <StatefulButton
                   v-if="canUseAction(activeConflict, 'RETRY')"
+                  unstyled
                   type="button"
-                  class="conflicts-action-btn is-emerald"
+                  class="conflicts-action-btn"
+                  :class="isApiRenameConflict(activeConflict) ? 'is-primary' : 'is-emerald'"
                   :disabled="batchRunning || isConflictBusy(activeConflict.id)"
                   @click="handleRetryDispatch(activeConflict)"
                 >
-                  <Loader2 v-if="isConflictRetrying(activeConflict)" class="conflicts-action-spinner" />
+                  <FileEdit v-if="isApiRenameConflict(activeConflict)" class="w-4 h-4" />
                   <RotateCcw v-else class="w-4 h-4" />
                   {{ retryDispatchLabel(activeConflict) }}
-                </button>
+                </StatefulButton>
                 <button
                   v-if="canUseAction(activeConflict, 'SKIP')"
                   type="button"
@@ -394,15 +397,19 @@
             <div
               v-if="isProblemConflict(activeConflict)"
               class="conflicts-detail-alert"
-              :class="isExtractFailed(activeConflict) ? 'is-warning' : 'is-danger'"
+              :class="isApiRenameConflict(activeConflict) ? 'is-api-rename' : isExtractFailed(activeConflict) ? 'is-warning' : 'is-danger'"
             >
-              <AlertTriangle class="w-5 h-5 flex-shrink-0 mt-0.5" :class="isExtractFailed(activeConflict) ? 'text-amber-500' : 'text-red-500'" />
+              <FileEdit v-if="isApiRenameConflict(activeConflict)" class="w-5 h-5 flex-shrink-0 mt-0.5" />
+              <AlertTriangle v-else class="w-5 h-5 flex-shrink-0 mt-0.5" :class="isExtractFailed(activeConflict) ? 'text-amber-500' : 'text-red-500'" />
               <div>
                 <h4 class="font-semibold mb-1">
                   {{ getProblemConflictAlertTitle(activeConflict) }}
                 </h4>
                 <p class="text-sm opacity-90 leading-relaxed">
                   {{ activeConflict.new_metadata?.error_message || getProblemConflictAlertMessage(activeConflict) }}
+                </p>
+                <p v-if="isApiRenameConflict(activeConflict) && activeConflict.new_metadata?.error_message" class="text-sm mt-2 leading-relaxed">
+                  {{ getProblemConflictAlertMessage(activeConflict) }}
                 </p>
               </div>
             </div>
@@ -625,7 +632,8 @@
 
     <BatchRetryPasswordDialog
       v-model="batchRetryDialogVisible"
-      :conflicts="batchRetryTargets"
+      :conflicts="batchRetryPasswordTargets"
+      :api-rename-count="batchRetryTargets.length - batchRetryPasswordTargets.length"
       :encoding-options="filenameEncodingOptions"
       @confirm="handleBatchRetryConfirm"
     />
@@ -766,6 +774,7 @@
 <script setup>
 import { computed, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { aggregateConflictRjcodes, formatConflictLabel } from '../utils/conflictLabel'
+import { isApiRenameConflict, passwordRetryTargets, requestRetryInput, buildConflictRetryPayload } from '../utils/conflictRetry'
 import { useBackgroundWorkbenchManager } from '../composables/useBackgroundWorkbenchManager'
 import { ElMessage } from 'element-plus'
 import {
@@ -786,6 +795,7 @@ import AppPageHeader from '../components/common/AppPageHeader.vue'
 import StatefulButton from '../components/ui/stateful-button.vue'
 import { libraryEntryIconFor, libraryEntryMetaFor } from '../components/library/_libraryFileKind'
 import { conflictApi } from '../api'
+import { getExistingConflictPath, preserveConflictStats, shouldRefreshConflictTarget } from '../utils/conflictContext'
 import { normalizeTaskCenterRealtimePayloads } from '../composables/taskCenterEventUtils'
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
@@ -805,6 +815,7 @@ let backfillAbortController = null
 // in-flight promise 复用：retry 轮询 / SSE 推送 / 用户手动刷新可能并发触发 fetchConflicts，
 // 这里让所有调用方共享同一个 promise，确保后端只跑一次完整列表查询 + 状态恢复。
 let pendingFetchPromise = null
+let refreshAfterPendingFetch = false
 const activeConflictId = ref(localStorage.getItem(ACTIVE_CONFLICT_STORAGE_KEY) || '')
 const selectedConflictIds = ref([])
 const selectionAnchorId = ref('')
@@ -869,6 +880,7 @@ const filenamePreviewState = reactive({})
 
 const batchRetryDialogVisible = ref(false)
 const batchRetryTargets = ref([])
+const batchRetryPasswordTargets = computed(() => passwordRetryTargets(batchRetryTargets.value))
 
 // 单条问题项的多密码重试弹窗。
 // askRetryPassword 触发时塞入 conflict + resolver，dialog confirm/cancel 后唤醒 promise。
@@ -1099,7 +1111,7 @@ watch([mergePreviewProgress, mergeSubmitting, mergeConflictId, mergeSubmitError]
   const failed = progress.status === 'failed' || Boolean(mergeSubmitError.value)
   mergeWorkbenchManager.patchWorkbenchState(mergeWorkbenchId, {
     summary: { subtitle: formatConflictLabel(mergeConflict.value), text: mergeSubmitError.value || progress.message },
-    progress: { percentage: failed ? 0 : mergeSubmitting.value ? 99 : progress.percent, label: progress.stage_label },
+    progress: { percentage: failed ? 0 : progress.percent, label: progress.stage_label },
     status: {
       key: failed ? 'failed' : mergeSubmitting.value ? 'running' : progress.status,
       label: failed ? '合并失败，请查看原因' : mergeSubmitting.value ? '正在提交合并结果' : progress.stage_label,
@@ -1139,7 +1151,7 @@ watch(conflictFilter, () => {
 })
 
 onMounted(() => {
-  fetchConflicts()
+  void restoreBackgroundMergePreview()
   // ESC 关闭文件名预览弹窗。
   window.addEventListener('keydown', _onFpDlgKeydown)
   window.addEventListener('kikoerumanager:events:message', handleConflictRealtimeEvent)
@@ -1155,6 +1167,7 @@ onActivated(() => {
 })
 
 onUnmounted(() => {
+  clearTimeout(waitingTargetRefreshTimer)
   cancelMergePreviewPolling()
   mergeWorkbenchManager.removeWorkbench(mergeWorkbenchId)
   window.removeEventListener('keydown', _onFpDlgKeydown)
@@ -1178,15 +1191,20 @@ onUnmounted(() => {
 })
 
 
-async function fetchConflicts() {
+async function fetchConflicts({ refreshAfterPending = false } = {}) {
   // in-flight 复用：已有 fetch 在跑则共享同一个 promise，避免重复 list 请求 / DB 查询 / Semaphore 排队。
   if (pendingFetchPromise) {
+    if (refreshAfterPending) refreshAfterPendingFetch = true
     return pendingFetchPromise
   }
   pendingFetchPromise = (async () => {
     loading.value = true
     errorMessage.value = ''
     try {
+      // 新列表优先，旧统计请求不能在稍后把已更新的目录覆盖回占位状态。
+      backfillAbortController?.abort()
+      backfillRequestId += 1
+      statsBackfilling.value = false
       // 阶段 1：不带 stats 立即拿列表（远程 stat 跳过，秒回），保证界面先渲染出来。
       const data = await conflictApi.list({ includeStats: false })
       const incoming = data.conflicts || []
@@ -1194,20 +1212,7 @@ async function fetchConflicts() {
       // 否则模板里的 `displayStatSize` 在 statsBackfilling=true 时会瞬间回退到"统计中…"，
       // 再被阶段 2 覆盖回真实大小 → 详情区"大小 / 创建时间"反复闪烁。
       const previousMap = new Map(conflicts.value.map(item => [item.id, item]))
-      conflicts.value = incoming.map(next => {
-        const prev = previousMap.get(next.id)
-        if (!prev) return next
-        const nextSrcStats = next.context?.source?.stats ?? prev.context?.source?.stats ?? null
-        const nextExistingStats = next.context?.existing?.stats ?? prev.context?.existing?.stats ?? null
-        return {
-          ...next,
-          context: {
-            ...(next.context || {}),
-            source: { ...(next.context?.source || {}), stats: nextSrcStats },
-            existing: { ...(next.context?.existing || {}), stats: nextExistingStats },
-          },
-        }
-      })
+      conflicts.value = incoming.map(next => preserveConflictStats(next, previousMap.get(next.id)))
       reconcileLocalRetryingConflicts()
       syncSelectedConflicts()
       syncActiveConflict()
@@ -1231,6 +1236,11 @@ async function fetchConflicts() {
     await pendingFetchPromise
   } finally {
     pendingFetchPromise = null
+    // 请求期间收到入库完成事件时，再读一次，不能复用事件发生前的旧响应。
+    if (refreshAfterPendingFetch) {
+      refreshAfterPendingFetch = false
+      await fetchConflicts()
+    }
   }
 }
 
@@ -1267,7 +1277,7 @@ async function backfillConflictStats() {
     conflicts.value = conflicts.value.map(existing => {
       const incoming = incomingMap.get(existing.id)
       if (!incoming) return existing
-      return { ...existing, context: incoming.context }
+      return { ...existing, context: incoming.context, available_actions: incoming.available_actions }
     })
   } catch (error) {
     // 主动 abort 走的是 axios 'CanceledError'（code 'ERR_CANCELED'），属于正常流程，静默丢弃。
@@ -1343,11 +1353,13 @@ function isProblemConflict(conflict) {
 }
 
 function getProblemConflictAlertTitle(conflict) {
+  if (isApiRenameConflict(conflict)) return 'API 重命名失败'
   if (isDisguisedVolumeConflict(conflict)) return '分卷压缩包命名异常，非重复冲突'
   return isExtractFailed(conflict) ? '解压阶段失败，非重复冲突' : '处理中途失败，非重复冲突'
 }
 
 function getProblemConflictAlertMessage(conflict) {
+  if (isApiRenameConflict(conflict)) return '重试将重新查询 DLsite 元数据，并在原库存位置重命名。无需密码。'
   if (isDisguisedVolumeConflict(conflict)) {
     return '检测到疑似分卷压缩包，但部分分卷后缀被伪装或无法识别。请使用“手动重命名分卷”确认文件名后再重试。'
   }
@@ -1358,7 +1370,7 @@ function canPreviewFilenames(conflict) {
   // 只有"文件名乱码"类失败才需要展示预览按钮：getGarbledMeta 已经按
   // extract_failure_reason === 'garbled_filename' 或 garbled_filename_sample/top_samples
   // 有值判定。密码错 / 一般解压失败 / 群晖错误等不暴露该入口，避免和重试流程不一致。
-  return isFailureConflict(conflict) && Boolean(conflict?.id) && Boolean(getGarbledMeta(conflict))
+  return !isApiRenameConflict(conflict) && isFailureConflict(conflict) && Boolean(conflict?.id) && Boolean(getGarbledMeta(conflict))
 }
 
 function ensureFilenamePreviewState(conflict) {
@@ -1487,6 +1499,7 @@ function isPasswordFailureConflict(conflict) {
 }
 
 function getGarbledMeta(conflict) {
+  if (isApiRenameConflict(conflict)) return null
   const metadata = conflict?.new_metadata || {}
   const sample = metadata.garbled_filename_sample || ''
   const topSamples = Array.isArray(metadata.garbled_filename_top_samples)
@@ -1744,10 +1757,6 @@ function getConflictSourcePath(conflict) {
   return conflict?.context?.source?.resolved_path || conflict?.context?.source?.path || conflict?.new_path || '-'
 }
 
-function getExistingConflictPath(conflict) {
-  return conflict?.context?.existing?.path || conflict?.existing_path || '-'
-}
-
 function getConflictLocationContext(conflict) {
   return isProblemConflict(conflict) ? conflict?.context?.source : conflict?.context?.existing
 }
@@ -1809,7 +1818,22 @@ function getConflictTaskId(conflict) {
   ).trim()
 }
 
+let waitingTargetRefreshTimer = null
+
 function handleConflictRealtimeEvent(event) {
+  // 并发入库的是另一条任务，不能只监听当前问题项的 task_id。
+  const detail = event?.detail || {}
+  const taskPayloads = normalizeTaskCenterRealtimePayloads(detail)
+  if (shouldRefreshConflictTarget(conflicts.value, detail, taskPayloads) && !waitingTargetRefreshTimer) {
+    waitingTargetRefreshTimer = setTimeout(() => {
+      waitingTargetRefreshTimer = null
+      void fetchConflicts({ refreshAfterPending: true })
+    }, 500)
+  }
+  if (event?.detail?.type === 'conflict.changed') {
+    void fetchConflicts({ refreshAfterPending: true })
+    return
+  }
   const payloads = normalizeTaskCenterRealtimePayloads(event?.detail || {})
     .filter(payload => payload?.type === 'task_center_changed')
   for (const payload of payloads) {
@@ -2098,6 +2122,38 @@ async function handleFilenamePreview(conflict) {
   }
 }
 
+async function restoreBackgroundMergePreview() {
+  await fetchConflicts()
+  try {
+    const { jobs = [] } = await conflictApi.listMergePreviewJobs()
+    const job = jobs.find(item => item.status === 'running' && conflicts.value.some(conflict => conflict.id === item.conflict_id))
+      || jobs.find(item => conflicts.value.some(conflict => conflict.id === item.conflict_id))
+    const conflict = conflicts.value.find(item => item.id === job?.conflict_id)
+    if (conflict && !mergeConflictId.value) {
+      void (async () => {
+        const execution = await conflictApi.mergeExecution(conflict.id)
+        if (execution.status === 'running' || execution.status === 'failed') {
+          await openMergeWorkbench(conflict, false, null, true)
+          mergeSubmitting.value = execution.status === 'running'
+          try {
+            await observeMergeExecution(conflict.id, execution)
+            removeConflict(conflict.id)
+            mergeWorkbenchManager.closeWorkbench(mergeWorkbenchId)
+          } catch (error) {
+            mergeSubmitError.value = resolveErrorMessage(error, '后台合并失败')
+          } finally {
+            mergeSubmitting.value = false
+          }
+        } else {
+          await openMergeWorkbench(conflict, false, job.target_context || null, true)
+        }
+      })().catch(error => console.warn('恢复合并执行失败:', error))
+    }
+  } catch (error) {
+    console.warn('恢复后台合并进度失败:', error)
+  }
+}
+
 async function getMergePreview(conflict, forceRefresh = false, onProgress = null, runToken = mergePreviewRunToken, mergeTarget = null) {
   let preview = mergePreviewCache[conflict.id]
   if (preview && !forceRefresh) return preview
@@ -2105,17 +2161,9 @@ async function getMergePreview(conflict, forceRefresh = false, onProgress = null
   // KEEP_NEW 仍然同步返回 preview。这里兼容两种返回：
   // - 老 sync 路径：直接拿 preview 缓存
   // - 新 async 路径：轮询 /preview-job/{job_id} 直到 status=completed/failed
-  const initial = await conflictApi.preview(conflict.id, 'MERGE', mergeTarget)
+  const initial = await conflictApi.preview(conflict.id, 'MERGE', mergeTarget, forceRefresh)
   if (runToken !== mergePreviewRunToken) {
-    if (initial?.async && initial?.job_id) {
-      try {
-        await conflictApi.cancelMergePreviewJob(conflict.id, initial.job_id)
-      } catch (error) {
-        if (error?.response?.status !== 404) {
-          console.warn('清理已失效的合并预览任务失败:', error)
-        }
-      }
-    }
+    // 页面观察者失效只断开轮询，不能取消属于后台的解压任务。
     const err = new Error('合并预览已取消')
     err.code = 'MERGE_PREVIEW_CANCELLED'
     throw err
@@ -2236,13 +2284,35 @@ function cancelMergePreviewPolling() {
 async function resolveMerge(conflict, preview = null, decisions = null) {
   const effectivePreview = preview || await getMergePreview(conflict)
   const effectiveDecisions = decisions || mergeDecisionCache[conflict.id] || effectivePreview.default_decisions || {}
-  await conflictApi.resolve(conflict.id, {
+  const response = await conflictApi.resolve(conflict.id, {
     action: 'MERGE',
     merge_session_id: effectivePreview.session_id,
     merge_decisions: effectiveDecisions
   })
+  if (response?.async) await observeMergeExecution(conflict.id, response)
   removeConflict(conflict.id)
   return effectivePreview
+}
+
+async function observeMergeExecution(conflictId, initial) {
+  let snapshot = initial
+  let failures = 0
+  while (true) {
+    mergePreviewProgress.value = {
+      ...snapshot, stage: 'merge', stage_label: snapshot.status === 'completed' ? '合并完成' : '后台合并',
+    }
+    if (snapshot.status === 'completed') return snapshot.result
+    if (snapshot.status === 'failed') throw new Error(snapshot.error || '后台合并失败')
+    if (snapshot.status !== 'running') throw new Error('后台合并状态已丢失，请检查服务器运行状态')
+    await new Promise(resolve => setTimeout(resolve, 1200))
+    try {
+      snapshot = await conflictApi.mergeExecution(conflictId)
+      failures = 0
+    } catch (error) {
+      failures += 1
+      if (failures >= 5) throw new Error('暂时无法连接后台，合并任务继续运行；刷新页面可重新查看状态')
+    }
+  }
 }
 
 async function presentBatchResult(actionLabel, successes, failures, extraMessage = '') {
@@ -2279,22 +2349,17 @@ async function presentBatchResult(actionLabel, successes, failures, extraMessage
 async function handleRetry(conflict) {
   markAction(conflict.id, 'RETRY', true)
   try {
-    const retryInput = await askRetryPassword(conflict)
+    const retryInput = await requestRetryInput(conflict, askRetryPassword)
     if (retryInput.cancelled) return
-    const retryPayload = {}
-    // 新版 ConflictRetryRequest 接受 passwords (list)：后端按序依次试，任一命中即成功
-    const passwords = Array.isArray(retryInput.passwords) ? retryInput.passwords.filter(p => p) : []
-    if (passwords.length) {
-      retryPayload.passwords = passwords
-      retryPayload.password = passwords[0]  // 兼容字段：旧后端如果还在生效会读这个
-    }
-    if (retryInput.filenameEncoding) retryPayload.filename_encoding = retryInput.filenameEncoding
-    if (retryInput.ignoreGarbled) retryPayload.ignore_garbled = true
+    const retryPayload = buildConflictRetryPayload(conflict, retryInput)
+    const passwords = retryPayload.passwords || []
     const result = await startRetry(conflict, retryPayload)
     markConflictRetrying(conflict.id, true)
     const passwordCount = passwords.length
     let successMessage
-    if (result.already_running) {
+    if (isApiRenameConflict(conflict)) {
+      successMessage = result.already_running ? 'API 重命名重试任务正在运行，持续跟踪结果' : '已提交 API 重命名重试，持续跟踪结果'
+    } else if (result.already_running) {
       if (passwordCount > 1) successMessage = `已将 ${passwordCount} 个指定密码应用到现有重试任务，后台持续跟踪结果`
       else if (passwordCount === 1) successMessage = '已将指定密码应用到现有重试任务，后台持续跟踪结果'
       else successMessage = '已存在重试任务，后台持续跟踪结果'
@@ -2655,6 +2720,7 @@ function handleBatchRetry() {
     return
   }
   batchRetryTargets.value = targets
+  if (!batchRetryPasswordTargets.value.length) return handleBatchRetryConfirm([])
   batchRetryDialogVisible.value = true
 }
 
@@ -2669,16 +2735,7 @@ async function handleBatchRetryConfirm(entries) {
     for (const conflict of targets) {
       try {
         const input = inputMap[conflict.id] || {}
-        const pw = String(input.password || '').trim()
-        const encoding = String(input.filenameEncoding || '').trim()
-        const payload = {}
-        if (pw) {
-          payload.passwords = [pw]
-          payload.password = pw
-        }
-        if (encoding && encoding !== 'auto') {
-          payload.filename_encoding = encoding
-        }
+        const payload = buildConflictRetryPayload(conflict, input)
         const result = await startRetry(conflict, payload)
         markConflictRetrying(conflict.id, true)
         successes.push(conflict)
@@ -2760,10 +2817,10 @@ function retryDispatchLabel(conflict) {
   if (isBatchableActive(conflict, 'RETRY')) {
     return `批量重试 (${selectedActionCount('RETRY')})`
   }
-  return '重试'
+  return isApiRenameConflict(conflict) ? '重试 API 重命名' : '重试'
 }
 
-async function openMergeWorkbench(conflict, forceRefresh = false, mergeTarget = null) {
+async function openMergeWorkbench(conflict, forceRefresh = false, mergeTarget = null, background = false) {
   if (mergeLoading.value || mergeSubmitting.value) {
     mergeWorkbenchManager.resumeWorkbench(mergeWorkbenchId)
     if (mergeConflictId.value !== conflict.id) ElMessage.info('请先完成或终止当前合并，再处理其他作品')
@@ -2774,7 +2831,8 @@ async function openMergeWorkbench(conflict, forceRefresh = false, mergeTarget = 
   mergeConflictId.value = conflict.id
   mergePreviewJobId.value = ''
   mergePreviewCanceling.value = false
-  mergeDialogVisible.value = true
+  mergeDialogVisible.value = !background
+  if (background) mergeWorkbenchManager.backgroundWorkbench(mergeWorkbenchId)
   mergeLoading.value = true
   mergePreview.value = null
   mergeTargetCandidates.value = []
@@ -2862,7 +2920,7 @@ async function submitMerge() {
   mergeSubmitError.value = ''
   try {
     await resolveMerge(mergeConflict.value, mergePreview.value, mergeDecisions.value)
-    ElMessage.success('合并结果已提交')
+    ElMessage.success('合并已完成')
     mergeWorkbenchManager.closeWorkbench(mergeWorkbenchId)
     mergeDialogVisible.value = false
     mergePreview.value = null
@@ -2919,6 +2977,7 @@ function getConflictTypeLabel(type) {
 //      翻译版没有补配价值的场景）
 // 这里把这两类都给出比"关联作品"更明确的描述。
 function getConflictTypeDetail(conflict) {
+  if (isApiRenameConflict(conflict)) return 'API 重命名失败'
   const type = String(conflict?.conflict_type || '').toUpperCase()
   const analysis = conflict?.analysis_info || {}
   const linked = Array.isArray(conflict?.linked_works_info) ? conflict.linked_works_info : []
@@ -3007,7 +3066,7 @@ function formatFileSize(size) {
 // 详情区 stats 字段展示器：stats 缺失 + 后台正在补齐 → "统计中…"，否则按原格式化走。
 // 把"未知"和"正在算"区分开，避免用户看到 "-" 误以为没数据。
 function displayStatSize(stats) {
-  if (stats?.size != null) return formatFileSize(stats.size)
+  if (stats?.size != null) return `${stats.truncated ? '≥ ' : ''}${formatFileSize(stats.size)}`
   return statsBackfilling.value ? '统计中…' : '-'
 }
 function displayStatTime(stats) {
@@ -3916,6 +3975,8 @@ button:disabled {
 }
 .conflicts-detail-dot.is-info { background: #0284c7; box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.15); }
 .conflicts-detail-dot.is-danger { background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15); }
+.conflicts-detail-dot.is-api-rename { background: #6366f1; box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15); }
+.conflicts-api-rename-icon { color: #6366f1; }
 
 /* 顶部操作按钮：详情区主变量 */
 .conflicts-detail-actions {
@@ -4090,6 +4151,17 @@ button:disabled {
   border-color: rgba(239, 68, 68, 0.78);
   color: #991b1b;
 }
+.conflicts-detail-alert.is-api-rename {
+  background: linear-gradient(90deg, rgba(224, 231, 255, 0.56), transparent);
+  border-color: #818cf8;
+  color: #4338ca;
+}
+:global(html.kikoerumanager-dark .conflicts-page .conflicts-detail-alert.is-api-rename) {
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.16), transparent);
+  border-color: #818cf8;
+  color: #c7d2fe;
+}
+:global(html.kikoerumanager-dark .conflicts-page .conflicts-api-rename-icon) { color: #a5b4fc; }
 
 .conflicts-garbled-card {
   margin-bottom: 18px;

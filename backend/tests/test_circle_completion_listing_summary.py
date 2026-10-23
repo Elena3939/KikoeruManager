@@ -1,19 +1,4 @@
-"""DLsite 列表层 summary + known_kikoeru_index 回归测试。
-
-覆盖：
-
-- ``_extract_summaries_from_listing_html``：能从 maker_profile 风格 HTML 解析 workno /
-  maker_id / maker_name / title / work_type_code / icon_classes / category_label。
-- ``_classify_listing_summary_audio``：SOU 类目正确判 True；MNG/GAM/VOC 类目正确判 False；
-  缺少 chip 时回退 ``None`` 走 metadata 链路。
-- ``_build_known_kikoeru_index``：把 kikoeru 直连 works 列表展开成 ``{RJ → state}`` 字典，
-  state 结构（``has_kikoeru`` / ``found_rjcodes`` / ``subtitle_rjcodes`` / ``found_titles``）
-  与 ``_probe_kikoeru_state`` 兼容，让 ``_collect_external_snapshot`` 的 Wave 2b 短路逻辑稳定。
-
-这些用例之前没有覆盖，但都是 P1 / P3 优化路径的关键契约。任何破坏 chip 分类或
-known index 字段名 / 类型的回归都会让"列表 chip 短路 metadata"和"直连命中跳过 probe"
-两条性能路径静默退化，**没有这些测试很难发现**——因此必须保留。
-"""
+"""DLsite 列表摘要解析与音声类别判定回归，不依赖已移除的 Kikoeru 直连索引。"""
 
 import pytest
 
@@ -115,25 +100,3 @@ async def test_profile_listing_fills_rj_codes_missing_from_summary_cards(monkeyp
     }
     assert next(item for item in summaries if item.workno == "RJ03333333").is_probably_audio is True
     assert next(item for item in summaries if item.workno == "RJ04444444").is_probably_audio is None
-
-
-def test_build_known_kikoeru_index_returns_compatible_state_payload():
-    service = CircleCompletionService()
-    works = [
-        {"id": 101, "title": "直连作品 A", "rjcode": "RJ01234567"},
-        {"id": 202, "title": "直连作品 B", "rjcode": "RJ02222222"},
-        {"id": 303, "title": "未提供 RJ 的作品"},
-    ]
-    index = service._build_known_kikoeru_index(works)
-    # 至少包含两条显式 RJ 的命中
-    assert "RJ01234567" in index
-    assert "RJ02222222" in index
-
-    a = index["RJ01234567"]
-    assert a["has_kikoeru"] is True
-    assert "RJ01234567" in a["found_rjcodes"]
-    # ``subtitle_rjcodes`` 必须存在且为 list（即使为空），保证下游 dict.get 不抛
-    assert isinstance(a.get("subtitle_rjcodes"), list)
-    assert a["found_titles"].get("RJ01234567") == "直连作品 A"
-    assert a["work_id"] == 101
-    assert a["source"] == "kikoeru_circle_works"

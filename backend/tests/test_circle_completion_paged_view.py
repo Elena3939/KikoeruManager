@@ -634,12 +634,18 @@ async def test_preview_batch_download_falls_back_to_asmr_code_without_requested_
     db_session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from unittest.mock import AsyncMock
+    from app.core.resource_source_service import ResourceSourceService
     circle_id = _seed_circle(db_session)
+    monkeypatch.setattr(service.dlsite_service, 'get_linked_works', AsyncMock(return_value={}))
+    sources = ResourceSourceService()
+    monkeypatch.setattr(sources, 'plan', AsyncMock(return_value={'selectable_resources': []}))
+    monkeypatch.setattr('app.core.resource_source_service.get_resource_source_service', lambda: sources)
     requested_codes = []
 
     async def fake_build_download_plan(*, rjcode: str, **_kwargs):
         requested_codes.append(rjcode)
-        return {"selectable_resources": [], "summary": {}}
+        return {"rjcode": rjcode, "selectable_resources": [], "summary": {}}
 
     class FakeLibraryManager:
         def list_libraries(self):
@@ -657,27 +663,29 @@ async def test_preview_batch_download_falls_back_to_asmr_code_without_requested_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('cached_available', [False, True])
-async def test_preview_sources_resolves_asmr_translation_even_with_stale_cache(service, db_session, monkeypatch, cached_available):
+async def test_preview_sources_keeps_clicked_rj_even_with_stale_cache(service, db_session, monkeypatch, cached_available):
     from unittest.mock import AsyncMock
     from app.core.resource_source_service import ResourceSourceService
     circle_id = _seed_circle(db_session)
+    monkeypatch.setattr(service.dlsite_service, 'get_linked_works', AsyncMock(return_value={}))
     work = db_session.query(CircleWork).filter(CircleWork.canonical_rjcode == 'RJ01000003').one()
     work.has_asmr_one = cached_available
     work.asmr_available_rjcode = 'RJ01000003' if cached_available else None
     db_session.commit()
     resolve = AsyncMock(return_value=('RJ01444384', {'title': '关联翻译'}))
-    build = AsyncMock(return_value={'session_id': 'asmr-session', 'selectable_resources': [
+    build = AsyncMock(return_value={'rjcode': 'RJ01000003', 'session_id': 'asmr-session', 'selectable_resources': [
         {'id': 'audio', 'relative_path': 'a.wav', 'selected': True}], 'summary': {}})
     monkeypatch.setattr(service.asmr_service, 'find_best_available_work', resolve)
     monkeypatch.setattr(service.asmr_resource_service, 'build_download_plan', build)
     sources = ResourceSourceService()
     monkeypatch.setattr(sources, 'plan', AsyncMock(return_value={
-        'selectable_resources': [{'id': 'package', 'complete': True}]}))
+        'rjcode': 'RJ01000003', 'selectable_resources': [{'id': 'package', 'complete': True}]}))
     monkeypatch.setattr('app.core.resource_source_service.get_resource_source_service', lambda: sources)
     monkeypatch.setattr('app.core.library_manager.get_library_manager', lambda: type('Manager', (), {'list_libraries': lambda self: []})())
     result = await service.preview_batch_download(circle_id, ['RJ01000003'],
         requested_rjcodes={'RJ01000003': ['RJ01000003']}, include_resource_sources=True)
-    assert build.call_args.kwargs['rjcode'] == 'RJ01444384'
+    assert build.call_args.kwargs['rjcode'] == 'RJ01000003'
+    resolve.assert_not_called()
     assert [p['source_provider'] for p in result['plans'][0]['source_options']] == ['asmr.one', 'imoutoheaven']
     assert result['plans'][0]['source_selection_required']
 

@@ -183,14 +183,14 @@ class MetadataService:
     ) -> Optional[Dict]:
         timeout = self._product_info_timeout_seconds()
         try:
-            return await asyncio.wait_for(
-                get_dlsite_service().get_product_info(
-                    rjcode,
-                    locale=locale,
-                    refresh=refresh,
-                ),
-                timeout=timeout,
-            )
+            service = get_dlsite_service()
+            async def fetch_verified_product():
+                result = await service.get_product_info(rjcode, locale=locale, refresh=refresh)
+                # 手动重试不能反复使用之前失败的页面/HTML缓存，仍须重新获取并验证。
+                if result and result.get('metadata_verification_status') == 'unverified' and not refresh:
+                    return await service.get_product_info(rjcode, locale=locale, refresh=True)
+                return result
+            return await asyncio.wait_for(fetch_verified_product(), timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning(
                 "[%s] DLsite product_info %s 超时 %.1fs，改走直连 product.json",
@@ -372,6 +372,7 @@ class MetadataService:
 
     async def _resolve_original_maker_fields(self, product: Dict, rjcode: str) -> Dict[str, str]:
         from .dlsite_metadata_trust import is_translation_placeholder_maker
+        from .import_validation import ImportDataError
 
         translation_info = dict(product.get('translation_info') or {})
         original_workno = str(
@@ -421,6 +422,7 @@ class MetadataService:
             if (
                 original_product
                 and verification_status == "verified"
+                and original_maker_name
                 and not is_translation_placeholder_maker(original_maker_name)
             ):
                 maker_fields['maker_id'] = original_product.get('maker_id', '') or maker_fields['maker_id']
@@ -432,16 +434,12 @@ class MetadataService:
                     original_workno,
                     maker_fields['maker_name'],
                 )
-            elif original_product:
-                logger.warning(
-                    "[%s] 原作社团元数据未通过验证，拒绝回填: original=%s status=%s maker=%s",
-                    rjcode,
-                    original_workno,
-                    verification_status or "unverified",
-                    original_maker_name or "missing",
-                )
+            else:
+                raise ImportDataError(f"原作 {original_workno} 社团数据获取失败或未经验证")
+        except ImportDataError:
+            raise
         except Exception as exc:
-            logger.warning("[%s] 获取原作社团信息失败 %s: %s", rjcode, original_workno, exc)
+            raise ImportDataError(f"原作 {original_workno} 社团数据获取失败: {exc}") from exc
 
         return maker_fields
     
@@ -854,7 +852,8 @@ class MetadataService:
             if product_info.get('fallback_used'):
                 metadata.metadata_source = "fallback"
             metadata.metadata_evidence_source = str(
-                product_info.get("fallback_source") or "dlsite_product"
+                product_info.get("metadata_evidence_source")
+                or product_info.get("fallback_source") or "dlsite_product"
             )
             metadata.metadata_verification_status = str(
                 product_info.get("metadata_verification_status") or "unverified"
@@ -1066,7 +1065,7 @@ class MetadataService:
         kana_ratio = kana_count / total_chars
         return kana_ratio > 0.05
 
-    async def fetch_japanese_metadata(self, rjcode: str) -> Optional[dict]:
+    async def fetch_japanese_metadata(self, rjcode: str, *, force_refresh: bool = False) -> Optional[dict]:
         """
         获取日文版本元数据。
 
@@ -1074,55 +1073,23 @@ class MetadataService:
         """
         await asyncio.sleep(self.config.metadata.sleep_interval)
 
-        url = f"https://www.dlsite.com/maniax/api/=/product.json?workno={rjcode}&locale=ja-JP"
-        logger.info(f"[{rjcode}] 获取日文元数据: {url}")
-
         try:
-            response = await asyncio.to_thread(
-                self.session.get,
-                url,
-                timeout=(self.config.metadata.connect_timeout, self.config.metadata.read_timeout),
+            # 共用官方结构化 API / 页面解析、缓存和请求去重，不能另走只接受 product.json 的链路。
+            product_info = await self._get_product_info_for_metadata(
+                rjcode, locale='ja-JP', purpose='japanese', refresh=force_refresh,
             )
-            await asyncio.to_thread(response.raise_for_status)
-
-            data = await asyncio.to_thread(response.json)
-            if not data or len(data) == 0:
-                logger.warning(f"[{rjcode}] 未找到日文元数据")
+            if not product_info or product_info.get('metadata_verification_status') != 'verified':
                 return None
-
-            product = data[0]
-
-            translation_info = product.get('translation_info', {})
-            original_workno = (
-                translation_info.get('original_workno')
-                or translation_info.get('parent_workno')
-                or ''
-            )
-            is_original = translation_info.get('is_original', True)
-
-            # 只要当前作品不是原作，就优先回溯到原作/父作品的日文元数据。
-            # 某些翻译版链路不会稳定带 is_child，但 original_workno / parent_workno 仍然可用。
-            if not is_original and original_workno:
-                logger.info(f"[{rjcode}] 检测到翻译作品，原始作品: {original_workno}，继续获取原始作品的日文元数据")
-                await asyncio.sleep(self.config.metadata.sleep_interval)
-
-                original_url = f"https://www.dlsite.com/maniax/api/=/product.json?workno={original_workno}&locale=ja-JP"
-                logger.info(f"[{original_workno}] 获取原作日文元数据: {original_url}")
-
-                try:
-                    original_response = await asyncio.to_thread(
-                        self.session.get,
-                        original_url,
-                        timeout=(self.config.metadata.connect_timeout, self.config.metadata.read_timeout),
-                    )
-                    await asyncio.to_thread(original_response.raise_for_status)
-
-                    original_data = await asyncio.to_thread(original_response.json)
-                    if original_data and len(original_data) > 0:
-                        product = original_data[0]
-                        logger.info(f"[{rjcode}] 使用原作 {original_workno} 的元数据: maker_name={product.get('maker_name')}")
-                except Exception as e:
-                    logger.warning(f"[{rjcode}] 获取原作 {original_workno} 元数据失败: {e}，继续使用当前作品数据")
+            product = product_info.get('product') or {}
+            translation_info = product.get('translation_info') or {}
+            original_workno = translation_info.get('original_workno') or translation_info.get('parent_workno')
+            if not translation_info.get('is_original', True) and original_workno:
+                original_info = await self._get_product_info_for_metadata(
+                    original_workno, locale='ja-JP', purpose='japanese_original', refresh=force_refresh,
+                )
+                if not original_info or original_info.get('metadata_verification_status') != 'verified':
+                    return None
+                product = original_info.get('product') or {}
 
             maker_fields = await self._resolve_original_maker_fields(product, rjcode)
             japanese_metadata = {

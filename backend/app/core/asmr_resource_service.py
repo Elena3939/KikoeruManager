@@ -2333,7 +2333,7 @@ class ASMRResourceService:
         normalized_rjcode = self.normalize_rjcode(rjcode)
         try:
             work_info, remote_resources = await self.fetch_remote_resources(normalized_rjcode, refresh=bool(refresh))
-            local_resources = self.scan_local_resources(folder_path) if folder_path else []
+            local_resources = await asyncio.to_thread(self.scan_local_resources, folder_path) if folder_path else []
             matched_resources, missing_resources, local_only_resources, pairing_conflicts = self._match_remote_with_local(local_resources, remote_resources)
 
             remote_catalog: List[Dict[str, Any]] = []
@@ -2352,7 +2352,7 @@ class ASMRResourceService:
 
             filtered_resources = self._apply_filters(remote_catalog, filters or {})
             selectable_resources = self._select_default_resources(filtered_resources)
-            session_id = self._create_download_session(
+            session_id = await asyncio.to_thread(self._create_download_session,
                 rjcode=normalized_rjcode,
                 work_title=str(work_info.get("title") or ""),
                 folder_path=folder_path,
@@ -2373,8 +2373,8 @@ class ASMRResourceService:
                 next_item["upload_status"] = "pending"
                 next_item["session_id"] = session_id
                 persisted_resources.append(next_item)
-            self._upsert_work_record(normalized_rjcode, work_info, status="cataloged")
-            self._upsert_resource_records(normalized_rjcode, work_info, persisted_resources, session_id=session_id)
+            await asyncio.to_thread(self._upsert_work_record, normalized_rjcode, work_info, status="cataloged")
+            await asyncio.to_thread(self._upsert_resource_records, normalized_rjcode, work_info, persisted_resources, session_id=session_id)
 
             local_pair_issues = self._detect_local_pair_issues(local_resources)
             summary = {
