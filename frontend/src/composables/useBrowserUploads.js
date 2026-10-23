@@ -1,9 +1,8 @@
 import { shallowRef, markRaw } from 'vue'
-import { ElNotification } from 'element-plus'
 import { apiUrl, redirectIfSecurityGateExpired } from '../api'
 import { enumerateUploadEntries, yieldUploadThread } from '../utils/browserUploadEntries'
 import { useBackgroundWorkbenchManager } from './useBackgroundWorkbenchManager'
-import { showSystemConfirm } from './useSystemPrompt'
+import { showSystemConfirm, showSystemAlert } from './useSystemPrompt'
 
 const STORAGE = 'kikoerumanager.browserUploads'
 export const UPLOAD_WORKBENCH = 'library-browser-uploads'
@@ -337,12 +336,19 @@ async function poll(session) {
       more = has_more
     }
     session.connectionError = ''
+    // 首次恢复只建立服务端状态基线；历史终态不再作为新完成事件重放。
+    if (!more && session.restoring) {
+      session.restoring = false
+      if (stopped.has(session.status)) session.notified = session.status
+    }
     if (!more && !session.index_pending && stopped.has(session.status) && session.notified !== session.status) {
       session.notified = session.status
       const completed = session.counts?.completed || 0
-      ElNotification({ title: session.status === 'completed' ? '上传完成' : session.status === 'cancelled' ? '上传已取消' : completed ? '上传部分失败' : '上传失败',
-        message: `${session.source_label}：完成 ${completed}，失败 ${session.counts?.failed || 0}，跳过 ${session.counts?.skipped || 0}`,
-        type: session.status === 'completed' ? 'success' : 'warning' })
+      void showSystemAlert({ title: session.status === 'completed' ? '上传完成' : session.status === 'cancelled' ? '上传已取消' : completed ? '上传部分失败' : '上传失败',
+        message: session.source_label,
+        description: `完成 ${completed}，失败 ${session.counts?.failed || 0}，跳过 ${session.counts?.skipped || 0}`,
+        details: [{ label: '目标目录', value: session.target_path || '根目录' }],
+        tone: session.status === 'completed' ? 'success' : 'warning' }).catch(() => {})
       window.dispatchEvent(new CustomEvent('library-browser-upload-finished', { detail: { libraryId: session.library_id, path: session.target_path } }))
     }
   } catch (error) {
@@ -413,7 +419,7 @@ export function initializeBrowserUploads() {
   try { saved = JSON.parse(localStorage.getItem(STORAGE) || '[]') } catch (_) { /* 无历史会话 */ }
   for (const item of saved) {
     if (!item.id || !item.token) continue
-    const session = makeSession({ ...item, status: 'receiving', source_label: '恢复上传', needsSource: true, snapshotNeeded: true })
+    const session = makeSession({ ...item, status: 'receiving', source_label: '恢复上传', needsSource: true, snapshotNeeded: true, restoring: true })
     session.needsSource = true
     runtime.set(item.id, session)
     void poll(session)
