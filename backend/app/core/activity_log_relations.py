@@ -26,11 +26,11 @@ def normalize_import_summary(row):
     if row.get("category") in {"extract", "auto_import"} and row.get("action") in IMPORT_RESULT_ACTIONS:
         detail = row.get("detail") or {}
         summary = summary.removesuffix("，解压耗时未记录")
-        summary = re.sub(r"，(?:总耗时|耗时|解压耗时|解包阶段耗时) [^，]*$", "", summary)
+        summary = re.sub(r"，(?:总耗时|耗时|解压耗时|解压进程累计耗时|解包阶段耗时) [^，]*$", "", summary)
         if detail.get("extract_execution_duration_ms") is not None:
             from .activity_log_service import _format_duration_ms
 
-            summary += f"，解压耗时 {_format_duration_ms(detail['extract_execution_duration_ms'])}"
+            summary += f"，解压进程累计耗时 {_format_duration_ms(detail['extract_execution_duration_ms'])}"
         elif detail.get("extract_phase_duration_ms") is not None:
             from .activity_log_service import _format_duration_ms
 

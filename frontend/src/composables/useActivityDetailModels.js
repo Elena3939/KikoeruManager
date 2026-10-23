@@ -553,7 +553,8 @@ const HIGHLIGHT_LABELS = {
   import_final_file_count: '导入文件数', recovered_failure_count: '修复失败数',
   duration_ms: '耗时', selected_count: '命中数量', selected_size: '命中体积',
   extract_phase_duration_ms: '解包阶段（含等待）',
-  extract_execution_duration_ms: '解压耗时（不含等待）',
+  extract_execution_duration_ms: '解压进程累计耗时（并行累计，不含等待）',
+  extract_timing: '父子归档链路耗时',
   task_started_at: '任务开始时间', task_completed_at: '任务结束时间',
   success_count: '成功数量', failed_count: '失败数量', deleted_bytes: '删除体积',
   deleted_file_count: '删除文件数', deleted_folder_count: '删除目录数',
@@ -629,6 +630,11 @@ const CONFLICT_RESOLUTION_HIGHLIGHT_KEYS = [
 ]
 
 function normalizeHighlightValue(key, value) {
+  if (key === 'extract_timing' && value?.version === 1) {
+    const totals = value.totals_ms || {}
+    const chains = (value.chains || []).map(chain => `${chain.archive}：链路解压 ${formatDurationMs(chain.durations_ms?.execution)}，链路等待 ${formatDurationMs(chain.durations_ms?.wait)}`)
+    return [`解压阶段墙钟 ${formatDurationMs(value.wall_duration_ms)}`, `解压进程累计 ${formatDurationMs(totals.execution)}（并行累计）`, ...chains].join('；')
+  }
   if (key === 'duration_ms' || key === 'batch_duration_ms' || key === 'extract_phase_duration_ms' || key === 'extract_execution_duration_ms') return formatDurationMs(value)
   if (key === 'awaiting_manual_match') return value ? '是' : '否'
   if (key === 'manual_match_completed') return value ? '是' : '否'

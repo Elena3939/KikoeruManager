@@ -28,7 +28,7 @@ it('解压历史区分任务总耗时和包含等待的解包阶段', () => {
   }))
   expect(model.highlights.value.map(item => item.k)).toContain('任务总耗时')
   expect(model.highlights.value.map(item => item.k)).toContain('解包阶段（含等待）')
-  expect(model.highlights.value.map(item => item.k)).toContain('解压耗时（不含等待）')
+  expect(model.highlights.value.map(item => item.k)).toContain('解压进程累计耗时（并行累计，不含等待）')
 })
 
 it('批次优先展示后端汇总容量并区分候选和实际参与数量', () => {

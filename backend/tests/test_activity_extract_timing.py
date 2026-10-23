@@ -64,7 +64,7 @@ def test_summary_uses_execution_time_and_is_idempotent():
     row = dict(category="auto_import", action="task_finished", summary="完成，压缩包 1 GB，总耗时 7 分 53 秒",
                detail={"duration_ms": 473000, "extract_execution_duration_ms": 12000})
     row["summary"] = normalize_import_summary(row)
-    assert "解压耗时 12.0 秒" in row["summary"]
+    assert "解压进程累计耗时 12.0 秒" in row["summary"]
     assert "7 分" not in row["summary"]
     assert normalize_import_summary(row) == row["summary"]
     row["detail"] = {"duration_ms": 473000}

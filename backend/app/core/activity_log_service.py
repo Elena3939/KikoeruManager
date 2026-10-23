@@ -469,6 +469,8 @@ def _duration_ms_for_task(task: Any) -> int:
 def _import_timing_snapshot(task: Any, meta: Dict[str, Any]) -> Dict[str, Any]:
     """保留任务与解包阶段边界；解包阶段包含稳定性检查和资源等待。"""
     result = {}
+    if isinstance(meta.get("extract_timing"), dict):
+        result["extract_timing"] = meta["extract_timing"]
     if meta.get("extract_execution_duration_ms") is not None:
         result["extract_execution_duration_ms"] = max(0, int(meta["extract_execution_duration_ms"]))
     for name, value in (

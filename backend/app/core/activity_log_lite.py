@@ -134,7 +134,7 @@ def _chips_for_extract_like(detail: Dict[str, Any]) -> List[Dict[str, str]]:
         chips.append(_chip("产物", out, "info"))
     execution = format_duration_short(detail.get("extract_execution_duration_ms"))
     if execution:
-        chips.append(_chip("解压耗时", execution, "neutral"))
+        chips.append(_chip("解压进程累计耗时", execution, "neutral"))
     phase = format_duration_short(detail.get("extract_phase_duration_ms"))
     if phase:
         chips.append(_chip("解包阶段（含等待）", phase, "neutral"))

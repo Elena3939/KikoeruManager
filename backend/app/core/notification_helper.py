@@ -209,14 +209,29 @@ def build_import_notification_extra(task, *, error: str = "") -> dict[str, Any]:
             "error": str(error or ""),
         })
 
-    # 构建日志（追加密码信息）
+    # 通知只呈现使用结果，不泄露密码。
     recent_logs = build_recent_logs(task, max_lines=30)
     password_used = str(
         meta.get("resolved_password") or meta.get("manual_retry_password") or ""
     ).strip()
     if password_used:
         ts = datetime.now().strftime("%H:%M:%S")
-        recent_logs.append({"level": "info", "text": f"🔑 使用密码解压：{password_used}", "ts": ts})
+        recent_logs.append({"level": "info", "text": "已使用密码完成解压", "ts": ts})
+
+    timing = meta.get("extract_timing") or {}
+    if timing.get("version") == 1:
+        totals = timing.get("totals_ms") or {}
+        stats["extract_wall_seconds"] = round(timing.get("wall_duration_ms", 0) / 1000, 3)
+        stats["extract_process_seconds"] = round(totals.get("execution", 0) / 1000, 3)
+        recent_logs.append({"level": "info", "text":
+            f"解压阶段墙钟 {stats['extract_wall_seconds']:.1f} 秒，"
+            f"解压进程累计耗时 {stats['extract_process_seconds']:.1f} 秒（并行累计）",
+            "ts": datetime.now().strftime("%H:%M:%S")})
+        for chain in timing.get("chains", []):
+            durations = chain.get("durations_ms") or {}
+            recent_logs.append({"level": "info", "text":
+                f"{chain.get('archive', '')}：链路解压 {durations.get('execution', 0) / 1000:.1f} 秒，"
+                f"链路等待 {durations.get('wait', 0) / 1000:.1f} 秒", "ts": datetime.now().strftime("%H:%M:%S")})
 
     result: dict[str, Any] = {
         "stats": stats,

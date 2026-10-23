@@ -83,6 +83,17 @@
           {{ item.current_step || '-' }}
         </div>
 
+        <div v-if="extractTiming" class="mt-2 space-y-1 break-all text-[12px] text-slate-500">
+          <div>当前归档：{{ extractTiming.current_archive || '—' }} · 层级 {{ extractTiming.current_depth ?? 0 }}</div>
+          <div>执行 {{ extractTiming.counts?.active || 0 }} · 排队 {{ extractTiming.counts?.queued || 0 }} · 完成 {{ extractTiming.counts?.completed || 0 }}</div>
+          <template v-if="extractTiming.totals_ms">
+            <div><template v-if="extractTiming.wall_duration_ms != null">解压阶段墙钟 {{ timingSeconds(extractTiming.wall_duration_ms) }} · </template>解压进程累计 {{ timingSeconds(extractTiming.totals_ms.execution) }}（并行累计）</div>
+            <div v-for="chain in extractTiming.chains" :key="chain.node_ids.join('/')">
+              {{ chain.archive }}：链路解压 {{ timingSeconds(chain.durations_ms.execution) }} · 链路等待 {{ timingSeconds(chain.durations_ms.wait) }}
+            </div>
+          </template>
+        </div>
+
         <div v-if="showProgress(item)" class="mt-2 flex items-center gap-2">
           <div class="h-2 flex-1 overflow-hidden rounded-full bg-slate-100">
             <div class="h-full rounded-full transition-all duration-700 ease-out" :class="domainMeta(item.domain).bar" :style="{ width: `${item.progress}%` }" />
@@ -456,6 +467,12 @@ const emit = defineEmits([
   'load-more-files',
   'restore-filtered',
 ])
+
+const extractTiming = computed(() => {
+  const metadata = props.item?.details?.metadata || props.item?.metadata || {}
+  return metadata.extract_timing?.version === 1 ? metadata.extract_timing : null
+})
+const timingSeconds = value => `${(Number(value || 0) / 1000).toFixed(1)} 秒`
 
 const restoreMenu = ref(null)
 const treeScrollRef = ref(null)
