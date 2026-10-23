@@ -140,6 +140,7 @@ clone_container() {
   "$DOCKER" run --rm -i \
     -v /var/run/docker.sock:/var/run/docker.sock \
     --entrypoint python "$target_image" - "$source_container" "$target_container" "$target_image" <<'PY'
+import http.client
 import json
 import socket
 import sys
@@ -147,37 +148,26 @@ from urllib.parse import quote
 
 source_name, target_name, target_image = sys.argv[1:4]
 
+class DockerConnection(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect("/var/run/docker.sock")
+
 def request(method, path, payload=None):
-    body = b"" if payload is None else json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    headers = [
-        f"{method} {path} HTTP/1.1",
-        "Host: docker",
-        "Connection: close",
-    ]
-    if body:
-        headers.extend(("Content-Type: application/json", f"Content-Length: {len(body)}"))
-    raw_request = ("\r\n".join(headers) + "\r\n\r\n").encode("ascii") + body
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.connect("/var/run/docker.sock")
-    client.sendall(raw_request)
-    chunks = []
-    while True:
-        chunk = client.recv(65536)
-        if not chunk:
-            break
-        chunks.append(chunk)
-    client.close()
-    response = b"".join(chunks)
-    header, _, response_body = response.partition(b"\r\n\r\n")
-    status_line = header.split(b"\r\n", 1)[0].decode("ascii", "replace")
+    body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    client = DockerConnection("localhost", timeout=60)
     try:
-        status = int(status_line.split()[1])
-    except (IndexError, ValueError) as exc:
-        raise RuntimeError(f"Docker API response invalid: {status_line}") from exc
-    if status < 200 or status >= 300:
-        detail = response_body.decode("utf-8", "replace")
-        raise RuntimeError(f"Docker API {method} {path} failed: {status} {detail}")
-    return response_body
+        client.request(method, path, body=body, headers={"Content-Type": "application/json"})
+        response = client.getresponse()
+        # 标准库负责解码 Docker 的分块响应，不能把分块长度当成 JSON。
+        response_body = response.read()
+        if not 200 <= response.status < 300:
+            detail = response_body.decode("utf-8", "replace")
+            raise RuntimeError(f"Docker API {method} {path} failed: {response.status} {detail}")
+        return response_body
+    finally:
+        client.close()
 
 source = json.loads(request("GET", f"/v1.41/containers/{quote(source_name, safe='')}/json"))
 config = dict(source["Config"])
