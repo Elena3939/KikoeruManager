@@ -3,9 +3,15 @@ import os
 import re
 from typing import Any
 import logging
+import copy
+import time
+import threading
+import contextlib
+import concurrent.futures
 
 from ..config.settings import get_config
 from ..core.task_engine import Task
+from .filter_planner import scan_tree, plan_filter
 from .filter_recovery_service import get_filter_recovery_service
 
 logger = logging.getLogger(__name__)
@@ -36,11 +42,13 @@ class FilterService:
                 "filtered_size": 0,
             }
         
-        task.update_progress(45, "过滤文件中")
+        progress = task.progress if isinstance(task.progress, (int, float)) else 0
+        task.update_progress(max(45, int(progress)), "过滤文件中")
         logger.info(f"开始过滤目录: {path}")
         
         # 如果没有配置规则，使用默认规则
-        rules = self.config.filter.rules
+        config = copy.deepcopy(self.config.filter)
+        rules = config.rules
         if not rules:
             logger.info("未配置过滤规则，使用默认规则")
             rules = [
@@ -48,9 +56,36 @@ class FilterService:
                 self._create_filter_rule("过滤MP3文件", r'\.mp3$', target="file", action="exclude", enabled=False),
             ]
         
-        # 目录只扫描一次：同一份快照同时用于音频分布、文件树和过滤计划。
-        walk_entries = await asyncio.to_thread(lambda: list(os.walk(path, topdown=False)))
-        audio_formats = self._detect_audio_formats_from_walk(walk_entries)
+        loop = asyncio.get_running_loop()
+        stopped = threading.Event()
+        metrics = {}
+        phase_started = time.monotonic()
+        def checkpoint():
+            if stopped.is_set() or (hasattr(task, 'is_cancelled') and task.is_cancelled()):
+                raise asyncio.CancelledError()
+            event = getattr(task, '_pause_event', None)
+            if event is not None and not event.is_set():
+                pending = asyncio.run_coroutine_threadsafe(task.wait_if_paused(), loop)
+                while True:
+                    try:
+                        pending.result(timeout=0.2)
+                        break
+                    except concurrent.futures.TimeoutError:
+                        if stopped.is_set() or task.is_cancelled():
+                            pending.cancel()
+                            raise asyncio.CancelledError()
+        async def run_worker(function, *args):
+            worker = asyncio.create_task(asyncio.to_thread(function, *args))
+            try:
+                return await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                stopped.set()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker
+                raise
+
+        all_items, audio_formats = await run_worker(scan_tree, path, checkpoint)
+        metrics["scan_ms"] = round((time.monotonic() - phase_started) * 1000)
         logger.info(f"检测到音频格式分布: {audio_formats}")
         
         # 如果只有 MP3 格式，临时禁用 MP3 过滤规则
@@ -66,104 +101,74 @@ class FilterService:
         filtered_files: list[str] = []
         filtered_dirs: list[str] = []
         filtered_items: list[dict[str, Any]] = []
-        all_items: list[dict[str, Any]] = []
         filtered_size = 0
         
-        matched_files: list[dict[str, Any]] = []
-        matched_dirs: list[dict[str, Any]] = []
+        phase_started = time.monotonic()
+        selected_dirs, selected_files = await run_worker(
+            plan_filter, all_items, rules, config.filter_dir, checkpoint,
+        )
 
-        # 先生成完整快照和过滤计划，再统一搬入恢复区，避免父目录和子项重复处理。
-        for root, dirs, files in walk_entries:
-            for file in files:
-                file_path = os.path.join(root, file)
-                size_bytes = 0
-                relative_path = ""
-                try:
-                    size_bytes = int(os.path.getsize(file_path)) if os.path.exists(file_path) else 0
-                except Exception:
-                    size_bytes = 0
-                try:
-                    relative_path = os.path.relpath(file_path, path).replace("\\", "/")
-                except Exception:
-                    relative_path = file
-                item = {
-                    "path": file_path,
-                    "relative_path": relative_path,
-                    "name": file,
-                    "type": "file",
-                    "size": size_bytes,
-                }
-                all_items.append(item)
-                if self._should_filter_file(file_path, rules):
-                    matched_files.append(item)
-            
-            for dir_name in dirs:
-                dir_path = os.path.join(root, dir_name)
-                relative_path = ""
-                try:
-                    relative_path = os.path.relpath(dir_path, path).replace("\\", "/")
-                except Exception:
-                    relative_path = dir_name
-                item = {
-                    "path": dir_path,
-                    "relative_path": relative_path,
-                    "name": dir_name,
-                    "type": "dir",
-                    "size": None,
-                }
-                all_items.append(item)
-                if self.config.filter.filter_dir and self._should_filter_dir(dir_path, rules):
-                    matched_dirs.append(item)
-
-        selected_dirs: list[dict[str, Any]] = []
-        for item in sorted(matched_dirs, key=lambda entry: self._path_depth(entry["relative_path"])):
-            if any(self._is_inside(item["relative_path"], parent["relative_path"]) for parent in selected_dirs):
-                continue
-            selected_dirs.append(item)
-
-        selected_files = [
-            item for item in matched_files
-            if not any(self._is_inside(item["relative_path"], parent["relative_path"]) for parent in selected_dirs)
-        ]
-        file_sizes = {
-            str(item.get("relative_path") or ""): int(item.get("size") or 0)
-            for item in all_items
-            if item.get("type") == "file"
-        }
-        for item in selected_dirs:
-            prefix = str(item.get("relative_path") or "").rstrip("/") + "/"
-            item["size"] = sum(size for relative, size in file_sizes.items() if relative.startswith(prefix))
-
+        metrics["plan_ms"] = round((time.monotonic() - phase_started) * 1000)
+        selected = [*selected_dirs, *selected_files]
+        total_bytes = sum(int(item.get("size") or 0) for item in selected)
         recovery_service = get_filter_recovery_service()
-        await asyncio.to_thread(recovery_service.begin_capture, task.id)
-        for item in [*selected_dirs, *selected_files]:
-            try:
-                recovery = await asyncio.to_thread(
-                    recovery_service.capture_item,
-                    task.id,
-                    item["path"],
-                    relative_path=item["relative_path"],
-                    entry_type=item["type"],
-                    size=int(item.get("size") or 0),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "过滤项移入恢复区失败，已保留原内容: path=%s error=%s",
-                    item.get("path"),
-                    exc,
-                    exc_info=True,
-                )
-                continue
-            public_item = {**item, **recovery}
-            filtered_items.append(public_item)
-            filtered_size += int(item.get("size") or 0)
-            if item["type"] == "dir":
-                filtered_dirs.append(item["name"])
-            else:
-                filtered_files.append(item["name"])
-            logger.info("过滤%s已移入恢复区: %s", "目录" if item["type"] == "dir" else "文件", item["relative_path"])
-        
-        task.update_progress(50, f"过滤完成，已过滤 {len(filtered_files)} 个文件，{len(filtered_dirs)} 个文件夹")
+        failures = []
+        def report(done, count):
+            metadata = dict(getattr(task, 'task_metadata', None) or {})
+            metadata["filter_transfer"] = {"bytes": done, "total_bytes": total_bytes,
+                                           "completed": count, "total": len(selected)}
+            task.task_metadata = metadata
+            task.update_progress(max(45, int(task.progress or 0)),
+                                 f"移入过滤恢复区 {count}/{len(selected)}，{done}/{total_bytes} 字节")
+
+        def capture_batch():
+            nonlocal filtered_size
+            recovery_service.begin_capture(task.id)
+            last_report = 0.0
+            for index, item in enumerate(selected):
+                checkpoint()
+                def copied(size):
+                    nonlocal last_report
+                    now = time.monotonic()
+                    if now - last_report >= 0.25:
+                        last_report = now
+                        loop.call_soon_threadsafe(report, filtered_size + size, index)
+                try:
+                    recovery = recovery_service.capture_item(
+                        task.id, item["path"], relative_path=item["relative_path"],
+                        entry_type=item["type"], size=int(item.get("size") or 0),
+                        checkpoint=checkpoint, progress=copied,
+                    )
+                except Exception as exc:
+                    failures.append({"path": item["path"], "error": str(exc)})
+                    logger.exception("过滤搬运失败，来源及恢复副本位置见记录：%s", item["path"])
+                    continue
+                filtered_items.append({**item, **recovery})
+                filtered_size += int(item.get("size") or 0)
+                (filtered_dirs if item["type"] == "dir" else filtered_files).append(item["name"])
+                copied(0)
+            loop.call_soon_threadsafe(report, filtered_size, len(filtered_items))
+
+        phase_started = time.monotonic()
+        worker = asyncio.create_task(asyncio.to_thread(capture_batch))
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            stopped.set()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+            raise
+        finally:
+            metrics["capture_ms"] = round((time.monotonic() - phase_started) * 1000)
+            metadata = dict(getattr(task, 'task_metadata', None) or {})
+            metadata.update(filter_timings=metrics, filter_failures=failures,
+                            filtered_items=filtered_items, filtered_size=filtered_size)
+            task.task_metadata = metadata
+        if failures:
+            raise RuntimeError(f"{len(failures)} 项过滤搬运失败，已保存成功项和失败路径，请核对恢复区记录")
+
+        progress = task.progress if isinstance(task.progress, (int, float)) else 0
+        task.update_progress(max(50, int(progress)), f"过滤完成，已过滤 {len(filtered_files)} 个文件，{len(filtered_dirs)} 个文件夹")
         logger.info(f"过滤完成: 文件 {len(filtered_files)} 个，文件夹 {len(filtered_dirs)} 个")
         return {
             "all_items": all_items,
@@ -172,7 +177,7 @@ class FilterService:
             "filtered_items": filtered_items,
             "filtered_count": len(filtered_items),
             "filtered_size": int(filtered_size),
-            "filter_recovery": recovery_service.public_summary(task.id),
+            "filter_recovery": await asyncio.to_thread(recovery_service.public_summary, task.id),
         }
     
     def _create_filter_rule(self, name: str, pattern: str, target: str = "file", action: str = "exclude", enabled: bool = True):
