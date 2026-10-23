@@ -93,7 +93,11 @@ try {
     }
 
     Write-Host '上传当前工作区源码快照...' -ForegroundColor Yellow
-    & tar.exe -C $repoRoot -czf $localArchive -T $fileList -C $packageOverrides Dockerfile .dockerignore
+    $archivePython = Join-Path $repoRoot 'backend/venv/Scripts/python.exe'
+    if (-not (Test-Path -LiteralPath $archivePython)) {
+        $archivePython = (Get-Command python -ErrorAction Stop).Source
+    }
+    & $archivePython (Join-Path $repoRoot 'tools/build-production-archive.py') $repoRoot $fileList $packageOverrides $localArchive
     if ($LASTEXITCODE -ne 0) {
         throw '源码快照打包失败，拒绝上传不完整的发布包。'
     }
