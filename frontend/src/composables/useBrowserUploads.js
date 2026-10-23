@@ -358,8 +358,9 @@ async function poll(session) {
 function refreshView() {
   const now = performance.now()
   for (const session of runtime.values()) {
-    let received = 0, written = 0
+    let received = 0, written = 0, activeFileCount = 0
     for (const file of session.files.values()) {
+      if (file.busy && session.status === 'receiving') activeFileCount++
       const live = Math.min(file.size, (file.received || 0) + (file.liveBytes || 0))
       received += live
       written += file.written || 0
@@ -392,8 +393,14 @@ function refreshView() {
     if (session.status !== 'receiving' || now - (session.lastWrittenAt || 0) > 3000) session.backendSpeed = 0
     session.liveReceived = received
     session.liveWritten = written
+    session.activeFileCount = activeFileCount
   }
   browserUploads.value = Array.from(runtime.values(), session => ({ ...session }))
+}
+
+export async function refreshBrowserUploads() {
+  await Promise.all(Array.from(runtime.values(), session => poll(session)))
+  refreshView()
 }
 
 export function initializeBrowserUploads() {

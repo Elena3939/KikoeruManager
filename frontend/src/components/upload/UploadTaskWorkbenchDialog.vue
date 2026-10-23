@@ -9,7 +9,7 @@
     empty-title="暂无符合筛选的上传任务"
     source-path-label="来源目录"
     :show-download-metrics="false"
-    :show-upload-eta="true"
+    :show-upload-eta="showUploadEta"
     :prefer-upload-icon="true"
     transfer-mode="upload"
     :merge-tasks="false"
@@ -23,6 +23,7 @@
     @cancel-task="emit('cancel-task', $event)"
   >
     <template v-if="$slots['transfer-content']" #transfer-content><slot name="transfer-content" /></template>
+    <template v-if="$slots['task-detail']" #task-detail="scope"><slot name="task-detail" v-bind="scope" /></template>
   </DownloadTaskWorkbenchDialog>
 </template>
 
@@ -34,6 +35,7 @@ const props = defineProps({
   visible: { type: Boolean, default: false },
   tasks: { type: Array, default: () => [] },
   refreshing: { type: Boolean, default: false },
+  showUploadEta: { type: Boolean, default: true },
 })
 
 const emit = defineEmits(['update:visible', 'refresh', 'background', 'close', 'pause-task', 'resume-task', 'cancel-task'])

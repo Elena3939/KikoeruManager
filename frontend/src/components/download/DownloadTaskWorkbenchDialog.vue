@@ -186,6 +186,7 @@
                 <div v-show="expandedTaskIds.has(task.id)" class="grid overflow-hidden" @click.stop>
                   <div class="min-h-0">
                     <div class="v1-task-detail">
+                      <slot v-if="expandedTaskIds.has(task.id)" name="task-detail" :task="task">
                       <div v-if="task.error_message || task?.task_metadata?.failure_reason" class="v1-error-box">
                         <AlertCircle :size="16" />
                         <div class="v1-error-copy">
@@ -280,6 +281,7 @@
                           </div>
                         </div>
                       </div>
+                      </slot>
                     </div>
                   </div>
                 </div>
@@ -1295,6 +1297,7 @@ function shouldShowSummaryProgress(task) {
 }
 
 function getPrimaryFileProgressLabel(task) {
+  if (isUploadMode.value && task?.task_metadata?.file_progress_label) return task.task_metadata.file_progress_label
   const stage = getTaskStageLabel(task)
   const total = getTaskResourceCount(task)
   if (!total) return '文件 0 / 0'
