@@ -10,7 +10,7 @@
       :style="{ transform: `translate3d(${uploadDragState.x}px, ${uploadDragState.y}px, 0)` }" role="status">
       <span class="lib-table-drag-icon-stack">
         <component v-for="(item, index) in uploadDragIconRows" :key="index"
-          :is="getLibraryRowIconComponent(item)" class="lib-table-drag-kind-icon file-icon"
+          :is="item.unknown ? IconUpload : getLibraryRowIconComponent(item)" class="lib-table-drag-kind-icon file-icon"
           :class="[getLibraryRowIconClass(item), `is-stack-${index}`, { 'is-single': uploadDragIconRows.length === 1 }]"
           :size="18" :stroke-width="2.3" />
       </span>
@@ -1985,8 +1985,9 @@ const { uploadDropHint, uploadDragState, onExternalUploadOver, onExternalUploadL
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 
 const uploadDragIconRows = computed(() => (uploadDragState.value?.items.length ? uploadDragState.value.items : [{}]).map(item => ({
-  name: item.type?.startsWith('image/') ? 'image.png' : item.type?.startsWith('audio/') ? 'audio.mp3' : item.type?.startsWith('video/') ? 'video.mp4' : item.type === 'application/pdf' ? 'file.pdf' : 'file',
-  is_directory: false,
+  name: item.name || (item.type?.startsWith('image/') ? 'image.png' : item.type?.startsWith('audio/') ? 'audio.mp3' : item.type?.startsWith('video/') ? 'video.mp4' : item.type === 'application/pdf' ? 'file.pdf' : 'file'),
+  is_directory: item.is_directory === true,
+  unknown: item.unknown !== false && !item.type && !item.name,
 })))
 
 function handleBrowserUploadFinished(event) {

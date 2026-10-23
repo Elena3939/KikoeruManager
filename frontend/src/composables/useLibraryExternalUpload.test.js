@@ -24,10 +24,33 @@ it('外部多项拖动逐帧更新图标与目标，离开即清除，不读取�
   expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
   expect(resolveTarget).not.toHaveBeenCalled()
   frame()
-  expect(state.uploadDragState.value).toMatchObject({ count: 2, valid: true, items: [{ type: 'image/png' }, { type: 'audio/mpeg' }] })
+  expect(state.uploadDragState.value).toMatchObject({ count: 2, valid: true, items: [{ type: 'image/png', unknown: false }, { type: 'audio/mpeg', unknown: false }] })
   expect(state.uploadDropHint.value).toBe('上传到：库存 / /目录')
   expect(read).not.toHaveBeenCalled()
   state.onExternalUploadLeave({ currentTarget: wrapper.element, relatedTarget: null })
   expect(state.uploadDragState.value).toBeNull()
+  wrapper.unmount()
+})
+
+it('保留真实目录类型，保护模式未知项不误判为文件或文件夹', () => {
+  let frame, state
+  vi.stubGlobal('requestAnimationFrame', vi.fn(callback => { frame = callback; return 1 }))
+  vi.stubGlobal('cancelAnimationFrame', vi.fn())
+  const wrapper = mount({ template: '<div />', setup() { state = useLibraryExternalUpload(() => ({ libraryId: 1 })) } })
+  const read = vi.fn()
+  state.onExternalUploadOver({ target: wrapper.element, clientX: 30, clientY: 40,
+    preventDefault: vi.fn(), stopPropagation: vi.fn(), dataTransfer: { types: ['Files'], items: [
+      { kind: 'file', type: '', webkitGetAsEntry: () => ({ name: '来源目录', isDirectory: true, createReader: read }) },
+      { kind: 'file', type: '', webkitGetAsEntry: () => null, getAsFile: read },
+      { kind: 'file', type: '', webkitGetAsEntry: () => ({ name: '无扩展文件', isDirectory: false, file: read }) },
+    ] },
+  })
+  frame()
+  expect(state.uploadDragState.value.items).toEqual([
+    { type: '', name: '来源目录', is_directory: true, unknown: false },
+    { type: '', name: '', is_directory: undefined, unknown: true },
+    { type: '', name: '无扩展文件', is_directory: false, unknown: false },
+  ])
+  expect(read).not.toHaveBeenCalled()
   wrapper.unmount()
 })

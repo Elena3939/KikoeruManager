@@ -49,7 +49,15 @@ export function useLibraryExternalUpload(resolveTarget) {
     for (const item of event.dataTransfer.items || []) {
       if (item.kind !== 'file') continue
       count++
-      if (items.length < 3) items.push({ type: item.type })
+      if (items.length < 3) {
+        // 只读取条目元数据，不调用 file()/createReader()，不读取内容。
+        // Chromium 保护模式可能返回 null；空 MIME 也可能是无扩展名文件，不能据此猜目录。
+        const entry = item.webkitGetAsEntry?.()
+        items.push({ type: item.type, name: entry?.name || '',
+          is_directory: entry ? entry.isDirectory === true : undefined,
+          unknown: !entry && !item.type,
+        })
+      }
     }
     lastEvent = { target: event.target, clientX: event.clientX, clientY: event.clientY, items, count }
     if (!frame) frame = requestAnimationFrame(() => { frame = 0; display(lastEvent) })
