@@ -21,6 +21,7 @@
       class="hidden"
       @change="handleFileSelect"
     />
+    <input v-if="selectionOnly" ref="folderInput" type="file" webkitdirectory multiple class="hidden" @change="handleFileSelect" />
 
     <div class="flex flex-col gap-2.5">
       <div class="flex items-center gap-2.5 min-w-0">
@@ -35,12 +36,16 @@
             class="m-0 truncate font-bold tracking-tight text-slate-900"
             :class="compact ? 'text-[11.5px]' : 'text-[13px]'"
           >
-            {{ compact ? '拖拽或点击上传文件' : '拖拽文件到此处或点击上传' }}
+            {{ selectionOnly ? '重新选择上传来源' : compact ? '拖拽或点击上传文件' : '拖拽文件到此处或点击上传' }}
           </h3>
           <p class="m-0 mt-px text-[10.5px] leading-snug text-slate-500">
-            支持多种压缩格式，自动识别分卷
+            {{ selectionOnly ? '拖入原文件夹或文件，核对后从断点继续' : '支持多种压缩格式，自动识别分卷' }}
           </p>
         </div>
+      </div>
+      <div v-if="selectionOnly" class="flex flex-wrap gap-2" @click.stop>
+        <StatefulButton size="sm" tone="neutral" :show-default-icons="false" @click="() => folderInput?.click()"><FolderOpen :size="14" />选择原文件夹</StatefulButton>
+        <StatefulButton size="sm" tone="neutral" :show-default-icons="false" @click="triggerFileInput"><Upload :size="14" />选择原文件</StatefulButton>
       </div>
 
       <div
@@ -123,20 +128,24 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { ChevronDown, FileText, Loader2, Play, Upload } from 'lucide-vue-next'
+import { ChevronDown, FileText, FolderOpen, Loader2, Play, Upload } from 'lucide-vue-next'
+import StatefulButton from './ui/stateful-button.vue'
+import { captureUploadSources } from '../utils/browserUploadEntries'
 import { ElMessage } from 'element-plus'
 import { apiFetchOptions, apiUrl, libraryApi } from '../api'
 
-defineProps({
+const props = defineProps({
+  selectionOnly: { type: Boolean, default: false },
   compact: {
     type: Boolean,
     default: false,
   },
 })
 
-const emit = defineEmits(['upload-success'])
+const emit = defineEmits(['upload-success', 'sources-selected'])
 
 const fileInput = ref(null)
+const folderInput = ref(null)
 const isDragOver = ref(false)
 const selectedFiles = ref([])
 const uploading = ref(false)
@@ -144,6 +153,7 @@ const libraries = ref([])
 const targetLibraryId = ref('')
 
 onMounted(async () => {
+  if (props.selectionOnly) return
   try {
     const data = await libraryApi.listLibraries()
     libraries.value = data.libraries || []
@@ -248,12 +258,21 @@ function handleDragLeave() {
 function handleDrop(e) {
   e.stopPropagation()
   isDragOver.value = false
+  if (props.selectionOnly) {
+    emit('sources-selected', captureUploadSources(e.dataTransfer))
+    return
+  }
   const files = Array.from(e.dataTransfer.files)
   addFiles(files)
 }
 
 function handleFileSelect(e) {
   const files = Array.from(e.target.files)
+  if (props.selectionOnly) {
+    emit('sources-selected', files)
+    e.target.value = ''
+    return
+  }
   addFiles(files)
 }
 
