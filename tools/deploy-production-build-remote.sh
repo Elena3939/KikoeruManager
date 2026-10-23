@@ -6,6 +6,7 @@ RELEASE_ID=${2:?missing release id}
 SOURCE_REVISION=${3:?missing source revision}
 FORCE=${4:-0}
 DRY_RUN=${5:-0}
+ARCHIVE_SHA256=${6:?missing archive sha256}
 
 DOCKER=/var/packages/Docker/target/usr/bin/docker
 CONTAINER=elena39-kikoerumanager
@@ -43,6 +44,8 @@ trap rollback EXIT INT TERM
 
 [ "$(hostname)" = 'Elena' ] || fail "生产主机校验失败: $(hostname)"
 [ -f "$ARCHIVE_PATH" ] || fail "源码快照不存在: $ARCHIVE_PATH"
+case "$ARCHIVE_SHA256" in *[!0-9a-f]*|'') fail '发布包摘要格式错误' ;; esac
+[ "$(sha256sum "$ARCHIVE_PATH" | cut -d ' ' -f 1)" = "$ARCHIVE_SHA256" ] || fail '发布包 SHA-256 校验失败'
 case "$RELEASE_ID" in
   *[!0-9A-Za-z-]*|'') fail "非法发布版本号: $RELEASE_ID" ;;
 esac
@@ -76,6 +79,7 @@ release_id=$RELEASE_ID
 source_revision=$SOURCE_REVISION
 created_at=$(date '+%Y-%m-%dT%H:%M:%S%z')
 image=$IMAGE
+archive_sha256=$ARCHIVE_SHA256
 EOF
 
 if [ "$DRY_RUN" = '1' ]; then

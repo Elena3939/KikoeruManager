@@ -36,7 +36,9 @@ if ($LASTEXITCODE -ne 0 -or -not $sourceRevision) {
     throw '无法读取当前 Git revision，拒绝发布。'
 }
 
-$sourceFiles = @(& git -C $repoRoot -c core.quotepath=false ls-files -co --exclude-standard)
+$sourceFiles = @(& git -C $repoRoot -c core.quotepath=false ls-files -co --exclude-standard | Where-Object {
+    $_ -notmatch '(^|/)(\.test-tmp[^/]*|\.pytest-tmp|\.codex[^/]*|\.codegraph|__pycache__)(/|$)'
+})
 if ($LASTEXITCODE -ne 0 -or $sourceFiles.Count -eq 0) {
     throw '无法列出源码快照文件，拒绝发布。'
 }
@@ -53,8 +55,24 @@ $remoteArchive = "/tmp/kikoerumanager-release-$ReleaseId.tar.gz"
 $remoteScript = "/tmp/kikoerumanager-deploy-$ReleaseId.sh"
 $forceValue = if ($Force) { '1' } else { '0' }
 $dryRunValue = if ($DryRun) { '1' } else { '0' }
+$packageOverrides = Join-Path ([System.IO.Path]::GetTempPath()) "kikoerumanager-image-$ReleaseId"
 
 try {
+    # 完整镜像也只使用本机构建的前端，生产不安装 Node 或运行 npm。
+    & npm --prefix (Join-Path $repoRoot 'frontend') run build
+    if ($LASTEXITCODE -ne 0) { throw '本地前端构建失败，拒绝发布。' }
+    New-Item -ItemType Directory -Path $packageOverrides -ErrorAction Stop | Out-Null
+    $dockerfile = [IO.File]::ReadAllText((Join-Path $repoRoot 'Dockerfile'))
+    $runtimeStart = $dockerfile.IndexOf('# 阶段2：后端运行环境')
+    if ($runtimeStart -lt 0) { throw 'Dockerfile 运行阶段标记不存在，拒绝改写构建快照。' }
+    $imageDockerfile = "FROM scratch AS frontend-builder`nCOPY frontend/dist /app/frontend/dist`n`n" + $dockerfile.Substring($runtimeStart)
+    [IO.File]::WriteAllText((Join-Path $packageOverrides 'Dockerfile'), $imageDockerfile, [Text.UTF8Encoding]::new($false))
+    $dockerignore = [IO.File]::ReadAllText((Join-Path $repoRoot '.dockerignore')) + "`n!frontend/dist`n!frontend/dist/**`n"
+    [IO.File]::WriteAllText((Join-Path $packageOverrides '.dockerignore'), $dockerignore, [Text.UTF8Encoding]::new($false))
+    $sourceFiles = @($sourceFiles | Where-Object { $_ -notin @('Dockerfile', '.dockerignore') })
+    $sourceFiles += @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'frontend/dist') -Recurse -File | ForEach-Object {
+        [IO.Path]::GetRelativePath($repoRoot, $_.FullName).Replace('\', '/')
+    })
     [System.IO.File]::WriteAllLines(
         $fileList,
         [string[]]$sourceFiles,
@@ -75,7 +93,7 @@ try {
     }
 
     Write-Host '上传当前工作区源码快照...' -ForegroundColor Yellow
-    & tar.exe -C $repoRoot -czf $localArchive -T $fileList
+    & tar.exe -C $repoRoot -czf $localArchive -T $fileList -C $packageOverrides Dockerfile .dockerignore
     if ($LASTEXITCODE -ne 0) {
         throw '源码快照打包失败，拒绝上传不完整的发布包。'
     }
@@ -86,7 +104,8 @@ try {
     }
 
     Write-Host '由生产服务器构建并切换容器...' -ForegroundColor Yellow
-    & $connectScript -Sudo "/bin/sh '$remoteScript' '$remoteArchive' '$ReleaseId' '$sourceRevision' '$forceValue' '$dryRunValue'"
+    $archiveHash = (Get-FileHash -LiteralPath $localArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+    & $connectScript -Sudo "/bin/sh '$remoteScript' '$remoteArchive' '$ReleaseId' '$sourceRevision' '$forceValue' '$dryRunValue' '$archiveHash'"
     if ($LASTEXITCODE -ne 0) {
         throw "生产发布失败，版本 $ReleaseId 未完成切换。"
     }
@@ -96,4 +115,7 @@ try {
 finally {
     Remove-Item -LiteralPath $fileList -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $localArchive -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $packageOverrides) {
+        Remove-Item -LiteralPath $packageOverrides -Recurse -Force
+    }
 }
