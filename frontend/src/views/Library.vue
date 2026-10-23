@@ -5,7 +5,18 @@
     @dragover.capture="onExternalUploadOver"
     @dragleave="onExternalUploadLeave"
     @drop.capture="onExternalUploadDrop">
-    <div v-if="uploadDropHint" class="library-external-upload-hint" role="status">{{ uploadDropHint }}</div>
+    <div v-if="uploadDragState" class="lib-table-drag-ghost library-upload-drag-ghost"
+      :class="{ 'is-droppable': uploadDragState.valid }"
+      :style="{ transform: `translate3d(${uploadDragState.x}px, ${uploadDragState.y}px, 0)` }" role="status">
+      <span class="lib-table-drag-icon-stack">
+        <component v-for="(item, index) in uploadDragIconRows" :key="index"
+          :is="getLibraryRowIconComponent(item)" class="lib-table-drag-kind-icon file-icon"
+          :class="[getLibraryRowIconClass(item), `is-stack-${index}`, { 'is-single': uploadDragIconRows.length === 1 }]"
+          :size="18" :stroke-width="2.3" />
+      </span>
+      <span class="lib-table-drag-count">上传{{ uploadDragState.count > 1 ? ` ${uploadDragState.count} 项` : '' }}</span>
+      <span class="lib-table-drag-target" :title="uploadDropHint">{{ uploadDropHint }}</span>
+    </div>
 
     <AppPageHeader
 
@@ -1947,7 +1958,7 @@
 
 import { useLibraryExternalUpload } from '../composables/useLibraryExternalUpload'
 
-const { uploadDropHint, onExternalUploadOver, onExternalUploadLeave, onExternalUploadDrop } = useLibraryExternalUpload((element) => {
+const { uploadDropHint, uploadDragState, onExternalUploadOver, onExternalUploadLeave, onExternalUploadDrop } = useLibraryExternalUpload((element) => {
   if (!(element instanceof Element)) return null
   const breadcrumb = element.closest('[data-library-path-drop-target]')
   const rowElement = element.closest('.lib-file-table-row, [data-browser-upload-row]')
@@ -1972,6 +1983,11 @@ const { uploadDropHint, onExternalUploadOver, onExternalUploadLeave, onExternalU
 })
 
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+
+const uploadDragIconRows = computed(() => (uploadDragState.value?.items.length ? uploadDragState.value.items : [{}]).map(item => ({
+  name: item.type?.startsWith('image/') ? 'image.png' : item.type?.startsWith('audio/') ? 'audio.mp3' : item.type?.startsWith('video/') ? 'video.mp4' : item.type === 'application/pdf' ? 'file.pdf' : 'file',
+  is_directory: false,
+})))
 
 function handleBrowserUploadFinished(event) {
   if (!libraryViewActive || String(event.detail?.libraryId) !== String(selectedLibraryId.value)) return
@@ -29482,6 +29498,15 @@ function statsStatusTextDisplay (stats) {
   border-color: rgba(14, 165, 233, 0.34);
   background: rgba(240, 249, 255, 0.94);
   color: #0c4a6e;
+}
+
+.library-upload-drag-ghost {
+  z-index: 4500;
+  max-width: min(420px, calc(100vw - 16px));
+}
+
+.library-upload-drag-ghost .lib-table-drag-target {
+  max-width: 260px;
 }
 
 .lib-table-drag-icon-stack {

@@ -39,7 +39,7 @@ const tasks = computed(() => browserUploads.value.map(s => ({
 </script>
 
 <style>
-.library-external-upload-target { outline: 2px solid var(--el-color-primary) !important; background: var(--el-color-primary-light-9) !important; }
-.library-external-upload-hint { position: fixed; z-index: 4500; left: 50%; bottom: 48px; transform: translateX(-50%); max-width: 90vw; padding: 14px 22px; border: 1px solid var(--el-color-primary); border-radius: 14px; background: var(--el-bg-color-overlay); color: var(--el-text-color-primary); box-shadow: var(--el-box-shadow); pointer-events: none; overflow-wrap: anywhere; }
+.library-external-upload-target { outline: none !important; box-shadow: inset 0 0 0 2px #38bdf8 !important; background: var(--el-color-primary-light-9) !important; }
+html.kikoerumanager-dark .library-external-upload-target { background: var(--km-dark-surface-soft) !important; }
 .browser-upload-empty { padding: 48px; text-align: center; color: var(--el-text-color-secondary); }
 </style>
