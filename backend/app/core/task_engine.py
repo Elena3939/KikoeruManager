@@ -45,6 +45,7 @@ class TaskType(str, Enum):
     BAIDU_NETDISK_UPLOAD = "baidu_netdisk_upload"  # 百度网盘上传任务
     RJ_SUBTITLE_FETCH = "rj_subtitle_fetch"  # RJ 字幕抓取任务
     LOCAL_LIBRARY_UPLOAD = "local_library_upload"
+    BROWSER_UPLOAD = "browser_upload"
     LIBRARY_FOLDER_COMPLETION_PREVIEW = "library_folder_completion_preview"
     CIRCLE_COMPLETION_INDEX = "circle_completion_index"
     CIRCLE_COMPLETION_REFRESH_SELECTED = "circle_completion_refresh_selected"
@@ -993,7 +994,7 @@ class TaskEngine:
             return "http_download"
         if task.type == TaskType.BAIDU_NETDISK_DOWNLOAD:
             return "baidu_netdisk"
-        if task.type == TaskType.LOCAL_LIBRARY_UPLOAD:
+        if task.type in {TaskType.LOCAL_LIBRARY_UPLOAD, TaskType.BROWSER_UPLOAD}:
             return "upload"
         if task.type == TaskType.LIBRARY_FOLDER_COMPLETION_PREVIEW:
             return "asmr_sync"
@@ -4276,6 +4277,8 @@ class TaskEngine:
 
     def retry_task(self, task_id: str):
         """手动重试等待中的任务"""
+        if task_id in self.tasks and self.tasks[task_id].type == TaskType.BROWSER_UPLOAD:
+            raise ValueError("浏览器上传请在传输小窗重试具体文件")
         logger.info(f"[重试] 尝试重试任务: {task_id}")
         logger.info(f"[重试] 当前内存中的任务: {list(self.tasks.keys())}")
 
@@ -4442,11 +4445,15 @@ class TaskEngine:
 
     def pause_task(self, task_id: str):
         """暂停任务"""
+        if self._browser_upload_action(task_id, 'pause'):
+            return
         if task_id in self.tasks:
             self.tasks[task_id].pause()
     
     def resume_task(self, task_id: str):
         """恢复任务"""
+        if self._browser_upload_action(task_id, 'resume'):
+            return
         if task_id in self.tasks:
             task = self.tasks[task_id]
             metadata = dict(task.task_metadata or {})
@@ -4504,6 +4511,8 @@ class TaskEngine:
     
     def cancel_task(self, task_id: str):
         """取消任务"""
+        if self._browser_upload_action(task_id, 'cancel'):
+            return
         if task_id in self.tasks:
             task = self.tasks[task_id]
             should_log_immediately = task.status == TaskStatus.PENDING and task_id not in self.processing
@@ -4541,6 +4550,17 @@ class TaskEngine:
                 except Exception:
                     logger.warning("[操作记录] 取消未运行任务记录失败: task_id=%s", task_id, exc_info=True)
     
+    def _browser_upload_action(self, task_id: str, action: str) -> bool:
+        task = self.tasks.get(task_id)
+        if task is None or task.type != TaskType.BROWSER_UPLOAD:
+            return False
+        from .browser_upload_service import get_browser_upload_service
+        service = get_browser_upload_service()
+        state = service.sessions.get(task_id)
+        if state:
+            asyncio.get_running_loop().create_task(service.action(state, action))
+        return True
+
     def get_task(self, task_id: str) -> Optional[Task]:
         """获取任务"""
         return self.tasks.get(task_id)

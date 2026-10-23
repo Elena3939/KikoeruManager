@@ -95,6 +95,26 @@ def library_index_name_sort_key(value: Any) -> str:
             parts.append(f"0{escaped}{_NATURAL_SORT_DELIMITER}")
     return "".join(parts)
 
+class BrowserUploadSession(Base):
+    """浏览器上传会话；源文件留在浏览器，不进入普通任务执行队列。"""
+    __tablename__ = 'browser_upload_sessions'
+    id = Column(String(36), primary_key=True)
+    token_hash = Column(String(64), nullable=False)
+    library_id = Column(String(100), nullable=False)
+    target_path = Column(Text, nullable=False)
+    state = Column(JSON, nullable=False)
+    updated_at = Column(DateTime, default=get_local_now, index=True, nullable=False)
+
+
+class BrowserUploadFile(Base):
+    """文件清单与恢复检查点；分块回执在暂存盘，不逐块写 PostgreSQL。"""
+    __tablename__ = 'browser_upload_files'
+    session_id = Column(String(36), ForeignKey('browser_upload_sessions.id', ondelete='CASCADE'), primary_key=True)
+    id = Column(String(36), primary_key=True)
+    relative_path = Column(Text, nullable=False)
+    state = Column(JSON, nullable=False)
+
+
 class Task(Base):
     """任务表"""
     __tablename__ = 'tasks'

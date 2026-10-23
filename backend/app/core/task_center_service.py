@@ -234,6 +234,7 @@ class TaskCenterService:
         TaskType.BAIDU_NETDISK_DOWNLOAD: "baidu_netdisk",
         TaskType.BAIDU_NETDISK_UPLOAD: "baidu_netdisk",
         TaskType.LOCAL_LIBRARY_UPLOAD: "upload",
+        TaskType.BROWSER_UPLOAD: "upload",
         TaskType.CIRCLE_COMPLETION_INDEX: "circle_completion",
         TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED: "circle_completion",
         TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH: "circle_completion",

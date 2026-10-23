@@ -509,6 +509,8 @@ app = FastAPI(
     version=get_app_version()
 )
 app.add_middleware(MediaAwareGZipMiddleware, minimum_size=1024)
+from .browser_upload_routes import router as browser_upload_router
+app.include_router(browser_upload_router)
 
 # ========== 工具函数 ==========
 def _mask_url_credentials(value: str) -> str:
@@ -2643,6 +2645,9 @@ async def startup_event():
     engine = get_task_engine()
     engine.start()
 
+    from ..core.browser_upload_service import get_browser_upload_service
+    await get_browser_upload_service().start()
+
     # 如果配置了自动启动监视器，则启动
     config = get_config()
     if config.watcher.enabled:
@@ -2734,6 +2739,8 @@ async def shutdown_event():
 
     # 停止任务引擎
     engine = get_task_engine()
+    from ..core.browser_upload_service import get_browser_upload_service
+    await get_browser_upload_service().stop()
     engine.stop()
 
     # 停止监视器
