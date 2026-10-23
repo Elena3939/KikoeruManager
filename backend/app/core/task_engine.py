@@ -2594,7 +2594,7 @@ class TaskEngine:
         metadata = dict(task.task_metadata or {})
         filtered_items = list(metadata.get("filtered_items") or [])
         recovery_summary = dict(metadata.get("filter_recovery") or {})
-        if not filtered_items or not task.output_path or int(recovery_summary.get("version") or 0) != 1:
+        if not filtered_items or not task.output_path or int(recovery_summary.get("version") or 0) not in {1, 2}:
             return
         from .filter_recovery_service import get_filter_recovery_service
 
@@ -2617,7 +2617,7 @@ class TaskEngine:
             {**item, **finalized_by_id.get(str(item.get("recovery_id") or ""), {})}
             for item in filtered_items
         ]
-        metadata["filter_recovery"] = service.public_summary(task.id)
+        metadata["filter_recovery"] = await asyncio.to_thread(service.public_summary, task.id)
         metadata["filter_path_transforms"] = list(path_transforms or [])
         task.task_metadata = metadata
         task.touch_metadata("filter_recovery_finalized")

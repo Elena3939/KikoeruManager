@@ -198,10 +198,10 @@ def test_capture_failure_keeps_original_filter_item(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(recovery, "capture_item", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")))
 
-    result = asyncio.run(FilterService().filter(str(source), _Task()))
+    with pytest.raises(RuntimeError, match="过滤搬运失败"):
+        asyncio.run(FilterService().filter(str(source), _Task()))
 
     assert removed.read_bytes() == b"keep-on-failure"
-    assert result["filtered_count"] == 0
 
 
 def test_capture_publish_failure_rolls_atomic_move_back(monkeypatch, tmp_path):

@@ -8,6 +8,10 @@ import os
 import shutil
 import threading
 import uuid
+import hashlib
+import functools
+import copy
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Optional
@@ -17,7 +21,7 @@ from ..config.settings import get_config_file_path
 
 logger = logging.getLogger(__name__)
 
-_MANIFEST_VERSION = 1
+_MANIFEST_VERSION = 2
 _MANIFEST_NAME = "manifest.json"
 
 
@@ -29,6 +33,14 @@ class FilterRecoveryConflictError(FilterRecoveryError):
     pass
 
 
+def task_exclusive(method):
+    @functools.wraps(method)
+    def wrapped(self, task_id, *args, **kwargs):
+        with self._task_lock(task_id):
+            return method(self, task_id, *args, **kwargs)
+    return wrapped
+
+
 class FilterRecoveryService:
     """持久化保存过滤项，并负责把它们安全写回最终库存。"""
 
@@ -36,6 +48,9 @@ class FilterRecoveryService:
         self._recovery_root_override = recovery_root
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
+        self._serialized_items = OrderedDict()
+        self._summary_cache = {}
+        self._transfer = threading.local()
 
     def recovery_root(self) -> Path:
         if self._recovery_root_override:
@@ -52,6 +67,28 @@ class FilterRecoveryService:
             data_root = config_path.parent / "data"
         return data_root / "filter-recovery"
 
+    def reconcile_all(self) -> Dict[str, str]:
+        """启动时在线程中核对各任务中断记录，异常任务保留现场并单独报告。"""
+        root = self.recovery_root()
+        failures = {}
+        if not root.exists():
+            return failures
+        for directory in root.iterdir():
+            if not directory.is_dir() or directory.is_symlink():
+                continue
+            try:
+                task_id = self._validate_token(directory.name, "任务 ID")
+                with self._task_lock(task_id):
+                    if not (directory / "task.json").exists() and not (directory / _MANIFEST_NAME).exists():
+                        continue
+                    self._ensure_store(task_id)
+                    self._reconcile(task_id)
+            except Exception as exc:
+                failures[directory.name] = str(exc)
+                logger.exception("启动核对过滤恢复区失败，已保留现场: %s", directory)
+        return failures
+
+    @task_exclusive
     def capture_item(
         self,
         task_id: str,
@@ -60,8 +97,13 @@ class FilterRecoveryService:
         relative_path: str,
         entry_type: str,
         size: int,
+        checkpoint=None,
+        progress=None,
     ) -> Dict[str, Any]:
         normalized_task_id = self._validate_token(task_id, "任务 ID")
+        self._transfer.checkpoint = checkpoint
+        self._transfer.progress = progress
+        self._transfer.copied = 0
         source = Path(source_path)
         if not source.exists():
             raise FilterRecoveryError(f"过滤来源不存在: {source_path}")
@@ -74,6 +116,21 @@ class FilterRecoveryService:
         item_root.parent.mkdir(parents=True, exist_ok=True)
         self._remove_path(staged, missing_ok=True)
 
+        header = self._ensure_store(normalized_task_id)
+        batch_id = header.get("active_batch") or uuid.uuid4().hex
+        if not header.get("active_batch"):
+            header["active_batch"] = batch_id
+            header.setdefault("batches", {})[batch_id] = {"target": {}}
+            self._write_header(normalized_task_id, header)
+        item = {
+            "recovery_id": recovery_id, "batch_id": batch_id,
+            "relative_path": safe_relative, "restore_relative_path": safe_relative,
+            "name": source.name, "type": "dir" if entry_type == "dir" else "file",
+            "size": max(0, int(size or 0)), "recovery_status": "preparing",
+            "source_path": str(source.resolve()), "restored_at": "", "restored_path": "",
+        }
+        # 必须先持久化归属，再移动内容；中断后能定位 .part 与已发布 payload。
+        self._write_item(normalized_task_id, item)
         try:
             staged.mkdir(parents=True, exist_ok=False)
             staged_payload = staged / source.name
@@ -97,23 +154,13 @@ class FilterRecoveryService:
                     )
             if not keep_staged:
                 self._remove_path(staged, missing_ok=True)
+            else:
+                raise FilterRecoveryError(f"恢复区发布失败，回滚未完成，内容实际位于: {staged_payload}")
             raise
 
         try:
-            manifest = self._read_manifest(normalized_task_id, required=False)
-            item = {
-                "recovery_id": recovery_id,
-                "relative_path": safe_relative,
-                "restore_relative_path": safe_relative,
-                "name": source.name,
-                "type": "dir" if entry_type == "dir" else "file",
-                "size": max(0, int(size or 0)),
-                "recovery_status": "available",
-                "restored_at": "",
-                "restored_path": "",
-            }
-            manifest["items"].append(item)
-            self._write_manifest(normalized_task_id, manifest)
+            item["recovery_status"] = "available"
+            self._write_item(normalized_task_id, item)
         except Exception:
             keep_item_root = False
             try:
@@ -130,13 +177,22 @@ class FilterRecoveryService:
                 )
             if not keep_item_root:
                 self._remove_path(item_root, missing_ok=True)
+            else:
+                raise FilterRecoveryError(f"恢复记录写入失败，回滚未完成，内容实际位于: {payload}")
             raise
         return dict(item)
 
+    @task_exclusive
     def begin_capture(self, task_id: str) -> None:
-        """同一任务重新执行过滤时先清掉上一次未完成尝试。"""
-        self.cleanup_task(task_id, strict=True)
+        """每次执行独立批次，不删除历史恢复内容。"""
+        header = self._ensure_store(task_id)
+        self._reconcile(task_id)
+        batch = uuid.uuid4().hex
+        header["active_batch"] = batch
+        header.setdefault("batches", {})[batch] = {"target": {}}
+        self._write_header(task_id, header)
 
+    @task_exclusive
     def finalize_task(
         self,
         task_id: str,
@@ -152,6 +208,8 @@ class FilterRecoveryService:
 
         transforms = list(path_transforms or [])
         for item in manifest["items"]:
+            if item.get("batch_id") != manifest.get("active_batch"):
+                continue
             item["restore_relative_path"] = self.apply_path_transforms(
                 str(item.get("relative_path") or ""),
                 transforms,
@@ -161,6 +219,7 @@ class FilterRecoveryService:
             "root": str(final_root or "").strip(),
             "library_id": str(library_id or "").strip(),
         }
+        manifest.setdefault("batches", {}).setdefault(manifest.get("active_batch", "legacy"), {})["target"] = dict(manifest["target"])
         self._write_manifest(normalized_task_id, manifest)
         return [dict(item) for item in manifest["items"]]
 
@@ -197,15 +256,21 @@ class FilterRecoveryService:
             else ""
         )
         lock = self._task_lock(task_id)
-        acquired = await asyncio.to_thread(lock.acquire, False)
+        acquired = lock.acquire(False)
         if not acquired:
             raise FilterRecoveryConflictError("该任务已有文件正在还原")
         try:
-            return await self._restore_item_locked(
+            operation = asyncio.create_task(self._restore_item_locked(
                 task_id,
                 normalized_recovery_id,
                 relative_path=normalized_relative_path,
-            )
+            ))
+            try:
+                return await asyncio.shield(operation)
+            except asyncio.CancelledError:
+                # 请求断开不能让后台复制脱离互斥锁继续运行。
+                await operation
+                raise
         finally:
             lock.release()
 
@@ -236,7 +301,9 @@ class FilterRecoveryService:
             if status not in {TaskStatus.COMPLETED.value, TaskStatus.WAITING_MANUAL.value}:
                 raise FilterRecoveryError("任务尚未完成，当前不能还原过滤项")
 
-            manifest = self._read_manifest(task_id)
+            await asyncio.to_thread(self._ensure_store, task_id)
+            await asyncio.to_thread(self._reconcile, task_id)
+            manifest = await asyncio.to_thread(self._read_manifest, task_id)
             item = next(
                 (entry for entry in manifest.get("items") or [] if entry.get("recovery_id") == recovery_id),
                 None,
@@ -246,6 +313,9 @@ class FilterRecoveryService:
             activity_item = item
             if item.get("recovery_status") == "restored":
                 raise FilterRecoveryConflictError("该文件已经还原")
+
+            if item.get("recovery_status") != "available" or item.get("pending_restore"):
+                raise FilterRecoveryError("恢复项存在未完成事务，请核对恢复区和目标位置")
 
             restore_item = item
             if relative_path:
@@ -265,7 +335,8 @@ class FilterRecoveryService:
                 }
                 activity_item = restore_item
 
-            target = dict(manifest.get("target") or {})
+            batch = manifest.get("batches", {}).get(item.get("batch_id"))
+            target = dict(batch.get("target", {}) if batch is not None else manifest.get("target") or {})
             if not target.get("ready") or not str(target.get("root") or "").strip():
                 raise FilterRecoveryError("任务尚未确定最终入库位置")
 
@@ -277,7 +348,7 @@ class FilterRecoveryService:
             if not payload.exists():
                 if not relative_path:
                     item["recovery_status"] = "missing"
-                    self._write_manifest(task_id, manifest)
+                    self._write_item(task_id, item)
                     self._sync_task_metadata(engine, live_task, record, db, manifest)
                 raise FilterRecoveryError("恢复内容已经丢失")
             if relative_path and not payload.is_file():
@@ -288,11 +359,26 @@ class FilterRecoveryService:
             library = manager.get_library_definition(library_id) if library_id else None
             target_root_text = str(target.get("root") or "").strip()
             target_is_local_staging = bool(target_root_text and os.path.exists(target_root_text))
-            if library is not None and library.type != "local" and not target_is_local_staging:
-                restored_path = await self._restore_remote(manager, library, payload, target, restore_item)
-            else:
-                restored_path = await asyncio.to_thread(self._restore_local, payload, target, restore_item)
+            item["pending_restore"] = {
+                "relative_path": relative_path,
+                "target": dict(target),
+                "restore_relative_path": restore_item["restore_relative_path"],
+                "started_at": datetime.now().isoformat(),
+            }
+            await asyncio.to_thread(self._write_item, task_id, item)
+            remote_restore = library is not None and library.type != "local" and not target_is_local_staging
+            try:
+                if remote_restore:
+                    restored_path = await self._restore_remote(manager, library, payload, target, restore_item)
+                else:
+                    restored_path = await asyncio.to_thread(self._restore_local, payload, target, restore_item)
+            except FilterRecoveryConflictError:
+                # 同名预检拒绝没有发布内容，不应留下无法再次尝试的事务。
+                item.pop("pending_restore", None)
+                await asyncio.to_thread(self._write_item, task_id, item)
+                raise
 
+            item.pop("pending_restore", None)
             restored_at = datetime.now().isoformat()
             if relative_path:
                 item.setdefault("restored_files", []).append({
@@ -305,7 +391,7 @@ class FilterRecoveryService:
                 item["restored_at"] = restored_at
                 item["restored_path"] = restored_path
             try:
-                self._write_manifest(task_id, manifest)
+                self._write_item(task_id, item)
                 self._sync_task_metadata(engine, live_task, record, db, manifest)
             except Exception:
                 if not payload.exists():
@@ -320,17 +406,20 @@ class FilterRecoveryService:
                             recovery_id,
                             exc_info=True,
                         )
+                rollback_ok = payload.exists() and not remote_restore
+                if not rollback_ok:
+                    item["pending_restore"] = {"restored_path": restored_path, "source_path": str(payload)}
                 if relative_path:
                     item["restored_files"] = [
                         entry for entry in item.get("restored_files") or []
                         if entry.get("relative_path") != relative_path
                     ]
                 else:
-                    item["recovery_status"] = "available"
+                    item["recovery_status"] = "available" if rollback_ok else "incomplete"
                     item["restored_at"] = ""
                     item["restored_path"] = ""
                 try:
-                    self._write_manifest(task_id, manifest)
+                    self._write_item(task_id, item)
                 except Exception:
                     logger.error("回滚过滤恢复清单失败: task_id=%s", task_id, exc_info=True)
                 raise
@@ -363,6 +452,7 @@ class FilterRecoveryService:
         finally:
             db.close()
 
+    @task_exclusive
     def cleanup_task(self, task_id: str, *, strict: bool = True) -> bool:
         normalized_task_id = self._validate_token(task_id, "任务 ID")
         task_root = self._task_root(normalized_task_id)
@@ -370,6 +460,8 @@ class FilterRecoveryService:
             return True
         try:
             shutil.rmtree(task_root)
+            self._serialized_items = OrderedDict((key, value) for key, value in self._serialized_items.items() if key[0] != task_id)
+            self._summary_cache.pop(task_id, None)
             return True
         except Exception as exc:
             logger.warning("清理过滤恢复数据失败: task_id=%s error=%s", task_id, exc, exc_info=True)
@@ -378,6 +470,9 @@ class FilterRecoveryService:
             return False
 
     def _restore_local(self, payload: Path, target: Dict[str, Any], item: Dict[str, Any]) -> str:
+        self._transfer.checkpoint = None
+        self._transfer.progress = None
+        self._transfer.copied = 0
         root = Path(str(target.get("root") or "")).resolve()
         relative = self._normalize_relative_path(str(item.get("restore_relative_path") or ""))
         destination = (root / Path(relative)).resolve()
@@ -388,15 +483,19 @@ class FilterRecoveryService:
         try:
             os.replace(payload, destination)
         except OSError as exc:
-            if exc.errno not in {errno.EXDEV, errno.EACCES, errno.EPERM}:
+            if exc.errno != errno.EXDEV:
                 raise
+            staged = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
             try:
                 if payload.is_dir():
-                    shutil.copytree(payload, destination, copy_function=shutil.copy2)
+                    shutil.copytree(payload, staged, copy_function=self._copy_file)
                 else:
-                    shutil.copy2(payload, destination)
-            except Exception:
-                self._remove_path(destination, missing_ok=True)
+                    self._copy_file(payload, staged)
+                if destination.exists():
+                    raise FilterRecoveryConflictError(f"目标已存在同名内容: {destination}")
+                os.replace(staged, destination)
+            except BaseException:
+                self._remove_path(staged, missing_ok=True)
                 raise
         return str(destination)
 
@@ -509,62 +608,187 @@ class FilterRecoveryService:
         except Exception:
             logger.warning("记录过滤项还原操作失败: task_id=%s", task_id, exc_info=True)
 
+    def _copy_file(self, source, destination):
+        before = os.stat(source)
+        digest = hashlib.sha256()
+        with open(source, "rb") as incoming, open(destination, "xb") as outgoing:
+            while chunk := incoming.read(1024 * 1024):
+                checkpoint = getattr(self._transfer, "checkpoint", None)
+                if checkpoint:
+                    checkpoint()
+                outgoing.write(chunk)
+                digest.update(chunk)
+                self._transfer.copied = getattr(self._transfer, "copied", 0) + len(chunk)
+                callback = getattr(self._transfer, "progress", None)
+                if callback:
+                    callback(self._transfer.copied)
+            outgoing.flush()
+            os.fsync(outgoing.fileno())
+        after = os.stat(source)
+        if (before.st_size, before.st_mtime_ns, before.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
+            raise FilterRecoveryError("复制期间来源发生变化，保留来源和恢复副本")
+        check = hashlib.sha256()
+        with open(destination, "rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                checkpoint = getattr(self._transfer, "checkpoint", None)
+                if checkpoint:
+                    checkpoint()
+                check.update(chunk)
+        if check.digest() != digest.digest():
+            raise FilterRecoveryError("恢复副本校验失败，保留来源")
+        shutil.copystat(source, destination)
+        return destination
+
     def _move_to_recovery(self, source: Path, destination: Path, *, expected_size: int) -> None:
         try:
             os.replace(source, destination)
             return
         except OSError as exc:
-            if exc.errno not in {errno.EXDEV, errno.EACCES, errno.EPERM}:
+            if exc.errno != errno.EXDEV:
                 raise
 
         if source.is_dir():
-            shutil.copytree(source, destination, copy_function=shutil.copy2)
+            before = self._tree_fingerprint(source)
+            shutil.copytree(source, destination, copy_function=self._copy_file)
             copied_size = self._path_size(destination)
-            if expected_size and copied_size != expected_size:
+            if copied_size != expected_size:
                 raise FilterRecoveryError(f"跨盘复制校验失败: {copied_size} != {expected_size}")
+            if before != self._tree_fingerprint(source):
+                raise FilterRecoveryError("复制期间来源目录发生变化，保留来源目录")
             shutil.rmtree(source)
         else:
-            shutil.copy2(source, destination)
+            self._copy_file(source, destination)
             copied_size = destination.stat().st_size
-            if expected_size and copied_size != expected_size:
+            if copied_size != expected_size:
                 raise FilterRecoveryError(f"跨盘复制校验失败: {copied_size} != {expected_size}")
             source.unlink()
 
+    def _tree_fingerprint(self, root):
+        """覆盖目录成员及身份，防止复制期间增删文件后误删整个来源。"""
+        result = {}
+        stack = [Path(root)]
+        while stack:
+            current = stack.pop()
+            checkpoint = getattr(self._transfer, "checkpoint", None)
+            if checkpoint:
+                checkpoint()
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    stat = entry.stat(follow_symlinks=False)
+                    result[os.path.relpath(entry.path, root)] = (
+                        stat.st_dev, stat.st_ino, stat.st_mode, stat.st_size, stat.st_mtime_ns,
+                    )
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+        return result
+
+    @staticmethod
+    def _atomic_json(path, payload):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(f".tmp-{uuid.uuid4().hex}")
+        try:
+            with temporary.open("w", encoding="utf-8") as stream:
+                json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _write_header(self, task_id, header):
+        self._atomic_json(self._task_root(task_id) / "task.json", {k: v for k, v in header.items() if k != "items"})
+        self._summary_cache.pop(task_id, None)
+
+    def _write_item(self, task_id, item):
+        token = self._validate_token(item["recovery_id"], "恢复 ID")
+        serialized = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        key = (task_id, token)
+        if self._serialized_items.get(key) == serialized:
+            return
+        self._atomic_json(self._task_root(task_id) / "entries" / f"{token}.json", item)
+        self._serialized_items[key] = serialized
+        self._serialized_items.move_to_end(key)
+        while len(self._serialized_items) > 2048:
+            self._serialized_items.popitem(last=False)
+        self._summary_cache.pop(task_id, None)
+
+    def _ensure_store(self, task_id):
+        header_path = self._task_root(task_id) / "task.json"
+        if header_path.exists():
+            header = json.loads(header_path.read_text(encoding="utf-8"))
+            if header.get("task_id") != task_id or header.get("version") != 2:
+                raise FilterRecoveryError("恢复区任务元信息无效")
+            return header
+        legacy_path = self._manifest_path(task_id)
+        legacy = json.loads(legacy_path.read_text(encoding="utf-8")) if legacy_path.exists() else {}
+        if legacy and (legacy.get("task_id") != task_id or not isinstance(legacy.get("items"), list)):
+            raise FilterRecoveryError("旧恢复清单格式无效，未迁移")
+        header = {"version": 2, "task_id": task_id, "active_batch": "legacy",
+                  "target": legacy.get("target", {}),
+                  "batches": {"legacy": {"target": legacy.get("target", {})}}}
+        for item in legacy.get("items", []):
+            item = {**item, "batch_id": "legacy"}
+            self._write_item(task_id, item)
+            saved = json.loads((self._task_root(task_id) / "entries" / f"{item['recovery_id']}.json").read_text(encoding="utf-8"))
+            if saved != item:
+                raise FilterRecoveryError("旧恢复清单迁移校验失败")
+        # 最后发布 v2 标记；迁移失败仍可按旧清单重试。
+        self._write_header(task_id, header)
+        return header
+
+    def _reconcile(self, task_id):
+        for item in self._read_manifest(task_id, required=False)["items"]:
+            if item.get("pending_restore"):
+                # 不能仅靠同名目的文件推断归属，保留事务与实际位置供核对。
+                item["recovery_status"] = "incomplete"
+                self._write_item(task_id, item)
+                continue
+            if item.get("recovery_status") != "preparing":
+                continue
+            payload = self._payload_path(task_id, item)
+            staged = payload.parent.with_name(payload.parent.name + ".part") / payload.name
+            source = Path(item["source_path"])
+            if payload.exists() and not source.exists():
+                item["recovery_status"] = "available"
+            elif staged.exists() and not source.exists() and not payload.exists():
+                os.replace(staged.parent, payload.parent)
+                item["recovery_status"] = "available"
+            else:
+                item["recovery_status"] = "incomplete"
+            self._write_item(task_id, item)
+
     def _read_manifest(self, task_id: str, *, required: bool = True) -> Dict[str, Any]:
+        header_path = self._task_root(task_id) / "task.json"
+        if header_path.exists():
+            manifest = self._ensure_store(task_id)
+            manifest["items"] = [json.loads(path.read_text(encoding="utf-8"))
+                                 for path in (self._task_root(task_id) / "entries").glob("*.json")]
+            return manifest
         path = self._manifest_path(task_id)
         if not path.exists():
             if required:
                 raise FilterRecoveryError("该任务没有可用的过滤恢复数据")
-            return {"version": _MANIFEST_VERSION, "task_id": task_id, "target": {}, "items": []}
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise FilterRecoveryError(f"读取过滤恢复清单失败: {exc}") from exc
+            return {"version": 2, "task_id": task_id, "target": {}, "items": []}
+        payload = json.loads(path.read_text(encoding="utf-8"))
         if payload.get("task_id") != task_id or not isinstance(payload.get("items"), list):
             raise FilterRecoveryError("过滤恢复清单格式无效")
         return payload
 
     def _write_manifest(self, task_id: str, manifest: Dict[str, Any]) -> None:
-        task_root = self._task_root(task_id)
-        task_root.mkdir(parents=True, exist_ok=True)
-        manifest = {
-            "version": _MANIFEST_VERSION,
-            "task_id": task_id,
-            "target": dict(manifest.get("target") or {}),
-            "items": list(manifest.get("items") or []),
-        }
-        target = self._manifest_path(task_id)
-        temp = target.with_suffix(f".tmp-{uuid.uuid4().hex}")
-        try:
-            temp.write_text(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-            os.replace(temp, target)
-        finally:
-            if temp.exists():
-                temp.unlink(missing_ok=True)
+        header = self._ensure_store(task_id)
+        header.update({k: v for k, v in manifest.items() if k not in ("items", "version")})
+        for item in manifest.get("items", []):
+            self._write_item(task_id, item)
+        self._write_header(task_id, header)
 
+    @task_exclusive
     def public_summary(self, task_id: str) -> Dict[str, Any]:
+        if task_id in self._summary_cache:
+            return copy.deepcopy(self._summary_cache[task_id])
         manifest = self._read_manifest(task_id, required=False)
-        return self._public_summary(manifest)
+        summary = self._public_summary(manifest)
+        self._summary_cache[task_id] = summary
+        return copy.deepcopy(summary)
 
     @staticmethod
     def _public_summary(manifest: Dict[str, Any]) -> Dict[str, Any]:
@@ -574,6 +798,9 @@ class FilterRecoveryService:
             "target_ready": bool((manifest.get("target") or {}).get("ready")),
             "available_count": sum(1 for item in items if item.get("recovery_status") == "available"),
             "restored_count": sum(1 for item in items if item.get("recovery_status") == "restored"),
+            "batches": manifest.get("batches", {}),
+            "incomplete_count": sum(1 for item in items if item.get("recovery_status") in {"preparing", "incomplete"}),
+            "pending_restore_count": sum(1 for item in items if item.get("pending_restore")),
             "missing_count": sum(1 for item in items if item.get("recovery_status") == "missing"),
         }
 

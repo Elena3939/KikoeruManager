@@ -2646,6 +2646,10 @@ async def startup_event():
     except Exception:
         logger.warning("[启动] 库存索引 watcher 启动失败", exc_info=True)
 
+    # 先核对恢复区中断事务，再允许新过滤任务移动内容；磁盘遍历不占用事件循环。
+    from ..core.filter_recovery_service import get_filter_recovery_service
+    await asyncio.to_thread(get_filter_recovery_service().reconcile_all)
+
     # 启动任务引擎
     engine = get_task_engine()
     engine.start()
