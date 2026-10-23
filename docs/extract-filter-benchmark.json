@@ -1,0 +1,123 @@
+{
+  "planning": [
+    {
+      "files": 10000,
+      "mode": "wide",
+      "median_ms": 23.24,
+      "selected": 10000
+    },
+    {
+      "files": 10000,
+      "mode": "deep",
+      "median_ms": 39.09,
+      "selected": 10000
+    },
+    {
+      "files": 10000,
+      "mode": "parent",
+      "median_ms": 20.45,
+      "selected": 100
+    },
+    {
+      "files": 10000,
+      "mode": "mp3",
+      "median_ms": 17.24,
+      "selected": 0
+    },
+    {
+      "files": 10000,
+      "mode": "zero",
+      "median_ms": 17.56,
+      "selected": 0
+    },
+    {
+      "files": 50000,
+      "mode": "wide",
+      "median_ms": 127.75,
+      "selected": 50000
+    },
+    {
+      "files": 50000,
+      "mode": "deep",
+      "median_ms": 211.64,
+      "selected": 50000
+    },
+    {
+      "files": 50000,
+      "mode": "parent",
+      "median_ms": 147.52,
+      "selected": 500
+    },
+    {
+      "files": 50000,
+      "mode": "mp3",
+      "median_ms": 119.72,
+      "selected": 0
+    },
+    {
+      "files": 50000,
+      "mode": "zero",
+      "median_ms": 120.25,
+      "selected": 0
+    },
+    {
+      "files": 100000,
+      "mode": "wide",
+      "median_ms": 246.75,
+      "selected": 100000
+    },
+    {
+      "files": 100000,
+      "mode": "deep",
+      "median_ms": 401.79,
+      "selected": 100000
+    },
+    {
+      "files": 100000,
+      "mode": "parent",
+      "median_ms": 248.79,
+      "selected": 1000
+    },
+    {
+      "files": 100000,
+      "mode": "mp3",
+      "median_ms": 209.95,
+      "selected": 0
+    },
+    {
+      "files": 100000,
+      "mode": "zero",
+      "median_ms": 214.21,
+      "selected": 0
+    }
+  ],
+  "disk": [
+    {
+      "files": 10000,
+      "scan_ms": 76.45,
+      "capture_and_persist_ms": 58188.39,
+      "summary_ms": 2040.89,
+      "atomic_record_writes": 20000
+    },
+    {
+      "files": 50000,
+      "scan_ms": 410.17,
+      "capture_and_persist_ms": 302032.78,
+      "summary_ms": 11348.41,
+      "atomic_record_writes": 100000
+    },
+    {
+      "files": 100000,
+      "scan_ms": 799.29,
+      "capture_and_persist_ms": 622449.74,
+      "summary_ms": 22755.78,
+      "atomic_record_writes": 200000
+    }
+  ],
+  "environment": "3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]",
+  "note": "规划为内存条目；disk 为实际临时文件、原子搬运和持久化，不等同于跨盘吞吐。",
+  "event_loop_delay_ms": {
+    "max": 68.09,
+    "p95": 6.44
+  }
+}
