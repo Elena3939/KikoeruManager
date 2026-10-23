@@ -622,7 +622,7 @@ class ResourceBudgetConfig(BaseModel):
     """跨业务资源预算：限制慢盘、远程库、下载等链路互相打满。"""
     enabled: bool = True
     disk_io_local: int = 2
-    archive_cpu: int = 0
+    archive_cpu: int = Field(default=0, exclude=True)  # 仅读取旧配置；实际解压统一由 extract 控制。
     archive_inspect: int = 0
     remote_fs: int = 4
     network_download: int = 5

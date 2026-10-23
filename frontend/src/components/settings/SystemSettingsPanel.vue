@@ -395,7 +395,6 @@ const defaultDatabaseConfig = {
 const defaultResourceBudget = {
   enabled: true,
   disk_io_local: 2,
-  archive_cpu: 0,
   archive_inspect: 0,
   remote_fs: 4,
   network_download: 5,
@@ -424,7 +423,6 @@ const budgetItems = [
   { key: 'disk_io_local', label: '本地磁盘 IO', hint: '本地复制、上传入库、打包扫描、临时视图复制等慢盘操作。', min: 0, max: 16 },
   { key: 'remote_fs', label: '远程库存 / 群晖', hint: 'FileStation 列表、搜索、下载、上传等群晖接口操作。', min: 0, max: 20 },
   { key: 'network_download', label: '网络下载', hint: 'HTTP、Google Drive、Transfer.it、百度 PCSGo、ASMR 下载等。', min: 0, max: 50 },
-  { key: 'archive_cpu', label: '解压 CPU', hint: '7zz / unar 实际解压子进程，建议按 CPU 和磁盘吞吐一起调。', min: 0, max: 16 },
   { key: 'archive_inspect', label: '压缩包探测', hint: '7zz l / 密码探测 / 伪装压缩包识别等轻量但高频操作。', min: 0, max: 32 },
 ]
 

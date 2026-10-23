@@ -50,6 +50,7 @@ from ..core.password_utils import (
 )
 from ..core.json_safety import database_safe_text, safe_json_value
 from ..core.resource_budget_service import get_resource_budget_service
+from .extract_runtime import AdjustableLimiter, ArchiveFingerprintCache, archive_node, record_event, node_state, measured_phase, archive_attempt, candidate_evidence
 from .failure_reason_formatter import format_extract_failure_message
 
 logger = logging.getLogger(__name__)
@@ -117,13 +118,11 @@ class ExtractService:
     _storage_type_cache: Dict[str, str] = {}
     # _list_archive_contents 最近检测到的编码（archive_path -> encoding_name），
     # 供 _get_archive_info 写入 archive_info.detected_encoding，进而给 _get_mcp_args 使用。
-    _archive_encoding_cache: Dict[str, str] = {}
+    _archive_encoding_cache = ArchiveFingerprintCache()
     # _list_archive_contents / _probe_7z_no_password_status 最近读取到的 7z 方法。
     # 用于识别 7-Zip ZS 扩展 codec（例如 ZSTD = 04F71101）。
-    _archive_method_cache: Dict[str, str] = {}
-    # 7zz 的 -mcp 参数兼容性检测：24.08+ 某些版本/某些 ZIP 文件对 `-mcp=N` 直接抛
-    # `opening : E_INVALIDARG`。第一次检测到后置为 True，后续 _get_mcp_args 直接
-    # short-circuit 返回 []，禁止再传 -mcp。事后 _repair_mojibake_filenames_in_place 兜底。
+    _archive_method_cache = ArchiveFingerprintCache()
+    # 保留旧测试/调用方属性兼容，参数重试不再使用跨工具全局禁用标记。
     _seven_zip_mcp_unsupported: bool = False
     # 上次构建 semaphore 时所用的"探测目标路径 + 探测结果"，用于热重载时识别变更
     _seven_zip_semaphore_storage_key: Optional[str] = None
@@ -534,9 +533,6 @@ class ExtractService:
         "wrong password",
         "password is incorrect",
         "incorrect password",
-        "password?",
-        "can not open encrypted archive",
-        "cannot open encrypted archive",
     )
     # #4 预读 list 缓存：避免同一压缩包重复跑 `7zz l`。
     # key = (abs_path, mtime_ns, size)，value = ArchiveInfo 快照。
@@ -544,7 +540,7 @@ class ExtractService:
     # 类变量跨 ExtractService 实例共享：task_engine 主任务和 linked_subtitle probe_task
     # 拿到的是不同实例，但通过这里共享 list 结果。
     # 分卷 / remap 后路径会变 → 新 key，老条目靠 LRU 自然淘汰，不主动 invalidate。
-    _archive_info_cache: "OrderedDict[Tuple[str, int, int], ArchiveInfo]" = OrderedDict()
+    _archive_info_cache: "OrderedDict[Tuple[str, int, int, int, int], ArchiveInfo]" = OrderedDict()
     _archive_info_cache_lock = threading.Lock()
     ARCHIVE_INFO_CACHE_MAX: int = 64
     ARCHIVE_INFO_CACHE_FILE_LIST_LIMIT: int = 50000  # 单条 file_list 超此值不入缓存，避免极端大包占内存
@@ -646,13 +642,8 @@ class ExtractService:
         当 zip_encoding=0（未配置）时，自动使用 archive_info.detected_encoding
         推断代码页（如日文 ZIP 自动得到 -mcp=932）。
 
-        7zz 24.08+ 某些版本/某些 ZIP 对 -mcp= 直接抛 `opening : E_INVALIDARG`。
-        _run_7z_command 检测到该错误会把 _seven_zip_mcp_unsupported 置 True，
-        这里 short-circuit 一律返回 []，让 7zz 走默认 UTF-8 解读；文件名 mojibake
-        由事后 _repair_mojibake_filenames_in_place 兜底反解。
+        参数不兼容由调用方释放执行槽后移除参数重试，不影响其它格式或密码证据。
         """
-        if self.__class__._seven_zip_mcp_unsupported:
-            return []
         if not archive_path:
             if archive_info is not None:
                 archive_path = getattr(archive_info, 'path', None)
@@ -664,6 +655,9 @@ class ExtractService:
         cp = self._filename_encoding_to_codepage(filename_encoding)
         if cp > 0:
             return [f"-mcp={cp}"]
+        configured_cp = int(self.config.extract.zip_encoding or 0)
+        if configured_cp > 0:
+            return [f"-mcp={configured_cp}"]
         enc = ""
         if archive_path:
             # ZIP 的真实文件名编码在中央目录里。7z stdout 的编码检测只能解释
@@ -725,12 +719,12 @@ class ExtractService:
         raw_list = metadata.get("manual_retry_passwords")
         if isinstance(raw_list, (list, tuple)):
             for raw in raw_list:
-                normalized = normalize_password_value(raw)
+                normalized = str(raw) if raw is not None else ""
                 if normalized and normalized not in seen:
                     seen.add(normalized)
                     result.append(normalized)
         if not result:
-            legacy = normalize_password_value(metadata.get("manual_retry_password"))
+            legacy = str(metadata.get("manual_retry_password") or "")
             if legacy:
                 result.append(legacy)
         return result
@@ -1783,29 +1777,21 @@ class ExtractService:
 
     def _get_7z_semaphore(self) -> asyncio.Semaphore:
         limit, reason = self._resolve_extract_concurrency()
-        # 把决策来源也作为 cache key 一部分，配置热重载切换 SSD↔HDD 时能重建 semaphore。
-        storage_key = f"{limit}:{reason}"
-        if (
-            self.__class__._seven_zip_semaphore is None
-            or self.__class__._seven_zip_semaphore_limit != limit
-            or self.__class__._seven_zip_semaphore_storage_key != storage_key
-        ):
-            self.__class__._seven_zip_semaphore = asyncio.Semaphore(limit)
-            self.__class__._seven_zip_semaphore_limit = limit
-            self.__class__._seven_zip_semaphore_storage_key = storage_key
-            logger.info("设置 7z 并发上限: %s (%s)", limit, reason)
-        return self.__class__._seven_zip_semaphore
+        limiter = self.__class__._seven_zip_semaphore
+        if not isinstance(limiter, AdjustableLimiter):
+            limiter = self.__class__._seven_zip_semaphore = AdjustableLimiter(limit)
+        limiter.resize(limit)
+        self.__class__._seven_zip_semaphore_limit = limit
+        return limiter
 
     def _get_7z_inspect_semaphore(self) -> asyncio.Semaphore:
         limit = max(1, int(self.INSPECT_CONCURRENCY_LIMIT or 1))
-        if (
-            self.__class__._seven_zip_inspect_semaphore is None
-            or self.__class__._seven_zip_inspect_semaphore_limit != limit
-        ):
-            self.__class__._seven_zip_inspect_semaphore = asyncio.Semaphore(limit)
-            self.__class__._seven_zip_inspect_semaphore_limit = limit
-            logger.info("设置 7z 清单/探测并发上限: %s", limit)
-        return self.__class__._seven_zip_inspect_semaphore
+        limiter = self.__class__._seven_zip_inspect_semaphore
+        if not isinstance(limiter, AdjustableLimiter):
+            limiter = self.__class__._seven_zip_inspect_semaphore = AdjustableLimiter(limit)
+        limiter.resize(limit)
+        self.__class__._seven_zip_inspect_semaphore_limit = limit
+        return limiter
 
     def _get_seven_zip_mmt_args(self) -> List[str]:
         """返回给 7z 的多线程参数。空字符串=不传，让 7z 自己决定。"""
@@ -1849,104 +1835,184 @@ class ExtractService:
         progress_floor: int = 31,
         update_task_progress: bool = True,
     ) -> AsyncIterator[bool]:
-        budget_service = get_resource_budget_service()
-        budget_busy = False
-        try:
-            snapshot = budget_service.snapshot()
-            info = (snapshot.get("resources") or {}).get(budget_resource) or {}
-            budget_busy = (
-                not bool(info.get("passthrough", True))
-                and int(info.get("active_limit") or 0) > 0
-                and int(info.get("available") or 0) <= 0
-            )
-        except Exception:
+        with archive_attempt():
+            budget_service = get_resource_budget_service()
             budget_busy = False
+            try:
+                snapshot = budget_service.snapshot()
+                info = (snapshot.get("resources") or {}).get(budget_resource) or {}
+                budget_busy = (
+                    not bool(info.get("passthrough", True))
+                    and int(info.get("active_limit") or 0) > 0
+                    and int(info.get("available") or 0) <= 0
+                )
+            except Exception:
+                budget_busy = False
 
-        if task is not None and update_task_progress and (self._is_semaphore_locked(semaphore) or budget_busy):
-            task.update_progress(
-                self._task_progress_floor(task, progress_floor),
-                f"等待{slot_label}（当前并发上限 {slot_limit or 1}）",
-            )
-
-        try:
-            timeout_seconds = float(wait_timeout or 0)
-        except Exception:
-            timeout_seconds = 0.0
-
-        semaphore_acquired = False
-        budget_cm = None
-        budget_entered = False
-
-        async def _enter_resources() -> None:
-            nonlocal semaphore_acquired, budget_cm, budget_entered
-            await semaphore.acquire()
-            semaphore_acquired = True
-            budget_cm = budget_service.acquire(budget_resource, reason=reason)
-            await budget_cm.__aenter__()
-            budget_entered = True
-
-        try:
-            if timeout_seconds > 0:
-                await asyncio.wait_for(_enter_resources(), timeout=timeout_seconds)
-            else:
-                await _enter_resources()
-        except asyncio.TimeoutError:
-            if budget_entered and budget_cm is not None:
-                try:
-                    await budget_cm.__aexit__(None, None, None)
-                except Exception:
-                    logger.debug("释放 7z 资源预算失败", exc_info=True)
-            if semaphore_acquired:
-                semaphore.release()
-            if task is not None and update_task_progress:
+            if task is not None and update_task_progress and (self._is_semaphore_locked(semaphore) or budget_busy):
                 task.update_progress(
                     self._task_progress_floor(task, progress_floor),
-                    f"等待{slot_label}超时，转入后续兜底流程",
+                    f"等待{slot_label}（当前并发上限 {slot_limit or 1}）",
                 )
-            logger.warning(
-                "等待 7z %s/资源预算超时（%.1fs）: reason=%s archive=%s",
-                slot_label,
-                timeout_seconds,
-                reason,
-                os.path.basename(str(archive_path or "")),
-            )
-            yield False
-            return
-        except asyncio.CancelledError:
-            if budget_entered and budget_cm is not None:
-                try:
-                    await budget_cm.__aexit__(None, None, None)
-                except Exception:
-                    logger.debug("释放 7z 资源预算失败", exc_info=True)
-            if semaphore_acquired:
-                semaphore.release()
-            raise
-        except Exception as e:
-            if budget_entered and budget_cm is not None:
-                try:
-                    await budget_cm.__aexit__(None, None, None)
-                except Exception:
-                    logger.debug("释放 7z 资源预算失败", exc_info=True)
-            if semaphore_acquired:
-                semaphore.release()
-            logger.warning(
-                "获取 7z %s/资源预算失败: reason=%s archive=%s error=%s",
-                slot_label,
-                reason,
-                os.path.basename(str(archive_path or "")),
-                e,
-            )
-            yield False
-            return
 
-        try:
-            async with self._measure_extract_execution(task, enabled=budget_resource == "archive_cpu"):
-                yield True
-        finally:
-            if budget_entered and budget_cm is not None:
-                await budget_cm.__aexit__(None, None, None)
-            if semaphore_acquired:
-                semaphore.release()
+            try:
+                timeout_seconds = float(wait_timeout or 0)
+            except Exception:
+                timeout_seconds = 0.0
+
+            queued_at = time.monotonic()
+            node_state("queued")
+            semaphore_acquired = False
+            budget_cm = None
+            budget_entered = False
+
+            class ResourcePaused(Exception):
+                pass
+
+            async def _enter_resources() -> None:
+                nonlocal semaphore_acquired, budget_cm, budget_entered
+                if not isinstance(task, Task):
+                    await semaphore.acquire()
+                else:
+                    # 正常轮询保留原排队位置；暂停才撤销排队，恢复后重新申请。
+                    await task.wait_if_paused()
+                    pending = asyncio.create_task(semaphore.acquire())
+                    try:
+                        while not pending.done():
+                            await asyncio.wait({pending}, timeout=0.2)
+                            if task.is_cancelled():
+                                raise asyncio.CancelledError()
+                            pause = getattr(task, '_pause_event', None)
+                            if pause is not None and not pause.is_set():
+                                pending.cancel()
+                                await asyncio.gather(pending, return_exceptions=True)
+                                if not pending.cancelled() and pending.exception() is None:
+                                    semaphore.release()
+                                pending = None
+                                await task.wait_if_paused()
+                                if task.is_cancelled():
+                                    raise asyncio.CancelledError()
+                                pending = asyncio.create_task(semaphore.acquire())
+                        await pending
+                    except BaseException:
+                        if pending is not None:
+                            pending.cancel()
+                            await asyncio.gather(pending, return_exceptions=True)
+                            if not pending.cancelled() and pending.exception() is None:
+                                semaphore.release()
+                        raise
+                semaphore_acquired = True
+                if isinstance(task, Task) and task.is_cancelled():
+                    raise asyncio.CancelledError()
+                if budget_resource != "archive_cpu":
+                    budget_cm = budget_service.acquire(budget_resource, reason=reason)
+                    pending_budget = asyncio.create_task(budget_cm.__aenter__())
+                    try:
+                        while not pending_budget.done():
+                            await asyncio.wait({pending_budget}, timeout=0.2)
+                            if isinstance(task, Task):
+                                if task.is_cancelled():
+                                    raise asyncio.CancelledError()
+                                pause = getattr(task, '_pause_event', None)
+                                if pause is not None and not pause.is_set():
+                                    # 退出两道资源申请后再等待恢复，不能暂停时占住第一道槽位。
+                                    raise ResourcePaused()
+                        await pending_budget
+                        budget_entered = True
+                    except BaseException:
+                        pending_budget.cancel()
+                        await asyncio.gather(pending_budget, return_exceptions=True)
+                        if not pending_budget.cancelled() and pending_budget.exception() is None:
+                            await budget_cm.__aexit__(None, None, None)
+                        raise
+
+            async def _wait_resources():
+                nonlocal semaphore_acquired, budget_cm, budget_entered
+                while True:
+                    try:
+                        await _enter_resources()
+                        return
+                    except ResourcePaused:
+                        if semaphore_acquired:
+                            semaphore.release()
+                            semaphore_acquired = False
+                        budget_cm = None
+                        budget_entered = False
+                        await task.wait_if_paused()
+                        if task.is_cancelled():
+                            raise asyncio.CancelledError()
+
+            try:
+                if timeout_seconds > 0:
+                    await asyncio.wait_for(_wait_resources(), timeout=timeout_seconds)
+                else:
+                    await _wait_resources()
+            except asyncio.TimeoutError:
+                record_event("wait", queued_at)
+                node_state("preparing")
+                if budget_entered and budget_cm is not None:
+                    try:
+                        await budget_cm.__aexit__(None, None, None)
+                    except Exception:
+                        logger.debug("释放 7z 资源预算失败", exc_info=True)
+                if semaphore_acquired:
+                    semaphore.release()
+                if task is not None and update_task_progress:
+                    task.update_progress(
+                        self._task_progress_floor(task, progress_floor),
+                        f"等待{slot_label}超时，转入后续兜底流程",
+                    )
+                logger.warning(
+                    "等待 7z %s/资源预算超时（%.1fs）: reason=%s archive=%s",
+                    slot_label,
+                    timeout_seconds,
+                    reason,
+                    os.path.basename(str(archive_path or "")),
+                )
+                yield False
+                return
+            except asyncio.CancelledError:
+                record_event("wait", queued_at)
+                node_state("preparing")
+                if budget_entered and budget_cm is not None:
+                    try:
+                        await budget_cm.__aexit__(None, None, None)
+                    except Exception:
+                        logger.debug("释放 7z 资源预算失败", exc_info=True)
+                if semaphore_acquired:
+                    semaphore.release()
+                raise
+            except Exception as e:
+                record_event("wait", queued_at)
+                node_state("preparing")
+                if budget_entered and budget_cm is not None:
+                    try:
+                        await budget_cm.__aexit__(None, None, None)
+                    except Exception:
+                        logger.debug("释放 7z 资源预算失败", exc_info=True)
+                if semaphore_acquired:
+                    semaphore.release()
+                logger.warning(
+                    "获取 7z %s/资源预算失败: reason=%s archive=%s error=%s",
+                    slot_label,
+                    reason,
+                    os.path.basename(str(archive_path or "")),
+                    e,
+                )
+                yield False
+                return
+
+            record_event("wait", queued_at)
+            node_state("active" if budget_resource == "archive_cpu" else "inspecting")
+            try:
+                async with self._measure_extract_execution(task, enabled=budget_resource == "archive_cpu"):
+                    yield True
+            finally:
+                node_state("preparing")
+                if budget_entered and budget_cm is not None:
+                    await budget_cm.__aexit__(None, None, None)
+                if semaphore_acquired:
+                    semaphore.release()
 
     @contextlib.asynccontextmanager
     async def _acquire_probe_inspect_slot(
@@ -2325,6 +2391,9 @@ class ExtractService:
                 metadata = dict(task.task_metadata or {})
                 metadata["extract_execution_duration_ms"] = int(metadata.get("extract_execution_duration_ms") or 0) + elapsed
                 task.task_metadata = metadata
+                record_event("execution", started)
+            elif not enabled:
+                record_event("inspect", started)
 
     async def extract(self, task: Task) -> Optional[str]:
         """统一清理标准卷名视图，包括预读失败和取消的提前退出。"""
@@ -2333,7 +2402,11 @@ class ExtractService:
             metadata.pop(key, None)
         task.task_metadata = metadata
         try:
-            return await self._extract(task)
+            async with archive_node(task, getattr(task, "source_path", ""), root=True) as node:
+                result = await self._extract(task)
+                if result is None:
+                    node["status"] = "incomplete"
+                return result
         finally:
             view = (task.task_metadata or {}).pop("password_part_volume_view", None)
             if view:
@@ -2674,7 +2747,7 @@ class ExtractService:
                 if bool((task.task_metadata or {}).get("extract_verified")):
                     logger.info("解压完整性已在解压阶段验证，跳过外层重复校验: %s", archive_path)
                 else:
-                    task.update_progress(90, "验证解压完整性")
+                    task.update_progress(max(36, int(task.progress or 0)), "验证解压完整性")
                     if not await self._verify_extraction(archive_info, output_path):
                         raise Exception("解压验证失败，文件不完整")
             else:
@@ -2687,7 +2760,7 @@ class ExtractService:
                 task.task_metadata.pop("nested_archive_failures", None)
                 task.task_metadata.pop("nested_archive_failure_count", None)
                 self._set_extract_meta(task, extract_stage="nested_scan")
-                task.update_progress(95, "检查嵌套压缩包")
+                task.update_progress(max(36, int(task.progress or 0)), "检查嵌套压缩包（工作量待扫描）")
                 inherited_nested_passwords = self._build_nested_inherited_passwords(
                     success_password,
                     password_candidates,
@@ -2729,7 +2802,7 @@ class ExtractService:
             # 最终兜底：所有解压/嵌套解压结束后，只检查路径名，不读文件内容。
             # 前面的 unar 修复阶段用采样保证多密码尝试轻量；这里仅跑一次全树短路扫描。
             self._set_extract_meta(task, extract_stage="filename_encoding_guard")
-            task.update_progress(97, "检查文件名编码")
+            task.update_progress(max(38, int(task.progress or 0)), "检查文件名编码")
             if await self._reject_if_garbled_after_extract(
                 archive_path,
                 output_path,
@@ -3135,7 +3208,20 @@ class ExtractService:
 
         # 检查深度限制
         if current_depth >= max_depth:
-            logger.warning(f"达到最大嵌套深度 {max_depth}，停止解压嵌套压缩包")
+            def remaining_archive():
+                from .file_processor import FileProcessor
+                processor = FileProcessor()
+                for root, _, files in os.walk(directory):
+                    for name in files:
+                        candidate = os.path.join(root, name)
+                        if os.path.realpath(candidate) not in processed_paths and processor.is_archive(candidate):
+                            return candidate
+                return None
+            remaining = await asyncio.to_thread(remaining_archive)
+            if remaining:
+                self._set_extract_meta(task, nested_incomplete=True, nested_depth_limit=max_depth,
+                                       nested_remaining_archive=remaining)
+                raise RuntimeError(f"达到最大嵌套深度 {max_depth}，仍有压缩包未展开: {remaining}")
             return 0
 
         # 检查任务状态
@@ -3175,6 +3261,7 @@ class ExtractService:
         # 此阶段只做 IO 元数据扫描和魔数探测，不动 7z 子进程，逐项加入 ``pending``。
         # 字幕小包、分卷非首卷、已处理文件等仍按原规则就地跳过。
         pending: List[Dict[str, object]] = []
+        scan_started = time.monotonic()
         stop_scan = False
         walk = os.walk(directory)
         try:
@@ -3189,19 +3276,19 @@ class ExtractService:
                     and not item.lower().startswith((".git", "__pycache__"))
                 ]
                 scanned_dirs += 1
-                if scanned_dirs > self.NESTED_SCAN_DIR_BUDGET:
-                    logger.warning("嵌套压缩包目录扫描达到预算上限，停止扫描: %s", directory)
-                    break
+                if scanned_dirs % max(1, self.NESTED_SCAN_DIR_BUDGET) == 0:
+                    await asyncio.sleep(0)
                 if task.is_cancelled():
                     break
                 await task.wait_if_paused()
 
                 for filename in files:
                     scanned_files += 1
-                    if scanned_files > self.NESTED_SCAN_FILE_BUDGET:
-                        logger.warning("嵌套压缩包文件扫描达到预算上限，停止扫描: %s", directory)
-                        stop_scan = True
-                        break
+                    if scanned_files % max(1, self.NESTED_SCAN_FILE_BUDGET) == 0:
+                        await task.wait_if_paused()
+                        if task.is_cancelled():
+                            return 0
+                        await asyncio.sleep(0)
                     file_path = os.path.join(root, filename)
 
                     # 检查是否已经处理过（防止循环）
@@ -3405,7 +3492,9 @@ class ExtractService:
                     break
         except Exception as e:
             logger.error(f"扫描嵌套压缩包时出错: {e}")
+            raise
 
+        record_event("scan", scan_started)
         if not pending:
             return 0
 
@@ -3418,7 +3507,7 @@ class ExtractService:
                 len(pending), current_depth + 1,
             )
 
-        async def _process_one(item: Dict[str, object]) -> int:
+        async def _process_one_body(item: Dict[str, object]) -> int:
             file_path = str(item["file_path"])
             filename = str(item["filename"])
             root_dir = str(item["root"])
@@ -3431,7 +3520,7 @@ class ExtractService:
 
             try:
                 task.update_progress(
-                    95,
+                    max(36, int(task.progress or 0)),
                     f"解压嵌套压缩包 {filename} (层{current_depth + 1})",
                 )
                 if "probe_subtitle_entries" in item:
@@ -3530,10 +3619,23 @@ class ExtractService:
                         pass
                 raise
 
-        results = await asyncio.gather(
-            *[_process_one(item) for item in pending],
-            return_exceptions=True,
-        )
+        async def _process_one(item):
+            async with archive_node(task, item["file_path"]) as node:
+                result = await _process_one_body(item)
+                if result is False:
+                    node["status"] = "incomplete"
+                return result
+
+        # 分层有界 worker；不持有实际解压槽递归处理后代。
+        iterator = iter(pending)
+        results = []
+        async def worker():
+            for item in iterator:
+                try:
+                    results.append(await _process_one(item))
+                except Exception as exc:
+                    results.append(exc)
+        await asyncio.gather(*(worker() for _ in range(min(len(pending), max(1, self._resolve_extract_concurrency()[0])))))
         failed_nested_archives: List[str] = []
         for r in results:
             if isinstance(r, int):
@@ -3813,15 +3915,16 @@ class ExtractService:
         task: Optional[Task] = None,
         inherited_passwords: Optional[List[str]] = None,
     ) -> tuple[bool, Optional[str]]:
-        """直接尝试解压嵌套压缩包，一次性收集所有密码候选，跳过多余的 list 步骤。
+        """嵌套包共用清单、密码证据及完整性校验，不以后缀决定可信程度。
 
         密码优先级：父密码 > 无密码 > 外层特定候选 > 手动指定密码 > 密码库查询结果 > 配置密码列表
         返回 (是否成功, 成功使用的密码)
         """
         archive_name = os.path.basename(archive_path)
+        opaque_file_list: Optional[List[Dict]] = None
         is_opaque_nested_archive = not bool(os.path.splitext(archive_name)[1])
         opaque_zip_has_encrypted_entries: Optional[bool] = None
-        if is_opaque_nested_archive and self._is_zip_like_archive(archive_path):
+        if self._is_zip_like_archive(archive_path):
             opaque_zip_has_encrypted_entries = await asyncio.to_thread(
                 self._zip_has_encrypted_entries,
                 archive_path,
@@ -3830,9 +3933,12 @@ class ExtractService:
 
         seen: set = set()
         password_list: List[str] = []
+        candidate_sources = {}
 
-        def add(p: Optional[str]) -> None:
-            v = normalize_password_value(p) if p else ""
+        def add(p: Optional[str], source="配置密码") -> None:
+            v = str(p) if p is not None else ""
+            candidate_sources.setdefault(v, []).append(source)
+            candidate_evidence(v, [source])
             if v not in seen:
                 seen.add(v)
                 password_list.append(v)
@@ -3840,22 +3946,22 @@ class ExtractService:
         if is_unencrypted_opaque_zip:
             # ZIP 中央目录已明确所有条目都未加密，不再查询密码库或做多次完整解压。
             # 大型内层 ZIP 的这次正确解压不能套用“候选密码轻量探测”的 45 秒限制。
-            add("")
+            add("", "无密码")
             if task is not None:
                 self._set_extract_meta(task, nested_opaque_zip_encryption="unencrypted")
         else:
             if parent_password:
-                add(parent_password)
-            add("")  # 无密码
+                add(parent_password, "父层成功密码")
+            add("", "无密码")
             for inherited_password in inherited_passwords or []:
-                add(inherited_password)
+                add(inherited_password, "继承候选")
 
             # 问题作品手动重试时，指定密码必须继续传递到递归内层包。
             # 外层包可能未加密，或内层包使用的密码与外层不同；只依赖 parent_password
             # 会让用户指定的密码在内层根本没有尝试机会。
             manual_retry_passwords = self._get_manual_retry_passwords(task)
             for pwd in manual_retry_passwords:
-                add(pwd)
+                add(pwd, "手动输入")
 
             # 密码库查询只做一次，包含 RJ/文件名/通用条目
             manual_retry_password_only = bool(
@@ -3864,17 +3970,18 @@ class ExtractService:
             if not manual_retry_password_only:
                 vault_candidates = await self._get_password_candidates_for_archive(archive_path)
                 for item in vault_candidates:
-                    add(item.get("password"))
+                    for source in item.get("sources") or [item.get("source") or "密码库"]:
+                        add(item.get("password"), source)
                 # 外层可能是未加密的包装壳，实际密码只存在于内层归档自身的 RJ 文件名。
                 # 例如 RJ01524818.zip -> RJ01524818.z删ip，内层密码仍是 RJ01524818；
                 # 不能只依赖外层 success_password 或密码库记录。
                 for rj_password in self._get_rj_passwords(archive_path):
-                    add(rj_password)
+                    add(rj_password, "RJ 文件名")
                 for pwd in self.config.extract.password_list:
                     add(pwd)
 
         opaque_password_prevalidated = False
-        if is_opaque_nested_archive and not is_unencrypted_opaque_zip:
+        if not is_unencrypted_opaque_zip:
             opaque_file_list: Optional[List[Dict]] = None
             try:
                 opaque_file_list = await self._list_archive_contents(
@@ -3888,13 +3995,13 @@ class ExtractService:
                 raise
             except ArchiveInspectSlotTimeout as exc:
                 logger.warning(
-                    "无扩展名嵌套包轻量清单等待超时，保留受限完整解压兜底: %s (%s)",
+                    "嵌套包轻量清单等待超时，保留受限实际解压: %s (%s)",
                     archive_name,
                     exc,
                 )
             except Exception as exc:
                 logger.warning(
-                    "无扩展名嵌套包轻量清单读取失败，保留受限完整解压兜底: %s (%s)",
+                    "嵌套包轻量清单读取失败，保留受限实际解压: %s (%s)",
                     archive_name,
                     exc,
                 )
@@ -3924,15 +4031,16 @@ class ExtractService:
                         raise
                     except Exception as exc:
                         logger.debug(
-                            "无扩展名嵌套包候选密码清单校验失败: archive=%s password=%s error=%s",
+                            "嵌套包候选密码清单校验失败: archive=%s password=%s error=%s",
                             archive_name,
                             self._password_log_state(password),
                             exc,
                         )
                         continue
                     if candidate_file_list:
+                        candidate_evidence(password, candidate_sources.get(password, []), header="passed", content="unknown")
                         selected_password = password
-                        password_list = [selected_password]
+                        password_list = [selected_password, *[p for p in password_list if p != selected_password]]
                         opaque_password_prevalidated = True
                         if task is not None:
                             self._set_extract_meta(
@@ -3941,11 +4049,13 @@ class ExtractService:
                                 nested_password_candidate_total=len(seen),
                                 nested_password_probe_attempted_count=header_probe_attempted,
                                 nested_password_probe_mode="encrypted_header_list",
-                                nested_password_probe_reason="无扩展名嵌套包已通过候选密码文件头清单校验",
+                                nested_password_header_verified=True,
+                                nested_password_content_verified=False,
+                                nested_password_probe_reason="嵌套包已通过候选密码文件头清单校验",
                                 nested_password_prevalidated=True,
                             )
                         logger.info(
-                            "无扩展名嵌套包已通过候选密码文件头清单校验，将执行一次不限时完整解压: %s",
+                            "嵌套包已通过候选密码文件头清单校验，将执行一次不限时完整解压: %s",
                             archive_name,
                         )
                         break
@@ -3961,7 +4071,7 @@ class ExtractService:
                 )
                 if skip_lightweight_probe:
                     logger.info(
-                        "无扩展名嵌套 RAR 无可用小条目，跳过候选轻量校验，继续原有解压流程: %s",
+                        "嵌套 RAR 无可用小条目，跳过候选轻量校验，继续原有解压流程: %s",
                         archive_name,
                     )
                 for password in ([] if skip_lightweight_probe else password_list):
@@ -3978,6 +4088,7 @@ class ExtractService:
                         task=task,
                         allow_full_test=False,
                     )
+                    candidate_evidence(password, candidate_sources.get(password, []), content=probe_result)
                     if probe_result == "ok":
                         selected_password = password
                         break
@@ -3994,14 +4105,14 @@ class ExtractService:
                         else logger.warning
                     )
                     log_probe_summary(
-                        "无扩展名嵌套包候选轻量校验结果汇总: archive=%s attempted=%d inconclusive=%s",
+                        "嵌套包候选轻量校验结果汇总: archive=%s attempted=%d inconclusive=%s",
                         archive_name,
                         probe_attempted,
                         probe_inconclusive_counts,
                     )
 
                 if selected_password is not None:
-                    password_list = [selected_password]
+                    password_list = [selected_password, *[p for p in password_list if p != selected_password]]
                     opaque_password_prevalidated = True
                     if task is not None:
                         self._set_extract_meta(
@@ -4010,11 +4121,13 @@ class ExtractService:
                             nested_password_candidate_total=len(seen),
                             nested_password_probe_attempted_count=probe_attempted,
                             nested_password_probe_mode="small_entry",
-                            nested_password_probe_reason="无扩展名嵌套包已通过小文件密码校验",
+                            nested_password_header_verified=False,
+                            nested_password_content_verified=True,
+                            nested_password_probe_reason="嵌套包已通过小文件密码校验",
                             nested_password_prevalidated=True,
                         )
                     logger.info(
-                        "无扩展名嵌套包已通过小文件密码校验，将执行一次不限时完整解压: %s",
+                        "嵌套包已通过小文件密码校验，将执行一次不限时完整解压: %s",
                         archive_name,
                     )
                 elif probe_attempted and not probe_had_unknown:
@@ -4025,11 +4138,11 @@ class ExtractService:
                             nested_password_candidate_total=len(password_list),
                             nested_password_probe_attempted_count=probe_attempted,
                             nested_password_probe_mode="small_entry",
-                            nested_password_probe_reason="无扩展名嵌套包所有候选均未通过小文件密码校验",
+                            nested_password_probe_reason="嵌套包所有候选均未通过小文件密码校验",
                             nested_password_probe_failed=True,
                         )
                     logger.warning(
-                        "无扩展名嵌套包所有 %d 个候选均未通过小文件密码校验: %s",
+                        "嵌套包所有 %d 个候选均未通过小文件密码校验: %s",
                         probe_attempted,
                         archive_name,
                     )
@@ -4040,11 +4153,11 @@ class ExtractService:
         # 的父级密码也套进 45 秒完整解压超时；否则正确密码会在真实解压完成前
         # 被杀掉。若两层密码不同，父级密码失败后仍按受限候选继续尝试。
         trusted_parent_password = (
-            normalize_password_value(parent_password)
-            if is_opaque_nested_archive and parent_password
+            str(parent_password)
+            if parent_password
             else ""
         )
-        has_trusted_parent_password = trusted_parent_password in password_list
+        has_trusted_parent_password = bool(trusted_parent_password) and trusted_parent_password in password_list
         fallback_password_list = (
             [
                 password
@@ -4064,8 +4177,7 @@ class ExtractService:
             ) or self.NESTED_OPAQUE_PASSWORD_CANDIDATE_LIMIT),
         )
         candidate_limit_reached = (
-            is_opaque_nested_archive
-            and not opaque_password_prevalidated
+            not opaque_password_prevalidated
             and len(fallback_password_list) > nested_candidate_limit
         )
         if candidate_limit_reached:
@@ -4078,14 +4190,14 @@ class ExtractService:
                     nested_password_candidate_limit=nested_candidate_limit,
                     nested_password_candidate_total=total_candidates,
                     nested_password_probe_reason=(
-                        "无扩展名嵌套包候选过多，已限制后备候选探测次数"
+                        "嵌套包候选过多，已限制后备候选探测次数"
                         if has_trusted_parent_password
-                        else "无扩展名嵌套包候选过多，已限制探测次数"
+                        else "嵌套包候选过多，已限制探测次数"
                     ),
                     nested_parent_password_unlimited=has_trusted_parent_password,
                 )
             logger.warning(
-                "无扩展名嵌套压缩包候选密码过多，限制后备候选为 %d 次: %s",
+                "嵌套压缩包候选密码过多，限制后备候选为 %d 次: %s",
                 nested_candidate_limit,
                 archive_name,
             )
@@ -4093,11 +4205,14 @@ class ExtractService:
         if has_trusted_parent_password:
             password_list = [trusted_parent_password, *fallback_password_list]
             logger.info(
-                "无扩展名嵌套压缩包将先使用外层已验证密码进行不限时完整解压: %s",
+                "嵌套压缩包将先使用外层已验证密码进行不限时完整解压: %s",
                 archive_name,
             )
         else:
             password_list = fallback_password_list
+
+        if opaque_password_prevalidated:
+            password_list = [selected_password, *[p for p in password_list if p != selected_password]]
 
         nested_attempt_timeout = (
             max(
@@ -4109,9 +4224,7 @@ class ExtractService:
                 ) or self.NESTED_PASSWORD_ATTEMPT_TIMEOUT_SECONDS),
             )
             if (
-                is_opaque_nested_archive
-                and not is_unencrypted_opaque_zip
-                and not opaque_password_prevalidated
+                not is_unencrypted_opaque_zip
             )
             else None
         )
@@ -4128,6 +4241,22 @@ class ExtractService:
                 except Exception:
                     pass
 
+        async def verify_output(password):
+            nonlocal opaque_file_list
+            if opaque_file_list is None:
+                opaque_file_list = await self._list_archive_contents(
+                    archive_path, password=password, task=task,
+                    command_timeout=self.PRECHECK_LIST_TIMEOUT_SECONDS,
+                    update_task_progress=False,
+                )
+            if opaque_file_list:
+                info = ArchiveInfo(archive_path, opaque_file_list, password=password)
+                if not await self._verify_extraction(info, output_path):
+                    logger.error("嵌套压缩包内容未通过完整性校验，保留原压缩包: %s", archive_path)
+                    return False
+            candidate_evidence(password, candidate_sources.get(password, []), extraction="passed")
+            return True
+
         logger.info("嵌套解压密码候选共 %d 个: %s", len(password_list), archive_name)
 
         # 嵌套 RAR fast-path：和外层主流程一样，优先用 unar 避开 7zz 24.08 RAR
@@ -4141,8 +4270,7 @@ class ExtractService:
             # 这两类场景代表密码路径可信，避免 unar 在超大加密 RAR5 上
             # 启动后无输出并失败。
             and not (
-                is_opaque_nested_archive
-                and (bool(parent_password) or opaque_password_prevalidated)
+                bool(parent_password) or opaque_password_prevalidated
             )
         ):
             unar_unsupported = False
@@ -4176,6 +4304,8 @@ class ExtractService:
                             "嵌套 RAR 用 unar 解压成功，密码状态: %s",
                             self._password_log_state(password),
                         )
+                        if not await verify_output(password):
+                            return False, None
                         return True, password or None
                     stderr_text = (result.stderr or b"").decode('utf-8', errors='ignore')
                     stderr_lower = stderr_text.lower()
@@ -4187,10 +4317,10 @@ class ExtractService:
                             self._set_extract_meta(
                                 task,
                                 nested_password_probe_timeout=True,
-                                nested_password_probe_reason="无扩展名嵌套 RAR 单个候选探测超时",
+                                nested_password_probe_reason="嵌套 RAR 单个候选探测超时",
                             )
                         logger.warning(
-                            "无扩展名嵌套 RAR 单个候选探测超时，停止继续穷举: %s",
+                            "嵌套 RAR 单个候选探测超时，停止继续穷举: %s",
                             archive_name,
                         )
                         break
@@ -4215,15 +4345,15 @@ class ExtractService:
             if unar_disk_full:
                 logger.error("嵌套 RAR unar 解压因磁盘空间不足终止: %s", archive_path)
                 return False, None
-            if is_opaque_nested_archive and not unar_unsupported:
+            if not unar_unsupported:
                 if task is not None:
                     self._set_extract_meta(
                         task,
                         nested_password_probe_failed=True,
-                        nested_password_probe_reason="无扩展名嵌套 RAR 未在受限候选中验证出可用密码",
+                        nested_password_probe_reason="嵌套 RAR 未在受限候选中验证出可用密码",
                     )
                 logger.warning(
-                    "无扩展名嵌套 RAR 未验证出可用密码，不再用 7zz 重复穷举: %s",
+                    "嵌套 RAR 未验证出可用密码，不再用 7zz 重复穷举: %s",
                     archive_name,
                 )
                 return False, None
@@ -4237,6 +4367,16 @@ class ExtractService:
 
         for index, password in enumerate(password_list):
             await asyncio.to_thread(clean_output)
+            if password and not password.isascii() and self._is_zip_like_archive(archive_path):
+                info = ArchiveInfo(archive_path, opaque_file_list or [], password=password)
+                compatible, reason = await self._try_extract_zip_with_python(info, output_path, password, task=task)
+                if compatible:
+                    if not await verify_output(password):
+                        return False, None
+                    return True, password
+                if reason == 'cancelled':
+                    return False, None
+                await asyncio.to_thread(clean_output)
             cmd = [self.seven_zip, "x", "-y", f"-o{output_path}", *self._get_seven_zip_mmt_args(), *self._get_mcp_args(archive_path), archive_path]
             cmd.append(f"-p{password}" if password else "-p")
             is_trusted_parent_password_attempt = (
@@ -4251,7 +4391,8 @@ class ExtractService:
                     task=task,
                     command_timeout=(
                         None
-                        if is_trusted_parent_password_attempt
+                        if is_trusted_parent_password_attempt or is_unencrypted_opaque_zip
+                        or (opaque_password_prevalidated and password == selected_password)
                         else nested_attempt_timeout
                     ),
                 )
@@ -4265,6 +4406,8 @@ class ExtractService:
                     ):
                         return False, None
                     logger.info("嵌套压缩包解压成功，密码状态: %s", self._password_log_state(password))
+                    if not await verify_output(password):
+                        return False, None
                     return True, password or None
                 stderr_text = (result.stderr or b"").decode("utf-8", errors="ignore")
                 if self._looks_like_unsupported_method_error(stderr_text):
@@ -4275,6 +4418,8 @@ class ExtractService:
                         task=task,
                     )
                     if zstd_result == "ok":
+                        if not await verify_output(password):
+                            return False, None
                         return True, password or None
                     if zstd_result in {
                         "unsupported_method",
@@ -4284,7 +4429,7 @@ class ExtractService:
                     }:
                         return False, None
                 if result.returncode == -9 and is_opaque_nested_archive:
-                    logger.warning("无扩展名嵌套压缩包候选探测超时，停止继续穷举: %s", archive_name)
+                    logger.warning("嵌套压缩包候选探测超时，停止继续穷举: %s", archive_name)
                     break
                 logger.debug(
                     "嵌套解压失败 (密码状态=%s, rc=%d)",
@@ -4298,118 +4443,30 @@ class ExtractService:
         return False, None
 
     async def _wait_file_stable(self, file_path: str, task: Optional[Task] = None, max_wait: int = 1800):
-        """等待文件大小稳定（文件复制完成检测）
-
-        改进点（解决群晖 NAS 上偶发"等 3600 秒超时"的死锁）：
-        1. 同时观察 size 和 mtime；任一维度连续稳定 file_stable_checks 次即视为完成。
-        2. PermissionError 累计上限：超过 stable_checks * 6 次后，只要 size 已经稳定，
-           就认为是 NAS / SMB 临时锁，软放行避免无限循环。
-        3. 默认 max_wait 1800 秒（30 分钟），避免单文件检测把任务卡 1 小时。
-        4. size 偶发"回退到更小值"按抖动处理（NAS stat 缓存可能瞬时不一致），
-           不再 reset stable_count，但会重新对齐 size。
-        """
+        """大小、纳秒修改时间与文件身份同时稳定，且实际可读才放行。"""
         config = self.config.processing
-        previous_size = -1
-        previous_mtime = -1.0
-        stable_count = 0
-        permission_failures = 0
-        max_permission_failures = max(20, config.file_stable_checks * 6)
-        start_time = asyncio.get_event_loop().time()
-        last_progress_time = start_time
-        last_max_size = 0
-
-        logger.info(f"开始等待文件复制完成: {file_path}")
-
-        while stable_count < config.file_stable_checks:
-            current_time = asyncio.get_event_loop().time()
-
-            # 检查总超时
-            if current_time - start_time > max_wait:
-                raise TimeoutError(f"等待文件复制完成超时 ({max_wait}秒): {file_path}")
-
-            # 检查任务是否被取消
-            if task and task.is_cancelled():
-                logger.info(f"任务在等待文件复制时被取消: {file_path}")
-                return
-
-            # 检查任务是否暂停
+        started = time.monotonic()
+        previous, stable = None, 0
+        while time.monotonic() - started <= max_wait:
             if task:
+                if task.is_cancelled():
+                    return
                 await task.wait_if_paused()
-
             try:
-                # 检查文件是否存在
-                if not os.path.exists(file_path):
-                    await asyncio.sleep(config.file_stable_interval)
-                    continue
-
-                # 获取文件大小 + mtime
-                stat = os.stat(file_path)
-                current_size = stat.st_size
-                current_mtime = stat.st_mtime
-
-                # 检查文件是否为空或太小（可能是刚开始复制）
-                if current_size < 1024:  # 小于1KB认为可能是刚开始复制
-                    logger.debug(f"文件太小 ({current_size} bytes)，等待更多数据写入...")
-                    await asyncio.sleep(config.file_stable_interval)
-                    continue
-
-                # NAS / SMB 偶发的"size 瞬时回退"按抖动处理：保留历史最大值，
-                # 但只要 size 不再增长就视作"未变化"，避免 stat 缓存抖动让计数永远归零。
-                size_grew = current_size > last_max_size
-                last_max_size = max(last_max_size, current_size)
-                size_stable = (current_size == previous_size) and not size_grew
-                mtime_stable = (
-                    previous_mtime > 0
-                    and abs(current_mtime - previous_mtime) < 1e-3
-                )
-
-                if size_stable or mtime_stable:
-                    stable_count += 1
-                    # 尝试打开文件检查是否被锁定
-                    try:
-                        with open(file_path, 'rb') as f:
-                            f.read(1)
-                        permission_failures = 0
-                        if stable_count >= config.file_stable_checks:
-                            logger.info(
-                                f"文件复制完成检测通过: {file_path} ({current_size} bytes, "
-                                f"size_stable={size_stable}, mtime_stable={mtime_stable})"
-                            )
-                            return
-                    except (PermissionError, OSError) as exc:
-                        permission_failures += 1
-                        # 软放行：size 已经稳定但反复读不到（典型 NAS / SMB 临时锁），
-                        # 累积超过阈值后认为可以放行，避免 1 小时死锁。
-                        if size_stable and permission_failures >= max_permission_failures:
-                            logger.warning(
-                                "文件 size 稳定但读取持续失败 %d 次，软放行: %s, %s",
-                                permission_failures, file_path, exc,
-                            )
-                            return
-                        logger.debug(
-                            f"文件仍被锁定 ({permission_failures}/{max_permission_failures}): {file_path}, {exc}"
-                        )
-                        stable_count = 0
-                else:
-                    # 文件还在变化
-                    if stable_count > 0:
-                        logger.info(f"文件仍在复制中，当前大小: {current_size} bytes")
-                    stable_count = 0
-                    last_progress_time = current_time
-
-                previous_size = current_size
-                previous_mtime = current_mtime
-
-                # 如果长时间没有进度，发出警告
-                if current_time - last_progress_time > 60:  # 1分钟没有变化
-                    logger.warning(f"文件复制可能已停滞: {file_path}, 当前大小: {current_size} bytes")
-
-            except Exception as e:
-                logger.warning(f"等待文件稳定时出错: {e}")
-                await asyncio.sleep(config.file_stable_interval)
-                continue
-
+                stat = await asyncio.to_thread(os.stat, file_path)
+                fingerprint = (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino)
+                stable = stable + 1 if fingerprint == previous else 0
+                previous = fingerprint
+                if stable >= config.file_stable_checks:
+                    def check_readable():
+                        with open(file_path, "rb") as stream:
+                            stream.read(1)
+                    await asyncio.to_thread(check_readable)
+                    return
+            except OSError:
+                previous, stable = None, 0
             await asyncio.sleep(config.file_stable_interval)
+        raise TimeoutError(f"等待文件稳定或可读超时 ({max_wait}秒): {file_path}")
 
     async def _repair_extension(self, file_path: str) -> str:
         """修复文件后缀名和文件名
@@ -6215,7 +6272,7 @@ class ExtractService:
         seen: set[str] = set()
 
         def add(raw_password: Optional[str]) -> None:
-            password = normalize_password_value(raw_password)
+            password = str(raw_password) if raw_password is not None else ""
             if password and password not in seen:
                 seen.add(password)
                 passwords.append(password)
@@ -6246,10 +6303,14 @@ class ExtractService:
             filename: Optional[str] = None,
             entry_id: Optional[str] = None,
         ):
-            normalized_password = normalize_password_value(password)
+            normalized_password = str(password) if password is not None else ""
             if not normalized_password:
                 return
             if normalized_password in seen_passwords:
+                existing = next(item for item in candidates if item['password'] == normalized_password)
+                sources = existing.setdefault('sources', [existing['source']])
+                if source not in sources:
+                    sources.append(source)
                 return
             seen_passwords.add(normalized_password)
             normalized_rjcode = normalize_rjcode_value(rjcode)
@@ -6257,6 +6318,7 @@ class ExtractService:
                 "entry_id": entry_id,
                 "password": normalized_password,
                 "source": source,
+                "sources": [source],
                 "rjcode": normalized_rjcode,
                 "filename": normalize_filename_value(filename),
             })
@@ -6269,7 +6331,7 @@ class ExtractService:
                 from sqlalchemy import func
                 entries = db.query(PasswordEntry).filter(func.upper(PasswordEntry.rjcode).in_(rjcodes)).all()
                 for entry in entries:
-                    normalized_password = normalize_password_value(entry.password)
+                    normalized_password = str(entry.password or "")
                     normalized_rjcode = normalize_rjcode_value(entry.rjcode)
                     normalized_filename = normalize_filename_value(entry.filename)
                     if (
@@ -6287,7 +6349,7 @@ class ExtractService:
             if filename_candidates:
                 entries = db.query(PasswordEntry).filter(PasswordEntry.filename.in_(filename_candidates)).all()
                 for entry in entries:
-                    normalized_password = normalize_password_value(entry.password)
+                    normalized_password = str(entry.password or "")
                     normalized_rjcode = normalize_rjcode_value(entry.rjcode)
                     normalized_filename = normalize_filename_value(entry.filename)
                     if (
@@ -6307,7 +6369,7 @@ class ExtractService:
                 PasswordEntry.filename.is_(None)
             ).all()
             for entry in generic_entries:
-                normalized_password = normalize_password_value(entry.password)
+                normalized_password = str(entry.password or "")
                 if normalized_password != str(entry.password or ""):
                     entry.password = normalized_password
                     dirty_entry_count += 1
@@ -6773,7 +6835,7 @@ class ExtractService:
         return passwords
 
     @classmethod
-    def _archive_cache_key(cls, archive_path: str) -> Optional[Tuple[str, int, int]]:
+    def _archive_cache_key(cls, archive_path: str) -> Optional[Tuple[str, int, int, int, int]]:
         """根据 archive_path 计算缓存 key = (abs_path, mtime_ns, size)。
 
         文件不存在 / 路径异常返回 None，由调用方跳过缓存。
@@ -6784,7 +6846,7 @@ class ExtractService:
                 return None
             st = os.stat(abs_path)
             mtime_ns = getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))
-            return (abs_path, int(mtime_ns), int(st.st_size))
+            return (abs_path, int(mtime_ns), int(st.st_size), st.st_dev, st.st_ino)
         except OSError:
             return None
 
@@ -7725,9 +7787,9 @@ class ExtractService:
                 archive_info.path,
             )
             return False, "unsupported_encryption"
-        password_probe = self._probe_zip_password_bytes(archive_info.path, password)
+        password_probe = await asyncio.to_thread(self._probe_zip_password_bytes, archive_info.path, password)
         if password_probe is None:
-            return False, "wrong_password"
+            return False, "unknown"
         password_encoding, password_bytes = password_probe
         filename_encoding = (
             getattr(archive_info, "detected_encoding", None)
@@ -7743,6 +7805,7 @@ class ExtractService:
             filename_encoding or "utf-8/cp437",
         )
 
+        stopped = threading.Event()
         def _extract_sync() -> Tuple[bool, str, Optional[str]]:
             total_size = 0
             with zipfile.ZipFile(archive_info.path, "r") as zf:
@@ -7751,7 +7814,7 @@ class ExtractService:
                 written = 0
                 last_update = 0.0
                 for info in zf.infolist():
-                    if task is not None and task.is_cancelled():
+                    if stopped.is_set() or (task is not None and task.is_cancelled()):
                         return False, "cancelled", None
                     member_name = self._zip_member_name(info, filename_encoding)
                     target = self._safe_zip_member_target(output_path, member_name)
@@ -7763,7 +7826,7 @@ class ExtractService:
                     os.makedirs(os.path.dirname(target), exist_ok=True)
                     with zf.open(info, "r", pwd=password_bytes) as src, open(target, "wb") as dst:
                         while True:
-                            if task is not None and task.is_cancelled():
+                            if stopped.is_set() or (task is not None and task.is_cancelled()):
                                 return False, "cancelled", None
                             chunk = src.read(1024 * 1024)
                             if not chunk:
@@ -7773,13 +7836,28 @@ class ExtractService:
                             if task is not None and total_size > 0:
                                 now = time.monotonic()
                                 if now - last_update >= 1.5:
-                                    percent = min(94, 40 + int((written / total_size) * 54))
+                                    percent = max(int(task.progress or 0), 30 + int((written / total_size) * 6))
                                     task.update_progress(percent, f"ZIP 兼容解压中 {min(100, int((written / total_size) * 100))}%")
                                     last_update = now
             return True, password_encoding, None
 
         try:
-            result, reason, detail = await asyncio.to_thread(_extract_sync)
+            semaphore = self._get_7z_semaphore()
+            async with self._acquire_7z_resource_slot(
+                semaphore=semaphore, budget_resource="archive_cpu", reason="extract.python_zip",
+                archive_path=archive_info.path, slot_label="解压槽位",
+                slot_limit=self.__class__._seven_zip_semaphore_limit, wait_timeout=None, task=task,
+            ) as acquired:
+                if not acquired:
+                    return False, "cancelled"
+                worker = asyncio.create_task(asyncio.to_thread(_extract_sync))
+                try:
+                    result, reason, detail = await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    stopped.set()
+                    with contextlib.suppress(Exception, asyncio.CancelledError):
+                        await worker
+                    raise
         except RuntimeError as e:
             if "password" in str(e).lower():
                 return False, "wrong_password"
@@ -7914,7 +7992,8 @@ class ExtractService:
                     files.append({
                         'name': path_value,
                         'size': int(size_value or 0),
-                        'is_dir': 'D' in attr_value
+                        'is_dir': 'D' in attr_value,
+                        'encrypted': {'+': True, '-': False}.get(current.get('Encrypted')),
                     })
                 except ValueError:
                     pass
@@ -7990,7 +8069,13 @@ class ExtractService:
                     max(40, int(task.progress or 0)),
                     f"等待解压槽位（当前并发上限 {self.__class__._seven_zip_semaphore_limit or 1}）",
                 )
-            async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.path_remap_entry"), self._measure_extract_execution(task):
+            async with self._acquire_7z_resource_slot(
+                semaphore=semaphore, budget_resource="archive_cpu", reason="extract.path_remap_entry",
+                archive_path="", slot_label="解压槽位", slot_limit=self.__class__._seven_zip_semaphore_limit,
+                wait_timeout=None, task=task,
+            ) as acquired:
+                if not acquired:
+                    raise RuntimeError("未取得解压资源")
                 kwargs = {
                     "stdout": subprocess.PIPE,
                     "stderr": subprocess.PIPE,
@@ -8126,7 +8211,7 @@ class ExtractService:
                 return
             last_progress_update = now
             percent = min(99, int(written_bytes * 100 / max(total_bytes, 1)))
-            mapped_progress = min(90, 40 + int(percent * 0.5))
+            mapped_progress = max(int(task.progress or 0), 30 + int(percent * 0.06))
             task.update_progress(mapped_progress, f"路径重映射解压中 {percent}%")
 
         seen_targets: set[str] = set()
@@ -8224,6 +8309,16 @@ class ExtractService:
         manual_retry_password_set = set(manual_retry_passwords)
         manual_filename_encoding = self._manual_filename_encoding_from_task(task)
         manual_ignore_garbled = bool((task.task_metadata or {}).get("manual_retry_ignore_garbled"))
+
+        for item in password_candidates:
+            candidate_evidence(str(item['password']), item.get('sources') or [item.get('source') or '密码库'])
+        for password in manual_retry_passwords:
+            candidate_evidence(password, ['手动输入'])
+        for password in self.config.extract.password_list:
+            candidate_evidence(password, ['配置密码'])
+        candidate_evidence('', ['无密码'])
+        if archive_info.password:
+            candidate_evidence(archive_info.password, ['预读清单'], header='passed', content='unknown')
 
         if manual_retry_passwords and manual_retry_password_only:
             # 多个指定密码：先做无密码轻量探测，确认可解再完整解压；否则再按指定密码依次尝试。
@@ -8646,8 +8741,10 @@ class ExtractService:
                         task=task,
                         allow_full_test=False,
                     )
-                    if no_password_probe != "ok":
+                    if no_password_probe == "wrong_password":
                         unar_passwords = [pwd for pwd in unique_passwords if pwd]
+                    elif no_password_probe != "ok":
+                        unar_passwords = [pwd for pwd in unique_passwords if pwd] + [""]
                 unar_success, unar_password, unar_reason = await self._try_extract_rar_with_unar(
                     archive_info,
                     output_path,
@@ -8703,6 +8800,7 @@ class ExtractService:
         # #3 负缓存：同一压缩包同一密码近期失败过，直接跳过；指纹拿不到就不缓存。
         archive_fingerprint = self._archive_fingerprint(archive_info.path)
 
+        empty_password_deferred = False
         for password in unique_passwords:
             password_args = [f'-p{password}'] if password else []
             cmd = [
@@ -8747,7 +8845,7 @@ class ExtractService:
                         logger.info(
                             "密码 %s (%s) 命中负缓存，但本次需要实际重试（manual=%s zip_non_ascii=%s）",
                             password_source,
-                            password or '无密码',
+                            self._password_log_state(password),
                             manual_retry_password_only,
                             zip_password_compat_candidate,
                         )
@@ -8755,7 +8853,7 @@ class ExtractService:
                         logger.info(
                             "密码 %s (%s) 命中负缓存，跳过本次尝试",
                             password_source,
-                            password or '无密码',
+                            self._password_log_state(password),
                         )
                         encountered_wrong_password = True
                         continue
@@ -8837,7 +8935,7 @@ class ExtractService:
                                 logger.info(
                                     "解压成功，使用 7-Zip ZS 兼容后端和%s密码: %s",
                                     password_source,
-                                    password or "无密码",
+                                    self._password_log_state(password),
                                 )
                                 return True, password, ""
                             if zstd_reason in {
@@ -8914,7 +9012,7 @@ class ExtractService:
                         logger.info(
                             "密码 %s (%s) 探测阶段判定为密码错误，跳过完整解压",
                             password_source,
-                            password or '无密码',
+                            self._password_log_state(password),
                         )
                         continue
                     if probe_result == 'corrupt':
@@ -8929,31 +9027,25 @@ class ExtractService:
                                 return False, None, "garbled_filename"
                             if compat_result == "extract_incomplete":
                                 return False, None, "extract_incomplete"
-                        if cache_key and not (manual_retry_password_only and password in manual_retry_password_set):
-                            self._remember_negative_password(cache_key)
                         logger.warning(
                             "密码 %s (%s) 探测阶段命中疑似损坏特征，跳过完整解压",
                             password_source,
-                            password or '无密码',
+                            self._password_log_state(password),
                         )
                         continue
                     if probe_result == 'ok':
                         logger.info(
                             "密码 %s (%s) 探测通过，进入完整解压",
                             password_source,
-                            password or '无密码',
+                            self._password_log_state(password),
                         )
                     elif probe_result == 'unknown':
                         if not password:
                             has_password_candidates = any(bool(pwd) for pwd in unique_passwords)
-                            if (
-                                not subtitle_probe_mode
-                                and (manual_retry_password_only or has_password_candidates)
-                            ):
-                                logger.info(
-                                    "无密码轻量探测无法定性，跳过无密码完整解压，继续尝试密码候选: %s",
-                                    os.path.basename(archive_info.path),
-                                )
+                            if has_password_candidates and not subtitle_probe_mode and not empty_password_deferred:
+                                # 保留既有密码优先顺序，但未知不能永久跳过无密码的真实解压。
+                                empty_password_deferred = True
+                                unique_passwords.append("")
                                 continue
                             if subtitle_probe_mode and has_password_candidates:
                                 logger.info(
@@ -8967,7 +9059,7 @@ class ExtractService:
                         logger.info(
                             "密码 %s (%s) 探测无法定性，进入完整解压兜底",
                             password_source,
-                            password or '无密码',
+                            self._password_log_state(password),
                         )
                     # 'ok' / 'unknown' 都让其继续走完整解压：
                     #   - ok: 大概率密码正确，直接进入 x
@@ -8987,7 +9079,7 @@ class ExtractService:
                     if percent_match:
                         raw_percent = int(percent_match.group(1))
                         # 解压阶段占 10% - 95%
-                        mapped = 10 + int(raw_percent * 0.85)
+                        mapped = max(int(task.progress or 0), 30 + int(raw_percent * 0.06))
 
                         now = datetime.now()
                         elapsed = (now - start_time).total_seconds()
@@ -9120,7 +9212,7 @@ class ExtractService:
                             logger.info(
                                 "解压成功，使用 7-Zip ZS 兼容后端和%s密码: %s",
                                 password_source,
-                                password or "无密码",
+                                self._password_log_state(password),
                             )
                             return True, password, ""
                         if zstd_reason in {
@@ -9224,13 +9316,7 @@ class ExtractService:
                 # 只靠 "wrong password" 一个关键字会漏判，导致后面误走损坏分支。
                 encryption_markers = (
                     "wrong password",
-                    "password is incorrect",
-                    "password?",                 # "Wrong password?" / "Enter password?"
-                    "passphrase",
-                    "cannot open encrypted",
-                    "is encrypted",
-                    "data error in encrypted",
-                    "crc failed in encrypted",
+                    "password is incorrect",                 # "Wrong password?" / "Enter password?"
                 )
                 if any(marker in stderr_lower for marker in encryption_markers):
                     encountered_wrong_password = True
@@ -9417,11 +9503,12 @@ class ExtractService:
             return False, None, "archive_corrupt"
         return False, None, "wrong_password"
 
+    @measured_phase("validation")
     async def _verify_extraction(self, archive_info: ArchiveInfo, output_path: str) -> bool:
         """验证解压完整性"""
-        if not self.config.extract.verify_after_extract:
-            return True
+        return await asyncio.to_thread(self._verify_extraction_sync, archive_info, output_path)
 
+    def _verify_extraction_sync(self, archive_info: ArchiveInfo, output_path: str) -> bool:
         if not archive_info.file_list:
             logger.warning("压缩包预读清单为空，跳过完整性验证: %s", archive_info.path)
             return True
@@ -9429,42 +9516,15 @@ class ExtractService:
         file_entries = [item for item in archive_info.file_list if not item.get('is_dir')]
         total_files = len(file_entries)
         verify_mode = "full"
-        if total_files > self.VERIFY_FULL_FILE_LIMIT:
-            verify_mode = "sample"
-            head_count = self.VERIFY_SAMPLE_FILE_LIMIT // 3
-            tail_count = self.VERIFY_SAMPLE_FILE_LIMIT // 3
-            stride_count = max(0, self.VERIFY_SAMPLE_FILE_LIMIT - head_count - tail_count)
-            stride = max(1, total_files // max(1, stride_count))
-            sampled = file_entries[:head_count]
-            sampled.extend(file_entries[head_count:total_files - tail_count:stride][:stride_count])
-            sampled.extend(file_entries[-tail_count:])
-            seen_names = set()
-            file_entries = [
-                item for item in sampled
-                if not (item.get('name') in seen_names or seen_names.add(item.get('name')))
-            ]
-            logger.info(
-                "压缩包文件数 %s，使用抽样完整性验证 %s/%s: %s",
-                total_files,
-                len(file_entries),
-                total_files,
-                archive_info.path,
-            )
-
-        # 安全检查：清单中大量 \ufffd 替换字符意味着采集时文件未完整或编码未知，
-        # 此时清单不可信，无法与磁盘上经过编码修复后的文件名匹配，直接跳过清单校验。
-        # 场景：precheck_archive 在文件写入未稳定时运行 → _sniff_zip_encoding 失败 →
-        # 7zz l 无 -mcp → CP932 字节被 UTF-8 解码为替换字符并缓存 → 提取时命中缓存 →
-        # 提取 + garbled_guard 修复后文件名正确，但清单里是 \ufffd，匹配失败。
+        # 编码替换字符只说明名称证据不足，不能跳过全量数量与大小核验。
         _ufffd_count = sum(1 for e in file_entries if '\ufffd' in str(e.get('name') or ''))
         if file_entries and _ufffd_count / len(file_entries) >= 0.3:
             logger.warning(
                 "清单中 %.0f%% 的文件名含编码替换字符（\\ufffd），清单采集时编码未知，"
-                "跳过基于清单的完整性校验: archive=%s",
+                "继续核对全部文件数量、大小及可匹配路径: archive=%s",
                 _ufffd_count / len(file_entries) * 100,
                 archive_info.path,
             )
-            return True
 
         missing_files = []
         size_mismatch_files = []
@@ -9491,14 +9551,14 @@ class ExtractService:
                                 # 不会再产生额外 IO；Linux 上 d_type 不带 size，会走一次 fstatat。
                                 size = entry.stat(follow_symlinks=False).st_size
                             except OSError:
-                                continue
+                                raise
                             rel = os.path.relpath(entry.path, output_path).replace('\\', '/')
                             actual[rel] = size
                 except OSError:
-                    continue
+                    raise
             return actual
 
-        actual_files = await asyncio.to_thread(_scan_actual_files)
+        actual_files = _scan_actual_files()
 
         # 反向 mojibake 修复：把磁盘上的 actual 路径也跑一遍反解，
         # 建立修复后路径 → 原始 actual 键的反向映射，
@@ -9511,7 +9571,7 @@ class ExtractService:
                     inv[repaired] = actual_path
             return inv
 
-        inverse_actual_lookup = await asyncio.to_thread(_build_inverse_lookup, actual_files)
+        inverse_actual_lookup = _build_inverse_lookup(actual_files)
 
         critical_zero_byte_files: List[Dict] = []  # expected.size > 0 但 actual.size == 0
 
@@ -9611,7 +9671,7 @@ class ExtractService:
             total_count = max(len(file_entries), 1)
             missing_ratio = len(missing_files) / total_count
             # 绝对阈值：缺失文件 >= 5 个 或 比例 >= 10%，要拒绝。
-            if missing_ratio >= 0.1 or len(missing_files) >= 5:
+            if missing_files:
                 if (
                     verify_mode == "full"
                     and (
@@ -9672,7 +9732,16 @@ class ExtractService:
                 else:
                     logger.error(f"清理解压目录失败: {output_path}, {e}")
 
-    async def _run_7z_command(
+    async def _run_7z_command(self, cmd, *args, **kwargs):
+        result = await self._run_7z_command_once(cmd, *args, **kwargs)
+        if result.returncode and b"E_INVALIDARG" in (result.stderr or b""):
+            cleaned = [arg for arg in cmd if not (isinstance(arg, str) and arg.startswith("-mcp="))]
+            if cleaned != cmd:
+                logger.warning("7z 文件名编码参数不兼容，释放资源后以原密码重试")
+                return await self._run_7z_command_once(cleaned, *args, **kwargs)
+        return result
+
+    async def _run_7z_command_once(
         self,
         cmd: List[Any],
         progress_callback: Optional[Callable[[str], None]] = None,
@@ -9866,37 +9935,7 @@ class ExtractService:
                         logger.error(f"错误输出: {err_text[:500]}")
                     except Exception as e:
                         logger.error(f"执行7z命令失败: {e}")
-                    # E_INVALIDARG + -mcp= 兼容性自动重试：
-                    # 7zz 24.08+ 某些版本/某些 ZIP 文件组合对 `-mcp=N` 直接抛
-                    # `opening : E_INVALIDARG`，导致 list / 解压都失败。这里检测到后
-                    # 标记类属性 _seven_zip_mcp_unsupported = True（后续 _get_mcp_args
-                    # 一律 short-circuit 返回 []），并剥掉 -mcp 重试一次。
-                    # 标志位 True 之后递归调用走 _get_mcp_args short-circuit，无无限递归风险。
-                    if (
-                        'E_INVALIDARG' in err_text_for_retry
-                        and any(isinstance(arg, str) and arg.startswith('-mcp=') for arg in cmd)
-                        and not self.__class__._seven_zip_mcp_unsupported
-                    ):
-                        self.__class__._seven_zip_mcp_unsupported = True
-                        cleaned_cmd = [
-                            arg for arg in cmd
-                            if not (isinstance(arg, str) and arg.startswith('-mcp='))
-                        ]
-                        logger.warning(
-                            "[7z] 检测到 -mcp 参数不被该 7zz 版本接受 (E_INVALIDARG)，"
-                            "标记 _seven_zip_mcp_unsupported 并剥掉 -mcp 重试: %s",
-                            self._format_command_for_log(cleaned_cmd),
-                        )
-                        return await self._run_7z_command(
-                            cleaned_cmd,
-                            progress_callback=progress_callback,
-                            capture_stdout=capture_stdout,
-                            max_captured_bytes=max_captured_bytes,
-                            task=task,
-                            command_timeout=command_timeout,
-                            slot_wait_timeout=slot_wait_timeout,
-                            update_task_progress=update_task_progress,
-                        )
+                    # 返回错误证据；外层在退出资源上下文后处理参数兼容重试。
                     return subprocess.CompletedProcess(
                         args=cmd,
                         returncode=return_code,
@@ -9925,12 +9964,14 @@ class ExtractService:
             st = os.stat(path)
         except OSError:
             return None
-        return f"{os.path.abspath(path)}|{st.st_size}|{int(st.st_mtime)}"
+        return f"{os.path.abspath(path)}|{st.st_size}|{st.st_mtime_ns}|{st.st_dev}|{st.st_ino}"
 
     def _password_cache_key(self, fingerprint: str, password: str) -> Tuple[str, str]:
         pwd_bytes = (password or '').encode('utf-8', errors='ignore')
         pwd_hash = hashlib.sha1(pwd_bytes if password else b'<empty>').hexdigest()[:16]
-        return (fingerprint, pwd_hash)
+        tool_identity = ArchiveFingerprintCache.fingerprint(self.seven_zip)
+        scope = f"{fingerprint}|{os.path.abspath(self.seven_zip)}|{tool_identity}|zip_cp={self.config.extract.zip_encoding}"
+        return (scope, pwd_hash)
 
     @classmethod
     def _get_password_probe_lock(cls, cache_key: Tuple[str, str]) -> asyncio.Lock:
@@ -9962,10 +10003,14 @@ class ExtractService:
         """从压缩包目录里选一个适合拿来 t 探测的条目：非目录、非空、尺寸不超阈值。按大小升序选最小。"""
         if not file_list:
             return None
+        # 混合包不能用明文条目验证密码；没有合适的加密小条目则明确返回未知。
+        encrypted = any(f.get('encrypted') is True for f in file_list if not f.get('is_dir'))
         candidates = []
         for f in file_list:
             try:
                 if f.get('is_dir'):
+                    continue
+                if encrypted and f.get('encrypted') is not True:
                     continue
                 size = int(f.get('size') or 0)
                 name = f.get('name') or ''
@@ -9973,13 +10018,13 @@ class ExtractService:
                     continue
                 if size > self.PROBE_ENTRY_MAX_SIZE:
                     continue
-                candidates.append((size, name))
+                candidates.append((0 if f.get('encrypted') is True else 1, size, name))
             except Exception:
                 continue
         if not candidates:
             return None
-        candidates.sort(key=lambda x: x[0])
-        size, name = candidates[0]
+        candidates.sort()
+        _, size, name = candidates[0]
         return {'name': name, 'size': size}
 
     @classmethod
@@ -10194,12 +10239,7 @@ class ExtractService:
         task: Optional[Task] = None,
         seven_zip_executable: Optional[str] = None,
     ) -> str:
-        """用 `7zz x -so archive -i!<entry>` 流式解压指定条目，只读前几十字节对照魔数。
-
-        密码错时 AES 输出是随机字节，魔数绝不会碰巧命中→直接判 wrong_password。
-        密码对时前几十字节就是真实文件头，解压出来的 magic 和表里对得上→ok。
-        整个过程读盘量极小，单个大文件也不需要拆出来完整 t。
-        """
+        """有限前缀仅提供格式线索；只有明确工具错误可以给出失败类型。"""
         entry_name = entry['name']
         magic_offset: int = entry['magic_offset']
         magics: Tuple[bytes, ...] = entry['magics']
@@ -10315,29 +10355,11 @@ class ExtractService:
                         except Exception:
                             pass
 
-            # 读够了魔数需要的字节数 → 立即对照并摄停进程
+            # 有限前缀只能用于格式线索，不能证明密码正确或错误。
             if enough_data:
                 await _terminate()
                 if task is not None:
                     task.unregister_process(process)
-                verdict = _match_magic(bytes(stdout_buf))
-                if verdict is True:
-                    return 'ok'
-                if verdict is False:
-                    # 伪装文件兜底：声称扩展名的魔数没匹配，但解出来的字节
-                    # 命中其他已知魔数（典型场景：内层压缩包伪装成 .png/.pdf
-                    # /.jpg 防误删，正确密码解出来是 PK / 7z / Rar 魔数）。
-                    # 此时返回 unknown，让 ``_probe_password`` 回退到更可靠的
-                    # t 探测做 CRC 校验，不冤杀正确密码。
-                    if self._data_matches_any_known_magic(bytes(stdout_buf)):
-                        logger.info(
-                            "魔数探测命中疑似伪装条目（声称 %s，解出字节匹配其他已知魔数），"
-                            "改判 unknown 由 t 探测兜底: %s",
-                            entry_name,
-                            os.path.basename(archive_path),
-                        )
-                        return 'unknown'
-                    return 'wrong_password'
                 return 'unknown'
 
             # 进程仍在跑（高于阈值的巨大文件头很罕见，正常是由于解压极慢/中断）
@@ -10366,30 +10388,8 @@ class ExtractService:
 
         stderr_text = b''.join(stderr_chunks).decode('utf-8', errors='ignore').lower()
 
-        # 小于 need_bytes 的小文件：即使密码正确也可能字节不够。退得干净 +
-        # 已有的字节能匹配魔数前缀 → ok；全不匹配 → wrong_password。
-        if process.returncode == 0 and stdout_buf:
-            for m in magics:
-                match_len = min(len(stdout_buf) - magic_offset, len(m))
-                if match_len <= 0:
-                    continue
-                if bytes(stdout_buf[magic_offset:magic_offset + match_len]) == m[:match_len]:
-                    return 'ok'
-            # 伪装文件兜底（小文件场景）：参见上方 enough_data 分支的注释。
-            if self._data_matches_any_known_magic(bytes(stdout_buf)):
-                logger.info(
-                    "魔数探测（小文件）命中疑似伪装条目（声称 %s），"
-                    "改判 unknown 由 t 探测兜底: %s",
-                    entry_name,
-                    os.path.basename(archive_path),
-                )
-                return 'unknown'
-            return 'wrong_password'
-
         encryption_markers = (
-            "wrong password", "password is incorrect", "password?",
-            "passphrase", "cannot open encrypted", "is encrypted",
-            "data error in encrypted", "crc failed in encrypted",
+            "wrong password", "password is incorrect",
         )
         if any(m in stderr_text for m in encryption_markers):
             return 'wrong_password'
@@ -10448,11 +10448,13 @@ class ExtractService:
 
         async with self._acquire_probe_inspect_slot("extract.probe_entry", archive_path, task) as acquired:
             if not acquired:
+                candidate_evidence(password, [], probe_reason='resource_timeout')
                 return 'unknown'
             logger.info("执行7z探测命令: %s", self._format_command_for_log(cmd))
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             except Exception as e:
+                candidate_evidence(password, [], probe_reason='io_failure')
                 logger.warning(f"密码探测（条目）无法启动 7z 进程，回退流式探测: {e}")
                 return 'unknown'
             if task is not None:
@@ -10464,6 +10466,7 @@ class ExtractService:
                         process.communicate(), timeout=timeout
                     )
                 except asyncio.TimeoutError:
+                    candidate_evidence(password, [], probe_reason='timeout')
                     if process.returncode is None:
                         try:
                             process.kill()
@@ -10480,6 +10483,11 @@ class ExtractService:
                     )
                     return 'unknown'
             finally:
+                if process.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        process.kill()
+                    with contextlib.suppress(Exception):
+                        await process.wait()
                 if task is not None:
                     task.unregister_process(process)
 
@@ -10493,12 +10501,6 @@ class ExtractService:
         encryption_markers = (
             "wrong password",
             "password is incorrect",
-            "password?",
-            "passphrase",
-            "cannot open encrypted",
-            "is encrypted",
-            "data error in encrypted",
-            "crc failed in encrypted",
         )
         if any(m in stderr_lower for m in encryption_markers):
             return 'wrong_password'
@@ -10547,11 +10549,13 @@ class ExtractService:
 
         async with self._acquire_probe_inspect_slot("extract.probe_full_test", archive_path, task) as acquired:
             if not acquired:
+                candidate_evidence(password, [], probe_reason='resource_timeout')
                 return 'unknown'
             logger.info("执行7z探测命令: %s", self._format_command_for_log(cmd))
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             except Exception as e:
+                candidate_evidence(password, [], probe_reason='io_failure')
                 logger.warning(f"密码探测（完整测试）无法启动 7z 进程，回退完整解压: {e}")
                 return 'unknown'
             if task is not None:
@@ -10563,6 +10567,7 @@ class ExtractService:
                         process.communicate(), timeout=timeout
                     )
                 except asyncio.TimeoutError:
+                    candidate_evidence(password, [], probe_reason='timeout')
                     if process.returncode is None:
                         try:
                             process.kill()
@@ -10579,6 +10584,11 @@ class ExtractService:
                     )
                     return 'unknown'
             finally:
+                if process.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        process.kill()
+                    with contextlib.suppress(Exception):
+                        await process.wait()
                 if task is not None:
                     task.unregister_process(process)
 
@@ -10591,12 +10601,6 @@ class ExtractService:
         encryption_markers = (
             "wrong password",
             "password is incorrect",
-            "password?",
-            "passphrase",
-            "cannot open encrypted",
-            "is encrypted",
-            "data error in encrypted",
-            "crc failed in encrypted",
         )
         if any(m in stderr_lower for m in encryption_markers):
             return 'wrong_password'
@@ -10616,6 +10620,7 @@ class ExtractService:
 
         return 'unknown'
 
+    @measured_phase("probe")
     async def _probe_password(
         self,
         archive_path: str,
@@ -10627,24 +10632,20 @@ class ExtractService:
         allow_full_test: bool = True,
         seven_zip_executable: Optional[str] = None,
     ) -> str:
-        """轻量探测密码是否正确。
+        """用完整加密小条目或整包测试提供内容证据。
 
-        优先走条目测试分支（`_probe_by_smallest_entry`）：能处理 store+AES。
-        拿不到 file_list 或没有合适小条目时，回退到原流式探测。
-
-        返回值：
-          - 'ok'             探测通过，建议进入完整解压
-          - 'wrong_password' 命中加密相关错误关键字 / CRC 失败 / 魔数不匹配
-          - 'corrupt'        命中疑似损坏关键字
-          - 'unsupported_method' 当前 7z 不支持该压缩方法
-          - 'unknown'        无法定性（超时 / 输出特殊），让上层走原有完整流程兜底
-
-        优先级：
-          1. 魔数探测（有已知后缀条目时）：不受文件大小影响，最快最准。
-          2. 小条目 t 探测（有 <=5MB 的条目但无已知后缀时）：运行单文件 CRC。
-          3. 流式探测（没 file_list 的头加密包兜底）：注意对 store+AES 可能漏判。
+        魔数、有限前缀、通用 CRC/Data Error 均不能独立判错密码；
+        无适用条目时返回 unknown，由实际解压及最终校验判定成功。
         """
         executable = seven_zip_executable or self.seven_zip
+
+        # 7zz 的 Unicode 参数判错不能覆盖 ZIP 传统加密的 GBK 密码字节证据。
+        # 前缀只用于选择兼容后端，仍需后端完整读取并校验每个目标条目。
+        if password and not password.isascii() and self._is_zip_like_archive(archive_path):
+            byte_hint = await asyncio.to_thread(self._probe_zip_password_bytes, archive_path, password)
+            if byte_hint is not None:
+                candidate_evidence(password, [], password_byte_encoding=byte_hint[0], probe_reason='byte_encoding_only')
+                return 'unknown'
 
         aes_argv_probe = await self._probe_winzip_aes_password_argv_encoding(
             archive_path,
@@ -10654,8 +10655,7 @@ class ExtractService:
             task=task,
             seven_zip_executable=executable,
         )
-        if aes_argv_probe == "ok":
-            return "ok"
+        # 一字节只证明该密码字节编码能产生输出，完整条目校验才提供内容证据。
         if aes_argv_probe == "wrong_password":
             return "wrong_password"
 
@@ -10676,35 +10676,6 @@ class ExtractService:
                 return "wrong_password"
 
         is_rar = self._is_rar_archive(archive_path)
-        if not is_rar:
-            magic_entries = self._pick_magic_entries(file_list)
-            for magic_entry in magic_entries:
-                logger.debug(
-                    "密码探测（magic）选择条目: %s (%s bytes)",
-                    magic_entry.get('name'),
-                    magic_entry.get('size'),
-                )
-                result = await self._probe_by_magic(
-                    archive_path,
-                    password,
-                    magic_entry,
-                    timeout=self.PROBE_MAGIC_TIMEOUT,
-                    task=task,
-                    seven_zip_executable=executable,
-                )
-                if result != 'unknown':
-                    return result
-            if magic_entries:
-                logger.debug(
-                    "魔数探测对 %s 的 %s 个条目均无法定性，回退到小条目 t 探测",
-                    os.path.basename(archive_path),
-                    len(magic_entries),
-                )
-        else:
-            logger.debug(
-                "RAR 密码探测跳过 magic/流式解压探测，避免错密码垃圾流误判: %s",
-                os.path.basename(archive_path),
-            )
 
         entry = self._pick_probe_entry(file_list)
         if entry is not None:
@@ -10762,11 +10733,13 @@ class ExtractService:
 
         async with self._acquire_probe_inspect_slot("extract.probe_stream", archive_path, task) as acquired:
             if not acquired:
+                candidate_evidence(password, [], probe_reason='resource_timeout')
                 return 'unknown'
             logger.info("执行7z探测命令: %s", self._format_command_for_log(cmd))
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             except Exception as e:
+                candidate_evidence(password, [], probe_reason='io_failure')
                 logger.warning(f"密码探测无法启动 7z 进程，回退完整解压: {e}")
                 return 'unknown'
             if task is not None:
@@ -10806,15 +10779,6 @@ class ExtractService:
             stderr_task = asyncio.create_task(consume_stderr())
             wait_task = asyncio.create_task(process.wait())
 
-            try:
-                await asyncio.wait(
-                    {stdout_task, wait_task},
-                    timeout=timeout,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-            except Exception:
-                pass
-
             async def _terminate():
                 if process.returncode is None:
                     try:
@@ -10830,15 +10794,26 @@ class ExtractService:
                         t.cancel()
                         try:
                             await t
-                        except Exception:
+                        except (Exception, asyncio.CancelledError):
                             pass
 
-            # 分支 1：阈值达成 → 密码正确
+            try:
+                await asyncio.wait(
+                    {stdout_task, wait_task}, timeout=timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except BaseException:
+                await _terminate()
+                if task is not None:
+                    task.unregister_process(process)
+                raise
+
+            # 有限输出只能证明进程有输出，不能证明内容完整性。
             if threshold_reached:
                 await _terminate()
                 if task is not None:
                     task.unregister_process(process)
-                return 'ok'
+                return 'unknown'
 
             # 分支 2：进程仍在跑 → 超时或被外部 kill（如 cancel/pause）
             if process.returncode is None:
@@ -10862,7 +10837,7 @@ class ExtractService:
                     t.cancel()
                     try:
                         await t
-                    except Exception:
+                    except (Exception, asyncio.CancelledError):
                         pass
 
             stderr_text = b''.join(stderr_chunks).decode('utf-8', errors='ignore')
@@ -10878,12 +10853,6 @@ class ExtractService:
             encryption_markers = (
                 "wrong password",
                 "password is incorrect",
-                "password?",
-                "passphrase",
-                "cannot open encrypted",
-                "is encrypted",
-                "data error in encrypted",
-                "crc failed in encrypted",
             )
             if any(m in stderr_lower for m in encryption_markers):
                 return 'wrong_password'
@@ -10913,14 +10882,21 @@ class ExtractService:
         传入 task 时把子进程登记到 task 上，cancel / pause 能立刻 kill —— 修复
         unar 解压大包时无法响应取消的问题。
         """
-        semaphore = self._get_7z_semaphore()
+        is_inspect = os.path.basename(str(cmd[0])).lower() in {"lsar", "lsar.exe"}
+        semaphore = self._get_7z_inspect_semaphore() if is_inspect else self._get_7z_semaphore()
         try:
             if task is not None and self._is_semaphore_locked(semaphore):
                 task.update_progress(
                     max(31, int(task.progress or 0)),
                     f"等待解压槽位（当前并发上限 {self.__class__._seven_zip_semaphore_limit or 1}）",
                 )
-            async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.subprocess"), self._measure_extract_execution(task):
+            async with self._acquire_7z_resource_slot(
+                semaphore=semaphore, budget_resource="archive_inspect" if is_inspect else "archive_cpu", reason="extract.subprocess",
+                archive_path="", slot_label="解压槽位", slot_limit=self.__class__._seven_zip_semaphore_limit,
+                wait_timeout=None, task=task,
+            ) as acquired:
+                if not acquired:
+                    raise RuntimeError("未取得解压资源")
                 if task is not None and running_step:
                     task.update_progress(max(40, int(task.progress or 0)), running_step)
                 kwargs = {
@@ -11202,7 +11178,7 @@ class ExtractService:
                         "unar 返回 rc=%s 但产物校验通过，接受本次 RAR 解压结果，使用 %s 密码: %s",
                         result.returncode,
                         password_source,
-                        password or '无密码',
+                        self._password_log_state(password),
                     )
                     return True, password, ""
                 await self._cleanup_extract_attempt(output_path)
@@ -11259,7 +11235,7 @@ class ExtractService:
                     )
                 logger.info(
                     "unar 解压 RAR 成功，使用 %s 密码: %s",
-                    password_source, password or '无密码',
+                    password_source, self._password_log_state(password),
                 )
                 return True, password, ""
 
@@ -11270,14 +11246,13 @@ class ExtractService:
                 "password is incorrect",
                 "incorrect password",
                 "wrong password?",
-                "passphrase",
                 "unable to decrypt",
             )
             if any(m in stderr_lower for m in wrong_password_markers):
                 encountered_wrong_password = True
                 logger.info(
                     "unar 密码 %s (%s) 失败: 密码错误",
-                    password_source, password or '无密码',
+                    password_source, self._password_log_state(password),
                 )
                 continue
 
@@ -11311,7 +11286,7 @@ class ExtractService:
             logger.warning(
                 "unar 密码 %s (%s) 失败 (rc=%s): %s",
                 password_source,
-                password or '无密码',
+                self._password_log_state(password),
                 result.returncode,
                 stderr_text[:300] if stderr_text else "(无错误文本)",
             )
@@ -12493,10 +12468,7 @@ class ExtractService:
         password: Optional[str],
         task: Optional[Task] = None,
     ) -> None:
-        """若 output_path 中存在乱码文件名，依次以 SHIFT_JIS / GBK / BIG5 重新解压修复。
-
-        不抛异常：若所有编码均无法修复，则回退重解一遍自动探测结果，确保目录有内容。
-        """
+        """清单筛选编码后在独立目录重解，内容一致才替换已成功输出。"""
         baseline_score = self._filename_garbled_score(output_path)
         if baseline_score < 30.0:
             return
@@ -12523,84 +12495,55 @@ class ExtractService:
         ranked_encodings = await self._rank_rar_encodings_after_garbled_extract(
             archive_path, password, baseline_score,
         )
-        tried_encodings: set[str] = set()
-        detected_encoding = ranked_encodings[0][0] if ranked_encodings else None
-        needs_auto_restore = False
-        if detected_encoding:
-            await self._cleanup_extract_attempt(output_path)
-            needs_auto_restore = True
-            tried_encodings.add(detected_encoding)
-            r = await self._try_unar_extract(
-                archive_path, output_path, password, task=task, encoding=detected_encoding,
-            )
-            if r.returncode == 0:
-                needs_auto_restore = False
-                score = self._filename_garbled_score(output_path)
-                logger.debug("[unar编码] 编码 %s 重解后乱码评分: %.1f", detected_encoding, score)
-                if score < 30.0:
-                    logger.info("[unar编码] 乱码修复成功，使用编码: %s score=%.1f", detected_encoding, score)
-                    return
-                logger.warning(
-                    "[unar编码] 嗅探编码 %s 重解后仍疑似乱码 score=%.1f",
-                    detected_encoding,
-                    score,
+        # 先筛选清单证据，只对有改善的编码进行独立目录重解。
+        # 未验证的候选不能删除已经成功落盘的内容。
+        for encoding, listing_score in ranked_encodings:
+            if listing_score >= baseline_score:
+                continue
+            attempt = tempfile.mkdtemp(prefix="encoding-attempt-", dir=os.path.dirname(output_path))
+            backup = None
+            published = False
+            try:
+                result = await self._try_unar_extract(
+                    archive_path, attempt, password, task=task, encoding=encoding,
                 )
-            else:
-                logger.debug("[unar编码] 嗅探编码 %s 重解失败 rc=%s", detected_encoding, r.returncode)
-        else:
-            logger.warning(
-                "[unar编码] lsar 嗅探不可用或无法改善评分，跳过多次完整重解: %s",
-                archive_path,
-            )
-            return
-
-        for candidate_encoding, candidate_score in ranked_encodings[1:]:
-            if candidate_encoding in tried_encodings:
-                continue
-            if candidate_score >= baseline_score:
-                continue
-            await self._cleanup_extract_attempt(output_path)
-            needs_auto_restore = True
-            tried_encodings.add(candidate_encoding)
-            logger.info(
-                "[unar编码] 继续尝试候选编码: %s lsar_score=%.1f baseline=%.1f",
-                candidate_encoding,
-                candidate_score,
-                baseline_score,
-            )
-            r = await self._try_unar_extract(
-                archive_path, output_path, password, task=task, encoding=candidate_encoding,
-            )
-            if r.returncode != 0:
-                logger.debug("[unar编码] 候选编码 %s 重解失败 rc=%s", candidate_encoding, r.returncode)
-                continue
-            score = self._filename_garbled_score(output_path)
-            logger.debug("[unar编码] 编码 %s 重解后乱码评分: %.1f", candidate_encoding, score)
-            if score < 30.0:
-                logger.info("[unar编码] 乱码修复成功，使用编码: %s score=%.1f", candidate_encoding, score)
+                if result.returncode != 0:
+                    continue
+                score = await asyncio.to_thread(self._filename_garbled_score, attempt)
+                def inventory(root):
+                    result = []
+                    for current, _, files in os.walk(root):
+                        for name in files:
+                            digest = hashlib.sha256()
+                            with open(os.path.join(current, name), 'rb') as stream:
+                                while chunk := stream.read(1024 * 1024):
+                                    digest.update(chunk)
+                            result.append(digest.digest())
+                    return sorted(result)
+                before = await asyncio.to_thread(inventory, output_path)
+                after = await asyncio.to_thread(inventory, attempt)
+                if score >= 30.0 or before != after:
+                    continue
+                backup = tempfile.mkdtemp(prefix="encoding-original-", dir=os.path.dirname(output_path))
+                os.rmdir(backup)
+                os.replace(output_path, backup)
+                try:
+                    os.replace(attempt, output_path)
+                except BaseException:
+                    try:
+                        os.replace(backup, output_path)
+                        backup = None
+                    except OSError as exc:
+                        raise RuntimeError(f"编码修复替换与回滚均失败，原内容保存在 {backup}") from exc
+                    raise
+                published = True
+                logger.info("文件名编码修复已验证并替换: encoding=%s", encoding)
                 return
-            logger.warning(
-                "[unar编码] 候选编码 %s 重解后仍疑似乱码 score=%.1f",
-                candidate_encoding,
-                score,
-            )
-
-        # 嗅探出的编码重解失败时恢复自动探测结果；上层会再次全树检查，仍乱码则失败清理。
-        if needs_auto_restore:
-            logger.warning("[unar编码] 乱码自动修复失败，回退自动探测结果")
-            await self._cleanup_extract_attempt(output_path)
-            r = await self._try_unar_extract(archive_path, output_path, password, task=task)
-            if r.returncode == 0:
-                repaired_count = await asyncio.to_thread(
-                    self._repair_mojibake_filenames_in_place,
-                    output_path,
-                )
-                if repaired_count:
-                    logger.info(
-                        "[unar编码] 回退自动探测后文件名反乱码重命名完成: count=%s score=%.1f",
-                        repaired_count,
-                        self._filename_garbled_score(output_path),
-                    )
+            finally:
+                if os.path.exists(attempt):
+                    await asyncio.to_thread(shutil.rmtree, attempt)
+                if published and backup and os.path.exists(backup):
+                    await asyncio.to_thread(shutil.rmtree, backup)
 
     async def _try_unar_extract(
         self,

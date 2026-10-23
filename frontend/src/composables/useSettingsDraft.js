@@ -419,7 +419,6 @@ export const defaultConfig = {
   resource_budget: {
     enabled: true,
     disk_io_local: 2,
-    archive_cpu: 0,
     archive_inspect: 0,
     remote_fs: 4,
     network_download: 5,

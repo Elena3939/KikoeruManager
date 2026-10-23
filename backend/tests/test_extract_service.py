@@ -16,6 +16,7 @@ from unittest.mock import Mock, AsyncMock, patch
 
 from app.core.archive_detection import detect_embedded_zip_offset
 from app.core.extract_service import ArchiveInfo, ExtractService
+from app.core.extract_runtime import AdjustableLimiter
 from app.core.file_processor import FileProcessor
 from app.core.task_engine import Task, TaskType
 
@@ -2004,7 +2005,7 @@ class TestExtractService:
         old_limit = ExtractService._seven_zip_inspect_semaphore_limit
         old_timeout = extract_service.INSPECT_SLOT_WAIT_TIMEOUT
 
-        ExtractService._seven_zip_inspect_semaphore = asyncio.Semaphore(1)
+        ExtractService._seven_zip_inspect_semaphore = AdjustableLimiter(1)
         ExtractService._seven_zip_inspect_semaphore_limit = 1
         await ExtractService._seven_zip_inspect_semaphore.acquire()
         extract_service.INSPECT_SLOT_WAIT_TIMEOUT = 0.01
@@ -2037,7 +2038,7 @@ class TestExtractService:
         task.progress = 38
         task.update_progress = Mock()
 
-        ExtractService._seven_zip_inspect_semaphore = asyncio.Semaphore(1)
+        ExtractService._seven_zip_inspect_semaphore = AdjustableLimiter(1)
         ExtractService._seven_zip_inspect_semaphore_limit = 1
         await ExtractService._seven_zip_inspect_semaphore.acquire()
         extract_service.PROBE_SLOT_WAIT_TIMEOUT = 0.01
@@ -2129,7 +2130,7 @@ class TestExtractService:
                 await asyncio.sleep(10)
                 yield
 
-        ExtractService._seven_zip_inspect_semaphore = asyncio.Semaphore(1)
+        ExtractService._seven_zip_inspect_semaphore = AdjustableLimiter(1)
         ExtractService._seven_zip_inspect_semaphore_limit = 1
         extract_service.PROBE_SLOT_WAIT_TIMEOUT = 0.01
 
@@ -2142,7 +2143,8 @@ class TestExtractService:
                     {"name": "test.txt", "size": 12, "is_dir": False},
                     timeout=1.0,
                 )
-                available = getattr(ExtractService._seven_zip_inspect_semaphore, "_value", None)
+                limiter = ExtractService._seven_zip_inspect_semaphore
+                available = limiter.capacity - limiter.active
         finally:
             ExtractService._seven_zip_inspect_semaphore = old_semaphore
             ExtractService._seven_zip_inspect_semaphore_limit = old_limit
@@ -2227,13 +2229,13 @@ class TestExtractService:
         })
         assert extract_service._get_manual_retry_passwords(task) == ["outer_pwd", "inner_pwd"]
 
-    def test_get_manual_retry_passwords_dedupe_and_strip(self, extract_service):
-        """list 里有重复 / 空 / 前后空白 → 去重保序、过滤空、normalize 后保留首次出现。"""
+    def test_get_manual_retry_passwords_dedupe_preserves_exact_bytes(self, extract_service):
+        """精确去重，密码的首尾空白属于密码内容。"""
         task = self._make_task_with_metadata({
             "manual_retry_passwords": ["alpha", "  beta  ", "alpha", "", "gamma"],
         })
-        # normalize_password_value 会 strip 首尾空白
-        assert extract_service._get_manual_retry_passwords(task) == ["alpha", "beta", "gamma"]
+        # 不对密码字节内容做隐式清洗
+        assert extract_service._get_manual_retry_passwords(task) == ["alpha", "  beta  ", "gamma"]
 
     def test_get_manual_retry_passwords_legacy_single_field(self, extract_service):
         """旧调用方只写 manual_retry_password 单字段：fallback 必须能拿到。"""
@@ -2244,9 +2246,9 @@ class TestExtractService:
         assert extract_service._get_manual_retry_passwords(task) == ["legacy_only_pwd"]
 
     def test_get_manual_retry_passwords_list_empty_falls_back_to_single(self, extract_service):
-        """list 字段存在但全是空白 → fallback 到 manual_retry_password 单字段。"""
+        """list 字段仅空字符串或 None 时，使用单字段密码。"""
         task = self._make_task_with_metadata({
-            "manual_retry_passwords": ["", "   ", None],
+            "manual_retry_passwords": ["", None],
             "manual_retry_password": "fallback_pwd",
         })
         assert extract_service._get_manual_retry_passwords(task) == ["fallback_pwd"]
@@ -2327,6 +2329,11 @@ class TestExtractService:
         parent_dir = os.path.join(temp_dir, "RJ01624471(20260531南＋冒険者本体)")
         os.makedirs(parent_dir, exist_ok=True)
         archive_path = os.path.join(parent_dir, "bonus.zip")
+        # 清单与轻量探测独立模拟，完整解压次数断言只统计实际 x 进程。
+        extract_service._list_archive_contents = AsyncMock(return_value=[
+            {"name": "large.wav", "size": 8 * 1024**3, "encrypted": True, "is_dir": False},
+        ])
+        extract_service._probe_password = AsyncMock(return_value="unknown")
         output_path = os.path.join(temp_dir, "out")
         os.makedirs(output_path, exist_ok=True)
 
@@ -2347,7 +2354,7 @@ class TestExtractService:
                 }
             ])
             extract_service._is_rar_archive = Mock(return_value=True)
-            extract_service._find_unar_executable = Mock(return_value="/usr/bin/unar")
+            extract_service._find_unar_executable = Mock(return_value=None)
             extract_service._try_unar_extract = AsyncMock(
                 side_effect=AssertionError("已预验证的加密 RAR 不应走 unar")
             )
@@ -2378,7 +2385,13 @@ class TestExtractService:
     @pytest.mark.asyncio
     async def test_nested_extract_uses_inner_rj_filename_password(self, extract_service, temp_dir):
         """未加密外层包装壳中的 RJ 内层包必须尝试内层文件名对应的 RJ 密码。"""
+        extract_service._verify_extraction = AsyncMock(return_value=True)
         archive_path = os.path.join(temp_dir, "RJ01524818.z删ip")
+        # 清单与轻量探测独立模拟，完整解压次数断言只统计实际 x 进程。
+        extract_service._list_archive_contents = AsyncMock(return_value=[
+            {"name": "large.wav", "size": 8 * 1024**3, "encrypted": True, "is_dir": False},
+        ])
+        extract_service._probe_password = AsyncMock(return_value="unknown")
         output_path = os.path.join(temp_dir, "out")
         os.makedirs(output_path, exist_ok=True)
 
@@ -2413,6 +2426,11 @@ class TestExtractService:
     async def test_nested_extract_includes_manual_retry_password(self, extract_service, temp_dir):
         """手动重试指定密码必须传递到外层解压发现的内层压缩包。"""
         archive_path = os.path.join(temp_dir, "密码：3个多月了还是0进展.rrar")
+        # 清单与轻量探测独立模拟，完整解压次数断言只统计实际 x 进程。
+        extract_service._list_archive_contents = AsyncMock(return_value=[
+            {"name": "large.wav", "size": 8 * 1024**3, "encrypted": True, "is_dir": False},
+        ])
+        extract_service._probe_password = AsyncMock(return_value="unknown")
         output_path = os.path.join(temp_dir, "out")
         os.makedirs(output_path, exist_ok=True)
         task = Task(
@@ -2453,6 +2471,8 @@ class TestExtractService:
         self, extract_service, temp_dir,
     ):
         """无后缀未加密 ZIP 必须只用空密码完整解压，不能被 45 秒候选探测超时杀掉。"""
+        extract_service._verify_extraction = AsyncMock(return_value=True)
+        extract_service._list_archive_contents = AsyncMock(return_value=[])
         archive_path = os.path.join(temp_dir, "RJ01668465")
         output_path = os.path.join(temp_dir, "out")
         os.makedirs(output_path, exist_ok=True)
@@ -2507,6 +2527,7 @@ class TestExtractService:
         self, extract_service, temp_dir, is_rar,
     ):
         """无后缀加密包应轻量验证完整候选，命中后不限时解压，不能只取前四个。"""
+        extract_service._verify_extraction = AsyncMock(return_value=True)
         archive_path = os.path.join(temp_dir, "RJ01555018")
         output_path = os.path.join(temp_dir, "out")
         os.makedirs(output_path, exist_ok=True)
@@ -2587,6 +2608,7 @@ class TestExtractService:
         self, extract_service, temp_dir, caplog, is_rar, probe_result,
     ):
         """大无扩展名内层包先用外层已验证密码不限时解压，不能在 45 秒后杀掉。"""
+        extract_service._verify_extraction = AsyncMock(return_value=True)
         archive_path = os.path.join(temp_dir, "解压码0821")
         output_path = os.path.join(temp_dir, "out")
         os.makedirs(output_path, exist_ok=True)
@@ -2663,6 +2685,7 @@ class TestExtractService:
         self, extract_service, temp_dir,
     ):
         """加密文件头无法空密码列目录时，RJ 密码校验成功后也必须不限时解压。"""
+        extract_service._verify_extraction = AsyncMock(return_value=True)
         archive_path = os.path.join(temp_dir, "RJ01730715")
         output_path = os.path.join(temp_dir, "out")
         os.makedirs(output_path, exist_ok=True)
@@ -2770,8 +2793,14 @@ class TestExtractService:
     async def test_nested_extract_tries_outer_filename_password_candidate(
         self, extract_service, temp_dir,
     ):
+        extract_service._verify_extraction = AsyncMock(return_value=True)
         """未加密外壳嗅探到的密码必须继续传给加密内包。"""
         archive_path = os.path.join(temp_dir, "RJ01684548.zzz")
+        # 清单与轻量探测独立模拟，完整解压次数断言只统计实际 x 进程。
+        extract_service._list_archive_contents = AsyncMock(return_value=[
+            {"name": "large.wav", "size": 8 * 1024**3, "encrypted": True, "is_dir": False},
+        ])
+        extract_service._probe_password = AsyncMock(return_value="unknown")
         output_path = os.path.join(temp_dir, "out")
         os.makedirs(output_path, exist_ok=True)
         with open(archive_path, "wb") as fp:
@@ -2824,8 +2853,14 @@ class TestExtractService:
     async def test_nested_extract_retries_unsupported_method_with_zstd_backend(
         self, extract_service, temp_dir,
     ):
+        extract_service._verify_extraction = AsyncMock(return_value=True)
         """嵌套包遇到官方 7zz 不支持的 codec 时应切到 7-Zip ZS。"""
         archive_path = os.path.join(temp_dir, "nested.7z")
+        # 清单与轻量探测独立模拟，完整解压次数断言只统计实际 x 进程。
+        extract_service._list_archive_contents = AsyncMock(return_value=[
+            {"name": "large.wav", "size": 8 * 1024**3, "encrypted": True, "is_dir": False},
+        ])
+        extract_service._probe_password = AsyncMock(return_value="unknown")
         output_path = os.path.join(temp_dir, "out")
         os.makedirs(output_path, exist_ok=True)
 
@@ -3142,7 +3177,8 @@ Block = 0
         extract_service._find_7z_zstd_executable = Mock(return_value="7zzs")
         extract_service._ensure_7z_zstd_available = AsyncMock(return_value=True)
         extract_service._probe_7z_no_password_status = AsyncMock(return_value="plain")
-        extract_service._probe_by_magic = AsyncMock(side_effect=["unsupported_method", "ok"])
+        extract_service._probe_by_magic = AsyncMock(return_value="unsupported_method")
+        extract_service._probe_by_smallest_entry = AsyncMock(return_value="ok")
         extract_service._run_7z_command = AsyncMock(side_effect=fake_run_7z_command)
         extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
         extract_service._verify_extraction = AsyncMock(return_value=True)
@@ -3177,8 +3213,9 @@ Block = 0
         assert password == ""
         assert reason == ""
         assert task.task_metadata["extract_zstd_backend_success"] is True
-        assert extract_service._probe_by_magic.await_count == 2
-        zstd_probe_call = extract_service._probe_by_magic.await_args_list[1]
+        assert extract_service._probe_by_magic.await_count == 1
+        assert extract_service._probe_by_smallest_entry.await_count == 1
+        zstd_probe_call = extract_service._probe_by_smallest_entry.await_args_list[0]
         assert zstd_probe_call.kwargs["seven_zip_executable"] == "7zzs"
         extract_cmds = [call.args[0] for call in extract_service._run_7z_command.await_args_list if "x" in call.args[0]]
         assert len(extract_cmds) == 1
@@ -3332,7 +3369,7 @@ Encrypted = +
             next((arg[2:] for arg in cmd if str(arg).startswith("-p")), "")
             for cmd in extract_cmds
         ]
-        assert tried_passwords == ["RJ01618696", "RJ01618697", "RJ01618695", "vault-a", "vault-b"]
+        assert tried_passwords == ["RJ01618696", "RJ01618697", "RJ01618695", "vault-a", "vault-b", ""]
         fingerprint = extract_service._archive_fingerprint(archive_path)
         assert fingerprint
         tried_key = extract_service._password_cache_key(fingerprint, "RJ01618696")
@@ -4120,7 +4157,7 @@ Encrypted = +
         assert run_7z_command.await_count >= 1
 
     @pytest.mark.asyncio
-    async def test_try_extract_rar_unar_skips_no_password_when_probe_unknown(
+    async def test_try_extract_rar_unar_defers_no_password_when_probe_unknown(
         self, extract_service, temp_dir,
     ):
         """RAR fast-path 也不能在无密码探测不确定时先完整跑 unar。"""
@@ -4167,7 +4204,7 @@ Encrypted = +
         assert reason == ""
         extract_service._probe_password.assert_awaited_once()
         unar_passwords = extract_service._try_extract_rar_with_unar.await_args.args[3]
-        assert unar_passwords == ["sxy4649777"]
+        assert unar_passwords == ["sxy4649777", ""]
 
     # ------------------------------------------------------------------
     # _detect_disguised_volume_set：伪装多卷启发式探测
