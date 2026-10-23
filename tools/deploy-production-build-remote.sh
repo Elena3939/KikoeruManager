@@ -184,7 +184,10 @@ endpoints = {}
 for name, endpoint in (source.get("NetworkSettings", {}).get("Networks", {}) or {}).items():
     endpoints[name] = {key: endpoint[key] for key in allowed_endpoint_keys if key in endpoint}
 
-config["HostConfig"] = source["HostConfig"]
+config["HostConfig"] = dict(source["HostConfig"])
+# 群晖 Docker 扩展会用 HostConfig.Env 覆盖标准 Config.Env。
+if version is not None and "Env" in config["HostConfig"]:
+    config["HostConfig"]["Env"] = [entry for entry in config["HostConfig"]["Env"] if not entry.startswith("KIKOERUMANAGER_VERSION=")] + [version]
 config["NetworkingConfig"] = {"EndpointsConfig": endpoints}
 request(
     "POST",
