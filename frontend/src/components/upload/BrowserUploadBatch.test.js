@@ -27,7 +27,7 @@ describe('浏览器上传详情', () => {
     const wrapper = mountBatch(status)
     expect(wrapper.find('file-uploader-stub').exists()).toBe(false)
     expect(wrapper.find('app-lottie-progress-bar-stub').exists()).toBe(false)
-    expect(wrapper.get('[role="status"]').text()).toContain('完成 1')
+    expect(wrapper.find('.upload-result').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -55,4 +55,19 @@ describe('浏览器上传详情', () => {
     expect(wrapper.find('app-lottie-progress-bar-stub').exists()).toBe(false)
     wrapper.unmount()
   })
+  it('没有失败或冲突时隐藏问题筛选', () => {
+    const wrapper = mountBatch('completed')
+    expect(wrapper.find('el-checkbox-stub').exists()).toBe(false)
+    wrapper.unmount()
+  })
+  it('有失败时显示问题筛选，复用无根节点的文件树', () => {
+    const wrapper = mountBatch('failed', { files: new Map([['f', { id: 'f', relative_path: '目录/文件.txt', status: 'failed', size: 100 }]]) })
+    expect(wrapper.find('el-checkbox-stub').exists()).toBe(true)
+    const tree = wrapper.getComponent({ name: 'DownloadResourceTree' })
+    expect(tree.props('hideRoot')).toBe(true)
+    expect(tree.props('plan').flatRows.map(row => [row.name, row.depth])).toEqual([['目录', 0], ['文件.txt', 1]])
+    expect(wrapper.find('.upload-file-scroll').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
 })
