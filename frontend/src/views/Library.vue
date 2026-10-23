@@ -1,6 +1,11 @@
 <template>
 
-  <div class="library library-page-loading-shell">
+  <div class="library library-page-loading-shell"
+    @dragenter.capture="onExternalUploadOver"
+    @dragover.capture="onExternalUploadOver"
+    @dragleave="onExternalUploadLeave"
+    @drop.capture="onExternalUploadDrop">
+    <div v-if="uploadDropHint" class="library-external-upload-hint" role="status">{{ uploadDropHint }}</div>
 
     <AppPageHeader
 
@@ -727,6 +732,7 @@
         <LibraryMobileCard
           v-for="row in files"
           :key="libraryRowKey(row)"
+          :data-browser-upload-row="libraryRowKey(row)"
           :row="row"
           :icon-component="getLibraryRowIconComponent(row)"
           :icon-class="getLibraryRowIconClass(row)"
@@ -1934,7 +1940,45 @@
 
 <script setup>
 
+import { useLibraryExternalUpload } from '../composables/useLibraryExternalUpload'
+
+const { uploadDropHint, onExternalUploadOver, onExternalUploadLeave, onExternalUploadDrop } = useLibraryExternalUpload((element) => {
+  if (!(element instanceof Element)) return null
+  const breadcrumb = element.closest('[data-library-path-drop-target]')
+  const rowElement = element.closest('.lib-file-table-row, [data-browser-upload-row]')
+  let target
+  if (rowElement) {
+    const row = rowElement.hasAttribute('data-browser-upload-row')
+      ? files.value.find(item => String(libraryRowKey(item)) === rowElement.getAttribute('data-browser-upload-row'))
+      : getLibraryRowFromElement(rowElement)
+    if (!row?.is_directory) return { reason: '文件行不能接收上传，请拖到文件夹或列表空白处' }
+    target = resolveDragMoveRowTarget(row)
+  } else if (breadcrumb) {
+    target = resolveDragMoveVirtualTarget(breadcrumb.getAttribute('data-library-path-drop-target') || '', files.value)
+  } else {
+    if (!element.closest('.lib-file-table, .lib-mobile-list, .lib-table-marquee-host, .lib-file-table-wrap, .library-file-list')) return { reason: '请拖到目录、列表空白处或面包屑' }
+    target = resolveDragMoveVirtualTarget(currentPath.value, files.value)
+  }
+  const library = libraries.value.find(item => String(item.id) === String(target?.libraryId))
+  if (!library || library.writable === false || library.enabled === false || !target?.libraryId || String(target.path).startsWith('circle:')) {
+    return { reason: '该位置不可写或不是唯一实际目录，请选择实际目录' }
+  }
+  return { ...target, libraryName: library.name, element: rowElement || breadcrumb }
+})
+
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+
+function handleBrowserUploadFinished(event) {
+  if (!libraryViewActive || String(event.detail?.libraryId) !== String(selectedLibraryId.value)) return
+  // 一批完成仅刷新受影响的当前目录，沿用目录请求合并。
+  const target = String(event.detail.path || '').replaceAll('\\', '/').replace(/\/$/, '')
+  const current = String(currentPath.value || '').replaceAll('\\', '/').replace(/\/$/, '')
+  if (!current || target === current || target.startsWith(current + '/') || current.startsWith(target + '/')) {
+    void refreshLibrary({ silent: true }).catch(error => console.warn('上传后目录刷新失败', error))
+  }
+}
+onMounted(() => window.addEventListener('library-browser-upload-finished', handleBrowserUploadFinished))
+onBeforeUnmount(() => window.removeEventListener('library-browser-upload-finished', handleBrowserUploadFinished))
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import { getCoreRowModel, useVueTable } from '@tanstack/vue-table'
 

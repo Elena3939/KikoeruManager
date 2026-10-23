@@ -52,6 +52,7 @@
           </header>
 
           <main class="v1-body v1-scrollbar">
+            <slot name="transfer-content">
             <article
               v-for="task in filteredTasks"
               :key="task.id"
@@ -286,6 +287,7 @@
             </article>
 
             <AppEmptyState v-if="!filteredTasks.length" :description="emptyTitleText" size="lg" />
+            </slot>
           </main>
 
           <footer class="v1-footer">

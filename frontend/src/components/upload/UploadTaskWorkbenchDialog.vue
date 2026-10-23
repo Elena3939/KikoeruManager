@@ -21,7 +21,9 @@
     @pause-task="emit('pause-task', $event)"
     @resume-task="emit('resume-task', $event)"
     @cancel-task="emit('cancel-task', $event)"
-  />
+  >
+    <template v-if="$slots['transfer-content']" #transfer-content><slot name="transfer-content" /></template>
+  </DownloadTaskWorkbenchDialog>
 </template>
 
 <script setup>

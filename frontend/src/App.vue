@@ -195,6 +195,7 @@
       </el-main>
     </el-container>
     <BackgroundWorkbenchHost v-if="!isGateRoute" />
+    <BrowserUploadWorkbenchHost v-if="!isGateRoute" />
     <SystemPromptHost />
   </el-container>
 </template>
@@ -223,6 +224,7 @@ import {
 } from 'lucide-vue-next'
 import { useWatcherStore } from './stores'
 import BackgroundWorkbenchHost from './components/workbench/BackgroundWorkbenchHost.vue'
+import BrowserUploadWorkbenchHost from './components/upload/BrowserUploadWorkbenchHost.vue'
 import SystemPromptHost from './components/system/SystemPromptHost.vue'
 import NotificationBell from './components/system/NotificationBell.vue'
 import AnimatedThemeToggler from './components/magicui/AnimatedThemeToggler.vue'
