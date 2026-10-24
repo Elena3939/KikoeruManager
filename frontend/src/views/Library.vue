@@ -934,6 +934,7 @@
                       v-model="baiduUploadForm.mode"
                       :options="baiduUploadModeOptions"
                       class="baidu-upload-dd"
+                      menu-class="baidu-upload-settings-menu"
                     />
                   </div>
 
@@ -946,6 +947,7 @@
                       v-model="baiduUploadForm.conflictPolicy"
                       :options="availableBaiduUploadPolicyOptions"
                       class="baidu-upload-dd"
+                      menu-class="baidu-upload-settings-menu"
                     />
                   </div>
 
@@ -1000,6 +1002,7 @@
                         v-model="baiduUploadForm.archiveFormat"
                         :options="baiduUploadArchiveFormatOptions"
                         class="baidu-upload-dd"
+                        menu-class="baidu-upload-settings-menu"
                       />
                     </div>
 
@@ -31611,6 +31614,41 @@ function statsStatusTextDisplay (stats) {
 .baidu-upload-modal .baidu-upload-dd :deep(.app-dd-trigger) {
   min-height: 36px;
   justify-content: space-between;
+  border-radius: 4px !important;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.baidu-upload-modal .baidu-upload-dd :deep(.app-dd-trigger-anchor) {
+  display: block;
+  width: 100%;
+}
+
+.baidu-upload-modal .baidu-upload-dd :deep(.app-dd-trigger:hover:not(:disabled)) {
+  transform: translateY(-2px) scale(1.02);
+}
+
+.baidu-upload-modal .baidu-upload-dd :deep(.app-dd-trigger:active:not(:disabled)) {
+  transform: scale(0.96);
+}
+
+.baidu-upload-modal .baidu-upload-input,
+.baidu-upload-modal .baidu-upload-stepper,
+.baidu-upload-modal .baidu-upload-password-control :deep(.animated-password-input__field) {
+  border-radius: 4px !important;
+}
+
+:global(.app-dd-menu.baidu-upload-settings-menu) {
+  border-radius: 4px;
+}
+
+:global(.baidu-upload-settings-menu .app-dd-item) {
+  border-radius: 2px;
+}
+
+:global(.baidu-upload-settings-menu .app-dd-item:focus),
+:global(.baidu-upload-settings-menu .app-dd-item:focus-visible) {
+  outline: none;
+  box-shadow: none;
 }
 
 .baidu-upload-modal .baidu-upload-dd :deep(.app-dd-trigger:hover),
