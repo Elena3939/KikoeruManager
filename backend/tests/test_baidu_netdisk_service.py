@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import time
 from urllib.parse import parse_qs, urlparse
@@ -380,6 +381,40 @@ def test_baidu_pcsgo_zero_exit_failure_output_is_error():
 
     assert service._pcsgo_command_failure_message("分享链接转存到网盘失败: 获取分享项元数据错误") == "分享链接转存到网盘失败: 获取分享项元数据错误"
     assert service._pcsgo_command_failure_message("WARNING: config init error: ignored\n百度帐号登录成功: tester") == ""
+
+
+def test_baidu_pcsgo_usage_error_is_not_replaced_by_help_text():
+    service = BaiduNetdiskService()
+    notice = "谨慎修改 appid, user_agent, pcs_ua, pan_ua 的值, 否则访问网盘服务器时, 可能会出现错误"
+    error = "Incorrect Usage: flag provided but not defined: -u_policy"
+
+    assert service._pcsgo_command_failure_message(notice) == ""
+    assert service._pcsgo_command_failure_message(f"{error}\n\n{notice}") == error
+    assert service._pcsgo_command_failure_message(f"{notice}\n上传失败: 网络错误") == "上传失败: 网络错误"
+    assert service._pcsgo_command_failure_message("未找到命令: invalid") == "未找到命令: invalid"
+
+
+@pytest.mark.parametrize("policy", ["skip", "overwrite", "rsync"])
+def test_baidu_upload_config_commands_match_real_pcsgo_cli(monkeypatch, tmp_path, policy):
+    service = BaiduNetdiskService()
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: DummyConfig())
+    binary = service._repo_root() / "tools" / "baidupcs-go" / "BaiduPCS-Go.exe"
+    if sys.platform != "win32" or not binary.is_file():
+        pytest.skip("真实 CLI 回归需要仓库内的 Windows BaiduPCS-Go")
+    env = {**os.environ, "BAIDUPCS_GO_CONFIG_DIR": str(tmp_path / "config")}
+    savedir = str(tmp_path / "upload")
+    for command in service._baidu_pcs_go_upload_config_commands(str(binary), savedir, policy):
+        result = subprocess.run(command, env=env, capture_output=True, timeout=15)
+        output = service._decode_pcsgo_output(result.stdout + result.stderr)
+        assert result.returncode == 0, output
+        assert service._pcsgo_command_failure_message(output) == "", output
+    data = json.loads((tmp_path / "config" / "pcs_config.json").read_text(encoding="utf-8"))
+    # CLI 选项名为 upload_policy，但工具持久化的 JSON 字段仍是 u_policy。
+    assert data["u_policy"] == policy
+    assert data["max_upload_parallel"] == 4
+    assert data["max_upload_load"] == 4
+    assert data["max_upload_rate"] == 0
+    assert data["savedir"] == savedir
 
 
 def test_baidu_share_sekey_decodes_encoded_randsk_once():
@@ -1574,6 +1609,7 @@ def test_baidu_pcsgo_cookie_config_is_written_without_login(monkeypatch, tmp_pat
     assert data["enable_https"] is True
     assert data["no_check"] is True
     assert data["ignore_illegal"] is True
+    assert data["u_policy"] == "skip"
 
 
 @pytest.mark.asyncio

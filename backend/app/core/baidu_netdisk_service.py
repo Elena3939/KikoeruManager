@@ -4656,7 +4656,7 @@ class BaiduNetdiskService:
             [pcsgo_path, "config", "set", "-max_upload_parallel", str(max_parallel)],
             [pcsgo_path, "config", "set", "-max_upload_load", str(max_upload_load)],
             [pcsgo_path, "config", "set", "-max_upload_rate", "0"],
-            [pcsgo_path, "config", "set", "-u_policy", conflict_policy],
+            [pcsgo_path, "config", "set", "-upload_policy", conflict_policy],
         ]
 
     def _baidu_pcs_go_download_args(self, pcsgo_path: str, remote_path: str, savedir: str) -> List[str]:
@@ -5507,6 +5507,11 @@ class BaiduNetdiskService:
                 continue
             lowered = line.lower()
             if lowered.startswith("warning:"):
+                continue
+            # CLI 参数错误也会以退出码 0 结束，后面附带的帮助文本不是失败原因。
+            if lowered.startswith(("incorrect usage:", "flag provided but not defined:", "未找到命令:")):
+                return self._sanitize_error(line)
+            if line.startswith("谨慎修改 appid, user_agent, pcs_ua, pan_ua 的值"):
                 continue
             if any(marker in line for marker in ("失败", "错误", "异常")) or " error" in lowered or lowered.startswith("error"):
                 return self._sanitize_error(line)
