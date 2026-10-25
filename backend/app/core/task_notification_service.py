@@ -465,6 +465,7 @@ async def _check_and_write(task) -> None:
 
 
 def _write_sync(event_key: str, event_type: str, task, group_key: str, group_type: str, group_run_id: str) -> None:
+    from sqlalchemy.dialects.postgresql import insert
     from ..models.database import SessionLocal, NotificationInboxItem, NotificationOutbox
     from ..config.settings import get_config
     db = SessionLocal()
@@ -487,7 +488,7 @@ def _write_sync(event_key: str, event_type: str, task, group_key: str, group_typ
         except Exception:
             pass
 
-        inbox = NotificationInboxItem(
+        inbox_values = dict(
             id=item_id,
             event_key=event_key,
             event_type=event_type,
@@ -515,7 +516,15 @@ def _write_sync(event_key: str, event_type: str, task, group_key: str, group_typ
             created_at=now,
             updated_at=now,
         )
-        db.add(inbox)
+        # 同一事件只允许一个事务生成收件箱、邮件和实时通知。
+        inserted_id = db.execute(
+            insert(NotificationInboxItem).values(**inbox_values)
+            .on_conflict_do_nothing(index_elements=["event_key"])
+            .returning(NotificationInboxItem.id)
+        ).scalar_one_or_none()
+        if inserted_id is None:
+            return
+        inbox = db.get(NotificationInboxItem, inserted_id)
 
         cfg = get_config().notification_email
         # domain 过滤：enabled_domains 非空时仅发清单内的 domain
