@@ -694,7 +694,9 @@ class TaskEngine:
                     versions = self._task_type_versions = {}
                 versions[task.type] = versions.get(task.type, 0) + 1
             self._write_task_runtime_to_redis(task, reason=reason)
-            self.enqueue_task_center_item_snapshot(task)
+            # 高频传输摘要只进 Redis / SSE；状态变化仍走任务中心持久化。
+            if reason != "upload_runtime":
+                self.enqueue_task_center_item_snapshot(task)
             broadcast_task_center_changed(task, reason=reason)
         except Exception:
             logger.debug("任务中心事件广播失败: task_id=%s", getattr(task, "id", ""), exc_info=True)
@@ -7518,6 +7520,14 @@ class TaskEngine:
         uploaded_rows = []
         runtime = dict(task.task_metadata.get("upload_runtime") or {})
 
+        from .upload_task_runtime import UploadTaskRuntime
+        upload_runtime = UploadTaskRuntime(total_bytes, total_files)
+        last_runtime_event_at = 0.0
+        upload_rows_by_source = {
+            (os.path.abspath(str(row["source_dir"])), str(row["relative_path"])): row
+            for row in upload_files
+        }
+
         def normalize_relative_target_dir(value: str) -> str:
             text = str(value or "").replace("\\", "/").strip("/")
             if not text:
@@ -7539,36 +7549,40 @@ class TaskEngine:
             return text
 
         def progress_callback(snapshot: dict):
-            runtime.update(snapshot or {})
-            runtime["backend_speed_bytes_per_sec"] = int(runtime.get("speed_bytes_per_sec") or 0)
-            runtime["speed_bytes_per_sec"] = 0
+            nonlocal last_runtime_event_at
+            runtime.update(upload_runtime.update(snapshot or {}))
             task.task_metadata["upload_runtime"] = dict(runtime)
             phase = str(runtime.get("phase") or "").strip()
             current_file_name = str(runtime.get("current_file_name") or "").strip()
             current_relative_path = str(runtime.get("current_relative_path") or "").strip()
             if phase == "preparing":
                 label = current_relative_path or current_file_name or "准备远程目录"
-                task.current_step = f"准备上传: {label}"
+                step = f"准备上传: {label}"
+            elif phase == "verifying":
+                step = f"正在确认远端文件: {current_file_name}"
             elif current_file_name:
-                task.current_step = f"上传中: {current_file_name}"
+                step = f"上传中: {current_file_name}"
+            else:
+                step = task.current_step
+            with task._set_state_silent():
+                task.current_step = step
+                task.progress = min(99, int(runtime["transferred_bytes"] * 100 / max(total_bytes, 1)))
             current_relative_path = str(runtime.get("current_relative_path") or "").strip()
             current_source_dir = str(runtime.get("current_source_dir") or "").strip()
             total_bytes_current = max(0, int(runtime.get("current_file_total_bytes") or 0))
             uploaded_bytes_current = max(0, int(runtime.get("current_file_uploaded_bytes") or 0))
             if current_relative_path:
-                rows = list(task.task_metadata.get("upload_files") or [])
-                for row in rows:
-                    if str(row.get("relative_path") or "").strip() != current_relative_path:
-                        continue
-                    row_source_dir = str(row.get("source_dir") or "").strip()
-                    if current_source_dir and row_source_dir and os.path.abspath(row_source_dir) != os.path.abspath(current_source_dir):
-                        continue
+                row = upload_rows_by_source.get((os.path.abspath(current_source_dir), current_relative_path))
+                if row is not None:
                     row["status"] = "uploading" if phase != "preparing" else "preparing"
                     row["uploaded_bytes"] = uploaded_bytes_current
                     if total_bytes_current > 0:
-                        row["progress"] = max(0, min(100, int((uploaded_bytes_current / total_bytes_current) * 100)))
-                    break
-                task.task_metadata["upload_files"] = rows
+                        row["progress"] = max(0, min(99, int((uploaded_bytes_current / total_bytes_current) * 100)))
+            # 同一文件内文案和整数百分比不变时，也必须发送新的速度和字节数。
+            now = time.monotonic()
+            if now - last_runtime_event_at >= 0.5:
+                last_runtime_event_at = now
+                task.touch_metadata("upload_runtime")
 
         def file_completed_callback(file_row: dict):
             uploaded_rows.append(dict(file_row or {}))
@@ -7657,7 +7671,7 @@ class TaskEngine:
             source_dir = str(entry.get("source_path") or "").strip()
             relative_target_dir = normalize_relative_target_dir(str(entry.get("relative_target_dir") or "").strip() or build_relative_target_dir() or "")
             source_name = os.path.basename(os.path.abspath(source_dir))
-            step_progress = max(1, min(95, int(((index - 1) / max(total_dirs, 1)) * 100)))
+            step_progress = min(99, int(runtime.get("transferred_bytes", 0) * 100 / max(total_bytes, 1)))
             task.update_progress(step_progress, f"开始上传 {index}/{total_dirs}: {source_name}")
             if relative_target_dir:
                 task.task_metadata["target_relative_dir"] = relative_target_dir.replace("\\", "/")
@@ -7707,7 +7721,7 @@ class TaskEngine:
                 )
             append_progress_log(
                 f"目录上传完成: {source_name}",
-                min(99, int((index / max(total_dirs, 1)) * 100)),
+                task.progress,
                 "success",
             )
 
@@ -7718,6 +7732,8 @@ class TaskEngine:
             "transferred_bytes": total_bytes,
             "total_bytes": total_bytes,
             "speed_bytes_per_sec": 0,
+            "backend_speed_bytes_per_sec": 0,
+            "eta_seconds": 0,
         }
         task.task_metadata["upload_result"] = {
             "uploaded": uploaded,

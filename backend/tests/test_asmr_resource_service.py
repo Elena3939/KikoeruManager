@@ -596,6 +596,79 @@ async def test_single_file_retry_serializes_same_file_but_allows_other_files(mon
     assert max_entered == 2
 
 
+@pytest.fixture
+def download_runtime_clock(monkeypatch):
+    import app.core.asmr_resource_service as runtime_module
+
+    class Clock(datetime):
+        current = datetime(2026, 10, 24)
+
+        @classmethod
+        def now(cls):
+            return cls.current
+
+    monkeypatch.setattr(runtime_module, "datetime", Clock)
+    task = Task(TaskType.ASMR_SYNC_DOWNLOAD, "RJ01393257")
+    task.task_metadata["download_runtime"] = {"expected_total_bytes": 1000}
+    state = {}
+    service = create_service()
+
+    def report(seconds, downloaded, *, file_key="01.wav"):
+        Clock.current = datetime(2026, 10, 24) + timedelta(seconds=seconds)
+        service._update_download_runtime(
+            task, state, file_key=file_key, file_name=file_key, relative_path=file_key,
+            downloaded_bytes=downloaded, total_bytes=500, index=1, total_files=2,
+            stage="download",
+        )
+        return task.task_metadata["download_runtime"]
+
+    return report
+
+
+def test_download_runtime_frequent_callbacks_accumulate_speed_window(download_runtime_clock):
+    report = download_runtime_clock
+    report(0, 0)
+    for index in range(1, 4):
+        runtime = report(index / 10, index * 50)
+        assert runtime["speed_bytes_per_sec"] == 0
+        assert runtime["speed_sample_transferred_bytes"] == 0
+    runtime = report(0.4, 200)
+    assert runtime["speed_bytes_per_sec"] == 500
+    assert runtime["eta_seconds"] == 2
+    assert runtime["speed_sample_transferred_bytes"] == 200
+    # 下一窗口也不被中间的回调重置。
+    report(0.5, 250)
+    runtime = report(0.8, 400)
+    assert runtime["speed_bytes_per_sec"] == 500
+    assert runtime["eta_seconds"] == 2
+
+
+def test_download_runtime_sums_concurrent_bytes_without_summing_file_speeds(download_runtime_clock):
+    report = download_runtime_clock
+    report(0, 0)
+    report(0.1, 100)
+    report(0.2, 100, file_key="02.wav")
+    report(0.3, 150)
+    runtime = report(0.4, 250, file_key="02.wav")
+    assert runtime["transferred_bytes"] == 400
+    assert runtime["speed_bytes_per_sec"] == 1000
+    assert runtime["eta_seconds"] == 1
+
+
+def test_download_runtime_stall_clears_speed_and_resumes_sampling(download_runtime_clock):
+    report = download_runtime_clock
+    report(0, 0)
+    report(0.4, 200)
+    for seconds in (0.8, 1.2, 1.6):
+        assert report(seconds, 200)["speed_bytes_per_sec"] == 500
+    runtime = report(2, 200)
+    assert runtime["speed_bytes_per_sec"] == 0
+    assert runtime["eta_seconds"] == 0
+    runtime = report(2.4, 400)
+    assert runtime["speed_bytes_per_sec"] == 500
+    assert runtime["eta_seconds"] == 2
+
+
 def test_download_runtime_keeps_full_selected_resource_total():
     service = create_service()
 

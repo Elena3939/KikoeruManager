@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import uuid
 from pathlib import Path
 
 CHUNK_SIZE = 8 * 1024 * 1024
@@ -107,22 +108,52 @@ def recover_checkpoint(path):
 
 
 def install_local(root, target, relative_path, source, expected_hash, decision, check_active, progress):
+    from .staged_file_move import _check_scope
+    original_check = check_active
+
+    def check_active():
+        _check_scope()
+        original_check()
+
+    check_active()
     destination = local_target(root, str(Path(target) / relative_name(relative_path)))
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination = local_target(root, str(destination))
-    pending = destination.parent / ('.kikoerumanager-upload-' + source.stem + '.part')
-    try:
+    if source.parent == destination.parent:
         h = hashlib.sha256()
         copied = 0
-        with source.open('rb') as input_file, pending.open('xb') as output:
+        with source.open('rb') as input_file:
             for chunk in iter(lambda: input_file.read(1024 * 1024), b''):
                 check_active()
-                output.write(chunk)
                 h.update(chunk)
                 copied += len(chunk)
                 progress(copied)
-            output.flush()
-            os.fsync(output.fileno())
+        if h.hexdigest() != expected_hash:
+            raise ValueError('写入库存校验失败')
+        check_active()
+        if decision != 'replace' and destination.exists():
+            raise FileExistsError('目标文件已存在')
+        from .fs_utils import publish_path
+        publish_path(source, destination, overwrite=decision == 'replace')
+        return str(destination)
+    pending = destination.parent / ('.kikoerumanager-upload-' + uuid.uuid4().hex + '.part')
+    owned = None
+
+    def created(value):
+        nonlocal owned
+        owned = value
+
+    try:
+        h = hashlib.sha256()
+        copied = 0
+        from .fs_utils import copy_path_exclusive_sync
+        copy_path_exclusive_sync(source, pending, checkpoint=check_active, on_created=created)
+        with pending.open('rb') as input_file:
+            for chunk in iter(lambda: input_file.read(1024 * 1024), b''):
+                check_active()
+                h.update(chunk)
+                copied += len(chunk)
+                progress(copied)
         if h.hexdigest() != expected_hash:
             raise ValueError('写入库存校验失败')
         check_active()
@@ -137,4 +168,8 @@ def install_local(root, target, relative_path, source, expected_hash, decision, 
             pending.unlink()
         return str(destination)
     finally:
-        pending.unlink(missing_ok=True)
+        if owned is not None and os.path.lexists(pending):
+            from .file_move_protocol import identity
+            actual = identity(pending)
+            if all(actual[key] == owned[key] for key in ('device', 'inode', 'mode')):
+                pending.unlink()

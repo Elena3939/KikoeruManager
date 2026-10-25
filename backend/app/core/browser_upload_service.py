@@ -138,6 +138,17 @@ class BrowserUploadService:
             await self.save(state, state['files'].values())
 
     def part(self, sid, fid):
+        state = self.sessions.get(sid)
+        file = state and state.get('files', {}).get(fid)
+        if state and file:
+            library = self.library(state['library_id'])
+            if library.type != 'local':
+                return self.root / sid / (fid + '.part')
+            root = library.browse_root_path or library.root_path
+            target = local_target(root, str(Path(state['target_path']) / file['relative_path']))
+            if not target.parent.exists() or target.parent.is_dir():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                return target.parent / ('.kikoerumanager-upload-' + fid + '.part')
         return self.root / sid / (fid + '.part')
 
     def journal(self, state, file):
@@ -534,6 +545,17 @@ class BrowserUploadService:
         moved_old = False
         committed = False
         source = self.part(state['id'], file['id'])
+        if not source.exists():
+            fallback = self.root / state['id'] / (file['id'] + '.part')
+            if fallback.exists():
+                source = fallback
+        if not source.exists() and state.get('target_type') == 'local':
+            local_library = self.library(state['library_id'])
+            local_root = local_library.browse_root_path or local_library.root_path
+            candidate = local_target(local_root, str(Path(state['target_path']) / file['relative_path']))
+            adjacent = candidate.parent / ('.kikoerumanager-upload-' + file['id'] + '.part')
+            if adjacent.exists():
+                source = adjacent
         def progress(done, total):
             self.check_writing(state)
             file['written'] = done
@@ -613,7 +635,8 @@ class BrowserUploadService:
                     elif library.type == 'local':
                         final_target = str(Path(state['target_path']) / relative_path)
                         await asyncio.to_thread(atomic_json, self.journal(state, file), dict(target=final_target))
-                        final = await asyncio.to_thread(install_local, library.browse_root_path or library.root_path,
+                        from .fs_utils import run_file_operation_async
+                        final = await run_file_operation_async(install_local, library.browse_root_path or library.root_path,
                             state['target_path'], relative_path, self.part(sid, fid), file['sha256'], decision,
                             lambda: self.check_writing(state), lambda done: file.update(written=done))
                     else:

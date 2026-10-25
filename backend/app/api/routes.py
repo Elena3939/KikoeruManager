@@ -17986,10 +17986,10 @@ def _serialize_http_download_task(task, *, compact: bool = False, runtime: Optio
     }
 
 
-def _serialize_local_upload_task_status(task) -> dict:
+def _serialize_local_upload_task_status(task, *, compact: bool = False) -> dict:
     metadata = _task_metadata_with_redis_runtime(task)
     status_value, progress, current_step = _task_runtime_response_values(task)
-    return {
+    result = {
         "id": task.id,
         "status": status_value,
         "display_status": (
@@ -18037,6 +18037,28 @@ def _serialize_local_upload_task_status(task) -> dict:
             "source_label": metadata.get("source_label", ""),
         },
     }
+    if compact:
+        # 后台小窗只需要状态、进度、速度和目标信息，避免重复传输完整文件树。
+        result["upload_files"] = []
+        result["uploaded_files"] = []
+        result["failed_files"] = []
+        result["verification_failures"] = []
+        result["source_lock_failures"] = []
+        result["progress_log"] = []
+        result["task_metadata"] = {
+            key: result["task_metadata"].get(key)
+            for key in (
+                "source_base_path",
+                "selected_dir_count",
+                "target_path",
+                "final_output_path",
+                "failure_reason",
+                "local_cleanup_status",
+                "local_cleanup_error",
+                "source_label",
+            )
+        }
+    return result
 
 
 _TRANSFER_STATUS_PREVIEW_LIMIT = 120
@@ -21453,7 +21475,7 @@ async def local_upload_start(request: LocalUploadStartRequest):
 
 
 @app.get("/api/local-upload/status")
-async def local_upload_status(task_ids: str = "", include_hidden: bool = True):
+async def local_upload_status(task_ids: str = "", include_hidden: bool = True, compact: bool = False):
     from ..core.task_engine import TaskType, get_task_engine
 
     try:
@@ -21478,7 +21500,7 @@ async def local_upload_status(task_ids: str = "", include_hidden: bool = True):
             "pending": len([t for t in upload_tasks if t.status.value == "pending"]),
             "completed": len([t for t in upload_tasks if t.status.value == "completed"]),
             "failed": len([t for t in upload_tasks if t.status.value == "failed"]),
-            "tasks": [_serialize_local_upload_task_status(t) for t in upload_tasks],
+            "tasks": [_serialize_local_upload_task_status(t, compact=compact) for t in upload_tasks],
         }
     except Exception as exc:
         logger.error("获取本地上传任务状态失败: %s", sanitize_text_for_log(exc))

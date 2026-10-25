@@ -8386,6 +8386,7 @@ class LibraryManager:
         last_speed_sample_bytes = 0
         stable_speed_bytes_per_sec = 0
         speed_sample_interval = 0.75
+        last_progress_emit_at = None
         # FileStation Upload 对同一目录并发写入很容易在公网/反代链路下返回 408。
         # 这里保持单文件流式上传，避免前端等待最终补配时发生超时回滚竞态。
         completed_files = 0
@@ -8393,12 +8394,16 @@ class LibraryManager:
         in_flight_bytes: dict[str, int] = {row["local_path"]: 0 for row in file_rows}
         _upload_semaphore = asyncio.Semaphore(1)
 
-        def emit_progress(current_row: dict, uploaded_bytes: int):
-            nonlocal last_speed_sample_at, last_speed_sample_bytes, stable_speed_bytes_per_sec
+        def emit_progress(current_row: dict, uploaded_bytes: int, *, force: bool = False):
+            nonlocal last_speed_sample_at, last_speed_sample_bytes, stable_speed_bytes_per_sec, last_progress_emit_at
             if not progress_callback:
                 return
-            transferred_bytes = min(total_bytes, completed_bytes + sum(in_flight_bytes.values()))
             now = time.monotonic()
+            if not force and last_progress_emit_at is not None and now - last_progress_emit_at < speed_sample_interval:
+                return
+            last_progress_emit_at = now
+            # 单文件并发度为 1，无需每个数据块遍历整个文件列表。
+            transferred_bytes = min(total_bytes, completed_bytes + in_flight_bytes.get(current_row["local_path"], 0))
             elapsed = max(0.001, now - started_at)
             delta_time = now - last_speed_sample_at
             delta_bytes = max(0, transferred_bytes - last_speed_sample_bytes)
@@ -8415,8 +8420,9 @@ class LibraryManager:
                 last_speed_sample_at = now
                 last_speed_sample_bytes = transferred_bytes
             remaining_bytes = max(0, total_bytes - transferred_bytes)
+            verifying = uploaded_bytes >= int(current_row.get("size") or 0)
             progress_callback({
-                "phase": "uploading",
+                "phase": "verifying" if verifying else "uploading",
                 "current_file_name": current_row.get("name") or "",
                 "current_relative_path": current_row.get("relative_path") or "",
                 "current_source_dir": current_row.get("source_dir") or "",
@@ -8426,7 +8432,7 @@ class LibraryManager:
                 "total_files": len(file_rows),
                 "transferred_bytes": transferred_bytes,
                 "total_bytes": total_bytes,
-                "speed_bytes_per_sec": stable_speed_bytes_per_sec,
+                "speed_bytes_per_sec": 0 if verifying else stable_speed_bytes_per_sec,
                 "average_speed_bytes_per_sec": int(transferred_bytes / elapsed) if transferred_bytes > 0 else 0,
                 "eta_seconds": int(remaining_bytes / stable_speed_bytes_per_sec) if stable_speed_bytes_per_sec > 0 and remaining_bytes > 0 else 0,
                 "active_file_count": 1 if remaining_bytes > 0 else 0,
@@ -8440,11 +8446,23 @@ class LibraryManager:
                     in_flight_bytes[_key] = uploaded
                     emit_progress(_row, uploaded)
 
-                await client.upload_file(
-                    row["remote_dir"],
-                    row["local_path"],
-                    progress_callback=on_file_progress,
-                )
+                async def report_runtime():
+                    # 网络停滞或等待远端响应时也更新速度，防止沿用最后一次速率。
+                    while True:
+                        await asyncio.sleep(speed_sample_interval)
+                        emit_progress(row, in_flight_bytes[key])
+
+                heartbeat = asyncio.create_task(report_runtime())
+                try:
+                    await client.upload_file(
+                        row["remote_dir"],
+                        row["local_path"],
+                        progress_callback=on_file_progress,
+                    )
+                finally:
+                    heartbeat.cancel()
+                    await asyncio.gather(heartbeat, return_exceptions=True)
+                emit_progress(row, int(row.get("size") or 0), force=True)
                 remote_file_path = self._normalize_remote_path(
                     str(PurePosixPath(row["remote_dir"]) / str(row.get("name") or os.path.basename(row["local_path"])))
                 )
@@ -8458,7 +8476,7 @@ class LibraryManager:
                 in_flight_bytes[key] = 0
                 completed_files += 1
                 completed_bytes += int(row.get("size") or 0)
-                emit_progress(row, int(row.get("size") or 0))
+                emit_progress(row, int(row.get("size") or 0), force=True)
                 if file_completed_callback:
                     file_completed_callback({
                         "name": row.get("name") or "",

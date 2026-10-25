@@ -90,6 +90,31 @@ def build_task_center_event(task, reason: str = "progress") -> dict[str, Any]:
         "current_step": str(getattr(task, "current_step", "") or ""),
         "updated_at": now,
     }
+    if event["domain"] == "upload":
+        runtime = metadata.get("upload_runtime")
+        if isinstance(runtime, dict):
+            # 上传小窗只需要运行态摘要；完整文件明细仍通过状态接口按需读取。
+            event["upload_runtime"] = {
+                key: runtime.get(key, 0 if key.endswith("bytes") or key.endswith("seconds") else "")
+                for key in (
+                    "backend_speed_bytes_per_sec",
+                    "speed_bytes_per_sec",
+                    "phase",
+                    "snapshot_at_ms",
+                    "current_source_dir",
+                    "completed_files",
+                    "total_files",
+                    "active_file_count",
+                    "transferred_bytes",
+                    "total_bytes",
+                    "current_file_name",
+                    "current_relative_path",
+                    "current_file_total_bytes",
+                    "current_file_uploaded_bytes",
+                    "eta_seconds",
+                )
+                if key in runtime
+            }
     bonus_probe_meta = metadata.get("bonus_probe_meta")
     if isinstance(bonus_probe_meta, dict):
         event["bonus_probe_meta"] = {

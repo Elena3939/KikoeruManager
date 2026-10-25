@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import logging
+import math
 import os
 import re
 import shutil
@@ -17,7 +18,7 @@ from sqlalchemy import select
 
 from ..config.settings import get_config
 from ..models.database import ASMRDownloadSession, ASMRResourceRecord, ASMRWork, SessionLocal
-from .fs_utils import move_path_efficient
+from .fs_utils import move_path_efficient, move_path_sync
 from .resource_budget_service import get_resource_budget_service
 from .ttl_cache import TTLCache
 
@@ -527,17 +528,19 @@ class ASMRResourceService:
         # 总速度必须按整个任务的字节增量采样。逐文件平均速度会把已启动但未实际并发传输的文件全部相加，
         # 在增强下载中会明显高于真实网络吞吐（例如 30 个文件的平均速度被累加）。
         previous_aggregate_at = str(runtime.get("speed_sample_at") or "").strip()
-        previous_aggregate_bytes = int(runtime.get("speed_sample_transferred_bytes") or transferred_bytes)
+        previous_aggregate_bytes = int(runtime.get("speed_sample_transferred_bytes", transferred_bytes))
         try:
             aggregate_sample_at = datetime.fromisoformat(previous_aggregate_at) if previous_aggregate_at else None
         except Exception:
             aggregate_sample_at = None
         aggregate_sample_speed = 0
+        advance_speed_sample = aggregate_sample_at is None
         if aggregate_sample_at is not None:
             sample_elapsed = max(0.001, (now - aggregate_sample_at).total_seconds())
             sample_delta = max(0, transferred_bytes - previous_aggregate_bytes)
             if sample_elapsed >= 0.35 and sample_delta > 0:
                 aggregate_sample_speed = int(sample_delta / sample_elapsed)
+                advance_speed_sample = True
         if aggregate_sample_speed > 0:
             previous_aggregate_speed = int(runtime.get("speed_bytes_per_sec") or 0)
             aggregate_speed = (
@@ -552,9 +555,10 @@ class ASMRResourceService:
                 sample_age = 0
             if sample_age >= 1.5:
                 aggregate_speed = 0
+                advance_speed_sample = True
             else:
                 aggregate_speed = int(runtime.get("speed_bytes_per_sec") or 0)
-        aggregate_eta = int(remaining_bytes / aggregate_speed) if aggregate_speed > 0 and remaining_bytes > 0 else 0
+        aggregate_eta = math.ceil(remaining_bytes / aggregate_speed) if aggregate_speed > 0 and remaining_bytes > 0 else 0
 
         aggregate_progress = int(transferred_bytes / aggregate_total * 100) if aggregate_total else 0
         if has_failed_file:
@@ -578,8 +582,9 @@ class ASMRResourceService:
             "progress": aggregate_progress,
             "speed_bytes_per_sec": aggregate_speed,
             "eta_seconds": aggregate_eta,
-            "speed_sample_at": now.isoformat(),
-            "speed_sample_transferred_bytes": transferred_bytes,
+            # 高频回调只累积字节；窗口满足条件后再移动起点，否则总速度永远无法产生。
+            "speed_sample_at": now.isoformat() if advance_speed_sample else previous_aggregate_at,
+            "speed_sample_transferred_bytes": transferred_bytes if advance_speed_sample else previous_aggregate_bytes,
         }
         if stage in {"download", "download_reused"}:
             # 下载阶段的任务进度必须来自真实字节量，否则日志会一直停在准备阶段。
@@ -2617,7 +2622,7 @@ class ASMRResourceService:
         while target_path.exists() and target_path.resolve() != current_path.resolve():
             target_path = current_path.parent / f"{renamed_name}({counter})"
             counter += 1
-        await asyncio.to_thread(shutil.move, str(current_path), str(target_path))
+        await move_path_efficient(str(current_path), str(target_path))
         return str(target_path)
 
     async def _finalize_circle_completion_download(
