@@ -1983,3 +1983,96 @@ button:hover .page-head-btn-icon-slot:not(.animate-spin) {
   transform: scale(1) rotate(0deg);
   pointer-events: auto;
 }
+/* 后台任务小窗：统一卡片，避免继承旧版环形进度布局。 */
+.floating-card.task-toast {
+  --toast-accent: #2478f5;
+  --toast-text: #172033;
+  --toast-muted: #778091;
+  --toast-surface: #fff;
+  --toast-track: #e9ecf1;
+  width: min(480px, calc(100vw - 24px));
+  padding: 10px 14px;
+  gap: 0;
+  border: 1px solid rgba(100, 116, 139, .18);
+  border-radius: 14px;
+  background: var(--toast-surface);
+  color: var(--toast-text);
+  box-shadow: 0 16px 44px rgba(15, 23, 42, .16), 0 2px 6px rgba(15, 23, 42, .06);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.task-toast.is-hosted { position: relative; right: auto; bottom: auto; width: 100%; z-index: auto; }
+.task-toast-head { display: flex; align-items: flex-start; gap: 8px; cursor: grab; touch-action: none; user-select: none; }
+.is-dragging .task-toast-head, .task-toast.is-dragging .task-toast-head { cursor: grabbing; }
+.task-toast-icon { display: grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: var(--toast-track); color: var(--toast-accent); }
+.task-toast-icon.is-success { background: var(--toast-accent); color: #fff; }
+.task-toast-heading { flex: 1; min-width: 0; padding-top: 2px; }
+.task-toast-heading h3 { margin: 0; color: var(--toast-text); font-size: 12px; font-weight: 650; line-height: 1.5; letter-spacing: -.025em; }
+.task-toast-heading p { margin: 4px 0 0; color: var(--toast-muted); font-size: 10px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-toast-grip { color: var(--toast-muted); opacity: .45; flex-shrink: 0; margin: 6px -5px 0 0; }
+.task-toast-close { display: grid; place-items: center; flex-shrink: 0; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--toast-muted); cursor: pointer; }
+.task-toast-body { margin: 7px 0 0 38px; min-width: 0; }
+.task-toast-progress { height: 5px; margin-top: 0; border-radius: 20px; overflow: hidden; background: var(--toast-track); }
+.task-toast-progress > span { display: block; height: 100%; border-radius: inherit; background: var(--toast-accent); transition: width .4s ease; }
+.task-toast-status { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 10px; margin-top: 8px; font-size: 11px; color: var(--toast-muted); }
+.task-toast-status strong { color: var(--toast-text); font-size: 13px; font-variant-numeric: tabular-nums; }
+.task-toast-meta { overflow-wrap: anywhere; }
+.task-toast-metrics { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 0; }
+.task-toast-metrics > span { display: inline-flex; align-items: center; gap: 4px; color: var(--toast-muted); font-size: 11px; }
+.task-toast-metrics b { color: var(--toast-text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.task-toast-metrics .metric-info svg { color: #488cff; }
+.task-toast-metrics .metric-warning svg { color: #d99b30; }
+.task-toast-metrics .metric-success svg { color: #2baa89; }
+.task-toast-metrics .metric-danger svg, .task-toast-metrics .metric-danger b { color: #ee637c; }
+.task-toast-detail { margin: 10px 0 0; font-size: 11px; line-height: 1.6; color: var(--toast-muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.task-toast-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 0; }
+.task-toast-action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 24px; border: 0; border-radius: 9px; padding: 3px 7px; color: var(--toast-muted); background: transparent; font-size: 12px; font-weight: 600; cursor: pointer; }
+.task-toast-action.is-primary { color: var(--toast-text); background: var(--toast-track); padding-inline: 8px; }
+.task-toast :is(button) { transition: all .3s cubic-bezier(.34, 1.56, .64, 1); }
+.task-toast button:hover { transform: translateY(-2px) scale(1.02); color: var(--toast-text); }
+.task-toast button:active { transform: scale(.96); }
+.task-toast button:hover svg { transform: rotate(-6deg); }
+.task-toast button svg { transition: transform .3s cubic-bezier(.34, 1.56, .64, 1); }
+.task-toast button:focus, .task-toast button:focus-visible { outline: none; box-shadow: none; }
+.task-toast.is-problem { --toast-accent: #eaa332; }
+@media (max-width: 480px) {
+  .floating-card.task-toast { padding: 10px; border-radius: 12px; }
+  .task-toast-head { gap: 10px; }
+  .task-toast-icon { width: 30px; height: 30px; }
+  .task-toast-body { margin-left: 0; }
+  .task-toast-grip { display: none; }
+  .task-toast-action, .task-toast-close { min-height: 26px; }
+}
+/* 紧凑长条布局：统计与操作共用一行，避免纵向堆叠。 */
+.task-toast-head { align-items: center; }
+.task-toast-heading h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 17px; }
+.task-toast-heading p { margin-top: 2px; }
+.task-toast-progress-row { display: flex; align-items: center; gap: 8px; }
+.task-toast-progress-row .task-toast-progress { flex: 1; }
+.task-toast-progress-row strong { min-width: 30px; text-align: right; font-size: 10px; line-height: 12px; font-variant-numeric: tabular-nums; }
+.task-toast-footer { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+.task-toast-info { flex: 1; min-width: 0; overflow: hidden; }
+.task-toast-metrics { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.task-toast-metrics::-webkit-scrollbar { display: none; }
+.task-toast-metrics > span { flex-shrink: 0; white-space: nowrap; font-size: 10px; }
+.task-toast-actions { flex-wrap: nowrap; flex-shrink: 0; }
+.task-toast-action { white-space: nowrap; font-size: 10px; }
+.task-toast-context { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--toast-muted); font-size: 10px; }
+.floating-card.task-toast.is-collapsed { padding: 0 10px; border-radius: 10px; }
+.task-toast-mini { display: flex; align-items: center; gap: 8px; height: 24px; cursor: grab; touch-action: none; }
+.is-dragging .task-toast-mini { cursor: grabbing; }
+.task-toast-mini-expand { display: flex; align-items: center; flex: 1; height: 24px; min-width: 0; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.task-toast-mini-track { display: block; width: 100%; height: 5px; border-radius: 10px; background: var(--toast-track); overflow: hidden; }
+.task-toast-mini-track > span { display: block; height: 100%; border-radius: inherit; background: var(--toast-accent); transition: width .4s ease; }
+.task-toast-mini-grip { flex-shrink: 0; color: var(--toast-muted); pointer-events: none; }
+.task-toast .task-toast-mini-expand:hover, .task-toast .task-toast-mini-expand:active { transform: none; }
+.task-toast-mini-expand { gap: 8px; justify-content: flex-start; text-align: left; }
+.task-toast-mini-name { flex: 0 1 auto; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--toast-text); font-size: 11px; text-align: left; }
+.task-toast-mini-expand .task-toast-mini-track { flex: 1; min-width: 24px; width: auto; }
+.task-toast-mini-percent { flex-shrink: 0; color: var(--toast-text); font-size: 10px; font-variant-numeric: tabular-nums; }
+.task-toast-mini-logo { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 20px; width: 20px; height: 20px; color: var(--toast-accent); }
+.task-toast-mini-logo > div { width: 24px; height: 24px; flex-shrink: 0; }
+.task-toast-icon .task-toast-success-animation { width: 36px; height: 36px; flex-shrink: 0; }
+.task-toast-icon.is-success:has(.task-toast-success-animation) { background: transparent; }
+.task-toast-meta { margin-top: 4px; font-variant-numeric: tabular-nums; }
+.task-toast-mini, .task-toast-mini-expand { height: 30px; }

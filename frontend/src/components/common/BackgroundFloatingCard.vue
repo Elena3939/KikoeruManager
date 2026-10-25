@@ -1,146 +1,85 @@
 <template>
   <article
-    class="floating-card floating-card-upload background-floating-card"
-    :class="[
-      toneClass,
-      {
-        'is-hosted': hosted,
-        'is-compact': compactLayout,
-        'is-completed': completed,
-        'is-problem': hasProblem
-      }
-    ]"
+    v-if="!persistentDismissed"
+    ref="cardRef"
+    class="floating-card background-floating-card task-toast"
+    :class="[toneClass, { 'is-hosted': hosted, 'is-completed': completed, 'is-problem': hasProblem, 'is-collapsed': collapsed }]"
     :style="cardStyle"
+    role="region"
+    :aria-label="title"
   >
-    <div class="upload-floating-head">
-      <div class="flex min-w-0 items-center gap-2.5 pr-2">
-        <div
-          class="floating-hero-icon"
-          :class="[
-            `is-${resolvedKind}`,
-            { 'has-hero-animation': showHeroAnimation }
-          ]"
-        >
-          <DotLottieVue
-            v-if="showHeroAnimation"
-            :src="resolvedHeroAnimation"
-            autoplay
-            loop
-            background="transparent"
-            class="floating-hero-lottie"
-          />
-          <component
-            :is="resolvedHeroIcon"
-            v-else
-            class="floating-hero-static-icon"
-            :stroke-width="2.25"
-          />
+    <div v-if="collapsed" class="task-toast-mini" @pointerdown="startDrag">
+      <button
+        type="button"
+        class="task-toast-mini-expand"
+        :aria-label="`展开${title}，进度 ${progressPercentText}`"
+        :title="`${title} · ${progressPercentText}，点击展开`"
+        @click="collapsed = false"
+      >
+        <span class="task-toast-mini-logo" aria-hidden="true">
+          <DotLottieVue v-if="completed" :src="successAnimation || defaultSuccessAnimation" :autoplay="true" :loop="false" />
+          <component :is="resolvedHeroIcon" v-else :size="16" :stroke-width="2" />
+        </span>
+        <span class="task-toast-mini-name">{{ title }}</span>
+        <span class="task-toast-mini-track" role="progressbar" :aria-valuenow="completed ? 100 : safePercentage" aria-valuemin="0" aria-valuemax="100" :aria-label="title">
+          <span :style="{ width: `${completed ? 100 : safePercentage}%` }" />
+        </span>
+      </button>
+      <strong class="task-toast-mini-percent">{{ completed ? '100%' : progressPercentText }}</strong>
+      <GripHorizontal class="task-toast-mini-grip" :size="14" aria-hidden="true" />
+    </div>
+    <template v-else>
+      <header class="task-toast-head" title="拖动以移动小窗" @pointerdown="startDrag">
+        <div class="task-toast-icon" :class="{ 'is-success': completed }">
+          <DotLottieVue v-if="completed" class="task-toast-success-animation" :src="successAnimation || defaultSuccessAnimation" :autoplay="true" :loop="false" />
+          <component :is="resolvedHeroIcon" v-else :size="18" :stroke-width="2.1" />
         </div>
-
-        <div class="min-w-0">
-          <div class="flex items-center gap-1.5 text-[13px] font-semibold leading-tight text-slate-900">
-            <span class="upload-floating-title">{{ title }}</span>
-            <span v-if="badgeText" class="floating-chip floating-chip-title">{{ badgeText }}</span>
+        <div class="task-toast-heading">
+          <h3 :title="title">{{ title }}</h3>
+          <p v-if="subtitle" :title="subtitle">{{ subtitle }}</p>
+        </div>
+        <button class="task-toast-collapse task-toast-close" type="button" aria-label="仅显示进度条" title="仅显示进度条" @click="collapsed = true"><Minus :size="17" /></button>
+        <button v-if="dismissAction" class="task-toast-close task-toast-dismiss" type="button" :aria-label="dismissAction.label" :title="dismissAction.label" @click="emit('action', dismissAction.key)"><X :size="17" /></button>
+      </header>
+      <div class="task-toast-body">
+        <div v-if="!completed" class="task-toast-progress-row">
+          <div class="task-toast-progress" role="progressbar" aria-label="任务进度" :aria-valuenow="safePercentage" aria-valuemin="0" aria-valuemax="100">
+            <span :style="{ width: `${safePercentage}%` }" />
           </div>
-
-          <div v-if="subtitle" class="mt-0.5 break-all text-[11px] leading-snug text-slate-500">
-            {{ subtitle }}
+          <strong>{{ progressPercentText }}</strong>
+        </div>
+        <div class="task-toast-footer">
+          <div class="task-toast-info" :title="[badgeText, metaText, detailText].filter(Boolean).join(' · ')">
+            <div v-if="visibleMetrics.length" class="task-toast-metrics">
+              <span v-for="metric in visibleMetrics" :key="metric.key" :class="`metric-${metric.tone}`" :title="`${metric.label} ${metric.value}`">
+                <component v-if="metric.icon" :is="metric.icon" :size="12" />
+                {{ metric.label }} <b>{{ metric.value }}</b>
+              </span>
+            </div>
+            <span v-if="metaText" class="task-toast-context task-toast-meta">{{ metaText }}</span>
+            <span v-else-if="!visibleMetrics.length" class="task-toast-context">{{ detailText || badgeText }}</span>
           </div>
-
-          <div v-if="metaText" class="mt-1 text-[11px] font-medium leading-none text-slate-400">
-            {{ metaText }}
+          <div v-if="bodyActions.length" class="task-toast-actions">
+            <button v-for="action in bodyActions" :key="action.key" type="button" :class="['task-toast-action', { 'is-primary': action.key === 'resume' }]" :title="action.label" @click="emit('action', action.key)">
+              <component v-if="action.icon" :is="action.icon" :size="12" />{{ action.key === 'resume' && action.label === '恢复工作台' ? '打开' : action.label }}
+            </button>
           </div>
         </div>
       </div>
-    </div>
-
-    <DotLottieVue
-      v-if="completed"
-      :key="successLottieKey"
-      :src="successAnimationSrc"
-      autoplay
-      :loop="false"
-      :render-config="{ autoResize: true, devicePixelRatio: 2 }"
-      background="transparent"
-      class="floating-progress-lottie floating-progress-lottie-success background-floating-success-lottie"
-    />
-
-    <DotLottieVue
-      v-else-if="showProgressLottie"
-      ref="progressLottieRef"
-      :key="progressLottieKey"
-      :src="progressAnimationSrc"
-      :autoplay="false"
-      :loop="false"
-      :render-config="{ autoResize: true, devicePixelRatio: 2 }"
-      background="transparent"
-      class="floating-progress-lottie floating-progress-lottie-progress"
-    />
-    <span
-      v-if="showProgressLottie && !completed"
-      class="floating-progress-percent"
-      :style="progressPercentStyle"
-      aria-hidden="true"
-    >
-      {{ progressPercentText }}
-    </span>
-    <div
-      v-else-if="!completed"
-      class="floating-progress-ring"
-      :style="progressPercentStyle"
-      aria-hidden="true"
-    >
-      <span>{{ progressPercentText }}</span>
-    </div>
-
-    <div v-if="normalizedMetrics.length" class="floating-chip-row-compact">
-      <span
-        v-for="metric in normalizedMetrics"
-        :key="metric.key"
-        class="floating-chip"
-        :class="{ 'floating-chip-danger': metric.tone === 'danger' }"
-      >
-        <component
-          :is="metric.icon"
-          v-if="metric.icon"
-          class="floating-chip-icon"
-          :class="metric.iconClass"
-          :stroke-width="2.2"
-        />
-        <span>{{ metric.label }}</span>
-        <b v-if="metric.value !== ''">{{ metric.value }}</b>
-      </span>
-    </div>
-
-    <div v-if="detailText" class="floating-detail-box">
-      {{ detailText }}
-    </div>
-
-    <div v-if="normalizedActions.length" class="floating-actions-row">
-      <button
-        v-for="action in normalizedActions"
-        :key="action.key"
-        type="button"
-        class="floating-action-btn group"
-        :class="action.className"
-        @click="emit('action', action.key)"
-      >
-        <component
-          :is="action.icon"
-          v-if="action.icon"
-          class="h-3 w-3 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-[-6deg]"
-          :stroke-width="2.3"
-        />
-        {{ action.label }}
-      </button>
-    </div>
+    </template>
   </article>
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated } from 'vue'
+import { useRoute } from 'vue-router'
+import { mountedTaskCards, persistentTaskCards, dismissPersistentTaskCard } from '../../composables/usePersistentTaskCards'
+import { useFloatingCardDrag } from '../../composables/useFloatingCardDrag'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
+import defaultSuccessAnimation from '../../assets/anime/success confetti.lottie?url'
 import {
+  GripHorizontal,
+  Minus,
   BarChart3,
   Captions,
   CheckSquare,
@@ -154,14 +93,11 @@ import {
   Upload,
   X
 } from 'lucide-vue-next'
-import uploadToCloudAnimation from '../../assets/anime/Uploading to cloud.lottie'
-import downloadAnimation from '../../assets/anime/download-icon-clean.json?url'
-import progressAnimation from '../../assets/anime/Loading Bar  Progress Bar.lottie'
-import successConfettiAnimation from '../../assets/anime/success confetti.lottie'
-import translateAnimation from '../../assets/anime/Translate.lottie'
-import deleteAnimation from '../../assets/anime/Delete icon animation.lottie'
-
 const props = defineProps({
+  taskIds: { type: Array, default: () => [] },
+  taskSource: { type: String, default: '' },
+  persistentReplica: { type: Boolean, default: false },
+  positionKey: { type: String, default: '' },
   title: { type: String, default: '后台任务正在运行' },
   subtitle: { type: String, default: '' },
   metaText: { type: String, default: '' },
@@ -183,7 +119,19 @@ const props = defineProps({
   actions: { type: Array, default: () => [] }
 })
 
-const emit = defineEmits(['action'])
+const emitAction = defineEmits(['action'])
+function emit(event, action) {
+  if (['close', 'dismiss'].includes(action) && props.taskSource) dismissPersistentTaskCard(persistentId.value)
+  emitAction(event, action)
+}
+const ownerRoute = useRoute()
+const ownerPath = ownerRoute?.path || '/tasks'
+const persistentId = computed(() => props.positionKey || `${ownerPath}:${props.taskSource}:${props.kind}`)
+const persistentDismissed = computed(() => props.taskSource && persistentTaskCards[persistentId.value]?.dismissed)
+onMounted(() => { if (!props.persistentReplica && props.taskSource) mountedTaskCards.add(persistentId.value) })
+onBeforeUnmount(() => { if (!props.persistentReplica) mountedTaskCards.delete(persistentId.value) })
+onActivated(() => { if (!props.persistentReplica && props.taskSource) mountedTaskCards.add(persistentId.value) })
+onDeactivated(() => { if (!props.persistentReplica) mountedTaskCards.delete(persistentId.value) })
 
 const toneClass = computed(() => `floating-card-tone-${normalizeTone(props.tone)}`)
 
@@ -194,15 +142,6 @@ const cardStyle = computed(() => {
     bottom: `calc(20px + ${index} * 176px)`
   }
 })
-
-const heroAnimationMap = {
-  upload: uploadToCloudAnimation,
-  download: downloadAnimation,
-  asmr: downloadAnimation,
-  subtitle: translateAnimation,
-  delete: deleteAnimation,
-  generic: uploadToCloudAnimation
-}
 
 const heroIconMap = {
   upload: Upload,
@@ -215,24 +154,12 @@ const heroIconMap = {
 
 const resolvedKind = computed(() => {
   const kind = String(props.kind || 'generic').trim().toLowerCase()
-  return heroAnimationMap[kind] ? kind : 'generic'
+  return heroIconMap[kind] ? kind : 'generic'
 })
 
-const resolvedHeroAnimation = computed(() => props.heroAnimation || heroAnimationMap[resolvedKind.value] || '')
 const resolvedHeroIcon = computed(() => props.heroIcon || heroIconMap[resolvedKind.value] || Upload)
-const compactLayout = computed(() => resolvedKind.value !== 'upload')
-const showHeroAnimation = computed(() => ['upload', 'download', 'asmr'].includes(resolvedKind.value) && Boolean(resolvedHeroAnimation.value))
-const showProgressLottie = computed(() => props.completed || !compactLayout.value)
-const progressAnimationSrc = computed(() => props.progressAnimation || progressAnimation)
-const successAnimationSrc = computed(() => props.successAnimation || successConfettiAnimation)
 const safePercentage = computed(() => Math.max(0, Math.min(100, Number(props.percentage || 0))))
 const progressPercentText = computed(() => `${Math.round(safePercentage.value)}%`)
-const progressPercentStyle = computed(() => ({
-  '--floating-progress': `${safePercentage.value}%`
-}))
-const progressLottieKey = computed(() => props.progressKey || `${resolvedKind.value}-${props.completed ? 'done' : 'run'}`)
-const successLottieKey = computed(() => `${props.progressKey || resolvedKind.value}-success-${props.completed ? 'play' : 'idle'}`)
-
 const normalizedMetrics = computed(() => props.metrics
   .filter(Boolean)
   .map((metric, index) => {
@@ -275,11 +202,24 @@ const normalizedActions = computed(() => props.actions
   .filter(action => action.key)
 )
 
-const progressLottieRef = ref(null)
-const progressLottieInstance = ref(null)
-const animatedFrame = ref(0)
-const targetFrame = ref(0)
-let frameRaf = null
+// 折叠只影响呈现，任务与原有操作状态继续保留。
+const collapsed = ref(false)
+watch(() => props.positionKey || props.kind, key => {
+  try { collapsed.value = localStorage.getItem(`kikoerumanager.ui.floatingCollapsed.${key}`) === 'true' } catch (_) {}
+}, { immediate: true })
+watch(collapsed, value => {
+  try { localStorage.setItem(`kikoerumanager.ui.floatingCollapsed.${props.positionKey || props.kind}`, String(value)) } catch (_) {}
+})
+const visibleMetrics = computed(() => normalizedMetrics.value.filter(metric => {
+  const value = metric.value.trim()
+  if (!value || /^[-—–]+$/.test(value)) return false
+  const count = Number(value)
+  return !Number.isFinite(count) || count > 0
+}))
+const cardRef = ref(null)
+const { startDrag } = useFloatingCardDrag(cardRef, () => props.positionKey || props.kind, () => props.stackIndex)
+const dismissAction = computed(() => normalizedActions.value.find(action => ['dismiss', 'close'].includes(action.key)))
+const bodyActions = computed(() => normalizedActions.value.filter(action => action !== dismissAction.value))
 
 function normalizeTone(value) {
   const tone = String(value || '').trim().toLowerCase()
@@ -365,224 +305,4 @@ function getActionClass(variant) {
   return ''
 }
 
-function cancelFrameAnimation() {
-  if (!frameRaf) return
-  window.cancelAnimationFrame(frameRaf)
-  frameRaf = null
-}
-
-function getProgressLottieInstance() {
-  return progressLottieRef.value?.getDotLottieInstance?.() || null
-}
-
-function unbindProgressLottieListeners() {
-  cancelFrameAnimation()
-  const instance = progressLottieInstance.value
-  if (!instance) return
-  instance.removeEventListener?.('ready', syncProgressLottieFrame)
-  instance.removeEventListener?.('load', syncProgressLottieFrame)
-  progressLottieInstance.value = null
-}
-
-function bindProgressLottieListeners() {
-  const instance = getProgressLottieInstance()
-  if (!instance || progressLottieInstance.value === instance) return
-  unbindProgressLottieListeners()
-  progressLottieInstance.value = instance
-  instance.addEventListener?.('ready', syncProgressLottieFrame)
-  instance.addEventListener?.('load', syncProgressLottieFrame)
-}
-
-async function syncProgressLottieFrame() {
-  if (props.completed || !showProgressLottie.value) return
-  const instance = getProgressLottieInstance()
-  if (!instance) return
-
-  const totalFrames = Number(instance.totalFrames || instance.total_frames || 0)
-  if (!Number.isFinite(totalFrames) || totalFrames <= 1) return
-
-  const frame = Math.floor((Math.min(safePercentage.value, 99) / 100) * (totalFrames - 1))
-  targetFrame.value = frame
-
-  try {
-    await instance.setLoop?.(false)
-    await instance.pause?.()
-    if (!Number.isFinite(animatedFrame.value)) animatedFrame.value = frame
-    if (Math.abs(animatedFrame.value - frame) < 0.5) {
-      animatedFrame.value = frame
-      await instance.setFrame?.(frame)
-      return
-    }
-    cancelFrameAnimation()
-    const animate = async () => {
-      const nextFrame = animatedFrame.value + ((targetFrame.value - animatedFrame.value) * 0.18)
-      if (Math.abs(targetFrame.value - nextFrame) < 0.35) {
-        animatedFrame.value = targetFrame.value
-        frameRaf = null
-        try {
-          await instance.setFrame?.(Math.round(animatedFrame.value))
-        } catch {
-          // 动画实例切换时可能还没就绪，忽略这类瞬时错误。
-        }
-        return
-      }
-      animatedFrame.value = nextFrame
-      try {
-        await instance.setFrame?.(Math.round(animatedFrame.value))
-      } catch {
-        frameRaf = null
-        return
-      }
-      frameRaf = window.requestAnimationFrame(() => {
-        animate()
-      })
-    }
-    frameRaf = window.requestAnimationFrame(() => {
-      animate()
-    })
-  } catch {
-    // 动画实例切换时可能还没就绪，忽略这类瞬时错误。
-  }
-}
-
-watch([safePercentage, () => props.completed, progressLottieRef], () => {
-  if (props.completed || !showProgressLottie.value) {
-    cancelFrameAnimation()
-    return
-  }
-  nextTick(() => {
-    bindProgressLottieListeners()
-    syncProgressLottieFrame()
-  })
-}, { immediate: true })
-
-watch(progressAnimationSrc, () => {
-  animatedFrame.value = 0
-  targetFrame.value = 0
-  nextTick(() => {
-    bindProgressLottieListeners()
-    syncProgressLottieFrame()
-  })
-})
-
-onBeforeUnmount(() => {
-  unbindProgressLottieListeners()
-})
 </script>
-
-<style scoped>
-.background-floating-card.is-hosted {
-  position: relative;
-  right: auto;
-  bottom: auto;
-  width: 100%;
-  z-index: auto;
-}
-
-.floating-hero-static-icon {
-  width: 18px;
-  height: 18px;
-}
-
-.background-floating-card.is-compact .floating-hero-lottie {
-  width: 30px;
-  height: 30px;
-}
-
-.background-floating-success-lottie {
-  z-index: 2;
-  filter: drop-shadow(0 8px 16px rgba(14, 165, 233, 0.18));
-}
-
-.background-floating-card.is-compact .background-floating-success-lottie {
-  right: 0;
-  top: -2px;
-  width: 76px;
-  height: 76px;
-}
-
-.background-floating-card.is-completed .upload-floating-head {
-  padding-right: 78px;
-}
-
-.background-floating-card.is-compact .floating-hero-icon.has-hero-animation {
-  border-color: transparent !important;
-  background: transparent !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .background-floating-card.is-compact .floating-hero-icon.has-hero-animation {
-  border-color: transparent !important;
-  background: transparent !important;
-  color: inherit !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .background-floating-card .floating-hero-icon.has-hero-animation .floating-hero-lottie {
-  filter: none !important;
-  color: inherit !important;
-}
-
-.background-floating-card.floating-card-tone-emerald .floating-chip-title {
-  color: #0369a1;
-  border-color: #bae6fd;
-  background: #f0f9ff;
-}
-
-.background-floating-card.floating-card-tone-violet .floating-chip-title {
-  color: #6d28d9;
-  border-color: #ddd6fe;
-  background: #f5f3ff;
-}
-
-.background-floating-card.floating-card-tone-amber .floating-chip-title {
-  color: #b45309;
-  border-color: #fde68a;
-  background: #fffbeb;
-}
-
-.background-floating-card.floating-card-tone-rose .floating-chip-title {
-  color: #be123c;
-  border-color: #fecdd3;
-  background: #fff1f2;
-}
-
-.floating-action-btn-violet {
-  border-color: #4338ca;
-  color: #fff;
-  background: #4f46e5;
-  box-shadow: 0 6px 14px rgba(79, 70, 229, 0.16);
-}
-
-.floating-action-btn-violet:hover {
-  color: #fff;
-  background: #4338ca;
-  box-shadow: 0 8px 18px rgba(79, 70, 229, 0.2);
-}
-
-.floating-action-btn-amber {
-  border-color: #92400e;
-  color: #fff;
-  background: #b45309;
-  box-shadow: 0 6px 14px rgba(180, 83, 9, 0.16);
-}
-
-.floating-action-btn-amber:hover {
-  color: #fff;
-  background: #92400e;
-  box-shadow: 0 8px 18px rgba(180, 83, 9, 0.2);
-}
-
-.floating-action-btn-rose {
-  border-color: #9f1239;
-  color: #fff;
-  background: #be123c;
-  box-shadow: 0 6px 14px rgba(190, 18, 60, 0.16);
-}
-
-.floating-action-btn-rose:hover {
-  color: #fff;
-  background: #9f1239;
-  box-shadow: 0 8px 18px rgba(190, 18, 60, 0.2);
-}
-</style>

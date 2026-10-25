@@ -5832,3 +5832,14 @@ html.kikoerumanager-dark body .el-dialog.custom-preview-modal.remote-folder-pick
   background: transparent !important;
   border-color: transparent !important;
 }
+
+/* 后台任务卡片与全局主题共用一套状态。 */
+html.kikoerumanager-dark .floating-card.task-toast {
+  --toast-text: var(--km-dark-text, #f4f4f5);
+  --toast-muted: var(--km-dark-text-muted, #92929a);
+  --toast-surface: #171719;
+  --toast-track: #2c2c30;
+  background: var(--toast-surface);
+  border-color: rgba(255, 255, 255, .12);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .32);
+}

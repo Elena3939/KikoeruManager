@@ -261,7 +261,8 @@ function closeWorkbench(id) {
   if (!runtime) return
   const definition = getDefinition(id)
   if (typeof definition.onClose === 'function') {
-    definition.onClose(runtime, managerApi)
+    // 业务回调返回 false 时，保留它按任务状态决定的窗口状态。
+    if (definition.onClose(runtime, managerApi) === false) return
   }
   if (definition.retainSnapshotOnClose) {
     patchWorkbenchState(id, {

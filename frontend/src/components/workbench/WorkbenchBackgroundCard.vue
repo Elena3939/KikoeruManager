@@ -1,6 +1,7 @@
 <template>
   <BackgroundFloatingCard
     hosted
+    :position-key="workbench.id"
     :kind="cardKind"
     :tone="cardTone"
     :title="cardTitle"
@@ -54,16 +55,20 @@ const cardTone = computed(() => {
 })
 
 const cardCompleted = computed(() => (
-  progressPercent.value >= 100
-  || statusTone.value === 'success'
+  !['failed', 'partial_failed', 'cancelled', 'canceled'].includes(statusKey.value)
+  && statusTone.value !== 'danger'
+  && (statusTone.value === 'success'
   || statusKey.value === 'success'
-  || statusKey.value === 'completed'
+  || statusKey.value === 'completed')
 ))
 
 const baseTitle = computed(() => String(props.workbench?.title || '后台工作台').trim())
 
 const cardTitle = computed(() => {
   if (cardCompleted.value) return `${baseTitle.value}已完成`
+  if (['cancelled', 'canceled'].includes(statusKey.value)) return `${baseTitle.value}已取消`
+  if (statusKey.value === 'paused') return `${baseTitle.value}已暂停`
+  if (['pending', 'awaiting', 'waiting_retry', 'idle'].includes(statusKey.value)) return `${baseTitle.value}等待处理`
   if (statusTone.value === 'danger' || statusKey.value === 'failed') return `${baseTitle.value}需要处理`
   return `${baseTitle.value}正在后台运行`
 })
