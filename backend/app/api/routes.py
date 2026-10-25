@@ -482,6 +482,8 @@ app = FastAPI(
 app.add_middleware(MediaAwareGZipMiddleware, minimum_size=1024)
 from .browser_upload_routes import router as browser_upload_router
 app.include_router(browser_upload_router)
+from .file_move_routes import router as file_move_router
+app.include_router(file_move_router)
 
 # ========== 工具函数 ==========
 def _mask_url_credentials(value: str) -> str:
@@ -888,6 +890,7 @@ def _enrich_lite_items_with_batch_summary(
             detail = row.get("detail") or {}
             it["status"] = row.get("status")
             it["summary"] = row.get("summary")
+            it["latest_activity_at"] = row.get("latest_activity_at") or detail.get("latest_activity_at") or row.get("created_at")
             for key in ("result_status", "outcome_label"):
                 if key in row:
                     it[key] = row[key]
@@ -1803,12 +1806,13 @@ def get_activity_log_detail(
 
 
 @app.post("/api/activity-logs/compact")
-async def compact_activity_logs(
+def compact_activity_logs(
     older_than_days: int = 30,
     min_detail_bytes: int = 8192,
     max_rows: Optional[int] = None,
     chunk_size: int = 200,
     time_budget_seconds: float = 5.0,
+    cursor: Optional[str] = None,
 ):
     """归档压缩老的操作记录 detail。
 
@@ -1823,7 +1827,6 @@ async def compact_activity_logs(
     - 每条压缩后的记录会标 ``__compacted=True``，前端可显示"已归档"小标签。
     """
     from ..core.activity_log_compactor import compact_old_activity_logs
-    from ..core.activity_log_writer import get_activity_log_query_cache, get_activity_log_row_dict_cache
 
     try:
         result = compact_old_activity_logs(
@@ -1832,14 +1835,8 @@ async def compact_activity_logs(
             max_rows=max_rows,
             chunk_size=chunk_size,
             time_budget_seconds=time_budget_seconds,
+            cursor=cursor,
         )
-        # 压缩动了底表 → 让缓存失效，避免下次列表请求拿到旧的合并结果
-        if result.get("updated"):
-            try:
-                get_activity_log_query_cache().invalidate()
-                get_activity_log_row_dict_cache().invalidate()
-            except Exception:
-                logger.debug("[操作记录] 压缩后失效缓存出错（非致命）", exc_info=True)
         return {
             "message": (
                 f"压缩完成，更新 {result.get('updated', 0)} 行，节省约 "
@@ -1849,6 +1846,8 @@ async def compact_activity_logs(
             ),
             **result,
         }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"压缩操作记录失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"压缩操作记录失败: {str(e)}")
@@ -2521,12 +2520,16 @@ async def _periodic_notification_cleanup():
 async def _periodic_activity_log_compact():
     # 启动 30 分钟后再开第一次，避免和首屏抢 IO
     await asyncio.sleep(30 * 60)
+    cursor = None
     while True:
         try:
             from ..core.activity_log_compactor import compact_old_activity_logs
 
             # 单次有行数和时间预算，剩下的下次再来。
-            result = compact_old_activity_logs(**_activity_log_compact_config())
+            result = await asyncio.to_thread(
+                compact_old_activity_logs, cursor=cursor, **_activity_log_compact_config()
+            )
+            cursor = result.get("next_cursor")
             if result.get("updated"):
                 logger.info(
                     "[操作记录] 自动压缩 %d 行，节省 %.2f MB",
@@ -2654,6 +2657,9 @@ async def startup_event():
     engine = get_task_engine()
     engine.start()
 
+    from ..core.input_scan_service import get_input_scan_service
+    await get_input_scan_service().recover()
+
     from ..core.browser_upload_service import get_browser_upload_service
     await get_browser_upload_service().start()
 
@@ -2720,6 +2726,8 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """应用关闭时执行"""
+    from ..core.input_scan_service import get_input_scan_service
+    await get_input_scan_service().stop()
     from ..core.resource_source_service import get_resource_source_service
     await get_resource_source_service().stop()
     try:
@@ -2999,6 +3007,7 @@ class FilteredItemRestoreRequest(BaseModel):
 
 class ConfigResponse(BaseModel):
     storage: dict
+    file_move: Optional[dict] = None
     processing: dict
     watcher: dict
     extract: Optional[dict] = None
@@ -3225,15 +3234,18 @@ async def _scan_and_create_tasks(
         "skipped_duplicate_count": 0,
     }
 
-    # 使用 FileProcessor 统一处理目录
+    # 批次预筛只构建一次活动源集合；提交前 FileProcessor 仍复核实时状态。
+    active_sources = {
+        task.source_path for task in get_task_engine().get_all_tasks()
+        if task.status.value in {"pending", "processing"}
+    }
     tasks = await file_processor.process_directory(
         input_path,
         auto_classify=config.watcher.auto_classify,
         is_processed=lambda path: (
             path in watcher.pending_files or
             path in watcher._processed_files or
-            any(t.source_path == path and t.status.value in ["pending", "processing"]
-                for t in get_task_engine().get_all_tasks())
+            path in active_sources
         ),
         mark_processed=watcher._mark_file_processed,
         task_metadata={"target_library_id": target_library_id} if target_library_id else None,
@@ -3956,6 +3968,7 @@ def get_configuration():
     storage_data["stats_cache_ttl_seconds"] = library_cfg["stats_cache_ttl_seconds"]
     return ConfigResponse(
         storage=storage_data,
+        file_move=config.file_move.model_dump(),
         processing=config.processing.model_dump(),
         watcher=config.watcher.model_dump(),
         extract=config.extract.model_dump(),
@@ -4758,6 +4771,14 @@ async def update_configuration(request: Request):
                 logger.error(f"[SECURITY_GATE] security_gate 配置验证失败: {e}")
                 raise HTTPException(status_code=400, detail=f"安全门禁配置无效: {e}")
 
+        from ..config.settings import AppConfig, deep_merge
+        from ..core.file_move_diagnostics import validate_configuration_update
+        current_config = get_config()
+        try:
+            candidate_config = AppConfig(**deep_merge(current_config.model_dump(), config_data))
+            await asyncio.to_thread(validate_configuration_update, current_config, candidate_config)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         result = save_config(config_data)
         if _should_log_config_save_info(config_keys):
             logger.info(
@@ -4821,6 +4842,8 @@ async def update_configuration(request: Request):
         if 'email_watcher' in response_config:
             response_config['email_watcher'] = _mask_email_watcher_config(result)
         return {"message": "配置已保存", "config": response_config}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"保存配置失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"保存配置失败: {str(e)}")
@@ -4962,9 +4985,53 @@ async def get_watcher_status():
         "pending_files": list(watcher.pending_files)
     }
 
-@app.post("/api/scan")
-async def scan_input_directory():
-    """手动扫描输入目录"""
+@app.post("/api/scan", status_code=202)
+async def scan_input_directory(background: bool = True, request_key: Optional[str] = None):
+    """创建持久扫描；接收请求与扫描结束是两个独立事件。"""
+    from ..core.input_scan_service import get_input_scan_service
+    service = get_input_scan_service()
+    result = await service.start(request_key=request_key)
+    if not background:
+        while result["status"] not in {"completed", "cancelled", "failed", "interrupted"}:
+            await asyncio.sleep(0.5)
+            result = await service.get(result["scan_id"])
+    return result
+
+
+@app.get("/api/scan/latest")
+async def get_latest_input_scan():
+    from ..core.input_scan_service import get_input_scan_service
+    return await get_input_scan_service().latest()
+
+
+@app.get("/api/scan/status/{scan_id}")
+async def get_input_scan_status(scan_id: str):
+    from ..core.input_scan_service import get_input_scan_service
+    result = await get_input_scan_service().get(scan_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="扫描记录不存在")
+    return result
+
+
+@app.post("/api/scan/{scan_id}/cancel", status_code=202)
+async def cancel_input_scan(scan_id: str):
+    from ..core.input_scan_service import get_input_scan_service
+    service = get_input_scan_service()
+    if not await service.cancel(scan_id):
+        raise HTTPException(status_code=404, detail="扫描记录不存在")
+    return await service.get(scan_id)
+
+
+@app.get("/api/scan/{scan_id}/candidates")
+async def get_input_scan_candidates(scan_id: str, after: Optional[str] = None, limit: int = 100):
+    from ..core.input_scan_service import get_input_scan_service
+    return await asyncio.to_thread(
+        get_input_scan_service().repository.candidates, scan_id,
+        after=after, limit=max(1, min(256, limit)),
+    )
+
+
+async def _run_manual_input_scan():
     result = await _scan_and_create_tasks(
         source_page="dashboard",
         source_action="scan_input",

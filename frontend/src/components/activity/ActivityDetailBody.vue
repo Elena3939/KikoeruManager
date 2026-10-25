@@ -59,7 +59,7 @@
               v-if="row?.rjcode || displayRj"
               class="inline-flex items-center px-1.5 py-[3px] rounded-md text-[11px] font-mono font-semibold leading-none tracking-tight bg-slate-100/70 text-slate-700 ring-1 ring-inset ring-slate-200/60"
             >{{ row?.rjcode || displayRj }}</span>
-            <span v-if="row?.created_at" class="subtitle-time">{{ formatDateTime(row.created_at) }}</span>
+            <span v-if="row?.latest_activity_at || row?.created_at" class="subtitle-time">{{ formatDateTime(row.latest_activity_at || row.created_at) }}</span>
           </div>
         </div>
       </div>

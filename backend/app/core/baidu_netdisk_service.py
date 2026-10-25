@@ -3682,13 +3682,13 @@ class BaiduNetdiskService:
                 reason="百度网盘下载异常，可重试失败文件",
                 retry_available=bool(failed_files),
             )
-            task.task_metadata["staging_cleanup"] = await asyncio.to_thread(
-                self._cleanup_completed_staging_dir,
-                task,
-                staging_dir,
-                download_root,
-            )
-            task.task_metadata["staging_cleanup"]["retained_for_retry"] = False
+            task.task_metadata["staging_cleanup"] = {
+                "success": True,
+                "cleaned": False,
+                "path": staging_dir,
+                "reason": "download_exception",
+                "retained_for_retry": True,
+            }
             raise
         finally:
             if self._task_cancel_events.get(task.id) is cancel_event:
@@ -3783,13 +3783,14 @@ class BaiduNetdiskService:
                 reason=failure_reason,
                 retry_available=bool(failed_files),
             )
-            task.task_metadata["staging_cleanup"] = await asyncio.to_thread(
-                self._cleanup_completed_staging_dir,
-                task,
-                staging_dir,
-                download_root,
-            )
-            task.task_metadata["staging_cleanup"]["retained_for_retry"] = False
+            # 发布可能只完成了部分移动，剩余来源必须保留，不能把完整下载当缓存删除。
+            task.task_metadata["staging_cleanup"] = {
+                "success": True,
+                "cleaned": False,
+                "path": staging_dir,
+                "reason": "output_finalize_failed",
+                "retained_for_retry": True,
+            }
             raise
         staging_cleanup = await asyncio.to_thread(
             self._cleanup_completed_staging_dir,
@@ -5947,7 +5948,7 @@ class BaiduNetdiskService:
         entries = [
             os.path.join(staging_dir, name)
             for name in os.listdir(staging_dir)
-            if name not in {".", ".."} and not name.endswith(".aria2")
+            if name not in {".", ".."} and not self._is_download_intermediate(name)
         ] if os.path.isdir(staging_dir) else []
         if item_count > 0 and not entries:
             with contextlib.suppress(OSError):
@@ -5982,13 +5983,23 @@ class BaiduNetdiskService:
     def _directory_has_files(self, path: str) -> bool:
         """判断目录是否至少包含一个真实文件，忽略 aria2 中间文件。"""
         if os.path.isfile(path):
-            return not path.endswith(".aria2")
+            return not self._is_download_intermediate(os.path.basename(path))
         if not os.path.isdir(path):
             return False
-        for _root, _dirs, files in os.walk(path):
-            if any(not name.endswith(".aria2") for name in files):
+        for _root, dirs, files in os.walk(path):
+            dirs[:] = [name for name in dirs if not self._is_download_intermediate(name)]
+            if any(not self._is_download_intermediate(name) for name in files):
                 return True
         return False
+
+    @staticmethod
+    def _is_download_intermediate(name: str) -> bool:
+        """内部复制、克隆和移动暂存文件不能参与下载发布。"""
+        value = name.lower()
+        return value.endswith(".aria2") or re.search(
+            r"\.kikoerumanager-(?:(?:clone|move|copy)-[0-9a-f-]+\.part|backup-[0-9a-f-]+)$",
+            value,
+        ) is not None
 
     def cleanup_orphaned_empty_dirs(self, *, min_age_seconds: int = 3600) -> Dict[str, Any]:
         """清理百度下载产生的长期空 staging/批次目录。"""

@@ -445,6 +445,7 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
         "task_id": row.get("task_id"),
         "source_path": row.get("source_path"),
         "created_at": row.get("created_at"),
+        "latest_activity_at": row.get("latest_activity_at") or detail.get("latest_activity_at") or row.get("created_at"),
         "batch_id": row.get("batch_id") or detail.get("batch_id"),
         "session_key": row.get("session_key") or detail.get("session_key") or detail.get("session_id"),
         "parent_id": row.get("parent_id") or detail.get("parent_id"),

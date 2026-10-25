@@ -72,7 +72,12 @@ class RenameService:
         japanese_metadata = None
         if self.config.rename.use_japanese_metadata:
             task.update_progress(61, "获取日语元数据")
-            japanese_metadata = await self._get_japanese_metadata(metadata.get('rjcode'))
+            from .metadata_service import MetadataService
+            prefetch_service = MetadataService()
+            if prefetch_service.prefetch_matches(task, metadata.get("rjcode")):
+                japanese_metadata = getattr(task, "_japanese_metadata_prefetch", None)
+            if not japanese_metadata:
+                japanese_metadata = await self._get_japanese_metadata(metadata.get('rjcode'))
             if not japanese_metadata:
                 from .import_validation import ImportDataError
                 raise ImportDataError("日语元数据获取失败，已停止重命名")

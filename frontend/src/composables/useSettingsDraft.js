@@ -90,6 +90,12 @@ export function normalizeLibraryConfig(library, index = 1) {
 }
 
 export const defaultConfig = {
+  file_move: {
+    host_enabled: false,
+    socket_path: '/app/data/.host-file-mover/control.sock',
+    request_timeout_seconds: 30,
+    journal_path: ''
+  },
   storage: {
     input_path: '/input',
     temp_path: '/temp',
@@ -105,7 +111,15 @@ export const defaultConfig = {
     stats_cache_ttl_seconds: 300
   },
   processing: {
-    max_workers: 4
+    max_workers: 4,
+    file_stable_checks: 3,
+    file_stable_interval: 2
+  },
+  input_scan: {
+    discovery_queue_capacity: 128,
+    active_candidate_limit: 256,
+    stable_timeout_seconds: 300,
+    progress_interval_seconds: 1
   },
   watcher: {
     enabled: true,
@@ -536,7 +550,9 @@ function hydrateConfig(data = {}) {
       health_warning_free_gb: data?.storage?.health_warning_free_gb ?? defaultConfig.storage.health_warning_free_gb,
       stats_cache_ttl_seconds: data?.storage?.stats_cache_ttl_seconds ?? defaultConfig.storage.stats_cache_ttl_seconds
     },
+    file_move: { ...defaultConfig.file_move, ...(data?.file_move || {}) },
     processing: { ...defaultConfig.processing, ...(data?.processing || {}) },
+    input_scan: { ...defaultConfig.input_scan, ...(data?.input_scan || {}) },
     watcher: { ...defaultConfig.watcher, ...(data?.watcher || {}) },
     extract: { ...defaultConfig.extract, ...(data?.extract || {}) },
     filter: { ...defaultConfig.filter, ...(data?.filter || {}), rules: data?.filter?.rules || defaultConfig.filter.rules },
@@ -583,8 +599,10 @@ function serializeConfig(config) {
   payload.storage.libraries = (payload.storage.libraries || [])
     .map((library, index) => sanitizeLibraryForSave(library, index + 1))
   const serialized = {
+    file_move: payload.file_move,
     storage: payload.storage,
     processing: payload.processing,
+    input_scan: payload.input_scan,
     watcher: payload.watcher,
     extract: payload.extract,
     filter: payload.filter,

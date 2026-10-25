@@ -241,7 +241,7 @@
                 @keydown.space.prevent="openDetail(row)"
               >
                 <div class="activity-log-time">
-                  <time>{{ formatTime(row.created_at) }}</time>
+                  <time>{{ formatTime(row._activityAt) }}</time>
                   <span class="activity-log-dot">
                     <component
                       :is="row._statusIcon"
@@ -1329,6 +1329,7 @@ const timelineGroups = computed(() => {
     const catConfig = categoryConfig(row.category)
     const viewRow = {
       ...row,
+      _activityAt: row.latest_activity_at || row.created_at,
       _effectiveStatus: effective,
       _statusTone: statusToneValue,
       _statusIcon: statusIcon(effective),
@@ -1352,7 +1353,7 @@ const timelineGroups = computed(() => {
       viewRow._categoryIconClass = ''
       viewRow.category_label = '百度网盘'
     }
-    const dt = row.created_at ? dayjs(row.created_at) : null
+    const dt = viewRow._activityAt ? dayjs(viewRow._activityAt) : null
     let key
     let label
     if (!dt || !dt.isValid()) {
@@ -1633,6 +1634,7 @@ async function refreshCompactEstimate() {
 }
 
 let compactRunning = false
+let compactCursor = null
 async function onCompactClick() {
   if (compactRunning) return
   compactRunning = true
@@ -1640,14 +1642,21 @@ async function onCompactClick() {
     let totalUpdated = 0
     let totalSaved = 0
     let safety = 10
+    let done = false
     while (safety-- > 0) {
-      const result = await api.activityLog.compact({ older_than_days: 30, time_budget_seconds: 5 })
+      const result = await api.activityLog.compact({
+        older_than_days: 30, time_budget_seconds: 5, cursor: compactCursor || undefined,
+      })
+      compactCursor = result.next_cursor || null
       totalUpdated += Number(result.updated || 0)
       totalSaved += Number(result.saved_bytes || 0)
-      if (result.done) break
+      done = Boolean(result.done)
+      if (done) break
     }
     invalidateDetail()
-    if (totalUpdated > 0) {
+    if (!done) {
+      ElMessage.warning(`本轮已归档 ${totalUpdated} 条，尚未完成，可继续归档`)
+    } else if (totalUpdated > 0) {
       const mb = (totalSaved / 1024 / 1024).toFixed(2)
       ElMessage.success(`已归档 ${totalUpdated} 条旧记录，释放 ${mb} MB`)
     } else {

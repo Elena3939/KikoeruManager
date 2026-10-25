@@ -101,6 +101,29 @@
 
     <div class="settings-grid two">
       <div class="settings-card">
+        <div class="card-title">输入扫描</div>
+        <div class="field-stack">
+          <SettingsFieldCard label="发现队列容量">
+            <SettingsRangeStepper v-model="config.input_scan.discovery_queue_capacity" :min="1" :max="1024" />
+          </SettingsFieldCard>
+          <SettingsFieldCard label="候选工作集上限">
+            <SettingsRangeStepper v-model="config.input_scan.active_candidate_limit" :min="1" :max="4096" />
+          </SettingsFieldCard>
+          <SettingsFieldCard label="稳定等待截止时间（秒）">
+            <SettingsRangeStepper v-model="config.input_scan.stable_timeout_seconds" :min="10" :max="86400" />
+          </SettingsFieldCard>
+          <SettingsFieldCard label="连续稳定次数">
+            <SettingsRangeStepper v-model="config.processing.file_stable_checks" :min="1" :max="30" />
+          </SettingsFieldCard>
+          <SettingsFieldCard label="稳定复查间隔（秒）">
+            <SettingsRangeStepper v-model="config.processing.file_stable_interval" :min="1" :max="60" />
+          </SettingsFieldCard>
+          <SettingsFieldCard label="状态推送间隔（秒）">
+            <SettingsRangeStepper v-model="config.input_scan.progress_interval_seconds" :min="0.5" :max="60" :step="0.5" />
+          </SettingsFieldCard>
+        </div>
+      </div>
+      <div class="settings-card">
         <div class="card-title">正常解压流程</div>
         <div class="pill-switch-grid">
           <SettingsToggleChip v-for="item in autoProcessItems" :key="item.key" v-model="config.auto_process[item.key]" :label="item.label" />

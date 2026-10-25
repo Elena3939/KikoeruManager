@@ -427,6 +427,9 @@ async def _check_and_write(task) -> None:
         return
 
     meta = dict(task.task_metadata or {})
+    if meta.get('scan_id'):
+        # 扫描可能继续产生任务；由扫描账本的事务 outbox 统一结算通知。
+        return
     if meta.get('notification_suppress'):
         logger.info(f"[通知] 跳过 task={tid} 显式 notification_suppress=True")
         return
@@ -464,7 +467,85 @@ async def _check_and_write(task) -> None:
     await loop.run_in_executor(None, _write_sync, event_key, evt, task, group_key, group_type, group_run_id)
 
 
-def _write_sync(event_key: str, event_type: str, task, group_key: str, group_type: str, group_run_id: str) -> None:
+def write_input_scan_notification(scan_id: str, *, repository=None) -> None:
+    """从持久账本结算，重启后不依赖内存任务集合，重复派发由事件键去重。"""
+    from ..config.settings import get_config
+    from ..models.database import Task as TaskRecord
+    from .input_scan_repository import InputScanRepository
+    from .task_engine import Task, TaskStatus, TaskType
+
+    if not get_config().notification_center.enabled:
+        return
+    repository = repository or InputScanRepository()
+    snapshot = repository.snapshot(scan_id)
+    if not snapshot or not snapshot["producer_closed"] or snapshot["pending_count"]:
+        return
+    outcomes = snapshot["task_outcomes"]
+    if any(outcomes.get(key) for key in ("pending", "processing", "paused", "waiting_retry")):
+        return
+    execution = snapshot["execution_status"]
+    if execution == "waiting" and outcomes.get("waiting_manual"):
+        event_type, label = "waiting_manual", "等待人工处理"
+    elif execution == "success":
+        event_type, label = "completed", "已完成"
+    elif execution in {"partial", "failed"}:
+        event_type, label = "failed", "部分失败" if execution == "partial" else "执行失败"
+    else:
+        return
+    with repository.session_factory() as db:
+        rows = db.query(TaskRecord).filter(
+            TaskRecord.task_metadata["scan_id"].astext == scan_id,
+        ).order_by(TaskRecord.created_at, TaskRecord.id).all()
+        group_tasks = []
+        for row in rows:
+            task = Task(
+                TaskType(row.type), row.source_path, task_id=row.id,
+                status=TaskStatus(row.status), metadata=dict(row.task_metadata or {}),
+            )
+            task.__dict__.update(
+                output_path=row.output_path, progress=row.progress, current_step=row.current_step,
+                error_message=row.error_message, created_at=row.created_at,
+                started_at=row.started_at, completed_at=row.completed_at,
+                session_id=snapshot["batch_id"],
+                rjcode=(row.task_metadata or {}).get("rjcode"),
+            )
+            group_tasks.append(task)
+        task_ids = [item.id for item in rows]
+        if group_tasks:
+            task = group_tasks[0]
+        else:
+            # 扫描/预检可在任务生成前失败，仅构造邮件上下文，不伪造持久任务。
+            task = Task(TaskType.AUTO_PROCESS, snapshot["root_path"], metadata={
+                "scan_id": scan_id, "batch_id": snapshot["batch_id"],
+            })
+            task.__dict__.update(
+                id=None, session_id=snapshot["batch_id"],
+                status=TaskStatus.FAILED, error_message="扫描或预检失败，详见批次记录",
+            )
+    total = snapshot["discovered_groups"]
+    info = {
+        "title": f"输入扫描批次{label}", "summary": (
+            f"共 {total} 组，成功 {outcomes.get('completed', 0)} 组，"
+            f"失败 {outcomes.get('failed', 0) + snapshot['counts'].get('failed', 0)} 组，"
+            f"待人工处理 {outcomes.get('waiting_manual', 0)} 组"
+        ),
+        "severity": {"completed": "success", "failed": "danger", "waiting_manual": "warning"}[event_type],
+        "event_label": label, "event_icon": "", "domain": "extract", "domain_label": "解压入库",
+        "rjcode": "", "source_page": snapshot["policy"].get("source_page", "dashboard"),
+        "source_action": snapshot["policy"].get("source_action", "scan_input"),
+        "source_label": "输入目录扫描", "business_key": scan_id,
+        "route_path": "/tasks", "route_query": {"batch_id": snapshot["batch_id"]},
+        "task_kind": "auto_process",
+    }
+    _write_sync(
+        f"input-scan:{scan_id}:{event_type}", event_type, task,
+        snapshot["batch_id"], "batch", scan_id, info=info, task_ids=task_ids,
+        group_tasks=group_tasks, raise_errors=True,
+    )
+
+
+def _write_sync(event_key: str, event_type: str, task, group_key: str, group_type: str, group_run_id: str,
+                *, info=None, task_ids=None, group_tasks=None, raise_errors=False) -> None:
     from sqlalchemy.dialects.postgresql import insert
     from ..models.database import SessionLocal, NotificationInboxItem, NotificationOutbox
     from ..config.settings import get_config
@@ -473,20 +554,21 @@ def _write_sync(event_key: str, event_type: str, task, group_key: str, group_typ
         if db.query(NotificationInboxItem).filter(NotificationInboxItem.event_key == event_key).first():
             return
 
-        info = _build_notification_info(event_type, group_key, group_type, task)
+        info = info if info is not None else _build_notification_info(event_type, group_key, group_type, task)
         meta = dict(task.task_metadata or {})
         now = datetime.now()
         item_id = str(uuid.uuid4())
 
-        task_ids = [task.id]
-        try:
-            from .task_engine import get_task_engine
-            engine = get_task_engine()
-            for t in list(engine.tasks.values()):
-                if t.id != task.id and _resolve_group_key(t)[0] == group_key:
-                    task_ids.append(t.id)
-        except Exception:
-            pass
+        if task_ids is None:
+            task_ids = [task.id]
+            try:
+                from .task_engine import get_task_engine
+                engine = get_task_engine()
+                for t in list(engine.tasks.values()):
+                    if t.id != task.id and _resolve_group_key(t)[0] == group_key:
+                        task_ids.append(t.id)
+            except Exception:
+                pass
 
         inbox_values = dict(
             id=item_id,
@@ -558,12 +640,13 @@ def _write_sync(event_key: str, event_type: str, task, group_key: str, group_typ
             batch_extra: dict = {}
             if group_type != 'task':
                 try:
-                    from .task_engine import get_task_engine
-                    engine = get_task_engine()
-                    group_tasks = [
-                        t for t in list(engine.tasks.values())
-                        if _resolve_group_key(t)[0] == group_key
-                    ]
+                    if group_tasks is None:
+                        from .task_engine import get_task_engine
+                        engine = get_task_engine()
+                        group_tasks = [
+                            t for t in list(engine.tasks.values())
+                            if _resolve_group_key(t)[0] == group_key
+                        ]
                     has_import_task = any(_task_kind(t) in _IMPORT_TASK_KINDS for t in group_tasks)
                     # 只要组内包含解压 / 入库任务，就按入库批量聚合；
                     # 当前触发通知的任务可能是字幕补配 waiting_manual，不能用它的 kind 判断。
@@ -625,6 +708,8 @@ def _write_sync(event_key: str, event_type: str, task, group_key: str, group_typ
     except Exception:
         db.rollback()
         logger.error("[通知] 写入通知失败", exc_info=True)
+        if raise_errors:
+            raise
     finally:
         db.close()
 

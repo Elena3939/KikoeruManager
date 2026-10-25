@@ -796,6 +796,7 @@ class TestTaskEngine:
             settings_module,
             "get_config",
             lambda: SimpleNamespace(
+                file_move=settings_module.FileMoveConfig(),
                 storage=SimpleNamespace(
                     input_path=str(source_dir),
                     processed_archives_path=str(processed_dir),

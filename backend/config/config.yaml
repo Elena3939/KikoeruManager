@@ -24,6 +24,11 @@ processing:
   archive_poll_interval_seconds: 3
   archive_retry_delay_seconds: 300
   archive_max_retry_count: 5
+input_scan:
+  discovery_queue_capacity: 128
+  active_candidate_limit: 256
+  stable_timeout_seconds: 300
+  progress_interval_seconds: 1
 database:
   host: 127.0.0.1
   port: 5432

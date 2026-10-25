@@ -579,6 +579,14 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
             if (category_key, batch_id) in synthetic_import_batch_keys:
                 rows.append(batch_row)
 
+    from ..input_scan_protocol import scan_batch_status
+    for batch_row in import_batch_rows_by_key.values():
+        status = scan_batch_status(batch_row.get("detail"))
+        if status is not None:
+            batch_row["status"] = batch_row["result_status"] = status
+            if status == "incomplete":
+                batch_row["outcome_label"] = "扫描或后续业务尚未结束"
+
     auto_import_rows: list[dict[str, Any]] = []
     for row in rows:
         if row.get("category") == "auto_import":

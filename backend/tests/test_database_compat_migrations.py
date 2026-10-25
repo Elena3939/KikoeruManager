@@ -43,6 +43,11 @@ def test_alembic_resource_and_upload_bootstrap(alembic_test_database, initial_sc
         database.ResourceSourceProbe.__table__,
         database.Base.metadata.tables["browser_upload_sessions"],
         database.Base.metadata.tables["browser_upload_files"],
+        database.InputScanRun.__table__,
+        database.InputScanCandidate.__table__,
+        database.InputScanEntry.__table__,
+        database.InputSourceClaim.__table__,
+        database.InputScanOutbox.__table__,
     )
     for expected in expected_tables:
         actual = {column["name"]: column for column in schema.get_columns(expected.name)}
@@ -69,7 +74,7 @@ def test_alembic_resource_and_upload_bootstrap(alembic_test_database, initial_sc
     )
     with engine.connect() as conn:
         assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            "20261023_0001_browser_uploads"
+            "20261025_0001_input_scan_queue"
         )
         if initial_schema in ("precreated", "partial_upload"):
             assert conn.execute(text(
@@ -82,7 +87,26 @@ def test_alembic_resource_and_upload_bootstrap(alembic_test_database, initial_sc
 
 class _CompatProbeConnection:
     def execute(self, *_args, **_kwargs):
+        return self
+
+    def scalar(self):
         return None
+
+
+def test_compat_widens_legacy_task_type(db_engine, db_session):
+    with db_engine.begin() as conn:
+        conn.execute(text("ALTER TABLE tasks ALTER COLUMN type TYPE VARCHAR(20)"))
+        database._migrate_compat_schema(conn)
+        database._migrate_compat_schema(conn)
+        length = conn.execute(text(
+            "SELECT character_maximum_length FROM information_schema.columns "
+            "WHERE table_schema=current_schema() AND table_name='tasks' AND column_name='type'"
+        )).scalar_one()
+        assert length == 64
+        conn.execute(text(
+            "INSERT INTO tasks(id, type, status) VALUES "
+            "('derived-schema-check', 'process_existing_folder', 'pending')"
+        ))
 
 
 @pytest.fixture

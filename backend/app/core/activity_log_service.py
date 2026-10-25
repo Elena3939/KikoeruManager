@@ -682,6 +682,9 @@ def write_activity_log(
     rjcode: Optional[str] = None,
     task_id: Optional[str] = None,
     source_path: Optional[str] = None,
+    *,
+    transaction=None,
+    event_key: Optional[str] = None,
 ) -> None:
     """入队一条操作记录（Phase 1：异步批量写）。
 
@@ -734,7 +737,11 @@ def write_activity_log(
         "parent_id": parent_id_value,
         "searchable_text": searchable_text,
     }
-    get_activity_log_writer().enqueue(payload)
+    if transaction is not None:
+        payload["event_key"] = event_key
+        get_activity_log_writer().insert_once(transaction, payload)
+    else:
+        get_activity_log_writer().enqueue(payload)
 
 
 def log_asmr_sync_event(
@@ -832,9 +839,12 @@ def log_task_lifecycle_event(task) -> None:
     submit_lifecycle_prep(_build_and_write_task_lifecycle_log, snapshot)
 
 
-def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
+def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction=None, event_key=None) -> None:
     """真正构造 detail 并入队的函数，运行在 lifecycle 线程池里。"""
     from .task_engine import TaskStatus, TaskType
+    from functools import partial
+
+    write_event = partial(write_activity_log, transaction=transaction, event_key=event_key)
 
     task = _TaskSnapshotProxy(snapshot)
     try:
@@ -875,7 +885,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
     category = type_map.get(tt, CATEGORY_AUTO_IMPORT) if tt else CATEGORY_AUTO_IMPORT
 
     if st == TaskStatus.PROCESSING:
-        write_activity_log(
+        write_event(
             category=category,
             action="task_finished_incomplete",
             status="incomplete",
@@ -1297,7 +1307,11 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             or ""
         ).strip()
         extract_output_bytes = 0
-        if st == TaskStatus.COMPLETED and tt == TaskType.AUTO_PROCESS and archive_input:
+        extract_performed = bool(
+            tt == TaskType.AUTO_PROCESS and archive_input
+            and (not meta.get("scan_id") or meta.get("input_first_extract_at"))
+        )
+        if st == TaskStatus.COMPLETED and extract_performed:
             extract_output_bytes = _safe_path_size(task.output_path) if task.output_path else 0
             if extract_output_bytes <= 0 and preview_extract_path:
                 extract_output_bytes = _safe_path_size(preview_extract_path)
@@ -1320,7 +1334,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             filtered_size = int(meta.get("filtered_size") or 0)
         except Exception:
             filtered_size = 0
-        if st == TaskStatus.COMPLETED and tt == TaskType.AUTO_PROCESS and archive_input:
+        if st == TaskStatus.COMPLETED and extract_performed:
             extract_label = "预检解包" if source_mode == "linked_translation_archive_pending" and not task.output_path else "解压产物"
             summary = (
                 f"{summary or '解压入库完成'}，"
@@ -1333,7 +1347,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "source_basename": os.path.basename(str(archive_path or task.source_path or "")),
             "archive_path": archive_path,
             "archive_input": archive_input,
-            "extract_performed": bool(tt == TaskType.AUTO_PROCESS and archive_input),
+            "extract_performed": extract_performed,
             "extract_output_bytes": extract_output_bytes,
             "archive_size_bytes": archive_size_bytes,
             "duration_ms": duration_ms,
@@ -1354,6 +1368,14 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "multi_rj_dispatch_failed": len(list(meta.get("multi_rj_dispatch_failures") or [])) or None,
             **_import_timing_snapshot(task, meta),
         }
+
+    if meta.get("scan_id"):
+        for key in (
+            "scan_id", "candidate_id", "input_route", "metadata_prefetch",
+            "input_first_extract_at",
+        ):
+            if meta.get(key) is not None:
+                detail[key] = meta[key]
 
     if tt in {
         TaskType.CIRCLE_COMPLETION_INDEX,
@@ -1386,7 +1408,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
     if result.get("outcome"):
         detail["business_outcome"] = result["outcome"]
 
-    write_activity_log(
+    write_event(
         category=category,
         action=action,
         status=status,

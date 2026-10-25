@@ -14,6 +14,31 @@ from app.core.task_engine import Task, TaskEngine, TaskStatus, TaskType
 CODES = ["RJ01410151", "RJ01428862"]
 
 
+@pytest.mark.asyncio
+async def test_dispatch_failure_preserves_moved_payload(tmp_path, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "get_config", lambda: SimpleNamespace(
+        storage=SimpleNamespace(temp_path=str(tmp_path)),
+        file_move=settings.FileMoveConfig(journal_path=str(tmp_path / "moves")),
+    ))
+    monkeypatch.setattr(Task, "_global_event_hook", None)
+    engine = TaskEngine(max_concurrent=1)
+    source = tmp_path / CODES[0]
+    source.mkdir()
+    (source / "track.wav").write_bytes(b"audio")
+    parent = Task(TaskType.AUTO_PROCESS, "Share.zip")
+    monkeypatch.setattr(engine, "submit", AsyncMock(side_effect=RuntimeError("提交失败")))
+    try:
+        assert await engine._dispatch_multi_rj_subtasks(parent, str(tmp_path), [
+            {"rjcode": CODES[0], "path": str(source)},
+        ]) == []
+        failed = parent.task_metadata["multi_rj_dispatch_failures"][0]
+        assert (Path(failed["path"]) / "track.wav").read_bytes() == b"audio"
+    finally:
+        engine.stop()
+
+
 @pytest.fixture
 def isolated_engine(monkeypatch):
     engine = TaskEngine(max_concurrent=1)
@@ -52,6 +77,8 @@ async def test_nested_original_and_bonus_keep_separate_payloads_and_dispatch(
     service = ExtractService()
     parent = Task(TaskType.AUTO_PROCESS, str(source), auto_classify=True, metadata={
         "aggregate_archive": True, "aggregate_rjcodes": CODES,
+        "scan_id": "scan-parent", "candidate_id": "candidate-parent",
+        "input_stability": {"parent_only": True},
     })
 
     async def extract_inner(archive_path, output_path, *_args, **_kwargs):
@@ -87,6 +114,9 @@ async def test_nested_original_and_bonus_keep_separate_payloads_and_dispatch(
         assert child.type == TaskType.PROCESS_EXISTING_FOLDER
         assert child.auto_classify is True
         assert child.task_metadata["rjcode_lock"] is True
+        assert child.task_metadata["scan_id"] == "scan-parent"
+        assert child.task_metadata["candidate_id"] == "candidate-parent"
+        assert "input_stability" not in child.task_metadata
         assert (Path(child.source_path) / payloads[index]).read_bytes() == child.rjcode.encode()
         other = payloads[1 - index]
         assert not (Path(child.source_path) / other).exists()

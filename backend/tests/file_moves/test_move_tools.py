@@ -41,6 +41,65 @@ def test_mapping_uses_directory_boundary_and_longest_mount():
     assert result["mappings"][1]["host"] == "/volume5/media"
 
 
+def test_bundle_syncs_all_business_mounts_without_app_config(tmp_path):
+    installer = tool("host-file-mover-install")
+    info = inspected()
+    info["Mounts"].extend([
+        {"Destination": "/anime_dowm", "Source": "/volume5/ANIME/压缩包/input",
+         "Type": "bind", "RW": True},
+        {"Destination": "/library/nested", "Source": "/volume5/media",
+         "Type": "bind", "RW": True},
+    ])
+    result = installer.make_bundle(tmp_path / "bundle", info, [], 1000, 1000,
+                                   "/var/lib/mover", ROOT / "backend/app/core")
+    mappings = {row["container"]: row["host"] for row in result["mappings"]}
+    assert mappings == {
+        "/library": "/volume4/ASMR", "/library/nested": "/volume5/media",
+        "/anime_dowm": "/volume5/ANIME/压缩包/input",
+        "/app/data/browser-uploads": "/volume1/data/browser-uploads",
+        "/app/data/filter-recovery": "/volume1/data/filter-recovery",
+    }
+
+
+@pytest.mark.parametrize("path", ["/app/config", "/app/postgres", "/app/app", "/app/static",
+                                  "/app/data/redis", "/etc", "/usr", "/var/lib", "/"])
+def test_mount_discovery_excludes_protected_directories(path):
+    installer = tool("host-file-mover-install")
+    info = inspected()
+    info["Mounts"].append({"Destination": path, "Source": "/volume1/protected",
+                           "Type": "bind", "RW": True})
+    assert path not in installer.mounted_business_paths(info)
+
+
+def test_mount_discovery_excludes_readonly_and_named_volumes():
+    installer = tool("host-file-mover-install")
+    info = inspected()
+    info["Mounts"].extend([
+        {"Destination": "/readonly", "Source": "/volume1/readonly", "Type": "bind", "RW": False},
+        {"Destination": "/named", "Source": "/volume1/named", "Type": "volume", "RW": True},
+    ])
+    assert not {"/readonly", "/named"} & set(installer.mounted_business_paths(info))
+
+
+def test_auto_sync_keeps_explicit_business_subdirectories(tmp_path):
+    installer = tool("host-file-mover-install")
+    result = installer.make_bundle(tmp_path / "bundle", inspected(), ["/library/selected"],
+                                   1000, 1000, "/var/lib/mover", ROOT / "backend/app/core")
+    mappings = {row["container"]: row["host"] for row in result["mappings"]}
+    assert mappings["/library/selected"] == "/volume4/ASMR/selected"
+    assert mappings["/library"] == "/volume4/ASMR"
+
+
+def test_auto_sync_rejects_crossing_readonly_nested_mount(tmp_path):
+    installer = tool("host-file-mover-install")
+    info = inspected()
+    info["Mounts"].append({"Destination": "/library/readonly", "Source": "/volume1/readonly",
+                           "Type": "bind", "RW": False})
+    with pytest.raises(ValueError, match="嵌套挂载"):
+        installer.make_bundle(tmp_path / "bundle", info, [], 1000, 1000,
+                              "/var/lib/mover", ROOT / "backend/app/core")
+
+
 @pytest.mark.parametrize("root", ["/var/lib/a b", "/var/lib/a%h", "/var/lib/a\nx", "/var/lib/../etc"])
 def test_systemd_paths_cannot_inject_arguments(root):
     with pytest.raises(ValueError):

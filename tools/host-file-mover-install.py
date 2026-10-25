@@ -8,6 +8,7 @@ import re
 import shutil
 import socket
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -66,6 +67,37 @@ def business_paths(config):
     return sorted({canonical(value) for value in values if value})
 
 
+def validate_business_path(path):
+    canonical(path)
+    forbidden = ("/app/config", "/app/postgres", "/app/app", "/app/static",
+                 "/proc", "/sys", "/dev", "/etc", "/var/run", "/run",
+                 "/usr", "/bin", "/sbin", "/lib", "/lib64", "/boot", "/root", "/var/lib")
+    if path == "/" or path in ("/app", "/app/data") or any(
+            within(path, item) or within(item, path) for item in forbidden):
+        raise ValueError("禁止映射配置、数据库、代码或系统目录: " + path)
+    if within(path, "/app/data") and not any(
+            within(path, item) for item in ("/app/data/filter-recovery", "/app/data/browser-uploads")):
+        raise ValueError("data 仅允许明确的上传和过滤恢复子目录: " + path)
+
+
+def mounted_business_paths(inspected):
+    """同步实际可写业务挂载，不依赖当前设置选中了哪个目录。"""
+    paths = set()
+    for mount in inspected["Mounts"]:
+        if mount["Type"] != "bind" or not mount.get("RW"):
+            continue
+        path = mount["Destination"]
+        if path == "/app/data":
+            paths.update(("/app/data/filter-recovery", "/app/data/browser-uploads"))
+            continue
+        try:
+            validate_business_path(path)
+        except ValueError:
+            continue
+        paths.add(path)
+    return sorted(paths)
+
+
 def build_config(inspected, paths, uid, gid, root):
     """按边界及最长挂载前缀映射；不接受手写宿主路径。"""
     installation_root(root)
@@ -78,16 +110,8 @@ def build_config(inspected, paths, uid, gid, root):
         raise ValueError("inspect 容器 ID 无效")
     mounts = sorted(inspected["Mounts"], key=lambda row: len(row["Destination"]), reverse=True)
     mappings = []
-    forbidden = ("/app/config", "/app/postgres", "/app/app", "/app/static",
-                 "/proc", "/sys", "/dev", "/etc", "/var/run", "/run")
     for path in sorted(set(paths)):
-        canonical(path)
-        if path == "/" or path in ("/app", "/app/data") or any(
-                within(path, item) or within(item, path) for item in forbidden):
-            raise ValueError("禁止映射配置、数据库、代码或系统目录: " + path)
-        if within(path, "/app/data") and not any(
-                within(path, item) for item in ("/app/data/filter-recovery", "/app/data/browser-uploads")):
-            raise ValueError("data 仅允许明确的上传和过滤恢复子目录: " + path)
+        validate_business_path(path)
         mounted = next((row for row in mounts if within(path, row["Destination"])), None)
         if not mounted or mounted["Type"] != "bind" or not mounted.get("RW"):
             raise ValueError("业务路径没有可写 bind 挂载: " + path)
@@ -117,6 +141,7 @@ def make_bundle(output, inspected, paths, uid, gid, root, sources, host_python="
     canonical(host_python)
     if not re.fullmatch(r"/[a-zA-Z0-9_./-]+", host_python):
         raise ValueError("宿主 Python 路径包含不支持的 systemd 字符")
+    paths = sorted(set(paths) | set(mounted_business_paths(inspected)))
     config = build_config(inspected, paths, uid, gid, root)
     output.mkdir(parents=True, exist_ok=False)
     for name in FILES:
@@ -219,7 +244,16 @@ def install(bundle, root, container, docker, production=False):
             "import json;"
             "c=HostMoveClient('/app/data/.host-file-mover/control.sock');"
             "print(json.dumps([c.probe(a,b) for a,b in " + repr(pairs) + "]))")
-        probes = json.loads(run(docker, "exec", container, "python3", "-c", probe_code))
+        # systemd active 只表示进程已启动，socket 可能尚未完成绑定和权限设置。
+        deadline = time.monotonic() + 15
+        while True:
+            try:
+                probes = json.loads(run(docker, "exec", container, "python3", "-c", probe_code))
+                break
+            except subprocess.CalledProcessError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.25)
         digest = hashlib.sha256(json.dumps(config["mappings"], sort_keys=True).encode()).hexdigest()
         if not probes or any(row["mapping_version"] != digest for row in probes):
             raise RuntimeError("执行器能力验证返回了其它映射版本")
@@ -266,16 +300,16 @@ def main():
     if args.install:
         install(args.bundle, Path(args.root), args.container, args.docker, args.production)
     else:
-        if args.inspect_json is None or args.uid is None or args.gid is None or not (
-                args.paths_json or args.app_config_json):
-            parser.error("准备安装包需要 inspect、UID/GID 及 paths-json 或 app-config-json")
+        if args.inspect_json is None or args.uid is None or args.gid is None:
+            parser.error("准备安装包需要 inspect 及 UID/GID")
         inspected = json.loads(args.inspect_json.read_text(encoding="utf-8-sig"))
         if isinstance(inspected, list):
             if len(inspected) != 1:
                 parser.error("inspect 必须只包含目标容器")
             inspected = inspected[0]
         paths = (business_paths(json.loads(args.app_config_json.read_text(encoding="utf-8-sig")))
-                 if args.app_config_json else json.loads(args.paths_json.read_text(encoding="utf-8-sig")))
+                 if args.app_config_json else
+                 json.loads(args.paths_json.read_text(encoding="utf-8-sig")) if args.paths_json else [])
         make_bundle(args.bundle, inspected, paths,
                     args.uid, args.gid, args.root, Path(__file__).resolve().parents[1] / "backend/app/core",
                     args.host_python)

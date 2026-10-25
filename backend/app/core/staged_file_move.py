@@ -88,7 +88,7 @@ def move_path_replacing_sync(source, destination, **kwargs):
     _validate_destination(source, destination)
     root = _journal_root()
     root.mkdir(parents=True, exist_ok=True)
-    key = hashlib.sha256(os.path.normcase(source).encode()).hexdigest()
+    key = hashlib.sha256(os.fsencode(os.path.normcase(source))).hexdigest()
     path = root / (key + ".replacement.json")
     with _operation_lock(root / (key + ".lock")):
         if (root / (key + ".json")).exists():
@@ -502,7 +502,7 @@ def move_path_sync(source, destination, *, overwrite=False, progress_cb=None, ca
     _validate_destination(source, destination)
     root = _journal_root()
     root.mkdir(parents=True, exist_ok=True)
-    key = hashlib.sha256(os.path.normcase(source).encode()).hexdigest()
+    key = hashlib.sha256(os.fsencode(os.path.normcase(source))).hexdigest()
     record_path = root / (key + ".json")
 
     def check():

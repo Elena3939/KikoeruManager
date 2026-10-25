@@ -111,6 +111,8 @@ export function useActivityHistoryLite() {
       )
       // 串号保护：只让最后一次发起的请求结果落地
       if (seq !== listReqSeq) return
+      // 同一父记录的子任务重试后 ID 不变，重新取列表时同步丢弃旧详情。
+      invalidateDetail()
       items.value = data.items || []
       total.value = data.total || 0
       const window = data?.window || {}
@@ -209,29 +211,34 @@ export function useActivityHistoryLite() {
     if (!force && detailCache.has(key)) {
       return detailCache.get(key)
     }
-    if (detailInflight.has(key)) return detailInflight.get(key)
+    if (detailInflight.has(key)) return detailInflight.get(key).promise
+    const request = {}
+    detailInflight.set(key, request)
     const promise = (async () => {
       detailLoading.value = true
       try {
         const data = await api.activityLog.detail(key)
         const row = data?.row || null
-        if (row) detailCache.set(key, row)
+        if (row && detailInflight.get(key) === request) detailCache.set(key, row)
         return row
       } finally {
-        detailLoading.value = false
-        detailInflight.delete(key)
+        if (detailInflight.get(key) === request) detailInflight.delete(key)
+        detailLoading.value = detailInflight.size > 0
       }
     })()
-    detailInflight.set(key, promise)
+    request.promise = promise
     return promise
   }
 
   function invalidateDetail(logId) {
     if (logId == null) {
       detailCache.clear()
+      detailInflight.clear()
     } else {
       detailCache.delete(String(logId))
+      detailInflight.delete(String(logId))
     }
+    detailLoading.value = detailInflight.size > 0
   }
 
   return {

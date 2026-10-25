@@ -24,7 +24,7 @@ def restart_preparing(source):
     """确认执行器停止后隔离残留；不自动删除无法证明完整归属的目录成员。"""
     source = os.path.abspath(source)
     root = _journal_root()
-    key = hashlib.sha256(os.path.normcase(source).encode()).hexdigest()
+    key = hashlib.sha256(os.fsencode(os.path.normcase(source))).hexdigest()
     path = root / (key + ".json")
     if not path.exists():
         path = root / (key + ".replacement.json")

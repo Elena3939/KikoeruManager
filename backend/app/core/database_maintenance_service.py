@@ -298,6 +298,7 @@ def _do_compact_loop(*, older_than_days: int, min_detail_bytes: int) -> Dict[str
     from .activity_log_compactor import compact_old_activity_logs
 
     overall_deadline = time.monotonic() + 10 * 60
+    cursor = None
     aggregate = {
         "scanned": 0,
         "updated": 0,
@@ -318,7 +319,9 @@ def _do_compact_loop(*, older_than_days: int, min_detail_bytes: int) -> Dict[str
             max_rows=5000,
             chunk_size=200,
             time_budget_seconds=5.0,
+            cursor=cursor,
         )
+        cursor = result.get("next_cursor")
         aggregate["rounds"] += 1
         for key in ("scanned", "updated", "skipped", "failed", "saved_bytes"):
             aggregate[key] += int(result.get(key, 0) or 0)

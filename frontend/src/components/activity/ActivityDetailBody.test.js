@@ -5,6 +5,24 @@ import ActivityDetailBody from './ActivityDetailBody.vue'
 vi.mock('./ActivityRichBlock.vue', () => ({ default: { template: '<div />' } }))
 vi.mock('../common/AppEmptyState.vue', () => ({ default: { template: '<div />' } }))
 
+it('父记录重试后显示最新活动时间，旧记录仍使用创建时间', async () => {
+  const row = {
+    id: 'parent', category: 'auto_import', created_at: '2026-10-19T10:00:00',
+    latest_activity_at: '2026-10-20T12:00:00', detail: {},
+  }
+  const wrapper = mount(ActivityDetailBody, {
+    props: { row, formatDateTime: (value) => value },
+    global: { directives: { 'app-loading': {} } },
+  })
+  try {
+    expect(wrapper.get('.subtitle-time').text()).toBe(row.latest_activity_at)
+    await wrapper.setProps({ row: { ...row, latest_activity_at: null } })
+    expect(wrapper.get('.subtitle-time').text()).toBe(row.created_at)
+  } finally {
+    wrapper.unmount()
+  }
+})
+
 it('返回入口透传事件，恢复父级时保留关联事件展开和滚动位置', async () => {
   const parent = {
     id: 'batch', category: 'auto_import', detail: {

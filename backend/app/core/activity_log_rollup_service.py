@@ -73,6 +73,11 @@ def _rollup_status(success: int, failed: int, partial: int, waiting: int) -> str
     return ""
 
 
+def _parent_status(parent, status):
+    from .input_scan_protocol import scan_batch_status
+    return scan_batch_status(getattr(parent, "detail", None)) or status
+
+
 def _created_at(value: Any) -> datetime:
     if isinstance(value, datetime):
         return value
@@ -187,7 +192,7 @@ class ActivityLogRollupService:
         record.failed_count = failed
         record.partial_count = partial
         record.waiting_count = waiting
-        record.latest_status = _rollup_status(success, failed, partial, waiting)
+        record.latest_status = _parent_status(parent, _rollup_status(success, failed, partial, waiting))
         record.latest_activity_at = _created_at(latest.created_at)
         record.updated_at = datetime.now()
         return record
@@ -327,7 +332,10 @@ class ActivityLogRollupService:
                     "failed_count": failed,
                     "partial_count": partial,
                     "waiting_count": waiting,
-                    "latest_status": _rollup_status(success, failed, partial, waiting),
+                    "latest_status": _parent_status(
+                        next((raw for raw in raw_rows if raw.action == "batch_start"), raw_rows[0] if raw_rows else None),
+                        _rollup_status(success, failed, partial, waiting),
+                    ),
                 }
                 actual = {
                     "child_count": int(row.child_count or 0),

@@ -2,6 +2,8 @@
 param(
     [switch]$Force,
     [switch]$DryRun,
+    [ValidatePattern('^v\d+\.\d+\.\d+$')]
+    [string]$RuntimeBaseTag,
     [string]$ReleaseId
 )
 
@@ -58,6 +60,19 @@ $dryRunValue = if ($DryRun) { '1' } else { '0' }
 $packageOverrides = Join-Path ([System.IO.Path]::GetTempPath()) "kikoerumanager-image-$ReleaseId"
 
 try {
+    $runtimeImage = $null
+    if ($RuntimeBaseTag) {
+        $hostname = (& $connectScript 'hostname' | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $hostname -ne 'Elena') { throw '生产主机校验失败。' }
+        $runtimeRevision = (& git -C $repoRoot rev-parse --verify "$RuntimeBaseTag^{commit}" | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { throw '运行环境基线不存在。' }
+        $runtimeChanges = @(& git -C $repoRoot diff --name-only $RuntimeBaseTag -- Dockerfile backend/Dockerfile backend/requirements.txt docker frontend/package.json frontend/package-lock.json frontend/pnpm-lock.yaml)
+        if ($LASTEXITCODE -ne 0 -or $runtimeChanges.Count) { throw '运行环境发生变化，不能复用基线镜像。' }
+        $identity = (& $connectScript -Sudo '/var/packages/Docker/target/usr/bin/docker inspect --format ''{{.Image}} {{index .Config.Labels "org.opencontainers.image.version"}} {{index .Config.Labels "org.opencontainers.image.revision"}}'' elena39-kikoerumanager' | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $identity -notmatch '^sha256:[a-f0-9]{64} ') { throw '无法确认生产镜像身份。' }
+        $runtimeImage = $identity.Split(' ')[0]
+        if ($identity -ne "$runtimeImage $($RuntimeBaseTag.Substring(1)) $runtimeRevision") { throw '生产运行环境与指定基线不一致。' }
+    }
     # 完整镜像也只使用本机构建的前端，生产不安装 Node 或运行 npm。
     & npm --prefix (Join-Path $repoRoot 'frontend') run build
     if ($LASTEXITCODE -ne 0) { throw '本地前端构建失败，拒绝发布。' }
@@ -66,6 +81,21 @@ try {
     $runtimeStart = $dockerfile.IndexOf('# 阶段2：后端运行环境')
     if ($runtimeStart -lt 0) { throw 'Dockerfile 运行阶段标记不存在，拒绝改写构建快照。' }
     $imageDockerfile = "FROM scratch AS frontend-builder`nCOPY frontend/dist /app/frontend/dist`n`n" + $dockerfile.Substring($runtimeStart)
+    if ($runtimeImage) {
+        $imageDockerfile = @"
+FROM $runtimeImage
+WORKDIR /app
+ARG KIKOERUMANAGER_VERSION=dev
+ENV KIKOERUMANAGER_VERSION=`${KIKOERUMANAGER_VERSION}
+LABEL org.opencontainers.image.version="`${KIKOERUMANAGER_VERSION}"
+LABEL org.opencontainers.image.revision="$sourceRevision"
+RUN rm -rf /app/app /app/static /app/backend/alembic
+COPY backend/app/ /app/app/
+COPY backend/alembic/ /app/backend/alembic/
+COPY alembic.ini /app/alembic.ini
+COPY frontend/dist/ /app/static/
+"@
+    }
     [IO.File]::WriteAllText((Join-Path $packageOverrides 'Dockerfile'), $imageDockerfile, [Text.UTF8Encoding]::new($false))
     $dockerignore = [IO.File]::ReadAllText((Join-Path $repoRoot '.dockerignore')) + "`n!frontend/dist`n!frontend/dist/**`n"
     [IO.File]::WriteAllText((Join-Path $packageOverrides '.dockerignore'), $dockerignore, [Text.UTF8Encoding]::new($false))

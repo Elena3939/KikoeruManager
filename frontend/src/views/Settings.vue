@@ -73,6 +73,15 @@
       </SettingsSectionPanel>
 
       <SettingsSectionPanel
+        v-else-if="activeSection === 'fileMove'"
+        kicker="File Movement"
+        title="文件移动加速"
+        description="查看宿主执行器状态、配置快速克隆，并检查入库与过滤恢复路径的搬运能力。"
+      >
+        <FileMoveSettingsPanel :config="config" />
+      </SettingsSectionPanel>
+
+      <SettingsSectionPanel
         v-else-if="activeSection === 'rules'"
         kicker="Rules"
         title="内容规则"
@@ -173,6 +182,7 @@ import SettingsWorkbench from '../components/settings/SettingsWorkbench.vue'
 import BaiduNetdiskNavIcon from '../components/settings/BaiduNetdiskNavIcon.vue'
 import StorageSettingsPanel from '../components/settings/StorageSettingsPanel.vue'
 import ProcessingSettingsPanel from '../components/settings/ProcessingSettingsPanel.vue'
+import FileMoveSettingsPanel from '../components/settings/FileMoveSettingsPanel.vue'
 import RulesSettingsPanel from '../components/settings/RulesSettingsPanel.vue'
 import ServicesSettingsPanel from '../components/settings/ServicesSettingsPanel.vue'
 import AISubtitleSettingsPanel from '../components/settings/AISubtitleSettingsPanel.vue'
@@ -190,7 +200,8 @@ import { configApi } from '../api'
 
 const sectionKeyMap = {
   storage: ['storage'],
-  processing: ['watcher', 'processing', 'extract', 'auto_process', 'process_existing'],
+  processing: ['watcher', 'processing', 'input_scan', 'extract', 'auto_process', 'process_existing'],
+  fileMove: ['file_move'],
   rules: ['filter', 'rename', 'classification', 'path_mappings', 'path_mapping_enabled'],
   services: ['kikoeru_server', 'asmr_sync', 'asmr_sync_step', 'rj_subtitle', 'email_watcher', 'bonus_probe', 'circle_external_search'],
   aiSubtitle: ['ai_subtitle_matching'],
@@ -263,6 +274,7 @@ const selectedLibraryId = ref('')
 const sections = [
   { id: 'storage', title: '存储与库存', short: '路径、本地库存、群晖模板', icon: HardDrive, keywords: ['storage', 'library', 'synology', '群晖', '库存'] },
   { id: 'processing', title: '处理流程', short: '监视、解压、自动处理', icon: Workflow, keywords: ['watcher', 'processing', 'extract', '自动处理'] },
+  { id: 'fileMove', title: '文件移动加速', short: '快速克隆、运行状态、路径诊断', icon: HardDrive, keywords: ['file_move', 'reflink', 'clone', '移动', '克隆', '过滤恢复', '执行器', '加速'] },
   { id: 'rules', title: '内容规则', short: '过滤、重命名、分类、路径映射', icon: Boxes, keywords: ['filter', 'rename', 'classification', 'path'] },
   { id: 'services', title: '外部服务', short: 'Kikoeru、ASMR、RJ 字幕、特典补全', icon: ScanSearch, keywords: ['kikoeru', 'asmr', 'subtitle', 'email', 'bonus', 'probe', 'dlsite', '外部服务', '特典补全', '特典探测'] },
   { id: 'aiSubtitle', title: 'AI 配对', short: '模型、Key、提示词、阈值', icon: Bot, keywords: ['ai', 'subtitle', 'match', 'model', 'prompt', '字幕配对', '模型', '提示词'] },

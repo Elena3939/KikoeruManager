@@ -2426,6 +2426,42 @@ html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-wind
   color: var(--km-dark-text) !important;
 }
 
+html.kikoerumanager-dark .fp-dlg-window :is(.fp-dlg-pill-label, .fp-tree-sub, .fp-tree-size, .fp-tree-col-size) {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .fp-dlg-window .fp-tree-name {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .fp-dlg-window .fp-tree-row .fp-tree-status.is-normal {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .fp-dlg-window :is(.fp-tree-status.is-fixed, .fp-dlg-pill.is-emerald) {
+  background: #123c30 !important;
+  border-color: #28765b !important;
+  color: #a7f3d0 !important;
+}
+
+html.kikoerumanager-dark .fp-dlg-window :is(.fp-tree-status.is-warn, .fp-dlg-pill.is-amber) {
+  background: #493719 !important;
+  border-color: #8d692c !important;
+  color: #fde68a !important;
+}
+
+html.kikoerumanager-dark .fp-dlg-window .fp-dlg-pill:is(.is-emerald, .is-amber) b {
+  color: inherit !important;
+}
+
+html.kikoerumanager-dark .fp-dlg-window .fp-dlg-btn-primary {
+  background: var(--km-dark-primary-button-bg) !important;
+  color: var(--km-dark-primary-button-text) !important;
+  border-color: var(--km-dark-border-strong) !important;
+}
+
 html.kikoerumanager-dark .rpd-window .rpd-input::placeholder,
 html.kikoerumanager-dark .brp-window .brp-input::placeholder,
 html.kikoerumanager-dark .vrd-window .vrd-row-input::placeholder {

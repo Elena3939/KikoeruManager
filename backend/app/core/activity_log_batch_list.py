@@ -122,6 +122,10 @@ def list_batch_lite(db, query, *, page, limit, status=None, searching=False):
         source = db.query(ActivityLog).join(candidates, and_(
             candidates.c.kind == kind, candidates.c.category == ActivityLog.category, candidates.c.key == key,
         )) if searching else query
+        source = source.filter(or_(
+            ~ActivityLog.category.in_(IMPORT_CATEGORIES),
+            ActivityLog.action.in_((*IMPORT_RESULT_ACTIONS, "batch_start")),
+        ))
         groups = source.with_entities(
             kind.label("kind"), ActivityLog.category.label("category"), key.label("key"),
             func.max(ActivityLog.created_at).label("latest"),
@@ -173,6 +177,7 @@ def list_batch_lite(db, query, *, page, limit, status=None, searching=False):
     for group in selected:
         item = batch_items.get((group.category, group.key)) if group.kind == "batch" else individual.get(group.key)
         if item is not None:
+            item["latest_activity_at"] = group.latest.isoformat() if group.latest else item.get("created_at")
             items.append(item)
     return {"total": total, "page": page, "limit": limit, "items": items}
 

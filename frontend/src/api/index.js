@@ -121,6 +121,13 @@ apiClient.interceptors.response.use(
   }
 )
 
+export const fileMoveApi = {
+  status: async () => (await apiClient.get('/system/file-move/status', { timeout: 15000 })).data,
+  probe: async (source, destination) => (
+    await apiClient.post('/system/file-move/probe', { source, destination }, { timeout: 15000 })
+  ).data
+}
+
 export const taskApi = {
   // 兼容层：
   // 这组接口只保留给少数历史链路使用，对应后端旧 /api/tasks/*。
@@ -549,10 +556,18 @@ export const watcherApi = {
 }
 
 export const scanApi = {
-  scan: async () => {
-    const response = await apiClient.post('/scan')
+  scan: async (requestKey) => {
+    const response = await apiClient.post('/scan', null, {
+      params: { background: true, ...(requestKey ? { request_key: requestKey } : {}) }
+    })
     return response.data
-  }
+  },
+  status: async (scanId) => {
+    const response = await apiClient.get(`/scan/status/${encodeURIComponent(scanId)}`)
+    return response.data
+  },
+  latest: async () => (await apiClient.get('/scan/latest')).data,
+  cancel: async (scanId) => (await apiClient.post(`/scan/${encodeURIComponent(scanId)}/cancel`)).data,
 }
 
 export const passwordApi = {

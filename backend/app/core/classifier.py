@@ -28,9 +28,9 @@ class InventoryEmptyShellChangedError(RuntimeError):
 class SmartClassifier:
     """智能分类器"""
 
-    def __init__(self):
+    def __init__(self, prepared_conflicts=None):
         # 不缓存配置，每次都获取最新配置
-        pass
+        self.prepared_conflicts = prepared_conflicts
 
     @property
     def config(self):
@@ -66,7 +66,7 @@ class SmartClassifier:
             return True
         
         # 3. 标记RJ号正在处理（防止其他任务同时处理）
-        if engine:
+        if engine and self.prepared_conflicts is None:
             engine.mark_rjcode_processing(rjcode)
             task.rjcode = rjcode  # 保存RJ号到任务，用于后续清理
         
@@ -708,6 +708,21 @@ class SmartClassifier:
         """添加到问题作品表（避免重复）"""
         import uuid
         from datetime import datetime
+
+        if self.prepared_conflicts is not None:
+            self.prepared_conflicts.append(ConflictWork(
+                id=str(uuid.uuid4()), task_id=task_id,
+                rjcode=database_safe_text(rjcode) if rjcode else None,
+                conflict_type=conflict_type,
+                existing_path=database_safe_text(existing_path or "") or "",
+                new_path=database_safe_text(new_path or "") or "",
+                new_metadata=safe_json_value(metadata or {}),
+                status=status, linked_works_info=safe_json_value(linked_works_info or []),
+                analysis_info=safe_json_value(analysis_info or {}),
+                related_rjcodes=safe_json_value(related_rjcodes or []),
+                created_at=datetime.now(),
+            ))
+            return
         
         db = next(get_db())
         try:

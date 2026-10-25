@@ -47,6 +47,33 @@ class FileProcessor:
 
     def __init__(self):
         self._processed_files: Set[str] = set()  # 已处理文件集合
+        self._directory_members: Optional[tuple[str, tuple[str, ...]]] = None
+        self._directory_index_source = None
+        self._directory_prefix_index = []
+        self._directory_lookup = None
+
+    def _list_directory(self, directory: str, prefix: Optional[str] = None):
+        if self._directory_lookup is not None and self._directory_lookup[0] == directory:
+            return self._directory_lookup[1](prefix)
+        cached = self._directory_members
+        if cached is not None and cached[0] == directory:
+            if prefix is not None:
+                from bisect import bisect_left
+                if self._directory_index_source is not cached:
+                    self._directory_prefix_index = sorted((name.lower(), name) for name in cached[1])
+                    self._directory_index_source = cached
+                needle = prefix.lower()
+                index = bisect_left(self._directory_prefix_index, (needle, ""))
+                matches = []
+                while index < len(self._directory_prefix_index):
+                    key, name = self._directory_prefix_index[index]
+                    if not key.startswith(needle):
+                        break
+                    matches.append(name)
+                    index += 1
+                return matches
+            return cached[1]
+        return os.listdir(directory)
 
     @property
     def config(self):
@@ -60,6 +87,20 @@ class FileProcessor:
     def has_active_download(self, file_path: str) -> bool:
         """查询文件是否仍由 aria2 下载，供监视器共用判断。"""
         return self._has_active_aria2_sidecar(file_path)
+
+    @staticmethod
+    def is_internal_download_path(file_path: str) -> bool:
+        """下载暂存区和搬运事务文件不能作为自动处理来源。"""
+        parts = Path(file_path).parts
+        return any(
+            part.lower() == ".baidu-netdisk-staging"
+            or re.search(
+                r"\.kikoerumanager-(?:(?:clone|move|copy)-[0-9a-f-]+\.part|backup-[0-9a-f-]+)$",
+                part,
+                re.IGNORECASE,
+            ) is not None
+            for part in parts
+        )
 
     @staticmethod
     def _has_zip_volume_main(file_path: str) -> bool:
@@ -225,8 +266,6 @@ class FileProcessor:
                     logger.debug(f"[FileProcessor] 文件已稳定: {file_path}")
                 except TimeoutError:
                     logger.error(f"[FileProcessor] 等待文件稳定超时: {file_path}")
-                    if mark_processed:
-                        mark_processed(file_path)
                     return None
                 if self._has_active_aria2_sidecar(file_path):
                     logger.info("[FileProcessor] 文件稳定后仍存在 aria2 未完成标记，跳过处理: %s", file_path)
@@ -340,8 +379,6 @@ class FileProcessor:
 
         except Exception as e:
             logger.error(f"[FileProcessor] 处理文件失败: {file_path}, {e}", exc_info=True)
-            if mark_processed:
-                mark_processed(original_path)
             return None
 
     async def process_directory(
@@ -378,31 +415,12 @@ class FileProcessor:
             logger.warning(f"[FileProcessor] 目录不存在: {directory}")
             return tasks
 
-        # 收集所有待处理的压缩包
-        archive_files = []
-        for root, dirs, files in os.walk(directory):
-            for file in files:
-                file_path = os.path.join(root, file)
-
-                # 检查是否已处理
-                if is_processed and is_processed(file_path):
-                    continue
-
-                if await get_deferred_archive_service().is_source_claimed(file_path):
-                    continue
-
-                # 检查是否是压缩包
-                if self.is_archive(file_path):
-                    # 检查文件大小
-                    try:
-                        file_size = os.path.getsize(file_path)
-                        if file_size < 1024:  # 小于1KB，可能正在复制中
-                            logger.warning(f"[FileProcessor] 文件太小，跳过: {file_path} ({file_size} bytes)")
-                            continue
-                    except OSError:
-                        continue
-
-                    archive_files.append(file_path)
+        # 遍历和伪装压缩包探测包含磁盘读取，不能阻塞 API 事件循环。
+        candidates = await asyncio.to_thread(self._collect_directory_archives, directory)
+        archive_files = [
+            path for path in candidates
+            if not (is_processed and is_processed(path))
+        ]
 
         logger.info(f"[FileProcessor] 找到 {len(archive_files)} 个待处理文件")
         if isinstance(report, dict):
@@ -420,12 +438,10 @@ class FileProcessor:
             # 检测分卷组
             volume_set = self.detect_volume_set(file_path)
             if volume_set:
-                # 标记所有分卷为已处理（仅用于本次扫描的内存记录，不调用 mark_processed）
-                # mark_processed 会在 process_file 成功创建任务后调用
-                for vol in volume_set.volumes:
-                    processed_volumes.add(vol)
+                # 仅用于本次扫描；持久化标记由 process_file 提交成功后写入。
+                processed_volumes.update(volume_set.volumes)
 
-            # 处理文件（不等待稳定，因为扫描时文件应该已经稳定）
+            # process_file 在规范化前和提交前复核持久化归档声明。
             task = await self.process_file(
                 file_path,
                 auto_classify=auto_classify,
@@ -445,7 +461,29 @@ class FileProcessor:
         logger.info(f"[FileProcessor] 创建了 {len(tasks)} 个任务")
         return tasks
 
-    def is_archive(self, file_path: str) -> bool:
+    def _collect_directory_archives(self, directory: str) -> List[str]:
+        """工作线程只收集磁盘候选，任务和 watcher 状态仍在事件循环内访问。"""
+        archive_files: List[str] = []
+        for root, dirs, files in os.walk(directory):
+            dirs[:] = [
+                name for name in dirs
+                if not self.is_internal_download_path(os.path.join(root, name))
+            ]
+            for file in files:
+                file_path = os.path.join(root, file)
+                if self.is_archive(file_path):
+                    try:
+                        file_size = os.path.getsize(file_path)
+                        if file_size < 1024:  # 小于1KB，可能正在复制中
+                            logger.warning(f"[FileProcessor] 文件太小，跳过: {file_path} ({file_size} bytes)")
+                            continue
+                    except OSError:
+                        continue
+
+                    archive_files.append(file_path)
+        return archive_files
+
+    def is_archive(self, file_path: str, *, include_downloading: bool = False) -> bool:
         """检测是否是压缩包文件
 
         复用 ArchiveHandler._is_archive 逻辑，但作为独立方法提供
@@ -456,7 +494,9 @@ class FileProcessor:
         Returns:
             是否是压缩包（True/False），如果是非首卷分卷文件返回 False
         """
-        if self._has_active_aria2_sidecar(file_path):
+        if self.is_internal_download_path(file_path):
+            return False
+        if not include_downloading and self._has_active_aria2_sidecar(file_path):
             logger.debug("[FileProcessor] 跳过 aria2 下载中的文件: %s", file_path)
             return False
 
@@ -555,7 +595,10 @@ class FileProcessor:
         directory = os.path.dirname(file_path)
         filename = os.path.basename(file_path)
         if normalize_part_volume_filename(filename) != filename:
-            group = detect_archive_volume_group(file_path)
+            prefix = re.split(r"\.part\d+", filename, flags=re.IGNORECASE)[0]
+            group = detect_archive_volume_group(
+                file_path, sibling_names=self._list_directory(directory, prefix),
+            )
             if group:
                 return VolumeSet(group.base_name, group.volumes, "part_password", entry_path=group.main_path)
             return None
@@ -603,7 +646,7 @@ class FileProcessor:
             match = re.search(pattern, filename, re.IGNORECASE)
             if match:
                 # 提取 base_name，只移除分卷后缀
-                base_name = re.sub(pattern, '', filename)
+                base_name = re.sub(pattern, '', filename, flags=re.IGNORECASE)
                 logger.debug(f"[FileProcessor] 检测到分卷模式: {filename}, base_name={base_name}")
 
                 # 查找所有分卷
@@ -696,15 +739,19 @@ class FileProcessor:
         if any(self.has_active_download(volume) for volume in volume_set.volumes):
             return None
 
-        # 等待所有分卷稳定
-        for volume in volume_set.volumes:
-            if volume != file_path:
-                try:
-                    await self.wait_file_stable(volume, max_wait=300)
-                    logger.debug(f"[FileProcessor] 分卷已稳定: {volume}")
-                except TimeoutError:
-                    logger.error(f"[FileProcessor] 等待分卷稳定超时: {volume}")
-                    return None
+        # 同组分卷共享观察时间，避免 N 个成员串行等待 N × 8 秒。
+        volumes = [volume for volume in volume_set.volumes if volume != file_path]
+        results = await asyncio.gather(
+            *(self.wait_file_stable(volume, max_wait=300) for volume in volumes),
+            return_exceptions=True,
+        )
+        for volume, result in zip(volumes, results):
+            if isinstance(result, TimeoutError):
+                logger.error(f"[FileProcessor] 等待分卷稳定超时: {volume}")
+                return None
+            if isinstance(result, BaseException):
+                raise result
+            logger.debug(f"[FileProcessor] 分卷已稳定: {volume}")
 
         if any(self.has_active_download(volume) for volume in volume_set.volumes):
             return None
@@ -849,7 +896,7 @@ class FileProcessor:
         # 1. 标准 WinRAR ZIP 分卷 (.zXX)：X.zip + X.z01 + X.z02 + ...
         z_volumes: List[str] = []
         try:
-            for file in os.listdir(directory):
+            for file in self._list_directory(directory, base_name):
                 if re.fullmatch(rf'{re.escape(base_name)}\.z\d{{2}}', file, re.IGNORECASE):
                     z_volumes.append(os.path.join(directory, file))
         except Exception as exc:
@@ -866,7 +913,7 @@ class FileProcessor:
         #    后续 remap 流程在 ExtractService 里完成，这里仅识别为分卷组。
         numeric_volumes: List[str] = []
         try:
-            for file in os.listdir(directory):
+            for file in self._list_directory(directory, base_name):
                 if re.fullmatch(rf'{re.escape(base_name)}\.\d{{3}}', file, re.IGNORECASE):
                     numeric_volumes.append(os.path.join(directory, file))
         except Exception as exc:
@@ -898,7 +945,7 @@ class FileProcessor:
             return None
 
         try:
-            siblings = os.listdir(directory)
+            siblings = self._list_directory(directory, base_name)
         except Exception as exc:
             logger.error(f"[FileProcessor] 查找自解压分卷失败: {exc}")
             return None
@@ -924,7 +971,7 @@ class FileProcessor:
 
         volumes = [rar_path]
         try:
-            for file in os.listdir(directory):
+            for file in self._list_directory(directory, base_name):
                 if re.fullmatch(rf'{re.escape(base_name)}\.r\d{{2}}', file, re.IGNORECASE):
                     volumes.append(os.path.join(directory, file))
         except Exception as exc:
@@ -984,11 +1031,11 @@ class FileProcessor:
         """
         volumes = []
         try:
-            files = os.listdir(directory)
+            files = self._list_directory(directory, base_name)
             logger.debug(f"[FileProcessor] _find_all_volumes: directory={directory}, base_name={base_name}, pattern={pattern}")
             logger.debug(f"[FileProcessor] 目录中的文件: {files}")
             for file in files:
-                if file.startswith(base_name) and re.search(pattern, file, re.IGNORECASE):
+                if re.fullmatch(re.escape(base_name) + pattern, file, re.IGNORECASE):
                     volumes.append(os.path.join(directory, file))
                     logger.debug(f"[FileProcessor] 匹配到分卷: {file}")
         except Exception as e:

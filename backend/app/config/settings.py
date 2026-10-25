@@ -106,6 +106,14 @@ class ProcessingConfig(BaseModel):
     archive_retry_delay_seconds: int = 300
     archive_max_retry_count: int = 5
 
+class InputScanConfig(BaseModel):
+    """输入扫描的积压容量和观察截止时间，不改变业务执行并发。"""
+    discovery_queue_capacity: int = Field(default=128, ge=1, le=1024)
+    active_candidate_limit: int = Field(default=256, ge=1, le=4096)
+    stable_timeout_seconds: int = Field(default=300, ge=10, le=86400)
+    progress_interval_seconds: float = Field(default=1, ge=0.5, le=60)
+
+
 class WatcherConfig(BaseModel):
     """监视器配置"""
     enabled: bool = True
@@ -737,6 +745,7 @@ class AppConfig(BaseModel):
     storage: StorageConfig = StorageConfig()
     file_move: FileMoveConfig = Field(default_factory=FileMoveConfig)
     processing: ProcessingConfig = ProcessingConfig()
+    input_scan: InputScanConfig = Field(default_factory=InputScanConfig)
     watcher: WatcherConfig = WatcherConfig()
     extract: ExtractConfig = ExtractConfig()
     filter: FilterConfig = FilterConfig(
@@ -1111,9 +1120,10 @@ def load_config(config_path: str = None) -> AppConfig:
                 _config_last_error = ""
                 _config_loaded_mtime = _write_yaml_atomically(config_path, _config.model_dump())
                 logger.info(f"默认配置已保存到: {config_path}")
-            return _config
         finally:
             _config_reload_in_progress = False
+    _notify_config_changed(_config)
+    return _config
 
 def get_config() -> AppConfig:
     """获取配置"""
@@ -1195,13 +1205,14 @@ def save_config(config_data: dict, config_path: str = None) -> AppConfig:
                 len(merged_config),
                 incoming_keys,
             )
-            return _config
         except Exception as e:
             _config_last_error = str(e)
             logger.error(f"保存配置失败: {e}")
             raise
         finally:
             _config_write_in_progress = False
+    _notify_config_changed(_config)
+    return _config
 
 def reload_config() -> AppConfig:
     """重新加载配置（用于配置变更后）"""
@@ -1263,6 +1274,7 @@ def reload_config() -> AppConfig:
         finally:
             _config_reload_in_progress = False
 
+    _notify_config_changed(_config)
     return _config
 
 
@@ -1284,6 +1296,15 @@ _config_file_path: Optional[str] = None
 _config_observer: Optional[Observer] = None
 _config_change_callbacks: list[Callable] = []
 _config_lock = threading.Lock()
+
+
+def _notify_config_changed(config):
+    """锁外通知，允许订阅者重新读取配置而不阻塞保存线程。"""
+    for callback in tuple(_config_change_callbacks):
+        try:
+            callback(config)
+        except Exception:
+            logging.getLogger(__name__).exception("[CONFIG] 配置变更回调失败")
 
 
 class ConfigFileChangeHandler(FileSystemEventHandler):
@@ -1315,14 +1336,7 @@ class ConfigFileChangeHandler(FileSystemEventHandler):
             logger.info("[CONFIG] 开始重新加载配置文件...")
             
             # 重新加载配置
-            new_config = load_config(_config_file_path)
-            
-            # 通知所有回调函数
-            for callback in _config_change_callbacks:
-                try:
-                    callback(new_config)
-                except Exception as e:
-                    logger.error(f"[CONFIG] 回调函数执行失败：{e}")
+            load_config(_config_file_path)
             
             logger.info("[CONFIG] 配置文件热重载完成")
         except Exception as e:

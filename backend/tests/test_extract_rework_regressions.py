@@ -74,56 +74,68 @@ async def test_second_resource_queue_cancel_releases_first_slot(monkeypatch):
 
 
 def test_cross_volume_restore_publishes_only_verified_copy(tmp_path, monkeypatch):
+    from app.core import staged_file_move as mover
     service = FilterRecoveryService(str(tmp_path / 'recovery'))
     payload = tmp_path / 'payload'
-    payload.write_bytes(b'content' * 100)
+    content = b'content' * 100
+    payload.write_bytes(content)
     target = tmp_path / 'target'
     target.mkdir()
-    replace = os.replace
-    def cross_volume(source, destination):
+    publish = mover.publish_path
+    def cross_volume(source, destination, **kwargs):
         if Path(source) == payload:
             raise OSError(errno.EXDEV, '跨卷')
-        return replace(source, destination)
-    monkeypatch.setattr('app.core.filter_recovery_service.os.replace', cross_volume)
+        return publish(source, destination, **kwargs)
+    monkeypatch.setattr(mover, 'publish_path', cross_volume)
+    monkeypatch.setattr(mover, '_journal_root', lambda: tmp_path / 'journal')
     output = service._restore_local(payload, {'root': str(target)}, {'restore_relative_path': 'a'})
-    assert Path(output).read_bytes() == payload.read_bytes()
+    assert Path(output).read_bytes() == content
+    assert not payload.exists()
     assert not list(target.glob('*.part'))
 
 
 def test_cross_volume_copy_failure_keeps_payload_and_no_partial_target(tmp_path, monkeypatch):
+    from app.core import staged_file_move as mover
     service = FilterRecoveryService(str(tmp_path / 'recovery'))
     payload = tmp_path / 'payload'
     payload.write_bytes(b'content')
     target = tmp_path / 'target'
     target.mkdir()
-    monkeypatch.setattr('app.core.filter_recovery_service.os.replace', Mock(side_effect=OSError(errno.EXDEV, '跨卷')))
-    def fail(source, destination):
+    monkeypatch.setattr(mover, 'publish_path', Mock(side_effect=OSError(errno.EXDEV, '跨卷')))
+    monkeypatch.setattr(mover, '_journal_root', lambda: tmp_path / 'journal')
+    def fail(source, destination, **kwargs):
         Path(destination).write_bytes(b'partial')
         raise OSError('disk full')
-    monkeypatch.setattr(service, '_copy_file', fail)
+    monkeypatch.setattr(mover, 'copy_path_exclusive_sync', fail)
     with pytest.raises(OSError, match='disk full'):
         service._restore_local(payload, {'root': str(target)}, {'restore_relative_path': 'a'})
     assert payload.read_bytes() == b'content'
-    assert not list(target.iterdir())
+    assert not (target / 'a').exists()
+    # 新移动协议保留隐藏暂存及 journal，供恢复工具核对，不发布半文件。
+    assert len(list(target.glob('.kikoerumanager-move-*.part'))) == 1
+    assert len(list((tmp_path / 'journal').glob('*.json'))) == 1
 
 
 def test_cross_volume_directory_mutation_never_deletes_source(tmp_path, monkeypatch):
+    from app.core import staged_file_move as mover
     service = FilterRecoveryService(str(tmp_path / 'recovery'))
     source = tmp_path / 'source'
     source.mkdir()
     (source / 'a').write_bytes(b'abc')
     destination = tmp_path / 'copy'
-    monkeypatch.setattr('app.core.filter_recovery_service.os.replace', Mock(side_effect=OSError(errno.EXDEV, '跨卷')))
-    copy_file = service._copy_file
-    def mutate(incoming, outgoing):
-        result = copy_file(incoming, outgoing)
+    monkeypatch.setattr(mover, 'publish_path', Mock(side_effect=OSError(errno.EXDEV, '跨卷')))
+    monkeypatch.setattr(mover, '_journal_root', lambda: tmp_path / 'journal')
+    copy_path = mover.copy_path_exclusive_sync
+    def mutate(incoming, outgoing, **kwargs):
+        result = copy_path(incoming, outgoing, **kwargs)
         (source / 'new').write_bytes(b'new')
         return result
-    monkeypatch.setattr(service, '_copy_file', mutate)
-    with pytest.raises(RuntimeError, match='来源目录发生变化'):
+    monkeypatch.setattr(mover, 'copy_path_exclusive_sync', mutate)
+    with pytest.raises(RuntimeError, match='来源在移动期间变化'):
         service._move_to_recovery(source, destination, expected_size=3)
     assert (source / 'a').read_bytes() == b'abc'
     assert (source / 'new').read_bytes() == b'new'
+    assert not destination.exists()
 
 
 @pytest.mark.asyncio

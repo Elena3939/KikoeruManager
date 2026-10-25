@@ -120,7 +120,7 @@ class Task(Base):
     __tablename__ = 'tasks'
     
     id = Column(String(36), primary_key=True)
-    type = Column(String(20))  # EXTRACT, FILTER, METADATA, RENAME, AUTO_PROCESS
+    type = Column(String(64))  # 包括 process_existing_folder 等派生任务
     status = Column(String(20))  # PENDING, PROCESSING, PAUSED, COMPLETED, FAILED
     source_path = Column(Text)
     output_path = Column(Text)
@@ -131,6 +131,102 @@ class Task(Base):
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
     task_metadata = Column(JSON)  # renamed from metadata to avoid SQLAlchemy reserved word
+
+
+class InputScanRun(Base):
+    """扫描事实；发现结束与下游业务结束分别记录。"""
+    __tablename__ = "input_scan_runs"
+    id = Column(String(36), primary_key=True)
+    request_key = Column(String(100), unique=True, nullable=False)
+    batch_id = Column(String(36), unique=True, nullable=False)
+    root_path = Column(Text, nullable=False)
+    scan_status = Column(String(24), nullable=False, default="running")
+    execution_status = Column(String(24), nullable=False, default="waiting")
+    producer_closed = Column(Boolean, nullable=False, default=False)
+    cancel_requested = Column(Boolean, nullable=False, default=False)
+    revision = Column(BigInteger, nullable=False, default=1)
+    policy = Column(JSON, nullable=False, default=dict)
+    coverage = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, default=get_local_now)
+    updated_at = Column(DateTime, nullable=False, default=get_local_now)
+    __table_args__ = (Index("ix_input_scan_runs_status_updated", "scan_status", "updated_at"),)
+
+
+class InputScanCandidate(Base):
+    """一个逻辑压缩组对应一个候选，分卷成员保存在独立表。"""
+    __tablename__ = "input_scan_candidates"
+    id = Column(String(36), primary_key=True)
+    scan_id = Column(String(36), ForeignKey("input_scan_runs.id", ondelete="CASCADE"), nullable=False)
+    group_key = Column(String(64), nullable=False)
+    source_path = Column(Text, nullable=False)
+    state = Column(String(24), nullable=False, default="pending")
+    reason = Column(Text)
+    task_id = Column(String(36), ForeignKey("tasks.id"), unique=True)
+    version = Column(BigInteger, nullable=False, default=1)
+    evidence = Column(JSON, nullable=False, default=dict)
+    preparation = Column(JSON, nullable=False, default=dict)
+    destination = Column(String(24))
+    record_id = Column(String(36))
+    next_check_at = Column(DateTime, nullable=False, default=get_local_now)
+    deadline = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=get_local_now)
+    updated_at = Column(DateTime, nullable=False, default=get_local_now)
+    __table_args__ = (
+        Index("uq_input_scan_candidate_group", "scan_id", "group_key", unique=True),
+        Index("ix_input_scan_candidate_due", "scan_id", "state", "next_check_at", "id"),
+    )
+
+
+class InputScanEntry(Base):
+    __tablename__ = "input_scan_entries"
+    candidate_id = Column(String(36), ForeignKey("input_scan_candidates.id", ondelete="CASCADE"), primary_key=True)
+    path_key = Column(String(64), primary_key=True)
+    source_path = Column(Text, nullable=False)
+    fingerprint = Column(JSON, nullable=False, default=dict)
+
+
+class InputScanDirectoryEntry(Base):
+    """超出内存工作集的目录成员；仅服务发现，恢复时重新枚举。"""
+    __tablename__ = "input_scan_directory_entries"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    scan_id = Column(String(36), ForeignKey("input_scan_runs.id", ondelete="CASCADE"), nullable=False)
+    directory_key = Column(String(64), nullable=False)
+    name = Column(Text, nullable=False)
+    lower_name = Column(Text, nullable=False)
+    processed = Column(Boolean, nullable=False, default=False)
+    __table_args__ = (
+        Index("ix_input_scan_directory_page", "scan_id", "directory_key", "id"),
+        Index("ix_input_scan_directory_prefix", "scan_id", "directory_key", "lower_name",
+              postgresql_ops={"lower_name": "text_pattern_ops"}),
+    )
+
+
+class InputSourceClaim(Base):
+    """扫描与归档共用的源路径占用；路径哈希避免超长路径 btree 限制。"""
+    __tablename__ = "input_source_claims"
+    path_key = Column(String(64), primary_key=True)
+    source_path = Column(Text, nullable=False)
+    owner_type = Column(String(24), nullable=False)
+    owner_id = Column(String(36), nullable=False)
+    updated_at = Column(DateTime, nullable=False, default=get_local_now)
+    __table_args__ = (Index("ix_input_source_claim_owner", "owner_type", "owner_id"),)
+
+
+class InputScanOutbox(Base):
+    __tablename__ = "input_scan_outbox"
+    id = Column(String(36), primary_key=True)
+    event_key = Column(String(160), unique=True, nullable=False)
+    scan_id = Column(String(36), ForeignKey("input_scan_runs.id", ondelete="CASCADE"), nullable=False)
+    kind = Column(String(32), nullable=False)
+    payload = Column(JSON, nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    available_at = Column(DateTime, nullable=False, default=get_local_now)
+    delivered_at = Column(DateTime)
+    last_error = Column(Text)
+    created_at = Column(DateTime, nullable=False, default=get_local_now)
+    __table_args__ = (
+        Index("ix_input_scan_outbox_due", "available_at", "id", postgresql_where=text("delivered_at IS NULL")),
+    )
 
 
 class TaskCenterItem(Base):
@@ -1119,8 +1215,10 @@ class ActivityLog(Base):
     batch_id = Column(String(80))
     session_key = Column(String(120))
     parent_id = Column(String(36))
+    event_key = Column(String(160))
 
     __table_args__ = (
+        Index('uq_activity_logs_event_key', 'event_key', unique=True),
         Index('idx_activity_created_category', 'created_at', 'category'),
         Index('idx_activity_category_batch', 'category', 'batch_id'),
         Index('idx_activity_category_session', 'category', 'session_key'),
@@ -4315,6 +4413,7 @@ def _migrate_compat_schema(conn) -> None:
     ):
         conn.execute(text(sql))
     existing_tables = _existing_tables(conn, (
+        "tasks",
         "processed_archives",
         "notification_templates",
         "activity_log_rollups",
@@ -4329,6 +4428,16 @@ def _migrate_compat_schema(conn) -> None:
         "notification_inbox_items",
         "work_metadata",
     ))
+    if "tasks" in existing_tables:
+        type_length = conn.execute(text(
+            "SELECT character_maximum_length FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = 'tasks' AND column_name = 'type'"
+        )).scalar()
+        if type_length is not None and type_length < 64:
+            conn.execute(text("ALTER TABLE tasks ALTER COLUMN type TYPE VARCHAR(64)"))
+    if "activity_logs" in existing_tables:
+        conn.execute(text("ALTER TABLE activity_logs ADD COLUMN IF NOT EXISTS event_key VARCHAR(160)"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_logs_event_key ON activity_logs(event_key)"))
     compat_index_specs = [
         spec
         for spec in _POSTGRES_COMPAT_INDEX_SPECS

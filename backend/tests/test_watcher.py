@@ -40,6 +40,13 @@ def watcher_setup(monkeypatch, tmp_path):
     monkeypatch.setattr(processor, '_inherit_download_password_metadata', lambda *_: {})
     monkeypatch.setattr(processor, '_normalize_file', AsyncMock(side_effect=lambda path, **kwargs: path))
     watcher = watcher_module.FolderWatcher()
+    async def submit_input(path):
+        return await processor.process_file(
+            path, auto_classify=config.watcher.auto_classify,
+            wait_stable=True, is_processed=watcher._is_file_processed,
+            mark_processed=watcher._mark_file_processed,
+        )
+    monkeypatch.setattr(watcher, "_submit_input", submit_input)
     watcher.is_running = True
     monkeypatch.setattr(watcher, '_broadcast_status', lambda *_: None)
     watcher.handler = watcher_module.ArchiveHandler(
@@ -298,3 +305,80 @@ async def test_scan_does_not_submit_after_stop(watcher_setup, monkeypatch, tmp_p
     await drain_events()
     assert submitted == []
     assert watcher.pending_files == set()
+
+
+@pytest.mark.asyncio
+async def test_manual_scan_collects_off_loop_and_only_checks_archive_claims(
+    watcher_setup, monkeypatch, tmp_path,
+):
+    _, processor, submitted = watcher_setup
+    loop_thread = threading.get_ident()
+    source = tmp_path / 'RJ123456.zip'
+    source.write_bytes(b'PK\x03\x04' + b'x' * 1024)
+    for index in range(20):
+        (tmp_path / f'notes{index}.txt').write_text('notes')
+    original_detect = processor.is_archive
+
+    def detect(path):
+        assert threading.get_ident() != loop_thread
+        return original_detect(path)
+
+    monkeypatch.setattr(processor, 'is_archive', detect)
+    archive = processor_module.get_deferred_archive_service()
+    result = await processor.process_directory(str(tmp_path))
+    assert result == submitted
+    assert len(result) == 1
+    # 仅在候选规范化前、提交前查询，不为每个普通文件查询数据库。
+    assert archive.is_source_claimed.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_manual_scan_keeps_live_archive_claim_check(watcher_setup, monkeypatch, tmp_path):
+    _, processor, submitted = watcher_setup
+    source = tmp_path / 'RJ123456.zip'
+    source.write_bytes(b'PK\x03\x04' + b'x' * 1024)
+    archive = processor_module.get_deferred_archive_service()
+    archive.is_source_claimed.return_value = True
+    normalize = processor._normalize_file
+    assert await processor.process_directory(str(tmp_path)) == []
+    normalize.assert_not_awaited()
+    assert submitted == []
+
+
+@pytest.mark.asyncio
+async def test_volume_stability_checks_share_observation_window(watcher_setup, monkeypatch):
+    _, processor, _ = watcher_setup
+    volumes = ['archive.zip'] + [f'archive.z{index:02}' for index in range(1, 11)]
+    entered = set()
+    ready = asyncio.Event()
+
+    async def wait(path, **kwargs):
+        entered.add(path)
+        if len(entered) == 10:
+            ready.set()
+        # 串行实现会在第一卷卡住，无法满足整组已开始观察。
+        await asyncio.wait_for(ready.wait(), timeout=2)
+
+    monkeypatch.setattr(processor, 'wait_file_stable', wait)
+    volume_set = VolumeSet('archive', volumes, 'zip_volume_main', volumes[0])
+    assert await processor._process_volume_set(volumes[0], volume_set) == volumes[0]
+    assert entered == set(volumes[1:])
+
+
+@pytest.mark.asyncio
+async def test_volume_timeout_or_new_download_prevents_submission(watcher_setup, monkeypatch, tmp_path):
+    _, processor, submitted = watcher_setup
+    first = tmp_path / 'archive.zip'
+    tail = tmp_path / 'archive.z01'
+    for path in (first, tail):
+        path.write_bytes(b'x' * 1024)
+    processor.wait_file_stable.side_effect = TimeoutError('仍在写入')
+    assert await processor.process_file(str(first), wait_stable=False) is None
+    assert not submitted
+
+    async def begin_download(*args, **kwargs):
+        tail.with_name(tail.name + '.aria2').write_bytes(b'active')
+
+    processor.wait_file_stable.side_effect = begin_download
+    assert await processor.process_file(str(first), wait_stable=False) is None
+    assert not submitted

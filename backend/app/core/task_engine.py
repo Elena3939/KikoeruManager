@@ -133,6 +133,9 @@ class Task:
         self._last_progress_event_at = 0.0
         self._last_progress_event_progress: Optional[int] = None
         self._metadata_version = 0
+        self._input_snapshot_revision = int(self.task_metadata.get("_input_snapshot_revision", 0))
+        self._input_lifecycle_pending = False
+        self._input_persisted_status = None
         self._events_initialized = True
 
     @classmethod
@@ -143,6 +146,8 @@ class Task:
         self._event_hook = hook
 
     def mark_changed(self, reason: str = "status"):
+        if (self.task_metadata or {}).get("scan_id"):
+            self._input_snapshot_revision = int(getattr(self, "_input_snapshot_revision", 0)) + 1
         if reason in {"progress", "status", "started", "completed", "failed", "cancelled"}:
             try:
                 self._log_progress_snapshot()
@@ -602,12 +607,22 @@ class TaskEngine:
         )
         self.tasks: dict[str, Task] = {}
         self.queue: asyncio.Queue = asyncio.Queue()
+        self._queued_task_ids: set[str] = set()
+        self._running_task_ids: set[str] = set()
+        self._dispatch_lock = asyncio.Lock()
         self.processing: set[str] = set()
+        self._input_preflight_ids: set[str] = set()
+        self._input_metadata_slots: set[str] = set()
+        self._input_metadata_window: dict[str, Task] = {}
+        self._last_lane_admission_preflight = False
         self._processing_rjcodes: set[str] = set()  # 正在处理的RJ号集合，防止并发重复处理
         self._shutdown = False
         self._worker_task: Optional[asyncio.Task] = None
         self._progress_callbacks: list[Callable] = []
         self._retry_scheduler_task: Optional[asyncio.Task] = None  # 重试调度器任务
+        self._config_loop = None
+        self._follow_configuration = False
+        self._config_refresh_task = None
         # 方案 B 并行 list 预检的后台协程集合：fire-and-forget 启动，写入
         # ExtractService._archive_info_cache 后自然完成。用 set 强引用避免 GC 警告。
         # task.cancel() 时通过 register_process 联动 kill 子进程，协程会自动退出。
@@ -743,7 +758,93 @@ class TaskEngine:
     def _task_lane_has_capacity(self, task: Task) -> bool:
         download = self._is_download_task(task)
         limit = self.max_concurrent_downloads if download else self.max_concurrent
-        return self._processing_lane_count(download=download) < limit
+        occupied = self._processing_lane_count(download=download)
+        if not download:
+            occupied += len(self._input_preflight_ids)
+            occupied += len(self._input_metadata_slots - {task.id})
+        return occupied < limit
+
+    def try_acquire_input_preflight(self, candidate_id):
+        """同一事件循环内登记许可；预检与普通任务共享可调整的容量。"""
+        if candidate_id in self._input_preflight_ids:
+            return False
+        if (
+            self._processing_lane_count(download=False) + len(self._input_preflight_ids)
+            + len(self._input_metadata_slots) >= self.max_concurrent
+        ):
+            return False
+        normal_waiting = any(
+            task.status == TaskStatus.PENDING and not self._is_download_task(task)
+            for task in self.tasks.values()
+        )
+        if normal_waiting and self._last_lane_admission_preflight:
+            return False
+        self._input_preflight_ids.add(candidate_id)
+        self._last_lane_admission_preflight = True
+        return True
+
+    def release_input_preflight(self, candidate_id):
+        self._input_preflight_ids.discard(candidate_id)
+
+    async def refresh_input_metadata_window(self):
+        """只为近端待执行任务使用空余名额；正常可执行任务优先。"""
+        from ..config.settings import get_config
+        from .metadata_service import MetadataService
+        config = get_config()
+        pending = [
+            task for task in self.tasks.values()
+            if task.status == TaskStatus.PENDING and not self._is_download_task(task)
+        ]
+        window = {
+            task.id: task for task in pending
+            if task.type == TaskType.AUTO_PROCESS
+            and (task.task_metadata or {}).get("scan_id")
+            and not (task.task_metadata or {}).get("aggregate_archive")
+            and not (task.task_metadata or {}).get("retry_from_conflicts")
+        }
+        window = dict(list(window.items())[:2 * max(1, self.max_concurrent)])
+        prefetch_service = MetadataService()
+        for task_id, task in list(self._input_metadata_window.items()):
+            if task_id in self._running_task_ids:
+                self._input_metadata_window.pop(task_id, None)
+                continue
+            if (
+                task_id not in window or not config.auto_process.fetch_metadata
+                or not prefetch_service.prefetch_matches(task, self._get_effective_rjcode(task))
+            ):
+                future = getattr(task, "_metadata_prefetch", None)
+                if future is not None:
+                    future.cancel()
+                    await asyncio.gather(future, return_exceptions=True)
+                    del task._metadata_prefetch
+                task._japanese_metadata_prefetch = None
+                self._input_metadata_slots.discard(task_id)
+                self._input_metadata_window.pop(task_id, None)
+        if not config.auto_process.fetch_metadata or any(
+            (task.task_metadata.get("input_source_wait") or {}).get("next_check_at", 0) <= time.time()
+            for task in pending
+        ):
+            return
+        for task_id, task in window.items():
+            occupied = (
+                self._processing_lane_count(download=False) + len(self._input_preflight_ids)
+                + len(self._input_metadata_slots)
+            )
+            if occupied >= self.max_concurrent:
+                break
+            if getattr(task, "_metadata_prefetch", None) is not None:
+                continue
+            rjcode = self._get_effective_rjcode(task)
+            if not rjcode:
+                continue
+            self._input_metadata_slots.add(task_id)
+            self._input_metadata_window[task_id] = task
+            future = MetadataService().start_prefetch(task, rjcode)
+            def release(done, owner=task_id):
+                self._input_metadata_slots.discard(owner)
+                if not done.cancelled():
+                    done.exception()
+            future.add_done_callback(release)
 
     @staticmethod
     async def _abort_precheck(precheck_task: Optional[asyncio.Task]) -> None:
@@ -966,6 +1067,9 @@ class TaskEngine:
     
     async def _notify_progress(self, task: Task):
         """通知进度更新"""
+        if (task.task_metadata or {}).get("scan_id"):
+            if task._input_persisted_status != task.status or task._input_lifecycle_pending:
+                await asyncio.to_thread(self.persist_task_snapshot, task)
         if (task.task_metadata or {}).get("conflict_resolution_conflict_id"):
             await asyncio.to_thread(
                 self._refresh_conflict_resolution_progress,
@@ -980,15 +1084,82 @@ class TaskEngine:
     
     async def submit(self, task: Task) -> str:
         """提交任务"""
+        existing = self.tasks.get(task.id)
+        if existing is not None and existing is not task:
+            return existing.id
+        if (task.task_metadata or {}).get("scan_id") and task.task_metadata.get("parent_task_id"):
+            from .input_scan_repository import InputScanRepository
+            registration = asyncio.create_task(asyncio.to_thread(InputScanRepository().register_derived_task, task))
+            try:
+                await asyncio.shield(registration)
+            except asyncio.CancelledError:
+                await registration
+                raise
         self._ensure_task_context(task)
         self.tasks[task.id] = task
-        await self.queue.put(task)
+        if task.id in self._queued_task_ids or task.id in self._running_task_ids:
+            return task.id
+        self._queued_task_ids.add(task.id)
+        self.queue.put_nowait(task)
         task.mark_changed("submitted")
         rjcode = self._extract_rjcode_from_path_tail(task.source_path) or "未知"
         source_path = str(task.source_path or "").rstrip("\\/")
         source_name = re.split(r"[\\/]+", source_path)[-1].strip() if source_path else ""
         logger.info(f"[{rjcode}] 任务提交 - ID: {task.id}, 源文件: {source_name or source_path}")
         return task.id
+
+    async def enqueue_once(self, task_id: str) -> bool:
+        """持久交接和恢复共用入口；重放不能重新执行已结束的任务。"""
+        from ..models.database import SessionLocal, Task as TaskRecord
+
+        def read_record():
+            with SessionLocal() as db:
+                record = db.get(TaskRecord, task_id)
+                if record is None:
+                    raise ValueError(f"持久任务不存在: {task_id}")
+                return {
+                    key: getattr(record, key) for key in (
+                        "id", "type", "status", "source_path", "output_path", "task_metadata",
+                        "created_at", "started_at", "completed_at", "current_step", "progress",
+                        "error_message",
+                    )
+                }
+
+        async with self._dispatch_lock:
+            if task_id in self._queued_task_ids or task_id in self._running_task_ids:
+                return False
+            existing = self.tasks.get(task_id)
+            record = await asyncio.to_thread(read_record)
+            if existing is not None:
+                if existing.status == TaskStatus.PENDING and record["status"] == TaskStatus.PENDING.value:
+                    await self.submit(existing)
+                    return True
+                if existing.status != TaskStatus.PENDING or record["status"] == TaskStatus.PENDING.value:
+                    return False
+            metadata = dict(record["task_metadata"] or {})
+            task = Task(
+                TaskType(record["type"]), record["source_path"], record["output_path"],
+                auto_classify=bool(metadata.get("auto_classify")),
+                skip_archive=bool(metadata.get("skip_archive")),
+                metadata=metadata, task_id=record["id"],
+            )
+            with task._set_state_silent():
+                task.created_at = record["created_at"]
+                task.started_at = record["started_at"]
+                task.completed_at = record["completed_at"]
+                task.current_step = record["current_step"]
+                task.progress = record["progress"]
+                task.status = TaskStatus(record["status"])
+                task.error_message = record["error_message"]
+            if task.status != TaskStatus.PENDING:
+                self._ensure_task_context(task)
+                self.tasks[task.id] = task
+                task._input_persisted_status = task.status
+                task.mark_changed("restored")
+                await self._notify_progress(task)
+                return False
+            await self.submit(task)
+            return True
 
     def _task_queue_priority(self, task: Task) -> tuple[int, datetime]:
         metadata = dict(task.task_metadata or {})
@@ -999,13 +1170,20 @@ class TaskEngine:
         return priority, task.created_at
 
     def _rebuild_pending_queue(self):
-        pending: list[Task] = []
+        pending: dict[str, Task] = {}
         while True:
             try:
-                pending.append(self.queue.get_nowait())
+                task = self.queue.get_nowait()
+                if (
+                    task.status == TaskStatus.PENDING
+                    and self.tasks.get(task.id) is task
+                    and task.id not in self._running_task_ids
+                ):
+                    pending[task.id] = task
             except asyncio.QueueEmpty:
                 break
-        for task in sorted(pending, key=self._task_queue_priority):
+        self._queued_task_ids = set(pending)
+        for task in sorted(pending.values(), key=self._task_queue_priority):
             self.queue.put_nowait(task)
 
     def update_task_priority(self, task_id: str, queue_priority: int) -> bool:
@@ -1230,6 +1408,20 @@ class TaskEngine:
         from ..models.database import SessionLocal, Task as TaskRecord
 
         self._ensure_task_context(task)
+        if (task.task_metadata or {}).get("scan_id"):
+            from .input_scan_repository import InputScanRepository
+            try:
+                lifecycle = task._input_lifecycle_pending
+                revision = task._input_snapshot_revision
+                persisted = InputScanRepository().persist_execution(task, lifecycle=lifecycle)
+                if persisted and revision == task._input_snapshot_revision:
+                    task._input_persisted_status = task.status
+                    if lifecycle:
+                        task._input_lifecycle_pending = False
+            except Exception:
+                logger.warning("[扫描任务] 状态持久化失败，将重试: task_id=%s", task.id, exc_info=True)
+            self.persist_task_center_item_snapshot(task)
+            return
         version_key = self._task_snapshot_version_key(task)
         if not self._should_persist_task_snapshot(task, version_key):
             self.persist_task_center_item_snapshot(task)
@@ -1641,13 +1833,13 @@ class TaskEngine:
             return "direct_reimport"
         return task.type.value
 
-    def _record_problem_work_for_extract_failure(self, task: Task, rjcode: Optional[str], reason: str):
+    def _record_problem_work_for_extract_failure(self, task: Task, rjcode: Optional[str], reason: str) -> bool:
         """将解压阶段失败的任务记录到问题作品列表，避免前端无项可见"""
         from .classifier import SmartClassifier
 
         source_path = str(task.source_path or "").strip()
         if not source_path or (not os.path.exists(source_path) and (task.task_metadata or {}).get("source_operation") != "api_rename"):
-            return
+            return False
 
         # 来自问题作品页的重试任务：原 conflict 在 routes.retry_extract_failed_conflict
         # 中已被改为 PROCESSING，_add_to_conflict_works 的去重查询只看 PENDING，
@@ -1655,7 +1847,7 @@ class TaskEngine:
         # 失败时由 _finalize_conflict_resolution_task 把原 conflict 恢复为 PENDING
         # 并写 resolution_error，这里直接短路即可。
         if self._is_retry_from_conflicts_task(task):
-            return
+            return True
 
         normalized_rjcode = (rjcode or "").strip()
         if normalized_rjcode == "未知":
@@ -1677,7 +1869,7 @@ class TaskEngine:
             metadata["raw_error_message"] = reason
         metadata["error_message"] = display_reason
         task.error_message = display_reason
-        classifier = SmartClassifier()
+        classifier = SmartClassifier(prepared_conflicts=getattr(task, "_prepared_conflicts", None))
         classifier._add_to_conflict_works(
             task.id,
             normalized_rjcode or None,
@@ -1687,6 +1879,7 @@ class TaskEngine:
             metadata,
             status="PENDING",
         )
+        return True
 
     def _is_retry_from_conflicts_task(self, task: Task) -> bool:
         """判断该任务是否由问题作品页的重试入口生成；这类任务失败时不应再写新 conflict。"""
@@ -1848,7 +2041,7 @@ class TaskEngine:
         task.task_metadata = metadata
         task.touch_metadata("failure_stage")
 
-        classifier = SmartClassifier()
+        classifier = SmartClassifier(prepared_conflicts=getattr(task, "_prepared_conflicts", None))
         classifier._add_to_conflict_works(
             task.id,
             normalized_rjcode or None,
@@ -2039,7 +2232,7 @@ class TaskEngine:
                 "source": "kikoeru",
             })
 
-        SmartClassifier()._add_to_conflict_works(
+        SmartClassifier(prepared_conflicts=getattr(task, "_prepared_conflicts", None))._add_to_conflict_works(
             task.id,
             source_rjcode or target_rjcode or None,
             "LINKED_WORK",
@@ -2789,6 +2982,407 @@ class TaskEngine:
         )
         return rjcodes
 
+    async def _preflight_auto_process(self, task, extract_service, classifier, config):
+        """扫描与执行共用预检顺序；准备模式由调用方接管问题记录事务。"""
+        rjcode = self._get_effective_rjcode(task) or self._extract_rjcode_from_path_tail(task.source_path)
+        if not hasattr(task, "_prepared_conflicts") and (task.task_metadata or {}).get("input_preflight"):
+            from .input_preflight import can_consume
+            from .resource_budget_service import get_resource_budget_service
+            async with get_resource_budget_service().acquire("disk_io_local", reason="核对输入预检凭据"):
+                reusable = await asyncio.to_thread(can_consume, task, config)
+            if reusable:
+                rjcode = task.task_metadata["input_preflight"].get("rjcode") or rjcode
+                # 排队期间仍可能出现同 RJ 竞争或新入库，保留真实执行前查重。
+                if task.task_metadata.get("preflight_runtime_duplicate_check"):
+                    if await classifier.check_duplicate_before_extract(rjcode, task, self):
+                        task.status = TaskStatus.WAITING_MANUAL
+                        task.update_progress(100, "重复作品，请在问题作品页面处理")
+                        task.completed_at = datetime.now()
+                        return rjcode, False
+                task.task_metadata["input_preflight_consumed_at"] = datetime.now().isoformat()
+                return rjcode, True
+        skip_retry_precheck = self._should_skip_conflict_retry_precheck(task)
+
+        # 方案 B 并行 list 预检：fire-and-forget 启动后台协程，
+        # 协程跑完 7zz l 后写入 ExtractService._archive_info_cache，
+        # 步骤 1 解压时内部 _get_archive_info 命中缓存秒回，消除重复 list。
+        # 预检只占清单/探测槽，不能阻塞正式解压槽。
+        precheck_task: Optional[asyncio.Task] = None
+
+        # 步骤0: 预检（先识别合集，再做字幕补配和普通查重）
+        if skip_retry_precheck:
+            logger.info(f"[{rjcode}] 问题作品处理任务，跳过已完成的解压前预检")
+            task.update_progress(8, "准备处理")
+        else:
+            try:  # 步骤 0 try/except：确保步骤 0 意外异常时 cancel precheck
+                logger.info(f"[{rjcode}] 步骤0: 预检")
+                task.update_progress(5, "预检中")
+                rjcode = self._extract_rjcode_from_path_tail(task.source_path)
+
+                # 密码库权威绑定：若条目同时填写 filename + rjcode 命中了当前压缩包，
+                # 整条链路（查重/命名/包裹目录）都使用条目里的 rjcode。
+                if os.path.isfile(task.source_path):
+                    try:
+                        bound_rjcode = await extract_service.lookup_filename_bound_rjcode(task.source_path)
+                    except Exception as exc:
+                        bound_rjcode = None
+                        logger.warning(f"[{rjcode or '未知'}] 查询密码库绑定 RJ 失败: {exc}")
+                    if bound_rjcode and bound_rjcode != rjcode:
+                        logger.info(
+                            f"[{bound_rjcode}] 密码库 filename+RJ 权威绑定，"
+                            f"覆盖源路径 RJ {rjcode or '未知'} -> {bound_rjcode}"
+                        )
+                        rjcode = self._sync_task_rjcode(
+                            task,
+                            bound_rjcode,
+                            source="password_entry_filename_match",
+                        )
+                        if task.task_metadata is None:
+                            task.task_metadata = {}
+                        task.task_metadata["rjcode_lock"] = True
+
+                if not rjcode and os.path.isfile(task.source_path):
+                    try:
+                        archive_rj_result = await extract_service.infer_rjcode_from_archive(
+                            task.source_path,
+                            max_nested_depth=3,
+                        )
+                    except Exception as exc:
+                        archive_rj_result = None
+                        logger.warning(f"[未知] 压缩包预检推断 RJ 失败: {os.path.basename(task.source_path)} error={exc}")
+
+                    if archive_rj_result and archive_rj_result.get("rjcode"):
+                        rjcode = self._sync_task_rjcode(
+                            task,
+                            archive_rj_result.get("rjcode"),
+                            source=archive_rj_result.get("source") or "archive_precheck",
+                        )
+                        logger.info(
+                            f"[{rjcode}] 预检阶段从压缩包内容推断到 RJ 号: "
+                            f"source={archive_rj_result.get('source') or 'archive_precheck'}"
+                        )
+                    else:
+                        logger.info(
+                            f"[未知] 压缩包预检未推断出 RJ 号: "
+                            f"source={os.path.basename(task.source_path)}"
+                        )
+                logger.info(f"[{rjcode}] 提取到的RJ号: {rjcode}")
+
+                archive_top_rjs = await self._collect_multi_rj_archive_precheck(
+                    task,
+                    extract_service,
+                )
+                is_multi_rj_archive = len(archive_top_rjs) >= 2
+                if is_multi_rj_archive:
+                    rjcode = ""
+
+                precheck_task = None
+                linked_result = {"handled": False, "reason": "not_run", "preview": {}}
+                if not rjcode and not is_multi_rj_archive:
+                    logger.warning(f"[未知] 无法从文件名提取RJ号，跳过字幕补配预检和预检查重: {os.path.basename(task.source_path)}")
+                    # 小型压缩包且 RJ 号未知：视作疑似字幕包，无法自动关联，转入问题作品等待人工处理
+                    if (
+                        task.auto_classify
+                        and getattr(config.auto_process, 'import_linked_translation_subtitles', False)
+                        and os.path.isfile(task.source_path)
+                    ):
+                        try:
+                            _unknown_size = os.path.getsize(task.source_path)
+                        except OSError:
+                            _unknown_size = 0
+                        if 0 < _unknown_size < 10 * 1024 * 1024:
+                            _reason = "小型压缩包无法识别 RJ 号，需人工处理"
+                            task.fail(_reason)
+                            self._record_problem_work_for_extract_failure(task, None, _reason)
+                            logger.warning(
+                                f"[未知] 小型压缩包未识别到 RJ 号，已转入问题作品: "
+                                f"source={os.path.basename(task.source_path)} size={_unknown_size}"
+                            )
+                            await self._abort_precheck(precheck_task)
+                            return rjcode, False
+                elif not task.auto_classify:
+                    logger.info(f"[{rjcode}] auto_classify=False，跳过字幕补配预检和预检查重")
+                else:
+                    if is_multi_rj_archive:
+                        logger.info(
+                            f"[{rjcode}] 多 RJ 合集跳过整包字幕补配预检，"
+                            "解压后按独立作品分别处理"
+                        )
+                    elif getattr(config.auto_process, 'import_linked_translation_subtitles', False) or task.task_metadata.get("retry_linked_subtitle_import"):
+                        from .linked_subtitle_import_service import get_linked_subtitle_import_service
+
+                        linked_import_service = get_linked_subtitle_import_service()
+                        try:
+                            linked_result = await linked_import_service.queue_pending_archive_import(task, rjcode)
+                        except Exception as exc:
+                            linked_result = {"handled": False, "reason": str(exc)}
+                            logger.warning(f"[{rjcode}] 关联字幕自动导入预检失败，回退原问题队列逻辑: {exc}")
+
+                        if linked_result.get("handled"):
+                            record = linked_result.get("record") or {}
+                            preview = linked_result.get("preview") or {}
+                            source_label = os.path.basename(task.source_path or "").strip() or rjcode or "字幕补配预检"
+                            task.task_metadata = {
+                                **(task.task_metadata or {}),
+                                "linked_subtitle_import": record,
+                                "linked_subtitle_preview": preview,
+                                "source_mode": "linked_translation_archive_pending",
+                                "task_domain": "subtitle_import",
+                                "task_kind": "linked_translation_archive_pending",
+                                "source_page": "subtitle-import",
+                                "source_action": "linked_translation_archive_pending",
+                                "source_label": source_label,
+                                "business_key": str(record.get("id") or task.id),
+                            }
+                            task.output_path = ""
+                            task.status = TaskStatus.COMPLETED
+                            task.update_progress(100, "已加入字幕补配预检列表，请在字幕补配页继续处理")
+                            task.completed_at = datetime.now()
+                            logger.info(
+                                f"[{rjcode}] 命中关联字幕补配预检分支，已挂入字幕补配页: "
+                                f"target={preview.get('target_rjcode', '')} record={record.get('id', '')}"
+                            )
+                            await self._abort_precheck(precheck_task)
+                            return rjcode, False
+                        preview = linked_result.get("preview") or {}
+                        existing_subtitle_problem = await linked_import_service.create_existing_subtitle_problem(
+                            source_path=task.source_path,
+                            preview=preview,
+                            task_id=task.id,
+                            queue_origin="auto_process",
+                            **({"prepared_conflicts": task._prepared_conflicts}
+                               if hasattr(task, "_prepared_conflicts") else {}),
+                        )
+                        if existing_subtitle_problem.get("handled"):
+                            auto_skipped = bool(existing_subtitle_problem.get("auto_skipped"))
+                            task.task_metadata = {
+                                **(task.task_metadata or {}),
+                                "linked_subtitle_preview": preview,
+                                "linked_subtitle_problem": existing_subtitle_problem,
+                                "source_mode": (
+                                    "linked_translation_archive_existing_subtitle_skipped"
+                                    if auto_skipped
+                                    else "linked_translation_archive_existing_subtitle_conflict"
+                                ),
+                            }
+                            task.output_path = ""
+                            task.status = TaskStatus.COMPLETED
+                            task.update_progress(
+                                100,
+                                (
+                                    "原作已在 Kikoeru 端有字幕，库存未命中可操作目录，已自动跳过"
+                                    if auto_skipped
+                                    else "原作目录已有字幕，已加入问题作品列表"
+                                ),
+                            )
+                            task.completed_at = datetime.now()
+                            if auto_skipped:
+                                logger.info(
+                                    f"[{rjcode}] 原作仅在 Kikoeru 端确认已有字幕，库存未命中目录，已自动跳过: "
+                                    f"target={preview.get('target_rjcode', '')}"
+                                )
+                            else:
+                                logger.info(
+                                    f"[{rjcode}] 原作目录已有字幕，已转入问题作品列表: "
+                                    f"target={preview.get('target_rjcode', '')} conflict={existing_subtitle_problem.get('conflict_id', '')}"
+                                )
+                            await self._abort_precheck(precheck_task)
+                            return rjcode, False
+                    else:
+                        logger.info(f"[{rjcode}] 字幕补配预检已禁用，跳过")
+
+                    preview = linked_result.get("preview") or {}
+                    fatal_extract_error = str(preview.get("fatal_extract_error") or "").strip()
+                    if fatal_extract_error:
+                        task.task_metadata.update({
+                            "retry_linked_subtitle_import": True,
+                            "extract_failure_reason": preview.get("source_subtitle_probe_status"),
+                            "linked_subtitle_preview": preview,
+                        })
+                        task.fail(fatal_extract_error)
+                        self._record_problem_work_for_extract_failure(
+                            task,
+                            rjcode,
+                            fatal_extract_error,
+                        )
+                        logger.error(f"[{rjcode}] 字幕补配预检已确认解压失败，任务终止: {fatal_extract_error}")
+                        await self._abort_precheck(precheck_task)
+                        return rjcode, False
+                    if preview.get("kikoeru_target_is_empty_shell"):
+                        empty_shell_rjcode = self._extract_rjcode(
+                            str(preview.get("target_rjcode") or "")
+                        ) or rjcode
+                        task.task_metadata = {
+                            **(task.task_metadata or {}),
+                            "replace_inventory_empty_shell": True,
+                            "inventory_empty_shell_rjcode": empty_shell_rjcode,
+                            "inventory_empty_shell_detected_at": datetime.now().isoformat(),
+                            "linked_subtitle_preview": preview,
+                        }
+                        logger.warning(
+                            f"[{rjcode}] 发现库存空壳，切换为新作入库并在成功后删除空目录: "
+                            f"target={empty_shell_rjcode}"
+                        )
+                    logger.info(
+                        f"[{rjcode}] 未进入字幕补配预检分支: "
+                        f"target={preview.get('target_rjcode', '')} "
+                        f"reason={linked_result.get('reason') or preview.get('reason') or 'conditions_not_met'}"
+                    )
+                    if preview:
+                        task.task_metadata = {
+                            **(task.task_metadata or {}),
+                            "linked_subtitle_preview": preview,
+                        }
+                        if self._should_block_uncertain_dlsite_linkage(preview):
+                            _reason = (
+                                str(preview.get("dlsite_linkage_uncertain_reason") or preview.get("reason") or "").strip()
+                                or "DLsite 关联链结果不完整，疑似翻译作品，等待重试后重新预检"
+                            )
+                            task.output_path = ""
+                            retry_after = self._schedule_dlsite_linkage_retry(
+                                task,
+                                _reason,
+                            )
+                            if retry_after is not None:
+                                logger.warning(
+                                    f"[{rjcode}] DLsite 关联链不完整，疑似翻译作品，等待重试: "
+                                    f"reason={_reason} retry_after={retry_after.isoformat()}"
+                                )
+                            await self._abort_precheck(precheck_task)
+                            return rjcode, False
+                        if self._should_block_linked_translation_without_subtitles(preview):
+                            _reason = (
+                                str(preview.get("reason") or "").strip()
+                                or "翻译作命中已收录原作，但来源压缩包未发现可补配字幕"
+                            )
+                            self._record_linked_translation_without_subtitles_problem(
+                                task,
+                                preview,
+                                _reason,
+                            )
+                            task.output_path = ""
+                            task.status = TaskStatus.WAITING_MANUAL
+                            task.update_progress(100, "翻译作命中已收录原作，但未发现可补配字幕，已加入问题作品列表")
+                            task.completed_at = datetime.now()
+                            logger.warning(
+                                f"[{rjcode}] 翻译作命中已收录原作但包内无字幕，已转入问题作品: "
+                                f"target={preview.get('target_rjcode', '')} reason={_reason}"
+                            )
+                            await self._abort_precheck(precheck_task)
+                            return rjcode, False
+                    if not config.auto_process.check_duplicate:
+                        logger.info(f"[{rjcode}] 预检查重已禁用，跳过")
+                    else:
+                        # 小型压缩包（< 10MB）且开启了字幕补配预检：
+                        # 不走 Kikoeru RJ 查重，改用包内字幕是否存在来判断。
+                        # 有字幕 → 本应已被字幕补配路由处理，此处只做日志；
+                        # 无字幕 → 视为非法/不明小包，转入问题作品等待人工。
+                        _is_small_subtitle_candidate = False
+                        if (
+                            getattr(config.auto_process, 'import_linked_translation_subtitles', False)
+                            and os.path.isfile(task.source_path)
+                        ):
+                            try:
+                                _src_size = os.path.getsize(task.source_path)
+                            except OSError:
+                                _src_size = 0
+                            if 0 < _src_size < 10 * 1024 * 1024:
+                                _is_small_subtitle_candidate = True
+
+                        if _is_small_subtitle_candidate:
+                            _preview_subtitle_count = int(preview.get("subtitle_count") or 0)
+                            _kikoeru_has_work = bool(
+                                preview.get("target_has_work")
+                                or preview.get("kikoeru_has_work")
+                                or preview.get("kikoeru_target_found")
+                            )
+                            _kikoeru_needs_subtitle = bool(
+                                preview.get("target_needs_subtitle", preview.get("kikoeru_needs_subtitle"))
+                            )
+                            _kikoeru_empty_shell = bool(preview.get("kikoeru_target_is_empty_shell"))
+                            _kikoeru_confident = bool(
+                                preview.get("target_route_confident", preview.get("kikoeru_route_confident"))
+                            )
+                            if _kikoeru_empty_shell:
+                                logger.info(
+                                    f"[{rjcode}] 小型压缩包命中库存空壳，按新作继续正式解压入库: "
+                                    f"source={os.path.basename(task.source_path)}"
+                                )
+                            elif (
+                                _kikoeru_has_work
+                                and not _kikoeru_needs_subtitle
+                            ):
+                                # 本地库存已有字幕 → 小包视为重复，转问题作品
+                                _reason = "小型压缩包对应作品在本地库存已有字幕，按重复处理"
+                                task.fail(_reason)
+                                self._record_problem_work_for_extract_failure(task, rjcode, _reason)
+                                logger.warning(
+                                    f"[{rjcode}] 小型压缩包对应本地库存作品已有字幕，转入问题作品: "
+                                    f"source={os.path.basename(task.source_path)}"
+                                )
+                                await self._abort_precheck(precheck_task)
+                                return rjcode, False
+                            elif not _kikoeru_has_work and _kikoeru_confident:
+                                if _preview_subtitle_count > 0:
+                                    _reason = "小型压缩包对应 RJ 作品未在 ready 库存索引命中，但包内含字幕，需人工核查"
+                                    task.fail(_reason)
+                                    self._record_problem_work_for_extract_failure(task, rjcode, _reason)
+                                    logger.warning(
+                                        f"[{rjcode}] 小型压缩包无原始作品但包内含字幕，转入问题作品: "
+                                        f"source={os.path.basename(task.source_path)} subtitle_count={_preview_subtitle_count}"
+                                    )
+                                    await self._abort_precheck(precheck_task)
+                                    return rjcode, False
+                                logger.info(
+                                    f"[{rjcode}] 小型压缩包未命中 ready 库存索引且包内无字幕，按新作继续解压入库: "
+                                    f"source={os.path.basename(task.source_path)}"
+                                )
+                            elif _preview_subtitle_count == 0:
+                                _reason = "小型压缩包内未发现字幕文件，需人工核查"
+                                task.fail(_reason)
+                                self._record_problem_work_for_extract_failure(task, rjcode, _reason)
+                                logger.warning(
+                                    f"[{rjcode}] 小型压缩包无字幕，跳过 Kikoeru 查重，转入问题作品: "
+                                    f"source={os.path.basename(task.source_path)}"
+                                )
+                                await self._abort_precheck(precheck_task)
+                                return rjcode, False
+                            else:
+                                logger.info(
+                                    f"[{rjcode}] 小型压缩包内含字幕，跳过 Kikoeru 查重，继续处理: "
+                                    f"subtitle_count={_preview_subtitle_count}"
+                                )
+                        else:
+                            if is_multi_rj_archive:
+                                logger.info(
+                                    f"[{rjcode}] 合集包跳过解压前整体查重，"
+                                    "每个子 RJ 将在拆分后各自查重"
+                                )
+                            else:
+                                task.task_metadata["preflight_runtime_duplicate_check"] = True
+                                is_duplicate = await classifier.check_duplicate_before_extract(rjcode, task, self)
+                                logger.info(f"[{rjcode}] 重复检查结果: {is_duplicate}")
+                                if is_duplicate:
+                                    logger.info(f"[{rjcode}] 作品已存在或正在处理中，已添加到问题作品列表")
+                                    task.status = TaskStatus.WAITING_MANUAL
+                                    task.update_progress(100, "重复作品，请在问题作品页面处理")
+                                    task.completed_at = datetime.now()
+                                    await self._abort_precheck(precheck_task)
+                                    return rjcode, False
+            except Exception:
+                await self._abort_precheck(precheck_task)
+                raise
+
+        # 不等待后台 list 预检。预检和正式解压不共享槽位，预检结果只是缓存优化；
+        # 如果这里 await，解压槽空闲时反而会被慢清单拖住。
+        if precheck_task is not None and not precheck_task.done():
+            logger.info(
+                f"[{rjcode}] 后台 list 预检仍在运行，步骤1解压不等待；"
+                "清单完成后会自动写缓存"
+            )
+
+        return rjcode, True
+
     async def _process_task(self, task: Task):
         """处理单个任务"""
         from .extract_service import ExtractService
@@ -2796,6 +3390,8 @@ class TaskEngine:
         from .metadata_service import MetadataService
         from .rename_service import RenameService
         from .classifier import InventoryEmptyShellChangedError, SmartClassifier
+        from .input_stability import InputSourceNotReady
+        source_waiting = False
         
         inferred_rjcode = self._extract_rjcode(str((task.task_metadata or {}).get('inferred_rjcode') or '')) or str((task.task_metadata or {}).get('inferred_rjcode') or '').strip().upper()
         task_metadata_rjcode = self._get_effective_rjcode(task)
@@ -2810,7 +3406,13 @@ class TaskEngine:
         logger.info(f"[{rjcode}] 源路径: {task.source_path}")
         
         try:
-            task.start()
+            if (task.task_metadata or {}).get("input_source_error"):
+                raise TimeoutError(task.task_metadata.pop("input_source_error"))
+            if (task.task_metadata or {}).pop("input_source_resume", False) and task.started_at:
+                task.status = TaskStatus.PROCESSING
+                task.current_step = "处理中"
+            else:
+                task.start()
             await self._notify_progress(task)
             if (task.task_metadata or {}).get("retry_linkage_required"):
                 from .dlsite_service import get_dlsite_service
@@ -2824,386 +3426,17 @@ class TaskEngine:
                 filter_service = FilterService()
                 metadata_service = MetadataService()
                 classifier = SmartClassifier()
-                skip_retry_precheck = self._should_skip_conflict_retry_precheck(task)
-
-                # 方案 B 并行 list 预检：fire-and-forget 启动后台协程，
-                # 协程跑完 7zz l 后写入 ExtractService._archive_info_cache，
-                # 步骤 1 解压时内部 _get_archive_info 命中缓存秒回，消除重复 list。
-                # 预检只占清单/探测槽，不能阻塞正式解压槽。
-                precheck_task: Optional[asyncio.Task] = None
-
-                # 步骤0: 预检（先识别合集，再做字幕补配和普通查重）
-                if skip_retry_precheck:
-                    logger.info(f"[{rjcode}] 问题作品处理任务，跳过已完成的解压前预检")
-                    task.update_progress(8, "准备处理")
-                else:
-                    try:  # 步骤 0 try/except：确保步骤 0 意外异常时 cancel precheck
-                        logger.info(f"[{rjcode}] 步骤0: 预检")
-                        task.update_progress(5, "预检中")
-                        rjcode = self._extract_rjcode_from_path_tail(task.source_path)
-
-                        # 密码库权威绑定：若条目同时填写 filename + rjcode 命中了当前压缩包，
-                        # 整条链路（查重/命名/包裹目录）都使用条目里的 rjcode。
-                        if os.path.isfile(task.source_path):
-                            try:
-                                bound_rjcode = await extract_service.lookup_filename_bound_rjcode(task.source_path)
-                            except Exception as exc:
-                                bound_rjcode = None
-                                logger.warning(f"[{rjcode or '未知'}] 查询密码库绑定 RJ 失败: {exc}")
-                            if bound_rjcode and bound_rjcode != rjcode:
-                                logger.info(
-                                    f"[{bound_rjcode}] 密码库 filename+RJ 权威绑定，"
-                                    f"覆盖源路径 RJ {rjcode or '未知'} -> {bound_rjcode}"
-                                )
-                                rjcode = self._sync_task_rjcode(
-                                    task,
-                                    bound_rjcode,
-                                    source="password_entry_filename_match",
-                                )
-                                if task.task_metadata is None:
-                                    task.task_metadata = {}
-                                task.task_metadata["rjcode_lock"] = True
-
-                        if not rjcode and os.path.isfile(task.source_path):
-                            try:
-                                archive_rj_result = await extract_service.infer_rjcode_from_archive(
-                                    task.source_path,
-                                    max_nested_depth=3,
-                                )
-                            except Exception as exc:
-                                archive_rj_result = None
-                                logger.warning(f"[未知] 压缩包预检推断 RJ 失败: {os.path.basename(task.source_path)} error={exc}")
-
-                            if archive_rj_result and archive_rj_result.get("rjcode"):
-                                rjcode = self._sync_task_rjcode(
-                                    task,
-                                    archive_rj_result.get("rjcode"),
-                                    source=archive_rj_result.get("source") or "archive_precheck",
-                                )
-                                logger.info(
-                                    f"[{rjcode}] 预检阶段从压缩包内容推断到 RJ 号: "
-                                    f"source={archive_rj_result.get('source') or 'archive_precheck'}"
-                                )
-                            else:
-                                logger.info(
-                                    f"[未知] 压缩包预检未推断出 RJ 号: "
-                                    f"source={os.path.basename(task.source_path)}"
-                                )
-                        logger.info(f"[{rjcode}] 提取到的RJ号: {rjcode}")
-
-                        archive_top_rjs = await self._collect_multi_rj_archive_precheck(
-                            task,
-                            extract_service,
-                        )
-                        is_multi_rj_archive = len(archive_top_rjs) >= 2
-                        if is_multi_rj_archive:
-                            rjcode = ""
-
-                        precheck_task = None
-                        linked_result = {"handled": False, "reason": "not_run", "preview": {}}
-                        if not rjcode and not is_multi_rj_archive:
-                            logger.warning(f"[未知] 无法从文件名提取RJ号，跳过字幕补配预检和预检查重: {os.path.basename(task.source_path)}")
-                            # 小型压缩包且 RJ 号未知：视作疑似字幕包，无法自动关联，转入问题作品等待人工处理
-                            if (
-                                task.auto_classify
-                                and getattr(config.auto_process, 'import_linked_translation_subtitles', False)
-                                and os.path.isfile(task.source_path)
-                            ):
-                                try:
-                                    _unknown_size = os.path.getsize(task.source_path)
-                                except OSError:
-                                    _unknown_size = 0
-                                if 0 < _unknown_size < 10 * 1024 * 1024:
-                                    _reason = "小型压缩包无法识别 RJ 号，需人工处理"
-                                    task.fail(_reason)
-                                    self._record_problem_work_for_extract_failure(task, None, _reason)
-                                    logger.warning(
-                                        f"[未知] 小型压缩包未识别到 RJ 号，已转入问题作品: "
-                                        f"source={os.path.basename(task.source_path)} size={_unknown_size}"
-                                    )
-                                    await self._abort_precheck(precheck_task)
-                                    return
-                        elif not task.auto_classify:
-                            logger.info(f"[{rjcode}] auto_classify=False，跳过字幕补配预检和预检查重")
-                        else:
-                            if is_multi_rj_archive:
-                                logger.info(
-                                    f"[{rjcode}] 多 RJ 合集跳过整包字幕补配预检，"
-                                    "解压后按独立作品分别处理"
-                                )
-                            elif getattr(config.auto_process, 'import_linked_translation_subtitles', False) or task.task_metadata.get("retry_linked_subtitle_import"):
-                                from .linked_subtitle_import_service import get_linked_subtitle_import_service
-
-                                linked_import_service = get_linked_subtitle_import_service()
-                                try:
-                                    linked_result = await linked_import_service.queue_pending_archive_import(task, rjcode)
-                                except Exception as exc:
-                                    linked_result = {"handled": False, "reason": str(exc)}
-                                    logger.warning(f"[{rjcode}] 关联字幕自动导入预检失败，回退原问题队列逻辑: {exc}")
-
-                                if linked_result.get("handled"):
-                                    record = linked_result.get("record") or {}
-                                    preview = linked_result.get("preview") or {}
-                                    source_label = os.path.basename(task.source_path or "").strip() or rjcode or "字幕补配预检"
-                                    task.task_metadata = {
-                                        **(task.task_metadata or {}),
-                                        "linked_subtitle_import": record,
-                                        "linked_subtitle_preview": preview,
-                                        "source_mode": "linked_translation_archive_pending",
-                                        "task_domain": "subtitle_import",
-                                        "task_kind": "linked_translation_archive_pending",
-                                        "source_page": "subtitle-import",
-                                        "source_action": "linked_translation_archive_pending",
-                                        "source_label": source_label,
-                                        "business_key": str(record.get("id") or task.id),
-                                    }
-                                    task.output_path = ""
-                                    task.status = TaskStatus.COMPLETED
-                                    task.update_progress(100, "已加入字幕补配预检列表，请在字幕补配页继续处理")
-                                    task.completed_at = datetime.now()
-                                    logger.info(
-                                        f"[{rjcode}] 命中关联字幕补配预检分支，已挂入字幕补配页: "
-                                        f"target={preview.get('target_rjcode', '')} record={record.get('id', '')}"
-                                    )
-                                    await self._abort_precheck(precheck_task)
-                                    return
-
-                                preview = linked_result.get("preview") or {}
-                                existing_subtitle_problem = await linked_import_service.create_existing_subtitle_problem(
-                                    source_path=task.source_path,
-                                    preview=preview,
-                                    task_id=task.id,
-                                    queue_origin="auto_process",
-                                )
-                                if existing_subtitle_problem.get("handled"):
-                                    auto_skipped = bool(existing_subtitle_problem.get("auto_skipped"))
-                                    task.task_metadata = {
-                                        **(task.task_metadata or {}),
-                                        "linked_subtitle_preview": preview,
-                                        "linked_subtitle_problem": existing_subtitle_problem,
-                                        "source_mode": (
-                                            "linked_translation_archive_existing_subtitle_skipped"
-                                            if auto_skipped
-                                            else "linked_translation_archive_existing_subtitle_conflict"
-                                        ),
-                                    }
-                                    task.output_path = ""
-                                    task.status = TaskStatus.COMPLETED
-                                    task.update_progress(
-                                        100,
-                                        (
-                                            "原作已在 Kikoeru 端有字幕，库存未命中可操作目录，已自动跳过"
-                                            if auto_skipped
-                                            else "原作目录已有字幕，已加入问题作品列表"
-                                        ),
-                                    )
-                                    task.completed_at = datetime.now()
-                                    if auto_skipped:
-                                        logger.info(
-                                            f"[{rjcode}] 原作仅在 Kikoeru 端确认已有字幕，库存未命中目录，已自动跳过: "
-                                            f"target={preview.get('target_rjcode', '')}"
-                                        )
-                                    else:
-                                        logger.info(
-                                            f"[{rjcode}] 原作目录已有字幕，已转入问题作品列表: "
-                                            f"target={preview.get('target_rjcode', '')} conflict={existing_subtitle_problem.get('conflict_id', '')}"
-                                        )
-                                    await self._abort_precheck(precheck_task)
-                                    return
-                            else:
-                                logger.info(f"[{rjcode}] 字幕补配预检已禁用，跳过")
-
-                            preview = linked_result.get("preview") or {}
-                            fatal_extract_error = str(preview.get("fatal_extract_error") or "").strip()
-                            if fatal_extract_error:
-                                task.task_metadata.update({
-                                    "retry_linked_subtitle_import": True,
-                                    "extract_failure_reason": preview.get("source_subtitle_probe_status"),
-                                    "linked_subtitle_preview": preview,
-                                })
-                                task.fail(fatal_extract_error)
-                                self._record_problem_work_for_extract_failure(
-                                    task,
-                                    rjcode,
-                                    fatal_extract_error,
-                                )
-                                logger.error(f"[{rjcode}] 字幕补配预检已确认解压失败，任务终止: {fatal_extract_error}")
-                                await self._abort_precheck(precheck_task)
-                                return
-                            if preview.get("kikoeru_target_is_empty_shell"):
-                                empty_shell_rjcode = self._extract_rjcode(
-                                    str(preview.get("target_rjcode") or "")
-                                ) or rjcode
-                                task.task_metadata = {
-                                    **(task.task_metadata or {}),
-                                    "replace_inventory_empty_shell": True,
-                                    "inventory_empty_shell_rjcode": empty_shell_rjcode,
-                                    "inventory_empty_shell_detected_at": datetime.now().isoformat(),
-                                    "linked_subtitle_preview": preview,
-                                }
-                                logger.warning(
-                                    f"[{rjcode}] 发现库存空壳，切换为新作入库并在成功后删除空目录: "
-                                    f"target={empty_shell_rjcode}"
-                                )
-                            logger.info(
-                                f"[{rjcode}] 未进入字幕补配预检分支: "
-                                f"target={preview.get('target_rjcode', '')} "
-                                f"reason={linked_result.get('reason') or preview.get('reason') or 'conditions_not_met'}"
-                            )
-                            if preview:
-                                task.task_metadata = {
-                                    **(task.task_metadata or {}),
-                                    "linked_subtitle_preview": preview,
-                                }
-                                if self._should_block_uncertain_dlsite_linkage(preview):
-                                    _reason = (
-                                        str(preview.get("dlsite_linkage_uncertain_reason") or preview.get("reason") or "").strip()
-                                        or "DLsite 关联链结果不完整，疑似翻译作品，等待重试后重新预检"
-                                    )
-                                    task.output_path = ""
-                                    retry_after = self._schedule_dlsite_linkage_retry(
-                                        task,
-                                        _reason,
-                                    )
-                                    if retry_after is not None:
-                                        logger.warning(
-                                            f"[{rjcode}] DLsite 关联链不完整，疑似翻译作品，等待重试: "
-                                            f"reason={_reason} retry_after={retry_after.isoformat()}"
-                                        )
-                                    await self._abort_precheck(precheck_task)
-                                    return
-                                if self._should_block_linked_translation_without_subtitles(preview):
-                                    _reason = (
-                                        str(preview.get("reason") or "").strip()
-                                        or "翻译作命中已收录原作，但来源压缩包未发现可补配字幕"
-                                    )
-                                    self._record_linked_translation_without_subtitles_problem(
-                                        task,
-                                        preview,
-                                        _reason,
-                                    )
-                                    task.output_path = ""
-                                    task.status = TaskStatus.WAITING_MANUAL
-                                    task.update_progress(100, "翻译作命中已收录原作，但未发现可补配字幕，已加入问题作品列表")
-                                    task.completed_at = datetime.now()
-                                    logger.warning(
-                                        f"[{rjcode}] 翻译作命中已收录原作但包内无字幕，已转入问题作品: "
-                                        f"target={preview.get('target_rjcode', '')} reason={_reason}"
-                                    )
-                                    await self._abort_precheck(precheck_task)
-                                    return
-
-                            if not config.auto_process.check_duplicate:
-                                logger.info(f"[{rjcode}] 预检查重已禁用，跳过")
-                            else:
-                                # 小型压缩包（< 10MB）且开启了字幕补配预检：
-                                # 不走 Kikoeru RJ 查重，改用包内字幕是否存在来判断。
-                                # 有字幕 → 本应已被字幕补配路由处理，此处只做日志；
-                                # 无字幕 → 视为非法/不明小包，转入问题作品等待人工。
-                                _is_small_subtitle_candidate = False
-                                if (
-                                    getattr(config.auto_process, 'import_linked_translation_subtitles', False)
-                                    and os.path.isfile(task.source_path)
-                                ):
-                                    try:
-                                        _src_size = os.path.getsize(task.source_path)
-                                    except OSError:
-                                        _src_size = 0
-                                    if 0 < _src_size < 10 * 1024 * 1024:
-                                        _is_small_subtitle_candidate = True
-
-                                if _is_small_subtitle_candidate:
-                                    _preview_subtitle_count = int(preview.get("subtitle_count") or 0)
-                                    _kikoeru_has_work = bool(
-                                        preview.get("target_has_work")
-                                        or preview.get("kikoeru_has_work")
-                                        or preview.get("kikoeru_target_found")
-                                    )
-                                    _kikoeru_needs_subtitle = bool(
-                                        preview.get("target_needs_subtitle", preview.get("kikoeru_needs_subtitle"))
-                                    )
-                                    _kikoeru_empty_shell = bool(preview.get("kikoeru_target_is_empty_shell"))
-                                    _kikoeru_confident = bool(
-                                        preview.get("target_route_confident", preview.get("kikoeru_route_confident"))
-                                    )
-                                    if _kikoeru_empty_shell:
-                                        logger.info(
-                                            f"[{rjcode}] 小型压缩包命中库存空壳，按新作继续正式解压入库: "
-                                            f"source={os.path.basename(task.source_path)}"
-                                        )
-                                    elif (
-                                        _kikoeru_has_work
-                                        and not _kikoeru_needs_subtitle
-                                    ):
-                                        # 本地库存已有字幕 → 小包视为重复，转问题作品
-                                        _reason = "小型压缩包对应作品在本地库存已有字幕，按重复处理"
-                                        task.fail(_reason)
-                                        self._record_problem_work_for_extract_failure(task, rjcode, _reason)
-                                        logger.warning(
-                                            f"[{rjcode}] 小型压缩包对应本地库存作品已有字幕，转入问题作品: "
-                                            f"source={os.path.basename(task.source_path)}"
-                                        )
-                                        await self._abort_precheck(precheck_task)
-                                        return
-                                    elif not _kikoeru_has_work and _kikoeru_confident:
-                                        if _preview_subtitle_count > 0:
-                                            _reason = "小型压缩包对应 RJ 作品未在 ready 库存索引命中，但包内含字幕，需人工核查"
-                                            task.fail(_reason)
-                                            self._record_problem_work_for_extract_failure(task, rjcode, _reason)
-                                            logger.warning(
-                                                f"[{rjcode}] 小型压缩包无原始作品但包内含字幕，转入问题作品: "
-                                                f"source={os.path.basename(task.source_path)} subtitle_count={_preview_subtitle_count}"
-                                            )
-                                            await self._abort_precheck(precheck_task)
-                                            return
-                                        logger.info(
-                                            f"[{rjcode}] 小型压缩包未命中 ready 库存索引且包内无字幕，按新作继续解压入库: "
-                                            f"source={os.path.basename(task.source_path)}"
-                                        )
-                                    elif _preview_subtitle_count == 0:
-                                        _reason = "小型压缩包内未发现字幕文件，需人工核查"
-                                        task.fail(_reason)
-                                        self._record_problem_work_for_extract_failure(task, rjcode, _reason)
-                                        logger.warning(
-                                            f"[{rjcode}] 小型压缩包无字幕，跳过 Kikoeru 查重，转入问题作品: "
-                                            f"source={os.path.basename(task.source_path)}"
-                                        )
-                                        await self._abort_precheck(precheck_task)
-                                        return
-                                    else:
-                                        logger.info(
-                                            f"[{rjcode}] 小型压缩包内含字幕，跳过 Kikoeru 查重，继续处理: "
-                                            f"subtitle_count={_preview_subtitle_count}"
-                                        )
-                                else:
-                                    if is_multi_rj_archive:
-                                        logger.info(
-                                            f"[{rjcode}] 合集包跳过解压前整体查重，"
-                                            "每个子 RJ 将在拆分后各自查重"
-                                        )
-                                    else:
-                                        is_duplicate = await classifier.check_duplicate_before_extract(rjcode, task, self)
-                                        logger.info(f"[{rjcode}] 重复检查结果: {is_duplicate}")
-                                        if is_duplicate:
-                                            logger.info(f"[{rjcode}] 作品已存在或正在处理中，已添加到问题作品列表")
-                                            task.status = TaskStatus.WAITING_MANUAL
-                                            task.update_progress(100, "重复作品，请在问题作品页面处理")
-                                            task.completed_at = datetime.now()
-                                            await self._abort_precheck(precheck_task)
-                                            return
-
-
-                    except Exception:
-                        await self._abort_precheck(precheck_task)
-                        raise
-
-                # 不等待后台 list 预检。预检和正式解压不共享槽位，预检结果只是缓存优化；
-                # 如果这里 await，解压槽空闲时反而会被慢清单拖住。
-                if precheck_task is not None and not precheck_task.done():
-                    logger.info(
-                        f"[{rjcode}] 后台 list 预检仍在运行，步骤1解压不等待；"
-                        "清单完成后会自动写缓存"
-                    )
+                rjcode, proceed = await self._preflight_auto_process(
+                    task, extract_service, classifier, config,
+                )
+                if not proceed:
+                    return
+                if (
+                    not (task.task_metadata or {}).get("aggregate_archive")
+                    and not (task.task_metadata or {}).get("retry_from_conflicts")
+                    and rjcode and rjcode != "未知" and config.auto_process.fetch_metadata
+                ):
+                    metadata_service.start_prefetch(task, rjcode)
 
                 # 步骤1: 解压
                 logger.info(f"[{rjcode}] 步骤1: 解压")
@@ -3216,14 +3449,16 @@ class TaskEngine:
                             logger.info(f"[{rjcode}] 解压已取消，任务终止")
                             return
                         failure_reason = task.error_message or "解压失败"
-                        self._record_problem_work_for_extract_failure(
+                        recorded = self._record_problem_work_for_extract_failure(
                             task,
                             rjcode,
                             failure_reason
                         )
-                        task.error_message = failure_reason
-                        task.status = TaskStatus.WAITING_MANUAL
-                        task.update_progress(100, "解压失败，已加入问题作品列表")
+                        if recorded:
+                            task.status = TaskStatus.WAITING_MANUAL
+                            task.update_progress(100, "解压失败，已加入问题作品列表")
+                        else:
+                            task.fail(failure_reason)
                         task.completed_at = datetime.now()
                         logger.error(f"[{rjcode}] 解压失败，任务终止")
                         return
@@ -3435,7 +3670,7 @@ class TaskEngine:
                     if (
                         config.auto_process.check_duplicate
                         and task.auto_classify
-                        and not skip_retry_precheck
+                        and not self._should_skip_conflict_retry_precheck(task)
                     ):
                         logger.info(f"[{rjcode}] 解压后进行重复检查")
                         try:
@@ -4079,6 +4314,11 @@ class TaskEngine:
                     task.complete()
                     logger.info(f"[{rjcode}] ========== 任务完成 ==========")
                 
+        except InputSourceNotReady:
+            source_waiting = True
+            task.status = TaskStatus.PENDING
+            task.task_metadata["input_source_resume"] = True
+            task.update_progress(0, "等待源文件稳定")
         except asyncio.CancelledError:
             # `append_progress_log` 是 _process_asmr_sync_download / _process_rj_subtitle_fetch /
             # _process_circle_completion_index 等内部方法的局部闭包，专门给那几个任务类型
@@ -4129,11 +4369,28 @@ class TaskEngine:
                     logger.warning("[通知] 构建导入失败 payload 失败", exc_info=True)
             logger.info(f"[{rjcode}] ========== 任务失败 ==========")
         finally:
+            prefetch = getattr(task, "_metadata_prefetch", None)
+            if prefetch is not None:
+                if not prefetch.done():
+                    prefetch.cancel()
+                await asyncio.gather(prefetch, return_exceptions=True)
+                del task._metadata_prefetch
+            if source_waiting:
+                self.processing.discard(task.id)
+                if task.rjcode:
+                    self.unmark_rjcode_processing(task.rjcode)
+                await self._notify_progress(task)
+                await asyncio.to_thread(self.persist_task_snapshot, task)
+                return
             # 操作记录优先写入，避免后续清理/通知异常导致整段 finally 中断而未落库
             try:
                 from .activity_log_service import log_task_lifecycle_event
 
-                log_task_lifecycle_event(task)
+                if (task.task_metadata or {}).get("scan_id"):
+                    task._input_lifecycle_pending = True
+                    await asyncio.to_thread(self.persist_task_snapshot, task)
+                else:
+                    log_task_lifecycle_event(task)
             except Exception:
                 logger.warning("[操作记录] 任务周期记录失败", exc_info=True)
             try:
@@ -4178,12 +4435,50 @@ class TaskEngine:
             except Exception:
                 logger.warning("[任务中心物化] 写入最终任务快照失败: task_id=%s", task.id, exc_info=True)
     
+    async def _input_source_ready(self, task):
+        """稳定观察发生在执行许可之外，一次采样后交还调度器。"""
+        metadata = task.task_metadata or {}
+        if not metadata.get("scan_id") or task.type not in {TaskType.AUTO_PROCESS, TaskType.EXTRACT}:
+            return True
+        from ..config.settings import get_config
+        from .input_stability import check_task_sources
+        from .resource_budget_service import get_resource_budget_service
+        config = get_config()
+        if task.type == TaskType.AUTO_PROCESS and not config.auto_process.extract:
+            return True
+        if time.time() < (metadata.get("input_source_wait") or {}).get("next_check_at", 0):
+            return False
+        try:
+            async with get_resource_budget_service().acquire("disk_io_local", reason="解压源复查"):
+                reason = await asyncio.to_thread(check_task_sources, task, config)
+        except TimeoutError as exc:
+            metadata["input_source_error"] = str(exc)
+            return True
+        if reason and task.current_step != "等待源文件稳定":
+            task.update_progress(0, "等待源文件稳定")
+        return reason is None
+
+    def _finish_running_task(self, done, task):
+        self._running_task_ids.discard(task.id)
+        if (
+            not self._shutdown and task.status == TaskStatus.PENDING
+            and (task.task_metadata or {}).get("input_source_wait")
+            and task.id not in self._queued_task_ids
+        ):
+            self.queue.put_nowait(task)
+            self._queued_task_ids.add(task.id)
+
     async def _worker(self):
         """工作线程"""
         while not self._shutdown:
             try:
+                if self._follow_configuration:
+                    self._apply_scheduling_config()
                 self._release_non_running_slots()
                 task = await asyncio.wait_for(self.queue.get(), timeout=1.0)
+                self._queued_task_ids.discard(task.id)
+                if task.id in self._running_task_ids or self.tasks.get(task.id) is not task:
+                    continue
                 if task.status != TaskStatus.PENDING:
                     logger.info(
                         "跳过非待处理队列项，避免占用并发槽: task_id=%s status=%s",
@@ -4194,20 +4489,68 @@ class TaskEngine:
                 if not self._task_lane_has_capacity(task):
                     # 当前通道已满时轮转队列，避免解压任务占满处理槽后阻塞下载任务。
                     await self.queue.put(task)
+                    self._queued_task_ids.add(task.id)
                     await asyncio.sleep(0.05)
                     continue
+                if not await self._input_source_ready(task):
+                    self.queue.put_nowait(task)
+                    self._queued_task_ids.add(task.id)
+                    await asyncio.sleep(0.05)
+                    continue
+                # 采样期间共享预检可能取得许可，准入前再次核对。
+                if not self._task_lane_has_capacity(task):
+                    self.queue.put_nowait(task)
+                    self._queued_task_ids.add(task.id)
+                    continue
                 self.processing.add(task.id)
+                self._input_metadata_slots.discard(task.id)
+                self._running_task_ids.add(task.id)
+                if not self._is_download_task(task):
+                    self._last_lane_admission_preflight = False
                 
                 # 创建任务处理协程
-                asyncio.create_task(self._process_task(task))
+                runner = asyncio.create_task(self._process_task(task))
+                runner.add_done_callback(
+                    lambda done, current=task: self._finish_running_task(done, current)
+                )
                 
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
                 logger.error(f"工作线程错误: {e}")
     
+    def _apply_scheduling_config(self):
+        from ..config.settings import get_config
+        config = get_config()
+        self.set_max_concurrent(max(1, int(config.processing.max_workers)))
+        self.set_max_concurrent_downloads(max(1, int(config.asmr_sync.max_concurrent_downloads)))
+
+    def _on_config_changed(self, config):
+        loop = self._config_loop
+        if loop is not None and not loop.is_closed() and not self._shutdown:
+            loop.call_soon_threadsafe(self._refresh_scheduling_config)
+
+    def _refresh_scheduling_config(self):
+        if self._shutdown:
+            return
+        from .resource_budget_service import get_resource_budget_service
+        if self._follow_configuration:
+            self._apply_scheduling_config()
+        if self._config_refresh_task is None or self._config_refresh_task.done():
+            self._config_refresh_task = asyncio.create_task(get_resource_budget_service().refresh())
+            self._config_refresh_task.add_done_callback(self._config_refresh_done)
+
+    @staticmethod
+    def _config_refresh_done(future):
+        if not future.cancelled() and future.exception() is not None:
+            logger.error("资源预算热更新失败", exc_info=future.exception())
+
     def start(self):
         """启动引擎"""
+        if self._config_loop is None:
+            from ..config.settings import register_config_change_callback
+            self._config_loop = asyncio.get_running_loop()
+            register_config_change_callback(self._on_config_changed)
         if not self._worker_task:
             self._worker_task = asyncio.create_task(self._worker())
             logger.info("任务引擎已启动")
@@ -4301,7 +4644,8 @@ class TaskEngine:
             task.current_step = "等待人工: DLsite 关联链仍不完整，已停止自动重试" if exhausted else "等待人工: DLsite 关联数据获取失败，请在问题作品中重试"
             task.completed_at = datetime.now()
         task.mark_changed("status")
-        self._remove_waiting_retry_task(task.rjcode)
+        if not hasattr(task, "_prepared_conflicts"):
+            self._remove_waiting_retry_task(task.rjcode)
 
     def _schedule_dlsite_linkage_retry(
         self,
@@ -4380,6 +4724,16 @@ class TaskEngine:
     def stop(self):
         """停止引擎"""
         self._shutdown = True
+        if self._config_loop is not None:
+            from ..config.settings import unregister_config_change_callback
+            unregister_config_change_callback(self._on_config_changed)
+            self._config_loop = None
+        if self._config_refresh_task is not None:
+            self._config_refresh_task.cancel()
+        for task in self._input_metadata_window.values():
+            future = getattr(task, "_metadata_prefetch", None)
+            if future is not None:
+                future.cancel()
         if self._worker_task:
             self._worker_task.cancel()
         if self._retry_scheduler_task:
@@ -5226,6 +5580,9 @@ class TaskEngine:
                 "batch_id": notification_batch_id,
                 "parent_session_id": notification_group_key,
             }
+            for key in ("scan_id", "candidate_id"):
+                if parent_metadata.get(key):
+                    child_metadata[key] = parent_metadata[key]
             if target_library_id:
                 child_metadata["target_library_id"] = target_library_id
 
@@ -5248,11 +5605,7 @@ class TaskEngine:
                     "path": target_path,
                     "error": f"子任务入队失败: {exc}",
                 })
-                # 入队失败也别留临时目录残骸
-                try:
-                    await asyncio.to_thread(shutil.rmtree, holder, ignore_errors=True)
-                except Exception:
-                    pass
+                # 目录已从父包移出；保留失败载荷，持久派发记录也可能已提交。
                 continue
 
             subtask_ids.append(child_task_id)
@@ -5288,8 +5641,8 @@ class TaskEngine:
         if (task.task_metadata or {}).get("source_operation") == "api_rename":
             return
 
-        if task.type == TaskType.HTTP_DOWNLOAD:
-            logger.info("HTTP 下载任务保留下载根目录: task_id=%s status=%s path=%s", task.id, task.status.value, task.output_path)
+        if task.type in {TaskType.HTTP_DOWNLOAD, TaskType.BAIDU_NETDISK_DOWNLOAD}:
+            logger.info("下载任务保留下载根目录: task_id=%s status=%s path=%s", task.id, task.status.value, task.output_path)
             return
 
         metadata = dict(task.task_metadata or {})
@@ -7819,4 +8172,5 @@ def get_task_engine() -> TaskEngine:
     else:
         _task_engine.set_max_concurrent(configured_max_workers)
         _task_engine.set_max_concurrent_downloads(configured_max_downloads)
+    _task_engine._follow_configuration = True
     return _task_engine

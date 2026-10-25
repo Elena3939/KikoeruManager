@@ -655,23 +655,23 @@
       @cancel="handleVolumeRenameCancel"
     />
 
-    <!-- 文件名预览弹窗：Teleport + Tailwind 玻璃壳，与社团补全下载预览同款风格。 -->
+    <!-- 文件名预览弹窗：复用全站遮罩、按钮和暗色主题。 -->
     <Teleport to="body">
       <Transition name="fp-dlg-fade">
         <div
           v-if="fpDlgVisible"
-          class="fp-dlg-overlay fixed inset-0 z-[4000] flex items-center justify-center p-6 max-[900px]:p-3"
+          class="el-overlay fp-dlg-overlay fixed inset-0 z-[4000] flex items-center justify-center p-6 max-[900px]:p-3"
           role="dialog"
           aria-modal="true"
           aria-labelledby="fp-dlg-title"
           @click.self="fpDlgClose"
         >
-          <div class="fp-dlg-window relative w-full max-w-[1100px] max-h-[calc(100vh-3rem)] max-[900px]:max-h-[calc(100vh-24px)] flex flex-col rounded-3xl overflow-hidden" @mousedown.stop>
+          <div class="fp-dlg-window relative w-full max-w-[1100px] max-h-[calc(100vh-3rem)] max-[900px]:max-h-[calc(100vh-24px)] flex flex-col rounded-lg overflow-hidden" @mousedown.stop>
             <!-- Header -->
             <header class="fp-dlg-header flex items-start justify-between gap-4 px-7 pt-6 pb-4 flex-none">
               <div class="min-w-0 flex-1">
                 <div class="flex items-center flex-wrap gap-2.5">
-                  <h1 id="fp-dlg-title" class="fp-dlg-title text-2xl font-bold tracking-tight">文件名预览</h1>
+                  <h1 id="fp-dlg-title" class="fp-dlg-title text-lg font-semibold">文件名预览</h1>
                   <span v-if="fpDlgData?.file_count" class="fp-dlg-pill"><b>{{ fpDlgData.file_count }}</b> 个文件</span>
                   <span v-if="fpDlgGarbledCount" class="fp-dlg-pill is-amber">
                     <AlertTriangle :size="12" :stroke-width="2.4" />
@@ -689,7 +689,7 @@
                 <p class="fp-dlg-subtitle text-sm m-0 mt-1.5">
                   {{ fpDlgGarbledCount
                     ? `仍有 ${fpDlgGarbledCount} 项疑似乱码，可取消后为该压缩包单独换编码`
-                    : '当前编码下未发现明显乱码，确认后会按该结果继续重试' }}
+                    : '当前清单可正常显示，重试后仍会校验实际解压文件名' }}
                 </p>
               </div>
               <button
@@ -739,8 +739,8 @@
                     <span class="fp-tree-expander-spacer" />
                     <component :is="fpRowIcon(row)" :size="17" class="fp-tree-icon" :style="fpRowIconStyle(row)" />
                     <div class="min-w-0 flex-1">
-                      <div class="fp-tree-name truncate text-[13px] font-medium text-slate-800">{{ row.displayName }}</div>
-                      <div class="fp-tree-sub truncate text-[11px] text-slate-400">{{ row.displayPath }}</div>
+                      <div class="fp-tree-name truncate text-[13px] font-medium" :title="row.displayName">{{ row.displayName }}</div>
+                      <div class="fp-tree-sub truncate text-[11px]" :title="row.displayPath">{{ row.displayPath }}</div>
                     </div>
                   </div>
                   <span class="fp-tree-size">{{ row.type === 'dir' ? '—' : (row.sizeText || '—') }}</span>
@@ -755,12 +755,12 @@
               <button
                 v-if="fpDlgCancelText"
                 type="button"
-                class="fp-dlg-btn-secondary px-6 h-10 rounded-xl font-bold"
+                class="page-head-btn fp-dlg-btn-secondary px-4 h-9 rounded-lg font-medium"
                 @click="fpDlgCancel"
               >{{ fpDlgCancelText }}</button>
               <button
                 type="button"
-                class="fp-dlg-btn-primary px-7 h-10 rounded-xl font-bold text-white"
+                class="page-head-btn is-primary fp-dlg-btn-primary px-4 h-9 rounded-lg font-medium text-white"
                 @click="fpDlgConfirm"
               >{{ fpDlgConfirmText || '确认' }}</button>
             </footer>
@@ -927,7 +927,7 @@ function fpBuildTreeRows(preview, encoding) {
     const repairedPath = String(item?.repaired_path || diag?.repaired_path || '')
     const displayPath = repairedPath || rawName
     const repairedLeaf = String(item?.repaired_name || diag?.repaired_name || '')
-    const displayName = repairedLeaf || formatPreviewName(rawName, encoding)
+    const displayName = repairedLeaf || formatPreviewName(rawName, encoding).split(/[/\\]/).filter(Boolean).pop() || rawName
     const wasRepaired = Boolean(repairedPath || repairedLeaf)
     const isDir = item?.is_dir === true || item?.type === 'dir'
     const size = Number(item?.size || 0)
@@ -4490,18 +4490,16 @@ button:disabled {
 .fp-dlg-fade-enter-from .fp-dlg-window,
 .fp-dlg-fade-leave-to .fp-dlg-window { transform: translateY(8px) scale(0.97); opacity: 0; filter: blur(1px); }
 
-/* 2. Overlay：半透 slate-900 + blur(6) */
+/* 2. 遮罩：复用全站透明度，不加模糊 */
 .fp-dlg-overlay {
-  background: transparent;
+  background: rgba(0, 0, 0, 0.52);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
 
-/* 3. Window：单层半透白玻璃壳 */
+/* 3. 弹窗：实色背景保证文字对比度 */
 .fp-dlg-window {
-  background: rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: #fff;
   border: 1px solid rgba(15, 23, 42, 0.06);
   box-shadow:
     0 30px 80px rgba(15, 23, 42, 0.12),
@@ -4517,7 +4515,7 @@ button:disabled {
 .fp-dlg-title {
   margin: 0;
   color: #0f172a;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   line-height: 1.15;
 }
 
@@ -4561,10 +4559,8 @@ button:disabled {
   color: #475569;
   font-size: 11.5px;
   font-weight: 500;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   white-space: nowrap;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .fp-dlg-pill b {
@@ -4590,11 +4586,11 @@ button:disabled {
 .fp-dlg-pill.is-emerald b { color: #0f766e; }
 
 .fp-dlg-pill-label {
-  color: rgba(29, 29, 31, 0.54);
-  font-size: 10.5px;
+  color: #64748b;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
 }
 
 /* 8. Tree head + scroll：直接平铺，无内嵌卡片 */
@@ -4634,13 +4630,12 @@ button:disabled {
 }
 
 .fp-dlg-btn-primary {
-  background: #111827;
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.16);
+  background: #2563eb;
+  color: #fff;
 }
 
 .fp-dlg-btn-primary:hover {
-  background: #0f172a;
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.22);
+  background: #1d4ed8;
   transform: translateY(-2px) scale(1.02);
 }
 
@@ -4725,7 +4720,8 @@ button:disabled {
 
 .fp-tree-sub {
   margin-top: 1px;
-  line-height: 1.15;
+  color: #64748b;
+  line-height: 1.4;
 }
 
 .fp-tree-col-size,
@@ -4786,8 +4782,25 @@ button:disabled {
 
 @media (max-width: 760px) {
   .fp-tree-grid { grid-template-columns: minmax(0, 1fr) 72px; }
+  .fp-tree-row.fp-tree-grid .fp-tree-size { min-width: 0; }
   .fp-tree-col-status,
-  .fp-tree-status { display: none; }
+  .fp-tree-row.fp-tree-grid .fp-tree-status { display: none; }
+  .fp-dlg-header, .fp-dlg-tabs, .fp-dlg-body, .fp-dlg-footer { padding-left: 12px; padding-right: 12px; }
+  .fp-dlg-tree-scroll { min-height: 0; }
+}
+
+.fp-dlg-window button:focus,
+.fp-dlg-window button:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.fp-dlg-close:hover { transform: translateY(-2px) scale(1.02); }
+.fp-dlg-close:active { transform: scale(0.96); }
+
+@media (max-width: 640px) {
+  .fp-dlg-overlay { padding: 0; }
+  .fp-dlg-window { height: 100dvh; max-height: 100dvh; border-radius: 0; }
 }
 
 /* ============================================================

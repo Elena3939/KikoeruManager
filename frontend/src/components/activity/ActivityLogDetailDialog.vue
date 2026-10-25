@@ -71,7 +71,7 @@
             </div>
             <div>
               <div class="meta-pill-label">Time</div>
-              <div class="meta-pill-value">{{ formatDateTime(row.created_at) }}</div>
+              <div class="meta-pill-value">{{ formatDateTime(row.latest_activity_at || row.created_at) }}</div>
             </div>
           </div>
         </div>

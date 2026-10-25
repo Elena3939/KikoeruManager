@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 from .fs_utils import move_path_efficient, move_path_sync
+from .input_source_rename import rename_sources, rename_sources_sync, source_rename_handler
 import contextlib
 
 # ZIP 文件名编码名称 → Windows 代码页编号（用于 7zz -mcp=<cp>）
@@ -2194,14 +2195,21 @@ class ExtractService:
         return after_percent
 
     @staticmethod
-    def _decode_7z_progress_chunk(chunk: bytes) -> str:
+    def _decode_7z_progress_chunk(chunk: bytes, filename_encoding: Optional[str] = None, *, partial: bool = False) -> str:
         if not chunk:
             return ""
         try:
             return chunk.decode("utf-8")
         except UnicodeDecodeError:
-            fallback = "gbk" if sys.platform == "win32" else "utf-8"
-            return chunk.decode(fallback, errors="replace")
+            # Linux 7zz 也可能原样输出 ZIP 的旧代码页字节。
+            fallback = filename_encoding or ("gbk" if sys.platform == "win32" else "utf-8")
+            if partial:
+                try:
+                    chunk.decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    if exc.reason == "unexpected end of data":
+                        return chunk[:exc.start].decode("utf-8")
+            return chunk.decode(fallback, errors="ignore" if partial else "replace")
 
     def _get_cached_embedded_zip_offset(self, archive_path: str, task: Optional[Task]) -> Optional[int]:
         metadata = getattr(task, "task_metadata", None) or {}
@@ -2404,6 +2412,16 @@ class ExtractService:
         for key in ("extract_execution_duration_ms", "extract_started_at", "extract_finished_at"):
             metadata.pop(key, None)
         task.task_metadata = metadata
+        rename_context = None
+        if metadata.get("candidate_id") and source_rename_handler.get() is None:
+            from .input_scan_service import finish_thread
+            from .input_scan_repository import InputScanRepository
+            from .input_source_rename import InputSourceRenamer
+            repository = InputScanRepository()
+            candidate = await finish_thread(repository.candidate_by_id, metadata["candidate_id"])
+            renamer = InputSourceRenamer(repository, candidate, task)
+            await finish_thread(renamer.reconcile)
+            rename_context = source_rename_handler.set(renamer)
         try:
             async with archive_node(task, getattr(task, "source_path", ""), root=True) as node:
                 result = await self._extract(task)
@@ -2411,9 +2429,13 @@ class ExtractService:
                     node["status"] = "incomplete"
                 return result
         finally:
-            view = (task.task_metadata or {}).pop("password_part_volume_view", None)
-            if view:
-                await asyncio.to_thread(shutil.rmtree, view["temp_dir"])
+            try:
+                view = (task.task_metadata or {}).pop("password_part_volume_view", None)
+                if view:
+                    await asyncio.to_thread(shutil.rmtree, view["temp_dir"])
+            finally:
+                if rename_context is not None:
+                    source_rename_handler.reset(rename_context)
 
     async def _extract(self, task: Task) -> Optional[str]:
         """
@@ -2426,6 +2448,11 @@ class ExtractService:
 
         archive_path = task.source_path
         original_archive_path = archive_path
+
+        if not os.path.isfile(archive_path):
+            self._set_extract_meta(task, extract_failure_reason="source_missing")
+            task.fail(format_extract_failure_message(task.task_metadata))
+            return None
 
         # 检查是否被取消
         if task.is_cancelled():
@@ -4471,29 +4498,46 @@ class ExtractService:
         logger.warning("嵌套压缩包解压失败，已尝试所有 %d 个密码: %s", len(password_list), archive_path)
         return False, None
 
-    async def _wait_file_stable(self, file_path: str, task: Optional[Task] = None, max_wait: int = 1800):
+    async def _wait_file_stable(self, file_path: str, task: Optional[Task] = None, max_wait: int = 1800, *, members=None):
         """大小、纳秒修改时间与文件身份同时稳定，且实际可读才放行。"""
+        from .input_stability import observe_sources, valid_stability_evidence
         config = self.config.processing
+        metadata = (getattr(task, "task_metadata", None) or {}) if task else {}
+        members = members or metadata.get("input_members") or [file_path]
+        if file_path not in members:
+            members = [file_path]
+        if metadata.get("scan_id"):
+            from .input_stability import check_task_sources, InputSourceNotReady
+            reason = await asyncio.to_thread(
+                check_task_sources, task, self.config, paths=members, max_wait=max_wait,
+            )
+            if reason:
+                raise InputSourceNotReady(reason)
+            return
+        evidence = metadata.get("input_stability") or {}
+        if await asyncio.to_thread(
+            valid_stability_evidence, evidence, members,
+            checks=config.file_stable_checks, interval=config.file_stable_interval,
+        ):
+            return
         started = time.monotonic()
-        previous, stable = None, 0
+        evidence = {}
         while time.monotonic() - started <= max_wait:
             if task:
                 if task.is_cancelled():
                     return
                 await task.wait_if_paused()
             try:
-                stat = await asyncio.to_thread(os.stat, file_path)
-                fingerprint = (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino)
-                stable = stable + 1 if fingerprint == previous else 0
-                previous = fingerprint
-                if stable >= config.file_stable_checks:
-                    def check_readable():
-                        with open(file_path, "rb") as stream:
-                            stream.read(1)
-                    await asyncio.to_thread(check_readable)
+                evidence, reason = await asyncio.to_thread(
+                    observe_sources, members, evidence,
+                    checks=config.file_stable_checks, interval=config.file_stable_interval,
+                )
+                if not reason:
+                    if task:
+                        task.task_metadata["input_stability"] = evidence
                     return
             except OSError:
-                previous, stable = None, 0
+                evidence = {}
             await asyncio.sleep(config.file_stable_interval)
         raise TimeoutError(f"等待文件稳定或可读超时 ({max_wait}秒): {file_path}")
 
@@ -4643,7 +4687,7 @@ class ExtractService:
             new_path = path.parent / new_filename
             counter += 1
 
-        move_path_sync(file_path, new_path)
+        rename_sources_sync([(file_path, new_path)])
         return str(new_path)
 
     async def normalize_archive_filename(self, file_path: str) -> str:
@@ -4722,7 +4766,7 @@ class ExtractService:
                 new_path = os.path.join(os.path.dirname(file_path), new_filename)
                 counter += 1
 
-            await move_path_efficient(file_path, new_path)
+            await rename_sources([(file_path, new_path)])
             return new_path
 
         # 文件名需要规范化，重命名文件
@@ -4776,10 +4820,7 @@ class ExtractService:
             logger.warning(f"[VolumeNormalize] 没有找到需要重命名的分卷文件")
             return file_path
 
-        for old_path, new_path in rename_map:
-            if old_path != new_path and os.path.exists(old_path):
-                await move_path_efficient(old_path, new_path)
-                logger.info(f"[RENAME] 分卷重命名: {old_path} -> {new_path}")
+        await rename_sources(rename_map)
 
         target_entry_path = volume_set.entry_path or file_path
         for old_path, new_path in rename_map:
@@ -5200,7 +5241,7 @@ class ExtractService:
             new_path = path.parent / new_name
             counter += 1
 
-        move_path_sync(file_path, new_path)
+        rename_sources_sync([(file_path, new_path)])
         return str(new_path)
 
     def _add_extension(self, file_path: str, ext: str) -> str:
@@ -5219,7 +5260,7 @@ class ExtractService:
             new_path = path.parent / new_name
             counter += 1
 
-        move_path_sync(file_path, new_path)
+        rename_sources_sync([(file_path, new_path)])
         return str(new_path)
 
     def _detect_volume_set(self, file_path: str) -> Optional['VolumeSet']:
@@ -5662,7 +5703,12 @@ class ExtractService:
                 return volume_set
 
         completed: List[Tuple[str, str]] = []
-        for old_path, new_path in rename_map:
+        pending_renames = rename_map
+        if source_rename_handler.get() is not None:
+            await rename_sources(rename_map)
+            completed = list(rename_map)
+            pending_renames = []
+        for old_path, new_path in pending_renames:
             try:
                 await move_path_efficient(old_path, new_path)
                 completed.append((old_path, new_path))
@@ -5747,7 +5793,7 @@ class ExtractService:
                 )
                 continue
             try:
-                await move_path_efficient(renamed, original)
+                await rename_sources([(renamed, original)])
                 logger.info(f"[ExeESequence] 失败回滚: {renamed} -> {original}")
             except Exception as exc:
                 logger.error(
@@ -5812,7 +5858,12 @@ class ExtractService:
                 return volume_set
 
         completed: List[Tuple[str, str]] = []
-        for old_path, new_path in rename_map:
+        pending_renames = rename_map
+        if source_rename_handler.get() is not None:
+            await rename_sources(rename_map)
+            completed = list(rename_map)
+            pending_renames = []
+        for old_path, new_path in pending_renames:
             try:
                 await move_path_efficient(old_path, new_path)
                 completed.append((old_path, new_path))
@@ -5878,7 +5929,7 @@ class ExtractService:
                 )
                 continue
             try:
-                await move_path_efficient(renamed, original)
+                await rename_sources([(renamed, original)])
                 logger.info(f"[ZipNumericSplit] 失败回滚: {renamed} -> {original}")
             except Exception as exc:
                 logger.error(
@@ -5954,7 +6005,12 @@ class ExtractService:
                 return volume_set
 
         completed: List[Tuple[str, str]] = []
-        for old_path, new_path in rename_map:
+        pending_renames = rename_map
+        if source_rename_handler.get() is not None:
+            await rename_sources(rename_map)
+            completed = list(rename_map)
+            pending_renames = []
+        for old_path, new_path in pending_renames:
             try:
                 await move_path_efficient(old_path, new_path)
                 completed.append((old_path, new_path))
@@ -6020,7 +6076,7 @@ class ExtractService:
                 )
                 continue
             try:
-                await move_path_efficient(renamed, original)
+                await rename_sources([(renamed, original)])
                 logger.info(f"[PartExeRemap] 失败回滚: {renamed} -> {original}")
             except Exception as exc:
                 logger.error(
@@ -6113,35 +6169,16 @@ class ExtractService:
         return result
 
     async def _wait_for_complete_set(self, volume_set: 'VolumeSet', task: Optional[Task] = None, max_wait: int = 3600) -> bool:
-        """等待分卷组完整"""
-        start_time = asyncio.get_event_loop().time()
-        check_interval = 5
-
-        while asyncio.get_event_loop().time() - start_time < max_wait:
-            # 检查任务是否被取消
-            if task and task.is_cancelled():
-                logger.info(f"任务在等待分卷组时被取消")
-                return False
-
-            # 检查任务是否暂停
-            if task:
-                await task.wait_if_paused()
-
-            all_stable = True
-            for volume in volume_set.volumes:
-                if not os.path.exists(volume):
-                    all_stable = False
-                    break
-                if not await self._is_file_stable_quick(volume):
-                    all_stable = False
-                    break
-
-            if all_stable:
-                return True
-
-            await asyncio.sleep(check_interval)
-
-        return False
+        """整组共享观察窗口，不逐卷累加等待时间。"""
+        if task and task.is_cancelled():
+            return False
+        try:
+            await self._wait_file_stable(
+                volume_set.volumes[0], task, max_wait=max_wait, members=volume_set.volumes,
+            )
+        except TimeoutError:
+            return False
+        return not (task and task.is_cancelled())
 
     async def _is_file_stable_quick(self, file_path: str) -> bool:
         """快速检查文件是否稳定（只检查一次）"""
@@ -8062,6 +8099,14 @@ class ExtractService:
             return method
         return None
 
+    @staticmethod
+    def _record_extract_process_started(task: Optional[Task]) -> None:
+        """只记录真正启动的内容提取，不把清单、稳定等待算作解压。"""
+        if task is None or (task.task_metadata or {}).get("input_first_extract_at"):
+            return
+        task.task_metadata["input_first_extract_at"] = datetime.now().isoformat()
+        task.touch_metadata()
+
     async def _extract_archive_entry_to_file(
         self,
         archive_info: ArchiveInfo,
@@ -8114,6 +8159,7 @@ class ExtractService:
                     kwargs["creationflags"] = CREATE_NO_WINDOW
 
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+                self._record_extract_process_started(task)
                 if task is not None:
                     task.register_process(process)
 
@@ -8831,6 +8877,8 @@ class ExtractService:
 
         empty_password_deferred = False
         for password in unique_passwords:
+            if not os.path.isfile(archive_info.path):
+                return False, None, "source_missing"
             password_args = [f'-p{password}'] if password else []
             cmd = [
                 self.seven_zip, 'x',
@@ -9217,6 +9265,8 @@ class ExtractService:
                     )
                     return True, password, ""
 
+                if not os.path.isfile(archive_info.path):
+                    return False, None, "source_missing"
                 stderr_text = (result.stderr or b"").decode('utf-8', errors='ignore')
                 stderr_lower = stderr_text.lower()
 
@@ -9483,6 +9533,9 @@ class ExtractService:
                 )
                 logger.warning("解压执行异常: %s", self._redact_sensitive_text(str(e), password))
                 return False, None, "extract_exception"
+
+        if not os.path.isfile(archive_info.path):
+            return False, None, "source_missing"
 
         # 所有密码都失败后的统一定性：
         # 1) 曾命中明确的加密错误 → 判密码错误
@@ -9858,14 +9911,20 @@ class ExtractService:
                     *cmd,
                     **kwargs
                 )
+                if is_extract_command:
+                    self._record_extract_process_started(task)
                 if task is not None:
                     task.register_process(process)
 
                 stdout_data = bytearray()
                 stderr_data = bytearray()
+                progress_encoding = next(
+                    (f"cp{arg.split('=', 1)[1]}" for arg in cmd if re.fullmatch(r"-mcp=\d+", str(arg))),
+                    None,
+                )
 
                 async def read_stream(stream, buffer, is_stdout=False):
-                    progress_tail = ""
+                    progress_tail = b""
                     while True:
                         chunk = await stream.read(4096)
                         if not chunk:
@@ -9877,24 +9936,24 @@ class ExtractService:
                                 buffer.extend(chunk[:remain])
                         if is_stdout and progress_callback:
                             try:
-                                text = progress_tail + self._decode_7z_progress_chunk(chunk)
-                                parts = re.split(r"[\r\n\b]+", text)
-                                if text and not text.endswith(("\r", "\n", "\b")):
+                                text = progress_tail + chunk
+                                parts = re.split(rb"[\r\n\b]+", text)
+                                if text and not text.endswith((b"\r", b"\n", b"\b")):
                                     progress_tail = parts.pop()
                                 else:
-                                    progress_tail = ""
+                                    progress_tail = b""
                                 for line in parts:
                                     if line.strip():
-                                        progress_callback(line.strip())
+                                        progress_callback(self._decode_7z_progress_chunk(line, progress_encoding).strip())
                                 # 7zz 在管道里也可能只写百分比和退格、不写换行。
-                                if re.search(r"\d{1,3}%", progress_tail):
-                                    progress_callback(progress_tail.strip())
+                                if re.search(rb"\d{1,3}%", progress_tail):
+                                    progress_callback(self._decode_7z_progress_chunk(progress_tail, progress_encoding, partial=True).strip())
                                 progress_tail = progress_tail[-8192:]
                             except Exception:
-                                progress_tail = ""
+                                progress_tail = b""
                     if is_stdout and progress_callback and progress_tail.strip():
                         try:
-                            progress_callback(progress_tail.strip())
+                            progress_callback(self._decode_7z_progress_chunk(progress_tail, progress_encoding).strip())
                         except Exception:
                             pass
 
@@ -10945,6 +11004,8 @@ class ExtractService:
                     kwargs['creationflags'] = CREATE_NO_WINDOW
 
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+                if not is_inspect:
+                    self._record_extract_process_started(task)
                 if task is not None:
                     task.register_process(process)
 
@@ -11950,11 +12011,14 @@ class ExtractService:
         os.rmdir(source)
         return True
 
-    def _repair_zip_filenames_in_place(self, archive_path: str, directory: str) -> int:
+    def _repair_zip_filenames_in_place(
+        self, archive_path: str, directory: str, filename_encoding: Optional[str] = None,
+    ) -> int:
         """按中央目录修复 7zz 原样写出的旧编码名字节，保留条目自身的 UTF-8 标记。"""
         if not self._is_zip_like_archive(archive_path):
             return 0
-        encoding = self.__class__._archive_encoding_cache.get(archive_path)
+        codepage = self._filename_encoding_to_codepage(filename_encoding) or int(self.config.extract.zip_encoding or 0)
+        encoding = f"cp{codepage}" if codepage else self.__class__._archive_encoding_cache.get(archive_path)
         if not encoding:
             encoding = self._sniff_zip_encoding(archive_path)
         if not encoding:
@@ -11965,14 +12029,13 @@ class ExtractService:
                 for info in archive.infolist():
                     if info.flag_bits & 0x800:
                         continue
-                    raw_path = info.orig_filename.encode('cp437').replace(b'\\', b'/')
-                    for raw in raw_path.split(b'/'):
+                    # 先解码再分路径；CP932 的双字节字符可能包含 0x5c。
+                    raw_path = info.orig_filename.encode('cp437')
+                    expected_parts = raw_path.decode(encoding).replace('\\', '/').split('/')
+                    for expected in expected_parts:
+                        raw = expected.encode(encoding)
                         original = raw.decode(sys.getfilesystemencoding() or 'utf-8', 'surrogateescape')
                         if not self._has_surrogateescape_bytes(original):
-                            continue
-                        try:
-                            expected = raw.decode(encoding)
-                        except UnicodeError:
                             continue
                         if expected in {'.', '..'} or any(ch in expected for ch in '/\\\x00'):
                             continue
@@ -12174,6 +12237,7 @@ class ExtractService:
                 self._repair_zip_filenames_in_place,
                 archive_path,
                 output_path,
+                self._manual_filename_encoding_from_task(task),
             )
             repaired_count += await asyncio.to_thread(
                 self._repair_mojibake_filenames_in_place,

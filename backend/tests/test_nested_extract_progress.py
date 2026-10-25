@@ -52,6 +52,9 @@ async def test_nested_zip_reports_local_percent_and_depth(tmp_path, monkeypatch)
     ([b" 17%"], "17%"),
     ([b" 1", b"7%"], "17%"),
     ([b" 17%\b\b\b\b 18%"], "18%"),
+    ([" 17% - 右耳左耳.wav\r".encode("cp932")], "右耳左耳.wav"),
+    ([" 17% - 右".encode("utf-8")[:-1], "右".encode("utf-8")[-1:] + b".wav\r"], "右.wav"),
+    ([" 17% - 右".encode("cp932")[:-1], "右".encode("cp932")[-1:] + b".wav\r"], "右.wav"),
 ])
 async def test_progress_without_newline_arrives_before_process_exit(monkeypatch, chunks, expected):
     service = ExtractService()
@@ -92,7 +95,7 @@ async def test_progress_without_newline_arrives_before_process_exit(monkeypatch,
         received.set()
 
     result = await service._run_7z_command_once(
-        [service.seven_zip, "x", "-bsp1", "nested.zip"], task=task,
+        [service.seven_zip, "x", "-bsp1", "-mcp=932", "nested.zip"], task=task,
         progress_callback=progress, progress_label="解压嵌套压缩包 nested.zip (层1)",
     )
     assert result.returncode == 0

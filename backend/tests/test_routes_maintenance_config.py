@@ -103,7 +103,6 @@ def test_get_config_includes_resource_budget(client, monkeypatch):
     assert response.json()["resource_budget"] == {
         "enabled": True,
         "disk_io_local": 2,
-        "archive_cpu": 0,
         "archive_inspect": 0,
         "remote_fs": 4,
         "network_download": 5,
@@ -172,7 +171,6 @@ def test_update_config_validates_resource_budget(client, monkeypatch):
     assert captured["resource_budget"] == {
         "enabled": True,
         "disk_io_local": 1,
-        "archive_cpu": 2,
         "archive_inspect": 3,
         "remote_fs": 3,
         "network_download": 4,

@@ -7,6 +7,7 @@ from typing import Any, Iterable, Optional, Dict, List
 import requests
 import logging
 import json
+import copy
 
 from ..config.settings import get_config
 from ..models.database import WorkMetadata as WorkMetadataModel, get_db
@@ -14,6 +15,7 @@ from ..core.task_engine import Task
 from ..core.dlsite_service import get_dlsite_service
 
 logger = logging.getLogger(__name__)
+_METADATA_FLIGHTS = {}
 
 _DLSITE_METADATA_CIRCUIT_FAILURE_THRESHOLD = 3
 _DLSITE_METADATA_CIRCUIT_OPEN_SECONDS = 45.0
@@ -249,6 +251,134 @@ class MetadataService:
             raise Exception(f"无法从路径中提取 RJ 号: {path}")
 
         task.update_progress(65, f"获取元数据 {rjcode}")
+        prefetch = getattr(task, "_metadata_prefetch", None)
+        if prefetch is not None and not force_refresh:
+            from .input_preflight import policy_revision
+            credential = getattr(task, "_metadata_prefetch_credential", {})
+            if self.prefetch_matches(task, rjcode):
+                started = time.monotonic()
+                try:
+                    payload = await asyncio.shield(prefetch)
+                    if self.prefetch_matches(task, rjcode) and self._usable_prefetch(payload, rjcode):
+                        task.task_metadata["metadata_prefetch"] = {
+                            **credential, "consumed": True,
+                            "consume_wait_seconds": time.monotonic() - started,
+                        }
+                        return copy.deepcopy(payload)
+                except Exception as exc:
+                    logger.warning("[%s] 元数据预取失败，正式步骤重新获取: %s", rjcode, exc)
+        return await self.fetch_by_rj(rjcode, path=path, force_refresh=force_refresh)
+
+    async def fetch_by_rj(self, rjcode: str, *, path: str = "", force_refresh: bool = False) -> dict:
+        """按已确定的 RJ 取数；预取不读取或修改任务状态。"""
+        rjcode = self._extract_rjcode(rjcode, search_subfolders=False)
+        if not rjcode:
+            raise ValueError("元数据请求缺少有效 RJ")
+        if force_refresh:
+            return await self._fetch_by_rj(rjcode, path=path, force_refresh=True)
+        from .input_preflight import policy_revision
+        key = (asyncio.get_running_loop(), rjcode, self.config.metadata.locale, policy_revision(self.config))
+        flight = _METADATA_FLIGHTS.get(key)
+        if flight is None:
+            flight = {"future": asyncio.create_task(self._fetch_by_rj(rjcode)), "subscribers": 0}
+            _METADATA_FLIGHTS[key] = flight
+        flight["subscribers"] += 1
+        try:
+            payload = copy.deepcopy(await asyncio.shield(flight["future"]))
+            # 最小结果中的文件名依赖消费路径，不能从另一个订阅者继承。
+            if payload.get("metadata_source") == "minimal":
+                payload["work_name"] = self._build_minimal_metadata(rjcode, path).work_name
+            return payload
+        finally:
+            flight["subscribers"] -= 1
+            if not flight["subscribers"]:
+                _METADATA_FLIGHTS.pop(key, None)
+                if not flight["future"].done():
+                    flight["future"].cancel()
+                await asyncio.gather(flight["future"], return_exceptions=True)
+
+    def prefetch_matches(self, task, rjcode):
+        from .input_preflight import policy_revision
+        credential = getattr(task, "_metadata_prefetch_credential", {})
+        return (
+            credential.get("rjcode") == rjcode
+            and credential.get("locale") == self.config.metadata.locale
+            and credential.get("purpose") == "automatic_import"
+            and credential.get("policy_revision") == policy_revision(self.config)
+            and time.monotonic() - credential.get("started_monotonic", float("-inf")) < 300
+        )
+
+    @staticmethod
+    def _usable_prefetch(payload, rjcode):
+        from .import_validation import require_import_metadata, ImportDataError
+        if (
+            not payload or payload.get("rjcode") != rjcode
+            or payload.get("metadata_verification_status") != "verified"
+        ):
+            return False
+        try:
+            require_import_metadata(payload)
+        except ImportDataError:
+            return False
+        return True
+
+    def start_prefetch(self, task: Task, rjcode: str):
+        """调用方须持业务许可；重新准入时复用同一次在途请求。"""
+        from .input_preflight import policy_revision
+        previous = getattr(task, "_metadata_prefetch", None)
+        if previous is not None and self.prefetch_matches(task, rjcode):
+            return previous
+        if previous is not None and not previous.done():
+            previous.cancel()
+        task._japanese_metadata_prefetch = None
+        credential = {
+            "rjcode": rjcode, "locale": self.config.metadata.locale,
+            "purpose": "automatic_import", "policy_revision": policy_revision(self.config),
+            "started_at": datetime.now().isoformat(),
+            "started_monotonic": time.monotonic(),
+            "field_set": "import_and_japanese" if (
+                self.config.auto_process.rename and self.config.rename.use_japanese_metadata
+            ) else "import",
+        }
+        task._metadata_prefetch_credential = credential
+        task.task_metadata["metadata_prefetch"] = {**credential, "consumed": False}
+
+        async def prepare():
+            started = time.monotonic()
+            japanese = None
+            try:
+                if credential["field_set"] == "import_and_japanese":
+                    japanese = asyncio.create_task(self.fetch_japanese_metadata(rjcode))
+                result = await self.fetch_by_rj(rjcode)
+                if japanese is not None:
+                    try:
+                        japanese_result = await japanese
+                        if self.prefetch_matches(task, rjcode):
+                            task._japanese_metadata_prefetch = japanese_result
+                    except Exception as exc:
+                        credential["japanese_error"] = str(exc)[:500]
+                credential["fetch_seconds"] = time.monotonic() - started
+                credential["verification_status"] = result.get("metadata_verification_status")
+                task.task_metadata["metadata_prefetch"] = {**credential, "consumed": False}
+                return result
+            except Exception as exc:
+                task.task_metadata["metadata_prefetch"] = {
+                    **credential, "consumed": False, "error": str(exc)[:500],
+                }
+                raise
+            finally:
+                if japanese is not None:
+                    if not japanese.done():
+                        japanese.cancel()
+                    await asyncio.gather(japanese, return_exceptions=True)
+
+        task._metadata_prefetch = asyncio.create_task(prepare(), name=f"metadata-prefetch:{task.id}")
+        task._metadata_prefetch.add_done_callback(
+            lambda done: None if done.cancelled() else done.exception()
+        )
+        return task._metadata_prefetch
+
+    async def _fetch_by_rj(self, rjcode: str, *, path: str = "", force_refresh: bool = False) -> dict:
 
         if self.config.metadata.cache_enabled and not force_refresh:
             cached = self._get_cached_metadata(rjcode)

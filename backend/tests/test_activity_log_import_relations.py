@@ -31,6 +31,42 @@ def _save(db, rows):
     db.flush()
 
 
+def test_retry_updates_parent_time_and_status_across_pages(db_session):
+    parent = _batch()
+    parent["detail"]["created_count"] = 1
+    parent["detail"]["archive_count"] = 1
+    other = _row("other", "other", at="2026-10-19T11:00:00")
+    other.update(category="pipeline_rename", batch_id=None, detail={})
+    _save(db_session, [
+        parent, _row("failure", "task-1", status="failed"),
+        other, _row("retry", "task-1", at="2026-10-20T12:00:00"),
+    ])
+    first = list_batch_lite(db_session, db_session.query(ActivityLog), page=1, limit=1)["items"][0]
+    second = list_batch_lite(db_session, db_session.query(ActivityLog), page=2, limit=1)["items"][0]
+    assert first["id"] == "parent"
+    assert first["status"] == "success"
+    assert first["created_at"] == datetime(2026, 10, 19, 10)
+    assert first["latest_activity_at"] == "2026-10-20T12:00:00"
+    assert second["id"] == "other"
+    assert second["latest_activity_at"] == "2026-10-19T11:00:00"
+    detail = routes.get_activity_log_detail("parent", db=db_session)["row"]
+    assert detail["status"] == first["status"]
+    assert detail["latest_activity_at"] == first["latest_activity_at"]
+
+
+def test_search_uses_latest_result_time_without_side_events(db_session):
+    _save(db_session, [
+        _batch(), _row("old", "task-1", status="failed"),
+        _row("retry", "task-1", at="2026-10-20T12:00:00"),
+        _row("side", "task-1", action="archive_queued", at="2026-10-21T12:00:00"),
+    ])
+    result = list_batch_lite(
+        db_session, db_session.query(ActivityLog).filter(ActivityLog.id == "old"),
+        page=1, limit=1, searching=True,
+    )
+    assert result["items"][0]["latest_activity_at"] == "2026-10-20T12:00:00"
+
+
 def test_duplicate_exclusion_is_not_a_failed_or_unfinished_archive():
     duplicate = _row("duplicate", "task-2", status="waiting")
     duplicate["summary"] = "重复作品，请在问题作品页面处理"

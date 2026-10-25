@@ -12,6 +12,7 @@ import socketserver
 import stat
 import struct
 import threading
+import time
 import weakref
 from pathlib import Path, PurePosixPath
 
@@ -60,6 +61,23 @@ class Executor:
         self.records.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._guard = threading.Lock()
         self._locks = weakref.WeakValueDictionary()
+        self.started_at = time.time()
+
+    def health(self):
+        """只返回容器白名单及能力，不暴露宿主路径或管理权限。"""
+        mappings = []
+        for row in self.mappings:
+            item = {"path": row["container"]}
+            try:
+                with self.open_path(row["container"]) as (descriptor, _):
+                    item["filesystem"] = filesystem_id(descriptor)
+                item["available"] = True
+            except OSError as exc:
+                item.update(available=False, error=exc.strerror or type(exc).__name__)
+            mappings.append(item)
+        return {"protocol_version": VERSION, "mapping_version": self.mapping_version,
+                "container_id": self.config["container_id"], "started_at": self.started_at,
+                "max_connections": 4, "mappings": mappings}
 
     def _lock(self, operation_id):
         with self._guard:
@@ -212,6 +230,8 @@ class Executor:
         if request.get("version") != VERSION:
             raise ValueError("文件移动协议版本不匹配")
         action = request.get("action")
+        if action == "health":
+            return self.health()
         if action == "probe":
             return self.probe(request)
         if action == "prepare":

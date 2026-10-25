@@ -176,47 +176,46 @@
       @load-files="task => loadFullWorkbenchTaskFiles(task, baiduNetdiskWorkbenchTasks)"
     />
 
-    <Transition name="floating-card">
-      <div v-if="visibleBackgroundFloatingCards.length" class="asmr-floating-pager">
-        <div v-if="visibleBackgroundFloatingCards.length > 1" class="asmr-floating-pager-controls">
-          <button
-            type="button"
-            class="asmr-floating-page-btn"
-            title="上一张"
-            @click="switchBackgroundFloatingCard(-1)"
-          >
-            <ChevronLeft :size="15" :stroke-width="2.4" />
-          </button>
-          <div class="asmr-floating-page-dots">
+    <Transition :name="backgroundFloatingCardTransitionName" mode="out-in">
+      <BackgroundFloatingCard
+        v-if="activeBackgroundFloatingCard"
+        :key="activeBackgroundFloatingCard.id"
+        v-bind="activeBackgroundFloatingCard.props"
+        position-group="download-pager"
+        @action="handleVisibleBackgroundFloatingCardAction"
+      >
+        <template #navigation>
+          <div v-if="visibleBackgroundFloatingCards.length > 1" class="asmr-floating-pager-controls" role="group" aria-label="切换下载小窗">
             <button
-              v-for="(card, index) in visibleBackgroundFloatingCards"
-              :key="card.id"
               type="button"
-              class="asmr-floating-page-dot"
-              :class="{ 'is-active': index === activeBackgroundFloatingCardIndex }"
-              :title="card.label"
-              @click="setBackgroundFloatingCardIndex(index)"
-            />
+              class="asmr-floating-page-btn"
+              title="上一张"
+              @click="switchBackgroundFloatingCard(-1)"
+            >
+              <ChevronLeft :size="15" :stroke-width="2.4" />
+            </button>
+            <div class="asmr-floating-page-dots">
+              <button
+                v-for="(card, index) in visibleBackgroundFloatingCards"
+                :key="card.id"
+                type="button"
+                class="asmr-floating-page-dot"
+                :class="{ 'is-active': index === activeBackgroundFloatingCardIndex }"
+                :title="card.label"
+                @click="setBackgroundFloatingCardIndex(index)"
+              />
+            </div>
+            <button
+              type="button"
+              class="asmr-floating-page-btn"
+              title="下一张"
+              @click="switchBackgroundFloatingCard(1)"
+            >
+              <ChevronRight :size="15" :stroke-width="2.4" />
+            </button>
           </div>
-          <button
-            type="button"
-            class="asmr-floating-page-btn"
-            title="下一张"
-            @click="switchBackgroundFloatingCard(1)"
-          >
-            <ChevronRight :size="15" :stroke-width="2.4" />
-          </button>
-        </div>
-        <Transition :name="backgroundFloatingCardTransitionName" mode="out-in">
-          <BackgroundFloatingCard
-            v-if="activeBackgroundFloatingCard"
-            :key="activeBackgroundFloatingCard.id"
-            v-bind="activeBackgroundFloatingCard.props"
-            :hosted="true"
-            @action="handleVisibleBackgroundFloatingCardAction"
-          />
-        </Transition>
-      </div>
+        </template>
+      </BackgroundFloatingCard>
     </Transition>
 
     <!-- Enhanced Download Workbench Dialog -->
@@ -3170,41 +3169,16 @@ button:disabled { cursor: not-allowed; }
 
 /* 后台浮动卡片 transition 已迁移至 index.css 全局 .floating-card-* 规范 */
 
-.asmr-floating-pager {
-  position: fixed;
-  right: 20px;
-  bottom: 20px;
-  z-index: 2120;
-  width: min(480px, calc(100vw - 24px));
-  perspective: 1200px;
-  pointer-events: auto;
-}
-
-.asmr-floating-pager :deep(.floating-card) {
-  position: relative;
-  right: auto;
-  bottom: auto;
-  width: 100%;
-  transform-origin: center right;
-}
-
 .asmr-floating-pager-controls {
-  position: relative;
-  right: 12px;
-  top: auto;
-  width: fit-content;
-  margin: 0 0 8px auto;
-  z-index: 3;
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
-  gap: 7px;
-  padding: 5px 7px;
+  gap: 4px;
+  padding: 2px 3px;
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.92);
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.10);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
 }
 
 .asmr-floating-page-btn,
@@ -3316,20 +3290,6 @@ html.kikoerumanager-dark .asmr-floating-page-dot {
 
 html.kikoerumanager-dark .asmr-floating-page-dot.is-active {
   background: #93c5fd;
-}
-
-@media (max-width: 640px) {
-  .asmr-floating-pager {
-    left: 12px;
-    right: 12px;
-    bottom: max(12px, env(safe-area-inset-bottom));
-    width: auto;
-  }
-
-  .asmr-floating-pager-controls {
-    right: 10px;
-    top: -32px;
-  }
 }
 
 /* ==============================================================

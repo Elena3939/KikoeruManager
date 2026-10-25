@@ -179,8 +179,50 @@ class ActivityLogWriter:
             except Exception:
                 logger.warning("[操作记录] 单条写入打开会话失败", exc_info=True)
 
+    def insert_once(self, db, payload: Dict[str, Any]) -> bool:
+        """可靠路径使用调用方事务；重放不重复累加统计，任何失败交给 outbox 重试。"""
+        from sqlalchemy.dialects.postgresql import insert
+        from ..models.database import ActivityLog, get_local_now
+        from .activity_log_rollup_service import get_activity_log_rollup_service
+
+        if not payload.get("event_key"):
+            raise ValueError("可靠操作记录必须提供 event_key")
+        payload = {**payload, "created_at": payload.get("created_at") or get_local_now()}
+        inserted = db.execute(insert(ActivityLog).values(**payload).on_conflict_do_nothing(
+            index_elements=["event_key"],
+        ).returning(ActivityLog.id)).scalar()
+        if not inserted:
+            return False
+        self._upsert_daily_stats(db, [payload], strict=True)
+        get_activity_log_rollup_service().upsert_from_payloads(db, [payload])
+        self.invalidate_after_commit(db)
+        return True
+
+    def invalidate_after_commit(self, db) -> None:
+        """只在外层事务提交后使读缓存失效，回滚不能对外发布新版本。"""
+        from sqlalchemy import event
+
+        key = "_activity_log_dirty_writer"
+        db.info[key] = self
+        if db.info.get("_activity_log_commit_hooks"):
+            return
+        db.info["_activity_log_commit_hooks"] = True
+
+        def committed(session):
+            if not session.in_nested_transaction():
+                writer = session.info.pop(key, None)
+                if writer is not None:
+                    writer._last_write_ts = time.time()
+
+        def rolled_back(session):
+            if not session.in_nested_transaction():
+                session.info.pop(key, None)
+
+        event.listen(db, "after_commit", committed)
+        event.listen(db, "after_rollback", rolled_back)
+
     @staticmethod
-    def _upsert_daily_stats(db, batch: list[Dict[str, Any]]) -> None:
+    def _upsert_daily_stats(db, batch: list[Dict[str, Any]], *, strict: bool = False) -> None:
         """Phase 4A：批量聚合后 UPSERT 到 activity_log_daily_stats。
 
         - 在 batch 里先按 (date, category, status) 本地累加，避免给同一格子发多条 UPSERT；
@@ -231,6 +273,8 @@ class ActivityLogWriter:
                         "count": delta,
                     })
         except Exception:
+            if strict:
+                raise
             # 聚合写入失败不影响主业务记录；PostgreSQL 里失败语句会污染事务，
             # 所以上面必须用 savepoint，让这里的失败只回滚聚合写入。
             logger.debug("[操作记录] 日聚合 UPSERT 失败（非致命）", exc_info=True)

@@ -31,7 +31,7 @@ class ArchiveHandler(FileSystemEventHandler):
     def __init__(
         self,
         on_archive_detected: Callable[[str], None],
-        get_excluded_paths: Callable[[], Set[str]],
+        get_excluded_paths: Callable[[str], Set[str]],
         is_paused: Callable[[], bool],
         mark_processed: Callable[[str], None]
     ):
@@ -47,7 +47,7 @@ class ArchiveHandler(FileSystemEventHandler):
         if self.is_paused():
             return
         file_path = str(event.src_path)
-        if file_path in self.get_excluded_paths():
+        if file_path in self.get_excluded_paths(file_path):
             logger.debug(f"文件在排除列表中，跳过: {file_path}")
             return
         if not os.path.exists(file_path):
@@ -67,7 +67,7 @@ class ArchiveHandler(FileSystemEventHandler):
         if self.is_paused():
             return
         file_path = str(event.src_path)
-        if file_path in self.get_excluded_paths():
+        if file_path in self.get_excluded_paths(file_path):
             return
         if not os.path.exists(file_path):
             return
@@ -118,6 +118,7 @@ class FolderWatcher:
         self.is_running = False
         self.pending_files = set()
         self._processed_files = set()
+        self._processed_fingerprints = {}
         self._scan_task = None
         self._loop = None
         self._paused = False  # 暂停监听标志
@@ -149,11 +150,22 @@ class FolderWatcher:
         except Exception:
             logger.debug("广播 watcher 实时状态失败", exc_info=True)
 
-    def _get_excluded_paths(self):
+    def _get_excluded_paths(self, file_path=None):
         """获取所有应该排除的路径（pending + processed）"""
-        return self.pending_files | self._processed_files
+        return self.pending_files | {
+            path for path in ((file_path,) if file_path else tuple(self._processed_files))
+            if self._is_file_processed(path)
+        }
 
-    def _mark_file_processed(self, file_path: str):
+    @staticmethod
+    def _source_fingerprint(file_path):
+        try:
+            info = os.stat(file_path)
+            return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+        except OSError:
+            return None
+
+    def _mark_file_processed(self, file_path: str, fingerprint=None):
         """将文件标记为已处理"""
         if self._loop and self._loop.is_running():
             try:
@@ -161,13 +173,45 @@ class FolderWatcher:
             except RuntimeError:
                 current_loop = None
             if current_loop is not self._loop:
-                self._loop.call_soon_threadsafe(self._mark_file_processed, file_path)
+                self._loop.call_soon_threadsafe(self._mark_file_processed, file_path, fingerprint)
                 return
-        self._processed_files.add(file_path)
+        if fingerprint is None:
+            fingerprint = self._source_fingerprint(file_path)
+        if fingerprint is not None:
+            self._processed_fingerprints[file_path] = fingerprint
+            self._processed_files.add(file_path)
 
     def _is_file_processed(self, file_path: str) -> bool:
         """检查文件是否已处理"""
-        return file_path in self._processed_files
+        if file_path not in self._processed_files:
+            return False
+        if self._processed_fingerprints.get(file_path) == self._source_fingerprint(file_path):
+            return True
+        self._processed_files.discard(file_path)
+        self._processed_fingerprints.pop(file_path, None)
+        return False
+
+    def _completed_source_members(self, task, original_path, original_fingerprint):
+        """只接纳本次任务实际核过身份的成员，不能重新枚举后删除晚到卷。"""
+        metadata = task.task_metadata or {}
+        if metadata.get("candidate_id"):
+            members = metadata.get("input_members") or []
+            expected = (metadata.get("input_stability") or {}).get("fingerprints") or {}
+            if not members or set(members) != set(expected):
+                return None
+            for path in members:
+                value = expected[path]
+                fingerprint = (value.get("dev"), value.get("ino"), value.get("size"), value.get("mtime_ns"))
+                if self._source_fingerprint(path) != fingerprint:
+                    return None
+            return {path: (expected[path]["dev"], expected[path]["ino"],
+                           expected[path]["size"], expected[path]["mtime_ns"]) for path in members}
+        if task.source_path != original_path:
+            return None
+        if original_fingerprint is None or self._source_fingerprint(original_path) != original_fingerprint:
+            return None
+        # 旧入口只证明主文件，伴随卷没有证据时不能由监听器删除。
+        return {original_path: original_fingerprint}
 
     def pause_watching(self):
         """暂停文件监听（在重命名等操作前调用）"""
@@ -255,7 +299,7 @@ class FolderWatcher:
             logger.debug(f"文件已在处理中，跳过: {file_path}")
             return
 
-        if file_path in self._processed_files:
+        if self._is_file_processed(file_path):
             logger.debug(f"文件已处理过，跳过: {file_path}")
             return
 
@@ -276,35 +320,38 @@ class FolderWatcher:
         else:
             logger.info(f"auto_start为false，跳过自动处理: {file_path}")
 
+    async def _submit_input(self, file_path: str):
+        from .input_scan_service import get_input_scan_service
+        return await get_input_scan_service().accept_watch_file(file_path)
+
     async def _process_file(self, file_path: str):
-        """处理文件（使用 FileProcessor 统一流程）"""
+        """持久交接后保留监听器原有的成功删源策略。"""
         logger.debug(f"[Watcher] 开始处理文件: {file_path}")
         original_path = file_path
 
         try:
             if not await asyncio.to_thread(os.path.isfile, file_path):
                 return
-            # 使用 FileProcessor 处理文件
-            # 传入暂停/恢复监听回调，用于文件名规范化时避免重复事件
-            task = await self._file_processor.process_file(
-                file_path,
-                auto_classify=self.config.watcher.auto_classify,
-                wait_stable=True,
-                max_wait=300,
-                is_processed=self._is_file_processed,
-                mark_processed=self._mark_file_processed,
-                pause_fn=self.pause_watching,
-                resume_fn=self.resume_watching
-            )
+            fingerprint = await asyncio.to_thread(self._source_fingerprint, file_path)
+            task = await self._submit_input(file_path)
 
             if task:
                 # 等待任务完成
                 while task.status.value in ["pending", "processing"]:
                     await asyncio.sleep(1)
 
-                # 任务完成后添加到已处理列表
-                self._processed_files.add(task.source_path)
+                # 失败可以重扫；处理期间被替换的同名源不能沿用旧结果。
+                completed_members = await asyncio.to_thread(
+                    self._completed_source_members, task, original_path, fingerprint,
+                ) if task.status.value == "completed" else None
+                if completed_members:
+                    for path, verified_fingerprint in completed_members.items():
+                        self._mark_file_processed(path, verified_fingerprint)
                 logger.info(f"文件处理完成: {task.source_path}, 状态: {task.status.value}")
+
+                if task.status.value == "completed" and not completed_members:
+                    logger.info("源文件代次已变化，保留新源等待重新扫描: %s", original_path)
+                    return
 
                 # 处理后删除原文件（如果配置允许且处理成功，且不是重新解压）
                 if self.config.watcher.delete_after_process and not task.skip_archive:
@@ -330,15 +377,16 @@ class FolderWatcher:
                                 logger.info("跳过 watcher 删除，源压缩包已由空闲归档队列声明: %s", source_path)
                                 return
                             source_dir = os.path.dirname(source_path)
-                            files_to_delete = [
-                                path for path in get_archive_volume_paths(source_path)
-                                if os.path.exists(path)
-                            ]
+                            files_to_delete = list(completed_members)
 
                             # 删除所有相关文件
                             for fp in files_to_delete:
                                 try:
-                                    await asyncio.to_thread(os.remove, fp)
+                                    def remove_member():
+                                        if self._source_fingerprint(fp) != completed_members[fp]:
+                                            raise OSError("源文件代次已变化，拒绝删除")
+                                        os.remove(fp)
+                                    await asyncio.to_thread(remove_member)
                                     logger.info(f"已删除原文件: {fp}")
                                 except Exception as e:
                                     logger.warning(f"删除原文件失败: {fp}, {e}")
@@ -382,7 +430,6 @@ class FolderWatcher:
 
         except Exception as e:
             logger.error(f"处理文件失败: {file_path}, {e}", exc_info=True)
-            self._processed_files.add(file_path)
         finally:
             self.pending_files.discard(original_path)
             self._broadcast_status("pending_removed")
@@ -418,7 +465,8 @@ class FolderWatcher:
             return
         candidates = await asyncio.to_thread(
             self._collect_archive_candidates,
-            self.config.storage.input_path, self._get_excluded_paths(),
+            self.config.storage.input_path,
+            await asyncio.to_thread(self._get_excluded_paths),
         )
         active_paths = {
             task.source_path for task in get_task_engine().get_all_tasks()
@@ -427,7 +475,9 @@ class FolderWatcher:
         for file_path in candidates:
             if not self.is_running or self._paused:
                 return
-            if file_path in active_paths or file_path in self._get_excluded_paths():
+            if file_path in active_paths or file_path in self.pending_files:
+                continue
+            if await asyncio.to_thread(self._is_file_processed, file_path):
                 continue
             if await get_deferred_archive_service().is_source_claimed(file_path):
                 continue

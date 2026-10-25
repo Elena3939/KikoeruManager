@@ -516,6 +516,13 @@ class LinkedSubtitleImportService:
     def _create_archive_stage_dir(self, archive_path: str) -> str:
         temp_root = os.path.join(self.extract_service.config.storage.temp_path, "linked_subtitle_import")
         os.makedirs(temp_root, exist_ok=True)
+        from .input_preflight import stage_preparer
+        prepare = stage_preparer.get()
+        if prepare is not None:
+            stage_dir = os.path.join(temp_root, f"scan_stage_{uuid.uuid4().hex}")
+            prepare(stage_dir)
+            os.mkdir(stage_dir)
+            return stage_dir
         safe_name = re.sub(r'[<>:"|?*]', "", Path(str(archive_path or "")).stem.strip()) or "linked_subtitle"
         return tempfile.mkdtemp(prefix=f"{safe_name}_stage_", dir=temp_root)
 
@@ -3342,7 +3349,7 @@ class LinkedSubtitleImportService:
         conflict = db.query(ConflictWork).filter(
             ConflictWork.new_path == normalized_source_path,
             ConflictWork.status == "PENDING",
-        ).first()
+        ).first() if db is not None else None
 
         if conflict:
             conflict.task_id = task_id or conflict.task_id
@@ -3369,7 +3376,8 @@ class LinkedSubtitleImportService:
             related_rjcodes=related_rjcodes,
             created_at=datetime.now(),
         )
-        db.add(conflict)
+        if db is not None:
+            db.add(conflict)
         return conflict
 
     async def create_existing_subtitle_problem(
@@ -3379,6 +3387,7 @@ class LinkedSubtitleImportService:
         preview: Dict[str, Any],
         task_id: Optional[str] = None,
         queue_origin: str = "auto_process",
+        prepared_conflicts=None,
     ) -> Dict[str, Any]:
         if preview.get("source_subtitle_probe_status") in self.TERMINAL_PROBE_STATUSES or not self._is_existing_subtitle_duplicate_preview(preview):
             return {
@@ -3399,6 +3408,17 @@ class LinkedSubtitleImportService:
                 "handled": True,
                 "auto_skipped": True,
                 "reason": self.EXISTING_SUBTITLE_REASON,
+            }
+
+        if prepared_conflicts is not None:
+            conflict = self._upsert_existing_subtitle_conflict(
+                None, source_path=source_path, preview=preview,
+                task_id=task_id, queue_origin=queue_origin,
+            )
+            prepared_conflicts.append(conflict)
+            return {
+                "handled": True, "conflict_id": conflict.id,
+                "conflict_type": conflict.conflict_type, "reason": self.EXISTING_SUBTITLE_REASON,
             }
 
         db = next(get_db())
@@ -3889,6 +3909,81 @@ class LinkedSubtitleImportService:
             logger.debug("[字幕补配] 读取库存索引视图 token 失败", exc_info=True)
             return "index-unavailable"
 
+    def _upsert_pending_archive_import(self, db, task, rjcode, preview):
+        pending = db.query(ConflictWork).filter(
+            ConflictWork.conflict_type == self.PENDING_CONFLICT_TYPE,
+            ConflictWork.new_path == task.source_path,
+            ConflictWork.status == "PENDING",
+        ).first() if db is not None else None
+
+        metadata = {
+            "source_rjcode": preview.get("source_rjcode", ""),
+            "target_rjcode": preview.get("target_rjcode", ""),
+            "source_label": preview.get("source_label", ""),
+            "subtitle_count": int(preview.get("subtitle_count") or 0),
+            "source_subtitle_probe_status": str(preview.get("source_subtitle_probe_status") or ""),
+            "queue_origin": "auto_process",
+        }
+        analysis_info = {
+            "preview": preview,
+            "source_mode": self.PENDING_SOURCE_MODE,
+            "queued_at": datetime.now().isoformat(),
+            **self._candidate_refresh_metadata(
+                preview,
+                index_view_token=self._current_candidate_index_view_token(),
+                refresh_min_interval_seconds=self.PENDING_REFRESH_MIN_INTERVAL_SECONDS,
+            ),
+        }
+        selected_candidate = preview.get("selected_candidate") or {}
+        existing_path = selected_candidate.get("folder_path") or ""
+        linked_works_info = self._build_target_linked_works_info(
+            preview,
+            selected_candidate,
+        )
+        related_rjcodes = [
+            code for code in [
+                preview.get("source_rjcode"),
+                preview.get("target_rjcode"),
+            ] if code
+        ]
+
+        if pending:
+            old_preview = dict((pending.analysis_info or {}).get("preview") or {})
+            old_stage_dir = str(
+                old_preview.get("source_subtitle_dir") or old_preview.get("staged_subtitle_dir") or ""
+            ).strip()
+            new_stage_dir = str(
+                preview.get("source_subtitle_dir") or preview.get("staged_subtitle_dir") or ""
+            ).strip()
+            if old_stage_dir and old_stage_dir != new_stage_dir:
+                self._cleanup_stage_dir(old_stage_dir)
+            pending.task_id = task.id
+            pending.rjcode = preview.get("target_rjcode") or preview.get("source_rjcode") or rjcode
+            pending.existing_path = existing_path
+            pending.new_metadata = metadata
+            pending.analysis_info = analysis_info
+            pending.linked_works_info = linked_works_info
+            pending.related_rjcodes = related_rjcodes
+        else:
+            pending = ConflictWork(
+                id=str(uuid.uuid4()),
+                task_id=task.id,
+                rjcode=preview.get("target_rjcode") or preview.get("source_rjcode") or rjcode,
+                conflict_type=self.PENDING_CONFLICT_TYPE,
+                existing_path=existing_path,
+                new_path=task.source_path,
+                new_metadata=metadata,
+                status="PENDING",
+                linked_works_info=linked_works_info,
+                analysis_info=analysis_info,
+                related_rjcodes=related_rjcodes,
+                created_at=datetime.now(),
+            )
+            if db is not None:
+                db.add(pending)
+
+        return pending
+
     async def queue_pending_archive_import(self, task: Task, rjcode: str, hint_password: Optional[str] = None) -> Dict[str, Any]:
         hinted_rjcode = self._extract_rjcode(
             rjcode
@@ -3960,78 +4055,18 @@ class LinkedSubtitleImportService:
                 "reason": preview.get("reason") or "",
             }
 
+        prepared_conflicts = getattr(task, "_prepared_conflicts", None)
+        if prepared_conflicts is not None:
+            pending = self._upsert_pending_archive_import(None, task, rjcode, preview)
+            prepared_conflicts.append(pending)
+            return {
+                "handled": True, "preview": preview,
+                "record": self._serialize_pending_record(pending),
+            }
+
         db = next(get_db())
         try:
-            pending = db.query(ConflictWork).filter(
-                ConflictWork.conflict_type == self.PENDING_CONFLICT_TYPE,
-                ConflictWork.new_path == task.source_path,
-                ConflictWork.status == "PENDING",
-            ).first()
-
-            metadata = {
-                "source_rjcode": preview.get("source_rjcode", ""),
-                "target_rjcode": preview.get("target_rjcode", ""),
-                "source_label": preview.get("source_label", ""),
-                "subtitle_count": int(preview.get("subtitle_count") or 0),
-                "source_subtitle_probe_status": str(preview.get("source_subtitle_probe_status") or ""),
-                "queue_origin": "auto_process",
-            }
-            analysis_info = {
-                "preview": preview,
-                "source_mode": self.PENDING_SOURCE_MODE,
-                "queued_at": datetime.now().isoformat(),
-                **self._candidate_refresh_metadata(
-                    preview,
-                    index_view_token=self._current_candidate_index_view_token(),
-                    refresh_min_interval_seconds=self.PENDING_REFRESH_MIN_INTERVAL_SECONDS,
-                ),
-            }
-            selected_candidate = preview.get("selected_candidate") or {}
-            existing_path = selected_candidate.get("folder_path") or ""
-            linked_works_info = self._build_target_linked_works_info(
-                preview,
-                selected_candidate,
-            )
-            related_rjcodes = [
-                code for code in [
-                    preview.get("source_rjcode"),
-                    preview.get("target_rjcode"),
-                ] if code
-            ]
-
-            if pending:
-                old_preview = dict((pending.analysis_info or {}).get("preview") or {})
-                old_stage_dir = str(
-                    old_preview.get("source_subtitle_dir") or old_preview.get("staged_subtitle_dir") or ""
-                ).strip()
-                new_stage_dir = str(
-                    preview.get("source_subtitle_dir") or preview.get("staged_subtitle_dir") or ""
-                ).strip()
-                if old_stage_dir and old_stage_dir != new_stage_dir:
-                    self._cleanup_stage_dir(old_stage_dir)
-                pending.task_id = task.id
-                pending.rjcode = preview.get("target_rjcode") or preview.get("source_rjcode") or rjcode
-                pending.existing_path = existing_path
-                pending.new_metadata = metadata
-                pending.analysis_info = analysis_info
-                pending.linked_works_info = linked_works_info
-                pending.related_rjcodes = related_rjcodes
-            else:
-                pending = ConflictWork(
-                    id=str(uuid.uuid4()),
-                    task_id=task.id,
-                    rjcode=preview.get("target_rjcode") or preview.get("source_rjcode") or rjcode,
-                    conflict_type=self.PENDING_CONFLICT_TYPE,
-                    existing_path=existing_path,
-                    new_path=task.source_path,
-                    new_metadata=metadata,
-                    status="PENDING",
-                    linked_works_info=linked_works_info,
-                    analysis_info=analysis_info,
-                    related_rjcodes=related_rjcodes,
-                    created_at=datetime.now(),
-                )
-                db.add(pending)
+            pending = self._upsert_pending_archive_import(db, task, rjcode, preview)
 
             db.commit()
             db.refresh(pending)

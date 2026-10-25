@@ -1676,7 +1676,7 @@ class TestExtractService:
             extract_service.config.storage.temp_path = old_temp_path
 
     @pytest.mark.asyncio
-    async def test_extract_task(self, extract_service, temp_dir):
+    async def test_extract_task(self, extract_service, temp_dir, db_session):
         """测试完整的解压任务。
 
         原实现两处会卡死：
@@ -3149,6 +3149,31 @@ Block = 0
         assert extract_service._probe_by_magic.await_count == 2
         extract_service._probe_by_smallest_entry.assert_not_awaited()
         extract_service._run_7z_command.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_try_extract_source_disappears_during_command(self, extract_service, temp_dir):
+        """源文件在执行中消失时立即终止，不再轮询其它密码。"""
+        archive_path = os.path.join(temp_dir, "missing-during-extract.exe")
+        with open(archive_path, "wb") as stream:
+            stream.write(b"MZ")
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        extract_service._probe_7z_no_password_status = AsyncMock(return_value="plain")
+        extract_service._probe_by_magic = AsyncMock(return_value="ok")
+        extract_service._probe_by_smallest_entry = AsyncMock(return_value="ok")
+
+        async def disappear(*args, **kwargs):
+            os.unlink(archive_path)
+            return subprocess.CompletedProcess(args=[], returncode=2, stdout=b"", stderr=b"No such file")
+
+        extract_service._run_7z_command = AsyncMock(side_effect=disappear)
+        result = await extract_service._try_extract(
+            ArchiveInfo(archive_path, [{"name": "cover.jpg", "size": 512, "is_dir": False}]),
+            os.path.join(temp_dir, "output"),
+            task,
+            password_candidates=[{"password": "unused", "source": "密码库-通用"}],
+        )
+        assert result == (False, None, "source_missing")
+        assert extract_service._run_7z_command.await_count == 1
 
     @pytest.mark.asyncio
     async def test_try_extract_execution_exception_is_not_password_failure(

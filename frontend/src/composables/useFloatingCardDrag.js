@@ -1,4 +1,4 @@
-import { onBeforeUnmount, onMounted } from 'vue'
+import { nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted } from 'vue'
 
 // 拖动实际浮层容器，分页器与同组任务卡片一起移动。
 export function useFloatingCardDrag(card, identity, stackIndex = () => 0) {
@@ -14,14 +14,18 @@ export function useFloatingCardDrag(card, identity, stackIndex = () => 0) {
     if (!target) return
     const view = viewport()
     const rect = target.getBoundingClientRect()
-    const left = Math.max(view.left + margin, Math.min(x, view.left + view.width - rect.width - margin))
-    const top = Math.max(view.top + margin, Math.min(y, view.top + view.height - rect.height - margin))
+    const left = Math.max(view.left + margin, Math.min(x, view.left + view.width - (target.offsetWidth || rect.width) - margin))
+    const top = Math.max(view.top + margin, Math.min(y, view.top + view.height - (target.offsetHeight || rect.height) - margin))
     Object.assign(target.style, { left: `${left}px`, top: `${top}px`, right: 'auto', bottom: 'auto' })
   }
   function constrain() {
     if (!target) return
     const rect = target.getBoundingClientRect()
-    place(rect.left, rect.top)
+    // 缓存页面移出文档时尺寸为零，不能把该位置写回；进出场动画的偏移也不应累积。
+    if (!rect.width || !rect.height) return
+    const left = parseFloat(target.style.left)
+    const top = parseFloat(target.style.top)
+    place(Number.isFinite(left) ? left : rect.left, Number.isFinite(top) ? top : rect.top)
   }
   function move(event) {
     if (!drag || event.pointerId !== drag.id) return
@@ -36,16 +40,16 @@ export function useFloatingCardDrag(card, identity, stackIndex = () => 0) {
     window.removeEventListener('pointerup', finish)
     window.removeEventListener('pointercancel', finish)
     if (target) {
-      const rect = target.getBoundingClientRect()
-      try { localStorage.setItem(key(), JSON.stringify({ x: rect.left, y: rect.top })) } catch (_) {}
+      try { localStorage.setItem(key(), JSON.stringify({ x: parseFloat(target.style.left), y: parseFloat(target.style.top) })) } catch (_) {}
     }
   }
   function startDrag(event) {
     if (event.button !== 0 || event.target.closest('button, a, input, [role=button]')) return
-    const rect = target?.getBoundingClientRect()
-    if (!rect) return
+    if (!target) return
+    constrain()
+    const rect = target.getBoundingClientRect()
     event.preventDefault()
-    drag = { id: event.pointerId, x: rect.left, y: rect.top, startX: event.clientX, startY: event.clientY, handle: event.currentTarget }
+    drag = { id: event.pointerId, x: parseFloat(target.style.left) || rect.left, y: parseFloat(target.style.top) || rect.top, startX: event.clientX, startY: event.clientY, handle: event.currentTarget }
     drag.handle.setPointerCapture?.(event.pointerId)
     target.classList.add('is-dragging')
     window.addEventListener('pointermove', move)
@@ -53,9 +57,9 @@ export function useFloatingCardDrag(card, identity, stackIndex = () => 0) {
     window.addEventListener('pointercancel', finish)
   }
   onMounted(() => {
-    target = card.value?.closest('.workbench-host-stack, .asmr-floating-pager') || card.value
+    target = card.value?.closest('.workbench-host-stack') || card.value
     if (!target) return
-    storageKey = `kikoerumanager.ui.floatingPosition.${target.matches('.workbench-host-stack') ? 'workbench-stack' : target.matches('.asmr-floating-pager') ? 'download-pager' : identity()}`
+    storageKey = `kikoerumanager.ui.floatingPosition.${target.matches('.workbench-host-stack') ? 'workbench-stack' : identity()}`
     const view = viewport()
     target.style.maxHeight = 'calc(100dvh - 24px)'
     // 单卡本身已裁切内容；只有多卡容器需要纵向滚动。
@@ -75,6 +79,8 @@ export function useFloatingCardDrag(card, identity, stackIndex = () => 0) {
     window.visualViewport?.addEventListener('resize', constrain)
     window.visualViewport?.addEventListener('scroll', constrain)
   })
+  onActivated(() => { nextTick(constrain) })
+  onDeactivated(finish)
   onBeforeUnmount(() => {
     finish()
     observer?.disconnect()

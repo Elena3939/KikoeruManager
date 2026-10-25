@@ -26,6 +26,7 @@
         </span>
       </button>
       <strong class="task-toast-mini-percent">{{ completed ? '100%' : progressPercentText }}</strong>
+      <slot name="navigation" />
       <GripHorizontal class="task-toast-mini-grip" :size="14" aria-hidden="true" />
     </div>
     <template v-else>
@@ -38,6 +39,7 @@
           <h3 :title="title">{{ title }}</h3>
           <p v-if="subtitle" :title="subtitle">{{ subtitle }}</p>
         </div>
+        <slot name="navigation" />
         <button class="task-toast-collapse task-toast-close" type="button" aria-label="仅显示进度条" title="仅显示进度条" @click="collapsed = true"><Minus :size="17" /></button>
         <button v-if="dismissAction" class="task-toast-close task-toast-dismiss" type="button" :aria-label="dismissAction.label" :title="dismissAction.label" @click="emit('action', dismissAction.key)"><X :size="17" /></button>
       </header>
@@ -98,6 +100,7 @@ const props = defineProps({
   taskSource: { type: String, default: '' },
   persistentReplica: { type: Boolean, default: false },
   positionKey: { type: String, default: '' },
+  positionGroup: { type: String, default: '' },
   title: { type: String, default: '后台任务正在运行' },
   subtitle: { type: String, default: '' },
   metaText: { type: String, default: '' },
@@ -217,7 +220,7 @@ const visibleMetrics = computed(() => normalizedMetrics.value.filter(metric => {
   return !Number.isFinite(count) || count > 0
 }))
 const cardRef = ref(null)
-const { startDrag } = useFloatingCardDrag(cardRef, () => props.positionKey || props.kind, () => props.stackIndex)
+const { startDrag } = useFloatingCardDrag(cardRef, () => props.positionGroup || props.positionKey || props.kind, () => props.stackIndex)
 const dismissAction = computed(() => normalizedActions.value.find(action => ['dismiss', 'close'].includes(action.key)))
 const bodyActions = computed(() => normalizedActions.value.filter(action => action !== dismissAction.value))
 

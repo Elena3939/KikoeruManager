@@ -398,6 +398,8 @@ class DeferredArchiveService:
                         self._add_claims(list(job.source_manifest or []))
                     return self._existing_job_response(job)
 
+            from .input_scan_repository import check_input_claims
+            check_input_claims(db, source_paths, task_id=str(task_id or "").strip())
             os.makedirs(processed_dir, exist_ok=True)
             target_manifest = self._reserve_targets_sync(
                 db,

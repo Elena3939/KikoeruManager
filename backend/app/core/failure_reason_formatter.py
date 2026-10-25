@@ -5,6 +5,7 @@ from typing import Any, Mapping
 
 
 _EXTRACT_REASON_MESSAGES = {
+    "source_missing": "解压失败：压缩包源文件不存在，可能已被移动或删除，请重新下载或确认路径",
     "wrong_password": "解压失败：密码未命中（无密码、RJ 号、密码库候选均未通过）",
     "missing_password": "解压失败：压缩包需要密码，但当前没有可用密码",
     "disk_full": "解压失败：临时目录磁盘空间不足",

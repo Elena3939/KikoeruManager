@@ -37,15 +37,94 @@ _WAIT_LOG_THRESHOLD_SECONDS = float(os.getenv("KIKOERUMANAGER_RESOURCE_BUDGET_WA
 @dataclass(frozen=True)
 class _BudgetState:
     limit: int
-    semaphore: asyncio.Semaphore
+    semaphore: _AsyncBudgetLimiter
 
 
 @dataclass(frozen=True)
 class _SyncBudgetState:
     limit: int
-    semaphore: threading.BoundedSemaphore
-    active: int = 0
-    waiting: int = 0
+    semaphore: _SyncBudgetLimiter
+
+
+class _AsyncBudgetLimiter:
+    """整笔分配权重；缩容保留在途令牌，取消归还已经发出的许可。"""
+
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.active = 0
+        self.waiters = []
+        self.loop = asyncio.get_running_loop()
+
+    def resize(self, capacity):
+        self.capacity = capacity
+        self._wake()
+
+    def _wake(self):
+        while self.waiters:
+            future, weight = self.waiters[0]
+            if future.done():
+                self.waiters.pop(0)
+                continue
+            amount = min(weight, self.capacity)
+            if self.active + amount > self.capacity:
+                break
+            self.waiters.pop(0)
+            self.active += amount
+            future.set_result(amount)
+
+    async def acquire(self, weight):
+        future = self.loop.create_future()
+        entry = (future, weight)
+        self.waiters.append(entry)
+        self._wake()
+        try:
+            return await asyncio.shield(future)
+        except BaseException:
+            if future.done() and not future.cancelled():
+                self.release(future.result())
+            else:
+                future.cancel()
+                if entry in self.waiters:
+                    self.waiters.remove(entry)
+                self._wake()
+            raise
+
+    def release(self, amount):
+        self.active -= amount
+        self._wake()
+
+
+class _SyncBudgetLimiter:
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.active = 0
+        self.waiters = []
+        self.condition = threading.Condition()
+
+    def resize(self, capacity):
+        with self.condition:
+            self.capacity = capacity
+            self.condition.notify_all()
+
+    def acquire(self, weight):
+        entry = object()
+        with self.condition:
+            self.waiters.append(entry)
+            try:
+                while True:
+                    amount = min(weight, self.capacity)
+                    if self.waiters[0] is entry and self.active + amount <= self.capacity:
+                        self.active += amount
+                        return amount
+                    self.condition.wait()
+            finally:
+                self.waiters.remove(entry)
+                self.condition.notify_all()
+
+    def release(self, amount):
+        with self.condition:
+            self.active -= amount
+            self.condition.notify_all()
 
 
 class ResourceBudgetService:
@@ -69,82 +148,59 @@ class ResourceBudgetService:
             return max(1, limit)
         return limit
 
-    async def _semaphore_for(self, resource: str) -> asyncio.Semaphore | None:
+    async def _semaphore_for(self, resource: str) -> _AsyncBudgetLimiter | None:
         limit = self._configured_limit(resource)
-        if limit <= 0:
-            return None
         state = self._states.get(resource)
+        if state and state.semaphore.loop is not asyncio.get_running_loop():
+            if state.semaphore.active or state.semaphore.waiters:
+                raise RuntimeError("资源预算仍被其他事件循环占用")
+            self._states.pop(resource)
+            state = None
+        if limit <= 0 and state is None:
+            return None
         if state and state.limit == limit:
             return state.semaphore
         async with self._lock:
             state = self._states.get(resource)
             if state and state.limit == limit:
                 return state.semaphore
-            semaphore = asyncio.Semaphore(limit)
+            semaphore = state.semaphore if state else _AsyncBudgetLimiter(max(1, limit))
+            # 保留在途计数；关闭预算时也唤醒旧等待者，重新开启后仍承认在途工作。
+            semaphore.resize(limit if limit > 0 else 2**31 - 1)
             self._states[resource] = _BudgetState(limit=limit, semaphore=semaphore)
             logger.info("[资源预算] %s 并发上限: %s", resource, limit)
             return semaphore
 
-    def _sync_semaphore_for(self, resource: str) -> threading.BoundedSemaphore | None:
+    def _sync_semaphore_for(self, resource: str) -> _SyncBudgetLimiter | None:
         limit = self._configured_limit(resource)
-        if limit <= 0:
-            return None
-        state = self._sync_states.get(resource)
-        if state and state.limit == limit:
-            return state.semaphore
         with self._sync_lock:
             state = self._sync_states.get(resource)
+            if limit <= 0 and state is None:
+                return None
             if state and state.limit == limit:
                 return state.semaphore
-            semaphore = threading.BoundedSemaphore(limit)
+            semaphore = state.semaphore if state else _SyncBudgetLimiter(max(1, limit))
+            semaphore.resize(limit if limit > 0 else 2**31 - 1)
             self._sync_states[resource] = _SyncBudgetState(limit=limit, semaphore=semaphore)
             logger.info("[资源预算] %s 同步并发上限: %s", resource, limit)
             return semaphore
-
-    def _sync_state_add_waiting(self, resource: str, delta: int) -> None:
-        with self._sync_lock:
-            state = self._sync_states.get(resource)
-            if not state:
-                return
-            self._sync_states[resource] = _SyncBudgetState(
-                limit=state.limit,
-                semaphore=state.semaphore,
-                active=state.active,
-                waiting=max(0, state.waiting + delta),
-            )
-
-    def _sync_state_add_active(self, resource: str, delta: int) -> None:
-        with self._sync_lock:
-            state = self._sync_states.get(resource)
-            if not state:
-                return
-            self._sync_states[resource] = _SyncBudgetState(
-                limit=state.limit,
-                semaphore=state.semaphore,
-                active=max(0, state.active + delta),
-                waiting=state.waiting,
-            )
 
     @contextlib.asynccontextmanager
     async def acquire(self, resource: str, *, weight: int = 1, reason: str = "") -> AsyncIterator[None]:
         """获取资源预算。
 
-        weight 会顺序获取多个令牌；默认权重 1。配置为 0 或禁用时直接放行。
+        weight 一次取得全部令牌；默认权重 1。配置为 0 或禁用时直接放行。
         """
         semaphore = await self._semaphore_for(resource)
         if semaphore is None:
             yield
             return
-        state = self._states.get(resource)
-        limit = state.limit if state else 1
-        amount = min(max(1, int(weight or 1)), max(1, int(limit or 1)))
+        amount = max(1, int(weight or 1))
 
         acquired = 0
         wait_started_at = time.monotonic()
         try:
-            for _ in range(amount):
-                await semaphore.acquire()
-                acquired += 1
+            acquired = await semaphore.acquire(amount)
             waited = time.monotonic() - wait_started_at
             if waited >= _WAIT_LOG_THRESHOLD_SECONDS > 0:
                 logger.warning(
@@ -158,8 +214,7 @@ class ResourceBudgetService:
                 logger.debug("[资源预算] acquire %s weight=%s reason=%s", resource, amount, reason)
             yield
         finally:
-            for _ in range(acquired):
-                semaphore.release()
+            semaphore.release(acquired)
 
     @contextlib.contextmanager
     def acquire_sync(self, resource: str, *, weight: int = 1, reason: str = "") -> Iterator[None]:
@@ -168,21 +223,12 @@ class ResourceBudgetService:
         if semaphore is None:
             yield
             return
-        state = self._sync_states.get(resource)
-        limit = state.limit if state else 1
-        amount = min(max(1, int(weight or 1)), max(1, int(limit or 1)))
+        amount = max(1, int(weight or 1))
 
         acquired = 0
         wait_started_at = time.monotonic()
         try:
-            for _ in range(amount):
-                self._sync_state_add_waiting(resource, 1)
-                try:
-                    semaphore.acquire()
-                    acquired += 1
-                    self._sync_state_add_active(resource, 1)
-                finally:
-                    self._sync_state_add_waiting(resource, -1)
+            acquired = semaphore.acquire(amount)
             waited = time.monotonic() - wait_started_at
             if waited >= _WAIT_LOG_THRESHOLD_SECONDS > 0:
                 logger.warning(
@@ -196,9 +242,14 @@ class ResourceBudgetService:
                 logger.debug("[资源预算] acquire_sync %s weight=%s reason=%s", resource, amount, reason)
             yield
         finally:
-            for _ in range(acquired):
-                semaphore.release()
-                self._sync_state_add_active(resource, -1)
+            semaphore.release(acquired)
+
+    async def refresh(self):
+        """由调度循环应用最新上限，同时唤醒已有等待者。"""
+        for resource in list(self._states):
+            await self._semaphore_for(resource)
+        for resource in list(self._sync_states):
+            self._sync_semaphore_for(resource)
 
     def snapshot(self) -> dict[str, object]:
         """返回当前资源预算状态，供诊断接口和压测调参使用。"""
@@ -210,13 +261,17 @@ class ResourceBudgetService:
             state = self._states.get(resource)
             sync_state = self._sync_states.get(resource)
             active_limit = int(state.limit) if state else 0
-            available = int(getattr(state.semaphore, "_value", 0)) if state else 0
-            active = max(0, active_limit - available) if state else 0
-            waiters = getattr(state.semaphore, "_waiters", None) if state else None
-            waiting = sum(1 for waiter in list(waiters or []) if not waiter.done())
+            active = state.semaphore.active if state else 0
+            available = max(0, active_limit - active)
+            waiters = state.semaphore.waiters if state else None
+            waiting = sum(1 for waiter, _ in list(waiters or []) if not waiter.done())
             sync_active_limit = int(sync_state.limit) if sync_state else 0
-            sync_active = int(sync_state.active) if sync_state else 0
-            sync_waiting = int(sync_state.waiting) if sync_state else 0
+            if sync_state:
+                with sync_state.semaphore.condition:
+                    sync_active = sync_state.semaphore.active
+                    sync_waiting = len(sync_state.semaphore.waiters)
+            else:
+                sync_active = sync_waiting = 0
             resources[resource] = {
                 "configured_limit": configured_limit,
                 "active_limit": active_limit + sync_active_limit,

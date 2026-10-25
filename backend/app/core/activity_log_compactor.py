@@ -29,6 +29,7 @@
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -114,7 +115,7 @@ def _detail_size_bytes(detail: Any) -> int:
     if not isinstance(detail, dict):
         return 0
     try:
-        return len(json.dumps(detail, ensure_ascii=False, default=str))
+        return len(json.dumps(detail, ensure_ascii=False, default=str).encode("utf-8"))
     except Exception:
         return 0
 
@@ -126,6 +127,7 @@ def compact_old_activity_logs(
     max_rows: Optional[int] = None,
     chunk_size: int = 200,
     time_budget_seconds: float = 5.0,
+    cursor: Optional[str] = None,
 ) -> Dict[str, Any]:
     """分批压缩老的操作记录 detail。
 
@@ -137,7 +139,8 @@ def compact_old_activity_logs(
         time_budget_seconds: 单次调用软上限。
 
     Returns:
-        ``scanned/updated/skipped/failed/done/saved_bytes``
+        ``scanned/updated/skipped/failed/done/saved_bytes/next_cursor``。
+        未结束时必须传回 next_cursor，截止时间固定在首轮，避免重复扫描前缀。
     """
     from ..models.database import ActivityLog, SessionLocal
 
@@ -148,13 +151,24 @@ def compact_old_activity_logs(
     remaining = int(max_rows) if max_rows is not None else None
 
     cutoff = datetime.now() - timedelta(days=older_than_days)
+    last_cursor: Optional[tuple[datetime, str]] = None
+    if cursor:
+        try:
+            checkpoint = json.loads(base64.urlsafe_b64decode(cursor).decode("utf-8"))
+            if checkpoint["options"] != [older_than_days, min_detail_bytes]:
+                raise ValueError("压缩参数与游标不一致")
+            cutoff = datetime.fromisoformat(checkpoint["cutoff"])
+            last_cursor = (datetime.fromisoformat(checkpoint["created_at"]), checkpoint["id"])
+            if cutoff.tzinfo is not None or last_cursor[0].tzinfo is not None or not isinstance(last_cursor[1], str):
+                raise ValueError("压缩游标格式无效")
+        except Exception as exc:
+            raise ValueError("压缩游标无效或参数已变化，请重新开始归档") from exc
 
     scanned = 0
     updated = 0
     skipped = 0
     failed = 0
     saved_bytes = 0
-    last_cursor: Optional[tuple[datetime, str]] = None
 
     while True:
         if remaining is not None and remaining <= 0:
@@ -193,8 +207,10 @@ def compact_old_activity_logs(
                     "failed": failed,
                     "saved_bytes": saved_bytes,
                     "done": True,
+                    "next_cursor": None,
                 }
 
+            batch_updated_before = updated
             for row in rows:
                 scanned += 1
                 if remaining is not None:
@@ -230,12 +246,30 @@ def compact_old_activity_logs(
                     )
 
             db.commit()
+            if updated > batch_updated_before:
+                from .activity_log_writer import (
+                    get_activity_log_query_cache,
+                    get_activity_log_row_dict_cache,
+                    get_activity_log_lite_item_cache,
+                )
+
+                get_activity_log_query_cache().invalidate()
+                get_activity_log_row_dict_cache().invalidate()
+                get_activity_log_lite_item_cache().invalidate()
         except Exception:
             db.rollback()
             raise
         finally:
             db.close()
 
+    next_cursor = None
+    if last_cursor is not None:
+        next_cursor = base64.urlsafe_b64encode(json.dumps({
+            "options": [older_than_days, min_detail_bytes],
+            "cutoff": cutoff.isoformat(),
+            "created_at": last_cursor[0].isoformat(),
+            "id": last_cursor[1],
+        }).encode("utf-8")).decode("ascii")
     return {
         "scanned": scanned,
         "updated": updated,
@@ -243,6 +277,7 @@ def compact_old_activity_logs(
         "failed": failed,
         "saved_bytes": saved_bytes,
         "done": False,
+        "next_cursor": next_cursor,
     }
 
 
