@@ -1591,8 +1591,7 @@ class ConflictResolutionService:
         await self.cleanup_conflict_sessions(conflict.id)
         if archive_result:
             return {
-                "message": "已跳过，原始压缩包及分卷已加入空闲归档队列"
-                if archive_result.get("queued") else "已跳过，原始压缩包已归档",
+                "message": "已跳过",
                 "deleted_path": None if archive_is_target or source_missing else delete_target,
                 "source_missing": False,
                 "archive_source_path": archive_source,

@@ -283,3 +283,16 @@ def test_waiting_manual_notification_summary_appends_specific_reason():
 
     assert "等待处理" in info["summary"]
     assert "分卷压缩包不完整" in info["summary"]
+
+
+def test_skip_notification_does_not_report_import_success():
+    task = SimpleNamespace(
+        id="skipped", type=TaskType.AUTO_PROCESS, status=TaskStatus.COMPLETED,
+        started_at=datetime.now(), completed_at=datetime.now(), current_step="已跳过",
+        error_message="", rjcode="RJ08888888", source_path="/down/a.zip", output_path="", progress=100,
+        task_metadata={"task_domain": "import", "conflict_resolution_action": "SKIP"},
+    )
+    info = task_notification_service._build_notification_info("completed", "skipped", "task", task)
+    assert info["event_label"] == "已跳过"
+    assert "已跳过" in info["summary"]
+    assert info["severity"] == "info"

@@ -379,16 +379,28 @@ class InputScanRepository:
         metadata = snapshot["task_metadata"]
         metadata["_input_snapshot_revision"] = revision
         with self.session_factory.begin() as db:
-            run = db.query(InputScanRun).filter_by(
-                id=metadata["scan_id"],
-            ).with_for_update().one()
+            # 进度只锁自己的任务；批次状态/首时间变化时才按批次、任务顺序加锁。
+            run = db.get(InputScanRun, metadata["scan_id"])
+            previous_status = db.query(TaskRecord.status).filter_by(id=task.id).scalar()
+            candidate = db.query(InputScanCandidate).filter_by(task_id=task.id).first()
+            coverage = dict(run.coverage or {})
+            if snapshot["started_at"]:
+                record_first(coverage, "first_task_start_at", snapshot["started_at"].isoformat())
+                if candidate and candidate.destination == "normal":
+                    record_first(coverage, "first_normal_task_start_at", snapshot["started_at"].isoformat())
+            record_first(coverage, "first_extract_at", metadata.get("input_first_extract_at"))
+            batch_changed = lifecycle or previous_status != snapshot["status"].value or coverage != (run.coverage or {})
+            if batch_changed:
+                run = db.query(InputScanRun).filter_by(id=metadata["scan_id"]).populate_existing().with_for_update().one()
             row = db.query(TaskRecord).filter_by(id=task.id).with_for_update().one()
             written = int((row.task_metadata or {}).get("_input_snapshot_revision", -1))
             if revision < written:
                 return False
             if revision == written and not lifecycle:
                 return True
-            candidate = db.query(InputScanCandidate).filter_by(task_id=task.id).first()
+            if not batch_changed and row.status != snapshot["status"].value:
+                raise ValueError("任务状态已变化，等待按批次锁顺序重试")
+            candidate = db.query(InputScanCandidate).filter_by(task_id=task.id).populate_existing().first()
             if candidate and (candidate.preparation or {}).get("source_aliases"):
                 # 改名事务是源路径事实，不能被提前捕获的进度快照写回旧路径。
                 snapshot["source_path"] = candidate.source_path
@@ -408,14 +420,15 @@ class InputScanRepository:
             row.progress = progress
             row.started_at, row.completed_at = snapshot["started_at"], snapshot["completed_at"]
             row.task_metadata = metadata
-            coverage = dict(run.coverage or {})
-            if snapshot["started_at"]:
-                if record_first(coverage, "first_task_start_at", snapshot["started_at"].isoformat()):
-                    coverage["first_task_start_type"] = task.type.value
-                if candidate and candidate.destination == "normal":
-                    record_first(coverage, "first_normal_task_start_at", snapshot["started_at"].isoformat())
-            record_first(coverage, "first_extract_at", metadata.get("input_first_extract_at"))
-            run.coverage = coverage
+            if batch_changed:
+                coverage = dict(run.coverage or {})
+                if snapshot["started_at"]:
+                    if record_first(coverage, "first_task_start_at", snapshot["started_at"].isoformat()):
+                        coverage["first_task_start_type"] = task.type.value
+                    if candidate and candidate.destination == "normal":
+                        record_first(coverage, "first_normal_task_start_at", snapshot["started_at"].isoformat())
+                record_first(coverage, "first_extract_at", metadata.get("input_first_extract_at"))
+                run.coverage = coverage
             if lifecycle:
                 payload = {**snapshot, "task_metadata": metadata}
                 for key in ("created_at", "started_at", "completed_at"):
@@ -424,7 +437,8 @@ class InputScanRepository:
                     db, run.id, "task_lifecycle", f"input-task:{task.id}:lifecycle:{revision}",
                     payload,
                 )
-            self._touch(run)
+            if batch_changed:
+                self._touch(run)
             return True
 
     def deliver_lifecycle(self, event_id):

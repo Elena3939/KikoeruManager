@@ -295,6 +295,10 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
         summary = f'{domain_label}{label_map.get(event_type, event_type)}'
 
     meta = dict(context_task.task_metadata or {})
+    if group_type == 'task' and str(meta.get('conflict_resolution_action') or '').upper() == 'SKIP':
+        summary = f'{domain_label}已跳过'
+        severity_map['completed'] = 'info'
+        label_map['completed'] = '已跳过'
     task_kind = _task_kind(context_task)
     is_baidu_upload = task_kind == 'baidu_netdisk_upload' or str(meta.get('source_action') or '') == 'manual_baidu_netdisk_upload'
     if not is_baidu_upload and (task_kind in {'http_download', 'baidu_netdisk_download'} or domain in {'http_download', 'baidu_netdisk'}):

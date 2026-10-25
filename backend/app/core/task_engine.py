@@ -1413,10 +1413,11 @@ class TaskEngine:
             try:
                 lifecycle = task._input_lifecycle_pending
                 revision = task._input_snapshot_revision
+                status = task.status
                 persisted = InputScanRepository().persist_execution(task, lifecycle=lifecycle)
-                if persisted and revision == task._input_snapshot_revision:
-                    task._input_persisted_status = task.status
-                    if lifecycle:
+                if persisted:
+                    task._input_persisted_status = status
+                    if lifecycle and revision == task._input_snapshot_revision:
                         task._input_lifecycle_pending = False
             except Exception:
                 logger.warning("[扫描任务] 状态持久化失败，将重试: task_id=%s", task.id, exc_info=True)
@@ -5061,11 +5062,13 @@ class TaskEngine:
         self.delete_task_snapshot(task_id)
         return True
     
-    def update_task_status(self, task_id: str, status: TaskStatus, message: Optional[str] = None):
+    def update_task_status(self, task_id: str, status: TaskStatus, message: Optional[str] = None, *, conflict_action: Optional[str] = None):
         """更新任务状态"""
         task = self.tasks.get(task_id)
         if task:
             with task._set_state_silent():
+                if conflict_action:
+                    task.task_metadata = {**(task.task_metadata or {}), "conflict_resolution_action": conflict_action}
                 task.status = status
                 if message:
                     task.current_step = message

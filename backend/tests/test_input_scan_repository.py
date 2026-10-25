@@ -9,7 +9,7 @@ from app.core.input_stability import observe_sources
 from app.core.task_engine import Task, TaskType, TaskStatus
 from app.models.database import (
     ActivityLog, ActivityLogDailyStats, ConflictWork, InputScanCandidate, InputScanOutbox,
-    InputSourceClaim, Task as TaskRecord,
+    InputSourceClaim, InputScanRun, Task as TaskRecord,
 )
 
 
@@ -135,6 +135,26 @@ def test_execution_status_and_lifecycle_survive_replay(repository, tmp_path):
     assert repository.snapshot(scan_id, materialize=True)["execution_status"] == "success"
     assert repository.snapshot(scan_id)["coverage"]["first_normal_task_start_at"] == task.started_at.isoformat()
     assert "first_extract_at" not in repository.snapshot(scan_id)["coverage"]
+
+
+def test_progress_does_not_wait_for_batch_row_lock(repository, tmp_path):
+    from sqlalchemy import text
+
+    scan_id, candidate, path = discover(repository, tmp_path)
+    task = Task(TaskType.AUTO_PROCESS, str(path))
+    repository.commit_candidate(candidate["id"], candidate["version"], task)
+    task.start()
+    assert repository.persist_execution(task)
+    with repository.session_factory.begin() as blocker:
+        blocker.query(InputScanRun).filter_by(id=scan_id).with_for_update().one()
+        with repository.session_factory.kw["bind"].connect() as connection:
+            connection.execute(text("SET lock_timeout = '300ms'"))
+            connection.commit()
+            scoped = InputScanRepository(sessionmaker(bind=connection))
+            task.current_step = "测试进度"
+            assert scoped.persist_execution(task)
+    with repository.session_factory() as db:
+        assert db.get(TaskRecord, task.id).current_step == "测试进度"
 
 
 def test_lifecycle_failure_rolls_back_delivery(repository, tmp_path, monkeypatch):

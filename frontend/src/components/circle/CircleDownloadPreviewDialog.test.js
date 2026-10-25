@@ -104,6 +104,33 @@ describe('资源站下载预览', () => {
     wrapper.unmount()
   })
 
+  it.each(['checkbox', 'row'])('YAAS 同名压缩包通过 %s 点击仍选择对应资源，切换和取消不串行', async target => {
+    const name = 'RJ01407305(south-plus).rar'
+    const plan = {
+      ...yaas(),
+      selectable_resources: [
+        { ...resource('small'), download_name: name, size_bytes: 20677918 },
+        { ...resource('large'), download_name: name, size_bytes: 158544691 }
+      ]
+    }
+    const wrapper = dialog([plan], {})
+    const clickPackage = async index => {
+      const row = wrapper.findAll('.resource-file-row')[index]
+      await (target === 'checkbox' ? row.find('.tree-checkbox') : row).trigger('click')
+    }
+    await clickPackage(1)
+    expect(wrapper.findAll('.resource-file-row').map(row => row.classes().includes('tree-row-selected'))).toEqual([false, true])
+    await wrapper.find('.primary-cta').trigger('click')
+    expect(wrapper.emitted('submit')[0][0].items[0].selected_resources).toEqual([{ id: 'large' }])
+    await clickPackage(0)
+    expect(wrapper.findAll('.resource-file-row').map(row => row.classes().includes('tree-row-selected'))).toEqual([true, false])
+    await clickPackage(1)
+    await clickPackage(1)
+    expect(wrapper.findAll('.resource-file-row.tree-row-selected')).toHaveLength(0)
+    expect(wrapper.find('.primary-cta').attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
   it('asmr.one 已选文件仍要求配置目标库存', async () => {
     const wrapper = dialog([multipleSources()], {})
     await wrapper.find('.plan-node-header .tree-checkbox').trigger('click')

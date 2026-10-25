@@ -9,6 +9,29 @@ from app.core.task_engine import Task, TaskEngine, TaskStatus, TaskType
 from app.core.input_stability import InputSourceNotReady
 
 
+def test_progress_change_during_write_records_persisted_status(monkeypatch):
+    from app.core.input_scan_repository import InputScanRepository
+
+    engine = TaskEngine(max_concurrent=1)
+    monkeypatch.setattr(Task, "_global_event_hook", None)
+    task = Task(TaskType.AUTO_PROCESS, "test.zip", metadata={"scan_id": "scan"})
+    task.start()
+    task._input_lifecycle_pending = True
+    engine.persist_task_center_item_snapshot = lambda task: None
+
+    def persist(_repository, value, **kwargs):
+        value._input_snapshot_revision += 1
+        return True
+
+    monkeypatch.setattr(InputScanRepository, "persist_execution", persist)
+    try:
+        engine.persist_task_snapshot(task)
+        assert task._input_persisted_status == TaskStatus.PROCESSING
+        assert task._input_lifecycle_pending
+    finally:
+        engine.stop()
+
+
 @pytest.mark.asyncio
 async def test_source_wait_is_pending_and_later_task_can_run(tmp_path, monkeypatch):
     from app.core import task_engine as module

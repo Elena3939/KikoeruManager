@@ -7449,7 +7449,8 @@ async def _resolve_conflict_skip(conflict_id: str, service) -> dict:
         task_id = str(conflict.task_id).strip() if conflict.task_id else None
         if task_id:
             await asyncio.to_thread(
-                get_task_engine().update_task_status, task_id, TaskStatus.COMPLETED, "跳过完成",
+                get_task_engine().update_task_status, task_id, TaskStatus.COMPLETED, "已跳过",
+                conflict_action="SKIP",
             )
         await asyncio.to_thread(
             mark_task_conflict_resolved_activity_log, task_id, "SKIP", conflict_id=conflict.id,
@@ -7841,7 +7842,9 @@ async def _resolve_conflict_inline(conflict_id: str, action: dict):
                 result = await service.resolve_skip(conflict)
                 conflict.status = action_type
                 if conflict.task_id:
-                    engine.update_task_status(str(conflict.task_id), TaskStatus.COMPLETED, "跳过完成")
+                    engine.update_task_status(
+                        str(conflict.task_id), TaskStatus.COMPLETED, "已跳过", conflict_action="SKIP",
+                    )
         except Exception:
             if action_type == "MERGE":
                 conflict.status = previous_conflict_status

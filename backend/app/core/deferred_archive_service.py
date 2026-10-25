@@ -1617,7 +1617,10 @@ class DeferredArchiveService:
                 "failed": "入库完成，但源压缩包归档失败",
                 "cancelled": "入库完成，源压缩包归档已取消",
             }
-            task.current_step = labels.get(status, task.current_step)
+            if str(metadata.get("conflict_resolution_action") or "").upper() == "SKIP":
+                task.current_step = "已跳过"
+            else:
+                task.current_step = labels.get(status, task.current_step)
             touch = getattr(task, "touch_metadata", None)
             if callable(touch):
                 touch("archive_queue")

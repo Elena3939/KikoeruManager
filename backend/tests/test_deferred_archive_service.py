@@ -306,6 +306,7 @@ async def test_skip_archives_original_zip_and_volumes(db_session, tmp_path, monk
 
     result = await service.resolve_skip(conflict)
 
+    assert result["message"] == "已跳过"
     assert result["archive_queued"] is True
     assert result["archive_source_path"] == str(members[0])
     assert all(path.exists() for path in members)
@@ -325,6 +326,19 @@ async def test_skip_archives_original_zip_and_volumes(db_session, tmp_path, monk
         assert (processed_dir / name).read_bytes() == bytes([index]) * 100
     with factory() as db:
         assert db.get(DeferredArchiveJob, result["archive_queue_id"]).status == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["pending", "processing", "completed", "failed", "waiting_retry", "cancelled"])
+async def test_archive_status_does_not_replace_skipped_result(monkeypatch, status):
+    from app.core import task_engine
+
+    task = SimpleNamespace(task_metadata={"conflict_resolution_action": "SKIP"}, current_step="已跳过")
+    monkeypatch.setattr(task_engine, "get_task_engine", lambda: SimpleNamespace(get_task=lambda _: task))
+    service = deferred_archive_module.DeferredArchiveService()
+    await service._update_parent_task({"task_id": "skipped-task", "job_id": "archive-job"}, status)
+    assert task.current_step == "已跳过"
+    assert task.task_metadata["archive_queue_status"] == status
 
 
 def test_deferred_archive_enqueue_is_idempotent_and_claims_all_volumes(

@@ -970,7 +970,9 @@ function buildTree(resources) {
       const currentPath = parentPath ? `${parentPath}/${name}` : name
       const isFile = i === parts.length - 1
       if (isFile) {
-        children.push({ id: currentPath, name, path: currentPath, type: 'file', resource, size_bytes: Number(resource.size_bytes || 0), children: [] })
+        // 同名压缩包可能对应不同下载资源，行标识必须包含资源 ID。
+        const id = JSON.stringify(['file', resource.id, currentPath])
+        children.push({ id, name, path: currentPath, type: 'file', resource, size_bytes: Number(resource.size_bytes || 0), children: [] })
       } else {
         if (!dirMap.has(currentPath)) {
           const node = { id: currentPath, name, path: currentPath, type: 'dir', size_bytes: 0, children: [] }

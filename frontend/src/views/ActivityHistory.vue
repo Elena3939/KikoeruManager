@@ -1439,6 +1439,7 @@ function onClearSearch() {
 // 旧版页面有 200+ 行逐 action 翻译；lite 模式后端已经提供 summary，
 // 这里只对常见 status 给个简短标题，兜底用 status 标签。
 function humanAction(row) {
+  if (String(row?.detail?.conflict_resolution_action || '').toUpperCase() === 'SKIP') return '已跳过'
   if (row?.outcome === 'duplicate' || (row?.outcome === 'pending' && row?.outcome_label === '待字幕补配') || (row?.action === 'batch_start' && row?.outcome_label)) return row.outcome_label
   if (!row) return ''
   const cat = String(row.category || '')

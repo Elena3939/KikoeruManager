@@ -85,7 +85,9 @@ def annotate_outcome(row):
                 or row.get("relation") in {"subtitle_import", "pair"}
                 or str(detail.get("source_mode") or "").startswith("linked_translation_archive")
                 or detail.get("source_mode") == "subtitle_folder_import")
-    if duplicate:
+    if str(detail.get("conflict_resolution_action") or "").upper() == "SKIP":
+        outcome, label = "cancelled", "已跳过"
+    elif duplicate:
         outcome, label = "duplicate", "重复已跳过" if str(detail.get("source_mode") or "").endswith("_skipped") else "重复待处理"
     elif is_subtitle_handoff(row):
         outcome, label = "pending", "待字幕补配"
