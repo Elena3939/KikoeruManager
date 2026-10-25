@@ -15,16 +15,21 @@ class HostMoveClient:
         self.socket_path = socket_path
         self.timeout = timeout
 
-    def request(self, action, **payload):
+    def request(self, action, checkpoint=None, **payload):
         if not hasattr(socket, "AF_UNIX"):
             raise HostMoveError("当前运行环境不支持宿主 Unix socket，已保留来源")
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
                 connection.settimeout(self.timeout)
                 connection.connect(self.socket_path)
-                connection.sendall(encode({"version": VERSION, "action": action, **payload}))
+                connection.sendall(encode({"version": VERSION, "action": action, "keepalive": True, **payload}))
                 with connection.makefile("rb") as stream:
-                    response = receive(stream)
+                    while True:
+                        response = receive(stream)
+                        if response.get("version") != VERSION or not response.get("pending"):
+                            break
+                        if checkpoint:
+                            checkpoint()
             if response.get("version") != VERSION or not response.get("ok"):
                 raise HostMoveError(response.get("error") or "宿主文件移动协议版本不匹配")
             return response["result"]
@@ -46,7 +51,7 @@ class HostMoveClient:
             result = self.request(
                 "prepare", operation_id=operation_id, mapping_version=mapping_version,
                 source=os.path.abspath(source), destination=os.path.abspath(pending),
-                source_identity=identity(source),
+                source_identity=identity(source), checkpoint=checkpoint,
             )
             checkpoint()
             if identity(pending) != result["destination_identity"]:

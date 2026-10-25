@@ -77,7 +77,7 @@ class Executor:
             mappings.append(item)
         return {"protocol_version": VERSION, "mapping_version": self.mapping_version,
                 "container_id": self.config["container_id"], "started_at": self.started_at,
-                "max_connections": 4, "mappings": mappings}
+                "max_connections": 32, "max_executions": 4, "mappings": mappings}
 
     def _lock(self, operation_id):
         with self._guard:
@@ -148,6 +148,8 @@ class Executor:
             parameters = {key: request[key] for key in
                           ("source", "destination", "source_identity", "mapping_version")}
             if old:
+                if old["state"] in ("cancelled", "released"):
+                    raise RuntimeError("本次克隆操作已终止，拒绝重新执行")
                 if old["parameters"] != parameters:
                     raise RuntimeError("同一操作 ID 的请求参数不一致")
                 if old["state"] != "ready":
@@ -197,6 +199,10 @@ class Executor:
         with self._lock(operation_id):
             record = self._read(operation_id)
             if not record:
+                if request["action"] == "cancel":
+                    # 取消可能先于排队中的 prepare 获得操作锁，必须阻止它随后启动。
+                    self._save({"operation_id": operation_id, "state": "cancelled"})
+                    return {"state": "cancelled"}
                 return {"state": "absent"}
             if request["action"] == "status":
                 return record
@@ -242,6 +248,15 @@ class Executor:
 
 
 class Handler(socketserver.StreamRequestHandler):
+    heartbeat_seconds = 1
+
+    def dispatch_request(self, request):
+        # 控制请求不能排在克隆执行槽后面；同一操作仍由操作锁等待安全确认。
+        if request.get("action") in {"status", "cancel", "release"}:
+            return self.server.executor.dispatch(request)
+        with self.server.slots:
+            return self.server.executor.dispatch(request)
+
     def handle(self):
         self.request.settimeout(60)
         try:
@@ -256,7 +271,11 @@ class Handler(socketserver.StreamRequestHandler):
             components = groups.replace(".scope", "").replace("docker-", "/").replace("\n", "/").split("/")
             if container_id not in components:
                 raise PermissionError("文件移动客户端不属于指定容器")
-            result = self.server.executor.dispatch(receive(self.rfile))
+            request = receive(self.rfile)
+            if request.get("keepalive"):
+                result = self.dispatch_with_keepalive(request)
+            else:
+                result = self.dispatch_request(request)
             response = {"version": VERSION, "ok": True, "result": result}
         except Exception as exc:
             response = {"version": VERSION, "ok": False, "error": str(exc)}
@@ -265,28 +284,57 @@ class Handler(socketserver.StreamRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def dispatch_with_keepalive(self, request):
+        """排队和磁盘同步期间定期响应；断线不撤销正在执行的文件事务。"""
+        done = threading.Event()
+        outcome = {}
+
+        def execute():
+            try:
+                outcome["result"] = self.dispatch_request(request)
+            except BaseException as exc:
+                outcome["error"] = exc
+            finally:
+                done.set()
+
+        worker = threading.Thread(target=execute)
+        worker.start()
+        while not done.wait(self.heartbeat_seconds):
+            try:
+                self.wfile.write(encode({"version": VERSION, "pending": True}))
+            except (OSError, ValueError):
+                # ioctl 不可安全中断；完成后仍由操作记录供 cancel/recovery 核对。
+                worker.join()
+                raise
+        worker.join()
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["result"]
+
 
 class Server(socketserver.ThreadingUnixStreamServer):
     daemon_threads = False
 
     def __init__(self, *args, **kwargs):
         self.slots = threading.BoundedSemaphore(4)
+        self.connections = threading.BoundedSemaphore(32)
         super().__init__(*args, **kwargs)
 
     def process_request(self, request, client_address):
-        self.slots.acquire()
+        if not self.connections.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
         try:
             super().process_request(request, client_address)
         except BaseException:
-            self.slots.release()
+            self.connections.release()
             raise
 
     def process_request_thread(self, request, client_address):
         try:
             super().process_request_thread(request, client_address)
         finally:
-            self.slots.release()
-
+            self.connections.release()
 
 def open_directory(path):
     """逐级打开宿主目录，连映射根的祖先也不能是符号链接。"""
