@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -443,7 +444,7 @@ class AISubtitleMatchService:
             raise ValueError("missing_config: api_key 不能为空")
 
         try:
-            import litellm
+            litellm = await asyncio.to_thread(importlib.import_module, "litellm")
         except Exception as exc:
             raise RuntimeError(f"missing_config: 后端未安装 litellm: {exc}") from exc
 
@@ -473,7 +474,7 @@ class AISubtitleMatchService:
 
     async def _probe_model_connection(self, config: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            import litellm
+            litellm = await asyncio.to_thread(importlib.import_module, "litellm")
         except Exception as exc:
             raise RuntimeError(f"missing_config: 后端未安装 litellm: {exc}") from exc
 
