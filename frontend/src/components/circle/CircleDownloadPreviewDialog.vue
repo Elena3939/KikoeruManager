@@ -285,7 +285,7 @@
       </div>
 
       <div v-if="!previewLoading" class="footer-row flex items-center justify-between">
-        <div v-if="pendingSourcePlans.length" class="summary">还有 {{ pendingSourcePlans.length }} 个作品待选择来源</div>
+        <div v-if="!selectedFileCount && pendingSourcePlans.length" class="summary">请选择要下载的语言版本和来源</div>
         <div v-else class="summary"><span class="summary-strong">{{ selectedFileCount }}</span> 已选，共 <span class="summary-strong">{{ formatSize(selectedTotalBytes) }}</span></div>
 
         <div class="footer-actions flex items-center gap-3">
@@ -345,6 +345,8 @@ const emit = defineEmits(['submit', 'update:visible', 'versions-updated'])
 
 const planStates = ref([])
 const activePlans = computed(() => planStates.value.filter(plan => plan.selected_version !== false))
+const selectedDownloadPlans = computed(() => activePlans.value.filter(plan =>
+  !plan.source_selection_required && plan.selected_resource_count > 0))
 const settingsSite = ref('asmr.one')
 const availableSettingsSites = computed(() => {
   const providers = new Set(activePlans.value.flatMap(plan =>
@@ -485,15 +487,15 @@ function toggleNamingMode() {
 }
 
 const isDirectMode = computed(() => props.enableDirectMode && props.settings?.mode === 'direct')
-const hasAsmrPlans = computed(() => activePlans.value.some(plan => !plan.discovery_only && !plan.preview_error && plan.source_provider !== 'imoutoheaven' && !plan.source_selection_required))
-const hasYaasPlans = computed(() => activePlans.value.some(plan => !plan.discovery_only && !plan.preview_error && plan.source_provider === 'imoutoheaven' && !plan.source_selection_required))
+const hasAsmrPlans = computed(() => selectedDownloadPlans.value.some(plan => plan.source_provider !== 'imoutoheaven'))
+const hasYaasPlans = computed(() => selectedDownloadPlans.value.some(plan => plan.source_provider === 'imoutoheaven'))
 const yaasDownloadRoots = computed(() => [...new Set(activePlans.value.flatMap(plan => plan.source_options?.length ? plan.source_options : [plan]).filter(plan => plan.source_provider === 'imoutoheaven').map(plan => plan.download_root).filter(Boolean))])
 const pendingSourcePlans = computed(() => activePlans.value.filter(plan => plan.source_selection_required))
 const requiresTargetLibrary = computed(() => activePlans.value.some(plan =>
   plan.source_provider !== 'imoutoheaven' && !plan.source_selection_required && plan.selected_resource_count > 0) && !isDirectMode.value)
 const primaryActionLabel = computed(() => {
   if (!activePlans.value.length) return '请选择下载版本'
-  if (pendingSourcePlans.value.length) return '请选择下载来源'
+  if (!selectedDownloadPlans.value.length) return '请选择下载内容'
   if (hasYaasPlans.value && !hasAsmrPlans.value) return '下载原压缩包'
   if (props.actionMode === 'reimport') return '跳过下载直接入库'
   if (isDirectMode.value) return '直接下载到选中的库存路径'
@@ -501,7 +503,7 @@ const primaryActionLabel = computed(() => {
 })
 const primaryActionDisabled = computed(() => {
   if (previewLoading.value || props.starting || activePlans.value.some(plan => plan.version_loading || plan.preview_error || plan.discovery_only)) return true
-  if (activePlans.value.some(plan => plan.source_selection_required)) return true
+  if (!selectedDownloadPlans.value.length) return true
   if (selectedFileCount.value === 0) return true
   if (requiresTargetLibrary.value && !String(props.settings?.targetLibraryId || '').trim()) return true
   if (isDirectMode.value && hasAsmrPlans.value) {
@@ -743,10 +745,6 @@ watch(() => props.plans, (plans) => {
 
 function emitSubmit() {
   if (primaryActionDisabled.value) return
-  if (activePlans.value.some(plan => plan.source_selection_required)) {
-    ElMessage.warning('请为每个作品选择下载来源')
-    return
-  }
   if (requiresTargetLibrary.value && !String(props.settings?.targetLibraryId || '').trim()) {
     ElMessage.warning('请先选择目标库存')
     return
@@ -758,7 +756,7 @@ function emitSubmit() {
   const namingMode = flattenFiles ? 'preserve' : (props.settings.namingMode === 'api' ? 'api' : 'preserve')
   const classifyMode = flattenFiles ? 'none' : (props.settings.classifyMode === 'circle' ? 'circle' : 'none')
 
-  const items = activePlans.value
+  const items = selectedDownloadPlans.value
     .map(plan => buildSubmitItem(plan, isDirectMode.value))
     .filter(item => item && item.selected_resources.length > 0)
 
@@ -2507,9 +2505,9 @@ html.kikoerumanager-dark .custom-preview-modal.circle-download-preview-modal {
 }
 html .custom-preview-modal.circle-download-preview-modal :is(.version-tag, .soft-button.active, .mode-tab-active, .tab-chip-active, .tab-chip-partial),
 html.kikoerumanager-dark .custom-preview-modal.circle-download-preview-modal :is(.version-tag, .soft-button.active, .mode-tab-active, .tab-chip-active, .tab-chip-partial) {
-  color: var(--preview-control-text) !important;
-  background: var(--preview-control-bg) !important;
-  border-color: var(--preview-control-border) !important;
+  color: var(--language-tag-text, var(--preview-control-text)) !important;
+  background: var(--language-tag-bg, var(--preview-control-bg)) !important;
+  border-color: var(--language-tag-border, var(--preview-control-border)) !important;
   box-shadow: none !important;
 }
 html .custom-preview-modal.circle-download-preview-modal :is(.tree-checkbox-on, .tree-checkbox-partial),

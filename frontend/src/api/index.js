@@ -2484,6 +2484,11 @@ export const subtitleImportApi = {
 }
 
 export const circleCompletionApi = {
+  getLibraryLocations: async (rjcode) => {
+    const response = await apiClient.get(`/circle-completion/library-locations/${encodeURIComponent(rjcode)}`)
+    return response.data
+  },
+
   searchCircles: async (keyword = '', limit = 30) => {
     const response = await apiClient.get('/circle-completion/circles', { params: { keyword, limit } })
     return response.data

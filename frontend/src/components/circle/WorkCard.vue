@@ -1,4 +1,5 @@
 <script setup>
+import { circleWorkVersionRjcode } from '../../utils/circleWorkVersion'
 import { computed, inject, ref, watch } from 'vue'
 import { LibraryBig, Calendar, Gift, LoaderCircle, RefreshCw } from 'lucide-vue-next'
 import ExternalSearchSourceChips from './ExternalSearchSourceChips.vue'
@@ -130,11 +131,7 @@ const displayVariant = computed(() =>
   isBonusWork.value ? '' :
   props.item?.owned ? (props.item.owned_variant?.group_short_label || '原作') : (props.item.preferred_variant?.group_short_label || '原作')
 )
-const displayVariantRjcode = computed(() =>
-  props.item?.owned
-    ? (props.item.owned_variant?.rjcode || props.item.server_match_primary_rjcode || props.item.display_rjcode || props.item.canonical_rjcode)
-    : (props.item.download_plan?.rjcode || props.item.display_rjcode || props.item.canonical_rjcode)
-)
+const displayVariantRjcode = computed(() => circleWorkVersionRjcode(props.item))
 const canRepairSubtitle = computed(() => Boolean(props.item?.subtitle_repairable))
 const showOriginalSubtitleState = computed(() =>
   Boolean(props.item?.owned)

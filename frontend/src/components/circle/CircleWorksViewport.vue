@@ -50,7 +50,6 @@ let imagePumpFrame = null
 const activeBonusDetail = ref(null)
 const failedBonusImageKeys = ref(new Set())
 const failedBonusCoverCodes = ref(new Set())
-const viewportScrolling = ref(false)
 
 let resizeObserver = null
 let motionTimer = null
@@ -314,18 +313,13 @@ function bonusActionItem(item, action = '') {
 
 function bonusCollectionViewModel(viewModel) {
   const bonuses = Array.isArray(viewModel?.bonuses) ? viewModel.bonuses : []
-  const members = sortBonusMembers(bonuses.flatMap(bonus => bonusMembers(bonus)).filter(bonus => bonus && shouldDisplayBonus(bonus)))
-  const first = members[0] || null
-  if (!first) return null
+  const collection = bonusCollections.value.get(viewModel.item)?.value
+  if (!collection) return null
+  const members = collection._bonus_members
+  const first = members[0]
   const owned = members.some(isCompletionOwned)
   return {
-    item: {
-      ...first,
-      title: bonusDisplayTitle(first),
-      _bonus_display_title: bonusDisplayTitle(first),
-      _bonus_members: members,
-      linked_rjcodes: bonusCodeList({ _bonus_members: members }),
-    },
+    item: collection,
     key: bonusCollectionKey(viewModel),
     code: bonusCode(first),
     owned,
@@ -414,6 +408,26 @@ const pagedGroups = computed(() => {
   const start = (normalizedPage.value - 1) * normalizedPageSize.value
   return displayGroups.value.slice(start, start + normalizedPageSize.value)
 })
+// 合集按需计算并保留排序结果，选择和滚动不会重排整页特典。
+const bonusCollections = computed(() => {
+  const collections = new Map()
+  for (const group of pagedGroups.value) {
+    if (!group.bonuses.length) continue
+    collections.set(group.item, computed(() => {
+      const members = sortBonusMembers(group.bonuses.flatMap(bonusMembers).filter(shouldDisplayBonus))
+      const first = members[0]
+      if (!first) return null
+      return {
+        ...first,
+        title: bonusDisplayTitle(first),
+        _bonus_display_title: bonusDisplayTitle(first),
+        _bonus_members: members,
+        linked_rjcodes: bonusCodeList({ _bonus_members: members }),
+      }
+    }))
+  }
+  return collections
+})
 const isCardMode = computed(() => props.mode === 'card')
 const gridGap = computed(() => isCardMode.value ? 10 : 6)
 const columnCount = computed(() => {
@@ -481,6 +495,11 @@ const rowViewModels = computed(() => {
   }
   return rows
 })
+// 合集只随作品、选择态或封面状态变化重算，不在滚动渲染中重复排序。
+const bonusViewModels = computed(() => new Map(
+  renderedViewModels.value.filter(model => model.bonuses.length)
+    .map(model => [model.key, bonusCollectionViewModel(model)]),
+))
 const usePlainRender = computed(() => viewportWidth.value > 0 && viewportWidth.value <= 640)
 const virtualRowHeight = computed(() => {
   if (!isCardMode.value) return viewportWidth.value <= 640 ? 58 : 60
@@ -502,6 +521,8 @@ const rowVirtualizer = useVirtualizer(computed(() => ({
 })))
 
 const virtualRows = computed(() => rowVirtualizer.value.getVirtualItems())
+const renderedViewModels = computed(() => usePlainRender.value ? itemViewModels.value
+  : virtualRows.value.flatMap(row => getRowItems(row.index)))
 const visibleImageKeys = computed(() => {
   if (usePlainRender.value) {
     return itemViewModels.value.flatMap(item => [
@@ -518,9 +539,9 @@ const visibleImageKeys = computed(() => {
   }
   return keys
 })
-const virtualCanvasStyle = computed(() => ({
-  height: `${rowVirtualizer.value.getTotalSize()}px`,
-}))
+// 虚拟器每次滚动都会通知，先用标量拦住总高度不变的更新。
+const virtualCanvasHeight = computed(() => `${rowVirtualizer.value.getTotalSize()}px`)
+const virtualCanvasStyle = computed(() => ({ height: virtualCanvasHeight.value }))
 const currentPageModel = computed({
   get: () => normalizedPage.value,
   set: value => {
@@ -539,8 +560,8 @@ const pageSizeModel = computed({
 })
 
 function updateViewportWidth() {
-  const el = scrollRef.value || viewportRef.value
-  viewportWidth.value = Math.max(0, Math.round(el?.clientWidth || 0))
+  const width = scrollRef.value?.clientWidth || viewportRef.value?.clientWidth || 0
+  viewportWidth.value = Math.max(0, Math.round(width))
 }
 
 function itemKey(item, fallbackIndex) {
@@ -700,9 +721,7 @@ function bonusCollectionKey(viewModel) {
 
 const imageSignatures = computed(() => {
   const result = new Map()
-  const renderedModels = usePlainRender.value ? itemViewModels.value
-    : virtualRows.value.flatMap(row => getRowItems(row.index))
-  for (const viewModel of renderedModels) {
+  for (const viewModel of renderedViewModels.value) {
     for (const model of [viewModel]) {
       const item = model.item || {}
       result.set(model.key, JSON.stringify([
@@ -711,8 +730,8 @@ const imageSignatures = computed(() => {
       ]))
     }
     if (viewModel.bonuses.length) {
-      const bonus = bonusCollectionViewModel(viewModel)
-      result.set(bonus.key, bonusCoverUrl(bonus.item))
+      const collection = bonusCollections.value.get(viewModel.item)?.value
+      if (collection) result.set(bonusCollectionKey(viewModel), bonusCoverUrl(collection))
     }
   }
   return result
@@ -720,7 +739,7 @@ const imageSignatures = computed(() => {
 
 function resolvedImageUrl(key) {
   const entry = settledImages.get(String(key || ''))
-  return entry?.signature === imageSignatures.value.get(key) ? entry.url : ''
+  return entry && entry.signature === imageSignatures.value.get(key) ? entry.url : ''
 }
 
 function releaseImageSlot(key) {
@@ -816,10 +835,10 @@ function triggerViewportMotion() {
 }
 
 function handleViewportScroll() {
-  if (!viewportScrolling.value) viewportScrolling.value = true
+  if (!scrollIdleTimer) scrollRef.value?.classList.add('is-scrolling')
   if (scrollIdleTimer) window.clearTimeout(scrollIdleTimer)
   scrollIdleTimer = window.setTimeout(() => {
-    viewportScrolling.value = false
+    scrollRef.value?.classList.remove('is-scrolling')
     scrollIdleTimer = null
   }, 120)
 }
@@ -859,15 +878,21 @@ watch([visibleImageKeys, imageSignatures], () => {
   enqueueVisibleImages()
 }, { immediate: true })
 
-onMounted(() => {
+watch(viewportRef, (element, previous) => {
+  if (previous) resizeObserver?.unobserve?.(previous)
   updateViewportWidth()
-  triggerViewportMotion()
-  resizeObserver = new ResizeObserver(() => {
+  if (!element) return
+  resizeObserver ||= new ResizeObserver(() => {
     const previousWidth = viewportWidth.value
     updateViewportWidth()
     if (viewportWidth.value !== previousWidth) nextTick(() => rowVirtualizer.value.measure())
   })
-  if (scrollRef.value) resizeObserver.observe(scrollRef.value)
+  resizeObserver.observe(element)
+}, { flush: 'post' })
+
+onMounted(() => {
+  updateViewportWidth()
+  triggerViewportMotion()
 })
 
 onBeforeUnmount(() => {
@@ -942,7 +967,7 @@ onBeforeUnmount(() => {
             />
             <div v-if="viewModel.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
               <button
-                v-for="bonusViewModel in [bonusCollectionViewModel(viewModel)]"
+                v-for="bonusViewModel in [bonusViewModels.get(viewModel.key)]"
                 :key="bonusViewModel.key"
                 type="button"
                 class="circle-bonus-gift"
@@ -1167,7 +1192,6 @@ onBeforeUnmount(() => {
         v-else
         ref="scrollRef"
         class="circle-work-scroll"
-        :class="{ 'is-scrolling': viewportScrolling }"
         @scroll.passive="handleViewportScroll"
       >
         <div class="circle-work-virtual-canvas" :style="virtualCanvasStyle">
@@ -1186,6 +1210,17 @@ onBeforeUnmount(() => {
             <div
               v-for="cell in getRowItems(virtualRow.index)"
               :key="cell.key"
+              v-memo="[cell.item, cell.index, cell.columnIndex, cell.selected, cell.flashed, cell.located,
+                cell.completionDimmed, cell.bonuses, mode, imageField, columnCount, motionActive,
+                bonusShelfStyle, activeBonusDetail, activeBonusDetailCover,
+                cornerLabel, isImageActive(cell.key), resolvedImageUrl(cell.key),
+                coverOverrideFor(cell.item), isCoverFetching(cell.item), failedBonusImageKeys,
+                mode === 'list' ? selectedCodes : null, mode === 'list' ? flashedCodes : null,
+                mode === 'list' ? locatedCodes : null, mode === 'list' ? activeImageKeys : null,
+                bonusViewModels.get(cell.key)?.item, bonusViewModels.get(cell.key)?.selected,
+                bonusViewModels.get(cell.key)?.flashed, bonusViewModels.get(cell.key)?.located,
+                bonusViewModels.get(cell.key)?.dimmed,
+                isImageActive(bonusCollectionKey(cell)), resolvedImageUrl(bonusCollectionKey(cell))]"
               class="circle-work-virtual-cell"
               :class="[`is-${mode}`, {
                 'is-motion-active': motionActive,
@@ -1226,7 +1261,7 @@ onBeforeUnmount(() => {
                 />
                 <div v-if="cell.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
                   <button
-                    v-for="bonusViewModel in [bonusCollectionViewModel(cell)]"
+                    v-for="bonusViewModel in [bonusViewModels.get(cell.key)]"
                     :key="bonusViewModel.key"
                     type="button"
                     class="circle-bonus-gift"

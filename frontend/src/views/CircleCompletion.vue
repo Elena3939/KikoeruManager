@@ -1034,6 +1034,7 @@
       @pause-task="handlePauseDownloadTask"
       @resume-task="handleResumeDownloadTask"
       @cancel-task="handleCancelDownloadTask"
+      @dismiss-task="dismissDownloadTask"
       @load-files="loadFullDownloadTaskFiles"
     />
 
@@ -1076,7 +1077,7 @@
     <Transition name="floating-card">
       <BackgroundFloatingCard
         v-if="showDownloadBackgroundCard"
-        v-bind="downloadBackgroundCardProps"
+        v-bind="downloadBackgroundCardProps" task-source="asmr" :task-ids="trackedDownloadTaskIds"
         @action="handleDownloadBackgroundCardAction"
       />
     </Transition>
@@ -1084,7 +1085,7 @@
     <Transition name="floating-card">
       <BackgroundFloatingCard
         v-if="showUploadBackgroundCard"
-        v-bind="uploadBackgroundCardProps"
+        v-bind="uploadBackgroundCardProps" task-source="upload" :task-ids="trackedUploadTaskIds"
         :stack-index="showDownloadBackgroundCard ? 1 : 0"
         @action="handleUploadBackgroundCardAction"
       />
@@ -1099,12 +1100,21 @@
       >
         <div class="circle-work-context-heading">
           <span>{{ workContextMenu.item.title || workContextMenu.item.canonical_rjcode || '作品操作' }}</span>
-          <small>{{ workContextMenu.item.canonical_rjcode || '' }}</small>
+          <small>{{ circleWorkVersionRjcode(workContextMenu.item) }}</small>
         </div>
         <button type="button" class="circle-work-context-item" @click.stop="handleWorkContextAction('refresh')">
           <RefreshCw :size="14" />
           <span>刷新状态</span>
         </button>
+        <StatefulButton unstyled class="circle-work-context-item" :show-default-icons="false" :disabled="!workContextMenu.item.owned || locatingLibraryWork" :title="!workContextMenu.item.owned ? '当前作品未收录' : undefined" @click="locateWorkInLibrary(workContextMenu.item)">
+          <template #prefix="{ state }">
+            <RefreshCw v-if="state === 'loading'" :size="14" class="spin-icon" />
+            <Check v-else-if="state === 'success'" :size="14" />
+            <XCircle v-else-if="state === 'error'" :size="14" />
+            <LibraryBig v-else :size="14" />
+          </template>
+          <span>前往库存</span>
+        </StatefulButton>
         <button
           v-if="workContextNeedsCover"
           type="button"
@@ -1118,13 +1128,61 @@
       </div>
     </Teleport>
 
+    <el-dialog
+      v-model="libraryLocationsVisible"
+      title="选择存放目录"
+      :show-close="false"
+      class="custom-preview-modal circle-library-locations-modal mobile-full-dialog"
+      modal-class="custom-preview-overlay circle-location-overlay"
+      align-center
+    >
+      <div class="window glass-shell circle-location-shell">
+        <header class="window-header circle-location-header">
+          <div class="circle-location-heading">
+            <h2 class="title">选择存放目录</h2>
+            <span class="circle-location-version">{{ libraryLocations[0]?.rjcode }}</span>
+          </div>
+          <button
+            type="button"
+            class="close-button circle-location-close"
+            aria-label="关闭"
+            title="关闭"
+            @click="libraryLocationsVisible = false"
+          ><X :size="18" /></button>
+        </header>
+        <div class="circle-location-list">
+          <button
+            v-for="location in libraryLocations"
+            :key="`${location.library_id}:${location.path}`"
+            type="button"
+            class="circle-library-location"
+            @click="goToLibraryLocation(location)"
+          >
+            <span class="circle-location-icon"><LibraryBig :size="18" /></span>
+            <span class="circle-location-main">
+              <strong>{{ location.library_name }}</strong>
+              <small>{{ location.path }}</small>
+            </span>
+            <ExternalLink :size="15" class="circle-location-arrow" />
+          </button>
+        </div>
+        <footer class="footer-row circle-location-footer">
+          <span>{{ libraryLocations.length }} 个存放位置</span>
+          <button type="button" class="circle-location-cancel" @click="libraryLocationsVisible = false">取消</button>
+        </footer>
+      </div>
+    </el-dialog>
+
   </div>
 </template>
 
 <script setup>
+import { usePersistentTaskWorkbench, dismissPersistentTaskCard, dismissWorkbenchTask } from '../composables/usePersistentTaskCards'
 import { getAsmrDownloadSessionId, getDownloadEngineTaskId } from '../utils/downloadTaskIdentity.js'
 import { computed, onActivated, onBeforeUnmount, onMounted, provide, reactive, ref, shallowReactive, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { circleWorkVersionRjcode } from '../utils/circleWorkVersion'
+import StatefulButton from '../components/ui/stateful-button.vue'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import celebrateImg from '../assets/celebrate.png'
 import confettiAnimation from '../assets/anime/Confetti.lottie'
@@ -1154,12 +1212,17 @@ import {
 } from './_downloadWorkbenchTracking.js'
 
 const route = useRoute()
+const router = useRouter()
+const locatingLibraryWork = ref(false)
+const libraryLocationsVisible = ref(false)
+const libraryLocations = ref([])
 const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'kikoerumanager.circleCompletion.targetSubdirs'
 const CIRCLE_COMPLETION_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.circleCompletion.downloadWorkbench'
 const CIRCLE_COMPLETION_REFRESH_JOB_KEY = 'kikoerumanager.circleCompletion.refreshJob'
 const CIRCLE_COMPLETION_INDEX_JOB_KEY = 'kikoerumanager.circleCompletion.indexJob'
 const CIRCLE_COMPLETION_BONUS_PROBE_JOB_KEY = 'kikoerumanager.circleCompletion.bonusProbeJob'
 const CIRCLE_COMPLETION_UPLOAD_WORKBENCH_KEY = 'kikoerumanager.circleCompletion.uploadWorkbench'
+const CIRCLE_COMPLETION_VIEW_PREFERENCES_KEY = 'kikoerumanager.circleCompletion.viewPreferences'
 const realtimeEvents = useRealtimeEvents()
 function getJobProgressPercent(job) {
   const value = Number(job?.progress || 0)
@@ -1743,12 +1806,30 @@ const uploadWorkbenchBackgroundActive = ref(false)
 const uploadWorkbenchRefreshing = ref(false)
 const worksPageSizes = [10, 20, 50, 100]
 const comparePageSizes = [10, 20, 50, 100]
-const worksPageSize = ref(10)
-const comparePageSize = ref(10)
+function loadViewPreferences() {
+  try {
+    return JSON.parse(localStorage.getItem(CIRCLE_COMPLETION_VIEW_PREFERENCES_KEY) || '{}')
+  } catch (_) {
+    return {}
+  }
+}
+const savedViewPreferences = loadViewPreferences()
+const worksPageSize = ref(worksPageSizes.includes(savedViewPreferences?.worksPageSize) ? savedViewPreferences.worksPageSize : 10)
+const comparePageSize = ref(comparePageSizes.includes(savedViewPreferences?.comparePageSize) ? savedViewPreferences.comparePageSize : 10)
 const missingPage = ref(1)
 const missingSort = ref('default') // 'default' | 'downloadable' | 'title'
-const worksReleaseSort = ref('desc')
-const viewMode = ref('card') // 'card' | 'list'
+const worksReleaseSort = ref(savedViewPreferences?.worksReleaseSort === 'asc' ? 'asc' : 'desc')
+const viewMode = ref(savedViewPreferences?.viewMode === 'list' ? 'list' : 'card')
+watch([worksPageSize, comparePageSize, worksReleaseSort, viewMode], () => {
+  try {
+    localStorage.setItem(CIRCLE_COMPLETION_VIEW_PREFERENCES_KEY, JSON.stringify({
+      worksPageSize: worksPageSize.value,
+      comparePageSize: comparePageSize.value,
+      worksReleaseSort: worksReleaseSort.value,
+      viewMode: viewMode.value,
+    }))
+  } catch (_) {}
+}, { flush: 'sync' })
 watch(missingSort, () => { missingPage.value = 1; scheduleCircleWorksRefresh() })
 watch(worksReleaseSort, () => { missingPage.value = 1; ownedPage.value = 1; comparePage.value = 1; scheduleCircleWorksRefresh() })
 watch([circleCompletionFilter, circleSortKey], () => {
@@ -2810,16 +2891,17 @@ const processingDownloadTasks = computed(() => trackedDownloadTasks.value.filter
 const pendingDownloadTasks = computed(() => trackedDownloadTasks.value.filter(task => ['pending', 'paused', 'waiting_retry'].includes(String(task.status || ''))))
 const completedDownloadTasks = computed(() => trackedDownloadTasks.value.filter(task => String(task.status || '') === 'completed'))
 const failedDownloadTasks = computed(() => trackedDownloadTasks.value.filter(task => String(task.status || '') === 'failed'))
-const showDownloadBackgroundCard = computed(() => downloadWorkbenchBackgroundActive.value && !downloadWorkbenchVisible.value && trackedDownloadTaskIds.value.length > 0)
+const showDownloadBackgroundCard = computed(() => downloadWorkbenchBackgroundActive.value && !downloadWorkbenchVisible.value && trackedDownloadTaskIds.value.length > 0 && trackedDownloadTasks.value.length > 0)
 const activeBackgroundDownloadTask = computed(() => processingDownloadTasks.value[0] || pendingDownloadTasks.value[0] || trackedDownloadTasks.value[0] || null)
 const processingUploadTasks = computed(() => trackedUploadTasks.value.filter(task => ['processing'].includes(String(task?.status || ''))))
 const pendingUploadTasks = computed(() => trackedUploadTasks.value.filter(task => ['pending', 'paused', 'waiting_retry'].includes(String(task?.status || ''))))
 const completedUploadTasks = computed(() => trackedUploadTasks.value.filter(task => String(task?.status || '') === 'completed'))
 const failedUploadTasks = computed(() => trackedUploadTasks.value.filter(task => String(task?.status || '') === 'failed'))
-const showUploadBackgroundCard = computed(() => uploadWorkbenchBackgroundActive.value && !uploadWorkbenchVisible.value && trackedUploadTaskIds.value.length > 0)
+const showUploadBackgroundCard = computed(() => uploadWorkbenchBackgroundActive.value && !uploadWorkbenchVisible.value && trackedUploadTaskIds.value.length > 0 && trackedUploadTasks.value.length > 0)
 const activeBackgroundUploadTask = computed(() => processingUploadTasks.value[0] || pendingUploadTasks.value[0] || trackedUploadTasks.value[0] || null)
 const uploadBackgroundPercent = computed(() => {
   if (!trackedUploadTasks.value.length) return 0
+  if (uploadBackgroundCompleted.value) return 100
   const aggregate = trackedUploadTasks.value.reduce((sum, task) => {
     const runtime = task?.upload_runtime || {}
     sum.transferred += Number(runtime?.transferred_bytes || 0)
@@ -4187,7 +4269,13 @@ function resumeDownloadWorkbenchFromBackground() {
 }
 
 function closeDownloadWorkbench() {
+  dismissPersistentTaskCard('/circle-completion:asmr:download')
   clearDownloadWorkbenchState()
+}
+
+function dismissDownloadTask(task) {
+  dismissWorkbenchTask(task, trackedDownloadTaskIds, trackedDownloadTasks, '/circle-completion:asmr:download', () => downloadWorkbenchRequestGuard.invalidate())
+  if (!trackedDownloadTaskIds.value.length) clearDownloadWorkbenchState()
 }
 
 function handleDownloadBackgroundCardAction(action) {
@@ -5851,7 +5939,7 @@ function openWorkContextMenu(item, event) {
   if (!selectedCanonicals.value.has(code)) toggleSelection(item, event)
   workContextMenu.item = item
   const menuWidth = 212
-  const menuHeight = workContextNeedsCover.value ? 112 : 76
+  const menuHeight = workContextNeedsCover.value ? 160 : 124
   workContextMenu.x = Math.max(8, Math.min(Number(event?.clientX || 0), window.innerWidth - menuWidth - 8))
   workContextMenu.y = Math.max(8, Math.min(Number(event?.clientY || 0), window.innerHeight - menuHeight - 8))
   workContextMenu.visible = true
@@ -5868,6 +5956,41 @@ async function handleWorkContextAction(action) {
   if (action === 'refresh') {
     const code = selectionCode(item)
     if (code) await refreshSelectedCircleIndex([code])
+  }
+}
+
+async function goToLibraryLocation(location) {
+  libraryLocationsVisible.value = false
+  await router.push({
+    name: 'Library',
+    query: { locateLibraryId: location.library_id, locatePath: location.path },
+  })
+}
+
+async function locateWorkInLibrary(item) {
+  if (!item?.owned || locatingLibraryWork.value) return
+  const rjcode = normalizeRjcode(circleWorkVersionRjcode(item))
+  if (!rjcode) return
+  locatingLibraryWork.value = true
+  try {
+    const result = await circleCompletionApi.getLibraryLocations(rjcode)
+    const locations = (result.locations || []).filter(location =>
+      location.library_id && location.path && normalizeRjcode(location.rjcode) === rjcode)
+    closeWorkContextMenu()
+    if (!locations.length) {
+      ElMessage.warning(`库存索引中未找到 ${rjcode} 当前语言版本，请刷新库存索引后重试`)
+      return
+    }
+    if (locations.length === 1) {
+      await goToLibraryLocation(locations[0])
+      return
+    }
+    libraryLocations.value = locations
+    libraryLocationsVisible.value = true
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '查询库存实际位置失败')
+  } finally {
+    locatingLibraryWork.value = false
   }
 }
 
@@ -6249,6 +6372,8 @@ function getUploadBackgroundSpeed(task) {
 function getUploadBackgroundTargetLabel(task) {
   return String(task?.task_metadata?.final_output_path || task?.task_metadata?.target_path || task?.output_path || '目标路径处理中').trim()
 }
+usePersistentTaskWorkbench(route, 'asmr', trackedDownloadTaskIds, downloadWorkbenchVisible, downloadWorkbenchBackgroundActive, refreshDownloadWorkbench, { tasks: trackedDownloadTasks, cardProps: downloadBackgroundCardProps })
+usePersistentTaskWorkbench(route, 'upload', trackedUploadTaskIds, uploadWorkbenchVisible, uploadWorkbenchBackgroundActive, refreshUploadWorkbench, { tasks: trackedUploadTasks, cardProps: uploadBackgroundCardProps })
 </script>
 
 <style scoped>
@@ -9444,8 +9569,176 @@ body.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animatio
 }
 
 .circle-work-context-item:disabled {
-  cursor: wait;
-  opacity: .65;
+  cursor: not-allowed;
+  opacity: .4;
+}
+
+/* 公共窗口尺寸在 components 层使用 important，此处在同层按用途覆盖。 */
+@layer components {
+  :global(.el-dialog.custom-preview-modal.circle-library-locations-modal) {
+    width: min(680px, calc(100vw - 32px)) !important;
+    max-width: min(680px, calc(100vw - 32px)) !important;
+    padding: 0 !important;
+  }
+  :global(.el-overlay.custom-preview-overlay.circle-location-overlay) {
+    background: rgb(0 0 0 / 32%) !important;
+  }
+  :global(html.kikoerumanager-dark .el-overlay.circle-location-overlay) {
+    background: rgb(0 0 0 / 52%) !important;
+  }
+  @media (max-width: 640px) {
+    :global(.el-dialog.custom-preview-modal.circle-library-locations-modal) {
+      width: 100vw !important;
+      max-width: 100vw !important;
+    }
+  }
+}
+
+.circle-location-shell {
+  --location-border: #e4e4e7;
+  --location-muted: #71717a;
+  --location-hover: #f0f0f0;
+  --location-icon: #f4f4f5;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 48px);
+  overflow: hidden;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, .97);
+  color: #18181b;
+  box-shadow: 0 24px 80px rgb(0 0 0 / 18%);
+  animation: circle-location-enter .3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.circle-location-header {
+  flex-shrink: 0;
+  gap: 16px;
+  padding: 22px 24px;
+  border-bottom: 1px solid var(--location-border);
+}
+
+.circle-location-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.circle-location-heading .title {
+  font-size: 18px;
+  line-height: 1.4;
+  letter-spacing: 0;
+}
+
+.circle-location-version {
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  color: var(--location-muted);
+}
+
+.circle-location-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  color: var(--location-muted);
+}
+
+.circle-location-list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.circle-library-location {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 16px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.circle-location-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--location-icon);
+}
+
+.circle-location-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.circle-location-main strong,
+.circle-location-main small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.circle-location-main strong { font-size: 13px; font-weight: 600; }
+.circle-location-main small { margin-top: 5px; font-size: 12px; line-height: 1.6; color: var(--location-muted); }
+.circle-location-arrow { flex-shrink: 0; color: var(--location-muted); }
+
+.circle-location-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  gap: 12px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--location-border);
+  color: var(--location-muted);
+  font-size: 12px;
+}
+
+.circle-location-cancel {
+  padding: 7px 16px;
+  border: 1px solid var(--location-border);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.circle-location-shell button { transition: all .3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.circle-location-shell button:hover { background: var(--location-hover); transform: translateY(-2px) scale(1.02); }
+.circle-location-shell button:hover svg { transform: rotate(-3deg); }
+.circle-location-shell button:active { transform: scale(.96); }
+.circle-location-shell button svg { transition: transform .3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+:global(html.kikoerumanager-dark .circle-location-shell) {
+  --location-border: var(--km-dark-border-soft);
+  --location-muted: var(--km-dark-text-muted);
+  --location-hover: #27272a;
+  --location-icon: var(--km-dark-surface-soft);
+  color: var(--km-dark-text);
+}
+
+@keyframes circle-location-enter {
+  from { opacity: 0; transform: translateY(10px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (max-width: 640px) {
+  .circle-location-shell { max-height: 100%; height: 100%; border-radius: 0; }
+  .circle-location-list { flex: 1; }
+  .circle-location-header { padding: 18px 16px; }
+  .circle-location-footer { padding: 14px 16px; }
+  .circle-library-location { gap: 10px; padding: 14px 8px; }
 }
 
 .circle-work-context-item:focus,

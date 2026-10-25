@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { reactive } from 'vue'
 import CircleWorksViewport from './CircleWorksViewport.vue'
 
 function mountViewport(options) {
@@ -470,6 +471,105 @@ describe('CircleWorksViewport', () => {
     await scroll.trigger('scroll')
     expect(scroll.classes()).toContain('is-scrolling')
 
+    wrapper.unmount()
+  })
+
+  it.each([480, 1600])('空列表异步加载百条作品后正确建立视口：%s', async width => {
+    mockClientWidth = width
+    mockClientHeight = 600
+    const wrapper = mountViewport({
+      props: { items: [], totalItems: 0, pageSize: 100, serverPaging: true },
+      global: {
+        stubs: {
+          WorkCard: { template: '<div class="work-card-stub" />' },
+          WorkListRow: true,
+          ElPagination: true,
+        },
+      },
+    })
+    await flushPromises()
+    expect(wrapper.find('.circle-work-empty').exists()).toBe(true)
+    await wrapper.setProps({
+      items: Array.from({ length: 100 }, (_, index) => ({
+        canonical_rjcode: `RJ${10000000 + index}`, title: `作品 ${index}`,
+      })),
+      totalItems: 100,
+    })
+    await flushPromises()
+    const mounted = wrapper.findAll('.work-card-stub').length
+    expect(mounted).toBeGreaterThan(0)
+    expect(wrapper.find('.circle-work-plain').exists()).toBe(width <= 640)
+    if (width > 640) expect(mounted).toBeLessThan(50)
+    wrapper.unmount()
+  })
+
+  it('虚拟卡片缓存仍响应原地更新的封面与选择状态', async () => {
+    mockClientWidth = 1600
+    mockClientHeight = 600
+    const covers = reactive({})
+    const fetching = reactive(new Set())
+    const wrapper = mountViewport({
+      props: {
+        items: [{ canonical_rjcode: 'RJ10000001', title: '作品' }],
+        totalItems: 1,
+        coverOverrides: covers,
+        coverFetchingCodes: fetching,
+      },
+      global: {
+        stubs: {
+          WorkCard: {
+            name: 'WorkCard',
+            props: ['coverUrlOverride', 'coverFetching', 'selected'],
+            template: '<div class="work-card-stub" />',
+          },
+          WorkListRow: true,
+          ElPagination: true,
+        },
+      },
+    })
+    await flushPromises()
+    covers.RJ10000001 = '/updated.jpg'
+    fetching.add('RJ10000001')
+    await flushPromises()
+    const card = wrapper.findComponent({ name: 'WorkCard' })
+    expect(card.props('coverUrlOverride')).toBe('/updated.jpg')
+    expect(card.props('coverFetching')).toBe(true)
+    await wrapper.setProps({ selectedCodes: new Set(['RJ10000001']) })
+    expect(card.props('selected')).toBe(true)
+    fetching.clear()
+    await flushPromises()
+    expect(card.props('coverFetching')).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('只计算可见作品的特典封面，选择作品时复用排序结果', async () => {
+    mockClientWidth = 1600
+    mockClientHeight = 600
+    const coverReads = Array(100).fill(0)
+    const items = Array.from({ length: 100 }, (_, index) => ({
+      canonical_rjcode: `RJ${10000000 + index}`,
+      title: `作品 ${index}`,
+      bonus_works: [{
+        canonical_rjcode: `RJ${20000000 + index}`,
+        title: '特典',
+        is_bonus_work: true,
+        get cover_available() { coverReads[index]++; return true },
+      }],
+    }))
+    const wrapper = mountViewport({
+      props: { items, totalItems: 100, pageSize: 100, serverPaging: true },
+      global: { stubs: { WorkCard: true, WorkListRow: true, ElPagination: true } },
+    })
+    // 挂载工具会复制传入属性；只统计视口建立后的业务读取。
+    coverReads.fill(0)
+    await flushPromises()
+    expect(coverReads[0]).toBeGreaterThan(0)
+    expect(coverReads[99]).toBe(0)
+    const firstReads = coverReads[0]
+    await wrapper.setProps({ selectedCodes: new Set(['RJ10000000']) })
+    await flushPromises()
+    expect(coverReads[0]).toBe(firstReads)
+    expect(coverReads[99]).toBe(0)
     wrapper.unmount()
   })
 

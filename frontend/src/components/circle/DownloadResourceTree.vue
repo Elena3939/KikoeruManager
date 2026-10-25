@@ -24,7 +24,7 @@
       </button>
       <Folder :size="20" class="tree-icon shrink-0" :style="iconStyle(LIBRARY_ENTRY_KIND_META.dir)" />
       <span class="tree-name min-w-0 flex-1 truncate text-sm font-medium">{{ plan.rjcode }}</span>
-      <span v-if="plan.language_label" class="version-tag">{{ languageLabel(plan.language_label) }}</span>
+      <span v-if="plan.language_label" class="version-tag" :data-language-tone="languageTone(plan.language_label)">{{ languageLabel(plan.language_label) }}</span>
       <span class="tree-size text-xs shrink-0">{{ formatSize(plan.total_size_bytes) }}</span>
       <slot name="root-action" />
     </div>
@@ -42,7 +42,7 @@
         <component :is="iconMeta(row).icon" :size="20" class="tree-icon shrink-0" :class="{ 'archive-package-icon': isArchive && row.type !== 'dir' }" :style="iconStyle(iconMeta(row))" />
         <div class="min-w-0 flex-1">
           <span class="tree-name block truncate text-sm font-medium" :title="row.name">{{ row.name }}</span>
-          <span v-if="isArchive" class="resource-file-meta"><span class="version-tag">{{ archiveLanguage(row) }}</span> {{ row.resource.rjcode }} · {{ row.resource.files?.length || 0 }} 个文件{{ row.resource.complete ? '' : ' · 分卷不完整' }}</span>
+          <span v-if="isArchive" class="resource-file-meta"><span class="version-tag" :data-language-tone="languageTone(archiveLanguage(row))">{{ archiveLanguage(row) }}</span> {{ row.resource.rjcode }} · {{ row.resource.files?.length || 0 }} 个文件{{ row.resource.complete ? '' : ' · 分卷不完整' }}</span>
           <slot name="row-detail" :row="row" />
         </div>
         <slot name="row-action" :row="row"><span class="tree-size text-xs shrink-0">{{ formatSize(row.size_bytes) }}</span></slot>
@@ -69,7 +69,14 @@ function archiveLanguage(row) {
   return languageLabel(label)
 }
 function languageLabel(label) {
-  return ({ CHI_HANS: '简体中文', CHI_HANT: '繁体中文', JPN: '日语', JA_JP: '日语', KO_KR: '韩语', KOR: '韩语', ENG: '英语', EN_US: '英语' })[String(label).toUpperCase()] || label
+  return ({ CHI_HANS: '简体中文', CHI_SIMP: '简体中文', CHI_HANT: '繁体中文', CHI_TRAD: '繁体中文', JPN: '日语', JAP: '日语', JA_JP: '日语', KO_KR: '韩语', KOR: '韩语', ENG: '英语', EN_US: '英语' })[String(label).trim().toUpperCase()] || label
+}
+function languageTone(label) {
+  const value = String(languageLabel(label) || '').trim()
+  if (/简体|简中/.test(value)) return 'simplified'
+  if (/繁体|繁體|繁中/.test(value)) return 'traditional'
+  if (/原作|原版|日语|日語|日文|日本語|^(ja|jp|japanese|original)$/i.test(value)) return 'original'
+  return 'other'
 }
 function iconMeta(row) {
   if (isArchive.value && row.type !== 'dir') return LIBRARY_ENTRY_KIND_META.archive
@@ -86,3 +93,12 @@ function formatSize(bytes) {
   return `${(size / 1024 ** index).toFixed(index ? 2 : 0)} ${units[index]}`
 }
 </script>
+
+<style scoped>
+.version-tag[data-language-tone="simplified"] { --language-tag-text: #2563eb; --language-tag-bg: #3b82f614; --language-tag-border: #3b82f659; }
+.version-tag[data-language-tone="traditional"] { --language-tag-text: #15803d; --language-tag-bg: #22c55e14; --language-tag-border: #22c55e59; }
+.version-tag[data-language-tone="other"] { --language-tag-text: #a16207; --language-tag-bg: #eab30814; --language-tag-border: #eab30866; }
+:global(html.kikoerumanager-dark .version-tag[data-language-tone="simplified"]) { --language-tag-text: #93c5fd; --language-tag-bg: #60a5fa1f; --language-tag-border: #93c5fd66; }
+:global(html.kikoerumanager-dark .version-tag[data-language-tone="traditional"]) { --language-tag-text: #86efac; --language-tag-bg: #4ade801f; --language-tag-border: #86efac66; }
+:global(html.kikoerumanager-dark .version-tag[data-language-tone="other"]) { --language-tag-text: #fde047; --language-tag-bg: #facc151f; --language-tag-border: #fde04766; }
+</style>

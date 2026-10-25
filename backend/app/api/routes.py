@@ -20562,6 +20562,47 @@ async def circle_completion_recent(limit: int = 20):
         raise HTTPException(status_code=500, detail=f"查询最近社团索引失败: {str(exc)}")
 
 
+@app.get("/api/circle-completion/library-locations/{rjcode}")
+def circle_completion_library_locations(rjcode: str):
+    """按当前展示的语言版本查询最新索引，不查关联作品、不扫盘。"""
+    code = str(rjcode or "").strip().upper()
+    if not re.fullmatch(r"RJ\d{4,}", code):
+        raise HTTPException(status_code=400, detail="无效的作品编号")
+    matches = get_library_manager().find_rj_in_ready_index(
+        [code], include_subtitle_state=False,
+    )
+    locations = []
+    roots_by_library = {}
+    candidates = []
+    for hit in matches.get(code, []):
+        path = str(hit.get("path") or "").replace("\\", "/").rstrip("/")
+        library_id = str(hit.get("library_id") or "")
+        if not path or not library_id:
+            continue
+        if re.match(r"^[A-Za-z]:/", path) or path.startswith("//"):
+            path = path.casefold()
+        parts = tuple(part for part in path.split("/") if part)
+        candidates.append((parts, library_id, hit))
+    # 先保留最浅的作品目录，再按路径组件排除继承同一 RJ 的子目录。
+    for parts, library_id, hit in sorted(candidates, key=lambda item: len(item[0])):
+        roots = roots_by_library.setdefault(library_id, set())
+        if any(parts[:depth] in roots for depth in range(1, len(parts) + 1)):
+            continue
+        roots.add(parts)
+        locations.append({
+            key: hit.get(key, "")
+            for key in ("library_id", "library_name", "path", "rjcode")
+        })
+    return JSONResponse(
+        content={
+            "success": True,
+            "rjcode": code,
+            "locations": locations,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/api/circle-completion/work-search")
 async def circle_completion_work_search(
     http_request: Request,
