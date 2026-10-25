@@ -14,6 +14,7 @@
     transfer-mode="upload"
     :merge-tasks="false"
     :compact="true"
+    :enable-task-dismiss="dismissible"
     @update:visible="emit('update:visible', $event)"
     @refresh="emit('refresh')"
     @background="emit('background')"
@@ -21,6 +22,7 @@
     @pause-task="emit('pause-task', $event)"
     @resume-task="emit('resume-task', $event)"
     @cancel-task="emit('cancel-task', $event)"
+    @dismiss-task="emit('dismiss-task', $event)"
   >
     <template v-if="$slots['transfer-content']" #transfer-content><slot name="transfer-content" /></template>
     <template v-if="$slots['task-detail']" #task-detail="scope"><slot name="task-detail" v-bind="scope" /></template>
@@ -32,13 +34,14 @@ import { computed } from 'vue'
 import DownloadTaskWorkbenchDialog from '../download/DownloadTaskWorkbenchDialog.vue'
 
 const props = defineProps({
+  dismissible: { type: Boolean, default: false },
   visible: { type: Boolean, default: false },
   tasks: { type: Array, default: () => [] },
   refreshing: { type: Boolean, default: false },
   showUploadEta: { type: Boolean, default: true },
 })
 
-const emit = defineEmits(['update:visible', 'refresh', 'background', 'close', 'pause-task', 'resume-task', 'cancel-task'])
+const emit = defineEmits(['update:visible', 'refresh', 'background', 'close', 'pause-task', 'resume-task', 'cancel-task', 'dismiss-task'])
 
 function clampActiveUploadPercent(transferredBytes, totalBytes, status, fallbackProgress = 0) {
   const normalizedStatus = String(status || '')
@@ -63,7 +66,9 @@ const mappedTasks = computed(() => {
     const finalOutputPath = String(metadata.final_output_path || task?.output_path || '').trim()
     const uploadRuntime = task?.upload_runtime || {}
     const currentRelativePath = String(uploadRuntime.current_relative_path || '').trim()
-    const currentSpeed = Number(uploadRuntime.frontend_speed_bytes_per_sec || 0)
+    const currentSpeed = task.status === 'processing'
+      ? Number(uploadRuntime.backend_speed_bytes_per_sec ?? uploadRuntime.speed_bytes_per_sec ?? 0)
+      : 0
     const currentUploadedBytes = Number(uploadRuntime.current_file_uploaded_bytes || 0)
     const totalBytes = Number(uploadRuntime.total_bytes || 0)
     const transferredBytes = Number(uploadRuntime.transferred_bytes || 0)
@@ -71,7 +76,9 @@ const mappedTasks = computed(() => {
     const uploadFiles = (Array.isArray(task?.upload_files) ? task.upload_files : []).map((file) => {
       const relativePath = String(file?.relative_path || '').trim()
       const sizeBytes = Number(file?.size || file?.size_bytes || 0)
-      const isCurrent = relativePath && relativePath === currentRelativePath
+      const currentSource = String(uploadRuntime.current_source_dir || '').replaceAll('\\', '/').replace(/\/$/, '')
+      const rowSource = String(file?.source_dir || '').replaceAll('\\', '/').replace(/\/$/, '')
+      const isCurrent = relativePath && relativePath === currentRelativePath && (!currentSource || !rowSource || currentSource === rowSource)
       const isCompleted = String(file?.status || '') === 'completed' || Number(file?.progress || 0) >= 100
       return {
         relative_path: relativePath,
@@ -79,7 +86,9 @@ const mappedTasks = computed(() => {
         size_bytes: sizeBytes,
         progress: isCompleted
           ? 100
-          : Math.max(0, Math.min(100, Number(file?.progress || 0))),
+          : (isCurrent && sizeBytes > 0
+              ? Math.min(99, Math.floor(currentUploadedBytes * 100 / sizeBytes))
+              : Math.max(0, Math.min(99, Number(file?.progress || 0)))),
         uploaded: isCompleted
           ? sizeBytes
           : (isCurrent ? Math.min(sizeBytes, currentUploadedBytes) : Number(file?.uploaded_bytes || 0)),

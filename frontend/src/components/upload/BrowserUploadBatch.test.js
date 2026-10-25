@@ -48,6 +48,13 @@ describe('浏览器上传详情', () => {
     expect(wrapper.findAll('app-lottie-progress-bar-stub')).toHaveLength(2)
     wrapper.unmount()
   })
+	it('本地库存只显示一个写入阶段', () => {
+		const wrapper = mountBatch('receiving', { target_type: 'local', needsSource: false })
+		expect(wrapper.text()).toContain('写入本地库存')
+		expect(wrapper.text()).not.toContain('上传至服务')
+		expect(wrapper.findAll('app-lottie-progress-bar-stub')).toHaveLength(1)
+		wrapper.unmount()
+	})
 
   it('枚举期间不显示确定的百分比', () => {
     const wrapper = mountBatch('receiving', { enumerated: false, discoveredFiles: 17 })

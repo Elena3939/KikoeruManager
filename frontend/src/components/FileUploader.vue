@@ -2,6 +2,7 @@
   <div
     class="group relative w-full cursor-pointer transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
     :class="[
+      { 'upload-source-picker': selectionOnly, 'is-drag-over': selectionOnly && isDragOver },
       compact
         ? ['rounded-[8px]', isDragOver ? 'bg-slate-50' : 'hover:bg-slate-50']
         : [
@@ -23,29 +24,29 @@
     />
     <input v-if="selectionOnly" ref="folderInput" type="file" webkitdirectory multiple class="hidden" @change="handleFileSelect" />
 
-    <div class="flex flex-col gap-2.5">
-      <div class="flex items-center gap-2.5 min-w-0">
+    <div class="flex flex-col gap-2.5" :class="{ 'upload-source-layout': selectionOnly }">
+      <div class="flex items-center gap-2.5 min-w-0" :class="{ 'upload-source-description': selectionOnly }">
         <span
-          class="inline-flex flex-shrink-0 items-center justify-center rounded-[10px] border border-slate-200 bg-white text-blue-600 transition-all duration-300 group-hover:scale-110 group-hover:-rotate-[6deg]"
+          class="upload-source-icon inline-flex flex-shrink-0 items-center justify-center rounded-[10px] border border-slate-200 bg-white text-blue-600 transition-all duration-300 group-hover:scale-110 group-hover:-rotate-[6deg]"
           :class="compact ? 'h-9 w-9' : 'h-10 w-10'"
         >
           <Upload :size="compact ? 16 : 20" :stroke-width="1.7" />
         </span>
         <div class="min-w-0 flex-1">
-          <h3
-            class="m-0 truncate font-bold tracking-tight text-slate-900"
+          <div
+            class="upload-source-title m-0 truncate font-bold tracking-tight text-slate-900"
             :class="compact ? 'text-[11.5px]' : 'text-[13px]'"
           >
             {{ selectionOnly ? '重新选择上传来源' : compact ? '拖拽或点击上传文件' : '拖拽文件到此处或点击上传' }}
-          </h3>
-          <p class="m-0 mt-px text-[10.5px] leading-snug text-slate-500">
+          </div>
+          <p class="upload-source-hint m-0 mt-px text-[10.5px] leading-snug text-slate-500">
             {{ selectionOnly ? '拖入原文件夹或文件，核对后从断点继续' : '支持多种压缩格式，自动识别分卷' }}
           </p>
         </div>
       </div>
-      <div v-if="selectionOnly" class="flex flex-wrap gap-2" @click.stop>
-        <StatefulButton size="sm" tone="neutral" :show-default-icons="false" @click="() => folderInput?.click()"><FolderOpen :size="14" />选择原文件夹</StatefulButton>
-        <StatefulButton size="sm" tone="neutral" :show-default-icons="false" @click="triggerFileInput"><Upload :size="14" />选择原文件</StatefulButton>
+      <div v-if="selectionOnly" class="upload-source-actions flex flex-wrap gap-2" @click.stop>
+        <StatefulButton unstyled class="upload-source-button" :show-default-icons="false" @click="() => folderInput?.click()"><FolderOpen :size="14" />选择原文件夹</StatefulButton>
+        <StatefulButton unstyled class="upload-source-button" :show-default-icons="false" @click="triggerFileInput"><Upload :size="14" />选择原文件</StatefulButton>
       </div>
 
       <div
@@ -343,3 +344,30 @@ async function startUpload() {
   }
 }
 </script>
+
+<style scoped>
+/* 续传选择器也用于 Teleport 弹窗，主题不能依赖 #app 祖先。 */
+.upload-source-picker { --source-button-bg: #fff; --source-button-hover: #eef2f7; --source-button-border: #d4d4d8; --source-button-text: #3f3f46; padding: 10px 12px; background: #f8fafc; border: 1px solid #e4e4e7; border-radius: 8px; }
+.upload-source-picker .upload-source-layout { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; }
+.upload-source-description { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.upload-source-picker .upload-source-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 36px; width: 36px; height: 36px; }
+.upload-source-picker .upload-source-title { display: block; margin: 0; color: #27272a; font-size: 12px; font-weight: 600; line-height: 18px; }
+.upload-source-picker .upload-source-hint { margin: 3px 0 0; color: #71717a; font-size: 11px; line-height: 16px; }
+.upload-source-actions { display: flex; flex: 0 0 auto; align-items: center; flex-wrap: wrap; gap: 8px; }
+.upload-source-actions :deep(button) { white-space: nowrap; }
+.upload-source-actions :deep(.upload-source-button) { display: inline-flex; align-items: center; justify-content: center; min-width: 0; height: 30px; padding: 0 10px; border: 1px solid var(--source-button-border); border-radius: 6px; background: var(--source-button-bg); color: var(--source-button-text); font-size: 11px; font-weight: 500; cursor: pointer; box-shadow: none; outline: none; --tw-ring-shadow: 0 0 #0000; --tw-ring-offset-shadow: 0 0 #0000; }
+.upload-source-actions :deep(.upload-source-button:hover) { background: var(--source-button-hover); transform: translateY(-2px) scale(1.02); box-shadow: none; }
+.upload-source-actions :deep(.upload-source-button:active) { transform: scale(.96); }
+.upload-source-actions :deep(.upload-source-button:focus),
+.upload-source-actions :deep(.upload-source-button:focus-visible) { outline: none; box-shadow: none; }
+:global(html.kikoerumanager-dark .upload-source-picker) { --source-button-bg: rgba(255,255,255,.04); --source-button-hover: rgba(255,255,255,.09); --source-button-border: rgba(255,255,255,.14); --source-button-text: var(--km-dark-text); background: var(--km-dark-elevated); border-color: var(--km-dark-border-soft); }
+:global(html.kikoerumanager-dark .upload-source-picker:hover),
+:global(html.kikoerumanager-dark .upload-source-picker.is-drag-over) { background: var(--km-dark-elevated); border-color: var(--source-button-border); }
+:global(html.kikoerumanager-dark .upload-source-picker .upload-source-icon) { background: var(--km-dark-surface-soft); border-color: var(--km-dark-border-soft); color: #93b4fd; }
+:global(html.kikoerumanager-dark .upload-source-picker .upload-source-title) { color: var(--km-dark-text); }
+:global(html.kikoerumanager-dark .upload-source-picker .upload-source-hint) { color: var(--km-dark-text-muted); }
+@media (max-width: 640px) {
+  .upload-source-picker .upload-source-layout { flex-direction: column; align-items: stretch; gap: 12px; }
+  .upload-source-actions { padding-left: 46px; }
+}
+</style>

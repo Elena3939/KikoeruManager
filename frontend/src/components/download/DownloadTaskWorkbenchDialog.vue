@@ -82,7 +82,7 @@
                 <div class="v1-task-main">
                   <div class="v1-task-head">
                     <div class="v1-task-name-wrap">
-                      <h3 class="v1-task-name">{{ getTaskPrimaryTitle(task) }}</h3>
+                      <h3 class="v1-task-name" :title="getTaskPrimaryTitle(task)">{{ getTaskPrimaryTitle(task) }}</h3>
                       <div v-if="getTaskSecondaryLabel(task)" class="v1-task-rj">{{ getTaskSecondaryLabel(task) }}</div>
                     </div>
 
@@ -124,6 +124,14 @@
                           {{ isTaskRetrying(task) ? '重试中' : '重试失败项' }}
                         </button>
                       </template>
+                      <button
+                        v-if="enableTaskDismiss && ['completed', 'cancelled', 'failed', 'partial_failed'].includes(String(task?.display_status || task?.status || ''))"
+                        type="button"
+                        class="v1-inline-action"
+                        aria-label="关闭任务"
+                        title="从当前工作台关闭，保留任务与文件"
+                        @click="emit('dismiss-task', task)"
+                      ><X :size="13" />关闭</button>
                       <button
                         v-if="enableFailedCancel && ['failed', 'partial_failed'].includes(String(task?.display_status || task?.status || ''))"
                         type="button"
@@ -184,7 +192,7 @@
                 leave-to-class="grid-rows-[0fr] opacity-0"
               >
                 <div v-show="expandedTaskIds.has(task.id)" class="grid overflow-hidden" @click.stop>
-                  <div class="min-h-0">
+                  <div class="min-h-0 min-w-0">
                     <div class="v1-task-detail">
                       <slot v-if="expandedTaskIds.has(task.id)" name="task-detail" :task="task">
                       <div v-if="task.error_message || task?.task_metadata?.failure_reason" class="v1-error-box">
@@ -345,6 +353,7 @@ import AppEmptyState from '../common/AppEmptyState.vue'
 import { getDownloadBatchPercent } from '../../utils/downloadProgress.js'
 
 const props = defineProps({
+  enableTaskDismiss: { type: Boolean, default: true },
   visible: { type: Boolean, default: false },
   tasks: { type: Array, default: () => [] },
   refreshing: { type: Boolean, default: false },
@@ -376,6 +385,7 @@ const emit = defineEmits([
   'pause-task',
   'resume-task',
   'cancel-task',
+  'dismiss-task',
   'load-files',
 ])
 
@@ -582,7 +592,7 @@ function iconToneClass(task) {
   if (tone === 'success') return 'success'
   if (tone === 'warning') return 'warning'
   if (tone === 'danger') return 'danger'
-  if (['pending', 'paused', 'waiting_retry'].includes(String(task?.status || ''))) return 'pending'
+  if (['pending', 'paused', 'waiting_retry', 'cancelled'].includes(String(task?.display_status || task?.status || ''))) return 'pending'
   return 'processing'
 }
 
@@ -592,7 +602,7 @@ function statusToneClass(task) {
   if (tone === 'success') return 'success'
   if (tone === 'warning') return 'warning'
   if (tone === 'danger') return 'danger'
-  if (['pending', 'paused', 'waiting_retry'].includes(String(task?.status || ''))) return 'pending'
+  if (['pending', 'paused', 'waiting_retry', 'cancelled'].includes(String(task?.display_status || task?.status || ''))) return 'pending'
   return 'processing'
 }
 
@@ -621,6 +631,7 @@ function compactFileSizeText(file) {
 }
 
 function getTaskIcon(task) {
+  if (String(task?.display_status || task?.status || '') === 'cancelled') return XCircle
   const tone = getTaskTone(task)
   if (tone === 'success') return CheckCircle2
   if (tone === 'warning' || tone === 'danger') return TriangleAlert
@@ -634,6 +645,7 @@ function getTaskIcon(task) {
 }
 
 function getTaskLottie(task) {
+  if (String(task?.display_status || task?.status || '') === 'cancelled') return ''
   if (isTaskSuccess(task)) return successConfettiAnimation
   const tone = getTaskTone(task)
   if (tone === 'warning' || tone === 'danger') return ''
@@ -653,6 +665,7 @@ function isTaskSuccess(task) {
 
 function getTaskStatusMetaIcon(task) {
   const status = String(task?.display_status || task?.status || '')
+  if (status === 'cancelled') return XCircle
   if (status === 'completed') return CheckCircle2
   if (status === 'failed' || status === 'partial_failed') return TriangleAlert
   if (status === 'paused' || status === 'pending' || status === 'waiting_retry') return Clock3
@@ -1083,12 +1096,10 @@ function getVisibleUploadSpeed(task) {
 
 function getUploadEtaSeconds(task) {
   if (!isUploadMode.value && !isUploadEnabled(task)) return 0
+  if (!isTaskProcessing(task)) return 0
   const runtime = getUploadRuntime(task)
   const runtimeEta = Number(runtime?.eta_seconds || 0)
   if (runtimeEta > 0) return runtimeEta
-  const speed = getVisibleUploadSpeed(task)
-  const remainingBytes = getUploadRemainingBytes(task)
-  if (speed > 0 && remainingBytes > 0) return Math.ceil(remainingBytes / speed)
   return 0
 }
 
@@ -1184,7 +1195,7 @@ function hasTaskFailures(task) {
 
 function getDownloadTaskStatusLabel(task) {
   const status = String(task?.display_status || task?.status || '')
-  const map = { pending: '等待中', processing: '处理中', completed: '已完成', partial_failed: '部分失败', failed: '失败', paused: '已暂停', waiting_retry: '等待重试' }
+  const map = { pending: '等待中', processing: '处理中', completed: '已完成', cancelled: '已取消', partial_failed: '部分失败', failed: '失败', paused: '已暂停', waiting_retry: '等待重试' }
   if (status === 'completed' && isUploadEnabled(task)) return '已上传 / 已入库'
   return map[status] || (status || '未知')
 }
@@ -1227,6 +1238,7 @@ function getTaskTone(task) {
 
 function getTaskStageLabel(task) {
   const status = String(task?.display_status || task?.status || '')
+  if (status === 'cancelled') return '已取消'
   if (status === 'waiting_retry') return '等待重试'
   if (status === 'pending') return isUploadMode.value ? '等待上传' : '等待开始'
   if (status === 'paused') return '已暂停'
@@ -1293,7 +1305,7 @@ function getTaskOverallPercent(task) {
 
 function shouldShowSummaryProgress(task) {
   const status = String(task?.display_status || task?.status || '')
-  return !(status === 'completed' && getTaskOverallPercent(task) >= 100)
+  return status !== 'cancelled' && !(status === 'completed' && getTaskOverallPercent(task) >= 100)
 }
 
 function getPrimaryFileProgressLabel(task) {
@@ -1363,6 +1375,8 @@ function getFinalOutputDisplay(task) {
 
 function canRetryDownloadTask(task) {
   if (isUploadMode.value) return false
+  const status = String(task?.display_status || task?.status || '')
+  if (['failed', 'partial_failed'].includes(status)) return true
   const domain = String(task?.task_domain || task?.task_metadata?.task_domain || task?.task_metadata?.download_mode || '').trim()
   if (domain === 'http_download' || domain === 'http' || domain === 'baidu_netdisk') {
     return ['failed', 'partial_failed', 'completed'].includes(String(task?.display_status || task?.status || '')) && hasTaskFailures(task)
@@ -1822,7 +1836,7 @@ function buildUnifiedFileRows(task) {
 .v1-shell.is-compact .v1-task-icon-fallback { font-size: 18px; }
 .v1-shell.is-compact .v1-task-icon-lottie { width: 48px; height: 48px; filter: drop-shadow(0 6px 14px rgba(24,24,27,.1)); }
 .v1-shell.is-compact .v1-task-icon-lottie.is-upload-anim { height: auto; aspect-ratio: 4 / 3; }
-.v1-shell.is-compact .v1-task-name { font-size: 13px; line-height: 1.15; }
+.v1-shell.is-compact .v1-task-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 1.15; }
 .v1-shell.is-compact .v1-task-rj { margin-top: 2px; font-size: 11px; }
 .v1-shell.is-compact .v1-task-meta { margin-top: 4px; gap: 8px; font-size: 11px; }
 .v1-shell.is-compact .v1-summary-progress { margin-top: 8px; gap: 8px; }

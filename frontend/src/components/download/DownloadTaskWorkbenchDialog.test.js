@@ -52,3 +52,20 @@ describe('HTTP 下载失败任务取消', () => {
     wrapper.unmount()
   })
 })
+describe('下载失败操作', () => {
+  it.each(['failed', 'partial_failed'])('%s 没有会话和文件明细也能重试和关闭', async status => {
+    const task = { id: 'download-one', status, error_message: '资源解析失败', progress: 0 }
+    const wrapper = shallowMount(DownloadTaskWorkbenchDialog, {
+      props: { visible: true, tasks: [task], mergeTasks: false },
+      global: { stubs: { Teleport: true, DotLottieVue: true, AppLottieProgressBar: true } },
+    })
+    const retry = wrapper.findAll('button').find(button => button.text().includes('重试失败项'))
+    expect(retry).toBeDefined()
+    await retry.trigger('click')
+    await wrapper.get('[aria-label=关闭任务]').trigger('click')
+    expect(wrapper.emitted('retry-task')[0][0].id).toBe(task.id)
+    expect(wrapper.emitted('dismiss-task')[0][0].id).toBe(task.id)
+    expect(wrapper.emitted('cancel-task')).toBeUndefined()
+    wrapper.unmount()
+  })
+})

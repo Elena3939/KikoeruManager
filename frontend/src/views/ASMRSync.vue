@@ -149,6 +149,7 @@
       @pause-task="pauseHttpDownloadTask"
       @resume-task="resumeHttpDownloadTask"
       @cancel-task="cancelHttpDownloadTask"
+      @dismiss-task="dismissHttpWorkbenchTask"
       @load-files="task => loadFullWorkbenchTaskFiles(task, httpDownloadWorkbenchTasks)"
     />
 
@@ -171,6 +172,7 @@
       @pause-task="pauseBaiduNetdiskTask"
       @resume-task="resumeBaiduNetdiskTask"
       @cancel-task="cancelBaiduNetdiskTask"
+      @dismiss-task="dismissBaiduWorkbenchTask"
       @load-files="task => loadFullWorkbenchTaskFiles(task, baiduNetdiskWorkbenchTasks)"
     />
 
@@ -235,6 +237,7 @@
       @pause-task="handlePauseEnhancedDownloadTask"
       @resume-task="handleResumeEnhancedDownloadTask"
       @cancel-task="handleCancelEnhancedDownloadTask"
+      @dismiss-task="dismissEnhancedWorkbenchTask"
       @load-files="task => loadFullWorkbenchTaskFiles(task, enhancedDownloadWorkbenchTasks)"
     />
 
@@ -608,6 +611,7 @@
 </template>
 
 <script setup>
+import { usePersistentTaskWorkbench, dismissPersistentTaskCard, dismissWorkbenchTask } from '../composables/usePersistentTaskCards'
 import { getAsmrDownloadSessionId, getDownloadEngineTaskId } from '../utils/downloadTaskIdentity.js'
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -975,7 +979,7 @@ const enhancedBackgroundFailed = computed(() => (
   && enhancedPendingTasks.value.length === 0
 ))
 const enhancedBackgroundMetaText = computed(() => backgroundDownloadMetaText(enhancedBackgroundPercent.value, enhancedProcessingTasks.value, enhancedActiveBackgroundTask.value, enhancedBackgroundFailed.value))
-const enhancedDownloadBackgroundCardProps = computed(() => ({
+const enhancedDownloadBackgroundCardProps = computed(() => ({ taskSource: 'asmr', taskIds: enhancedDownloadWorkbenchTaskIds.value,
   kind: 'asmr',
   tone: enhancedBackgroundFailed.value ? 'amber' : 'violet',
   title: enhancedBackgroundCompleted.value
@@ -1030,7 +1034,7 @@ const httpDownloadBackgroundFailed = computed(() => (
   && httpDownloadPendingTasks.value.length === 0
 ))
 const httpDownloadBackgroundMetaText = computed(() => backgroundDownloadMetaText(httpDownloadBackgroundPercent.value, httpDownloadProcessingTasks.value, httpDownloadActiveBackgroundTask.value, httpDownloadBackgroundFailed.value))
-const httpDownloadBackgroundCardProps = computed(() => ({
+const httpDownloadBackgroundCardProps = computed(() => ({ positionKey: '/asmr-sync:http:download', taskSource: 'http', taskIds: httpDownloadWorkbenchTaskIds.value,
   kind: 'download',
   tone: httpDownloadBackgroundFailed.value ? 'amber' : 'blue',
   title: httpDownloadBackgroundCompleted.value
@@ -1083,7 +1087,7 @@ const baiduNetdiskBackgroundFailed = computed(() => (
   && baiduNetdiskPendingTasks.value.length === 0
 ))
 const baiduNetdiskBackgroundMetaText = computed(() => backgroundDownloadMetaText(baiduNetdiskBackgroundPercent.value, baiduNetdiskProcessingTasks.value, baiduNetdiskActiveBackgroundTask.value, baiduNetdiskBackgroundFailed.value))
-const baiduNetdiskBackgroundCardProps = computed(() => ({
+const baiduNetdiskBackgroundCardProps = computed(() => ({ positionKey: '/asmr-sync:baidu:download', taskSource: 'baidu', taskIds: baiduNetdiskWorkbenchTaskIds.value,
   kind: 'download',
   tone: baiduNetdiskBackgroundFailed.value ? 'amber' : 'blue',
   title: baiduNetdiskBackgroundCompleted.value
@@ -1568,7 +1572,20 @@ function resumeEnhancedDownloadWorkbench() {
 }
 
 function closeEnhancedDownloadWorkbench() {
+  dismissPersistentTaskCard('/asmr-sync:asmr:asmr')
   clearEnhancedDownloadWorkbenchState()
+}
+function dismissEnhancedWorkbenchTask(task) {
+  dismissWorkbenchTask(task, enhancedDownloadWorkbenchTaskIds, enhancedDownloadWorkbenchTasks, '/asmr-sync:asmr:asmr', () => enhancedDownloadWorkbenchRequestGuard.invalidate())
+  if (!enhancedDownloadWorkbenchTaskIds.value.length) clearEnhancedDownloadWorkbenchState()
+}
+function dismissHttpWorkbenchTask(task) {
+  dismissWorkbenchTask(task, httpDownloadWorkbenchTaskIds, httpDownloadWorkbenchTasks, '/asmr-sync:http:download', () => httpDownloadWorkbenchRequestGuard.invalidate())
+  if (!httpDownloadWorkbenchTaskIds.value.length) clearHttpDownloadWorkbenchState()
+}
+function dismissBaiduWorkbenchTask(task) {
+  dismissWorkbenchTask(task, baiduNetdiskWorkbenchTaskIds, baiduNetdiskWorkbenchTasks, '/asmr-sync:baidu:download', () => baiduNetdiskWorkbenchRequestGuard.invalidate())
+  if (!baiduNetdiskWorkbenchTaskIds.value.length) clearBaiduNetdiskWorkbenchState()
 }
 
 function handleEnhancedDownloadBackgroundCardAction(action) {
@@ -1695,6 +1712,7 @@ function resumeHttpDownloadWorkbench() {
 }
 
 function closeHttpDownloadWorkbench() {
+  dismissPersistentTaskCard('/asmr-sync:http:download')
   clearHttpDownloadWorkbenchState()
 }
 
@@ -1937,6 +1955,7 @@ function resumeBaiduNetdiskWorkbench() {
 }
 
 function closeBaiduNetdiskWorkbench() {
+  dismissPersistentTaskCard('/asmr-sync:baidu:download')
   clearBaiduNetdiskWorkbenchState()
 }
 
@@ -2772,6 +2791,9 @@ watch(activeWorkspaceTab, (value) => {
   if (currentTab === nextTab) return
   router.replace({ path: route.path, query: { ...route.query, tab: nextTab } }).catch(() => {})
 })
+usePersistentTaskWorkbench(route, 'asmr', enhancedDownloadWorkbenchTaskIds, enhancedDownloadWorkbenchVisible, enhancedDownloadWorkbenchBackgroundActive, refreshEnhancedDownloadWorkbench, { tasks: enhancedDownloadWorkbenchTasks, cardProps: enhancedDownloadBackgroundCardProps })
+usePersistentTaskWorkbench(route, 'http', httpDownloadWorkbenchTaskIds, httpDownloadWorkbenchVisible, httpDownloadWorkbenchBackgroundActive, refreshHttpDownloadWorkbench, { tasks: httpDownloadWorkbenchTasks, cardProps: httpDownloadBackgroundCardProps })
+usePersistentTaskWorkbench(route, 'baidu', baiduNetdiskWorkbenchTaskIds, baiduNetdiskWorkbenchVisible, baiduNetdiskWorkbenchBackgroundActive, refreshBaiduNetdiskWorkbench, { tasks: baiduNetdiskWorkbenchTasks, cardProps: baiduNetdiskBackgroundCardProps })
 </script>
 
 <style scoped>
@@ -3153,7 +3175,7 @@ button:disabled { cursor: not-allowed; }
   right: 20px;
   bottom: 20px;
   z-index: 2120;
-  width: min(92vw, 440px);
+  width: min(480px, calc(100vw - 24px));
   perspective: 1200px;
   pointer-events: auto;
 }
@@ -3167,9 +3189,11 @@ button:disabled { cursor: not-allowed; }
 }
 
 .asmr-floating-pager-controls {
-  position: absolute;
+  position: relative;
   right: 12px;
-  top: -34px;
+  top: auto;
+  width: fit-content;
+  margin: 0 0 8px auto;
   z-index: 3;
   display: inline-flex;
   align-items: center;

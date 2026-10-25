@@ -1255,190 +1255,52 @@
 
 
 
-    <div v-if="showUploadBackgroundCard" class="floating-card floating-card-upload">
-
-      <div class="upload-floating-head">
-
-        <div class="flex items-center gap-2.5 min-w-0 pr-2">
-
-          <div class="floating-hero-icon">
-            <DotLottieVue
-              :src="uploadToCloudAnimation"
-              autoplay
-              loop
-              background="transparent"
-              class="floating-hero-lottie"
-            />
-          </div>
-
-          <div class="min-w-0">
-
-            <div class="flex items-center gap-1.5 text-[13px] font-semibold text-slate-900 leading-tight">
-              <span class="upload-floating-title">{{ uploadBackgroundTitleText }}</span>
-              <span v-if="trackedUploadTasks.length" class="floating-chip floating-chip-title">上传 {{ formatFileSize(uploadBackgroundTotalBytes) }}</span>
-            </div>
-
-            <div class="mt-0.5 text-[11px] text-slate-500 leading-snug break-all">
-              {{ activeBackgroundUploadTask ? `上传到目录: ${getUploadBackgroundTargetLabel(activeBackgroundUploadTask)}` : '上传到目录: -' }}
-            </div>
-
-            <div class="mt-1 text-[11px] font-medium text-slate-400 leading-none">
-              预计剩余: {{ uploadBackgroundEtaText }}
-            </div>
-
-          </div>
-
-        </div>
-
-      </div>
-
-      <DotLottieVue
-        v-if="uploadBackgroundCompleted"
-        ref="uploadProgressLottieRef"
-        :src="uploadBackgroundStatusAnimation"
-        :autoplay="uploadBackgroundAnimationAutoplay"
-        :loop="uploadBackgroundAnimationLoop"
-        :render-config="{ autoResize: true, devicePixelRatio: 2 }"
-        background="transparent"
-        :class="[
-          'floating-progress-lottie',
-          'floating-progress-lottie-success'
-        ]"
-      />
-
-      <DotLottieVue
-        v-else
-        ref="uploadProgressLottieRef"
-        :key="uploadBackgroundProgressLottieKey"
-        :src="uploadProgressBarAnimation"
-        :autoplay="false"
-        :loop="false"
-        :render-config="{ autoResize: true, devicePixelRatio: 2 }"
-        background="transparent"
-        class="floating-progress-lottie floating-progress-lottie-progress"
-      />
-
-      <div class="floating-chip-row-compact">
-
-        <span class="floating-chip"><IconRefreshCw class="floating-chip-icon chip-blue" :stroke-width="2.2" />进行中 <b>{{ processingUploadTasks.length }}</b></span>
-
-        <span class="floating-chip"><IconListTodo class="floating-chip-icon chip-amber" :stroke-width="2.2" />等待中 <b>{{ pendingUploadTasks.length }}</b></span>
-
-        <span class="floating-chip"><IconCheckSquare class="floating-chip-icon chip-emerald" :stroke-width="2.2" />完成 <b>{{ completedUploadTasks.length }}</b></span>
-
-        <span class="floating-chip" :class="{ 'floating-chip-danger': failedUploadTasks.length > 0 }"><IconX class="floating-chip-icon chip-rose" :stroke-width="2.2" />失败 <b>{{ failedUploadTasks.length }}</b></span>
-
-        <span class="floating-chip"><IconBarChart class="floating-chip-icon chip-indigo" :stroke-width="2.2" />{{ formatSpeed(uploadBackgroundSpeedValue) }}</span>
-
-      </div>
-
-      <div v-if="uploadBackgroundDetailText" class="rounded-xl bg-slate-50 border border-slate-100/80 px-3 py-2 text-[11px] leading-relaxed text-slate-500 line-clamp-2">
-
-        {{ uploadBackgroundDetailText }}
-
-      </div>
-
-      <div class="flex items-center justify-end gap-2 pt-0.5">
-
-        <button type="button" class="floating-action-btn" @click="closeUploadWorkbench">关闭</button>
-
-        <button type="button" class="floating-action-btn floating-action-btn-primary" @click="resumeUploadWorkbenchFromBackground">
-
-          <IconUpload class="h-3 w-3" :stroke-width="2.3" />恢复工作台
-
-        </button>
-
-      </div>
-
-    </div>
-
-
+    <BackgroundFloatingCard
+      v-if="showUploadBackgroundCard"
+      position-key="library-upload" task-source="upload" :task-ids="trackedUploadTaskIds"
+      kind="upload"
+      :title="uploadBackgroundTitleText"
+      :subtitle="activeBackgroundUploadTask ? getUploadBackgroundTargetLabel(activeBackgroundUploadTask) : ''"
+      :badge-text="formatFileSize(uploadBackgroundTotalBytes)"
+      :meta-text="uploadBackgroundEtaText"
+      :percentage="uploadBackgroundPercent"
+      :completed="uploadBackgroundCompleted"
+      :detail-text="uploadBackgroundDetailText"
+      :metrics="[
+        { key: 'processing', label: '进行中', value: processingUploadTasks.length },
+        { key: 'pending', label: '等待中', value: pendingUploadTasks.length },
+        { key: 'completed', label: '完成', value: completedUploadTasks.length },
+        { key: 'failed', label: '失败', value: failedUploadTasks.length },
+        { key: 'speed', label: '速度', value: formatSpeed(uploadBackgroundSpeedValue) }
+      ]"
+      :actions="[{ key: 'close', label: '关闭' }, { key: 'resume', label: '恢复工作台' }]"
+      @action="$event === 'resume' ? resumeUploadWorkbenchFromBackground() : closeUploadWorkbench()"
+    />
 
     <Teleport to="body">
       <div v-if="subtitleDialogVisible" class="subtitle-workbench-overlay" role="presentation">
 
-      <div class="subtitle-workbench-dialog" role="dialog" aria-modal="true" aria-labelledby="subtitle-workbench-title">
+      <div class="subtitle-workbench-dialog" role="dialog" aria-modal="true" aria-label="RJ 字幕抓取工作台">
 
-      <div class="subtitle-workbench-shell relative flex w-full min-h-[78vh] max-h-[92vh] flex-col overflow-hidden rounded-[20px] border border-slate-200/80 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.1)]">
-
-        <header class="subtitle-workbench-header relative flex items-center justify-between gap-4 px-6 py-4 flex-shrink-0 border-b border-slate-100 bg-white">
-
-          <div class="flex items-center gap-3.5 min-w-0">
-
-            <div class="subtitle-workbench-brand group flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-[12px] border border-slate-200 bg-slate-900 text-white shadow-[0_4px_12px_rgba(15,23,42,0.18)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:shadow-[0_8px_20px_rgba(15,23,42,0.28)]">
-
-              <Captions class="h-[18px] w-[18px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-[-4deg]" :stroke-width="2.1" />
-
-            </div>
-
-            <div class="min-w-0">
-
-              <div class="flex items-center gap-2">
-
-                <h2 id="subtitle-workbench-title" class="text-[17px] font-semibold tracking-[-0.02em] leading-tight text-slate-900">RJ 字幕抓取工作台</h2>
-
-                <span class="inline-flex items-center gap-1 rounded-full border border-emerald-200/70 bg-emerald-50 px-2 py-0.5 text-[10.5px] font-medium text-emerald-700">
-
-                  <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>Live
-
-                </span>
-
-              </div>
-
-              <p class="mt-0.5 text-[11.5px] leading-snug text-slate-500 truncate">沉浸式单舞台工作台，焦点只保留当前阶段、当前任务和当前操作。</p>
-
-            </div>
-
-          </div>
-
-          <div class="flex items-center gap-2 flex-shrink-0">
-
-            <button
-
-              type="button"
-
-              class="subtitle-workbench-btn group inline-flex items-center gap-1.5 rounded-[10px] border border-slate-200 bg-white px-3.5 py-2 text-[12.5px] font-medium text-slate-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 hover:shadow-[0_8px_16px_rgba(15,23,42,0.08)] active:translate-y-0 active:scale-[0.96]"
-
-              @click="hideSubtitleTaskPanelToBackground"
-
-            >
-
-              <Minimize2 class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-[-8deg]" :stroke-width="2.2" />
-
-              <span>隐藏到后台</span>
-
-            </button>
-
-            <button
-
-              type="button"
-
-              class="subtitle-workbench-btn subtitle-workbench-btn-close group inline-flex items-center gap-1.5 rounded-[10px] border border-slate-200/70 bg-slate-50/70 px-3.5 py-2 text-[12.5px] font-medium text-slate-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700 hover:shadow-[0_8px_16px_rgba(0,0,0,0.08)] active:translate-y-0 active:scale-[0.96]"
-
-              @click="closeSubtitleTaskPanel"
-
-            >
-
-              <IconX class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-90" :stroke-width="2.4" />
-
-              <span>关闭</span>
-
-            </button>
-
-          </div>
-
-        </header>
-
-        <div class="subtitle-workbench-body flex flex-1 min-h-0 flex-col overflow-hidden bg-gradient-to-b from-[#fafcff] via-white to-[#f6f8ff] p-3">
-
-          <SubtitleWorkbenchStage :ctx="subtitleWorkbenchStageCtx" />
-
-        </div>
+      <SubtitleWorkbenchShell
+        title="RJ 字幕抓取工作台"
+        :focus-code="activeSubtitleInspectTask ? getTaskDisplayRJCode(activeSubtitleInspectTask) : '等待任务'"
+        :focus-name="activeSubtitleInspectTask ? (activeSubtitleInspectTask.folder_name || getFileName(activeSubtitleInspectTask.folder_path)) : '扫描 RJ 目录，抓取字幕后筛选、配对并导入'"
+      >
+        <template #actions>
+          <button type="button" class="siw-action-btn" @click="hideSubtitleTaskPanelToBackground">
+            <Minimize2 class="siw-action-icon" :stroke-width="2.3" />
+            <span>后台</span>
+          </button>
+          <button type="button" class="siw-action-btn is-close" @click="closeSubtitleTaskPanel">
+            <IconX class="siw-action-icon" :stroke-width="2.4" />
+            <span>关闭</span>
+          </button>
+        </template>
+        <SubtitleWorkbenchStage :ctx="subtitleWorkbenchStageCtx" />
+      </SubtitleWorkbenchShell>
 
       </div>
-
-      </div>
-
       </div>
     </Teleport>
 
@@ -1928,7 +1790,7 @@
     <Transition name="floating-card">
       <BackgroundFloatingCard
         v-if="showSubtitleBackgroundCard"
-        v-bind="subtitleBackgroundCardProps"
+        v-bind="subtitleBackgroundCardProps" task-source="subtitle" :task-ids="subtitleTasks.map(task => String(task.id))"
         @action="handleSubtitleBackgroundCardAction"
       />
     </Transition>
@@ -1958,6 +1820,8 @@
 
 
 <script setup>
+import { usePersistentTaskWorkbench } from '../composables/usePersistentTaskCards'
+import { getBackendUploadEta, mergeUploadTaskSnapshot } from '../utils/uploadTaskSnapshot'
 
 import { useLibraryExternalUpload } from '../composables/useLibraryExternalUpload'
 
@@ -2111,9 +1975,6 @@ import AppPageHeader from '../components/common/AppPageHeader.vue'
 import clipboardIconAnimation from '../assets/anime/Clipboard.lottie'
 
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
-import uploadToCloudAnimation from '../assets/anime/Uploading to cloud.lottie'
-import uploadProgressBarAnimation from '../assets/anime/Loading Bar  Progress Bar.lottie'
-import successConfettiAnimation from '../assets/anime/success confetti.lottie'
 
 import ServerUploadPreviewDialog from '../components/common/ServerUploadPreviewDialog.vue'
 
@@ -2143,6 +2004,7 @@ import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.
 
 import LibrarySearchOverlay from '../components/library/LibrarySearchOverlay.vue'
 
+import SubtitleWorkbenchShell from '../components/library/subtitle-workbench/SubtitleWorkbenchShell.vue'
 import SubtitleWorkbenchStage from '../components/library/subtitle-workbench/SubtitleWorkbenchStage.vue'
 
 import { useViewport } from '../composables/useViewport'
@@ -3194,7 +3056,6 @@ const LOCAL_UPLOAD_WORKBENCH_KEY = 'kikoerumanager.library.uploadWorkbench'
 
 let uploadWorkbenchTimer = null
 
-let uploadSpeedSamples = new Map()
 
 const processingUploadTasks = computed(() => trackedUploadTasks.value.filter(task => String(task?.status || '') === 'processing'))
 
@@ -3204,7 +3065,7 @@ const completedUploadTasks = computed(() => trackedUploadTasks.value.filter(task
 
 const failedUploadTasks = computed(() => trackedUploadTasks.value.filter(task => String(task?.status || '') === 'failed'))
 
-const showUploadBackgroundCard = computed(() => uploadWorkbenchBackgroundActive.value && !uploadWorkbenchVisible.value && trackedUploadTaskIds.value.length > 0)
+const showUploadBackgroundCard = computed(() => uploadWorkbenchBackgroundActive.value && !uploadWorkbenchVisible.value && trackedUploadTaskIds.value.length > 0 && trackedUploadTasks.value.length > 0)
 
 const activeBackgroundUploadTask = computed(() => processingUploadTasks.value[0] || pendingUploadTasks.value[0] || trackedUploadTasks.value[0] || null)
 
@@ -3277,14 +3138,6 @@ const uploadBackgroundDetailText = computed(() => {
   return String(activeBackgroundUploadTask.value?.current_step || '').trim()
 })
 
-const uploadBackgroundStatusAnimation = computed(() => (
-  uploadBackgroundCompleted.value ? successConfettiAnimation : uploadProgressBarAnimation
-))
-
-const uploadBackgroundAnimationAutoplay = computed(() => uploadBackgroundCompleted.value)
-
-const uploadBackgroundAnimationLoop = computed(() => uploadBackgroundCompleted.value)
-
 const uploadBackgroundSpeedText = computed(() => {
   const speed = uploadBackgroundSpeedValue.value
   if (speed > 0) return formatSpeed(speed)
@@ -3294,22 +3147,17 @@ const uploadBackgroundSpeedText = computed(() => {
 
 const uploadBackgroundEtaText = computed(() => {
   if (uploadBackgroundCompleted.value) return '完成'
-  const speed = Math.max(0, Number(uploadBackgroundSpeedValue.value || 0))
-  const remaining = Math.max(0, Number(uploadBackgroundRemainingBytes.value || 0))
-  if (speed > 0 && remaining > 0) {
-    return formatEtaSeconds(Math.ceil(remaining / speed))
-  }
-  if (remaining <= 0 && trackedUploadTasks.value.length > 0) return '已接近完成'
+  const seconds = getBackendUploadEta(trackedUploadTasks.value)
+  if (seconds !== null) return pendingUploadTasks.value.length > 0 ? `当前任务 ${formatEtaSeconds(seconds)}` : formatEtaSeconds(seconds)
+  if (processingUploadTasks.value.some(task => task.upload_runtime?.phase === 'verifying')) return '正在确认远端文件'
   return '—'
 })
 
 const uploadBackgroundPercent = computed(() => {
   const total = Number(uploadBackgroundAggregate.value.totalBytes || 0)
   const transferred = Number(uploadBackgroundAggregate.value.transferredBytes || 0)
-  const remaining = Math.max(0, total - transferred)
-  const hasProcessing = processingUploadTasks.value.length > 0
-
   let percent = 0
+  if (uploadBackgroundCompleted.value) return 100
   if (total > 0) {
     percent = Math.max(0, Math.min(100, Math.floor((transferred / total) * 100)))
   } else if (trackedUploadTasks.value.length > 0) {
@@ -3317,7 +3165,7 @@ const uploadBackgroundPercent = computed(() => {
     percent = Math.floor(totalProgress / Math.max(trackedUploadTasks.value.length, 1))
   }
 
-  if (!uploadBackgroundCompleted.value && hasProcessing && remaining > 0) {
+  if (!uploadBackgroundCompleted.value) {
     return Math.min(percent, 99)
   }
 
@@ -3325,127 +3173,8 @@ const uploadBackgroundPercent = computed(() => {
 
 })
 
-const uploadProgressLottieRef = ref(null)
-const uploadProgressLottieInstance = ref(null)
-const uploadBackgroundProgressLottieKey = computed(() => `${showUploadBackgroundCard.value ? 'visible' : 'hidden'}-${trackedUploadTaskIds.value.join(',')}`)
-const uploadProgressAnimatedFrame = ref(0)
-const uploadProgressTargetFrame = ref(0)
-let uploadProgressAnimationRaf = null
 
-function cancelUploadProgressFrameAnimation() {
-  if (uploadProgressAnimationRaf) {
-    window.cancelAnimationFrame(uploadProgressAnimationRaf)
-    uploadProgressAnimationRaf = null
-  }
-}
 
-function getUploadProgressLottieInstance() {
-  return uploadProgressLottieRef.value?.getDotLottieInstance?.() || null
-}
-
-function unbindUploadProgressLottieListeners() {
-  cancelUploadProgressFrameAnimation()
-  const instance = uploadProgressLottieInstance.value
-  if (!instance) return
-  instance.removeEventListener?.('ready', syncUploadProgressLottieFrame)
-  instance.removeEventListener?.('load', syncUploadProgressLottieFrame)
-  uploadProgressLottieInstance.value = null
-}
-
-function bindUploadProgressLottieListeners() {
-  const instance = getUploadProgressLottieInstance()
-  if (!instance || uploadProgressLottieInstance.value === instance) return
-  cancelUploadProgressFrameAnimation()
-  unbindUploadProgressLottieListeners()
-  uploadProgressLottieInstance.value = instance
-  instance.addEventListener?.('ready', syncUploadProgressLottieFrame)
-  instance.addEventListener?.('load', syncUploadProgressLottieFrame)
-}
-
-async function syncUploadProgressLottieFrame() {
-  if (uploadBackgroundCompleted.value) return
-  const instance = getUploadProgressLottieInstance()
-  if (!instance) return
-
-  const percent = Math.max(0, Math.min(99, Number(uploadBackgroundPercent.value || 0)))
-  const totalFrames = Number(instance.totalFrames || instance.total_frames || 0)
-  if (!Number.isFinite(totalFrames) || totalFrames <= 1) return
-
-  const frame = Math.floor((percent / 100) * (totalFrames - 1))
-  uploadProgressTargetFrame.value = frame
-  try {
-    await instance.setLoop?.(false)
-    await instance.pause?.()
-    if (!Number.isFinite(uploadProgressAnimatedFrame.value)) {
-      uploadProgressAnimatedFrame.value = frame
-    }
-    if (Math.abs(uploadProgressAnimatedFrame.value - frame) < 0.5) {
-      uploadProgressAnimatedFrame.value = frame
-      await instance.setFrame?.(frame)
-      return
-    }
-    cancelUploadProgressFrameAnimation()
-    const animate = async () => {
-      const nextFrame = uploadProgressAnimatedFrame.value + ((uploadProgressTargetFrame.value - uploadProgressAnimatedFrame.value) * 0.18)
-      if (Math.abs(uploadProgressTargetFrame.value - nextFrame) < 0.35) {
-        uploadProgressAnimatedFrame.value = uploadProgressTargetFrame.value
-        uploadProgressAnimationRaf = null
-        try {
-          await instance.setFrame?.(Math.round(uploadProgressAnimatedFrame.value))
-        } catch {
-          // 忽略动画实例尚未完全就绪时的瞬时错误
-        }
-        return
-      }
-      uploadProgressAnimatedFrame.value = nextFrame
-      try {
-        await instance.setFrame?.(Math.round(uploadProgressAnimatedFrame.value))
-      } catch {
-        uploadProgressAnimationRaf = null
-        return
-      }
-      uploadProgressAnimationRaf = window.requestAnimationFrame(() => {
-        animate()
-      })
-    }
-    uploadProgressAnimationRaf = window.requestAnimationFrame(() => {
-      animate()
-    })
-  } catch {
-    // 忽略动画实例尚未完全就绪时的瞬时错误
-  }
-}
-
-watch(uploadBackgroundPercent, () => {
-  syncUploadProgressLottieFrame()
-})
-
-watch(uploadBackgroundCompleted, () => {
-  if (uploadBackgroundCompleted.value) {
-    cancelUploadProgressFrameAnimation()
-  }
-  nextTick(() => {
-    bindUploadProgressLottieListeners()
-    syncUploadProgressLottieFrame()
-  })
-})
-
-watch(showUploadBackgroundCard, visible => {
-  if (!visible) return
-  nextTick(() => {
-    bindUploadProgressLottieListeners()
-    syncUploadProgressLottieFrame()
-  })
-})
-
-watch(uploadProgressLottieRef, () => {
-  uploadProgressAnimatedFrame.value = 0
-  uploadProgressTargetFrame.value = 0
-  nextTick(() => {
-    bindUploadProgressLottieListeners()
-    syncUploadProgressLottieFrame()
-  })
-})
 
 const mappedPathDialogVisible = ref(false)
 
@@ -8126,6 +7855,8 @@ onMounted(async () => {
 
   libraryViewActive = true
 
+  await consumeLibraryLocationRoute()
+
   await consumeSubtitleRouteFocus()
 
   await consumeSubtitleBatchSelectionRoute()
@@ -8136,7 +7867,7 @@ onMounted(async () => {
 
 onActivated(async () => {
 
-  if (libraryViewActive) return
+  if (!libraryInitialized || libraryViewActive) return
 
   libraryViewActive = true
 
@@ -8145,6 +7876,8 @@ onActivated(async () => {
   await nextTick()
 
   bindPathBreadcrumbResizeObserver()
+
+  await consumeLibraryLocationRoute()
 
   await consumeSubtitleRouteFocus()
 
@@ -8200,8 +7933,8 @@ onDeactivated(() => {
 
   }
 
-  cancelUploadProgressFrameAnimation()
-  unbindUploadProgressLottieListeners()
+
+
 
 })
 
@@ -8295,7 +8028,7 @@ onBeforeUnmount(() => {
 
   }
 
-  unbindUploadProgressLottieListeners()
+
 
 })
 
@@ -8308,6 +8041,8 @@ watch(uploadWorkbenchVisible, () => {
   if (uploadWorkbenchVisible.value) {
 
     clearListPoll()
+    // SSE 只推送运行态摘要，展开时必须单独补取文件明细。
+    void refreshUploadWorkbench({ silent: true, compact: false })
 
   }
 
@@ -8326,6 +8061,21 @@ watch(uploadWorkbenchBackgroundActive, () => {
   if (uploadWorkbenchVisible.value || uploadWorkbenchBackgroundActive.value) startUploadWorkbenchPolling()
 
   else stopUploadWorkbenchPolling()
+
+})
+
+
+watch(() => realtimeEvents.connected.value, (connected) => {
+
+  if (connected) {
+
+    stopUploadWorkbenchPolling()
+
+    return
+
+  }
+
+  if (uploadWorkbenchVisible.value || uploadWorkbenchBackgroundActive.value) startUploadWorkbenchPolling()
 
 })
 
@@ -8725,6 +8475,8 @@ watch(
   async () => {
 
     if (!libraryViewActive) return
+
+    await consumeLibraryLocationRoute()
 
     await consumeSubtitleRouteFocus()
 
@@ -12380,6 +12132,11 @@ function startUploadWorkbenchPolling () {
 
   if (!trackedUploadTaskIds.value.length) return
 
+  if (realtimeEvents.connected.value) {
+    stopUploadWorkbenchPolling()
+    return
+  }
+
   stopUploadWorkbenchPolling()
 
   uploadWorkbenchTimer = window.setTimeout(() => {
@@ -12419,6 +12176,7 @@ function normalizeUploadRuntimeNumber (value) {
 function getUploadTaskTransferredBytes (task) {
 
   const runtime = task?.upload_runtime || {}
+  if (runtime.transferred_bytes != null) return normalizeUploadRuntimeNumber(runtime.transferred_bytes)
 
   const uploadFiles = Array.isArray(task?.upload_files) ? task.upload_files : []
 
@@ -12470,12 +12228,7 @@ function getUploadTaskTotalBytes (task) {
 
 
 
-function withSampledUploadSpeeds (tasks) {
-
-  const now = Date.now()
-
-  const nextSamples = new Map()
-
+function withBackendUploadSpeeds (tasks) {
   const nextTasks = (Array.isArray(tasks) ? tasks : []).map((task) => {
 
     const taskId = String(task?.id || '').trim()
@@ -12490,43 +12243,15 @@ function withSampledUploadSpeeds (tasks) {
 
     const transferredBytes = Math.min(getUploadTaskTransferredBytes(task), totalBytes || getUploadTaskTransferredBytes(task))
 
-    const previous = uploadSpeedSamples.get(taskId)
-
-    let sampledSpeed = 0
-
-    if (status === 'processing' && previous && now > previous.time) {
-
-      const elapsedSeconds = Math.max(0.001, (now - previous.time) / 1000)
-
-      const deltaBytes = Math.max(0, transferredBytes - previous.transferredBytes)
-
-      sampledSpeed = elapsedSeconds >= 0.5 && deltaBytes > 0 ? Math.round(deltaBytes / elapsedSeconds) : 0
-
-    }
-
-    const remainingBytes = Math.max(0, (totalBytes || 0) - transferredBytes)
+    const backendSpeed = normalizeUploadRuntimeNumber(runtime.backend_speed_bytes_per_sec ?? runtime.speed_bytes_per_sec)
 
     runtime.total_bytes = totalBytes || normalizeUploadRuntimeNumber(runtime.total_bytes)
 
     runtime.transferred_bytes = transferredBytes
 
-    runtime.speed_bytes_per_sec = status === 'processing' ? sampledSpeed : 0
+    runtime.speed_bytes_per_sec = status === 'processing' ? backendSpeed : 0
 
-    runtime.frontend_speed_bytes_per_sec = runtime.speed_bytes_per_sec
-
-    runtime.eta_seconds = runtime.speed_bytes_per_sec > 0 && remainingBytes > 0
-
-      ? Math.ceil(remainingBytes / runtime.speed_bytes_per_sec)
-
-      : 0
-
-    nextSamples.set(taskId, {
-
-      time: now,
-
-      transferredBytes,
-
-    })
+    runtime.eta_seconds = normalizeUploadRuntimeNumber(runtime.eta_seconds)
 
     return {
 
@@ -12538,10 +12263,44 @@ function withSampledUploadSpeeds (tasks) {
 
   })
 
-  uploadSpeedSamples = nextSamples
-
   return nextTasks
 
+}
+
+
+function patchUploadTaskFromRealtimeEvent (payload = {}) {
+
+  if (payload?.type !== 'task_center_changed' || String(payload?.domain || '') !== 'upload') return false
+
+  const taskId = String(payload.engine_task_id || payload.task_id || '').trim()
+
+  if (!taskId) return false
+
+  const index = trackedUploadTasks.value.findIndex(task => String(task?.id || '').trim() === taskId)
+
+  if (index < 0) return false
+
+  const current = trackedUploadTasks.value[index] || {}
+  const runtime = {
+    ...(current.upload_runtime || {}),
+    ...(payload.upload_runtime || {}),
+  }
+  const status = String(payload.status || current.status || '').trim()
+  const next = withBackendUploadSpeeds([mergeUploadTaskSnapshot(current, {
+    status,
+    progress: Number.isFinite(Number(payload.progress)) ? Number(payload.progress) : current.progress,
+    current_step: payload.current_step ?? current.current_step,
+    updated_at: payload.updated_at || current.updated_at,
+    upload_runtime: runtime,
+  })])[0]
+
+  trackedUploadTasks.value = trackedUploadTasks.value.map((task, taskIndex) => taskIndex === index ? next : task)
+
+  if (['completed', 'failed', 'cancelled'].includes(status)) {
+    void Promise.allSettled([refreshLibrary(), refreshStats()])
+  }
+
+  return true
 }
 
 
@@ -12556,8 +12315,6 @@ async function refreshUploadWorkbench (options = {}) {
 
     uploadCompletionSyncedTaskIds.value = new Set()
 
-    uploadSpeedSamples = new Map()
-
     stopUploadWorkbenchPolling()
 
     persistUploadWorkbenchState()
@@ -12570,15 +12327,21 @@ async function refreshUploadWorkbench (options = {}) {
 
   try {
 
+    const compact = options.compact ?? !uploadWorkbenchVisible.value
     const result = await localUploadApi.status({
 
       task_ids: trackedUploadTaskIds.value.join(','),
 
-      include_hidden: true
+      include_hidden: true,
+
+      compact
 
     })
 
-    const allTasks = withSampledUploadSpeeds(Array.isArray(result.tasks) ? result.tasks : [])
+    const currentTasks = new Map(trackedUploadTasks.value.map(task => [String(task.id), task]))
+    const allTasks = withBackendUploadSpeeds((Array.isArray(result.tasks) ? result.tasks : []).map(task => (
+      mergeUploadTaskSnapshot(currentTasks.get(String(task.id)), task, { compact })
+    )))
     const requestedTaskIds = trackedUploadTaskIds.value.map(id => String(id || '').trim()).filter(Boolean)
     const matchedRequestedTasks = requestedTaskIds
       .map(id => allTasks.find(task => String(task?.id || '').trim() === id))
@@ -12729,8 +12492,6 @@ async function closeUploadWorkbench () {
   trackedUploadTaskIds.value = []
 
   trackedUploadTasks.value = []
-
-  uploadSpeedSamples = new Map()
 
   stopUploadWorkbenchPolling()
 
@@ -20399,7 +20160,25 @@ async function locateLibrarySearchResult (row) {
 
 
 
-async function locateCircleLocation (location) {
+async function consumeLibraryLocationRoute () {
+  if (route.name !== 'Library') return
+  const libraryId = typeof route.query.locateLibraryId === 'string' ? route.query.locateLibraryId : ''
+  const path = typeof route.query.locatePath === 'string' ? route.query.locatePath : ''
+  if (!libraryId || !path) return
+  const library = libraries.value.find(item => String(item.id) === libraryId)
+  const query = { ...route.query }
+  delete query.locateLibraryId
+  delete query.locatePath
+  // 先消费参数，避免首次激活与路由监听重复定位。
+  await router.replace({ path: route.path, query, hash: route.hash })
+  if (!library || !isPathWithinLibraryRoot(path, library)) {
+    ElMessage.warning('库存或作品目录已变更，请刷新索引后重新定位')
+    return
+  }
+  await locateCircleLocation({ library_id: libraryId, path }, { forceRefresh: false })
+}
+
+async function locateCircleLocation (location, { forceRefresh = true } = {}) {
 
   if (!location?.path) {
 
@@ -20449,7 +20228,7 @@ async function locateCircleLocation (location) {
 
   await nextTick()
 
-  await refreshLibrary({ forceRefresh: true })
+  await refreshLibrary({ forceRefresh })
 
 }
 
@@ -22981,6 +22760,21 @@ function handleFolderCompletionRealtimeEvent (event) {
   const detail = event?.detail || {}
 
   const payload = normalizeFolderCompletionRealtimePayload(detail)
+
+  let handledUpload = false
+
+  for (const item of normalizeTaskCenterRealtimePayloads(detail)) {
+
+    handledUpload = patchUploadTaskFromRealtimeEvent(item) || handledUpload
+
+  }
+
+  if (handledUpload) {
+    persistUploadWorkbenchState()
+    if (!trackedUploadTasks.value.some(task => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(task?.status || '')))) {
+      stopUploadWorkbenchPolling()
+    }
+  }
 
   if (payload?.type === 'library_index_status_changed') {
 
@@ -25630,6 +25424,10 @@ function statsStatusTextDisplay (stats) {
 
 }
 
+usePersistentTaskWorkbench(route, 'upload', trackedUploadTaskIds, uploadWorkbenchVisible, uploadWorkbenchBackgroundActive, refreshUploadWorkbench, { tasks: trackedUploadTasks, id: 'library-upload', title: '库存上传任务' })
+const persistentSubtitleIds = ref(subtitleTasks.value.map(task => String(task.id)))
+watch(subtitleTasks, tasks => { persistentSubtitleIds.value = tasks.map(task => String(task.id)) }, { deep: true })
+usePersistentTaskWorkbench(route, 'subtitle', persistentSubtitleIds, subtitleDialogVisible, subtitleDialogBackgroundActive, () => refreshRJSubtitleStatus(false, { silent: true }), { tasks: subtitleTasks, cardProps: subtitleBackgroundCardProps })
 </script>
 
 
@@ -33198,6 +32996,3 @@ function statsStatusTextDisplay (stats) {
 }
 
 </style>
-
-
-

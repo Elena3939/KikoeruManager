@@ -6,6 +6,11 @@
     </div>
     <p class="upload-started"><Clock3 :size="12" />开始时间：{{ session.created_at ? new Date(session.created_at).toLocaleString() : '恢复中' }}</p>
     <p v-if="!session.enumerated && !terminal" class="upload-enumerating">读取目录：已发现 {{ session.discoveredFiles || session.total_files || 0 }} 个文件，共 {{ bytes(session.discoveredBytes || session.total_bytes) }}；总量尚未确定</p>
+    <div v-else-if="!terminal && isLocalTarget" class="upload-phases upload-phases-local">
+      <div class="upload-phase"><span>写入本地库存</span><span>{{ bytes(session.liveReceived) }} / {{ bytes(session.total_bytes) }} · {{ bytes(session.speed) }}/s</span></div>
+      <AppLottieProgressBar :percentage="phasePercent(session.liveReceived)" size="sm" />
+      <p class="upload-phase-summary">本地接收完成后原子提交到目标目录<span v-if="eta"> · 预计剩余 {{ eta }}</span></p>
+    </div>
     <div v-else-if="!terminal" class="upload-phases">
       <div class="upload-phase"><span>上传至服务</span><span>{{ bytes(session.liveReceived) }} / {{ bytes(session.total_bytes) }} · {{ bytes(session.speed) }}/s</span></div>
       <AppLottieProgressBar :percentage="phasePercent(session.liveReceived)" size="sm" />
@@ -80,17 +85,20 @@ const batchContainer = ref(null), treeContainer = ref(null), scrollElement = ref
 function updateMargin() {
   if (treeContainer.value && scrollElement.value) scrollMargin.value = treeContainer.value.getBoundingClientRect().top - scrollElement.value.getBoundingClientRect().top + scrollElement.value.scrollTop
 }
+// 虚拟占位与实际行高保持一致，错误和冲突操作单独留出空间。
+const rowHeight = row => row?.type === 'dir' ? 32 : row?.file?.status === 'conflict' ? 112 : row?.file?.reason ? 80 : 48
 const virtualizer = useVirtualizer(computed(() => ({
   count: rows.value.length > 100 ? rows.value.length : 0,
-  getScrollElement: () => scrollElement.value, estimateSize: () => 112, overscan: 8,
+  getScrollElement: () => scrollElement.value, estimateSize: index => rowHeight(rows.value[index]), overscan: 8,
   scrollMargin: scrollMargin.value, getItemKey: i => rows.value[i]?.id || i,
 })))
+watch(() => rows.value.length > 100 ? rows.value.map(rowHeight).join(',') : '', () => virtualizer.value.measure())
 const virtualRows = computed(() => virtualizer.value.getVirtualItems())
 const treePlan = computed(() => ({ rootExpanded: true, expandedIds: expandedIds.value,
   flatRows: rows.value.length > 100 ? virtualRows.value.map(item => rows.value[item.index]) : rows.value,
 }))
 const topPadding = computed(() => rows.value.length > 100 && virtualRows.value.length ? Math.max(0, virtualRows.value[0].start - scrollMargin.value) : 0)
-const bottomPadding = computed(() => rows.value.length > 100 ? Math.max(0, virtualizer.value.getTotalSize() - topPadding.value - virtualRows.value.length * 112) : 0)
+const bottomPadding = computed(() => rows.value.length > 100 ? Math.max(0, virtualizer.value.getTotalSize() - ((virtualRows.value.at(-1)?.end || scrollMargin.value) - scrollMargin.value)) : 0)
 let resizeObserver
 onMounted(() => {
   scrollElement.value = batchContainer.value?.closest('.v1-body')
@@ -103,7 +111,8 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
 const terminal = computed(() => ['completed', 'failed', 'cancelled'].includes(props.session.status))
 const canRestore = computed(() => !['completed', 'cancelled'].includes(props.session.status) && (props.session.needsSource || props.session.enumerationError))
 const phasePercent = value => Math.max(0, Math.min(100, Number(value || 0) / Math.max(1, props.session.total_bytes) * 100))
-const stage = computed(() => props.session.status === 'paused' ? '暂停' : props.session.status === 'cancelled' ? '已取消，已落地文件保留' : props.session.status === 'completed' ? '完成' : props.session.status === 'failed' ? '存在失败文件' : !props.session.enumerated ? '读取目录／上传接收' : props.session.counts?.conflict ? '等待冲突，其他文件继续传输' : '上传接收／写入库存')
+const isLocalTarget = computed(() => props.session.target_type === 'local')
+const stage = computed(() => props.session.status === 'paused' ? '暂停' : props.session.status === 'cancelled' ? '已取消，已落地文件保留' : props.session.status === 'completed' ? '完成' : props.session.status === 'failed' ? '存在失败文件' : !props.session.enumerated ? '读取目录／上传接收' : props.session.counts?.conflict ? '等待冲突，其他文件继续传输' : isLocalTarget.value ? '写入本地库存' : '上传接收／写入库存')
 const eta = computed(() => {
   const s = props.session
   if (!s.enumerated || s.status !== 'receiving' || !s.speedStable) return ''
@@ -134,14 +143,14 @@ async function restoreSources(sources) {
 .upload-started,.upload-phase,.upload-file-name,.upload-file-info,.upload-list-tools,.upload-list-filters { display: flex; align-items: center; gap: 8px; }
 .upload-started { margin: 10px 0 14px; color: var(--upload-muted); font-size: 11px; }
 .upload-phases { padding: 4px 0; }
-.upload-phase { justify-content: space-between; margin-bottom: 10px; gap: 12px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.upload-phase { justify-content: space-between; margin-bottom: 28px; gap: 12px; font-size: 11px; font-variant-numeric: tabular-nums; }
 .upload-phase > span:last-child { color: var(--upload-muted); text-align: right; }
-.upload-phases :deep(.app-lottie-progress) { min-height: 10px; margin-bottom: 14px; }
+.upload-phases :deep(.app-lottie-progress) { min-height: 10px; margin: 0 8px 14px 18px; }
 .upload-phase-summary { margin: 4px 0 0; color: var(--upload-muted); font-size: 11px; }
 .upload-error { color: var(--el-color-danger); overflow-wrap: anywhere; margin: 5px 0 0; font-size: 11px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .upload-session-error { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border: 1px solid rgba(220,38,38,.24); border-radius: 10px; }
 .upload-session-error > svg { flex-shrink: 0; }
-.upload-restore { margin-top: 12px; border: 1px dashed var(--upload-border); border-radius: 12px; padding: 12px; background: transparent; }
+.upload-restore { margin-top: 12px; background: transparent; }
 .upload-list-tools { flex-wrap: wrap; justify-content: space-between; margin: 14px 0 8px; }
 .upload-list-tools strong { font-size: 11px; }
 .upload-list-tools strong span { font-weight: 400; margin-left: 6px; color: var(--upload-muted); }
@@ -150,7 +159,7 @@ async function restoreSources(sources) {
 .upload-list-filters :deep(.el-checkbox__label) { font-size: 11px; }
 .upload-status-chip { flex-shrink: 0; padding: 2px 7px; border-radius: 5px; background: var(--upload-border); font-size: 10px; color: var(--upload-muted); }
 .upload-status-chip.is-failed,.upload-status-chip.is-conflict { color: var(--el-color-danger); }
-.upload-file-info { margin-top: 8px; flex-wrap: wrap; color: var(--upload-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.upload-file-info { margin-top: 2px; flex-wrap: wrap; color: var(--upload-muted); font-size: 11px; line-height: 16px; font-variant-numeric: tabular-nums; }
 .browser-upload-batch :deep(button) { transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
 .browser-upload-batch :deep(button:hover) { transform: translateY(-2px) scale(1.02); }
 .browser-upload-batch :deep(button:active) { transform: scale(0.96); }
@@ -158,13 +167,16 @@ async function restoreSources(sources) {
 .browser-upload-batch :is(button,input):focus-visible { outline: none; box-shadow: none; }
 
 .upload-path-card { padding: 4px 0; }
-.upload-file-tree { min-height: 180px; overflow: visible; }
-.upload-file-tree :deep(.resource-file-row) { min-height: 88px; box-sizing: border-box; border-bottom: 1px solid var(--upload-border); color: var(--upload-text); }
+.upload-file-tree { overflow: visible; }
+.upload-file-tree :deep(.resource-file-row) { min-height: 48px; padding-top: 4px; padding-bottom: 4px; box-sizing: border-box; border-bottom: 1px solid var(--upload-border); color: var(--upload-text); }
 .upload-file-tree :deep(.tree-row:hover) { background: var(--upload-border); }
 .upload-file-tree :deep(.tree-expander) { color: var(--upload-muted); }
-.upload-file-tree :deep(.tree-name) { font-size: 12px; }
-.upload-file-info { margin-top: 6px; }
-.upload-file-tree.is-virtual :deep(.resource-file-row) { height: 112px; overflow: hidden; }
+.upload-file-tree :deep(.tree-name) { font-size: 12px; line-height: 18px; }
+.upload-file-tree :deep(.resource-file-row:has(.tree-expander)) { min-height: 32px; }
+.upload-file-tree.is-virtual :deep(.resource-file-row) { height: 48px; overflow: hidden; }
+.upload-file-tree.is-virtual :deep(.resource-file-row:has(.upload-error)) { height: 80px; }
+.upload-file-tree.is-virtual :deep(.resource-file-row:has(.is-conflict)) { height: 112px; }
+.upload-file-tree.is-virtual :deep(.resource-file-row:has(.tree-expander)) { height: 32px; }
 @media(max-width:640px) { .upload-path-grid { grid-template-columns: minmax(0,1fr); } .upload-phase { align-items: flex-start; flex-direction: column; gap: 4px; } }
 .upload-row-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; max-width: 45%; }
 </style>

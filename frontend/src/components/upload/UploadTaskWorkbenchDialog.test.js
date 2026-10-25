@@ -8,6 +8,18 @@ vi.mock('../common/AppLottieProgressBar.vue', () => ({ default: { template: '<di
 vi.mock('../common/AppEmptyState.vue', () => ({ default: { template: '<div />' } }))
 
 describe('上传工作台共享任务详情', () => {
+  it('取消任务在折叠态显示已取消，停止进度动画，并转发单条关闭', async () => {
+    const wrapper = mount(UploadTaskWorkbenchDialog, {
+      props: { visible: true, dismissible: true, tasks: [{ id: 'cancelled-upload', status: 'cancelled', source_path: '/来源' }] },
+      global: { stubs: { Teleport: true, DotLottieVue: true } },
+    })
+    expect(wrapper.get('.v1-status-line').text()).toBe('已取消')
+    expect(wrapper.find('.v1-summary-progress').exists()).toBe(false)
+    expect(wrapper.find('.v1-task-icon-lottie').exists()).toBe(false)
+    await wrapper.get('button[aria-label="关闭任务"]').trigger('click')
+    expect(wrapper.emitted('dismiss-task')[0][0].id).toBe('cancelled-upload')
+    wrapper.unmount()
+  })
   it('自定义文件详情仍参与搜索、筛选和折叠', async () => {
     const wrapper = mount(UploadTaskWorkbenchDialog, {
       props: { visible: true, tasks: [

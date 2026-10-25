@@ -1,11 +1,13 @@
 <template>
   <UploadTaskWorkbenchDialog
+    dismissible
     :visible="Boolean(workbench.visible)" :tasks="tasks" :show-upload-eta="false"
     @pause-task="task => controlBrowserUpload(task.id, 'pause')"
     @resume-task="task => controlBrowserUpload(task.id, 'resume')"
     @cancel-task="task => controlBrowserUpload(task.id, 'cancel')"
+    @dismiss-task="task => dismissBrowserUpload(task.id)"
     @refresh="refreshBrowserUploads"
-    @update:visible="hide" @background="hide" @close="hide"
+    @update:visible="hide" @background="hide" @close="closeBrowserUploadWorkbench"
   >
     <template #task-detail="{ task }">
       <BrowserUploadBatch v-if="sessionsById.has(task.id)" :session="sessionsById.get(task.id)" />
@@ -17,7 +19,7 @@
 import { computed } from 'vue'
 import UploadTaskWorkbenchDialog from './UploadTaskWorkbenchDialog.vue'
 import BrowserUploadBatch from './BrowserUploadBatch.vue'
-import { browserUploads, controlBrowserUpload, refreshBrowserUploads, initializeBrowserUploads, UPLOAD_WORKBENCH } from '../../composables/useBrowserUploads'
+import { browserUploads, controlBrowserUpload, dismissBrowserUpload, closeBrowserUploadWorkbench, refreshBrowserUploads, initializeBrowserUploads, UPLOAD_WORKBENCH } from '../../composables/useBrowserUploads'
 import { useBackgroundWorkbenchManager } from '../../composables/useBackgroundWorkbenchManager'
 
 const manager = useBackgroundWorkbenchManager()

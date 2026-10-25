@@ -16,9 +16,55 @@ let worker, hashId = 0
 const hashes = new Map()
 const manager = useBackgroundWorkbenchManager()
 const stopped = new Set(['completed', 'failed', 'cancelled'])
+export const UPLOAD_RETENTION_MS = 60_000
+let lastWorkbenchSummary = ''
+
+function syncWorkbenchSummary() {
+  const sessions = [...runtime.values()]
+  if (!sessions.length) { lastWorkbenchSummary = ''; return }
+  const active = sessions.filter(session => !stopped.has(session.status))
+  const failed = sessions.some(session => session.status === 'failed')
+  const cancelled = sessions.some(session => session.status === 'cancelled')
+  const paused = active.length > 0 && active.every(session => session.status === 'paused')
+  const key = active.length ? (paused ? 'paused' : 'processing') : failed ? 'failed' : cancelled ? 'cancelled' : 'completed'
+  const label = { processing: '上传中', paused: '已暂停', failed: '需要处理', cancelled: '已取消', completed: '已完成' }[key]
+  const total = sessions.reduce((sum, session) => sum + Number(session.total_bytes || 0), 0)
+  const written = sessions.reduce((sum, session) => sum + Number(session.written_bytes || 0), 0)
+  const percentage = key === 'completed' ? 100 : Math.min(99, Math.max(0, Math.floor(written * 100 / Math.max(1, total))))
+  const patch = {
+    status: { key, label, tone: key === 'completed' ? 'success' : failed ? 'danger' : paused || cancelled ? 'warning' : 'primary' },
+    progress: { percentage, label, status: key === 'completed' ? 'success' : failed ? 'exception' : '' },
+    summary: { subtitle: `${sessions.length} 个上传批次`, text: active.length ? `${active.length} 个${paused ? '已暂停' : '处理中'}` : label },
+    metrics: [{ key: 'speed', label: '上传速度', value: formatUploadBytes(sessions.reduce((sum, session) => sum + (session.status === 'receiving' ? session.speed || 0 : 0), 0)) + '/s' }],
+  }
+  // 视图每 250ms 刷新，仅在展示数据变化时写入工作台及持久化状态。
+  const signature = JSON.stringify(patch)
+  if (signature === lastWorkbenchSummary) return
+  lastWorkbenchSummary = signature
+  manager.patchWorkbenchState(UPLOAD_WORKBENCH, patch)
+}
 
 function remember() {
-  localStorage.setItem(STORAGE, JSON.stringify(Array.from(runtime.values(), s => ({ id: s.id, token: s.token }))))
+  localStorage.setItem(STORAGE, JSON.stringify(Array.from(runtime.values(), s => ({ id: s.id, token: s.token, terminalAt: s.terminalAt }))))
+}
+
+// 仅移除终态会话的展示和恢复记录，不删除已落地文件。
+export function dismissBrowserUpload(id) {
+  const session = runtime.get(id)
+  if (!session || !stopped.has(session.status)) return
+  runtime.delete(id)
+  session.sources.clear()
+  remember()
+  refreshView()
+}
+
+export function closeBrowserUploadWorkbench() {
+  for (const session of [...runtime.values()]) {
+    if (stopped.has(session.status)) dismissBrowserUpload(session.id)
+  }
+  if (runtime.size) manager.backgroundWorkbench(UPLOAD_WORKBENCH)
+  else manager.patchWorkbenchState(UPLOAD_WORKBENCH, { visible: false, cardVisible: false, backgroundActive: false, restorable: false })
+  return false
 }
 
 function hash(buffer) {
@@ -306,6 +352,7 @@ async function poll(session) {
       let offset = 0, revision
       do {
         const result = await request(session, `?offset=${offset}&limit=200`)
+        if (runtime.get(session.id) !== session) return
         if (revision === undefined) revision = result.revision
         for (const incoming of result.files) session.files.set(incoming.id, { ...session.files.get(incoming.id), ...incoming })
         offset += result.files.length
@@ -323,6 +370,7 @@ async function poll(session) {
     let more = true
     for (let page = 0; page < 4 && more; page++) {
       const result = await request(session, `/changes?cursor=${session.cursor}`)
+      if (runtime.get(session.id) !== session) return
       const { files, cursor, has_more, ...summary } = result
       Object.assign(session, summary, { cursor })
       for (const incoming of files) {
@@ -344,11 +392,11 @@ async function poll(session) {
     if (!more && !session.index_pending && stopped.has(session.status) && session.notified !== session.status) {
       session.notified = session.status
       const completed = session.counts?.completed || 0
-      void showSystemAlert({ title: session.status === 'completed' ? '上传完成' : session.status === 'cancelled' ? '上传已取消' : completed ? '上传部分失败' : '上传失败',
+      if (session.status === 'failed') void showSystemAlert({ title: completed ? '上传部分失败' : '上传失败',
         message: session.source_label,
         description: `完成 ${completed}，失败 ${session.counts?.failed || 0}，跳过 ${session.counts?.skipped || 0}`,
         details: [{ label: '目标目录', value: session.target_path || '根目录' }],
-        tone: session.status === 'completed' ? 'success' : 'warning' }).catch(() => {})
+        tone: 'warning' }).catch(() => {})
       window.dispatchEvent(new CustomEvent('library-browser-upload-finished', { detail: { libraryId: session.library_id, path: session.target_path } }))
     }
   } catch (error) {
@@ -364,6 +412,18 @@ async function poll(session) {
 function refreshView() {
   const now = performance.now()
   for (const session of runtime.values()) {
+    if (['completed', 'cancelled'].includes(session.status)) {
+      if (!session.terminalAt) { session.terminalAt = Date.now(); remember() }
+      if (Date.now() - session.terminalAt >= UPLOAD_RETENTION_MS) {
+        runtime.delete(session.id)
+        session.sources.clear()
+        remember()
+        continue
+      }
+    } else if (session.terminalAt && !session.restoring) {
+      delete session.terminalAt
+      remember()
+    }
     let received = 0, written = 0, activeFileCount = 0
     for (const file of session.files.values()) {
       if (file.busy && session.status === 'receiving') activeFileCount++
@@ -401,7 +461,10 @@ function refreshView() {
     session.liveWritten = written
     session.activeFileCount = activeFileCount
   }
+  const hadSessions = browserUploads.value.length > 0
   browserUploads.value = Array.from(runtime.values(), session => ({ ...session }))
+  syncWorkbenchSummary()
+  if (hadSessions && !runtime.size) manager.patchWorkbenchState(UPLOAD_WORKBENCH, { visible: false, cardVisible: false, backgroundActive: false, restorable: false })
 }
 
 export async function refreshBrowserUploads() {
@@ -414,7 +477,7 @@ export function initializeBrowserUploads() {
   initialized = true
   manager.registerWorkbench({ id: UPLOAD_WORKBENCH, type: 'upload', title: '库存拖拽上传',
     onAction: action => { if (action === 'resume') manager.openWorkbench(UPLOAD_WORKBENCH) },
-    onClose: () => manager.backgroundWorkbench(UPLOAD_WORKBENCH) })
+    onClose: closeBrowserUploadWorkbench })
   let saved = []
   try { saved = JSON.parse(localStorage.getItem(STORAGE) || '[]') } catch (_) { /* 无历史会话 */ }
   for (const item of saved) {
@@ -424,15 +487,13 @@ export function initializeBrowserUploads() {
     runtime.set(item.id, session)
     void poll(session)
   }
+  if (!runtime.size) manager.patchWorkbenchState(UPLOAD_WORKBENCH, { cardVisible: false, backgroundActive: false })
   let polling = false
   setInterval(async () => {
     if (polling) return
     polling = true
     try { await Promise.all(Array.from(runtime.values(), session => poll(session))) } finally { polling = false }
-    if (runtime.size) manager.patchWorkbenchState(UPLOAD_WORKBENCH, {
-      summary: { subtitle: `${runtime.size} 个上传批次`, text: Array.from(runtime.values()).filter(s => s.status === 'receiving').length + ' 个传输中' },
-      metrics: [{ key: 'speed', label: '上传速度', value: formatUploadBytes(Array.from(runtime.values()).reduce((n, s) => n + s.speed, 0)) + '/s' }],
-    })
+    refreshView()
   }, 1500)
   setInterval(refreshView, 250)
 }

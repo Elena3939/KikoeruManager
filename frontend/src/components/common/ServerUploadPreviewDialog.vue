@@ -1327,7 +1327,10 @@ function classifyRowKind (row) {
   transform: rotate(90deg);
 }
 .tree-row-selected { background: rgba(15,23,42,.04); }
-.field-input { transition: border-color .15s ease; }
+.server-upload-preview-modal .field-input {
+  border-radius: 10px;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
 .field-input:focus { border-color: rgba(17,24,39,.45); }
 .picker-button { cursor: pointer; }
 .picker-button:disabled {
