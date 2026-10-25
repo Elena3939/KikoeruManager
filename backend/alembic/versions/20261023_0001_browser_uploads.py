@@ -10,19 +10,24 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table('browser_upload_sessions',
+    # 新库的 baseline 已创建这些表；旧库仍需按会话、文件的依赖顺序补建。
+    metadata = sa.MetaData()
+    sessions = sa.Table('browser_upload_sessions', metadata,
         sa.Column('id', sa.String(36), primary_key=True),
         sa.Column('token_hash', sa.String(64), nullable=False),
         sa.Column('library_id', sa.String(100), nullable=False),
         sa.Column('target_path', sa.Text(), nullable=False),
         sa.Column('state', JSONB(), nullable=False),
         sa.Column('updated_at', sa.DateTime(), nullable=False))
-    op.create_index('ix_browser_upload_sessions_updated_at', 'browser_upload_sessions', ['updated_at'])
-    op.create_table('browser_upload_files',
+    files = sa.Table('browser_upload_files', metadata,
         sa.Column('session_id', sa.String(36), sa.ForeignKey('browser_upload_sessions.id', ondelete='CASCADE'), primary_key=True),
         sa.Column('id', sa.String(36), primary_key=True),
         sa.Column('relative_path', sa.Text(), nullable=False),
         sa.Column('state', JSONB(), nullable=False))
+    bind = op.get_bind()
+    sessions.create(bind, checkfirst=True)
+    sa.Index('ix_browser_upload_sessions_updated_at', sessions.c.updated_at).create(bind, checkfirst=True)
+    files.create(bind, checkfirst=True)
 
 
 def downgrade():

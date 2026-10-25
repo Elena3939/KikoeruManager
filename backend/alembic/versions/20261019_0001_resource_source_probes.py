@@ -10,8 +10,12 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table(
+    # baseline 使用当前 ORM 建表；旧库增量升级时此表则可能尚不存在。
+    # 固定迁移自身的结构定义，不依赖运行时 ORM，也不重复创建已有表和索引。
+    metadata = sa.MetaData()
+    table = sa.Table(
         'resource_source_probes',
+        metadata,
         sa.Column('source', sa.String(40), primary_key=True),
         sa.Column('rjcode', sa.String(20), primary_key=True),
         sa.Column('probe_version', sa.Integer(), primary_key=True),
@@ -21,8 +25,10 @@ def upgrade():
         sa.Column('checked_at', sa.DateTime()),
         sa.Column('expires_at', sa.DateTime()),
     )
-    op.create_index('ix_resource_source_probes_status', 'resource_source_probes', ['status'])
-    op.create_index('ix_resource_source_probes_expires_at', 'resource_source_probes', ['expires_at'])
+    bind = op.get_bind()
+    table.create(bind, checkfirst=True)
+    sa.Index('ix_resource_source_probes_status', table.c.status).create(bind, checkfirst=True)
+    sa.Index('ix_resource_source_probes_expires_at', table.c.expires_at).create(bind, checkfirst=True)
 
 
 def downgrade():

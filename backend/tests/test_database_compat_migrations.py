@@ -9,6 +9,77 @@ from sqlalchemy import create_engine, inspect, text
 from app.models import database
 
 
+@pytest.mark.parametrize("initial_schema", ["empty", "legacy", "precreated", "partial_upload"])
+def test_alembic_resource_and_upload_bootstrap(alembic_test_database, initial_schema):
+    """真实 PostgreSQL 验证空库、旧库及 ORM 预建表均能完整升级。"""
+    engine, config = alembic_test_database
+    if initial_schema != "empty":
+        command.upgrade(config, "20260802_0001_library_index_children_index_cleanup")
+        with engine.begin() as conn:
+            if initial_schema == "legacy":
+                conn.execute(text("DROP TABLE browser_upload_files"))
+                conn.execute(text("DROP TABLE browser_upload_sessions"))
+                conn.execute(text("DROP TABLE resource_source_probes"))
+            else:
+                conn.execute(text("""
+                    INSERT INTO resource_source_probes
+                        (source, rjcode, probe_version, status, candidates, error)
+                    VALUES ('acceptance', 'RJ123456', 1, 'hit', '[]', '')
+                """))
+                conn.execute(text("""
+                    INSERT INTO browser_upload_sessions
+                        (id, token_hash, library_id, target_path, state, updated_at)
+                    VALUES ('session-test', 'hash', 'library-test', 'test', '{}', now())
+                """))
+                conn.execute(text("DROP INDEX ix_resource_source_probes_status"))
+                conn.execute(text("DROP INDEX ix_browser_upload_sessions_updated_at"))
+                if initial_schema == "partial_upload":
+                    conn.execute(text("DROP TABLE browser_upload_files"))
+
+    command.upgrade(config, "head")
+    command.upgrade(config, "head")
+    schema = inspect(engine)
+    expected_tables = (
+        database.ResourceSourceProbe.__table__,
+        database.Base.metadata.tables["browser_upload_sessions"],
+        database.Base.metadata.tables["browser_upload_files"],
+    )
+    for expected in expected_tables:
+        actual = {column["name"]: column for column in schema.get_columns(expected.name)}
+        assert set(actual) == set(expected.columns.keys())
+        for column in expected.columns:
+            assert actual[column.name]["nullable"] == column.nullable
+            assert str(actual[column.name]["type"].compile(dialect=engine.dialect)) == str(
+                column.type.compile(dialect=engine.dialect)
+            )
+        assert schema.get_pk_constraint(expected.name)["constrained_columns"] == [
+            column.name for column in expected.primary_key
+        ]
+        indexes = {index["name"]: index for index in schema.get_indexes(expected.name)}
+        for index in expected.indexes:
+            assert indexes[index.name]["column_names"] == [column.name for column in index.columns]
+
+    foreign_keys = schema.get_foreign_keys("browser_upload_files")
+    assert any(
+        fk["constrained_columns"] == ["session_id"]
+        and fk["referred_table"] == "browser_upload_sessions"
+        and fk["referred_columns"] == ["id"]
+        and fk["options"].get("ondelete") == "CASCADE"
+        for fk in foreign_keys
+    )
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+            "20261023_0001_browser_uploads"
+        )
+        if initial_schema in ("precreated", "partial_upload"):
+            assert conn.execute(text(
+                "SELECT status FROM resource_source_probes WHERE source = 'acceptance'"
+            )).scalar_one() == "hit"
+            assert conn.execute(text(
+                "SELECT token_hash FROM browser_upload_sessions WHERE id = 'session-test'"
+            )).scalar_one() == "hash"
+
+
 class _CompatProbeConnection:
     def execute(self, *_args, **_kwargs):
         return None
