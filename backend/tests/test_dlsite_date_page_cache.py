@@ -1,9 +1,55 @@
 from datetime import datetime
+import asyncio
+import threading
 
 import httpx
 import pytest
 
 from app.core.dlsite_service import DLsiteApiService, DLsiteWorkSummary
+
+
+@pytest.mark.asyncio
+async def test_date_page_decoding_and_parsing_keep_event_loop_responsive(monkeypatch):
+    service = DLsiteApiService()
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    release = threading.Event()
+    main_thread = threading.get_ident()
+    threads = []
+
+    class Response:
+        status_code = 200
+
+        @property
+        def text(self):
+            threads.append(threading.get_ident())
+            loop.call_soon_threadsafe(started.set)
+            assert release.wait(timeout=2)
+            return '<div class="n_worklist_item" data-product_id="RJ01000001"></div>'
+
+    async def fake_get(*args, **kwargs):
+        return Response()
+
+    monkeypatch.setattr(service, "_guarded_get", fake_get)
+    task = asyncio.create_task(service.list_new_work_summaries_by_date("2026-10-24", max_pages=1))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert not task.done()
+        assert threads and all(thread != main_thread for thread in threads)
+    finally:
+        release.set()
+        summaries, status = await task
+    assert status == "ok"
+    assert [summary.workno for summary in summaries] == ["RJ01000001"]
+
+
+def test_listing_release_date_handles_whitespace_without_backtracking():
+    service = DLsiteApiService()
+    chunk = '<span class="release_date">' + " " * 20_000 + "</span>"
+    assert service._extract_release_date_from_listing_chunk(chunk) == ""
+    assert service._extract_release_date_from_listing_chunk(
+        '<span class="release_date">\n 2026年10月24日  </span>',
+    ) == "2026-10-24"
 
 
 @pytest.mark.asyncio

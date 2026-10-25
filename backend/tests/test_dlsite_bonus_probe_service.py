@@ -4,6 +4,7 @@ import time
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import sessionmaker
 
 from app.core.dlsite_bonus_probe_service import DLsiteBonusProbeService
 from app.core.dlsite_service import DLsiteProductProbeFeature, DLsiteWorkSummary
@@ -28,6 +29,92 @@ def _service() -> DLsiteBonusProbeService:
 
     service.dlsite_service = _FakeDLsiteService()
     return service
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selected,fail", [(False, False), (True, False), (False, True)])
+async def test_probe_date_database_work_keeps_event_loop_responsive(db_engine, monkeypatch, selected, fail):
+    service = _service()
+    factory = sessionmaker(bind=db_engine)
+    main_thread = threading.get_ident()
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    release = threading.Event()
+    session_threads = []
+    maker_id = f"RG991000{int(selected)}{int(fail)}"
+
+    def worker_session():
+        session_threads.append(threading.get_ident())
+        assert threading.get_ident() != main_thread
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(timeout=2)
+        return factory()
+
+    async def fake_date_page(*args, **kwargs):
+        if fail:
+            raise RuntimeError("模拟日期页连接失败")
+        return [], "empty"
+
+    monkeypatch.setattr("app.core.dlsite_bonus_probe_service.SessionLocal", worker_session)
+    monkeypatch.setattr(service.dlsite_service, "list_new_work_summaries_by_date", fake_date_page, raising=False)
+    monkeypatch.setattr(service, "_load_cached_features_sync", lambda candidates: {})
+    monkeypatch.setattr(service, "_build_anchor_edge_candidates", lambda *args, **kwargs: [])
+    monkeypatch.setattr(service, "_build_circle_neighbor_range_candidates", lambda **kwargs: ([], 0))
+    task = asyncio.create_task(service.probe_date(
+        circle_id="thread-probe", maker_id=maker_id, release_date="2026-10-24",
+        target_rjcodes=["RJ01000001"] if selected else [],
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert not task.done()
+    finally:
+        release.set()
+        if fail:
+            with pytest.raises(RuntimeError, match="日期页解析异常"):
+                await task
+        else:
+            result = await task
+            assert result["release_date"] == "2026-10-24"
+    assert session_threads and all(thread != main_thread for thread in session_threads)
+    with factory() as db:
+        row = db.query(DLsiteBonusProbeDate).filter_by(maker_id=maker_id).one()
+        assert row.status == ("failed" if fail else "incomplete" if selected else "completed")
+        if fail:
+            assert db.query(DLsiteBonusOriginalProbeState).filter_by(maker_id=maker_id).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_probe_circle_dates_prepares_database_context_in_worker(monkeypatch):
+    service = _service()
+    main_thread = threading.get_ident()
+    calls = []
+
+    def context(*args):
+        assert threading.get_ident() != main_thread
+        calls.append("context")
+        return {"circle_id": "circle", "maker_id": "RG01000", "circle_name": ""}
+
+    def dates(*args, **kwargs):
+        assert threading.get_ident() != main_thread
+        calls.append("dates")
+        return ["2026-10-24"]
+
+    def order(**kwargs):
+        assert threading.get_ident() != main_thread
+        calls.append("order")
+        return kwargs["dates"]
+
+    async def probe(**kwargs):
+        assert threading.get_ident() == main_thread
+        return {"release_date": kwargs["release_date"]}
+
+    monkeypatch.setattr(service, "resolve_circle_context", context)
+    monkeypatch.setattr(service, "list_indexed_release_dates", dates)
+    monkeypatch.setattr(service, "_order_probe_release_dates", order)
+    monkeypatch.setattr(service, "probe_date", probe)
+    result = await service.probe_circle_dates(circle_id="circle")
+    assert calls == ["context", "dates", "order"]
+    assert result["date_count"] == 1
 
 
 class _Row:

@@ -11,6 +11,7 @@ from urllib.parse import urlencode, urljoin, urlparse
 
 import httpx
 from sqlalchemy import or_
+from sqlalchemy.dialects.postgresql import insert
 
 from ..config.settings import get_config
 from ..models.database import CircleExternalSearchRecord, SessionLocal, get_local_now
@@ -363,6 +364,22 @@ class CircleExternalSearchService:
         rjcodes = sorted({rjcode for _source, rjcode in lookup_keys})
         db = SessionLocal()
         try:
+            # 并发页面请求可能同时补同一条快照，由唯一键裁决且不覆盖 worker 的结果。
+            db.execute(insert(CircleExternalSearchRecord).values([
+                dict(
+                    source=source,
+                    rjcode=rjcode,
+                    probe_schema_version=self._PROBE_SCHEMA_VERSION,
+                    status="pending",
+                    results_json=[],
+                    search_url=self._source_search_url(source, rjcode),
+                    next_probe_at=now,
+                    priority=100,
+                )
+                for source, rjcode in sorted(set(lookup_keys))
+            ]).on_conflict_do_nothing(
+                index_elements=["source", "rjcode", "probe_schema_version"],
+            ))
             rows = db.query(CircleExternalSearchRecord).filter(
                 CircleExternalSearchRecord.probe_schema_version == self._PROBE_SCHEMA_VERSION,
                 CircleExternalSearchRecord.source.in_(sources),
@@ -371,20 +388,6 @@ class CircleExternalSearchService:
             records = {(row.source, row.rjcode): row for row in rows}
             for source, rjcode in lookup_keys:
                 record = records.get((source, rjcode))
-                if record is None:
-                    record = CircleExternalSearchRecord(
-                        source=source,
-                        rjcode=rjcode,
-                        probe_schema_version=self._PROBE_SCHEMA_VERSION,
-                        status="pending",
-                        results_json=[],
-                        search_url=self._source_search_url(source, rjcode),
-                        next_probe_at=now,
-                        priority=100,
-                    )
-                    db.add(record)
-                    records[(source, rjcode)] = record
-                    continue
                 if record.next_probe_at <= now and (record.lease_until is None or record.lease_until <= now):
                     record.priority = max(int(record.priority or 0), 100)
             db.commit()

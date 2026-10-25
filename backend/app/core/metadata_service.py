@@ -1078,18 +1078,24 @@ class MetadataService:
             product_info = await self._get_product_info_for_metadata(
                 rjcode, locale='ja-JP', purpose='japanese', refresh=force_refresh,
             )
-            if not product_info or product_info.get('metadata_verification_status') != 'verified':
+            if not product_info:
                 return None
             product = product_info.get('product') or {}
             translation_info = product.get('translation_info') or {}
             original_workno = translation_info.get('original_workno') or translation_info.get('parent_workno')
             if not translation_info.get('is_original', True) and original_workno:
+                # 翻译占位社团不能作为重命名数据，但不影响官方作品身份与原作关联。
+                from .dlsite_metadata_trust import is_dlsite_linkage_product_verified
+                if not is_dlsite_linkage_product_verified(product_info, rjcode):
+                    return None
                 original_info = await self._get_product_info_for_metadata(
                     original_workno, locale='ja-JP', purpose='japanese_original', refresh=force_refresh,
                 )
                 if not original_info or original_info.get('metadata_verification_status') != 'verified':
                     return None
                 product = original_info.get('product') or {}
+            elif product_info.get('metadata_verification_status') != 'verified':
+                return None
 
             maker_fields = await self._resolve_original_maker_fields(product, rjcode)
             japanese_metadata = {

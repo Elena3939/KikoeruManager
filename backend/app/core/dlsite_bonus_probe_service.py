@@ -1418,7 +1418,9 @@ class DLsiteBonusProbeService:
         maker_id: str,
         release_date: str,
     ) -> Tuple[List[str], List[str], List[str], str]:
-        worknos = self._load_indexed_public_worknos(circle_id, maker_id, release_date)
+        worknos = await asyncio.to_thread(
+            self._load_indexed_public_worknos, circle_id, maker_id, release_date,
+        )
         date_page_worknos: List[str] = []
         date_page_boundary_worknos: List[str] = []
         parse_status = "not_requested"
@@ -2335,6 +2337,76 @@ class DLsiteBonusProbeService:
             ),
         )
 
+    def _start_probe_date_sync(
+        self, *, circle_id, maker_id, release_date, gap_limit, mode, job_id, target_rjcodes,
+    ) -> Optional[Dict[str, Any]]:
+        """数据库会话只在工作线程内创建、提交和关闭。"""
+        if target_rjcodes:
+            self._persist_precise_release_dates(
+                rjcodes=target_rjcodes, maker_id=maker_id, release_date=release_date,
+            )
+        db = SessionLocal()
+        try:
+            date_row = (
+                db.query(DLsiteBonusProbeDate)
+                .filter(
+                    DLsiteBonusProbeDate.maker_id == maker_id,
+                    DLsiteBonusProbeDate.release_date == release_date,
+                    DLsiteBonusProbeDate.gap_limit == int(gap_limit),
+                ).first()
+            )
+            if not target_rjcodes and self._can_reuse_completed_date_row(date_row, mode=mode):
+                result = self._completed_date_row_result(
+                    date_row, circle_id=circle_id, maker_id=maker_id,
+                    release_date=release_date, mode=mode,
+                )
+                date_row.circle_id = circle_id or date_row.circle_id or ""
+                date_row.mode = self._mode_key(mode)
+                date_row.job_id = str(job_id or date_row.job_id or "")
+                date_row.updated_at = datetime.now()
+                db.commit()
+                return result
+            if date_row is None:
+                date_row = DLsiteBonusProbeDate(
+                    maker_id=maker_id, release_date=release_date, gap_limit=int(gap_limit),
+                )
+                db.add(date_row)
+            date_row.circle_id = circle_id or date_row.circle_id or ""
+            date_row.mode = self._mode_key(mode)
+            date_row.status = "processing"
+            date_row.job_id = str(job_id or "")
+            date_row.started_at = datetime.now()
+            date_row.finished_at = None
+            date_row.error_message = None
+            db.commit()
+            return None
+        finally:
+            db.close()
+
+    def _filter_probe_date_hidden_hits_sync(self, **kwargs):
+        db = SessionLocal()
+        try:
+            return self._filter_hidden_hits_for_target_links_sync(db, **kwargs)
+        finally:
+            db.close()
+
+    def _fail_probe_date_sync(
+        self, *, circle_id, maker_id, release_date, gap_limit, mode_key, error,
+    ) -> None:
+        db = SessionLocal()
+        try:
+            date_row = self._upsert_date_row(
+                db, maker_id=maker_id, circle_id=circle_id,
+                release_date=release_date, gap_limit=gap_limit,
+            )
+            date_row.mode = mode_key
+            date_row.status = "failed"
+            date_row.error_message = str(error)[:2000]
+            date_row.finished_at = datetime.now()
+            db.commit()
+        finally:
+            db.close()
+
     async def probe_date(
         self,
         *,
@@ -2363,57 +2435,15 @@ class DLsiteBonusProbeService:
             for normalized in (self.normalize_rjcode(value) for value in (target_rjcodes or []))
             if normalized
         ])
-        if normalized_target_rjcodes:
-            self._persist_precise_release_dates(
-                rjcodes=normalized_target_rjcodes,
-                maker_id=normalized_maker_id,
-                release_date=normalized_date,
-            )
-
         mode_key = self._mode_key(mode)
-        db = SessionLocal()
-        try:
-            date_row = (
-                db.query(DLsiteBonusProbeDate)
-                .filter(
-                    DLsiteBonusProbeDate.maker_id == normalized_maker_id,
-                    DLsiteBonusProbeDate.release_date == normalized_date,
-                    DLsiteBonusProbeDate.gap_limit == int(gap_limit),
-                )
-                .first()
-            )
-            if not normalized_target_rjcodes and self._can_reuse_completed_date_row(date_row, mode=mode):
-                result = self._completed_date_row_result(
-                    date_row,
-                    circle_id=normalized_circle_id,
-                    maker_id=normalized_maker_id,
-                    release_date=normalized_date,
-                    mode=mode,
-                )
-                date_row.circle_id = normalized_circle_id or date_row.circle_id or ""
-                date_row.mode = mode_key
-                date_row.job_id = str(job_id or date_row.job_id or "")
-                date_row.updated_at = datetime.now()
-                db.commit()
-                return result
-
-            if date_row is None:
-                date_row = DLsiteBonusProbeDate(
-                    maker_id=normalized_maker_id,
-                    release_date=normalized_date,
-                    gap_limit=int(gap_limit),
-                )
-                db.add(date_row)
-            date_row.circle_id = normalized_circle_id or date_row.circle_id or ""
-            date_row.mode = mode_key
-            date_row.status = "processing"
-            date_row.job_id = str(job_id or "")
-            date_row.started_at = datetime.now()
-            date_row.finished_at = None
-            date_row.error_message = None
-            db.commit()
-        finally:
-            db.close()
+        reused_result = await asyncio.to_thread(
+            self._start_probe_date_sync,
+            circle_id=normalized_circle_id, maker_id=normalized_maker_id,
+            release_date=normalized_date, gap_limit=gap_limit, mode=mode,
+            job_id=job_id, target_rjcodes=normalized_target_rjcodes,
+        )
+        if reused_result is not None:
+            return reused_result
 
         request_count = 0
         cached_hit_count = 0
@@ -2445,7 +2475,8 @@ class DLsiteBonusProbeService:
                 hidden_hits_by_rjcode[normalized_workno] = feature
 
         try:
-            reusable_hidden_hits = self._load_reusable_hidden_bonus_features(
+            reusable_hidden_hits = await asyncio.to_thread(
+                self._load_reusable_hidden_bonus_features,
                 circle_id=normalized_circle_id,
                 maker_id=normalized_maker_id,
                 release_date=normalized_date,
@@ -2459,7 +2490,8 @@ class DLsiteBonusProbeService:
             selected_cache_covered = False
             selected_probe_stopped_on_hit = False
             if selected_scope and hidden_hits_by_rjcode:
-                covered_targets = self._selected_targets_with_bonus_hits(
+                covered_targets = await asyncio.to_thread(
+                    self._selected_targets_with_bonus_hits,
                     circle_id=normalized_circle_id,
                     maker_id=normalized_maker_id,
                     release_date=normalized_date,
@@ -2474,7 +2506,8 @@ class DLsiteBonusProbeService:
                 normalized_maker_id,
                 normalized_date,
             )
-            self._persist_precise_release_dates(
+            await asyncio.to_thread(
+                self._persist_precise_release_dates,
                 rjcodes=public_worknos,
                 maker_id=normalized_maker_id,
                 release_date=normalized_date,
@@ -2518,7 +2551,8 @@ class DLsiteBonusProbeService:
                         )
                     )
                     circle_candidates = list(selected_anchor_candidates)
-                    date_page_candidates, date_page_range_count = self._build_circle_neighbor_range_candidates(
+                    date_page_candidates, date_page_range_count = await asyncio.to_thread(
+                        self._build_circle_neighbor_range_candidates,
                         circle_id=normalized_circle_id,
                         maker_id=normalized_maker_id,
                         anchor_worknos=normalized_target_rjcodes,
@@ -2545,7 +2579,8 @@ class DLsiteBonusProbeService:
 
             remember_hidden_hits(cached_candidate_features.values(), enforce_selected_relevance=True)
             if selected_scope and hidden_hits_by_rjcode:
-                covered_targets = self._selected_targets_with_bonus_hits(
+                covered_targets = await asyncio.to_thread(
+                    self._selected_targets_with_bonus_hits,
                     circle_id=normalized_circle_id,
                     maker_id=normalized_maker_id,
                     release_date=normalized_date,
@@ -2626,18 +2661,14 @@ class DLsiteBonusProbeService:
                 raise RuntimeError(f"DLsite RJ 探测异常，未产出特典结论：{'; '.join(error_samples)}")
             hidden_hits = list(hidden_hits_by_rjcode.values())
             if selected_scope:
-                db = SessionLocal()
-                try:
-                    hidden_hits = self._filter_hidden_hits_for_target_links_sync(
-                        db,
-                        circle_id=normalized_circle_id,
-                        hidden_hits=hidden_hits,
-                        target_original_rjcodes=normalized_target_rjcodes,
-                        release_date=normalized_date,
-                        selected_anchor_candidates=selected_anchor_candidates,
-                    )
-                finally:
-                    db.close()
+                hidden_hits = await asyncio.to_thread(
+                    self._filter_probe_date_hidden_hits_sync,
+                    circle_id=normalized_circle_id,
+                    hidden_hits=hidden_hits,
+                    target_original_rjcodes=normalized_target_rjcodes,
+                    release_date=normalized_date,
+                    selected_anchor_candidates=selected_anchor_candidates,
+                )
             result = {
                 "circle_id": normalized_circle_id,
                 "maker_id": normalized_maker_id,
@@ -2676,7 +2707,8 @@ class DLsiteBonusProbeService:
                 "hit_rjcodes": [feature.workno for feature in hidden_hits],
                 "reused_hit_index": bool(reusable_hidden_hits),
             }
-            return self._finish_probe_date_result(
+            return await asyncio.to_thread(
+                self._finish_probe_date_result,
                 circle_id=normalized_circle_id,
                 maker_id=normalized_maker_id,
                 release_date=normalized_date,
@@ -2687,22 +2719,12 @@ class DLsiteBonusProbeService:
                 result=result,
             )
         except Exception as exc:
-            db = SessionLocal()
-            try:
-                date_row = self._upsert_date_row(
-                    db,
-                    maker_id=normalized_maker_id,
-                    circle_id=normalized_circle_id,
-                    release_date=normalized_date,
-                    gap_limit=gap_limit,
-                )
-                date_row.mode = mode_key
-                date_row.status = "failed"
-                date_row.error_message = str(exc)[:2000]
-                date_row.finished_at = datetime.now()
-                db.commit()
-            finally:
-                db.close()
+            await asyncio.to_thread(
+                self._fail_probe_date_sync,
+                maker_id=normalized_maker_id, circle_id=normalized_circle_id,
+                release_date=normalized_date, gap_limit=gap_limit,
+                mode_key=mode_key, error=exc,
+            )
             raise
 
     async def probe_circle_dates(
@@ -2723,7 +2745,7 @@ class DLsiteBonusProbeService:
         limits = self.resolve_probe_runtime_limits(mode=mode, batch_size=batch_size, concurrency=concurrency)
         batch_size = int(limits["batch_size"])
         concurrency = int(limits["concurrency"])
-        context = self.resolve_circle_context(circle_id, maker_id)
+        context = await asyncio.to_thread(self.resolve_circle_context, circle_id, maker_id)
         normalized_circle_id = context["circle_id"]
         normalized_maker_id = context["maker_id"]
         if not normalized_maker_id:
@@ -2731,10 +2753,13 @@ class DLsiteBonusProbeService:
         dates = [self.normalize_date(value) for value in (release_dates or [])]
         dates = [value for value in dates if value]
         if not dates:
-            dates = self.list_indexed_release_dates(normalized_circle_id, normalized_maker_id, mode=mode)
+            dates = await asyncio.to_thread(
+                self.list_indexed_release_dates, normalized_circle_id, normalized_maker_id, mode=mode,
+            )
         if not dates:
             raise ValueError("没有可探测的已索引发售日")
-        dates = self._order_probe_release_dates(
+        dates = await asyncio.to_thread(
+            self._order_probe_release_dates,
             circle_id=normalized_circle_id,
             maker_id=normalized_maker_id,
             dates=dates,

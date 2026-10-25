@@ -579,7 +579,7 @@ class DLsiteApiService:
             return ''
         for pattern in [
             r'(?:regist_date|release_date|sales_date)["\']?\s*[:=]\s*["\']([^"\']+)["\']',
-            r'class="[^"]*(?:regist_date|release_date|work_date|date)[^"]*"[^>]*>\s*([^<\n]+?)\s*</',
+            r'class="[^"]*(?:regist_date|release_date|work_date|date)[^"]*"[^>]*>\s*([^\s<][^<\n]*)</',
             r'(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2})',
             r'(20\d{6})',
         ]:
@@ -2886,6 +2886,17 @@ class DLsiteApiService:
         lowered = head.lower()
         return any(marker in lowered for marker in markers)
 
+    def _parse_listing_response_sync(self, response, *, include_touch_ids=False):
+        """解码和整页解析放在工作线程，避免大页面占用事件循环。"""
+        text = response.text
+        summaries = self._extract_summaries_from_listing_html(text)
+        worknos = self._extract_worknos_from_listing_html(text)
+        if not worknos and include_touch_ids:
+            worknos = self._extract_any_worknos_from_listing_html(text)
+        if not worknos and include_touch_ids:
+            worknos = self._extract_not_product_ids_from_html(text)
+        return summaries, worknos, self._looks_like_dlsite_html(text)
+
     async def list_circle_work_summaries_by_maker(
         self,
         maker_id: str,
@@ -3002,18 +3013,16 @@ class DLsiteApiService:
                         )
                         break
                     any_http_success = True
-                    if self._looks_like_dlsite_html(response.text):
+                    page_summaries, page_worknos, looks_normal = await asyncio.to_thread(
+                        self._parse_listing_response_sync, response,
+                        include_touch_ids=mode == "profile-touch",
+                    )
+                    if looks_normal:
                         any_html_looked_normal = True
 
-                    page_summaries = self._extract_summaries_from_listing_html(response.text)
                     new_count = absorb_summaries(page_summaries)
                     # summary 只覆盖已识别的卡片模板；DLsite 同页可能混用卡片结构，
                     # 因此始终再从完整 HTML 提取裸 RJ，补回没有 summary 的作品。
-                    page_worknos = self._extract_worknos_from_listing_html(response.text)
-                    if not page_worknos and mode == "profile-touch":
-                        page_worknos = self._extract_any_worknos_from_listing_html(response.text)
-                    if not page_worknos and mode == "profile-touch":
-                        page_worknos = self._extract_not_product_ids_from_html(response.text)
                     new_count += absorb_raw_worknos(page_worknos)
                 except Exception as exc:
                     logger.warning(
@@ -3049,15 +3058,12 @@ class DLsiteApiService:
                 response_f = await self._guarded_get(filter_url, headers=self._get_browser_headers())
                 if response_f.status_code == 200:
                     any_http_success = True
-                    if self._looks_like_dlsite_html(response_f.text):
+                    page_summaries, page_worknos, looks_normal = await asyncio.to_thread(
+                        self._parse_listing_response_sync, response_f, include_touch_ids=True,
+                    )
+                    if looks_normal:
                         any_html_looked_normal = True
-                    page_summaries = self._extract_summaries_from_listing_html(response_f.text)
                     if absorb_summaries(page_summaries) == 0:
-                        page_worknos = self._extract_worknos_from_listing_html(response_f.text)
-                        if not page_worknos:
-                            page_worknos = self._extract_any_worknos_from_listing_html(response_f.text)
-                        if not page_worknos:
-                            page_worknos = self._extract_not_product_ids_from_html(response_f.text)
                         absorb_raw_worknos(page_worknos)
             except Exception as exc:
                 logger.debug("[DLsite] 社团profile-touch-filter summary 异常 maker_id=%s error=%s", normalized_maker_id, exc)
@@ -3155,9 +3161,11 @@ class DLsiteApiService:
                         continue
                     page_loaded = True
                     any_http_success = True
-                    if self._looks_like_dlsite_html(response.text):
+                    page_summaries, page_worknos, looks_normal = await asyncio.to_thread(
+                        self._parse_listing_response_sync, response,
+                    )
+                    if looks_normal:
                         any_html_looked_normal = True
-                    page_summaries = self._extract_summaries_from_listing_html(response.text)
                     for summary in page_summaries:
                         if not summary.workno or summary.workno in summaries_by_rj:
                             continue
@@ -3165,7 +3173,7 @@ class DLsiteApiService:
                         summaries_by_rj[summary.workno] = summary
                         new_count += 1
                     if new_count == 0:
-                        for workno in self._extract_worknos_from_listing_html(response.text):
+                        for workno in page_worknos:
                             if workno and workno not in summaries_by_rj:
                                 summaries_by_rj[workno] = DLsiteWorkSummary(workno=workno, release_date=normalized_date)
                                 new_count += 1
