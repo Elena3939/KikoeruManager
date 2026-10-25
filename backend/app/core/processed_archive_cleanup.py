@@ -203,6 +203,8 @@ class ProcessedArchiveCleanupService:
                     "file_size": archive.file_size or 0,
                     "file_size_mb": (archive.file_size or 0) / (1024 * 1024),
                     "current_path": archive.current_path,
+                    "original_path": archive.original_path,
+                    "task_id": archive.task_id,
                     "archive_manifest": manifest,
                     "processed_at": archive.processed_at.isoformat() if archive.processed_at else None,
                     "process_count": archive.process_count,
@@ -264,6 +266,9 @@ class ProcessedArchiveCleanupService:
                         if os.path.exists(physical_path):
                             await asyncio.to_thread(os.remove, physical_path)
                             logger.debug(f"删除文件: {physical_path}")
+                    from .filter_recovery_service import get_filter_recovery_service
+
+                    await asyncio.to_thread(get_filter_recovery_service().cleanup_archive, snap)
                     successfully_deleted_ids.append(snap["id"])
                     freed_space += snap["file_size"]
                 except Exception as e:

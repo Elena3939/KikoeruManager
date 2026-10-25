@@ -17,6 +17,7 @@ from datetime import datetime
 from yarl import URL
 
 from ..config.settings import get_config
+from .fs_utils import move_path_efficient
 from .log_sanitizer import mask_url_for_log, sanitize_for_log, sanitize_text_for_log
 from .resource_budget_service import get_resource_budget_service
 from .ttl_cache import TTLCache
@@ -936,7 +937,7 @@ class ASMRDownloadService:
                                     progress_callback(0, remote_size)
                             elif existing_size > 0:
                                 # 文件存在但不完整，重命名并续传
-                                await asyncio.to_thread(os.rename, dest_path, temp_path)
+                                await move_path_efficient(dest_path, temp_path)
                                 resume_offset = existing_size
                                 logger.debug(f"[下载] 文件不完整({existing_size}/{remote_size})，续传: {os.path.basename(dest_path)}")
                                 push_log(f"{os.path.basename(dest_path)} 文件不完整，准备续传 {existing_size}/{remote_size}")
@@ -1031,7 +1032,7 @@ class ASMRDownloadService:
                         if remote_total > 0 and resume_offset == remote_total and os.path.exists(temp_path):
                             if os.path.exists(dest_path):
                                 await asyncio.to_thread(os.remove, dest_path)
-                            await asyncio.to_thread(os.rename, temp_path, dest_path)
+                            await move_path_efficient(temp_path, dest_path)
                             if progress_callback:
                                 progress_callback(remote_total, remote_total)
                             push_log(f"{os.path.basename(dest_path)} 断点片段已完整，直接完成下载", "success")
@@ -1140,7 +1141,7 @@ class ASMRDownloadService:
 
                         if os.path.exists(dest_path):
                             await asyncio.to_thread(os.remove, dest_path)
-                        await asyncio.to_thread(os.rename, temp_path, dest_path)
+                        await move_path_efficient(temp_path, dest_path)
 
                     logger.debug(f"下载完成: {dest_path} ({downloaded} bytes)")
                     push_log(f"{os.path.basename(dest_path)} 下载完成", "success")

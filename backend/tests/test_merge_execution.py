@@ -88,19 +88,19 @@ def test_file_merge_reports_progress_and_preserves_sources_on_write_failure(tmp_
     compare = folders.FolderCompareService()
     messages = []
     token = execution.merge_progress.set(lambda message, percent: messages.append((message, percent)))
-    copy = folders.shutil.copy2
+    copy = folders.copy_file_publish_sync
 
     def fail_copy(*args):
         raise OSError("磁盘空间不足")
 
     try:
-        monkeypatch.setattr(folders.shutil, "copy2", fail_copy)
+        monkeypatch.setattr(folders, "copy_file_publish_sync", fail_copy)
         with pytest.raises(OSError, match="磁盘空间不足"):
             compare.apply_merge(str(source), str(target), {}, str(target))
         assert (source / "new.txt").read_text() == "new"
         assert (target / "old.txt").read_text() == "old"
         assert not list(temp.iterdir())
-        monkeypatch.setattr(folders.shutil, "copy2", copy)
+        monkeypatch.setattr(folders, "copy_file_publish_sync", copy)
         compare.apply_merge(str(source), str(target), {}, str(target))
         assert {path.name for path in target.iterdir()} == {"new.txt", "old.txt"}
         assert messages[-1][1] == 90

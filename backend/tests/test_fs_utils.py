@@ -5,6 +5,25 @@ import time
 import pytest
 
 from app.core import fs_utils
+from app.core import staged_file_move
+
+
+@pytest.fixture(autouse=True)
+def move_settings(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    monkeypatch.setattr(staged_file_move, "move_config", lambda: SimpleNamespace(
+        host_enabled=False, journal_path=str(tmp_path / "journal")))
+
+
+def reject_source_rename(monkeypatch, source):
+    original = staged_file_move.publish_path
+
+    def publish(left, right, **kwargs):
+        if str(left) == str(source):
+            raise OSError(errno.EXDEV, "cross-device link")
+        return original(left, right, **kwargs)
+
+    monkeypatch.setattr(staged_file_move, "publish_path", publish)
 
 
 @pytest.mark.asyncio
@@ -13,10 +32,7 @@ async def test_cross_device_move_does_not_block_event_loop(monkeypatch, tmp_path
     target = tmp_path / "target.bin"
     source.write_bytes(b"x" * (128 * 1024))
 
-    def reject_rename(_src, _dst):
-        raise OSError(errno.EXDEV, "cross-device link")
-
-    monkeypatch.setattr(fs_utils.os, "rename", reject_rename)
+    reject_source_rename(monkeypatch, source)
     loop_tick = asyncio.Event()
 
     async def mark_loop_tick():
@@ -49,16 +65,13 @@ async def test_cross_device_move_cancellation_preserves_source(monkeypatch, tmp_
     target = tmp_path / "target.bin"
     source.write_bytes(b"x" * (64 * 1024))
 
-    def reject_rename(_src, _dst):
-        raise OSError(errno.EXDEV, "cross-device link")
-
     checks = {"count": 0}
 
     def should_cancel():
         checks["count"] += 1
         return checks["count"] >= 4
 
-    monkeypatch.setattr(fs_utils.os, "rename", reject_rename)
+    reject_source_rename(monkeypatch, source)
 
     with pytest.raises(asyncio.CancelledError):
         await fs_utils.move_path_efficient(
@@ -69,5 +82,5 @@ async def test_cross_device_move_cancellation_preserves_source(monkeypatch, tmp_
         )
 
     assert source.exists() is True
-    assert target.exists() is True
-    assert target.stat().st_size < source.stat().st_size
+    assert target.exists() is False
+    assert list((tmp_path / "journal").glob("*.json"))

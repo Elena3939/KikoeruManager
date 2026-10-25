@@ -1,4 +1,6 @@
 import asyncio
+from .fs_utils import copy_file_publish_sync
+
 import contextlib
 import hashlib
 import html
@@ -2852,7 +2854,7 @@ class HttpDownloadService:
         part = final.with_name(final.name + ".part")
         try:
             if source.resolve() != part.resolve():
-                shutil.copyfile(source, part)
+                copy_file_publish_sync(source, part, overwrite=True)
             self._validate_transferit_download_size(part, expected_size)
             os.replace(part, final)
         except Exception:

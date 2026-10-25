@@ -57,6 +57,14 @@ class LibraryConfigItem(BaseModel):
     synology: Optional[SynologyLibraryConfig] = None
 
 
+class FileMoveConfig(BaseModel):
+    """跨挂载文件移动；宿主映射由独立安装工具管理。"""
+    host_enabled: bool = False
+    socket_path: str = "/app/data/.host-file-mover/control.sock"
+    request_timeout_seconds: float = Field(default=30.0, gt=0, le=3600)
+    journal_path: str = ""
+
+
 class StorageConfig(BaseModel):
     """存储路径配置"""
     input_path: str = "/input"
@@ -727,6 +735,7 @@ class UiConfig(BaseModel):
 class AppConfig(BaseModel):
     """应用配置"""
     storage: StorageConfig = StorageConfig()
+    file_move: FileMoveConfig = Field(default_factory=FileMoveConfig)
     processing: ProcessingConfig = ProcessingConfig()
     watcher: WatcherConfig = WatcherConfig()
     extract: ExtractConfig = ExtractConfig()

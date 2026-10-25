@@ -1,0 +1,21 @@
+{
+  "backend/app/config/settings.py:_write_yaml_atomically:os.replace": "配置 YAML 同目录临时文件原子替换，必须保留原子提交语义。",
+  "backend/app/core/app_logging.py:_truncate_file_keep_tail:os.replace": "日志截尾生成的同目录临时文件原子提交，不是业务文件迁移。",
+  "backend/app/core/browser_upload_storage.py:atomic_json:os.replace": "上传断点 JSON 或移动事务记录的同目录原子提交。",
+  "backend/app/core/browser_upload_storage.py:install_local:os.replace": "统一副本生成和 SHA-256 校验已完成；此处只原子替换目标旁上传暂存，保留上传并发策略。",
+  "backend/app/core/circle_image_cache_service.py:CircleImageCacheService.restore_from_legacy_alias:os.replace": "封面缓存由同目录临时文件提交，缓存别名不是业务移动。",
+  "backend/app/core/circle_image_cache_service.py:CircleImageCacheService._download_once:os.replace": "封面下载缓存的同目录临时文件原子提交。",
+  "backend/app/core/extract_service.py:ExtractService._extract_archive_entry_to_file:os.replace": "7zz 流式解压单文件的目标旁 .part 原子提交，不搬运已有业务文件。",
+  "backend/app/core/extract_service.py:ExtractService._fix_unar_garbled_encoding:os.replace": "同父目录内 unar 编码重试视图与备份切换，必须保留原子交换和失败回滚。",
+  "backend/app/core/file_move_protocol.py:atomic_json:os.replace": "上传断点 JSON 或移动事务记录的同目录原子提交。",
+  "backend/app/core/filter_recovery_service.py:FilterRecoveryService.capture_item:os.replace": "内容已通过统一移动生成到恢复项暂存，此处只提交同父目录恢复项容器。",
+  "backend/app/core/filter_recovery_service.py:FilterRecoveryService._atomic_json:os.replace": "过滤恢复清单 JSON 同目录临时文件原子提交。",
+  "backend/app/core/filter_recovery_service.py:FilterRecoveryService._reconcile:os.replace": "旧版恢复项同父目录 .part 提交，不跨挂载搬运内容。",
+  "backend/app/core/http_download_service.py:HttpDownloadService._publish_transferit_download:os.replace": "统一能力生成并验证目标旁下载 .part 后的原子提交。",
+  "backend/app/core/http_download_service.py:HttpDownloadService._quarantine_incomplete_transferit_final:os.replace": "同父目录未完成下载隔离为 .part，保持断点语义。",
+  "backend/app/core/http_download_service.py:HttpDownloadService._download_transferit_item_unlocked.run_download_once:tmp_path.replace": "下载写入目标旁 .part 后原子提交；失败仍保留原下载断点。",
+  "backend/app/core/http_download_service.py:HttpDownloadService._download_transferit_item_unlocked.run_download_once:os.replace": "下载写入目标旁 .part 后原子提交；失败仍保留原下载断点。",
+  "backend/app/core/staged_file_move.py:publish_path:os.replace": "统一移动底层唯一原生重命名/覆盖实现；上层负责事务、EXDEV 与恢复。",
+  "backend/app/core/staged_file_move.py:publish_path:os.rename": "统一移动底层唯一原生重命名/覆盖实现；上层负责事务、EXDEV 与恢复。",
+  "backend/app/core/baidu_netdisk_service.py:BaiduNetdiskService._download_share_item_via_temporary_transfer:os.replace": "已统一搬运到目标旁独占暂存并完成大小校验，此处保留下载收尾的同目录原子发布。"
+}

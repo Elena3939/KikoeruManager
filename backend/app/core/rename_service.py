@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import shutil
+from .fs_utils import move_path_sync, run_file_operation_async
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -126,7 +127,7 @@ class RenameService:
                 logger.info(f"重命名服务 - 使用新名称避免冲突: {new_path.name}")
         
         # 执行重命名
-        await asyncio.to_thread(shutil.move, str(dir_path), str(new_path))
+        await run_file_operation_async(move_path_sync, str(dir_path), str(new_path))
         logger.info(f"重命名: {dir_path} -> {new_path}")
 
         return str(new_path)
@@ -208,13 +209,13 @@ class RenameService:
                     temp_path = current_path.parent / f"{current_path.name}_temp_{os.urandom(4).hex()}"
 
                     # 先将子文件夹移动到临时位置
-                    shutil.move(str(subfolder), str(temp_path))
+                    move_path_sync(str(subfolder), str(temp_path))
 
                     # 删除空的原文件夹
                     current_path.rmdir()
 
                     # 将临时文件夹重命名为原文件夹名
-                    shutil.move(str(temp_path), str(current_path))
+                    move_path_sync(str(temp_path), str(current_path))
 
                     logger.info(f"扁平化完成 (层 {current_depth + 1}): {current_path}")
 

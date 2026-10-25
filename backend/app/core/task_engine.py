@@ -5,6 +5,7 @@ import re
 import uuid
 import os
 import shutil
+from .fs_utils import move_path_efficient, move_path_sync
 import tempfile
 import threading
 import time
@@ -3248,7 +3249,18 @@ class TaskEngine:
                         multi_rj_dirs = self._detect_multi_rj_subfolders(extracted_path)
                     except Exception:
                         multi_rj_dirs = []
-                        logger.warning(f"[{rjcode}] 多作品包检测失败，回退到单作品流程", exc_info=True)
+                        logger.warning(f"[{rjcode}] 多作品包目录检测失败", exc_info=True)
+                    from .archive_identity import aggregate_rjcodes
+                    expected_rjs = aggregate_rjcodes(task.task_metadata)
+                    detected_rjs = {entry["rjcode"] for entry in multi_rj_dirs}
+                    missing_rjs = [code for code in expected_rjs if code not in detected_rjs]
+                    if missing_rjs:
+                        from .import_validation import ImportDataError
+
+                        raise ImportDataError(
+                            f"合集作品拆分失败，解压后未找到独立作品目录: {'、'.join(missing_rjs)}",
+                            "extract",
+                        )
                     if multi_rj_dirs and len(multi_rj_dirs) >= 2:
                         rj_list = [d.get("rjcode") for d in multi_rj_dirs]
                         logger.info(
@@ -3393,8 +3405,11 @@ class TaskEngine:
                             )
                             return
                         else:
-                            logger.warning(
-                                f"[{rjcode}] 多作品包检测命中但未派发任何子任务，回退到单作品流程"
+                            from .import_validation import ImportDataError
+
+                            raise ImportDataError(
+                                "合集作品拆分失败，未成功派发任何子任务，已停止整包入库",
+                                "extract",
                             )
 
                 # 步骤1.5: 解压后重复检查（如果预检时无法提取 RJ 号）
@@ -5173,7 +5188,7 @@ class TaskEngine:
                 )
                 target_path = os.path.join(holder, os.path.basename(sub_src.rstrip("\\/")))
                 # 同步搬运目录（数据较大时阻塞，但已经在线程里）
-                await asyncio.to_thread(shutil.move, sub_src, target_path)
+                await move_path_efficient(sub_src, target_path)
             except Exception as exc:
                 logger.error(
                     "[多作品拆分] 移动 RJ 子目录失败: parent=%s rj=%s src=%s err=%s",
@@ -5653,6 +5668,9 @@ class TaskEngine:
                     existing_record.processed_at = datetime.now()
                     existing_record.status = 'completed'
                     existing_record.volume_count = len(get_archive_volume_paths(source_path))
+                    from .filter_recovery_service import get_filter_recovery_service
+
+                    get_filter_recovery_service().bind_archive(task.id, existing_record.id)
                     db.commit()
                     try:
                         from .task_center_event_service import broadcast_processed_archive_changed
@@ -5823,8 +5841,11 @@ class TaskEngine:
                         db.add(archive_record)
                         logger.info(f"已记录压缩包归档信息: {main_filename}, 时间: {now}")
                     
-                    db.commit()
                     changed_archive = existing_record or archive_record
+                    from .filter_recovery_service import get_filter_recovery_service
+
+                    get_filter_recovery_service().bind_archive(task.id, changed_archive.id)
+                    db.commit()
                     try:
                         from .task_center_event_service import broadcast_processed_archive_changed
                         broadcast_processed_archive_changed(changed_archive)
@@ -6213,7 +6234,7 @@ class TaskEngine:
                     final_path = os.path.join(library_path, f"{os.path.basename(renamed_path)}_{counter}")
                     counter += 1
 
-                await asyncio.to_thread(shutil.move, renamed_path, final_path)
+                await move_path_efficient(renamed_path, final_path)
                 task.output_path = final_path
                 logger.info(f"[{rjcode}] 移动到: {final_path}")
                 # 索引同步：禁用 classify 的兜底链路里没有 library 上下文，
@@ -6247,7 +6268,7 @@ class TaskEngine:
                         dest_subtitle_path = os.path.join(finished_dir, f"{subtitle_folder_name}_{counter}")
                         counter += 1
 
-                    await asyncio.to_thread(shutil.move, subtitle_folder, dest_subtitle_path)
+                    await move_path_efficient(subtitle_folder, dest_subtitle_path)
                     logger.info(f"[{rjcode}] 字幕文件夹已移动到: {dest_subtitle_path}")
                     task.task_metadata['subtitle_moved_to'] = dest_subtitle_path
 

@@ -74,6 +74,72 @@ def test_filter_moves_file_to_recovery_and_can_restore(monkeypatch, tmp_path):
     assert not payload.exists()
 
 
+def test_archive_storage_migrates_existing_payload_and_restores_after_restart(tmp_path):
+    recovery = FilterRecoveryService(str(tmp_path / "data" / "filter-recovery"))
+    source = tmp_path / "remove.tmp"
+    source.write_bytes(b"recover-me")
+    item = recovery.capture_item("task-1", str(source), relative_path="remove.tmp", entry_type="file", size=10)
+    old_payload = recovery._payload_path("task-1", item)
+    processed = tmp_path / "processed"
+    recovery.prepare_archive_storage("task-1", rjcode="RJ123456", source_path="/input/work.zip", processed_root=processed)
+    expected = processed / "RJ123456_过滤文件" / "task-1" / "payload" / item["recovery_id"] / "remove.tmp"
+    assert expected.read_bytes() == b"recover-me"
+    assert not old_payload.exists()
+    recovery.finalize_task("task-1", final_root=str(tmp_path / "library"))
+    recovery = FilterRecoveryService(str(tmp_path / "data" / "filter-recovery"))
+    manifest = recovery._read_manifest("task-1")
+    assert recovery._payload_path("task-1", item) == expected
+    restored = recovery._restore_local(expected, manifest["target"], item)
+    assert Path(restored).read_bytes() == b"recover-me"
+
+
+def test_archive_cleanup_only_removes_associated_tasks_and_preserves_same_rj(tmp_path):
+    recovery = FilterRecoveryService(str(tmp_path / "recovery"))
+    processed = tmp_path / "processed"
+    for task_id, archive_id in [("task-1", "archive-1"), ("task-2", "archive-1"), ("task-3", "archive-2")]:
+        recovery.prepare_archive_storage(task_id, rjcode="RJ123456", source_path="/input/same.zip", processed_root=processed)
+        source = tmp_path / f"{task_id}.tmp"
+        source.write_bytes(b"data")
+        recovery.capture_item(task_id, str(source), relative_path=source.name, entry_type="file", size=4)
+        recovery.bind_archive(task_id, archive_id)
+    # 删除任务记录不再提前删除随归档留存的内容。
+    assert recovery.cleanup_task("task-1")
+    assert recovery._task_root("task-1").exists()
+    recovery.cleanup_archive({"id": "archive-1", "task_id": "task-2"})
+    assert not recovery._task_root("task-1").exists()
+    assert not recovery._task_root("task-2").exists()
+    assert not (processed / "RJ123456_过滤文件" / "task-1").exists()
+    assert (processed / "RJ123456_过滤文件" / "task-3" / "payload").exists()
+
+
+def test_archive_storage_keeps_original_directory_when_configuration_changes(tmp_path):
+    recovery = FilterRecoveryService(str(tmp_path / "recovery"))
+    recovery.prepare_archive_storage("task-1", rjcode="RJ123456", processed_root=tmp_path / "first")
+    recovery.prepare_archive_storage("task-1", rjcode="RJ123456", processed_root=tmp_path / "second")
+    assert recovery._payload_root("task-1").is_relative_to(tmp_path / "first")
+
+
+def test_archive_storage_cross_device_copy_is_verified(monkeypatch, tmp_path):
+    import errno
+
+    recovery = FilterRecoveryService(str(tmp_path / "recovery"))
+    source = tmp_path / "remove.tmp"
+    source.write_bytes(b"data")
+    item = recovery.capture_item("task-1", str(source), relative_path=source.name, entry_type="file", size=4)
+    old_root = recovery._task_root("task-1") / "payload"
+    replace = os.replace
+
+    def cross_device(source, destination):
+        if Path(source) == old_root:
+            raise OSError(errno.EXDEV, "跨设备")
+        return replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", cross_device)
+    recovery.prepare_archive_storage("task-1", rjcode="RJ123456", processed_root=tmp_path / "processed")
+    assert recovery._payload_path("task-1", item).read_bytes() == b"data"
+    assert not old_root.exists()
+
+
 def test_parent_directory_match_collapses_child_file_match(monkeypatch, tmp_path):
     source = tmp_path / "source"
     removed_dir = source / "delete-me"

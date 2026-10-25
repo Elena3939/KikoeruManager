@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+from .fs_utils import move_path_sync, run_file_operation_async
 import asyncio
 import uuid
 from pathlib import Path
@@ -414,7 +415,7 @@ class SmartClassifier:
         final_path = ""
         old_deleted = False
         try:
-            final_path = await asyncio.to_thread(
+            final_path = await run_file_operation_async(
                 self._move_with_rename,
                 source_path,
                 target_path,
@@ -450,7 +451,7 @@ class SmartClassifier:
             old_deleted = True
             if os.path.normcase(os.path.abspath(final_path)) != os.path.normcase(os.path.abspath(old_path)):
                 if os.path.normcase(os.path.abspath(intended_final)) == os.path.normcase(os.path.abspath(old_path)):
-                    os.replace(final_path, old_path)
+                    move_path_sync(final_path, old_path)
                     final_path = old_path
 
             final_relative = manager._index_relative_path(target_library, final_path)
@@ -541,7 +542,7 @@ class SmartClassifier:
             # 之后用户点"合并 / 保留新版"预览就会 404 New source does not exist。
             conflict_base_path = os.path.join(self.config.storage.library_path, '_conflicts')
             os.makedirs(conflict_base_path, exist_ok=True)
-            final_path = await asyncio.to_thread(self._move_with_rename, source_path, conflict_base_path)
+            final_path = await run_file_operation_async(self._move_with_rename, source_path, conflict_base_path)
 
             # 用搬迁后的稳定路径写入 conflict 记录
             self._add_to_conflict_works(task.id, rjcode, conflict_type, existing['path'], final_path, metadata)
@@ -558,7 +559,7 @@ class SmartClassifier:
         existing_subtree_to_clear: Optional[str] = None
         if resolution == "KEEP_NEW" and resolution_existing_path:
             task.update_progress(92, "替换现有目录")
-            final_path = await asyncio.to_thread(
+            final_path = await run_file_operation_async(
                 get_folder_compare_service().safe_replace_directory,
                 source_path,
                 str(resolution_existing_path),
@@ -566,7 +567,7 @@ class SmartClassifier:
             existing_subtree_to_clear = str(resolution_existing_path)
         elif resolution == "MERGE" and resolution_existing_path:
             task.update_progress(92, "生成并写入合并结果")
-            final_path = await asyncio.to_thread(
+            final_path = await run_file_operation_async(
                 get_folder_compare_service().apply_merge,
                 source_path,
                 str(resolution_existing_path),
@@ -578,6 +579,13 @@ class SmartClassifier:
             # 跨卷复制时通过 progress 回调把"移动到库存"的真实进度映射到 90~94 区间。
             # 默认 shutil.move 在 NAS 跨卷场景下没有任何进度回报，前端经常停留在
             # 90%（"移动到库存"）十几分钟看不到任何变化；这里实时上报 MB 数。
+            move_phase = "准备中"
+
+            def _classify_move_phase(phase: str) -> None:
+                nonlocal move_phase
+                move_phase = phase
+                task.update_progress(90, f"移动到库存 · {phase}")
+
             def _classify_move_progress(copied: int, total: int) -> None:
                 try:
                     if total <= 0:
@@ -587,11 +595,12 @@ class SmartClassifier:
                     mb_total = total / (1024 * 1024)
                     task.update_progress(
                         90 + int(ratio * 4),
-                        f"移动到库存 {mb_done:.0f}/{mb_total:.0f}MB",
+                        f"移动到库存 · {move_phase} {mb_done:.0f}/{mb_total:.0f}MB",
                     )
                 except Exception:
                     logger.debug("classify 移动进度回调异常已忽略", exc_info=True)
 
+            _classify_move_progress.phase_cb = _classify_move_phase
             final_path = None
             if bool((task.task_metadata or {}).get("replace_inventory_empty_shell")):
                 empty_shell_rjcode = str(
@@ -609,7 +618,7 @@ class SmartClassifier:
                     progress_cb=_classify_move_progress,
                 )
             if not final_path:
-                final_path = await asyncio.to_thread(
+                final_path = await run_file_operation_async(
                     self._move_with_rename,
                     source_path,
                     target_path,
@@ -706,8 +715,7 @@ class SmartClassifier:
                 ConflictWork.status.in_(['PENDING', 'PROCESSING'])
             )
 
-            # 失败问题项允许同一 RJ 下保留多条不同来源记录；
-            # 否则会把后来的失败直接吞掉，任务中心里看得到失败，但问题作品页里没有。
+            # 只按实际来源去重。同 RJ 的本体、特典等不同包必须各自保留问题记录。
             existing_conflict = None
             if new_path:
                 path_query = active_query.filter(ConflictWork.new_path == new_path)
@@ -718,12 +726,6 @@ class SmartClassifier:
                     )
                 existing_conflict = path_query.first()
 
-            if not existing_conflict and rjcode and conflict_type not in {'EXTRACT_FAILED', 'PROCESS_FAILED'}:
-                existing_conflict = active_query.filter(
-                    ConflictWork.rjcode == rjcode,
-                    ConflictWork.conflict_type == conflict_type,
-                ).first()
-            
             if existing_conflict:
                 if metadata.get("source_operation") == "api_rename":
                     existing_conflict.new_metadata = safe_json_value({
@@ -965,8 +967,8 @@ class SmartClassifier:
     def _move_with_rename(self, source: str, target_dir: str, progress_cb=None) -> str:
         """移动文件/文件夹，处理重名
 
-        - 同卷直接 ``os.rename``，瞬间完成
-        - 跨卷场景下走 fs_utils.move_path_efficient（8 MB buffer 流式），并把
+        - 优先原生重命名，EXDEV 后按宿主真实文件系统选择克隆或流式复制
+        - 统一走 fs_utils.move_path_sync，并把
           ``progress_cb(copied_bytes, total_bytes)`` 透传出去，方便上层把
           "移动到库存"的真实进度上报到任务中心
         """
@@ -991,26 +993,11 @@ class SmartClassifier:
             final_target = target_path / f"{original_target.stem}({counter}){original_target.suffix}"
             counter += 1
             if counter > 100:  # 防止无限循环
-                logger.error(f"无法找到可用的目标路径，使用原路径")
-                return source
+                raise FileExistsError(f"无法找到可用的目标路径: {original_target}")
             logger.info(f"移动: 目标已存在，尝试新名称: {final_target.name}")
 
-        # 跨卷场景下走 efficient 流式 copy + 大 buffer。这里调用方 _move_with_rename
-        # 是 sync 的（被 asyncio.to_thread 包装），所以用 asyncio.run 跑一次协程。
-        from .fs_utils import move_path_efficient
-
-        try:
-            asyncio.run(
-                move_path_efficient(
-                    str(source_path),
-                    str(final_target),
-                    progress_cb=progress_cb,
-                )
-            )
-        except RuntimeError:
-            # asyncio.run 只能在没有运行 event loop 的线程里调用；
-            # 极少数同步路径如果已经在 event loop 内被调用，回退到 shutil.move 老路径。
-            shutil.move(str(source_path), str(final_target))
+        move_path_sync(str(source_path), str(final_target), progress_cb=progress_cb,
+                       phase_cb=getattr(progress_cb, "phase_cb", None))
         logger.info(f"移动: {source_path} -> {final_target}")
         
         return str(final_target)

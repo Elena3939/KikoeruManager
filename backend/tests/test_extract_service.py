@@ -22,6 +22,32 @@ from app.core.task_engine import Task, TaskType
 
 class TestExtractService:
     """测试解压服务"""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["RJ01410151", "[社团][RJ01428862]", "01410151", "RJ01410151_1"])
+    async def test_collapse_wrapper_preserves_work_identity(self, extract_service, tmp_path, name):
+        wrapper = tmp_path / name
+        track = wrapper / "作品名" / "wav" / "track.wav"
+        track.parent.mkdir(parents=True)
+        track.write_bytes(b"audio")
+
+        await extract_service._collapse_wrapper_dir(str(wrapper), str(tmp_path))
+
+        assert track.read_bytes() == b"audio"
+        assert not (tmp_path / "作品名").exists()
+
+    @pytest.mark.asyncio
+    async def test_collapse_wrapper_still_flattens_plain_container(self, extract_service, tmp_path):
+        parent = tmp_path / "RJ01410151"
+        wrapper = parent / "archive"
+        track = wrapper / "wav" / "track.wav"
+        track.parent.mkdir(parents=True)
+        track.write_bytes(b"audio")
+
+        await extract_service._collapse_wrapper_dir(str(wrapper), str(parent))
+
+        assert not wrapper.exists()
+        assert (parent / "wav" / "track.wav").read_bytes() == b"audio"
     
     @pytest.fixture
     def extract_service(self):

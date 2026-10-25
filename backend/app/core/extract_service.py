@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+from .fs_utils import move_path_efficient, move_path_sync
 import contextlib
 
 # ZIP 文件名编码名称 → Windows 代码页编号（用于 7zz -mcp=<cp>）
@@ -23,6 +24,8 @@ _CP_TO_ENCODING: dict[int, str] = {
     950: 'big5',
 }
 import subprocess
+from .fs_utils import copy_file_publish_sync
+
 import asyncio
 import sys
 import threading
@@ -50,7 +53,7 @@ from ..core.password_utils import (
 )
 from ..core.json_safety import database_safe_text, safe_json_value
 from ..core.resource_budget_service import get_resource_budget_service
-from .extract_runtime import AdjustableLimiter, ArchiveFingerprintCache, archive_node, record_event, node_state, measured_phase, archive_attempt, candidate_evidence
+from .extract_runtime import AdjustableLimiter, ArchiveFingerprintCache, archive_node, record_event, node_state, measured_phase, archive_attempt, candidate_evidence, current_archive_depth
 from .failure_reason_formatter import format_extract_failure_message
 
 logger = logging.getLogger(__name__)
@@ -3668,7 +3671,8 @@ class ExtractService:
     async def _collapse_wrapper_dir(self, nested_dir: str, parent_dir: str) -> None:
         """若 nested_dir 内只有子目录（无直接文件），将子目录整体移入 parent_dir 后删除空壳。
 
-        用于减少多层嵌套解压产生的中间目录层级，节省峰值磁盘占用。
+        用于减少多层嵌套解压产生的中间目录层级。
+        带作品编号的目录承载嵌套包身份，必须保留供后续拆分、查重使用。
         遇到同名冲突时跳过该条目，保留原目录结构。
         """
         if not os.path.isdir(nested_dir):
@@ -3679,6 +3683,9 @@ class ExtractService:
                 # 空目录直接删除
                 await asyncio.to_thread(shutil.rmtree, nested_dir, ignore_errors=True)
                 logger.debug("删除空嵌套目录: %s", nested_dir)
+                return
+
+            if self._extract_rjcode_candidates_from_text(os.path.basename(os.path.normpath(nested_dir))):
                 return
 
             # 有直接文件则保留，不做折叠
@@ -3696,7 +3703,7 @@ class ExtractService:
                 if os.path.exists(dst):
                     logger.debug("折叠嵌套目录时跳过同名项: %s", dst)
                     continue
-                await asyncio.to_thread(shutil.move, src, dst)
+                await move_path_efficient(src, dst)
                 moved_any = True
 
             # 若目录已空，删除空壳
@@ -3922,6 +3929,25 @@ class ExtractService:
         """
         archive_name = os.path.basename(archive_path)
         opaque_file_list: Optional[List[Dict]] = None
+        progress_label = f"解压嵌套压缩包 {archive_name} (层{max(1, current_archive_depth())})"
+        last_progress_percent = -1
+        last_progress_time = 0.0
+
+        def nested_progress(line: str):
+            nonlocal last_progress_percent, last_progress_time
+            match = re.search(r"(?<!\d)(\d{1,3})%", line)
+            if task is None or not match:
+                return
+            percent = int(match.group(1))
+            if not 0 <= percent <= 100:
+                return
+            now = time.monotonic()
+            if percent == last_progress_percent or (now - last_progress_time < 1.5 and percent != 100):
+                return
+            last_progress_percent, last_progress_time = percent, now
+            # 后续仍可能发现更深层归档；单包百分比不冒充整个任务完成率。
+            task.update_progress(max(40, int(task.progress or 0)), f"{progress_label} · 当前包 {percent}%")
+
         is_opaque_nested_archive = not bool(os.path.splitext(archive_name)[1])
         opaque_zip_has_encrypted_entries: Optional[bool] = None
         if self._is_zip_like_archive(archive_path):
@@ -4377,7 +4403,7 @@ class ExtractService:
                 if reason == 'cancelled':
                     return False, None
                 await asyncio.to_thread(clean_output)
-            cmd = [self.seven_zip, "x", "-y", f"-o{output_path}", *self._get_seven_zip_mmt_args(), *self._get_mcp_args(archive_path), archive_path]
+            cmd = [self.seven_zip, "x", "-y", "-bsp1", f"-o{output_path}", *self._get_seven_zip_mmt_args(), *self._get_mcp_args(archive_path), archive_path]
             cmd.append(f"-p{password}" if password else "-p")
             is_trusted_parent_password_attempt = (
                 has_trusted_parent_password
@@ -4385,8 +4411,11 @@ class ExtractService:
                 and password == trusted_parent_password
             )
             try:
+                last_progress_percent, last_progress_time = -1, 0.0
                 result = await self._run_7z_command(
                     cmd,
+                    progress_callback=nested_progress,
+                    progress_label=progress_label,
                     capture_stdout=False,
                     task=task,
                     command_timeout=(
@@ -4614,7 +4643,7 @@ class ExtractService:
             new_path = path.parent / new_filename
             counter += 1
 
-        os.rename(file_path, new_path)
+        move_path_sync(file_path, new_path)
         return str(new_path)
 
     async def normalize_archive_filename(self, file_path: str) -> str:
@@ -4693,7 +4722,7 @@ class ExtractService:
                 new_path = os.path.join(os.path.dirname(file_path), new_filename)
                 counter += 1
 
-            await asyncio.to_thread(os.rename, file_path, new_path)
+            await move_path_efficient(file_path, new_path)
             return new_path
 
         # 文件名需要规范化，重命名文件
@@ -4749,7 +4778,7 @@ class ExtractService:
 
         for old_path, new_path in rename_map:
             if old_path != new_path and os.path.exists(old_path):
-                await asyncio.to_thread(os.rename, old_path, new_path)
+                await move_path_efficient(old_path, new_path)
                 logger.info(f"[RENAME] 分卷重命名: {old_path} -> {new_path}")
 
         target_entry_path = volume_set.entry_path or file_path
@@ -4973,7 +5002,7 @@ class ExtractService:
                     )
                     continue
                 try:
-                    os.rename(file_path, new_path)
+                    move_path_sync(file_path, new_path)
                     rename_map[file_path] = new_path
                     logger.info(
                         f"[残缺后缀修复] {filename} → {new_filename} (探测真实格式={real_ext})"
@@ -5065,7 +5094,7 @@ class ExtractService:
                 )
                 continue
             try:
-                await asyncio.to_thread(os.rename, source_path, target_path)
+                await move_path_efficient(source_path, target_path)
                 rename_map[source_path] = target_path
                 logger.info(
                     "[嵌套 SFX 分卷修复] %s -> %s（RAR 分卷，共 %d 卷）",
@@ -5171,7 +5200,7 @@ class ExtractService:
             new_path = path.parent / new_name
             counter += 1
 
-        os.rename(file_path, new_path)
+        move_path_sync(file_path, new_path)
         return str(new_path)
 
     def _add_extension(self, file_path: str, ext: str) -> str:
@@ -5190,7 +5219,7 @@ class ExtractService:
             new_path = path.parent / new_name
             counter += 1
 
-        os.rename(file_path, new_path)
+        move_path_sync(file_path, new_path)
         return str(new_path)
 
     def _detect_volume_set(self, file_path: str) -> Optional['VolumeSet']:
@@ -5477,7 +5506,7 @@ class ExtractService:
             os.link(source_path, target_path)
             return "hardlink"
         except Exception:
-            shutil.copy2(source_path, target_path)
+            copy_file_publish_sync(source_path, target_path)
             return "copy"
 
     async def _remap_exe_e_sequence(
@@ -5635,7 +5664,7 @@ class ExtractService:
         completed: List[Tuple[str, str]] = []
         for old_path, new_path in rename_map:
             try:
-                await asyncio.to_thread(os.rename, old_path, new_path)
+                await move_path_efficient(old_path, new_path)
                 completed.append((old_path, new_path))
                 logger.info(f"[ExeESequence] 重命名: {old_path} -> {new_path}")
             except Exception as exc:
@@ -5645,7 +5674,7 @@ class ExtractService:
                 )
                 for done_old, done_new in completed:
                     try:
-                        await asyncio.to_thread(os.rename, done_new, done_old)
+                        await move_path_efficient(done_new, done_old)
                         logger.info(f"[ExeESequence] 回滚重命名: {done_new} -> {done_old}")
                     except Exception as rollback_exc:
                         logger.error(
@@ -5718,7 +5747,7 @@ class ExtractService:
                 )
                 continue
             try:
-                await asyncio.to_thread(os.rename, renamed, original)
+                await move_path_efficient(renamed, original)
                 logger.info(f"[ExeESequence] 失败回滚: {renamed} -> {original}")
             except Exception as exc:
                 logger.error(
@@ -5785,7 +5814,7 @@ class ExtractService:
         completed: List[Tuple[str, str]] = []
         for old_path, new_path in rename_map:
             try:
-                await asyncio.to_thread(os.rename, old_path, new_path)
+                await move_path_efficient(old_path, new_path)
                 completed.append((old_path, new_path))
                 logger.info(f"[ZipNumericSplit] 重命名: {old_path} -> {new_path}")
             except Exception as exc:
@@ -5795,7 +5824,7 @@ class ExtractService:
                 )
                 for done_old, done_new in completed:
                     try:
-                        await asyncio.to_thread(os.rename, done_new, done_old)
+                        await move_path_efficient(done_new, done_old)
                         logger.info(f"[ZipNumericSplit] 回滚重命名: {done_new} -> {done_old}")
                     except Exception as rollback_exc:
                         logger.error(
@@ -5849,7 +5878,7 @@ class ExtractService:
                 )
                 continue
             try:
-                await asyncio.to_thread(os.rename, renamed, original)
+                await move_path_efficient(renamed, original)
                 logger.info(f"[ZipNumericSplit] 失败回滚: {renamed} -> {original}")
             except Exception as exc:
                 logger.error(
@@ -5927,7 +5956,7 @@ class ExtractService:
         completed: List[Tuple[str, str]] = []
         for old_path, new_path in rename_map:
             try:
-                await asyncio.to_thread(os.rename, old_path, new_path)
+                await move_path_efficient(old_path, new_path)
                 completed.append((old_path, new_path))
                 logger.info(f"[PartExeRemap] 重命名: {old_path} -> {new_path}")
             except Exception as exc:
@@ -5937,7 +5966,7 @@ class ExtractService:
                 )
                 for done_old, done_new in completed:
                     try:
-                        await asyncio.to_thread(os.rename, done_new, done_old)
+                        await move_path_efficient(done_new, done_old)
                         logger.info(f"[PartExeRemap] 回滚重命名: {done_new} -> {done_old}")
                     except Exception as rollback_exc:
                         logger.error(
@@ -5991,7 +6020,7 @@ class ExtractService:
                 )
                 continue
             try:
-                await asyncio.to_thread(os.rename, renamed, original)
+                await move_path_efficient(renamed, original)
                 logger.info(f"[PartExeRemap] 失败回滚: {renamed} -> {original}")
             except Exception as exc:
                 logger.error(
@@ -9751,6 +9780,7 @@ class ExtractService:
         command_timeout: Optional[float] = None,
         slot_wait_timeout: Optional[float] = None,
         update_task_progress: bool = True,
+        progress_label: Optional[str] = None,
     ) -> subprocess.CompletedProcess:
         """运行7z命令。传入 task 后会把子进程登记到 task 上，cancel/pause 能立刻 kill。"""
         cmd = self._apply_cached_zip_password_argv_encoding(cmd)
@@ -9766,6 +9796,8 @@ class ExtractService:
             else self.__class__._seven_zip_inspect_semaphore_limit
         ) or 1
         slot_label = "解压槽位" if is_extract_command else "清单/探测槽位"
+        if progress_label:
+            slot_label += f"（{progress_label}）"
         timeout_seconds = command_timeout
         if timeout_seconds is None and is_inspect_command:
             timeout_seconds = self.LIST_TIMEOUT_SECONDS
@@ -9811,7 +9843,7 @@ class ExtractService:
                     )
                 logger.info("已取得%s，启动7z命令: %s", slot_label, formatted_cmd)
                 if task is not None and update_task_progress and is_extract_command:
-                    task.update_progress(max(40, int(task.progress or 0)), "解压子进程已启动")
+                    task.update_progress(max(40, int(task.progress or 0)), f"{progress_label} · 已启动" if progress_label else "解压子进程已启动")
                 # Windows 上隐藏子进程窗口，避免闪烁
                 kwargs = {
                     'stdout': subprocess.PIPE,
@@ -9846,14 +9878,18 @@ class ExtractService:
                         if is_stdout and progress_callback:
                             try:
                                 text = progress_tail + self._decode_7z_progress_chunk(chunk)
-                                parts = re.split(r"[\r\n]+", text)
-                                if text and not text.endswith(("\r", "\n")):
+                                parts = re.split(r"[\r\n\b]+", text)
+                                if text and not text.endswith(("\r", "\n", "\b")):
                                     progress_tail = parts.pop()
                                 else:
                                     progress_tail = ""
                                 for line in parts:
                                     if line.strip():
                                         progress_callback(line.strip())
+                                # 7zz 在管道里也可能只写百分比和退格、不写换行。
+                                if re.search(r"\d{1,3}%", progress_tail):
+                                    progress_callback(progress_tail.strip())
+                                progress_tail = progress_tail[-8192:]
                             except Exception:
                                 progress_tail = ""
                     if is_stdout and progress_callback and progress_tail.strip():
@@ -11899,7 +11935,7 @@ class ExtractService:
         if os.path.islink(source) or os.path.islink(target):
             return False
         if not os.path.lexists(target):
-            os.rename(source, target)
+            move_path_sync(source, target)
             return True
         if not os.path.isdir(source) or not os.path.isdir(target):
             return False

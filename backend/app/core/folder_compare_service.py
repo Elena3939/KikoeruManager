@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..config.settings import get_config
+from .fs_utils import (
+    MoveCleanupPending, copy_file_publish_sync, move_path_sync, move_path_replacing_sync,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,9 +146,11 @@ class FolderCompareService:
             if progress:
                 progress("替换目标目录并清理旧目录备份", 90)
             return self.safe_replace_directory(merged_dir, target_path)
+        except MoveCleanupPending:
+            raise
         except Exception:
-            if os.path.isdir(merged_dir):
-                shutil.rmtree(merged_dir, ignore_errors=True)
+            # 统一替换记录可能引用这个来源或暂存，保留完整现场供恢复。
+            logger.exception("合并提交失败，保留生成目录及移动记录: %s", merged_dir)
             raise
 
     def safe_replace_directory(self, source_dir: str, target_path: str) -> str:
@@ -158,47 +163,14 @@ class FolderCompareService:
         target_parent = os.path.dirname(target_path)
         os.makedirs(target_parent, exist_ok=True)
 
-        backup_path = ""
-        try:
-            if os.path.exists(target_path):
-                backup_path = f"{target_path}.__kikoerumanager_backup__.{uuid.uuid4().hex[:8]}"
-                os.replace(target_path, backup_path)
-                logger.info("冲突替换前备份旧目录: %s -> %s", target_path, backup_path)
-
-            self._move_directory_atomic(source_dir, target_path)
-            logger.info("冲突替换写入完成: %s", target_path)
-
-            if backup_path and os.path.exists(backup_path):
-                shutil.rmtree(backup_path, ignore_errors=True)
-                logger.info("冲突替换完成后清理备份目录: %s", backup_path)
-            return target_path
-        except Exception:
-            logger.exception("冲突替换失败，准备回滚: %s", target_path)
-            if os.path.exists(target_path):
-                shutil.rmtree(target_path, ignore_errors=True)
-            if backup_path and os.path.exists(backup_path):
-                os.replace(backup_path, target_path)
-                logger.info("冲突替换已回滚: %s", target_path)
-            raise
+        move_path_replacing_sync(source_dir, target_path)
+        logger.info("冲突替换写入完成: %s", target_path)
+        return target_path
 
     @staticmethod
     def _move_directory_atomic(source_dir: str, target_path: str) -> None:
-        """跨设备安全的目录搬运：优先 rename，跨挂载点时回退到 copytree + rmtree。"""
-        try:
-            os.replace(source_dir, target_path)
-            return
-        except OSError as exc:
-            if exc.errno != errno.EXDEV:
-                raise
-            logger.info(
-                "跨设备 rename 不可用 (EXDEV)，回退到 copytree: %s -> %s",
-                source_dir,
-                target_path,
-            )
-        # 跨挂载点：copytree 把内容复制到 target，再清掉 source。
-        # copytree 要求 target 不存在；若 copytree 中途失败，外层 except 会 rmtree(target) 并回滚 backup。
-        shutil.copytree(source_dir, target_path, symlinks=False, dirs_exist_ok=False)
-        shutil.rmtree(source_dir, ignore_errors=True)
+        """旧目标已经备份；新目录经独占暂存发布后才清理来源。"""
+        move_path_sync(source_dir, target_path)
 
     def _build_merged_directory(
         self,
@@ -249,7 +221,7 @@ class FolderCompareService:
                 continue
             target_file = os.path.join(merge_root, relative_path)
             os.makedirs(os.path.dirname(target_file), exist_ok=True)
-            shutil.copy2(source_path, target_file)
+            copy_file_publish_sync(source_path, target_file)
 
         return merge_root
 

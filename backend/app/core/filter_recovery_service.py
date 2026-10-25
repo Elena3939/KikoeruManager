@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .fs_utils import MoveCleanupPending, copy_path_exclusive_sync, move_path_sync, publish_path, run_file_operation_async
+
 import asyncio
 import errno
 import json
@@ -11,12 +13,13 @@ import uuid
 import hashlib
 import functools
 import copy
+import re
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Optional
 
-from ..config.settings import get_config_file_path
+from ..config.settings import get_config, get_config_file_path
 
 
 logger = logging.getLogger(__name__)
@@ -67,6 +70,91 @@ class FilterRecoveryService:
             data_root = config_path.parent / "data"
         return data_root / "filter-recovery"
 
+    @task_exclusive
+    def prepare_archive_storage(self, task_id, *, rjcode="", source_path="", processed_root=None):
+        """索引留在数据区，实际过滤内容随归档目录保存；旧任务首次接入时迁移。"""
+        if self._recovery_root_override and processed_root is None:
+            return
+        header = self._ensure_store(task_id)
+        if not header.get("archive_storage"):
+            configured = processed_root if processed_root is not None else get_config().storage.processed_archives_path
+            if not str(configured or "").strip():
+                raise FilterRecoveryError("未配置归档压缩包目录，不能保存过滤文件")
+            match = re.search(r"RJ\d+", str(rjcode or source_path), re.IGNORECASE)
+            name = match.group().upper() if match else "无RJ"
+            directory = Path(configured).resolve() / f"{name}_过滤文件" / self._validate_token(task_id, "任务 ID")
+            header["archive_storage"] = {"directory": str(directory), "source_path": str(source_path or "")}
+            # 先记录意图，搬运中断后可通过原位置或 .part 继续核对。
+            self._write_header(task_id, header)
+        self._finish_archive_storage(task_id, header)
+
+    def _finish_archive_storage(self, task_id, header):
+        storage = header.get("archive_storage") or {}
+        if not storage:
+            return
+        destination = self._archive_directory(task_id, storage) / "payload"
+        source = self._task_root(task_id) / "payload"
+        staged = destination.with_name("payload.part")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            if staged.exists():
+                raise FilterRecoveryError("过滤归档存在多个副本，保留现场等待核对")
+            if source.exists():
+                # 只有统一移动持久化记录能证明已发布目标归属，不能凭同名目录删源。
+                from .file_move_recovery import records
+                pending = [row for row in records()
+                           if row["source"] == str(source.absolute())
+                           and row["destination"] == str(destination.absolute())]
+                if len(pending) != 1:
+                    raise FilterRecoveryError("过滤归档存在来源和目标但无唯一移动记录，保留现场等待核对")
+                move_path_sync(source, destination, verify_hashes=True)
+            return
+        if staged.exists():
+            raise FilterRecoveryError("旧版过滤归档暂存缺少完整校验记录，保留现场等待核对")
+        if source.exists():
+            self._transfer.checkpoint = None
+            self._transfer.progress = None
+            move_path_sync(source, destination, verify_hashes=True)
+
+    @staticmethod
+    def _archive_directory(task_id, storage):
+        directory = Path(storage["directory"])
+        if not directory.is_absolute() or directory.name != task_id or not directory.parent.name.endswith("_过滤文件"):
+            raise FilterRecoveryError("过滤归档目录无效")
+        if directory.is_symlink() or directory.parent.is_symlink():
+            raise FilterRecoveryError("过滤归档目录不能是符号链接")
+        return directory
+
+    def _payload_root(self, task_id):
+        header_path = self._task_root(task_id) / "task.json"
+        if header_path.exists():
+            header = json.loads(header_path.read_text(encoding="utf-8"))
+            if header.get("archive_storage"):
+                return self._archive_directory(task_id, header["archive_storage"]) / "payload"
+        return self._task_root(task_id) / "payload"
+
+    def cleanup_archive(self, archive):
+        """仅清理确属该压缩包的恢复内容，不按 RJ 扩大删除范围。"""
+        root = self.recovery_root()
+        if not root.exists():
+            return
+        for directory in root.iterdir():
+            header_path = directory / "task.json"
+            if directory.is_symlink() or not header_path.is_file():
+                continue
+            header = json.loads(header_path.read_text(encoding="utf-8"))
+            if directory.name == archive.get("task_id") or str(header.get("archive_id") or "") == str(archive.get("id") or "缺失归档ID"):
+                self.cleanup_task(directory.name, purge_archived=True)
+
+    @task_exclusive
+    def bind_archive(self, task_id, archive_id):
+        """用归档记录 ID 关联，避免同 RJ 或相同下载文件名被再次使用时误删。"""
+        if not task_id or not (self._task_root(task_id) / "task.json").exists():
+            return
+        header = self._ensure_store(task_id)
+        header["archive_id"] = str(archive_id)
+        self._write_header(task_id, header)
+
     def reconcile_all(self) -> Dict[str, str]:
         """启动时在线程中核对各任务中断记录，异常任务保留现场并单独报告。"""
         root = self.recovery_root()
@@ -78,10 +166,28 @@ class FilterRecoveryService:
                 continue
             try:
                 task_id = self._validate_token(directory.name, "任务 ID")
+                # 旧数据按原任务的 RJ 和当前归档设置迁移，不改任务恢复入口。
+                if not self._recovery_root_override:
+                    from ..models.database import SessionLocal, Task as TaskRecord, ProcessedArchive
+
+                    with SessionLocal() as db:
+                        record = db.query(TaskRecord).filter(TaskRecord.id == task_id).first()
+                        archive = db.query(ProcessedArchive).filter(ProcessedArchive.task_id == task_id).first()
+                        source_path = str(record.source_path or "") if record is not None else ""
+                        metadata = dict(record.task_metadata or {}) if record is not None else {}
+                        if archive is None and source_path:
+                            archive = db.query(ProcessedArchive).filter(ProcessedArchive.current_path == source_path).first()
+                        rjcode = str(getattr(archive, "rjcode", "") or metadata.get("rjcode") or metadata.get("inferred_rjcode") or "")
+                        archive_id = str(archive.id) if archive is not None else ""
+                    if record is not None or archive_id:
+                        self.prepare_archive_storage(task_id, rjcode=rjcode, source_path=source_path)
+                        if archive_id:
+                            self.bind_archive(task_id, archive_id)
                 with self._task_lock(task_id):
                     if not (directory / "task.json").exists() and not (directory / _MANIFEST_NAME).exists():
                         continue
-                    self._ensure_store(task_id)
+                    header = self._ensure_store(task_id)
+                    self._finish_archive_storage(task_id, header)
                     self._reconcile(task_id)
             except Exception as exc:
                 failures[directory.name] = str(exc)
@@ -110,7 +216,7 @@ class FilterRecoveryService:
 
         safe_relative = self._normalize_relative_path(relative_path)
         recovery_id = uuid.uuid4().hex
-        item_root = self._task_root(normalized_task_id) / "payload" / recovery_id
+        item_root = self._payload_root(normalized_task_id) / recovery_id
         payload = item_root / source.name
         staged = item_root.with_name(f"{item_root.name}.part")
         item_root.parent.mkdir(parents=True, exist_ok=True)
@@ -136,6 +242,8 @@ class FilterRecoveryService:
             staged_payload = staged / source.name
             self._move_to_recovery(source, staged_payload, expected_size=max(0, int(size or 0)))
             os.replace(staged, item_root)
+        except MoveCleanupPending:
+            raise
         except Exception:
             staged_payload = staged / source.name
             keep_staged = False
@@ -186,6 +294,7 @@ class FilterRecoveryService:
     def begin_capture(self, task_id: str) -> None:
         """每次执行独立批次，不删除历史恢复内容。"""
         header = self._ensure_store(task_id)
+        self._finish_archive_storage(task_id, header)
         self._reconcile(task_id)
         batch = uuid.uuid4().hex
         header["active_batch"] = batch
@@ -301,7 +410,8 @@ class FilterRecoveryService:
             if status not in {TaskStatus.COMPLETED.value, TaskStatus.WAITING_MANUAL.value}:
                 raise FilterRecoveryError("任务尚未完成，当前不能还原过滤项")
 
-            await asyncio.to_thread(self._ensure_store, task_id)
+            header = await asyncio.to_thread(self._ensure_store, task_id)
+            await run_file_operation_async(self._finish_archive_storage, task_id, header)
             await asyncio.to_thread(self._reconcile, task_id)
             manifest = await asyncio.to_thread(self._read_manifest, task_id)
             item = next(
@@ -371,7 +481,7 @@ class FilterRecoveryService:
                 if remote_restore:
                     restored_path = await self._restore_remote(manager, library, payload, target, restore_item)
                 else:
-                    restored_path = await asyncio.to_thread(self._restore_local, payload, target, restore_item)
+                    restored_path = await run_file_operation_async(self._restore_local, payload, target, restore_item)
             except FilterRecoveryConflictError:
                 # 同名预检拒绝没有发布内容，不应留下无法再次尝试的事务。
                 item.pop("pending_restore", None)
@@ -398,7 +508,7 @@ class FilterRecoveryService:
                     try:
                         restored = Path(restored_path)
                         payload.parent.mkdir(parents=True, exist_ok=True)
-                        os.replace(restored, payload)
+                        move_path_sync(restored, payload, verify_hashes=True)
                     except Exception:
                         logger.error(
                             "还原状态持久化失败且无法回滚本地内容: task_id=%s recovery_id=%s",
@@ -453,12 +563,24 @@ class FilterRecoveryService:
             db.close()
 
     @task_exclusive
-    def cleanup_task(self, task_id: str, *, strict: bool = True) -> bool:
+    def cleanup_task(self, task_id: str, *, strict: bool = True, purge_archived: bool = False) -> bool:
         normalized_task_id = self._validate_token(task_id, "任务 ID")
         task_root = self._task_root(normalized_task_id)
         if not task_root.exists():
             return True
         try:
+            header = self._read_manifest(task_id, required=False)
+            storage = header.get("archive_storage")
+            if storage:
+                if not purge_archived:
+                    return True
+                archive_directory = self._archive_directory(task_id, storage)
+                if archive_directory.exists():
+                    shutil.rmtree(archive_directory)
+                try:
+                    archive_directory.parent.rmdir()
+                except OSError:
+                    pass
             shutil.rmtree(task_root)
             self._serialized_items = OrderedDict((key, value) for key, value in self._serialized_items.items() if key[0] != task_id)
             self._summary_cache.pop(task_id, None)
@@ -480,23 +602,7 @@ class FilterRecoveryService:
         if destination.exists():
             raise FilterRecoveryConflictError(f"目标已存在同名内容: {destination}")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.replace(payload, destination)
-        except OSError as exc:
-            if exc.errno != errno.EXDEV:
-                raise
-            staged = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
-            try:
-                if payload.is_dir():
-                    shutil.copytree(payload, staged, copy_function=self._copy_file)
-                else:
-                    self._copy_file(payload, staged)
-                if destination.exists():
-                    raise FilterRecoveryConflictError(f"目标已存在同名内容: {destination}")
-                os.replace(staged, destination)
-            except BaseException:
-                self._remove_path(staged, missing_ok=True)
-                raise
+        move_path_sync(payload, destination, verify_hashes=True)
         return str(destination)
 
     async def _restore_remote(self, manager: Any, library: Any, payload: Path, target: Dict[str, Any], item: Dict[str, Any]) -> str:
@@ -611,19 +717,27 @@ class FilterRecoveryService:
     def _copy_file(self, source, destination):
         before = os.stat(source)
         digest = hashlib.sha256()
-        with open(source, "rb") as incoming, open(destination, "xb") as outgoing:
+        from .fs_utils import copy_path_exclusive_sync
+        base_copied = getattr(self._transfer, "copied", 0)
+
+        def checkpoint():
+            callback = getattr(self._transfer, "checkpoint", None)
+            if callback:
+                callback()
+
+        def progress(done, _total):
+            self._transfer.copied = base_copied + done
+            callback = getattr(self._transfer, "progress", None)
+            if callback:
+                callback(self._transfer.copied)
+
+        copy_path_exclusive_sync(source, destination, checkpoint=checkpoint, progress_cb=progress)
+        with open(source, "rb") as incoming:
             while chunk := incoming.read(1024 * 1024):
                 checkpoint = getattr(self._transfer, "checkpoint", None)
                 if checkpoint:
                     checkpoint()
-                outgoing.write(chunk)
                 digest.update(chunk)
-                self._transfer.copied = getattr(self._transfer, "copied", 0) + len(chunk)
-                callback = getattr(self._transfer, "progress", None)
-                if callback:
-                    callback(self._transfer.copied)
-            outgoing.flush()
-            os.fsync(outgoing.fileno())
         after = os.stat(source)
         if (before.st_size, before.st_mtime_ns, before.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
             raise FilterRecoveryError("复制期间来源发生变化，保留来源和恢复副本")
@@ -640,28 +754,19 @@ class FilterRecoveryService:
         return destination
 
     def _move_to_recovery(self, source: Path, destination: Path, *, expected_size: int) -> None:
-        try:
-            os.replace(source, destination)
-            return
-        except OSError as exc:
-            if exc.errno != errno.EXDEV:
-                raise
+        def cancelled():
+            callback = getattr(self._transfer, "checkpoint", None)
+            if callback:
+                callback()
+            return False
 
-        if source.is_dir():
-            before = self._tree_fingerprint(source)
-            shutil.copytree(source, destination, copy_function=self._copy_file)
-            copied_size = self._path_size(destination)
-            if copied_size != expected_size:
-                raise FilterRecoveryError(f"跨盘复制校验失败: {copied_size} != {expected_size}")
-            if before != self._tree_fingerprint(source):
-                raise FilterRecoveryError("复制期间来源目录发生变化，保留来源目录")
-            shutil.rmtree(source)
-        else:
-            self._copy_file(source, destination)
-            copied_size = destination.stat().st_size
-            if copied_size != expected_size:
-                raise FilterRecoveryError(f"跨盘复制校验失败: {copied_size} != {expected_size}")
-            source.unlink()
+        def progress(done, _total):
+            callback = getattr(self._transfer, "progress", None)
+            if callback:
+                callback(done)
+
+        move_path_sync(source, destination, verify_hashes=True,
+                       cancel_check=cancelled, progress_cb=progress)
 
     def _tree_fingerprint(self, root):
         """覆盖目录成员及身份，防止复制期间增删文件后误删整个来源。"""
@@ -809,7 +914,7 @@ class FilterRecoveryService:
         name = Path(str(item.get("name") or "")).name
         if not name:
             raise FilterRecoveryError("恢复项文件名无效")
-        item_root = (self._task_root(task_id) / "payload" / recovery_id).resolve()
+        item_root = (self._payload_root(task_id) / recovery_id).resolve()
         payload = (item_root / name).resolve()
         self._assert_inside(item_root, payload)
         return payload

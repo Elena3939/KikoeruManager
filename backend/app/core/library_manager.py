@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shutil
+from .fs_utils import move_path_replacing_sync, move_path_sync, run_file_operation_async
 import stat
 import threading
 import time
@@ -6325,7 +6326,7 @@ class LibraryManager:
     ) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type == "local":
-            return await asyncio.to_thread(
+            return await run_file_operation_async(
                 self._local_rename,
                 library,
                 path,
@@ -6408,7 +6409,7 @@ class LibraryManager:
         self._assert_local_path_in_library(library, path)
         parent_dir = os.path.dirname(path)
         new_path = os.path.join(parent_dir, new_name)
-        os.rename(path, new_path)
+        move_path_sync(path, new_path)
         # 文件夹改名后 keyword→matches 里旧 path 不再有效
         self._invalidate_local_browse_caches(library.id)
         index_mutation = None
@@ -6473,7 +6474,7 @@ class LibraryManager:
                 skip_index_mutation=skip_index_mutation,
                 sync_index_mutation=sync_index_mutation,
             )
-        return await asyncio.to_thread(
+        return await run_file_operation_async(
             self._local_batch_rename,
             library,
             items,
@@ -6526,7 +6527,7 @@ class LibraryManager:
                 self._assert_local_path_in_library(library, path)
                 parent_dir = os.path.dirname(path)
                 new_path = os.path.join(parent_dir, new_name)
-                os.rename(path, new_path)
+                move_path_sync(path, new_path)
                 results.append({"index": request_index, "path": path, "source_path": source_path, "new_name": new_name, "new_path": new_path})
                 success_count += 1
                 moved_index_items.append({"source": path, "destination": new_path})
@@ -7286,7 +7287,7 @@ class LibraryManager:
             strategy = "overwrite"
         if strategy not in {"suffix", "overwrite", "skip"}:
             strategy = "suffix"
-        return await asyncio.to_thread(
+        return await run_file_operation_async(
             self._move_local_items_sync,
             source_library,
             target_library,
@@ -7776,14 +7777,12 @@ class LibraryManager:
                         })
                         continue
                     if conflict_strategy == "overwrite":
-                        if os.path.isdir(dest_child):
-                            _robust_rmtree(dest_child)
-                        else:
-                            os.remove(dest_child)
+                        move_path_replacing_sync(source_child, dest_child)
+                        continue
                     else:
                         dest_child = self._unique_local_destination_path(dest_dir, name, source_is_dir)
 
-                shutil.move(source_child, dest_child)
+                move_path_sync(source_child, dest_child)
             except Exception as exc:
                 failed.append({"path": source_child, "name": name, "error": str(exc)})
 
@@ -7886,14 +7885,11 @@ class LibraryManager:
                         skipped.append({"path": path, "name": base_name, "reason": "目标已存在同名项，按策略跳过"})
                         continue
                     if conflict_strategy == "overwrite":
-                        if os.path.isdir(dest_path):
-                            _robust_rmtree(dest_path)
-                        else:
-                            os.remove(dest_path)
+                        pass  # 统一覆盖事务在新内容提交前保留旧目标。
                     else:  # suffix（默认）
                         dest_path = self._unique_local_destination_path(target_dir, base_name, is_dir)
 
-                shutil.move(path, dest_path)
+                (move_path_replacing_sync if conflict_strategy == "overwrite" else move_path_sync)(path, dest_path)
 
                 # 顶层判定 / search cache 失效 / folder_count 增减全部由 _local_top_level_delta 内部处理
                 if is_dir:
@@ -8219,7 +8215,7 @@ class LibraryManager:
     ) -> str:
         library = self.get_library_definition(library_id)
         if library.type == "local":
-            return await asyncio.to_thread(self._move_directory_to_local_library, library, source_dir, relative_target_dir)
+            return await run_file_operation_async(self._move_directory_to_local_library, library, source_dir, relative_target_dir)
 
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
@@ -8290,7 +8286,7 @@ class LibraryManager:
         while os.path.exists(final_path):
             final_path = os.path.join(target_root, f"{os.path.basename(source_dir)}_{counter}")
             counter += 1
-        shutil.move(source_dir, final_path)
+        move_path_sync(source_dir, final_path)
         self._local_top_level_delta(library, final_path, 1)
         return final_path
 

@@ -8,6 +8,8 @@
 3. 处理标题只有日文的情况，使用字幕文件夹中的标准命名
 4. 净化LRC文件中的广告内容
 """
+from .fs_utils import copy_file_publish_sync, move_path_sync
+
 import os
 import re
 import shutil
@@ -616,7 +618,7 @@ class SubtitleSyncService:
                 logger.info(f"[预览] 重命名: {os.path.basename(audio_path)} -> {new_name}")
                 return True, new_path
 
-            os.rename(audio_path, new_path)
+            move_path_sync(audio_path, new_path)
             logger.info(f"重命名: {os.path.basename(audio_path)} -> {new_name}")
             return True, new_path
 
@@ -700,7 +702,7 @@ class SubtitleSyncService:
                             os.path.dirname(match['audio_path']),
                             match['subtitle_name']
                         )
-                        shutil.copy2(match['subtitle_path'], subtitle_dest)
+                        copy_file_publish_sync(match['subtitle_path'], subtitle_dest, overwrite=True)
                         result['copied_subtitles'].append(match['subtitle_name'])
                 else:
                     result['errors'].append(f"重命名失败: {new_path_or_error}")

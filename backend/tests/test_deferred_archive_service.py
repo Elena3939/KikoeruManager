@@ -260,6 +260,73 @@ def _configure_service(monkeypatch, db_session, source_dir, processed_dir, tmp_p
     return service, session_factory
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_kind", ["archive", "temporary", "missing_temporary", "original_metadata"])
+async def test_skip_archives_original_zip_and_volumes(db_session, tmp_path, monkeypatch, source_kind):
+    from unittest.mock import AsyncMock, Mock
+    from app.core import conflict_resolution_service
+
+    source_dir = tmp_path / "input"
+    processed_dir = tmp_path / "processed"
+    source_dir.mkdir()
+    processed_dir.mkdir()
+    members = [source_dir / name for name in ("Share.zip", "Share.z01", "Share.z02")]
+    for index, path in enumerate(members):
+        path.write_bytes(bytes([index]) * 100)
+    unrelated = source_dir / "bonus.zip"
+    unrelated.write_bytes(b"bonus")
+    # 同名目标不能被覆盖；整组新目标应使用一致的后缀。
+    (processed_dir / "Share.zip").write_bytes(b"existing")
+    temporary = tmp_path / "extracted"
+    temporary.mkdir()
+    (temporary / "track.wav").write_bytes(b"audio")
+    temporary_source = source_kind != "archive"
+    if source_kind == "missing_temporary":
+        (temporary / "track.wav").unlink()
+        temporary.rmdir()
+    metadata_key = (
+        "rename_retry_original_source_path" if source_kind == "original_metadata"
+        else "rename_retry_archive_source_path"
+    )
+    conflict = SimpleNamespace(
+        id="skip-split", task_id="original-task", rjcode="RJ01410151",
+        new_path=str(temporary if temporary_source else members[0]),
+        new_metadata={metadata_key: str(members[0])} if temporary_source else {},
+    )
+    archive_service, factory = _configure_service(
+        monkeypatch, db_session, source_dir, processed_dir, tmp_path,
+    )
+    monkeypatch.setattr(deferred_archive_module, "get_deferred_archive_service", lambda: archive_service)
+    monkeypatch.setattr(archive_service, "_write_activity", Mock())
+    service = conflict_resolution_service.ConflictResolutionService()
+    monkeypatch.setattr(service, "describe_conflict", lambda _: {"source": {"library_id": None}})
+    monkeypatch.setattr(service, "_resolve_conflict_new_path", lambda _: conflict.new_path)
+    monkeypatch.setattr(service, "cleanup_conflict_sessions", AsyncMock())
+    monkeypatch.setattr(conflict_resolution_service, "get_library_manager", Mock())
+
+    result = await service.resolve_skip(conflict)
+
+    assert result["archive_queued"] is True
+    assert result["archive_source_path"] == str(members[0])
+    assert all(path.exists() for path in members)
+    assert temporary.exists() is (not temporary_source)
+    assert result["deleted_path"] == (str(temporary) if source_kind in {"temporary", "original_metadata"} else None)
+    claim = archive_service._claim_next_job_sync()
+    assert claim["job_id"] == result["archive_queue_id"]
+    assert {item["source_path"] for item in claim["source_manifest"]} == {str(path) for path in members}
+    for index, source in enumerate(claim["source_manifest"]):
+        archive_service._move_member_sync(claim["job_id"], claim["lease_epoch"], index, source)
+    archive_service._complete_job_sync(claim["job_id"], claim["lease_epoch"])
+
+    assert all(not path.exists() for path in members)
+    assert unrelated.read_bytes() == b"bonus"
+    assert (processed_dir / "Share.zip").read_bytes() == b"existing"
+    for index, name in enumerate(("Share (1).zip", "Share (1).z01", "Share (1).z02")):
+        assert (processed_dir / name).read_bytes() == bytes([index]) * 100
+    with factory() as db:
+        assert db.get(DeferredArchiveJob, result["archive_queue_id"]).status == "completed"
+
+
 def test_deferred_archive_enqueue_is_idempotent_and_claims_all_volumes(
     db_session,
     tmp_path,

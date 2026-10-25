@@ -7,6 +7,8 @@ RJ 字幕抓取服务
 3. 下载字幕并执行后处理（去广告、繁转简）
 4. 将字幕匹配到本地音频并写入 subtitles/ 目录
 """
+from .fs_utils import copy_file_publish_sync, move_path_sync, run_file_operation_async
+
 import asyncio
 import hashlib
 import logging
@@ -1888,6 +1890,11 @@ class RJSubtitleService:
             suffix += 1
         return candidate
 
+    @staticmethod
+    def _check_local_write_cancel(should_cancel):
+        if should_cancel and should_cancel():
+            raise asyncio.CancelledError()
+
     def _preview_raw_subtitle_output_name(self, subtitle: Dict) -> str:
         normalized = self._normalize_subtitle_file(subtitle)
         base_name = str(normalized.get('base_name') or '').strip()
@@ -2062,18 +2069,19 @@ class RJSubtitleService:
                     if output_name in existing_names:
                         cleanup_names.append(output_name)
                     cleanup_names.extend(equivalent_names)
-                    for name in cleanup_names:
-                        target_path = subtitle_dir / name
-                        if target_path.exists():
-                            target_path.unlink()
-                        existing_names.discard(name)
                 elif output_name in existing_names:
                     skipped_files.append(output_name)
                     continue
                 elif equivalent_names:
                     skipped_files.append(output_name)
                     continue
-                shutil.copy2(source_path, destination)
+                copy_file_publish_sync(source_path, destination, overwrite=overwrite,
+                                       checkpoint=lambda: self._check_local_write_cancel(should_cancel))
+                if overwrite:
+                    for name in cleanup_names:
+                        if name != output_name:
+                            (subtitle_dir / name).unlink(missing_ok=True)
+                        existing_names.discard(name)
                 existing_names.add(output_name)
                 written_files.append(self._build_written_match_record(match))
             except Exception as exc:
@@ -2169,11 +2177,6 @@ class RJSubtitleService:
                     if output_name in existing_names:
                         cleanup_names.append(output_name)
                     cleanup_names.extend(equivalent_names)
-                    for name in cleanup_names:
-                        target_path = subtitle_dir / name
-                        if target_path.exists():
-                            target_path.unlink()
-                        existing_names.discard(name)
                 elif output_name in existing_names:
                     for legacy_name in equivalent_names:
                         legacy_path = subtitle_dir / legacy_name
@@ -2186,7 +2189,7 @@ class RJSubtitleService:
                     primary_name = equivalent_names[0]
                     primary_path = subtitle_dir / primary_name
                     if primary_path.exists():
-                        primary_path.rename(destination)
+                        move_path_sync(primary_path, destination)
                     existing_names.discard(primary_name)
                     existing_names.add(output_name)
                     for legacy_name in equivalent_names[1:]:
@@ -2198,7 +2201,13 @@ class RJSubtitleService:
                     item['display_name'] = output_name
                     written_files.append(self._build_written_subtitle_record(item, output_name, '旧名迁移'))
                     continue
-                shutil.copy2(item['path'], destination)
+                copy_file_publish_sync(item['path'], destination, overwrite=overwrite,
+                                       checkpoint=lambda: self._check_local_write_cancel(should_cancel))
+                if overwrite:
+                    for name in cleanup_names:
+                        if name != output_name:
+                            (subtitle_dir / name).unlink(missing_ok=True)
+                        existing_names.discard(name)
                 existing_names.add(output_name)
                 item['output_name'] = output_name
                 item['display_name'] = output_name
@@ -2310,7 +2319,7 @@ class RJSubtitleService:
             last_error = None
             for attempt in range(1, 4):
                 try:
-                    await asyncio.to_thread(shutil.copy2, w_item['path'], staged_path)
+                    await run_file_operation_async(copy_file_publish_sync, w_item['path'], staged_path)
                     await client.upload_file(subtitle_dir, staged_path, overwrite=True, remote_name=temp_remote_name)
                     if overwrite and output_name in existing_names:
                         try:
@@ -2642,7 +2651,7 @@ class RJSubtitleService:
             last_error = None
             for attempt in range(1, 4):
                 try:
-                    await asyncio.to_thread(shutil.copy2, match['subtitle_path'], staged_path)
+                    await run_file_operation_async(copy_file_publish_sync, match['subtitle_path'], staged_path)
                     logger.info('[RJ字幕] 开始回写远程字幕 %s 临时名=%s', output_name, temp_remote_name)
                     await client.upload_file(subtitle_dir, staged_path, overwrite=True, remote_name=temp_remote_name)
                     if overwrite and output_name in existing_names:

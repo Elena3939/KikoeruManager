@@ -9,10 +9,12 @@ from app.models.database import ProcessedArchive
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("protected", [True, False])
 async def test_cleanup_skips_archive_with_active_deferred_target(
     db_session,
     tmp_path,
     monkeypatch,
+    protected,
 ):
     processed_dir = tmp_path / "processed"
     processed_dir.mkdir()
@@ -67,10 +69,10 @@ async def test_cleanup_skips_archive_with_active_deferred_target(
 
     class FakeDeferredArchiveService:
         def active_target_paths_sync(self):
-            return {str(main_path.resolve()).casefold()}
+            return {str(main_path.resolve()).casefold()} if protected else set()
 
         def is_target_claimed_sync(self, path):
-            return str(path).casefold() == str(main_path).casefold()
+            return protected and str(path).casefold() == str(main_path).casefold()
 
     monkeypatch.setattr(cleanup_module, "get_config", lambda: config)
     monkeypatch.setattr(cleanup_module, "get_db", fake_get_db)
@@ -79,9 +81,15 @@ async def test_cleanup_skips_archive_with_active_deferred_target(
         lambda: FakeDeferredArchiveService(),
     )
 
+    cleaned = []
+    monkeypatch.setattr(
+        "app.core.filter_recovery_service.get_filter_recovery_service",
+        lambda: SimpleNamespace(cleanup_archive=lambda archive: cleaned.append(archive["id"])),
+    )
     result = await cleanup_module.ProcessedArchiveCleanupService().cleanup_archives()
 
-    assert result["deleted_count"] == 0
-    assert main_path.exists()
-    assert volume_path.exists()
-    assert db_session.query(ProcessedArchive).filter_by(id="cleanup-active-target").count() == 1
+    assert result["deleted_count"] == (0 if protected else 1)
+    assert main_path.exists() == protected
+    assert volume_path.exists() == protected
+    assert cleaned == ([] if protected else ["cleanup-active-target"])
+    assert db_session.query(ProcessedArchive).filter_by(id="cleanup-active-target").count() == (1 if protected else 0)

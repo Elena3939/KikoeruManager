@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import ctypes
 import errno
 import hashlib
@@ -25,6 +26,7 @@ from ..config.settings import get_config
 from ..models.database import DeferredArchiveJob, ProcessedArchive, SessionLocal, Task as TaskRecord, get_local_now
 from .archive_volume_utils import detect_archive_volume_group, get_archive_volume_paths, sort_archive_volumes
 from .resource_budget_service import get_resource_budget_service
+from .fs_utils import run_file_operation_async
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,7 @@ _STOP_GRACE_SECONDS = 35
 _COPY_BUFFER_SIZE = 8 * 1024 * 1024
 _CONTROL_CHECK_CHUNKS = 8
 _STAGING_DIRECTORY = ".kikoerumanager_archive_staging"
+_archive_move_phase = contextvars.ContextVar("archive_move_phase", default=None)
 
 
 class _YieldToForeground(RuntimeError):
@@ -769,10 +772,30 @@ class DeferredArchiveService:
     async def _move_member(self, claim: dict[str, Any], index: int, source: dict[str, Any]) -> None:
         job_id = str(claim["job_id"])
         epoch = int(claim["lease_epoch"])
+        loop = asyncio.get_running_loop()
+
+        def display(phase: str) -> None:
+            try:
+                from .task_engine import get_task_engine
+                task = get_task_engine().get_task(str(claim.get("task_id") or ""))
+                step = f"源压缩包归档 · {phase}"
+                if task is not None:
+                    task.current_step = step
+                self._broadcast(claim, "processing", step)
+            except Exception:
+                logger.debug("归档移动阶段通知失败", exc_info=True)
+
+        def worker() -> None:
+            token = _archive_move_phase.set(lambda phase: loop.call_soon_threadsafe(display, phase))
+            try:
+                self._move_member_sync(job_id, epoch, index, source)
+            finally:
+                _archive_move_phase.reset(token)
+
         async with get_resource_budget_service().acquire("disk_io_local", reason="deferred_archive.move"):
             self._set_copy_running(True)
             try:
-                await asyncio.to_thread(self._move_member_sync, job_id, epoch, index, source)
+                await run_file_operation_async(worker)
             finally:
                 self._set_copy_running(False)
 
@@ -799,10 +822,12 @@ class DeferredArchiveService:
         return True
 
     def _hash_file(self, path: str, should_abort: Callable[[bool], str]) -> str:
+        from .staged_file_move import _check_scope
         digest = hashlib.sha256()
         chunks = 0
         with open(path, "rb", buffering=0) as reader:
             while True:
+                _check_scope()
                 self._raise_if_abort(should_abort(chunks % _CONTROL_CHECK_CHUNKS == 0))
                 chunk = reader.read(_COPY_BUFFER_SIZE)
                 if not chunk:
@@ -819,22 +844,73 @@ class DeferredArchiveService:
     ) -> str:
         digest = hashlib.sha256()
         chunks = 0
+        owned = []
+        from .file_move_protocol import atomic_json, identity
+        from .host_file_move_client import HostMoveClient, HostMoveError
+        from .staged_file_move import move_config
+        ownership_path = part_path + ".owner.json"
+        ownership = {"version": 1, "source": source_path, "source_identity": identity(source_path),
+                     "host_operations": []}
+
+        def register(operation_id):
+            ownership["host_operations"].append(operation_id)
+            atomic_json(ownership_path, ownership)
+
+        def created(value):
+            owned.append(value)
+            ownership["stage_identity"] = value
+            atomic_json(ownership_path, ownership)
+
+        if os.path.lexists(part_path) or os.path.exists(ownership_path):
+            if not os.path.isfile(ownership_path):
+                raise FileExistsError(f"归档暂存缺少归属记录，保留现场: {part_path}")
+            with open(ownership_path, encoding="utf-8") as stream:
+                previous = json.load(stream)
+            if any(previous.get(key) != ownership[key] for key in ("source", "source_identity")):
+                raise RuntimeError("归档暂存来源发生变化，保留现场")
+            config = move_config()
+            for operation_id in previous.get("host_operations", []):
+                HostMoveClient(config.socket_path, config.request_timeout_seconds).request(
+                    "cancel", operation_id=operation_id)
+            if os.path.lexists(part_path):
+                expected = previous.get("stage_identity")
+                actual = identity(part_path)
+                if not expected or any(actual[key] != expected[key] for key in ("device", "inode", "mode")):
+                    raise RuntimeError("归档暂存身份不匹配，保留现场")
+                self._raise_if_abort(should_abort(True))
+                os.remove(part_path)
+        atomic_json(ownership_path, ownership)
         try:
-            with open(source_path, "rb", buffering=0) as reader, open(part_path, "xb", buffering=0) as writer:
+            from .fs_utils import copy_path_exclusive_sync
+            from .staged_file_move import _check_scope
+            control_checks = 0
+
+            def checkpoint():
+                nonlocal control_checks
+                _check_scope()
+                self._raise_if_abort(should_abort(control_checks % _CONTROL_CHECK_CHUNKS == 0))
+                control_checks += 1
+
+            copy_path_exclusive_sync(source_path, part_path, checkpoint=checkpoint, on_created=created,
+                                     register_host_operation=register,
+                                     phase_cb=_archive_move_phase.get())
+            with open(part_path, "rb", buffering=0) as reader:
                 while True:
+                    checkpoint()
                     self._raise_if_abort(should_abort(chunks % _CONTROL_CHECK_CHUNKS == 0))
                     chunk = reader.read(_COPY_BUFFER_SIZE)
                     if not chunk:
                         break
-                    writer.write(chunk)
                     digest.update(chunk)
                     chunks += 1
-                writer.flush()
-                os.fsync(writer.fileno())
             return digest.hexdigest()
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.remove(part_path)
+        except BaseException as exc:
+            # 宿主未确认停止时不得删除暂存；其它异常也只清理已证明归属的对象。
+            if owned and not isinstance(exc, HostMoveError):
+                with contextlib.suppress(OSError):
+                    actual = identity(part_path)
+                    if all(actual[key] == owned[0][key] for key in ("device", "inode", "mode")):
+                        os.remove(part_path)
             raise
 
     @staticmethod
@@ -969,6 +1045,8 @@ class DeferredArchiveService:
             return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
 
         def should_abort(force_database: bool = False) -> str:
+            from .staged_file_move import _check_scope
+            _check_scope()
             return self._copy_abort_reason(job_id, epoch, check_database=force_database)
 
         # 每个哈希前后都冻结身份，防止校验期间替换路径、原地改写或恢复 mtime。
@@ -1004,6 +1082,8 @@ class DeferredArchiveService:
             if identity(target_path) != target_identity:
                 raise RuntimeError(f"归档已发布目标在校验后发生变化: {target_path}")
             if source_identity is not None:
+                from .staged_file_move import _check_scope
+                _check_scope()
                 if identity(source_path) != source_identity:
                     raise RuntimeError(f"归档源文件在校验后发生变化，拒绝删除: {source_path}")
                 os.remove(source_path)
@@ -1047,6 +1127,8 @@ class DeferredArchiveService:
         check_counter = [0]
 
         def should_abort(force_database: bool = False) -> str:
+            from .staged_file_move import _check_scope
+            _check_scope()
             check_counter[0] += 1
             return self._copy_abort_reason(
                 job_id,
@@ -1084,7 +1166,7 @@ class DeferredArchiveService:
         try:
             # 即使源和目标在同一文件系统，也统一经由独占 .part 发布。hard link 会
             # 修改源 inode 的 ctime，既破坏冻结身份校验，也会让两个路径意外共享
-            # 同一对象；低优先级归档优先保证可恢复性而非省下一次复制。
+            # 同一对象。统一暂存能力优先 reflink，不支持宿主加速时才流式复制。
             stage_dir = os.path.join(
                 os.path.dirname(target_path),
                 _STAGING_DIRECTORY,
@@ -1093,15 +1175,16 @@ class DeferredArchiveService:
             )
             os.makedirs(stage_dir, exist_ok=True)
             part_path = os.path.join(stage_dir, f"{index:04d}-{os.path.basename(target_path)}.part")
-            with contextlib.suppress(OSError):
-                os.remove(part_path)
             checksum = self._copy_to_part(source_path, part_path, should_abort)
             if not self._matches_source_identity(source_path, source):
                 raise RuntimeError(f"归档复制期间源文件已变化: {source_path}")
             if self._hash_file(source_path, should_abort) != checksum:
                 raise RuntimeError(f"归档复制后的源文件校验失败: {source_path}")
+            self._raise_if_abort(should_abort(True))
             self._publish_part_no_replace(part_path, target_path)
             published_here = True
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(part_path + ".owner.json")
             if os.path.getsize(target_path) != expected_size:
                 raise RuntimeError(f"归档目标大小校验失败: {target_path}")
             if not checksum:
@@ -1116,6 +1199,9 @@ class DeferredArchiveService:
             # 先持久化发布状态，崩溃后可凭 checksum 恢复，之后才允许删除源文件。
             self._record_member_published_sync(job_id, epoch, index, checksum)
             recorded_published = True
+            phase = _archive_move_phase.get()
+            if phase:
+                phase("清理来源")
             self._finalize_published_member_sync(job_id, epoch, index, checksum)
         except (_YieldToForeground, _ArchiveCancelled, _ShutdownRequested):
             if published_here and not recorded_published:
@@ -1177,6 +1263,10 @@ class DeferredArchiveService:
                 existing.process_count = int(existing.process_count or 0) + 1
                 existing.task_id = job.task_id
                 existing.status = "completed"
+            from .filter_recovery_service import get_filter_recovery_service
+
+            if job.task_id:
+                get_filter_recovery_service().bind_archive(job.task_id, existing.id)
             job.status = "completed"
             job.completed_at = now
             job.updated_at = now

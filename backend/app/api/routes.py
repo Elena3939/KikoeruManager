@@ -7396,10 +7396,15 @@ async def _resolve_conflict_skip(conflict_id: str, service) -> dict:
             task_id=conflict.task_id,
             source_path=source_path,
             target_path=str(conflict.existing_path or ""),
-            final_path=str(result.get("final_path") or conflict.existing_path or ""),
-            diff_items=[{**item, "variant": "deleted"} for item in skip_tree_items],
+            final_path=str(result.get("final_path") or ""),
+            diff_items=[{**item, "variant": "deleted"} for item in skip_tree_items]
+            if result.get("deleted_path") else [],
             extra_detail={"source_missing": True, "source_missing_reason": "源文件已不存在，无需删除"}
-            if result.get("source_missing") else None,
+            if result.get("source_missing") else {
+                key: result[key] for key in (
+                    "archive_source_path", "archive_queue_id", "archive_queue_status", "archive_queued",
+                ) if key in result
+            } or None,
         )
         return {"success": True, "conflict_id": conflict.id, "action": "SKIP", **result}
     except HTTPException:
@@ -8011,7 +8016,8 @@ async def _resolve_conflict_inline(conflict_id: str, action: dict):
                 # 如果是已解压的文件夹，直接移动
                 if os.path.exists(conflict.new_path):
                     target_path = os.path.join(config.storage.library_path, os.path.basename(conflict.new_path))
-                    await asyncio.to_thread(shutil.move, conflict.new_path, target_path)
+                    from ..core.fs_utils import move_path_efficient
+                    await move_path_efficient(conflict.new_path, target_path)
                     logger.info(f"保留新版完成：已移动到 {target_path}")
             
             conflict.status = "KEEP_NEW"

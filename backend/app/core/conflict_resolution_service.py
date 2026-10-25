@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import shutil
+from .fs_utils import move_path_efficient, move_path_sync, copy_path_exclusive_sync, run_file_operation_async
 import tempfile
 import time
 import uuid
@@ -1336,7 +1337,7 @@ class ConflictResolutionService:
                 extract_task.task_metadata, extract_task.error_message or "解压未返回有效目录",
             ))
         staged_root = os.path.join(workspace, "extracted")
-        await asyncio.to_thread(shutil.move, extracted_path, staged_root)
+        await move_path_efficient(extracted_path, staged_root)
 
         self._update_merge_preview_job(
             job, stage="filter", stage_label="过滤临时目录",
@@ -1553,15 +1554,52 @@ class ConflictResolutionService:
         source = description["source"]
         # 走 fallback 路径，避免老 conflict 数据 new_path 死路径导致 _conflicts/ 残留。
         delete_target = await asyncio.to_thread(self._resolve_conflict_new_path, conflict) or conflict.new_path
+        metadata = dict(getattr(conflict, "new_metadata", None) or {})
+        archive_source = ""
+        if metadata.get("source_operation") != "api_rename":
+            archive_source = str(
+                metadata.get("rename_retry_archive_source_path")
+                or metadata.get("rename_retry_original_source_path")
+                or (delete_target if not source.get("library_id") else "")
+                or ""
+            ).strip()
+        archive_result = None
+        if archive_source and await asyncio.to_thread(os.path.isfile, archive_source):
+            from .deferred_archive_service import get_deferred_archive_service
+
+            # 先持久化整组分卷的搬运声明，再清理临时目录；入队失败不能结束问题记录。
+            archive_result = await get_deferred_archive_service().enqueue_source(
+                archive_source,
+                task_id=str(getattr(conflict, "task_id", "") or ""),
+                rjcode=str(getattr(conflict, "rjcode", "") or ""),
+            )
+            if archive_result.get("status") in {"failed", "cancelled"}:
+                raise RuntimeError(archive_result.get("last_error") or "原始压缩包归档未成功，请重试归档作业")
+        archive_is_target = bool(archive_result) and (
+            os.path.normcase(os.path.abspath(archive_source))
+            == os.path.normcase(os.path.abspath(str(delete_target or "")))
+        )
         source_missing = False
         if not source.get("library_id"):
             source_missing = not await asyncio.to_thread(os.path.exists, str(delete_target or ""))
-        try:
-            await self._delete_source_path(delete_target, source.get("library_id"))
-        except FileNotFoundError:
-            # 来源已由外部删除，无需再次删除，仍完成问题记录的跳过操作。
-            source_missing = True
+        if not archive_is_target:
+            try:
+                await self._delete_source_path(delete_target, source.get("library_id"))
+            except FileNotFoundError:
+                # 来源已由外部删除，无需再次删除，仍完成问题记录的跳过操作。
+                source_missing = True
         await self.cleanup_conflict_sessions(conflict.id)
+        if archive_result:
+            return {
+                "message": "已跳过，原始压缩包及分卷已加入空闲归档队列"
+                if archive_result.get("queued") else "已跳过，原始压缩包已归档",
+                "deleted_path": None if archive_is_target or source_missing else delete_target,
+                "source_missing": False,
+                "archive_source_path": archive_source,
+                "archive_queue_id": archive_result.get("job_id") or "",
+                "archive_queue_status": archive_result.get("status") or "",
+                "archive_queued": bool(archive_result.get("queued")),
+            }
         return {
             "message": "已跳过，源文件已不存在，无需删除" if source_missing else "已跳过当前压缩包或目录，并删除待处理来源",
             "deleted_path": None if source_missing else delete_target,
@@ -1684,20 +1722,20 @@ class ConflictResolutionService:
                     directory,
                     f".kikoerumanager-rename-{rename_id}-{idx:03d}.tmp",
                 )
-                await asyncio.to_thread(os.rename, old_abs, tmp_path)
+                await move_path_efficient(old_abs, tmp_path)
                 stage1.append((old_abs, tmp_path))
                 stage2.append((tmp_path, new_abs))
 
             # Stage 2: tmp -> new
             for tmp_path, new_abs in stage2:
-                await asyncio.to_thread(os.rename, tmp_path, new_abs)
+                await move_path_efficient(tmp_path, new_abs)
         except Exception as exc:
             # Stage 2 失败 → 把已经改成 new 的退回 tmp，然后所有 tmp 退回 old
             logger.error("[RenameVolumes] 重命名失败，开始回滚: %s", exc, exc_info=True)
             for tmp_path, new_abs in stage2:
                 if os.path.exists(new_abs) and not os.path.exists(tmp_path):
                     try:
-                        await asyncio.to_thread(os.rename, new_abs, tmp_path)
+                        await move_path_efficient(new_abs, tmp_path)
                     except Exception:
                         logger.error(
                             "[RenameVolumes] 回滚 stage2 失败: %s -> %s",
@@ -1708,7 +1746,7 @@ class ConflictResolutionService:
             for old_abs, tmp_path in stage1:
                 if os.path.exists(tmp_path) and not os.path.exists(old_abs):
                     try:
-                        await asyncio.to_thread(os.rename, tmp_path, old_abs)
+                        await move_path_efficient(tmp_path, old_abs)
                     except Exception:
                         logger.error(
                             "[RenameVolumes] 回滚 stage1 失败: %s -> %s",
@@ -1874,10 +1912,7 @@ class ConflictResolutionService:
     async def _copy_to_stage_with_budget(self, source_path: str, target_path: str, *, is_dir: bool, reason: str) -> None:
         async with get_resource_budget_service().acquire("disk_io_local", reason=reason):
             os.makedirs(os.path.dirname(target_path), exist_ok=True)
-            if is_dir:
-                await asyncio.to_thread(shutil.copytree, source_path, target_path)
-            else:
-                await asyncio.to_thread(shutil.copy2, source_path, target_path)
+            await run_file_operation_async(copy_path_exclusive_sync, source_path, target_path)
 
     async def _stage_new_source(self, conflict, workspace: str) -> str:
         # 兜底找回 source：DB 里 conflict.new_path 可能是已经被搬走 / 清理的临时路径，

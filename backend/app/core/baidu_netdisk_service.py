@@ -27,7 +27,7 @@ import aiohttp
 import requests
 
 from ..config.settings import get_config, save_config
-from .fs_utils import move_path_efficient
+from .fs_utils import move_path_replacing_sync, move_path_efficient, move_path_sync
 from .http_download_service import sanitize_http_download_item
 from .resource_budget_service import get_resource_budget_service
 
@@ -5958,7 +5958,7 @@ class BaiduNetdiskService:
                 with contextlib.suppress(OSError):
                     os.rmdir(final_dir)
             try:
-                shutil.move(entries[0], final_dir)
+                move_path_sync(entries[0], final_dir)
                 if item_count > 0 and not self._directory_has_files(final_dir):
                     with contextlib.suppress(OSError):
                         shutil.rmtree(final_dir)
@@ -5967,17 +5967,12 @@ class BaiduNetdiskService:
             except BaiduNetdiskError:
                 raise
             except Exception:
-                os.makedirs(final_dir, exist_ok=True)
+                raise  # 移动错误必须保留来源并暴露，禁止转另一条复制路径。
         os.makedirs(final_dir, exist_ok=True)
         for entry in entries:
             name = os.path.basename(entry.rstrip("\\/"))
             target = os.path.join(final_dir, name)
-            if os.path.exists(target):
-                if os.path.isdir(target):
-                    shutil.rmtree(target)
-                else:
-                    os.remove(target)
-            shutil.move(entry, target)
+            move_path_replacing_sync(entry, target)
         if item_count > 0 and not self._directory_has_files(final_dir):
             with contextlib.suppress(OSError):
                 shutil.rmtree(final_dir)

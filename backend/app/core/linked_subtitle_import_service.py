@@ -17,6 +17,7 @@ from ..config.settings import get_config
 from ..models.database import ConflictWork, SessionLocal, WorkCanonicalLink, get_db
 from .dlsite_service import get_dlsite_service
 from .extract_service import ExtractService
+from .fs_utils import copy_file_publish_sync, move_path_replacing_sync, run_file_operation_async
 from .kikoeru_duplicate_service import get_kikoeru_service
 from .library_manager import SynologyFileStationClient, get_library_manager
 from .password_utils import normalize_password_value
@@ -467,7 +468,7 @@ class LinkedSubtitleImportService:
 
             def copy_one(plan: Tuple[str, str, Dict[str, Any]]) -> Dict[str, Any]:
                 source_path, destination_path, metadata = plan
-                shutil.copy2(source_path, destination_path)
+                copy_file_publish_sync(source_path, destination_path, overwrite=True)
                 return metadata
 
             def copy_all() -> List[Dict[str, Any]]:
@@ -671,7 +672,7 @@ class LinkedSubtitleImportService:
 
         def _do_copy(plan: Tuple[str, str, Dict[str, Any]]) -> Dict[str, Any]:
             src, dst, meta = plan
-            shutil.copy2(src, dst)
+            copy_file_publish_sync(src, dst, overwrite=True)
             return meta
 
         if copy_workers == 1:
@@ -1019,27 +1020,10 @@ class LinkedSubtitleImportService:
         target_folder = os.path.abspath(normalized_target_folder)
         target_subtitle_dir = os.path.join(target_folder, "subtitles")
         target_parent_dir = os.path.dirname(target_subtitle_dir)
-        target_name = os.path.basename(target_subtitle_dir.rstrip("\\/")) or "subtitles"
-        stage_dir = os.path.join(target_parent_dir, f"{target_name}.__kikoerumanager_stage__.{uuid.uuid4().hex[:8]}")
-        backup_dir = os.path.join(target_parent_dir, f"{target_name}.__kikoerumanager_backup__.{uuid.uuid4().hex[:8]}")
         os.makedirs(target_parent_dir, exist_ok=True)
-
-        try:
-            await asyncio.to_thread(shutil.copytree, workbench_subtitle_dir, stage_dir)
-            if os.path.exists(target_subtitle_dir):
-                await asyncio.to_thread(os.replace, target_subtitle_dir, backup_dir)
-            await asyncio.to_thread(os.replace, stage_dir, target_subtitle_dir)
-            if os.path.exists(backup_dir):
-                await asyncio.to_thread(shutil.rmtree, backup_dir, True)
-        except Exception:
-            if os.path.exists(stage_dir):
-                await asyncio.to_thread(shutil.rmtree, stage_dir, True)
-            if os.path.exists(backup_dir) and not os.path.exists(target_subtitle_dir):
-                try:
-                    await asyncio.to_thread(os.replace, backup_dir, target_subtitle_dir)
-                except Exception:
-                    logger.warning("[字幕补配] 恢复本地字幕目录失败: %s -> %s", backup_dir, target_subtitle_dir, exc_info=True)
-            raise
+        await run_file_operation_async(
+            move_path_replacing_sync, workbench_subtitle_dir, target_subtitle_dir,
+        )
 
         try:
             await asyncio.to_thread(shutil.rmtree, workbench_root_dir, True)

@@ -123,6 +123,11 @@ class FilterService:
 
         def capture_batch():
             nonlocal filtered_size
+            if selected:
+                recovery_service.prepare_archive_storage(
+                    task.id, rjcode=getattr(task, "rjcode", ""),
+                    source_path=getattr(task, "source_path", ""),
+                )
             recovery_service.begin_capture(task.id)
             last_report = 0.0
             for index, item in enumerate(selected):

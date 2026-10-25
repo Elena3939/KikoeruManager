@@ -105,6 +105,12 @@ _attempt = contextvars.ContextVar("extract_attempt", default=None)
 _candidate_secret = os.urandom(32)
 
 
+def current_archive_depth():
+    """读取当前协程的归档层级，避免并行子包互相覆盖展示上下文。"""
+    node = _node.get()
+    return node["depth"] if node is not None else 0
+
+
 def candidate_evidence(password, sources, **evidence):
     """候选证据仅限当前归档，公开记录不包含密码原文。"""
     node = _node.get()
