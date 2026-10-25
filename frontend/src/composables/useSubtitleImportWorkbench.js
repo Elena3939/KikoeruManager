@@ -98,19 +98,19 @@ export function useSubtitleImportWorkbench({
 
     workbenchManager.patchWorkbenchState(SUBTITLE_IMPORT_WORKBENCH_ID, {
       title: '字幕补配工作台',
-      cardVisible: Boolean(workbenchBackgroundActive.value),
+      cardVisible: Boolean(workbenchBackgroundActive.value) && total > 0,
       dismissed: false,
       payload: {
         activeTaskId: String(activeWorkbenchTaskId.value || '')
       },
       status: {
-        key: tone,
+        key: processing > 0 ? 'processing' : awaiting > 0 ? 'awaiting' : failed > 0 ? 'failed' : completed > 0 ? 'completed' : 'pending',
         label,
         tone
       },
       progress: {
         percentage,
-        status: failed > 0 && processing <= 0 ? 'warning' : completed > 0 && processing <= 0 && failed <= 0 ? 'success' : '',
+        status: failed > 0 && processing <= 0 ? 'warning' : completed > 0 && processing <= 0 && awaiting <= 0 && failed <= 0 ? 'success' : '',
         label: activeTask?.progressText || activeTask?.statusLabel || ''
       },
       summary: {
@@ -262,6 +262,7 @@ export function useSubtitleImportWorkbench({
   function hideImportWorkbenchToBackground() {
     workbenchDialogInitialized.value = true
     workbenchManager.backgroundWorkbench(SUBTITLE_IMPORT_WORKBENCH_ID)
+    syncSubtitleImportWorkbenchCardState()
   }
 
   function closeImportWorkbench(options = {}) {

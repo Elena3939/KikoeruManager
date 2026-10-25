@@ -879,7 +879,7 @@ export function useSubtitleTask ({
 
   // ─── Computed properties ─────────────────────────────────────────────────
   const subtitleDialogSessionActive = computed(() => subtitleDialogVisible.value || subtitleDialogBackgroundActive.value)
-  const showSubtitleBackgroundCard = computed(() => subtitleDialogBackgroundActive.value && !subtitleDialogVisible.value)
+  const showSubtitleBackgroundCard = computed(() => subtitleDialogBackgroundActive.value && !subtitleDialogVisible.value && effectiveSubtitleTasks.value.length > 0)
 
   const selectionBackfilledTasks = computed(() => {
     const currentTasks = Array.isArray(subtitleTasks.value) ? subtitleTasks.value : []

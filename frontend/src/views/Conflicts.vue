@@ -1946,10 +1946,11 @@ async function resolveKeepNew(conflict, preview = null, options = {}) {
 async function resolveSkip(conflict) {
   pendingSkipConflictIds.add(conflict.id)
   try {
-    await conflictApi.resolve(conflict.id, {
+    const result = await conflictApi.resolve(conflict.id, {
       action: 'SKIP'
     })
     removeConflict(conflict.id)
+    return result
   } finally {
     pendingSkipConflictIds.delete(conflict.id)
   }
@@ -2473,16 +2474,16 @@ async function handleSkip(conflict) {
     await showSystemConfirm({
       title: '跳过当前压缩包',
       description: formatConflictLabel(conflict),
-      message: '将删除本次导入留下的待处理来源，并把该问题项标记为已跳过。',
-      currentLabel: '待删除来源',
+      message: '原始压缩包及分卷将加入空闲归档队列，移到已处理压缩包目录；临时解压目录将清理，问题项标记为已跳过。',
+      currentLabel: '待处理来源',
       currentValue: getConflictSourcePath(conflict),
       tone: 'warning',
       confirmText: '确认跳过',
       cancelText: '取消'
     })
 
-    await resolveSkip(conflict)
-    ElMessage.success('已跳过当前包')
+    const result = await resolveSkip(conflict)
+    ElMessage.success(result.message || '已跳过当前包')
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') {
       console.error('跳过失败:', error)
@@ -2633,7 +2634,7 @@ async function handleBatchSkip() {
     await showSystemConfirm({
       title: '批量跳过确认',
       description: `已选择 ${targets.length} 个可跳过的问题项`,
-      message: `将跳过 ${targets.length} 项，并逐项删除待处理来源。`,
+      message: `将跳过 ${targets.length} 项，原始压缩包及分卷加入空闲归档队列，并清理临时目录。`,
       currentLabel: '来源预览',
       currentValue: buildPathPreview(targets.map(conflict => getConflictSourcePath(conflict))),
       tone: 'warning',

@@ -217,7 +217,7 @@
       </div>
       </div>
 
-      <div v-if="showPairing && view.activeSubtitleTaskProgressLogs?.length" class="flex flex-col gap-2 p-3 rounded-[13px] bg-slate-50 border border-slate-200">
+      <div v-if="showPairing && view.activeSubtitleTaskProgressLogs?.length" class="subtitle-pairing-progress-log flex flex-col gap-2 p-3 rounded-[13px] bg-slate-50 border border-slate-200">
         <div class="flex items-center justify-between">
           <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">过程日志</span>
           <span class="text-[11px] text-slate-400">{{ view.activeSubtitleTaskProgressLogs.length }} 条</span>
@@ -1615,9 +1615,18 @@ html.dark .subtitle-folder-mark:hover {
   overflow: auto;
 }
 
+.subtitle-inspector-workbench-scroll > * {
+  flex-shrink: 0;
+}
+
 .subtitle-pairing-stage {
-  flex: 1 1 auto;
-  min-height: 0;
+  flex: 1 0 auto;
+  min-height: min-content;
+}
+
+.subtitle-pairing-progress-log {
+  max-height: 220px;
+  overflow: auto;
 }
 
 .is-spinning { animation: subtitle-spin 1s linear infinite; }
