@@ -337,7 +337,8 @@ async def test_old_bonus_images_are_verified_in_background(tmp_path, monkeypatch
         if network_error:
             return False, "status=429", True
         if code == "RJ01739750":
-            cache.get_local_path(code, variant).write_bytes(b"official-image")
+            from PIL import Image
+            Image.new("RGB", (8, 8), "red").save(cache.get_local_path(code, variant), format="JPEG")
             return True, "", False
         return False, "status=404", False
 

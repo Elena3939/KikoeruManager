@@ -776,7 +776,11 @@ class MetadataService:
             if not force:
                 query = query.filter(WorkMetadataModel.bonus_info_checked_at.is_(None))
             rows = query.all()
-            pending = [str(row.rjcode or "").strip().upper() for row in rows if str(row.rjcode or "").strip()]
+            from .release_dates import is_unreleased
+            pending = [
+                str(row.rjcode or "").strip().upper() for row in rows
+                if str(row.rjcode or "").strip() and not is_unreleased(row.release_date)
+            ]
         finally:
             db.close()
         if not pending:

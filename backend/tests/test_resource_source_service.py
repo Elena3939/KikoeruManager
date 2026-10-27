@@ -139,8 +139,9 @@ async def test_submit_uses_actual_rj_and_no_postprocessing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_search_lists_directory_and_keeps_old_hits_on_error(monkeypatch):
+async def test_search_lists_directory_and_keeps_old_hits_on_error(monkeypatch, db_session):
     service = ResourceSourceService()
+    monkeypatch.setattr(module, 'SessionLocal', lambda: db_session)
     state = {'status': 'pending', 'fresh': False, 'candidates': []}
     @asynccontextmanager
     async def lease(*args, **kwargs):
@@ -316,3 +317,63 @@ async def test_yaas_poll_error_does_not_persist_signed_url(monkeypatch):
     rows, _, _, failed = await service._poll_task(['one'], [{'gid': 'one', 'source': SOURCE}])
     assert failed == 1
     assert 'secret' not in rows[0]['failure_reason']
+
+
+@pytest.mark.asyncio
+async def test_api_error_preserves_endpoint_code_and_reason_without_signed_url(monkeypatch):
+    service = ResourceSourceService()
+    monkeypatch.setattr(service, 'pace', AsyncMock())
+
+    def handler(request):
+        return httpx.Response(200, json={
+            'code': 500,
+            'message': 'failed to get obj: object not found\n'
+                       'https://cdn.imoutoheaven.org/file?sign=secret',
+            'data': None,
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        service._client = client
+        with pytest.raises(module.ResourceSourceError) as captured:
+            await service.request('get', {'path': ROOTS[0] + '/RJ01214847.rar', 'password': ''})
+
+    message = str(captured.value)
+    assert '接口 get' in message
+    assert '500' in message
+    assert 'failed to get obj: object not found' in message
+    assert 'secret' not in message
+    assert '\n' not in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('error,expected', [
+    (module.ResourceSourceError('YAAS 接口 get 失败（状态码 500）：object not found'), 'object not found'),
+    (module.ResourceSourceError('YAAS 下载节点返回 HTTP 403'), 'HTTP 403'),
+    (module.ResourceSourceError('失败 https://cdn.imoutoheaven.org/file?sign=secret'), '[YAAS 下载地址]'),
+    (httpx.ConnectTimeout('https://cdn.imoutoheaven.org/file?sign=secret'), '请求超时（ConnectTimeout）'),
+    (httpx.ConnectError('https://cdn.imoutoheaven.org/file?sign=secret'), '网络请求失败（ConnectError）'),
+    (RuntimeError('https://cdn.imoutoheaven.org/file?sign=secret'), 'YAAS 下载任务异常（RuntimeError）'),
+])
+async def test_download_reports_yaas_failure_reason_and_still_cleans_up(monkeypatch, error, expected):
+    from types import SimpleNamespace
+    from app.core.http_download_service import HttpDownloadError
+
+    @asynccontextmanager
+    async def lease(*args, **kwargs):
+        yield
+
+    source = SimpleNamespace(lease=lease, pace=AsyncMock())
+    monkeypatch.setattr(module, 'get_resource_source_service', lambda: source)
+    service = HttpDownloadService()
+    monkeypatch.setattr(service, '_start_download_task_inner', AsyncMock(side_effect=error))
+    cleanup = AsyncMock()
+    monkeypatch.setattr(service, '_cleanup_task_pikpak_transfers', cleanup)
+    task = SimpleNamespace(id='', task_metadata={'resource_source': SOURCE},
+                           wait_if_paused=AsyncMock(), is_cancelled=lambda: False)
+
+    with pytest.raises(HttpDownloadError) as captured:
+        await service.start_download_task(task)
+
+    assert expected in str(captured.value)
+    assert 'secret' not in str(captured.value)
+    cleanup.assert_awaited_once_with(task)

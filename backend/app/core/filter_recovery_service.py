@@ -10,7 +10,6 @@ import os
 import shutil
 import threading
 import uuid
-import hashlib
 import functools
 import copy
 import re
@@ -54,6 +53,10 @@ class FilterRecoveryService:
         self._serialized_items = OrderedDict()
         self._summary_cache = {}
         self._transfer = threading.local()
+
+    @property
+    def _verify_hashes(self) -> bool:
+        return get_config().file_move.filter_verify_hashes
 
     def recovery_root(self) -> Path:
         if self._recovery_root_override:
@@ -107,14 +110,14 @@ class FilterRecoveryService:
                            and row["destination"] == str(destination.absolute())]
                 if len(pending) != 1:
                     raise FilterRecoveryError("过滤归档存在来源和目标但无唯一移动记录，保留现场等待核对")
-                move_path_sync(source, destination, verify_hashes=True)
+                move_path_sync(source, destination, verify_hashes=self._verify_hashes)
             return
         if staged.exists():
             raise FilterRecoveryError("旧版过滤归档暂存缺少完整校验记录，保留现场等待核对")
         if source.exists():
             self._transfer.checkpoint = None
             self._transfer.progress = None
-            move_path_sync(source, destination, verify_hashes=True)
+            move_path_sync(source, destination, verify_hashes=self._verify_hashes)
 
     @staticmethod
     def _archive_directory(task_id, storage):
@@ -508,7 +511,7 @@ class FilterRecoveryService:
                     try:
                         restored = Path(restored_path)
                         payload.parent.mkdir(parents=True, exist_ok=True)
-                        move_path_sync(restored, payload, verify_hashes=True)
+                        move_path_sync(restored, payload, verify_hashes=self._verify_hashes)
                     except Exception:
                         logger.error(
                             "还原状态持久化失败且无法回滚本地内容: task_id=%s recovery_id=%s",
@@ -602,7 +605,7 @@ class FilterRecoveryService:
         if destination.exists():
             raise FilterRecoveryConflictError(f"目标已存在同名内容: {destination}")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        move_path_sync(payload, destination, verify_hashes=True)
+        move_path_sync(payload, destination, verify_hashes=self._verify_hashes)
         return str(destination)
 
     async def _restore_remote(self, manager: Any, library: Any, payload: Path, target: Dict[str, Any], item: Dict[str, Any]) -> str:
@@ -715,9 +718,6 @@ class FilterRecoveryService:
             logger.warning("记录过滤项还原操作失败: task_id=%s", task_id, exc_info=True)
 
     def _copy_file(self, source, destination):
-        before = os.stat(source)
-        digest = hashlib.sha256()
-        from .fs_utils import copy_path_exclusive_sync
         base_copied = getattr(self._transfer, "copied", 0)
 
         def checkpoint():
@@ -731,26 +731,8 @@ class FilterRecoveryService:
             if callback:
                 callback(self._transfer.copied)
 
-        copy_path_exclusive_sync(source, destination, checkpoint=checkpoint, progress_cb=progress)
-        with open(source, "rb") as incoming:
-            while chunk := incoming.read(1024 * 1024):
-                checkpoint = getattr(self._transfer, "checkpoint", None)
-                if checkpoint:
-                    checkpoint()
-                digest.update(chunk)
-        after = os.stat(source)
-        if (before.st_size, before.st_mtime_ns, before.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
-            raise FilterRecoveryError("复制期间来源发生变化，保留来源和恢复副本")
-        check = hashlib.sha256()
-        with open(destination, "rb") as stream:
-            while chunk := stream.read(1024 * 1024):
-                checkpoint = getattr(self._transfer, "checkpoint", None)
-                if checkpoint:
-                    checkpoint()
-                check.update(chunk)
-        if check.digest() != digest.digest():
-            raise FilterRecoveryError("恢复副本校验失败，保留来源")
-        shutil.copystat(source, destination)
+        copy_path_exclusive_sync(source, destination, checkpoint=checkpoint, progress_cb=progress,
+                                 verify_hashes=self._verify_hashes)
         return destination
 
     def _move_to_recovery(self, source: Path, destination: Path, *, expected_size: int) -> None:
@@ -765,7 +747,8 @@ class FilterRecoveryService:
             if callback:
                 callback(done)
 
-        move_path_sync(source, destination, verify_hashes=True,
+        # 默认只校验身份、成员和大小；按配置额外校验内容哈希。
+        move_path_sync(source, destination, verify_hashes=self._verify_hashes,
                        cancel_check=cancelled, progress_cb=progress)
 
     def _tree_fingerprint(self, root):

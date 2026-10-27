@@ -455,6 +455,14 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
         "rerun": bool(detail.get("rerun_linked") or detail.get("rerun_count")),
         "compacted": bool(detail.get("__compacted")),
     }
+    if detail.get("mode") in {"conflict_retry_batch", "conflict_retry_item"}:
+        item["category_label"] = "重试作品"
+        item["outcome_label"] = {
+            "success": "重试成功", "failed": "重试失败", "partial_success": "部分重试成功",
+            "incomplete": "重试中", "waiting": "等待处理", "cancelled": "已取消",
+        }.get(row.get("result_status") or status, "重试中")
+        if row.get("outcome_label") == "待字幕补配" or detail.get("subtitle_pending_count"):
+            item["outcome_label"] = row.get("outcome_label") or "含字幕待补配"
     if category in {"auto_import", "process_existing", "extract"} and action == "batch_start":
         item.update({
             "child_failed_count": _int(detail.get("failed_child_count")),
@@ -469,7 +477,8 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
 
     for key in ("result_status", "outcome", "outcome_label"):
         if key in row:
-            item[key] = row[key]
+            if key != "outcome_label" or "outcome_label" not in item:
+                item[key] = row[key]
 
     if category == "pipeline_delete" and action == "batch_api_delete":
         item["source_path"] = None

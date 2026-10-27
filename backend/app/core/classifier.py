@@ -73,6 +73,61 @@ class SmartClassifier:
         logger.info(f"[预检] 完成: RJ号 {rjcode} 未在 ready 库存索引发现重复，继续解压")
         return False
 
+    async def check_aggregate_duplicate_before_extract(self, task: Task) -> bool:
+        """合集只有每个 RJ 都直接命中库存时，才在解压前整体判重。"""
+        from .archive_identity import aggregate_archive_title, aggregate_rjcodes
+
+        codes = aggregate_rjcodes(task.task_metadata)
+        if not codes:
+            return False
+        # 关联作品仍需拆分后判断，避免将可补配字幕的翻译作当成重复作品。
+        hits = await asyncio.to_thread(
+            get_library_manager().find_rj_in_ready_index,
+            codes,
+            include_subtitle_state=False,
+        )
+        matches = [
+            {
+                "rjcode": code,
+                "path": hit["path"],
+                "size": hit.get("size"),
+                "library_id": hit.get("library_id"),
+                "library_name": hit.get("library_name"),
+            }
+            for code in codes
+            for hit in (hits.get(code) or [])
+            if str(hit.get("path") or "").strip()
+        ]
+        matched = {hit["rjcode"] for hit in matches}
+        missing = [code for code in codes if code not in matched]
+        task.task_metadata["aggregate_duplicate_precheck"] = {
+            "source": "library_index",
+            "matched_rjcodes": [code for code in codes if code in matched],
+            "missing_rjcodes": missing,
+        }
+        if missing:
+            logger.info(
+                "[合集预检] %s/%s 个 RJ 已收录，继续解压并按作品拆分查重: %s",
+                len(matched), len(codes), task.source_path,
+            )
+            return False
+
+        metadata = {
+            **task.task_metadata,
+            "source": "library_index",
+            "work_name": aggregate_archive_title(task.task_metadata, task.source_path),
+            "available_actions": ["SKIP"],
+        }
+        for key in ("rjcode", "inferred_rjcode", "rjcode_source", "inferred_rjcode_source"):
+            metadata.pop(key, None)
+        self._add_to_conflict_works(
+            task.id, None, "DUPLICATE", "", task.source_path, metadata,
+            linked_works_info=matches,
+            related_rjcodes=codes,
+        )
+        logger.info("[合集预检] 全部 %s 个 RJ 已收录，停止解压: %s", len(codes), task.source_path)
+        return True
+
     async def _check_library_index_before_extract(self, rjcode: str, task: Task) -> bool:
         """预解压优先用库存索引查当前 RJ 和关联 RJ。"""
         normalized_rj = str(rjcode or "").strip().upper()

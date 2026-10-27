@@ -75,7 +75,11 @@
               <ScrollText class="h-4 w-4" :stroke-width="2.1" />
             </div>
             <div class="min-w-0">
-              <div class="text-[13px] font-semibold text-slate-900">当前任务执行日志</div>
+              <div class="flex flex-wrap items-center gap-2 text-[13px] font-semibold text-slate-900">
+                当前任务执行日志
+                <span v-if="ctx.activeSubtitleTask.subtitle_is_ai" class="subtitle-source-ai">AI 字幕</span>
+                <span v-if="ctx.activeSubtitleTask.source_provider === 'yaas'" class="subtitle-source-label">YAAS</span>
+              </div>
               <div class="mt-0.5 text-[11.5px] font-medium text-slate-500 truncate">{{ ctx.getTaskDisplayRJCode(ctx.activeSubtitleTask) }}</div>
             </div>
           </div>
@@ -263,6 +267,8 @@
           </div>
 
           <div class="flex flex-wrap gap-1">
+            <span v-if="task.subtitle_is_ai" class="subtitle-source-ai">AI 字幕</span>
+            <span v-if="task.source_provider === 'yaas'" class="subtitle-source-label">YAAS</span>
             <template v-if="ctx.isHistoryRestoredSubtitleTask(task) || ctx.isSelectionBackfillSubtitleTask(task)">
               <span class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10.5px] font-medium text-slate-900">
                 <History class="h-2.5 w-2.5 text-violet-500" :stroke-width="2.4" />{{ ctx.isHistoryRestoredSubtitleTask(task) ? '历史恢复' : '结果回填' }}
@@ -844,6 +850,22 @@ function getTaskMetaItems(task) {
 </script>
 
 <style scoped>
+.subtitle-source-ai,
+.subtitle-source-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.subtitle-source-ai { color: #b45309; background: #fffbeb; }
+.subtitle-source-label { color: #047857; background: #ecfdf5; }
+:global(html.kikoerumanager-dark) .subtitle-source-ai { color: #fcd34d; background: #422006; }
+:global(html.kikoerumanager-dark) .subtitle-source-label { color: #6ee7b7; background: #022c22; }
+
 .subtitle-task-card {
   display: grid;
   gap: 12px;

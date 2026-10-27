@@ -168,6 +168,20 @@ class RenameService:
 
         return japanese_metadata
 
+    async def flatten_single_subfolder(
+        self,
+        path: str,
+        operation_sink: Optional[list[dict[str, str]]] = None,
+    ) -> str:
+        # 两次移动之间不能取消，否则原路径可能消失、内容留在临时目录。
+        return await run_file_operation_async(
+            self._flatten_single_subfolder, path, operation_sink,
+            cancel_at_checkpoints=False,
+        )
+
+    async def remove_empty_folders_async(self, path: str, remove_root: bool = False) -> None:
+        await run_file_operation_async(self.remove_empty_folders, path, remove_root)
+
     def _flatten_single_subfolder(
         self,
         path: str,
@@ -199,15 +213,6 @@ class RenameService:
                 # 如果只有一个项目且是文件夹，则扁平化
                 if len(items) == 1 and items[0].is_dir():
                     subfolder = items[0]
-                    if operation_sink is not None:
-                        try:
-                            parent_relative = current_path.relative_to(root_path).as_posix()
-                        except ValueError:
-                            parent_relative = ""
-                        operation_sink.append({
-                            "parent_relative_path": "" if parent_relative == "." else parent_relative,
-                            "removed_segment": subfolder.name,
-                        })
                     logger.info(f"扁平化 (层 {current_depth + 1}/{max_depth}): {current_path.name} 只有一个子文件夹 {subfolder.name}，正在合并...")
 
                     # 创建临时路径
@@ -221,6 +226,13 @@ class RenameService:
 
                     # 将临时文件夹重命名为原文件夹名
                     move_path_sync(str(temp_path), str(current_path))
+
+                    if operation_sink is not None:
+                        parent_relative = current_path.relative_to(root_path).as_posix()
+                        operation_sink.append({
+                            "parent_relative_path": "" if parent_relative == "." else parent_relative,
+                            "removed_segment": subfolder.name,
+                        })
 
                     logger.info(f"扁平化完成 (层 {current_depth + 1}): {current_path}")
 

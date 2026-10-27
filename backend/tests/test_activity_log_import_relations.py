@@ -67,6 +67,46 @@ def test_search_uses_latest_result_time_without_side_events(db_session):
     assert result["items"][0]["latest_activity_at"] == "2026-10-20T12:00:00"
 
 
+def test_conflict_retry_projection_updates_original_and_new_batch(db_session):
+    from app.core.conflict_retry_activity import sync_retry_parent
+
+    parent = _batch(schema_version=2, scan_id="scan", producer_closed=True,
+                    scan_closed=True, execution_status="failed")
+    parent["detail"]["created_count"] = 1
+    retry_parent = _row("retry-parent", "retry-batch", action="batch_start",
+                        mode="conflict_retry_batch", created_count=1, requested_count=1)
+    retry_parent.update(batch_id="retry-batch")
+    retry_parent["detail"].update(batch_id="retry-batch", session_id="retry-batch")
+    result = _row("retry-result", "new-task", at="2026-10-20T12:00:00",
+                  mode="conflict_retry_item")
+    result.update(batch_id="retry-batch")
+    result["detail"].update(batch_id="retry-batch", session_id="retry-batch")
+    projection = _row("projection", "task-1", at="2026-10-20T12:00:00", retry_projection=True)
+    _save(db_session, [parent, _row("failure", "task-1", status="failed"),
+                       retry_parent, result, projection])
+    sync_retry_parent(db_session, [projection])
+    db_session.flush()
+    actual_parent = db_session.query(ActivityLog).filter_by(id="parent").one()
+    assert actual_parent.status == "success"
+    assert actual_parent.detail["execution_status"] == "success"
+    items = list_batch_lite(db_session, db_session.query(ActivityLog), page=1, limit=20, status="success")["items"]
+    assert {item["id"] for item in items} == {"parent", "retry-parent"}
+    for item in items:
+        assert item["child_total_count"] == 1
+        detail = routes.get_activity_log_detail(item["id"], db=db_session)["row"]
+        assert detail["status"] == item["status"]
+
+
+def test_retry_submission_failure_matches_sql_filter(db_session):
+    parent = _batch(mode="conflict_retry_batch", submission_failed_count=1)
+    parent["detail"]["created_count"] = 1
+    _save(db_session, [parent, _row("success", "task-1")])
+    result = list_batch_lite(db_session, db_session.query(ActivityLog), page=1, limit=20, status="partial_success")
+    assert result["total"] == 1
+    assert result["items"][0]["status"] == "partial_success"
+    assert "提交失败 1 个" in result["items"][0]["summary"]
+
+
 def test_duplicate_exclusion_is_not_a_failed_or_unfinished_archive():
     duplicate = _row("duplicate", "task-2", status="waiting")
     duplicate["summary"] = "重复作品，请在问题作品页面处理"

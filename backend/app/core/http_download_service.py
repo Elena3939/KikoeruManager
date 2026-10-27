@@ -6047,10 +6047,18 @@ class HttpDownloadService:
             return await self._start_download_task_inner(task)
         except Exception as exc:
             if (task.task_metadata or {}).get("resource_source") == "imoutoheaven":
-                if isinstance(exc, HttpDownloadError):
+                from .resource_source_service import ResourceSourceError
+                if isinstance(exc, (HttpDownloadError, ResourceSourceError)):
                     message = re.sub(r"https?://[^\s\"'<>]+", "[YAAS 下载地址]", str(exc))
                     raise HttpDownloadError(message) from None
-                raise HttpDownloadError("YAAS 传输异常，请重试以刷新下载地址") from None
+                if isinstance(exc, httpx.TimeoutException):
+                    raise HttpDownloadError(
+                        f"YAAS 请求超时（{type(exc).__name__}），请稍后重试") from None
+                if isinstance(exc, httpx.HTTPError):
+                    raise HttpDownloadError(
+                        f"YAAS 网络请求失败（{type(exc).__name__}），请稍后重试") from None
+                raise HttpDownloadError(
+                    f"YAAS 下载任务异常（{type(exc).__name__}），请稍后重试") from None
             raise
         finally:
             # 任务异常、取消或预览阶段失败时也必须回收已转存的 PikPak 文件，

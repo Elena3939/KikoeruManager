@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, BigInteger, Index, text, Float, event, CheckConstraint, ForeignKey
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
@@ -94,6 +94,40 @@ def library_index_name_sort_key(value: Any) -> str:
             )
             parts.append(f"0{escaped}{_NATURAL_SORT_DELIMITER}")
     return "".join(parts)
+
+class CircleCompletionProjection(Base):
+    """可重建的查询投影；同一事务发布统计与有序作品组。"""
+    __tablename__ = "circle_completion_projections"
+    id = Column(String(64), primary_key=True)
+    circle_id = Column(String(120), nullable=False, index=True)
+    data_version = Column(Text, nullable=False)
+    summary = Column(JSON, nullable=False)
+    row_count = Column(Integer, nullable=False)
+    updated_at = Column(DateTime, default=get_local_now, nullable=False, index=True)
+
+
+class CircleCompletionProjectionRow(Base):
+    __tablename__ = "circle_completion_projection_rows"
+    projection_id = Column(String(64), ForeignKey("circle_completion_projections.id", ondelete="CASCADE"), primary_key=True)
+    variant = Column(String(32), primary_key=True)
+    position = Column(Integer, primary_key=True)
+    tags = Column(ARRAY(Text), nullable=False)
+    search_text = Column(Text, nullable=False)
+    aliases = Column(ARRAY(Text), nullable=False)
+    parent_codes = Column(ARRAY(Text), nullable=False)
+    is_bonus = Column(Boolean, nullable=False)
+    release_timestamp = Column(Float, nullable=False)
+    unreleased = Column(Boolean, nullable=False)
+    title = Column(Text, nullable=False)
+    member_count = Column(Integer, nullable=False)
+    payload = Column(JSON, nullable=False)
+    compare_payload = Column(JSON)
+    __table_args__ = (
+        Index("ix_circle_projection_tags", "tags", postgresql_using="gin"),
+        Index("ix_circle_projection_search", "search_text", postgresql_using="gin", postgresql_ops={"search_text": "gin_trgm_ops"}),
+        Index("ix_circle_projection_release", "projection_id", "variant", "unreleased", "release_timestamp", "title", "position"),
+    )
+
 
 class BrowserUploadSession(Base):
     """浏览器上传会话；源文件留在浏览器，不进入普通任务执行队列。"""
@@ -4541,6 +4575,8 @@ def init_db():
             if not health.get("ok"):
                 _db_logger.critical("[数据库] 启动自检失败: %s", health)
                 raise RuntimeError(f"数据库自检失败: {health}")
+        with engine.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         Base.metadata.create_all(bind=engine)
         with engine.begin() as conn:
             _create_postgres_extensions_and_indexes(conn)

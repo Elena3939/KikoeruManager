@@ -42,13 +42,14 @@ export function resolveTrackedDownloadBatch(taskIds = [], batchTaskIds = [], tas
     ? startedTime
     : createdTimes.length ? Math.min(...createdTimes) : NaN
 
-  // 旧缓存按新任务置顶；只排除本次提交之前已经结束的任务，保留当时仍活跃的任务。
+  // 旧缓存按新任务置顶；失败项保留供重试，只排除提交前已成功或取消的任务。
   if (!Number.isFinite(boundary)) return { taskIds: normalizedIds, batchStartedAt }
   return {
     taskIds: normalizedIds.filter(id => {
       if (batchIds.has(id)) return true
       const task = tasksById.get(id)
-      if (!task || !['completed', 'failed', 'cancelled', 'canceled'].includes(String(task.status || ''))) return true
+      const status = String(task?.display_status || task?.status || '').trim().toLowerCase()
+      if (!task || !['completed', 'success', 'succeeded', 'cancelled', 'canceled'].includes(status)) return true
       return Date.parse(task.completed_at) >= boundary
     }),
     batchStartedAt: new Date(boundary).toISOString(),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import time
@@ -15,6 +16,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from ..config.settings import get_config
 from ..models.database import CircleExternalSearchRecord, SessionLocal, get_local_now
+from .http_client_lifecycle import HttpClientLifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +124,40 @@ class CircleExternalSearchService:
         self._worker_task: asyncio.Task | None = None
         self._worker_stop_event: asyncio.Event | None = None
         self._clients = {}
+        self._client_lifecycle = HttpClientLifecycle()
+        self._source_backoffs = {}
+
+    @staticmethod
+    def _source_signature(source: str) -> str:
+        config = get_config().circle_external_search
+        values = (
+            getattr(config, source + "_enabled", True),
+            getattr(config, source + "_cookie", ""),
+            getattr(config, source + "_proxy", ""),
+        )
+        return hashlib.sha256(repr(values).encode()).hexdigest()
+
+    def _source_backoff(self, source: str):
+        state = self._source_backoffs.get(source)
+        if state and state[0] == self._source_signature(source) and state[1] > time.monotonic():
+            return state[2]
+        self._source_backoffs.pop(source, None)
+        return None
+
+    def _pause_source(self, source: str, code: str, seconds: float, signature: str) -> None:
+        if signature != self._source_signature(source):
+            return
+        if not self._source_backoff(source):
+            logger.warning("[社团补全·外部搜索] 暂停来源 source=%s reason=%s seconds=%s", source, code, seconds)
+        self._source_backoffs[source] = (signature, time.monotonic() + seconds, code)
+
+    @staticmethod
+    def _south_plus_access_error(page: str) -> str:
+        if any(text in page for text in ("请先登录论坛", "您还不是论坛会员", "您尚未登录")):
+            return "login_required"
+        if "不能使用搜索功能" in page or "用户组权限" in page:
+            return "permission_denied"
+        return ""
 
     @staticmethod
     def _normalize_rjcode(value: Any) -> str:
@@ -194,6 +230,7 @@ class CircleExternalSearchService:
             proxy = f"http://{proxy}"
         async with self._semaphore:
             client_kwargs: Dict[str, Any] = {
+                "trust_env": False,
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(connect=8.0, read=12.0, write=8.0, pool=8.0),
                 "limits": httpx.Limits(max_connections=4, max_keepalive_connections=4, keepalive_expiry=60),
@@ -210,9 +247,14 @@ class CircleExternalSearchService:
             client = self._clients.get(key)
             if client is None or client.is_closed:
                 client = self._clients[key] = httpx.AsyncClient(**client_kwargs)
-            response = await client.get(url, headers=request_headers)
-            response.raise_for_status()
-            return response.text
+            def discard(failed):
+                if self._clients.get(key) is failed:
+                    self._clients.pop(key, None)
+
+            async with self._client_lifecycle.use(client, discard):
+                response = await client.get(url, headers=request_headers)
+                response.raise_for_status()
+                return response.text
 
     async def _fetch_south_plus_text(
         self,
@@ -233,6 +275,7 @@ class CircleExternalSearchService:
 
     async def _search_anime_share(self, rjcode: str) -> Dict[str, Any]:
         search_url = self._anime_share_search_url(rjcode)
+        signature = self._source_signature("anime_share")
         if not bool(getattr(get_config().circle_external_search, "anime_share_enabled", True)):
             return {"status": "unavailable", "results": [], "search_url": search_url}
         try:
@@ -248,13 +291,15 @@ class CircleExternalSearchService:
                 if not any(item["url"] == url for item in results):
                     results.append({"url": url, "title": title})
             return {"status": "hit" if results else "miss", "results": results, "search_url": search_url}
-        except Exception:
-            logger.info("[社团补全·外部搜索] AnimeShare 查询失败 rj=%s", rjcode, exc_info=True)
-            return {"status": "error", "results": [], "search_url": search_url}
+        except Exception as exc:
+            code = type(exc).__name__
+            self._pause_source("anime_share", code, self._ERROR_REFRESH_SECONDS, signature)
+            return {"status": "error", "error_code": code, "results": [], "search_url": search_url}
 
     async def _search_south_plus(self, rjcode: str) -> Dict[str, Any]:
         search_url = self._south_plus_search_url(rjcode)
         config = get_config().circle_external_search
+        signature = self._source_signature("south_plus")
         if not bool(getattr(config, "south_plus_enabled", True)):
             return {"status": "unavailable", "results": [], "search_url": search_url}
         cookie = str(getattr(config, "south_plus_cookie", "") or "").strip()
@@ -267,8 +312,10 @@ class CircleExternalSearchService:
                 headers=self._south_plus_headers(cookie),
                 proxy=proxy,
             )
-            if "不能使用搜索功能" in page or "用户组权限" in page:
-                return {"status": "unavailable", "results": [], "search_url": search_url}
+            access_error = self._south_plus_access_error(page)
+            if access_error:
+                self._pause_source("south_plus", access_error, self._UNAVAILABLE_REFRESH_SECONDS, signature)
+                return {"status": "unavailable", "error_code": access_error, "results": [], "search_url": search_url}
             parser = _SouthPlusResultParser()
             parser.feed(page)
             results = []
@@ -280,9 +327,10 @@ class CircleExternalSearchService:
                 if not any(item["url"] == url for item in results):
                     results.append({"url": url, "title": title})
             return {"status": "hit" if results else "miss", "results": results, "search_url": search_url}
-        except Exception:
-            logger.info("[社团补全·外部搜索] 南+ 查询失败 rj=%s", rjcode, exc_info=True)
-            return {"status": "error", "results": [], "search_url": search_url}
+        except Exception as exc:
+            code = type(exc).__name__
+            self._pause_source("south_plus", code, self._ERROR_REFRESH_SECONDS, signature)
+            return {"status": "error", "error_code": code, "results": [], "search_url": search_url}
 
     async def test_south_plus_connection(self, cookie: str = "", proxy: str = "") -> Dict[str, Any]:
         """只验证南+搜索页可访问性，不写入作品搜索缓存。"""
@@ -297,13 +345,18 @@ class CircleExternalSearchService:
                 headers=self._south_plus_headers(cookie),
                 proxy=str(proxy or "").strip(),
             )
-            if "不能使用搜索功能" in page or "用户组权限" in page:
+            access_error = self._south_plus_access_error(page)
+            if access_error:
                 return {
                     "success": False,
-                    "status": "permission_denied",
-                    "message": "南+ 当前账号没有搜索权限",
+                    "status": access_error,
+                    "message": "南+ Cookie 已失效，请重新登录后更新 Cookie" if access_error == "login_required" else "南+ 当前账号没有搜索权限",
                     "latency_ms": round((time.perf_counter() - started_at) * 1000),
                 }
+            config = get_config().circle_external_search
+            if (cookie == str(getattr(config, "south_plus_cookie", "") or "").strip()
+                    and str(proxy or "").strip() == str(getattr(config, "south_plus_proxy", "") or "").strip()):
+                self._source_backoffs.pop("south_plus", None)
             return {
                 "success": True,
                 "status": "ok",
@@ -319,10 +372,11 @@ class CircleExternalSearchService:
                 "latency_ms": round((time.perf_counter() - started_at) * 1000),
             }
         except Exception as exc:
-            logger.info("[社团补全·外部搜索] 南+ 连接测试失败: %s", exc, exc_info=True)
+            logger.info("[社团补全·外部搜索] 南+ 连接测试失败 type=%s", type(exc).__name__)
             return {
                 "success": False,
                 "status": "error",
+                "error_code": type(exc).__name__,
                 "message": "南+ 连接失败，请检查代理和 Cookie",
                 "latency_ms": round((time.perf_counter() - started_at) * 1000),
             }
@@ -331,6 +385,9 @@ class CircleExternalSearchService:
         """worker 专用的真实外站请求；页面读取路径不得调用此方法。"""
         config = get_config().circle_external_search
         search_url = self._source_search_url(source, rjcode)
+        backoff = self._source_backoff(source)
+        if backoff:
+            return {"status": "unavailable", "error_code": backoff, "results": [], "search_url": search_url}
         if source == "anime_share" and not bool(getattr(config, "anime_share_enabled", True)):
             return {"status": "unavailable", "results": [], "search_url": search_url}
         if source == "south_plus" and (
@@ -347,6 +404,7 @@ class CircleExternalSearchService:
             "results": list(record.results_json or []),
             "search_url": str(record.search_url or cls._source_search_url(record.source, record.rjcode)),
             "checked_at": record.checked_at.isoformat() if record.checked_at else None,
+            "error_code": str(record.last_error_code or ""),
         }
 
     def _load_or_enqueue_records(self, lookup_keys: List[tuple[str, str]]) -> Dict[tuple[str, str], Dict[str, Any]]:
@@ -434,7 +492,8 @@ class CircleExternalSearchService:
             db.close()
 
     def requeue_unavailable_source(self, source: str) -> int:
-        """登录态或代理变更后，只唤醒此前因不可用而延后的记录。"""
+        """登录态或代理变更后，唤醒不可用及请求失败记录，不动已有命中。"""
+        self._source_backoffs.pop(source, None)
         now = get_local_now()
         db = SessionLocal()
         try:
@@ -442,7 +501,7 @@ class CircleExternalSearchService:
                 db.query(CircleExternalSearchRecord)
                 .filter(CircleExternalSearchRecord.source == str(source or "").strip())
                 .filter(CircleExternalSearchRecord.probe_schema_version == self._PROBE_SCHEMA_VERSION)
-                .filter(CircleExternalSearchRecord.status == "unavailable")
+                .filter(CircleExternalSearchRecord.status.in_(["unavailable", "error"]))
                 .update({
                     CircleExternalSearchRecord.next_probe_at: now,
                     CircleExternalSearchRecord.lease_until: None,
@@ -485,7 +544,7 @@ class CircleExternalSearchService:
             row.next_probe_at = self._next_probe_at(status, now)
             row.lease_until = None
             row.attempt_count = int(row.attempt_count or 0) + 1
-            row.last_error_code = "" if status in {"hit", "miss"} else status
+            row.last_error_code = "" if status in {"hit", "miss"} else str(payload.get("error_code") or status)[:80]
             db.commit()
             return {
                 "id": str(row.id),
@@ -537,7 +596,7 @@ class CircleExternalSearchService:
 
     async def _worker_loop(self, source: str) -> None:
         while self._worker_stop_event and not self._worker_stop_event.is_set():
-            claimed = await asyncio.to_thread(self._claim_next_record, source) if self._source_ready(source) else None
+            claimed = await asyncio.to_thread(self._claim_next_record, source) if self._source_ready(source) and not self._source_backoff(source) else None
             if claimed is None:
                 try:
                     await asyncio.wait_for(self._worker_stop_event.wait(), timeout=self._WORKER_IDLE_SECONDS)
@@ -600,8 +659,10 @@ class CircleExternalSearchService:
         for canonical, variants in variants_by_canonical.items():
             source_payloads: Dict[str, Any] = {}
             for source in ("anime_share", "south_plus"):
+                backoff = self._source_backoff(source)
                 entries: List[Dict[str, str]] = []
                 search_entries: List[Dict[str, str]] = []
+                error_codes = set()
                 statuses = []
                 for variant in variants:
                     rjcode = self._normalize_rjcode(variant.get("rjcode"))
@@ -612,7 +673,11 @@ class CircleExternalSearchService:
                         "results": [],
                         "search_url": self._source_search_url(source, rjcode),
                     })
+                    if backoff and payload.get("status") != "hit":
+                        payload = {**payload, "status": "unavailable", "error_code": backoff}
                     statuses.append(str(payload.get("status") or "error"))
+                    if payload.get("error_code"):
+                        error_codes.add(str(payload["error_code"]))
                     search_entry = self._search_entry(source, variant, payload)
                     if search_entry["url"] and not any(existing["url"] == search_entry["url"] for existing in search_entries):
                         search_entries.append(search_entry)
@@ -633,6 +698,7 @@ class CircleExternalSearchService:
                     "status": status,
                     "results": entries,
                     "search_results": search_entries,
+                    "error_codes": sorted(error_codes),
                 }
             items[str(canonical)] = source_payloads
         return {"items": items}

@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
 from ..config.settings import BonusProbeConfig, get_config
+from .release_dates import is_unreleased
 from ..models.database import (
     CircleCatalog,
     CircleExternalIdentity,
@@ -50,7 +51,7 @@ class DLsiteBonusProbeService:
     DEFAULT_CACHE_WRITE_BATCH_SIZE = 100
     DEFAULT_TEMP_TABLE_LOOKUP_THRESHOLD = 3000
     DEFAULT_TEMP_TABLE_INSERT_BATCH_SIZE = 5000
-    PROBE_STRATEGY_VERSION = "date-range-v5"
+    PROBE_STRATEGY_VERSION = "date-range-v6"
 
     def __init__(self) -> None:
         self.dlsite_service = get_dlsite_service()
@@ -891,7 +892,9 @@ class DLsiteBonusProbeService:
         row.checked_at = datetime.now()
         row.updated_at = datetime.now()
 
-    def _load_cached_features_sync(self, normalized: Sequence[str]) -> Dict[str, DLsiteProductProbeFeature]:
+    def _load_cached_features_sync(
+        self, normalized: Sequence[str], *, force_refresh: bool = False,
+    ) -> Dict[str, DLsiteProductProbeFeature]:
         features: Dict[str, DLsiteProductProbeFeature] = {}
         if not normalized:
             return features
@@ -901,7 +904,9 @@ class DLsiteBonusProbeService:
             redis_rows = get_redis_service().read_bonus_probe_cache_rows_sync(normalized)
             for rjcode, payload in redis_rows.items():
                 normalized_rjcode = self.normalize_rjcode(rjcode)
-                if normalized_rjcode:
+                if normalized_rjcode and self._cache_result_reusable(
+                    payload.get("probe_status"), payload.get("checked_at"), force_refresh=force_refresh,
+                ):
                     features[normalized_rjcode] = self._feature_from_cache_payload(payload)
         except Exception:
             logger.debug("[DLsite特典探测] 读取 Redis 缓存 overlay 失败", exc_info=True)
@@ -915,10 +920,17 @@ class DLsiteBonusProbeService:
         db = SessionLocal()
         try:
             for row in self._cache_rows_by_rjcodes_sync(db, missing):
-                features[self.normalize_rjcode(row.rjcode)] = self._feature_from_cache_row(row)
+                if self._cache_result_reusable(row.probe_status, row.checked_at, force_refresh=force_refresh):
+                    features[self.normalize_rjcode(row.rjcode)] = self._feature_from_cache_row(row)
         finally:
             db.close()
         return features
+
+    def _cache_result_reusable(
+        self, status: Any, checked_at: Any = None, *, force_refresh: bool = False,
+    ) -> bool:
+        # 稳定结果永久复用；只有显式重查或策略升级才绕过负缓存。
+        return status == "ok" or (status == "missing" and not force_refresh)
 
     def _cache_values_from_feature(self, feature: DLsiteProductProbeFeature) -> Dict[str, Any]:
         now = datetime.now()
@@ -1199,12 +1211,14 @@ class DLsiteBonusProbeService:
         batch_size: int,
         concurrency: int,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        force_refresh: bool = False,
     ) -> Tuple[Dict[str, DLsiteProductProbeFeature], int, int]:
         normalized = self._dedupe(rjcodes)
         if not normalized:
             return {}, 0, 0
 
-        features = await asyncio.to_thread(self._load_cached_features_sync, normalized)
+        cache_options = {"force_refresh": True} if force_refresh else {}
+        features = await asyncio.to_thread(self._load_cached_features_sync, normalized, **cache_options)
 
         missing = [
             workno for workno in normalized
@@ -1597,7 +1611,8 @@ class DLsiteBonusProbeService:
                 release_date=release_date,
                 gap_limit=gap_limit,
             )
-            date_row.mode = mode_key
+            if not result.get("incomplete") or not date_row.mode:
+                date_row.mode = mode_key
             date_row.status = "incomplete" if result.get("incomplete") else "completed"
             date_row.public_count = int(result.get("public_count") or 0)
             date_row.sou_public_count = int(result.get("sou_public_count") or 0)
@@ -2270,7 +2285,7 @@ class DLsiteBonusProbeService:
                 query = query.filter(WorkMetadata.maker_id == normalized_maker_id)
             dates = []
             for row in query.all():
-                if bool(row.is_bonus_work):
+                if bool(row.is_bonus_work) or is_unreleased(row.release_date):
                     continue
                 if state_map.get(self.normalize_rjcode(row.rjcode)) in {"no_bonus", "has_bonus"}:
                     continue
@@ -2339,6 +2354,7 @@ class DLsiteBonusProbeService:
 
     def _start_probe_date_sync(
         self, *, circle_id, maker_id, release_date, gap_limit, mode, job_id, target_rjcodes,
+        force_refresh=False,
     ) -> Optional[Dict[str, Any]]:
         """数据库会话只在工作线程内创建、提交和关闭。"""
         if target_rjcodes:
@@ -2355,7 +2371,17 @@ class DLsiteBonusProbeService:
                     DLsiteBonusProbeDate.gap_limit == int(gap_limit),
                 ).first()
             )
-            if not target_rjcodes and self._can_reuse_completed_date_row(date_row, mode=mode):
+            if target_rjcodes and not force_refresh:
+                states = self._completed_original_state_map(db, circle_id, target_rjcodes)
+                if set(target_rjcodes).issubset(states):
+                    return {
+                        "circle_id": circle_id, "maker_id": maker_id,
+                        "release_date": release_date, "parse_status": "cached_completed",
+                        "original_count": len(states), "original_concluded_count": len(states),
+                        "original_pending_count": 0, "request_count": 0, "probe_count": 0,
+                        "hit_count": 0, "inserted_count": 0,
+                    }
+            if not force_refresh and not target_rjcodes and self._can_reuse_completed_date_row(date_row, mode=mode):
                 result = self._completed_date_row_result(
                     date_row, circle_id=circle_id, maker_id=maker_id,
                     release_date=release_date, mode=mode,
@@ -2372,7 +2398,8 @@ class DLsiteBonusProbeService:
                 )
                 db.add(date_row)
             date_row.circle_id = circle_id or date_row.circle_id or ""
-            date_row.mode = self._mode_key(mode)
+            if not date_row.mode:
+                date_row.mode = self._mode_key(mode)
             date_row.status = "processing"
             date_row.job_id = str(job_id or "")
             date_row.started_at = datetime.now()
@@ -2380,6 +2407,43 @@ class DLsiteBonusProbeService:
             date_row.error_message = None
             db.commit()
             return None
+        finally:
+            db.close()
+
+    def _requires_strategy_refresh_sync(
+        self, *, circle_id, maker_id, release_date, gap_limit, mode, target_rjcodes,
+    ) -> bool:
+        db = SessionLocal()
+        try:
+            query = db.query(DLsiteBonusOriginalProbeState).filter(
+                DLsiteBonusOriginalProbeState.circle_id == circle_id,
+                DLsiteBonusOriginalProbeState.maker_id == maker_id,
+            )
+            if target_rjcodes:
+                query = query.filter(DLsiteBonusOriginalProbeState.original_rjcode.in_(target_rjcodes))
+            else:
+                query = query.filter(DLsiteBonusOriginalProbeState.release_date == release_date)
+            states = query.all()
+            if states:
+                return any(row.strategy_version != self.PROBE_STRATEGY_VERSION for row in states)
+            row = db.query(DLsiteBonusProbeDate).filter(
+                DLsiteBonusProbeDate.maker_id == maker_id,
+                DLsiteBonusProbeDate.release_date == release_date,
+                DLsiteBonusProbeDate.gap_limit == int(gap_limit),
+            ).first()
+            return row is not None and str(row.mode or "") != self._mode_key(mode)
+        finally:
+            db.close()
+
+    def _filter_released_targets_sync(self, rjcodes: Sequence[str]) -> List[str]:
+        db = SessionLocal()
+        try:
+            unreleased = {
+                self.normalize_rjcode(row.rjcode)
+                for row in db.query(WorkMetadata).filter(WorkMetadata.rjcode.in_(rjcodes)).all()
+                if is_unreleased(row.release_date)
+            }
+            return [code for code in rjcodes if code not in unreleased]
         finally:
             db.close()
 
@@ -2399,7 +2463,8 @@ class DLsiteBonusProbeService:
                 db, maker_id=maker_id, circle_id=circle_id,
                 release_date=release_date, gap_limit=gap_limit,
             )
-            date_row.mode = mode_key
+            if not date_row.mode:
+                date_row.mode = mode_key
             date_row.status = "failed"
             date_row.error_message = str(error)[:2000]
             date_row.finished_at = datetime.now()
@@ -2420,6 +2485,7 @@ class DLsiteBonusProbeService:
         job_id: str = "",
         target_rjcodes: Optional[Sequence[str]] = None,
         probe_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        force_refresh: bool = False,
     ) -> Dict[str, Any]:
         normalized_circle_id = str(circle_id or "").strip()
         normalized_maker_id = str(maker_id or "").strip().upper()
@@ -2430,17 +2496,43 @@ class DLsiteBonusProbeService:
             raise ValueError("缺少 DLsite maker_id")
         if not normalized_date:
             raise ValueError("缺少发售日")
+        if is_unreleased(release_date):
+            return {
+                "circle_id": normalized_circle_id, "maker_id": normalized_maker_id,
+                "release_date": normalized_date, "skipped": True,
+                "skip_reason": "unreleased", "hit_count": 0, "request_count": 0,
+            }
         normalized_target_rjcodes = self._dedupe([
             normalized
             for normalized in (self.normalize_rjcode(value) for value in (target_rjcodes or []))
             if normalized
         ])
+        if normalized_target_rjcodes:
+            normalized_target_rjcodes = await asyncio.to_thread(
+                self._filter_released_targets_sync, normalized_target_rjcodes,
+            )
+            if not normalized_target_rjcodes:
+                return {
+                    "circle_id": normalized_circle_id, "maker_id": normalized_maker_id,
+                    "release_date": normalized_date, "skipped": True,
+                    "skip_reason": "unreleased", "hit_count": 0, "request_count": 0,
+                }
+        if force_refresh and not normalized_target_rjcodes:
+            raise ValueError("强制重查必须指定选中原作")
+        refresh_negative = force_refresh or await asyncio.to_thread(
+            self._requires_strategy_refresh_sync,
+            circle_id=normalized_circle_id, maker_id=normalized_maker_id,
+            release_date=normalized_date, gap_limit=gap_limit, mode=mode,
+            target_rjcodes=normalized_target_rjcodes,
+        )
+        cache_options = {"force_refresh": True} if refresh_negative else {}
         mode_key = self._mode_key(mode)
         reused_result = await asyncio.to_thread(
             self._start_probe_date_sync,
             circle_id=normalized_circle_id, maker_id=normalized_maker_id,
             release_date=normalized_date, gap_limit=gap_limit, mode=mode,
             job_id=job_id, target_rjcodes=normalized_target_rjcodes,
+            force_refresh=force_refresh,
         )
         if reused_result is not None:
             return reused_result
@@ -2518,6 +2610,7 @@ class DLsiteBonusProbeService:
                 public_worknos,
                 batch_size=batch_size,
                 concurrency=concurrency,
+                **cache_options,
             )
             cached_hit_count += cached_hits
             request_count += requests
@@ -2573,6 +2666,7 @@ class DLsiteBonusProbeService:
             cached_candidate_features = await asyncio.to_thread(
                 self._load_cached_features_sync,
                 raw_probe_candidates,
+                **cache_options,
             )
             gap_count = circle_gap_count
             budget_reached = bool(circle_budget_reached or date_page_budget_reached)
@@ -2626,6 +2720,7 @@ class DLsiteBonusProbeService:
                             shard_candidates,
                             batch_size=batch_size,
                             concurrency=concurrency,
+                            **cache_options,
                             progress_callback=lambda checked, total, offset=checked_before: emit_probe_progress(
                                 offset + checked,
                                 len(leased_probe_candidates),
@@ -2741,6 +2836,7 @@ class DLsiteBonusProbeService:
         selected_rjcodes_by_date: Optional[Dict[str, Sequence[str]]] = None,
         progress_callback: Optional[Callable[[int, str, Dict[str, Any]], None]] = None,
         cancel_callback: Optional[Callable[[], bool]] = None,
+        force_refresh: bool = False,
     ) -> Dict[str, Any]:
         limits = self.resolve_probe_runtime_limits(mode=mode, batch_size=batch_size, concurrency=concurrency)
         batch_size = int(limits["batch_size"])
@@ -2750,7 +2846,10 @@ class DLsiteBonusProbeService:
         normalized_maker_id = context["maker_id"]
         if not normalized_maker_id:
             raise ValueError("未找到该社团的 DLsite maker_id，请先建立社团索引")
-        dates = [self.normalize_date(value) for value in (release_dates or [])]
+        requested_dates = release_dates or (
+            list(selected_rjcodes_by_date or {}) if force_refresh else []
+        )
+        dates = [self.normalize_date(value) for value in requested_dates]
         dates = [value for value in dates if value]
         if not dates:
             dates = await asyncio.to_thread(
@@ -2776,6 +2875,9 @@ class DLsiteBonusProbeService:
             ])
             if normalized_codes:
                 normalized_selected_by_date[normalized_date] = normalized_codes
+        if force_refresh:
+            if not normalized_selected_by_date or any(date not in normalized_selected_by_date for date in dates):
+                raise ValueError("强制重查必须为每个发售日指定选中原作")
 
         async with self._acquire_active_job_slot(job_id):
             return await self._probe_circle_dates_locked(
@@ -2789,6 +2891,7 @@ class DLsiteBonusProbeService:
                 selected_rjcodes_by_date=normalized_selected_by_date,
                 progress_callback=progress_callback,
                 cancel_callback=cancel_callback,
+                force_refresh=force_refresh,
             )
 
     async def _probe_circle_dates_locked(
@@ -2804,6 +2907,7 @@ class DLsiteBonusProbeService:
         selected_rjcodes_by_date: Optional[Dict[str, Sequence[str]]] = None,
         progress_callback: Optional[Callable[[int, str, Dict[str, Any]], None]] = None,
         cancel_callback: Optional[Callable[[], bool]] = None,
+        force_refresh: bool = False,
     ) -> Dict[str, Any]:
         normalized_circle_id = context["circle_id"]
         normalized_maker_id = context["maker_id"]
@@ -2893,6 +2997,7 @@ class DLsiteBonusProbeService:
                         job_id=job_id,
                         target_rjcodes=normalized_selected_by_date.get(release_date) or [],
                         probe_progress_callback=emit_date_probe_progress,
+                        **({"force_refresh": True} if force_refresh else {}),
                     )
                 except asyncio.CancelledError:
                     stop_event.set()

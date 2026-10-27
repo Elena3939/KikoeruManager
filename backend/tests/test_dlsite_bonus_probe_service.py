@@ -1,6 +1,7 @@
 import asyncio
 import threading
 import time
+from datetime import datetime
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
@@ -136,6 +137,7 @@ class _DateRow:
         self.status = status
         self.mode = mode
         self.probe_count = probe_count
+        self.finished_at = datetime.now()
 
 
 class _Meta:
@@ -712,7 +714,7 @@ async def test_load_public_worknos_for_date_uses_same_maker_date_page_boundaries
 
 def test_completed_probe_date_row_reuses_current_strategy() -> None:
     service = _service()
-    row = _DateRow(status="completed", mode="deep:date-range-v5", probe_count=160)
+    row = _DateRow(status="completed", mode=service._mode_key("deep"), probe_count=160)
 
     assert service._can_reuse_completed_date_row(row, mode="deep")
 
@@ -746,7 +748,8 @@ def test_split_reusable_release_dates_uses_current_strategy(db_session, monkeypa
             maker_id="RG62878",
             release_date="2025-06-28",
             gap_limit=500,
-            mode="deep:date-range-v5",
+            mode=service._mode_key("deep"),
+            finished_at=datetime.now(),
             status="completed",
             probe_count=5800,
         )
@@ -783,7 +786,8 @@ def test_split_reusable_release_dates_keeps_date_when_original_state_pending(db_
             circle_id="circle-pending-state",
             release_date="2025-06-28",
             gap_limit=500,
-            mode="deep:date-range-v5",
+            mode=service._mode_key("deep"),
+            finished_at=datetime.now(),
             status="completed",
             probe_count=5800,
         )

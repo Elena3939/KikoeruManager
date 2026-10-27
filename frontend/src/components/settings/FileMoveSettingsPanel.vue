@@ -44,6 +44,11 @@
         title="启用宿主快速克隆"
         subtitle="保存时验证执行器及业务目录。启用后执行器故障会明确报错并保留来源。"
       />
+      <SettingsToggleRow
+        v-model="settings.filter_verify_hashes"
+        title="过滤文件搬运 SHA-256 校验"
+        subtitle="流式复制和快速克隆共用此开关，默认关闭。适用于过滤保存、迁移、复原和回滚；开启会重读源文件与副本。关闭仍校验来源变化、目录成员和目标大小。"
+      />
       <div class="move-grid">
         <SettingsFieldCard label="Unix socket 路径" hint="应用容器内路径；必须与已安装执行器的通信位置一致。">
           <input v-model="settings.socket_path" class="settings-inline-input" spellcheck="false" />

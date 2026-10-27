@@ -5,7 +5,7 @@ import re
 import uuid
 import os
 import shutil
-from .fs_utils import move_path_efficient, move_path_sync
+from .fs_utils import move_path_efficient, move_path_sync, run_file_operation_async
 import tempfile
 import threading
 import time
@@ -45,6 +45,7 @@ class TaskType(str, Enum):
     BAIDU_NETDISK_DOWNLOAD = "baidu_netdisk_download"  # 百度网盘下载任务
     BAIDU_NETDISK_UPLOAD = "baidu_netdisk_upload"  # 百度网盘上传任务
     RJ_SUBTITLE_FETCH = "rj_subtitle_fetch"  # RJ 字幕抓取任务
+    RJ_SUBTITLE_EXTRACT = "rj_subtitle_extract"  # 字幕爬取临时解压
     LOCAL_LIBRARY_UPLOAD = "local_library_upload"
     BROWSER_UPLOAD = "browser_upload"
     LIBRARY_FOLDER_COMPLETION_PREVIEW = "library_folder_completion_preview"
@@ -1206,7 +1207,7 @@ class TaskEngine:
     def _infer_task_domain(self, task: Task) -> str:
         if task.type in {TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:
             return "import"
-        if task.type == TaskType.RJ_SUBTITLE_FETCH:
+        if task.type in {TaskType.RJ_SUBTITLE_FETCH, TaskType.RJ_SUBTITLE_EXTRACT}:
             return "rj_subtitle"
         if task.type == TaskType.ASMR_SYNC_DOWNLOAD:
             return "asmr_sync"
@@ -2252,6 +2253,9 @@ class TaskEngine:
     def _build_retry_conflict_activity_extra(self, task: Task) -> dict[str, Any]:
         metadata = dict(task.task_metadata or {})
         keys = (
+            "retry_batch_id",
+            "retry_origin_task_id",
+            "retry_origin_batch_id",
             "manual_retry_password_requested",
             "manual_retry_filename_encoding",
             "manual_retry_ignore_garbled",
@@ -2975,7 +2979,7 @@ class TaskEngine:
         for key in ("rjcode", "inferred_rjcode", "rjcode_source", "inferred_rjcode_source"):
             task.task_metadata.pop(key, None)
         logger.info(
-            "[%s] 清单检测到 %s 个独立 RJ（合集包），跳过整包字幕关联预检和整体查重: %s%s",
+            "[%s] 清单检测到 %s 个独立 RJ（合集包），按全部 RJ 预检查重: %s%s",
             task.rjcode or rjcodes[0],
             len(rjcodes),
             rjcodes[:8],
@@ -2985,7 +2989,10 @@ class TaskEngine:
 
     async def _preflight_auto_process(self, task, extract_service, classifier, config):
         """扫描与执行共用预检顺序；准备模式由调用方接管问题记录事务。"""
+        from .archive_identity import aggregate_rjcodes
+
         rjcode = self._get_effective_rjcode(task) or self._extract_rjcode_from_path_tail(task.source_path)
+        skip_retry_precheck = self._should_skip_conflict_retry_precheck(task)
         if not hasattr(task, "_prepared_conflicts") and (task.task_metadata or {}).get("input_preflight"):
             from .input_preflight import can_consume
             from .resource_budget_service import get_resource_budget_service
@@ -2993,8 +3000,25 @@ class TaskEngine:
                 reusable = await asyncio.to_thread(can_consume, task, config)
             if reusable:
                 rjcode = task.task_metadata["input_preflight"].get("rjcode") or rjcode
+                is_multi_rj_archive = bool(aggregate_rjcodes(task.task_metadata))
+                if is_multi_rj_archive:
+                    rjcode = ""
+                    task.rjcode = None
+                    for key in ("rjcode", "inferred_rjcode", "rjcode_source", "inferred_rjcode_source"):
+                        task.task_metadata.pop(key, None)
                 # 排队期间仍可能出现同 RJ 竞争或新入库，保留真实执行前查重。
-                if task.task_metadata.get("preflight_runtime_duplicate_check"):
+                if (
+                    is_multi_rj_archive
+                    and task.auto_classify
+                    and config.auto_process.check_duplicate
+                    and not skip_retry_precheck
+                ):
+                    if await classifier.check_aggregate_duplicate_before_extract(task):
+                        task.status = TaskStatus.WAITING_MANUAL
+                        task.update_progress(100, "合集内作品均已收录，请在问题作品页面处理")
+                        task.completed_at = datetime.now()
+                        return rjcode, False
+                elif not is_multi_rj_archive and task.task_metadata.get("preflight_runtime_duplicate_check"):
                     if await classifier.check_duplicate_before_extract(rjcode, task, self):
                         task.status = TaskStatus.WAITING_MANUAL
                         task.update_progress(100, "重复作品，请在问题作品页面处理")
@@ -3002,7 +3026,6 @@ class TaskEngine:
                         return rjcode, False
                 task.task_metadata["input_preflight_consumed_at"] = datetime.now().isoformat()
                 return rjcode, True
-        skip_retry_precheck = self._should_skip_conflict_retry_precheck(task)
 
         # 方案 B 并行 list 预检：fire-and-forget 启动后台协程，
         # 协程跑完 7zz l 后写入 ExtractService._archive_info_cache，
@@ -3273,6 +3296,13 @@ class TaskEngine:
                             return rjcode, False
                     if not config.auto_process.check_duplicate:
                         logger.info(f"[{rjcode}] 预检查重已禁用，跳过")
+                    elif is_multi_rj_archive:
+                        if await classifier.check_aggregate_duplicate_before_extract(task):
+                            task.status = TaskStatus.WAITING_MANUAL
+                            task.update_progress(100, "合集内作品均已收录，请在问题作品页面处理")
+                            task.completed_at = datetime.now()
+                            await self._abort_precheck(precheck_task)
+                            return rjcode, False
                     else:
                         # 小型压缩包（< 10MB）且开启了字幕补配预检：
                         # 不走 Kikoeru RJ 查重，改用包内字幕是否存在来判断。
@@ -3354,22 +3384,16 @@ class TaskEngine:
                                     f"subtitle_count={_preview_subtitle_count}"
                                 )
                         else:
-                            if is_multi_rj_archive:
-                                logger.info(
-                                    f"[{rjcode}] 合集包跳过解压前整体查重，"
-                                    "每个子 RJ 将在拆分后各自查重"
-                                )
-                            else:
-                                task.task_metadata["preflight_runtime_duplicate_check"] = True
-                                is_duplicate = await classifier.check_duplicate_before_extract(rjcode, task, self)
-                                logger.info(f"[{rjcode}] 重复检查结果: {is_duplicate}")
-                                if is_duplicate:
-                                    logger.info(f"[{rjcode}] 作品已存在或正在处理中，已添加到问题作品列表")
-                                    task.status = TaskStatus.WAITING_MANUAL
-                                    task.update_progress(100, "重复作品，请在问题作品页面处理")
-                                    task.completed_at = datetime.now()
-                                    await self._abort_precheck(precheck_task)
-                                    return rjcode, False
+                            task.task_metadata["preflight_runtime_duplicate_check"] = True
+                            is_duplicate = await classifier.check_duplicate_before_extract(rjcode, task, self)
+                            logger.info(f"[{rjcode}] 重复检查结果: {is_duplicate}")
+                            if is_duplicate:
+                                logger.info(f"[{rjcode}] 作品已存在或正在处理中，已添加到问题作品列表")
+                                task.status = TaskStatus.WAITING_MANUAL
+                                task.update_progress(100, "重复作品，请在问题作品页面处理")
+                                task.completed_at = datetime.now()
+                                await self._abort_precheck(precheck_task)
+                                return rjcode, False
             except Exception:
                 await self._abort_precheck(precheck_task)
                 raise
@@ -3796,11 +3820,11 @@ class TaskEngine:
                 # 步骤5: 扁平化
                 logger.debug(f"[{rjcode}] 步骤5: 扁平化")
                 filter_path_transforms: list[dict[str, str]] = []
+                from .rename_service import RenameService
+                rename_service = RenameService()
                 if config.rename.flatten_single_subfolder:
                     task.update_progress(78, "扁平化文件夹结构")
-                    from .rename_service import RenameService
-                    rename_service = RenameService()
-                    renamed_path = rename_service._flatten_single_subfolder(
+                    renamed_path = await rename_service.flatten_single_subfolder(
                         renamed_path,
                         operation_sink=filter_path_transforms,
                     )
@@ -3808,7 +3832,7 @@ class TaskEngine:
 
                 if config.rename.remove_empty_folders:
                     task.update_progress(79, "清理空文件夹")
-                    rename_service.remove_empty_folders(renamed_path, remove_root=False)
+                    await rename_service.remove_empty_folders_async(renamed_path, remove_root=False)
 
                 await task.wait_if_paused()
                 if task.is_cancelled():
@@ -3819,7 +3843,9 @@ class TaskEngine:
                     task.update_progress(79, "字幕繁体转简体")
                     from .subtitle_sync_service import get_subtitle_sync_service
                     subtitle_svc = get_subtitle_sync_service()
-                    simplify_result = subtitle_svc.convert_subtitles_to_simplified_in_folder(renamed_path)
+                    simplify_result = await run_file_operation_async(
+                        subtitle_svc.convert_subtitles_to_simplified_in_folder, renamed_path,
+                    )
                     if simplify_result['converted_files'] > 0:
                         logger.info(f"[{rjcode}] 字幕繁简转换完成: 处理 {simplify_result['total_files']} 个文件, "
                                    f"转换 {simplify_result['converted_files']} 个文件")
@@ -4118,11 +4144,11 @@ class TaskEngine:
 
                 logger.debug(f"[{rjcode}] 步骤4: 扁平化")
                 filter_path_transforms: list[dict[str, str]] = []
+                from .rename_service import RenameService
+                rename_service = RenameService()
                 if config.rename.flatten_single_subfolder:
                     task.update_progress(75, "扁平化文件夹结构")
-                    from .rename_service import RenameService
-                    rename_service = RenameService()
-                    renamed_path = rename_service._flatten_single_subfolder(
+                    renamed_path = await rename_service.flatten_single_subfolder(
                         renamed_path,
                         operation_sink=filter_path_transforms,
                     )
@@ -4130,32 +4156,32 @@ class TaskEngine:
 
                 if config.rename.remove_empty_folders:
                     task.update_progress(78, "清理空文件夹")
-                    rename_service.remove_empty_folders(renamed_path, remove_root=False)
+                    await rename_service.remove_empty_folders_async(renamed_path, remove_root=False)
 
                 # 步骤4.5: 从 Subtitles 目录导入 LRC 字幕（如果存在且启用）
                 subtitle_folder = None
                 subtitle_base = getattr(getattr(config, 'storage', None), 'asmr_subtitle_path', '')
                 if not resume_from_rename and config.process_existing.import_lrc and subtitle_base:
                     try:
-                        if os.path.exists(subtitle_base) and rjcode:
+                        subtitle_base_exists = await asyncio.to_thread(os.path.exists, subtitle_base)
+                        if subtitle_base_exists and rjcode:
                             # 查找匹配 RJ 号的字幕文件夹
                             from .subtitle_sync_service import get_subtitle_sync_service
                             subtitle_svc = get_subtitle_sync_service()
-                            for item in os.listdir(subtitle_base):
-                                item_path = os.path.join(subtitle_base, item)
-                                if os.path.isdir(item_path):
-                                    folder_rj = subtitle_svc.extract_rjcode_from_folder(item)
-                                    if folder_rj and folder_rj.upper() == rjcode.upper():
-                                        subtitle_folder = item_path
-                                        logger.info(f"[{rjcode}] 找到匹配的字幕文件夹: {item}")
-                                        break
+                            subtitle_folder = await asyncio.to_thread(
+                                subtitle_svc.find_subtitle_folder, subtitle_base, rjcode,
+                            )
+                            if subtitle_folder:
+                                logger.info(f"[{rjcode}] 找到匹配的字幕文件夹: {os.path.basename(subtitle_folder)}")
 
                             if subtitle_folder:
                                 # LRC 广告清理
                                 if config.asmr_sync.lrc_clean_enabled:
                                     task.update_progress(79, "清理LRC广告")
                                     custom_patterns = config.asmr_sync.lrc_clean_patterns if hasattr(config.asmr_sync, 'lrc_clean_patterns') else None
-                                    lrc_clean_result = subtitle_svc.clean_lrc_files_in_folder(subtitle_folder, custom_patterns)
+                                    lrc_clean_result = await run_file_operation_async(
+                                        subtitle_svc.clean_lrc_files_in_folder, subtitle_folder, custom_patterns,
+                                    )
                                     if lrc_clean_result['cleaned_files'] > 0:
                                         logger.info(f"[{rjcode}] LRC广告清理完成: 处理 {lrc_clean_result['total_files']} 个文件, "
                                                    f"清理 {lrc_clean_result['cleaned_files']} 个文件")
@@ -4163,14 +4189,17 @@ class TaskEngine:
                                 # 字幕繁简转换（字幕源文件夹）
                                 if getattr(config.asmr_sync, 'simplify_chinese_enabled', False):
                                     task.update_progress(79, "字幕繁简转换中")
-                                    simplify_result = subtitle_svc.convert_subtitles_to_simplified_in_folder(subtitle_folder)
+                                    simplify_result = await run_file_operation_async(
+                                        subtitle_svc.convert_subtitles_to_simplified_in_folder, subtitle_folder,
+                                    )
                                     if simplify_result['converted_files'] > 0:
                                         logger.info(f"[{rjcode}] 字幕繁简转换完成: 处理 {simplify_result['total_files']} 个文件, "
                                                    f"转换 {simplify_result['converted_files']} 个文件")
 
                                 # 同步字幕到作品目录
                                 task.update_progress(79, "同步字幕到作品目录")
-                                sync_result = subtitle_svc.sync_subtitles_to_download(
+                                sync_result = await run_file_operation_async(
+                                    subtitle_svc.sync_subtitles_to_download,
                                     renamed_path,
                                     subtitle_folder
                                 )
@@ -4179,7 +4208,7 @@ class TaskEngine:
                                                f"复制 {len(sync_result['copied_subtitles'])} 个字幕")
                                 else:
                                     logger.warning(f"[{rjcode}] 字幕同步失败: {sync_result.get('errors', [])}")
-                        elif not os.path.exists(subtitle_base):
+                        elif not subtitle_base_exists:
                             logger.info(f"[{rjcode}] ASMR 字幕目录不存在，跳过 LRC 导入: {subtitle_base}")
                     except Exception as subtitle_error:
                         logger.warning(f"[{rjcode}] 可选 LRC 导入失败，继续已有文件夹入库: {subtitle_error}", exc_info=True)
@@ -4198,7 +4227,9 @@ class TaskEngine:
                     from .subtitle_sync_service import get_subtitle_sync_service
                     subtitle_svc = get_subtitle_sync_service()
                     task.update_progress(79, "字幕繁简转换中")
-                    simplify_result = subtitle_svc.convert_subtitles_to_simplified_in_folder(renamed_path)
+                    simplify_result = await run_file_operation_async(
+                        subtitle_svc.convert_subtitles_to_simplified_in_folder, renamed_path,
+                    )
                     if simplify_result['converted_files'] > 0:
                         logger.info(f"[{rjcode}] 字幕繁简转换完成: 处理 {simplify_result['total_files']} 个文件, "
                                    f"转换 {simplify_result['converted_files']} 个文件")
@@ -4297,6 +4328,8 @@ class TaskEngine:
                     await self._process_baidu_netdisk_upload(task)
                 elif task.type == TaskType.RJ_SUBTITLE_FETCH:
                     await self._process_rj_subtitle_fetch(task)
+                elif task.type == TaskType.RJ_SUBTITLE_EXTRACT:
+                    raise RuntimeError("临时解压任务不能单独重试，请重新运行所属字幕爬取任务")
                 elif task.type == TaskType.LOCAL_LIBRARY_UPLOAD:
                     await self._process_local_library_upload(task)
                 elif task.type == TaskType.LIBRARY_FOLDER_COMPLETION_PREVIEW:
@@ -5370,8 +5403,8 @@ class TaskEngine:
 
         典型场景：压缩包里是「社团/RJ 作品/...」二级以上结构（按社团分类的合集包）。
         返回结构 ``[{"rjcode": "RJxxxx", "path": "/abs/path"}, ...]``：
-        - 一旦某层目录被识别为 RJ 作品目录（自身或直接子项含 RJ 号），
-          就把该目录整体当成一个独立 RJ，不再继续向其内部递归。
+        - 明确带 RJ 号的目录整体作为作品；纯数字目录先检查是否包着多个作品，
+          避免日期外壳被误当成作品号而停止扫描。
         - 同一 RJ 号只保留最浅一层匹配，避免嵌套重复识别。
         - 仅当返回 >=2 个结果时才视为「多作品包」，调用方再决定是否拆分。
         - ``max_scan_depth`` 限制扫描层数，防止异常深嵌套时耗时过长。
@@ -5386,13 +5419,15 @@ class TaskEngine:
 
         rj_pattern = re.compile(r'[RVB]J(\d{8}|\d{6})(?!\d)', re.IGNORECASE)
 
-        def _match_rj(name: str) -> Optional[str]:
+        def _match_rj(name: str, allow_numeric: bool = True) -> Optional[str]:
             text = str(name or "")
             if not text:
                 return None
             match = rj_pattern.search(text)
             if match:
                 return match.group(0).upper()
+            if not allow_numeric:
+                return None
             # 兼容纯数字目录名 / 带前缀，例如 39.RJ01570159、01503161
             base = re.sub(r'^\d+\.', '', text)
             num_match = re.match(r'^(\d{8}|\d{6})$', base)
@@ -5413,14 +5448,15 @@ class TaskEngine:
                 return set()
             collected: set = set()
             for name in entries:
-                rj = _match_rj(name)
+                # 纯数字子项可能是日期外壳，必须进入目录后再判断。
+                rj = _match_rj(name, allow_numeric=False)
                 if rj:
                     collected.add(rj)
             return collected
 
         discovered: Dict[str, Dict[str, str]] = {}
 
-        def _walk(current: str, depth: int) -> None:
+        def _walk(current: str, depth: int, found: Dict[str, Dict[str, str]]) -> None:
             if depth > max_scan_depth:
                 return
             try:
@@ -5435,11 +5471,19 @@ class TaskEngine:
                 if name.startswith('.') or name.lower() in {"__macosx", "_conflicts", "subtitles"}:
                     continue
                 child_path = entry.path
-                # 1) 目录名直接含 RJ → 该目录就是 RJ 作品根目录，不再深入
+                # 数字名只有弱身份；先检查其内部是否存在多个独立作品。
                 rj_in_name = _match_rj(name)
+                if rj_in_name and not rj_pattern.search(name):
+                    nested: Dict[str, Dict[str, str]] = {}
+                    _walk(child_path, depth + 1, nested)
+                    if len(nested) >= 2:
+                        for code, item in nested.items():
+                            found.setdefault(code, item)
+                        continue
+                # 明确带 RJ 号，或未发现合集结构的纯数字目录，保留整个作品。
                 if rj_in_name:
-                    if rj_in_name not in discovered:
-                        discovered[rj_in_name] = {
+                    if rj_in_name not in found:
+                        found[rj_in_name] = {
                             "rjcode": rj_in_name,
                             "path": os.path.abspath(child_path),
                             "match_kind": "name",
@@ -5452,17 +5496,17 @@ class TaskEngine:
                 child_rj_set = _distinct_children_rjs(child_path)
                 if len(child_rj_set) == 1:
                     only_rj = next(iter(child_rj_set))
-                    if only_rj not in discovered:
-                        discovered[only_rj] = {
+                    if only_rj not in found:
+                        found[only_rj] = {
                             "rjcode": only_rj,
                             "path": os.path.abspath(child_path),
                             "match_kind": "children",
                         }
                     continue
                 # 否则继续向下扫描，期待找到更深层的 RJ
-                _walk(child_path, depth + 1)
+                _walk(child_path, depth + 1, found)
 
-        _walk(root_path, depth=1)
+        _walk(root_path, depth=1, found=discovered)
 
         results = list(discovered.values())
         if len(results) < 2:
@@ -6459,7 +6503,9 @@ class TaskEngine:
             if config.asmr_sync.lrc_clean_enabled:
                 task.update_progress(70, "清理LRC广告")
                 custom_patterns = config.asmr_sync.lrc_clean_patterns if hasattr(config.asmr_sync, 'lrc_clean_patterns') else None
-                lrc_clean_result = subtitle_service.clean_lrc_files_in_folder(subtitle_folder, custom_patterns)
+                lrc_clean_result = await run_file_operation_async(
+                    subtitle_service.clean_lrc_files_in_folder, subtitle_folder, custom_patterns,
+                )
                 if lrc_clean_result['cleaned_files'] > 0:
                     logger.info(f"[{rjcode}] LRC广告清理完成: 处理 {lrc_clean_result['total_files']} 个文件, "
                                f"清理 {lrc_clean_result['cleaned_files']} 个文件, "
@@ -6470,7 +6516,9 @@ class TaskEngine:
             simplify_result = None
             if getattr(config.asmr_sync, 'simplify_chinese_enabled', False):
                 task.update_progress(72, "字幕繁体转简体")
-                simplify_result = subtitle_service.convert_subtitles_to_simplified_in_folder(subtitle_folder)
+                simplify_result = await run_file_operation_async(
+                    subtitle_service.convert_subtitles_to_simplified_in_folder, subtitle_folder,
+                )
                 if simplify_result['converted_files'] > 0:
                     logger.info(f"[{rjcode}] 字幕繁简转换完成: 处理 {simplify_result['total_files']} 个文件, "
                                f"转换 {simplify_result['converted_files']} 个文件")
@@ -6479,7 +6527,8 @@ class TaskEngine:
             # 步骤4: 同步字幕文件
             if config.asmr_sync_step.sync_subtitle:
                 task.update_progress(75, "同步字幕文件")
-                sync_result = subtitle_service.sync_subtitles_to_download(
+                sync_result = await run_file_operation_async(
+                    subtitle_service.sync_subtitles_to_download,
                     download_dir=download_dir,
                     subtitle_folder=subtitle_folder
                 )
@@ -6565,7 +6614,9 @@ class TaskEngine:
             # 步骤4.5: 扁平化文件夹
             if config.rename.flatten_single_subfolder:
                 task.update_progress(87, "扁平化文件夹结构")
-                renamed_path = rename_service._flatten_single_subfolder(renamed_path)
+                from .rename_service import RenameService
+                rename_service = RenameService()
+                renamed_path = await rename_service.flatten_single_subfolder(renamed_path)
                 logger.info(f"[{rjcode}] 扁平化后路径: {renamed_path}")
 
             await task.wait_if_paused()
@@ -7188,6 +7239,8 @@ class TaskEngine:
                 'source_lang': result.get('source_lang', ''),
                 'source_work_type': result.get('source_work_type', ''),
                 'source_title': result.get('source_title', ''),
+                'source_provider': result.get('source_provider', task.task_metadata.get('source_provider', '')),
+                'subtitle_is_ai': bool(result.get('subtitle_is_ai', task.task_metadata.get('subtitle_is_ai', False))),
                 'downloaded_count': result.get('downloaded_count', 0),
                 'existing_subtitle_count': result.get('existing_subtitle_count', 0),
                 'subtitle_dir': result.get('subtitle_dir', ''),
@@ -7687,6 +7740,7 @@ class TaskEngine:
             concurrency=concurrency,
             job_id=task.id,
             selected_rjcodes_by_date=selected_rjcodes_by_date,
+            force_refresh=bool(metadata.get("force_refresh")),
             progress_callback=progress_callback,
             cancel_callback=task.is_cancelled,
         )

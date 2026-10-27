@@ -63,6 +63,8 @@
           <span class="text-[14px] font-semibold text-slate-900 truncate">{{ getDisplayFolderTitle() }}</span>
         </div>
         <div class="flex items-center gap-1.5 flex-wrap">
+          <span v-if="view.activeSubtitleInspectTask?.subtitle_is_ai" class="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-semibold text-amber-700 bg-amber-50 dark:text-amber-300 dark:bg-amber-950"><Bot :size="11" />AI 字幕</span>
+          <span v-if="view.activeSubtitleInspectTask?.source_provider === 'yaas'" class="text-[11px] font-semibold text-emerald-600 dark:text-emerald-300">YAAS</span>
           <span class="inline-flex items-center gap-1 px-2 py-1 rounded-[7px] text-[11px] font-semibold bg-slate-900 text-white">{{ view.getTaskDisplayRJCode(view.activeSubtitleInspectTask) }}</span>
           <span v-if="view.getTaskSourceRJCode(view.activeSubtitleInspectTask)" class="inline-flex items-center gap-1 px-2 py-1 rounded-[7px] text-[11px] font-medium bg-white border border-slate-200 text-slate-600"><Link :size="11" :stroke-width="2.4" />来源 {{ view.getTaskSourceRJCode(view.activeSubtitleInspectTask) }}</span>
           <span class="inline-flex items-center gap-1 px-2 py-1 rounded-[7px] text-[11px] font-medium bg-slate-50 border border-slate-200 text-slate-600"><Music :size="11" :stroke-width="2.4" />{{ view.subtitleInspectorAudioFiles.length }} 个音频</span>

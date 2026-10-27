@@ -725,7 +725,7 @@ export function useSubtitleTask ({
 
   function isSubtitleRelativePath (relativePath = '') {
     const normalized = String(relativePath || '').replace(/\\/g, '/').toLowerCase().replace(/^\/+/, '')
-    return normalized === 'subtitles' || normalized.startsWith('subtitles/')
+    return ['subtitles', 'subtitles [ai]'].some(name => normalized === name || normalized.startsWith(`${name}/`))
   }
 
   function normalizeSubtitleDownloadKey (name) {
@@ -907,7 +907,7 @@ export function useSubtitleTask ({
           downloaded_count: Number(item.downloaded_count || 0),
           existing_subtitle_count: Math.max(Number(item.existing_subtitle_count || 0), Number(item.downloaded_count || 0)),
           subtitle_dir: awaitingManualMatch || manualMatchCompleted || Number(item.downloaded_count || 0) > 0 || Number(item.existing_subtitle_count || 0) > 0
-            ? `${String(item.folder_path || '').replace(/[\\/]+$/, '')}/subtitles`
+            ? item.subtitle_dir || `${String(item.folder_path || '').replace(/[\\/]+$/, '')}/${item.subtitle_is_ai ? 'subtitles [AI]' : 'subtitles'}`
             : '',
           awaiting_manual_match: awaitingManualMatch,
           manual_match_completed: manualMatchCompleted,
@@ -927,7 +927,7 @@ export function useSubtitleTask ({
           downloaded_count: Number(item.downloaded_count || 0),
           existing_subtitle_count: Math.max(Number(item.existing_subtitle_count || 0), Number(item.downloaded_count || 0)),
           subtitle_dir: awaitingManualMatch || manualMatchCompleted || Number(item.downloaded_count || 0) > 0 || Number(item.existing_subtitle_count || 0) > 0
-            ? `${String(item.folder_path || '').replace(/[\\/]+$/, '')}/subtitles`
+            ? item.subtitle_dir || `${String(item.folder_path || '').replace(/[\\/]+$/, '')}/${item.subtitle_is_ai ? 'subtitles [AI]' : 'subtitles'}`
             : '',
           awaiting_manual_match: awaitingManualMatch,
           manual_match_completed: manualMatchCompleted,

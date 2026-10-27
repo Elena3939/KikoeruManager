@@ -144,9 +144,15 @@
               />
             </div>
           </div>
-          <div v-if="displayCircleList.length" class="circle-list">
+          <div v-if="displayCircleList.length" ref="circleListScrollRef" class="circle-list">
+            <div class="circle-list-canvas" :style="{ height: `${circleListVirtualizer.getTotalSize()}px` }">
+            <div v-for="virtualCircle in visibleCircleRows" :key="virtualCircle.key"
+              :ref="element => circleListVirtualizer.measureElement(element)"
+              :data-index="virtualCircle.index"
+              :style="{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${virtualCircle.start}px)` }"
+            >
             <button
-              v-for="circle in displayCircleList"
+              v-for="circle in [displayCircleList[virtualCircle.index]]"
               :key="circle.circle_id"
               type="button"
               class="circle-list-item"
@@ -191,6 +197,8 @@
                 <Clock :size="9" /> {{ formatDateTime(circle.last_indexed_at) }}
               </div>
             </button>
+            </div>
+            </div>
           </div>
           <AppEmptyState v-else :description="circleList.length ? '当前筛选条件下没有社团' : '还没有社团索引'" size="sm" />
         </div>
@@ -212,15 +220,24 @@
               >
                 仅索引新作
               </el-button>
-              <el-button
+              <StatefulButton
                 class="batch-action-button bonus"
-                :disabled="!activeCircleId || indexing || isRefreshJobActive || isBonusProbeJobActive"
-                :loading="bonusProbeRunning"
+                unstyled
+                :disabled="!activeCircleId || indexing || isRefreshJobActive || isBonusProbeJobActive || bonusProbeRunning"
                 @click="startBonusProbeFromToolbar"
               >
                 <Gift :size="13" style="margin-right:4px" />
                 {{ bonusProbeActionLabel }}
-              </el-button>
+              </StatefulButton>
+              <StatefulButton
+                class="batch-action-button bonus"
+                unstyled
+                :disabled="!activeCircleId || !selectedActiveCanonicalRJCodes.length || indexing || isRefreshJobActive || isBonusProbeJobActive || bonusProbeRunning"
+                @click="() => startBonusProbeForSelectedWorks({ forceRefresh: true })"
+              >
+                <RefreshCw :size="13" style="margin-right:4px" />
+                强制重查选中作品
+              </StatefulButton>
               <el-button
                 class="batch-action-button bonus-refresh"
                 :disabled="!activeCircleId || bonusWorksCount <= 0 || indexing || isRefreshJobActive || isBonusProbeJobActive || refreshingCurrentCircleBonuses"
@@ -1179,7 +1196,8 @@
 <script setup>
 import { usePersistentTaskWorkbench, dismissPersistentTaskCard, dismissWorkbenchTask } from '../composables/usePersistentTaskCards'
 import { getAsmrDownloadSessionId, getDownloadEngineTaskId } from '../utils/downloadTaskIdentity.js'
-import { computed, onActivated, onBeforeUnmount, onMounted, provide, reactive, ref, shallowReactive, watch } from 'vue'
+import { computed, markRaw, onActivated, onBeforeUnmount, onMounted, provide, reactive, ref, shallowReactive, watch } from 'vue'
+import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useRoute, useRouter } from 'vue-router'
 import { circleWorkVersionRjcode } from '../utils/circleWorkVersion'
 import StatefulButton from '../components/ui/stateful-button.vue'
@@ -1366,6 +1384,7 @@ let circleDetailPrefetchTimer = null
 let circleDetailPrefetchIdleId = null
 let circleDetailPrefetchIdleIsTimeout = false
 let circleDetailPrefetchRunning = false
+let circleDetailPrefetchController = null
 let circleWorksFetchTimer = null
 let circleSearchFetchTimer = null
 let heroWorkSearchFetchTimer = null
@@ -1860,8 +1879,8 @@ function buildCircleWorksQuery(options = {}) {
   const tab = options.tab || activeTab.value || 'missing'
   return {
     tab,
-    page: includePage ? getActiveWorksPage() : 1,
-    pageSize: includePage ? getActiveWorksPageSize() : 1,
+    page: includePage ? (tab === 'owned' ? ownedPage.value : tab === 'compare' ? comparePage.value : missingPage.value) : 1,
+    pageSize: includePage ? (tab === 'compare' ? comparePageSize.value : worksPageSize.value) : 1,
     includeDlOnly: filters.includeDlOnly,
     statusFilters: [...statusFilters.value],
     ownedFilter: ownedWorksFilterType.value,
@@ -1884,7 +1903,7 @@ function applyCircleSummaryPayload(payload = {}) {
 }
 
 function applyCircleWorksPayload(payload = {}) {
-  detail.works = Array.isArray(payload.items) ? payload.items.map(item => ({ ...item })) : []
+  detail.works = markRaw(Array.isArray(payload.items) ? payload.items : [])
   detail.filtered_count = Number(payload.total || payload.filtered_count || 0)
   Object.assign(circleWorksPage, {
     tab: String(payload.tab || activeTab.value || 'missing'),
@@ -2351,6 +2370,7 @@ function normalizeReleaseDateForBonusProbe(raw) {
 }
 
 function getWorkBonusProbeDate(item) {
+  if (isWorkUnreleased(item)) return ''
   return normalizeReleaseDateForBonusProbe(item?.original_release_date || item?.release_date || item?.date || item?.release_at || '')
 }
 
@@ -2416,6 +2436,20 @@ const displayCircleList = computed(() => {
 
   return list
 })
+const circleListScrollRef = ref(null)
+const circleListVirtualizer = useVirtualizer(computed(() => ({
+  count: displayCircleList.value.length,
+  getScrollElement: () => circleListScrollRef.value,
+  getItemKey: index => displayCircleList.value[index]?.circle_id || index,
+  estimateSize: () => 136,
+  gap: 6,
+  overscan: 4,
+})))
+const visibleCircleRows = computed(() => circleListVirtualizer.value.getVirtualItems())
+watch([activeCircleId, displayCircleList], ([circleId]) => {
+  const index = displayCircleList.value.findIndex(circle => circle.circle_id === circleId)
+  if (index >= 0) circleListVirtualizer.value.scrollToIndex(index, { align: 'auto' })
+}, { flush: 'post' })
 const showMissingWorksCompleteState = computed(() =>
   Boolean(activeCircleId.value)
   && circleDetailLoaded.value
@@ -3103,6 +3137,9 @@ onActivated(() => {
 })
 
 onBeforeUnmount(() => {
+  circlePageDisposed = true
+  circleDetailPrefetchController?.abort()
+  circleDetailPrefetchController = null
   if (externalSearchRealtimeRefreshTimer) {
     clearTimeout(externalSearchRealtimeRefreshTimer)
     externalSearchRealtimeRefreshTimer = null
@@ -3165,25 +3202,27 @@ onBeforeUnmount(() => {
 })
 
 let circleWorksRefreshRevision = 0
-let circleWorksRefreshRunning = false
-let circleWorksLastRefresh = 0
+let circleWorksRefreshQueued = false
+let circlePageDisposed = false
 function scheduleCircleWorksRefresh(delay = 0) {
-  if (!activeCircleId.value || suppressCircleWorksRefresh) return
+  if (circlePageDisposed || !activeCircleId.value || suppressCircleWorksRefresh) return
   circleWorksRefreshRevision += 1
-  if (circleWorksFetchTimer || circleWorksRefreshRunning) return
-  const wait = Math.max(Number(delay || 0), 500 - (Date.now() - circleWorksLastRefresh), 0)
-  circleWorksFetchTimer = setTimeout(async () => {
+  if (circleWorksFetchTimer) clearTimeout(circleWorksFetchTimer)
+  if (delay <= 0) {
     circleWorksFetchTimer = null
-    circleWorksRefreshRunning = true
-    circleWorksLastRefresh = Date.now()
-    const revision = circleWorksRefreshRevision
-    try {
-      await refreshActiveCircleWorks({ showLoading: false })
-    } finally {
-      circleWorksRefreshRunning = false
-      if (revision !== circleWorksRefreshRevision) scheduleCircleWorksRefresh()
+    if (!circleWorksRefreshQueued) {
+      circleWorksRefreshQueued = true
+      queueMicrotask(() => {
+        circleWorksRefreshQueued = false
+        if (!circlePageDisposed && activeCircleId.value && !suppressCircleWorksRefresh) void refreshActiveCircleWorks({ showLoading: false })
+      })
     }
-  }, wait)
+    return
+  }
+  circleWorksFetchTimer = setTimeout(() => {
+    circleWorksFetchTimer = null
+    void refreshActiveCircleWorks({ showLoading: false })
+  }, delay)
 }
 
 watch(activeTab, (tab) => {
@@ -3206,7 +3245,7 @@ watch([statusFilterModel, () => filters.includeDlOnly], () => {
   ownedPage.value = 1
   comparePage.value = 1
   clearSelection()
-  refreshActiveCircle()
+  scheduleCircleWorksRefresh()
 }, { deep: true })
 
 watch(downloadWorkbenchVisible, (visible) => {
@@ -5083,37 +5122,24 @@ function scheduleCircleDetailPrefetch() {
 
 async function prefetchNeighborCircleDetails() {
   if (circleDetailPrefetchRunning || circleDetailLoading.value || circleDetailAbortController) return
-  const list = Array.isArray(displayCircleList.value) ? displayCircleList.value : []
-  if (!list.length || !activeCircleId.value) return
-  const activeIndex = list.findIndex(circle => String(circle?.circle_id || '') === activeCircleId.value)
-  if (activeIndex < 0) return
-  const candidates = [
-    ...list.slice(activeIndex + 1, activeIndex + 1 + CIRCLE_DETAIL_PREFETCH_LIMIT),
-    ...list.slice(Math.max(0, activeIndex - 1), activeIndex),
-  ]
-    .map(circle => String(circle?.circle_id || '').trim())
-    .filter(circleId => circleId && circleId !== activeCircleId.value && !hasFreshCircleDetailCache(circleId))
-
-  if (!candidates.length) return
+  const circleId = activeCircleId.value
+  if (!circleId) return
+  const worksQuery = ['missing', 'owned', 'compare']
+    .filter(tab => tab !== activeTab.value)
+    .map(tab => ({ ...buildCircleWorksQuery({ tab }), page: 1 }))
+    .find(query => !getCachedCircleWorksPage(circleId, query))
+  if (!worksQuery) return
+  const controller = new AbortController()
+  circleDetailPrefetchController = controller
   circleDetailPrefetchRunning = true
   try {
-    for (const circleId of candidates.slice(0, CIRCLE_DETAIL_PREFETCH_LIMIT)) {
-      if (hasFreshCircleDetailCache(circleId)) continue
-      const worksQuery = {
-        tab: 'missing',
-        page: 1,
-        pageSize: worksPageSize.value,
-        includeDlOnly: filters.includeDlOnly,
-        statusFilters: [],
-        sort: getCircleWorksSort(),
-        viewMode: viewMode.value === 'card' ? 'card' : 'list',
-      }
-      const works = await circleCompletionApi.getCircleWorks(circleId, worksQuery)
-      if (circleDetailLoading.value || circleDetailAbortController) break
+    const revision = circleWorksRefreshRevision
+    const works = await circleCompletionApi.getCircleWorks(circleId, worksQuery, { signal: controller.signal })
+    if (!controller.signal.aborted && circleId === activeCircleId.value && revision === circleWorksRefreshRevision) {
       setCachedCircleWorksPage(circleId, worksQuery, works)
-      setCachedCircleDetail(circleId, buildCachedCircleDetailPayload(works, works))
     }
   } finally {
+    if (circleDetailPrefetchController === controller) circleDetailPrefetchController = null
     circleDetailPrefetchRunning = false
   }
 }
@@ -5196,6 +5222,7 @@ async function startBonusProbeForCircle(circleId, options = {}) {
     circle_id: normalizedCircleId,
     release_dates: releaseDates,
     selected_rjcodes_by_date: options.selectedRjcodesByDate || {},
+    force_refresh: Boolean(options.forceRefresh),
     mode: 'deep',
     gap_limit: 500,
   })
@@ -5242,10 +5269,11 @@ async function startBonusProbeForActiveCircle() {
     bonusProbeRunning.value = false
     clearBonusProbeJobState()
     ElMessage.error(error.response?.data?.detail || '启动特典补全失败')
+    return false
   }
 }
 
-async function getSelectedBonusProbeDates() {
+async function getSelectedBonusProbeDates({ forceRefresh = false } = {}) {
   const selectedCodes = selectedActiveCanonicalRJCodes.value
     .map(code => String(code || '').trim())
     .filter(Boolean)
@@ -5259,9 +5287,11 @@ async function getSelectedBonusProbeDates() {
   const hasBonusCodes = new Set()
   const noBonusCodes = new Set()
   const completedDates = new Set()
+  const unreleasedCodes = new Set()
   for (const code of selectedCodes) {
     const item = activeSelectableWorksByCanonical.value.get(code)
     if (!item) continue
+    if (isWorkUnreleased(item)) unreleasedCodes.add(code)
     if (isBonusDisplayWork(item)) bonusCodes.add(code)
     if (!isBonusDisplayWork(item) && hasAttachedBonusWorks(item)) hasBonusCodes.add(code)
     const releaseDate = getWorkBonusProbeDate(item)
@@ -5300,11 +5330,15 @@ async function getSelectedBonusProbeDates() {
   let skippedNoBonusCount = 0
   let skippedCompletedDateCount = 0
   for (const code of selectedCodes) {
+    if (unreleasedCodes.has(code) || isWorkUnreleased({ release_date: releaseDatesByCode[code] })) {
+      missingDateCount += 1
+      continue
+    }
     if (bonusCodes.has(code)) {
       skippedBonusCount += 1
       continue
     }
-    if (hasBonusCodes.has(code)) {
+    if (!forceRefresh && hasBonusCodes.has(code)) {
       skippedHasBonusCount += 1
       continue
     }
@@ -5313,8 +5347,14 @@ async function getSelectedBonusProbeDates() {
       missingDateCount += 1
       continue
     }
-    if (noBonusCodes.has(code)) skippedNoBonusCount += 1
-    if (completedDates.has(releaseDate)) skippedCompletedDateCount += 1
+    if (!forceRefresh && noBonusCodes.has(code)) {
+      skippedNoBonusCount += 1
+      continue
+    }
+    if (!forceRefresh && completedDates.has(releaseDate)) {
+      skippedCompletedDateCount += 1
+      continue
+    }
     if (!dates.includes(releaseDate)) dates.push(releaseDate)
     if (!Array.isArray(selectedRjcodesByDate[releaseDate])) selectedRjcodesByDate[releaseDate] = []
     if (!selectedRjcodesByDate[releaseDate].includes(code)) selectedRjcodesByDate[releaseDate].push(code)
@@ -5332,7 +5372,7 @@ async function getSelectedBonusProbeDates() {
   }
 }
 
-async function startBonusProbeForSelectedWorks() {
+async function startBonusProbeForSelectedWorks({ forceRefresh = false } = {}) {
   const circleId = String(activeCircleId.value || detail.circle_id || '').trim()
   if (!circleId) {
     ElMessage.warning('当前还没有选中社团')
@@ -5361,7 +5401,7 @@ async function startBonusProbeForSelectedWorks() {
       skippedNoBonusCount,
       skippedCompletedDateCount,
       missingDateCount,
-    } = await getSelectedBonusProbeDates()
+    } = await getSelectedBonusProbeDates({ forceRefresh })
     if (!dates.length) {
       bonusProbeRunning.value = false
       const skippedText = [
@@ -5378,6 +5418,7 @@ async function startBonusProbeForSelectedWorks() {
       circleName: detail.circle_name || '',
       releaseDates: dates,
       selectedRjcodesByDate,
+      forceRefresh,
       currentStep: `正在探测选中作品的 ${dates.length} 个发售日`,
     })
     if (result?.already_completed) {
@@ -5399,15 +5440,15 @@ async function startBonusProbeForSelectedWorks() {
     bonusProbeRunning.value = false
     clearBonusProbeJobState()
     ElMessage.error(error.response?.data?.detail || '启动选中作品特典查找失败')
+    return false
   }
 }
 
 async function startBonusProbeFromToolbar() {
   if (selectedActiveCanonicalRJCodes.value.length > 0) {
-    await startBonusProbeForSelectedWorks()
-    return
+    return startBonusProbeForSelectedWorks()
   }
-  await startBonusProbeForActiveCircle()
+  return startBonusProbeForActiveCircle()
 }
 
 async function startBonusProbeForVisibleCircles() {
@@ -5658,6 +5699,7 @@ async function selectCircle(circleId, options = {}) {
 }
 
 async function refreshActiveCircle(options = {}) {
+  circleDetailPrefetchController?.abort()
   if (!activeCircleId.value) return
   const { preferCache = false, summaryOnly = false } = options
   const requestCircleId = String(activeCircleId.value || '').trim()
@@ -5718,7 +5760,8 @@ async function refreshActiveCircle(options = {}) {
     const works = await circleCompletionApi.getCircleWorks(requestCircleId, worksQuery, {
       signal: circleDetailAbortController.signal
     })
-    if (requestSeq !== circleDetailRequestSeq || activeCircleId.value !== requestCircleId) return
+    if (requestSeq !== circleDetailRequestSeq || activeCircleId.value !== requestCircleId
+      || getCircleWorksPageCacheKey(requestCircleId, worksQuery) !== getCircleWorksPageCacheKey(activeCircleId.value, buildCircleWorksQuery())) return
     applyCircleSummaryPayload(works)
     applyCircleWorksPayload(works)
     setCachedCircleWorksPage(requestCircleId, worksQuery, works)
@@ -5734,11 +5777,13 @@ async function refreshActiveCircle(options = {}) {
       circleDetailLoading.value = false
       circleWorksPage.loading = false
       circleDetailAbortController = null
+      scheduleCircleDetailPrefetch()
     }
   }
 }
 
 async function refreshActiveCircleWorks(options = {}) {
+  circleDetailPrefetchController?.abort()
   const circleId = String(activeCircleId.value || '').trim()
   if (!circleId) return
   const requestSeq = ++circleDetailRequestSeq
@@ -5754,6 +5799,7 @@ async function refreshActiveCircleWorks(options = {}) {
     circleWorksPage.loading = false
     circleDetailLoading.value = false
     circleDetailAbortController = null
+    scheduleCircleDetailPrefetch()
     return
   }
 
@@ -5764,18 +5810,22 @@ async function refreshActiveCircleWorks(options = {}) {
     const result = await circleCompletionApi.getCircleWorks(circleId, worksQuery, {
       signal: circleDetailAbortController.signal
     })
-    if (requestSeq !== circleDetailRequestSeq || activeCircleId.value !== circleId) return
+    if (requestSeq !== circleDetailRequestSeq || activeCircleId.value !== circleId
+      || getCircleWorksPageCacheKey(circleId, worksQuery) !== getCircleWorksPageCacheKey(activeCircleId.value, buildCircleWorksQuery())) return
     applyCircleSummaryPayload(result)
     applyCircleWorksPayload(result)
     if (refreshRevision === circleWorksRefreshRevision) setCachedCircleWorksPage(circleId, worksQuery, result)
   } catch (error) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return
+    if (requestSeq !== circleDetailRequestSeq || activeCircleId.value !== circleId
+      || getCircleWorksPageCacheKey(circleId, worksQuery) !== getCircleWorksPageCacheKey(activeCircleId.value, buildCircleWorksQuery())) return
     ElMessage.error(error.response?.data?.detail || '加载社团作品失败')
   } finally {
     if (requestSeq === circleDetailRequestSeq) {
       circleWorksPage.loading = false
       circleDetailLoading.value = false
       circleDetailAbortController = null
+      scheduleCircleDetailPrefetch()
     }
   }
 }
@@ -7951,6 +8001,11 @@ body.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animatio
   /* 只保留底部滚动暗示，避免第一张卡片被顶部遮罩吃掉 */
   mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 14px), transparent 100%);
   -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 14px), transparent 100%);
+}
+.circle-list-canvas {
+  position: relative;
+  width: 100%;
+  min-height: 1px;
 }
 .circle-list::-webkit-scrollbar {
   display: none;

@@ -62,6 +62,7 @@ def _task_domain(task) -> str:
         "auto_process": "import",
         "process_existing_folder": "existing_folder",
         "rj_subtitle_fetch": "rj_subtitle",
+        "rj_subtitle_extract": "rj_subtitle",
         "asmr_sync_download": "asmr_sync",
         "library_folder_completion_preview": "asmr_sync",
         "http_download": "http_download",

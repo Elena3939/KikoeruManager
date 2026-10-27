@@ -326,6 +326,14 @@ class SubtitleSyncService:
 
         return results
 
+    def find_subtitle_folder(self, source_dir: str, rjcode: str) -> Optional[str]:
+        """查找同 RJ 字幕目录，由异步调用方在线程中执行目录扫描。"""
+        with os.scandir(source_dir) as entries:
+            for entry in entries:
+                if entry.is_dir() and self.extract_rjcode_from_folder(entry.name) == rjcode.upper():
+                    return entry.path
+        return None
+
     def extract_rjcode_from_folder(self, folder_name: str) -> Optional[str]:
         """
         从文件夹名提取 RJ 号

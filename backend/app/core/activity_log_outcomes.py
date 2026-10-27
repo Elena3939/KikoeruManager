@@ -103,6 +103,11 @@ def annotate_outcome(row):
         }.get(row.get("category"), "成功")
     else:
         outcome, label = "pending", "待处理"
+    if detail.get("mode") == "conflict_retry_item" and not is_subtitle_handoff(row):
+        label = {
+            "success": "重试成功", "failed": "重试失败", "partial": "部分重试成功",
+            "pending": "重试中", "cancelled": "已取消",
+        }.get(outcome, label)
     if row.get("category") in IMPORT_CATEGORIES and row.get("action") in IMPORT_RESULT_ACTIONS:
         row.update(result_status=status, outcome=outcome, outcome_label=label)
     return outcome, subtitle

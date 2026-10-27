@@ -5,6 +5,7 @@ import json
 from datetime import datetime
 
 import pytest
+from PIL import Image
 
 from app.core import circle_completion_service as circle_module
 from app.core import dlsite_bonus_probe_service as bonus_probe_module
@@ -300,13 +301,14 @@ def test_circle_image_cache_restores_historical_display_alias(tmp_path) -> None:
     image_cache = CircleImageCacheService()
     image_cache._cache_dir = tmp_path
     legacy_path = tmp_path / "RJ01099999.jpg"
-    legacy_path.write_bytes(b"legacy-cover")
+    Image.new("RGB", (8, 8), "red").save(legacy_path, format="JPEG")
+    original = legacy_path.read_bytes()
 
     restored = image_cache.restore_from_legacy_alias("RJ01012345", ["RJ01099999"])
 
     assert restored == tmp_path / "RJ01012345.jpg"
-    assert restored.read_bytes() == b"legacy-cover"
-    assert legacy_path.read_bytes() == b"legacy-cover"
+    assert restored.read_bytes() == original
+    assert legacy_path.read_bytes() == original
 
 
 @pytest.mark.asyncio
@@ -339,7 +341,7 @@ async def test_circle_image_cache_queue_wait_does_not_consume_download_timeout(t
 
     async def write_cover(rjcode, _url, *, variant):
         path = image_cache.get_local_path(rjcode, variant)
-        path.write_bytes(b"cover")
+        Image.new("RGB", (8, 8), "red").save(path, format="JPEG")
         return True, "", False
 
     image_cache._download_with_outcome = write_cover
@@ -392,7 +394,7 @@ async def test_circle_image_cache_does_not_redownload_existing_file(tmp_path) ->
     async def write_cover(rjcode, _url, *, variant):
         nonlocal download_count
         download_count += 1
-        image_cache.get_local_path(rjcode, variant).write_bytes(b"cover")
+        Image.new("RGB", (8, 8), "red").save(image_cache.get_local_path(rjcode, variant), format="JPEG")
         return True, "", False
 
     image_cache._download_with_outcome = write_cover
@@ -423,7 +425,8 @@ async def test_paged_works_cover_cache_url_uses_image_file_rjcode(service: Circl
     db_session.commit()
     image_cache = CircleImageCacheService()
     image_cache._cache_dir = tmp_path
-    (tmp_path / "RJ01099999.jpg").write_bytes(b"legacy-cover")
+    Image.new("RGB", (8, 8), "red").save(tmp_path / "RJ01099999.jpg", format="JPEG")
+    original = (tmp_path / "RJ01099999.jpg").read_bytes()
     monkeypatch.setattr(circle_module, "get_circle_image_cache_service", lambda: image_cache)
 
     page = await service.list_circle_completion_works(circle_id, tab="missing", page=1, page_size=10, view_mode="card")
@@ -435,7 +438,7 @@ async def test_paged_works_cover_cache_url_uses_image_file_rjcode(service: Circl
     alias_task = service._cover_alias_restore_tasks.get(circle_id)
     if alias_task is not None:
         await alias_task
-    assert (tmp_path / "RJ01012345.jpg").read_bytes() == b"legacy-cover"
+    assert (tmp_path / "RJ01012345.jpg").read_bytes() == original
 
 
 @pytest.mark.asyncio
@@ -505,7 +508,8 @@ async def test_paged_missing_works_and_work_codes(service: CircleCompletionServi
             maker_id="RGPAGE",
             release_date="2025-03-31",
             gap_limit=500,
-            mode="deep:date-range-v5",
+            mode=bonus_probe_module.DLsiteBonusProbeService()._mode_key("deep"),
+            finished_at=datetime.now(),
             status="completed",
         )
     )
@@ -516,7 +520,7 @@ async def test_paged_missing_works_and_work_codes(service: CircleCompletionServi
             original_rjcode="RJ01000003",
             release_date="2025-03-31",
             status="no_bonus",
-            strategy_version="date-range-v5",
+            strategy_version=bonus_probe_module.DLsiteBonusProbeService.PROBE_STRATEGY_VERSION,
         )
     )
     db_session.commit()

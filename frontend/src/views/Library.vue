@@ -15299,6 +15299,8 @@ function normalizeSubtitleTaskFromTaskCenterItem (item, routePayload = {}) {
     completed_at: pickSubtitleRestoreText(item?.completed_at, metadata.completed_at, restoredAt),
 
     source_lang: pickSubtitleRestoreText(metadata.source_lang),
+    source_provider: pickSubtitleRestoreText(metadata.source_provider),
+    subtitle_is_ai: Boolean(metadata.subtitle_is_ai),
 
     source_work_type: pickSubtitleRestoreText(metadata.source_work_type),
 

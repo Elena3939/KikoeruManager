@@ -43,7 +43,7 @@ async def test_precheck_and_failure_do_not_assign_first_work_to_parent(tmp_path,
     assert engine._get_effective_rjcode(task) == ""
 
     classifier = Mock()
-    monkeypatch.setattr("app.core.classifier.SmartClassifier", lambda: classifier)
+    monkeypatch.setattr("app.core.classifier.SmartClassifier", lambda **kwargs: classifier)
     # 即使解压后端又推断出单个 RJ，失败事实也属于整个合集。
     task.task_metadata["inferred_rjcode"] = CODES[0]
     engine._record_problem_work_for_extract_failure(task, CODES[0], "密码未命中")
@@ -90,6 +90,8 @@ async def test_retry_preserves_aggregate_and_does_not_restore_first_rj(tmp_path,
     engine = SimpleNamespace(get_all_tasks=lambda: [], submit=AsyncMock())
     monkeypatch.setattr(database, "get_db", lambda: iter([db]))
     monkeypatch.setattr(routes, "get_task_engine", lambda: engine)
+    monkeypatch.setattr("app.core.input_scan_repository.source_lock", Mock())
+    monkeypatch.setattr("app.core.input_scan_repository.handoff_conflict_claims", Mock())
     result = await routes.retry_extract_failed_conflict(conflict.id)
     assert result["success"]
     task = engine.submit.call_args.args[0]

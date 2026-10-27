@@ -19,6 +19,7 @@ from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 
+from sqlalchemy import func
 
 from ..config.settings import get_config
 from ..models.database import (
@@ -49,6 +50,7 @@ from .circle_image_cache_service import get_circle_image_cache_service
 from .dlsite_service import DLsiteWorkSummary, get_dlsite_service, with_dlsite_api_snapshot
 from .dlsite_bonus_probe_service import DLsiteBonusProbeService
 from .metadata_service import MetadataService
+from .release_dates import is_unreleased, release_date_end
 from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -219,7 +221,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
     _COMPLETION_BUILD_LOCK_SECONDS = 12
     _COMPLETION_ALIAS_REDIS_TTL_SECONDS = 86400
     # 同名特典保留待验证候选，并按真实封面选择代表项；升级后重建历史视图缓存。
-    _COMPLETION_CACHE_SCHEMA_VERSION = 21
+    _COMPLETION_CACHE_SCHEMA_VERSION = 23
 
     def __init__(self):
         self.metadata_service = MetadataService()
@@ -412,10 +414,10 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     ])
                     epoch = max(0, int(raw_epoch or 0))
                     version = max(0, int(raw_version or 0))
-                    return f"s{self._COMPLETION_CACHE_SCHEMA_VERSION}:e{epoch}:v{version}"
+                    return f"s{self._COMPLETION_CACHE_SCHEMA_VERSION}:d{date.today().isoformat()}:e{epoch}:v{version}"
                 except Exception:
                     logger.debug("[社团补全·缓存] Redis 版本同步失败", exc_info=True)
-            return f"s{self._COMPLETION_CACHE_SCHEMA_VERSION}:local:{self._completion_local_namespace}:e{self._completion_local_epoch}:v{self._completion_local_versions.get(scope, 0)}"
+            return f"s{self._COMPLETION_CACHE_SCHEMA_VERSION}:d{date.today().isoformat()}:local:{self._completion_local_namespace}:e{self._completion_local_epoch}:v{self._completion_local_versions.get(scope, 0)}"
 
     def _completion_resource_version_tag(self, scope):
         scope = self._completion_cache_scope(scope)
@@ -470,10 +472,10 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
     def _completion_state_cache_key(self, circle_id_or_query: str, version_tag: str) -> str:
         return f"{self._completion_cache_scope(circle_id_or_query)}|state|{version_tag}"
 
-    def _completion_query_cache_key(self, kind: str, circle_id_or_query: str, params: Dict[str, Any], *, version_tag: Optional[str] = None) -> str:
+    def _completion_query_cache_key(self, kind: str, circle_id_or_query: str, params: Dict[str, Any], *, version_tag: Optional[str] = None, resource_version_tag: Optional[str] = None) -> str:
         payload = {"scope": self._completion_cache_scope(circle_id_or_query), "params": params}
         version = version_tag if version_tag is not None else self._completion_version_tag(circle_id_or_query)
-        resource_version = self._completion_resource_version_tag(circle_id_or_query)
+        resource_version = resource_version_tag if resource_version_tag is not None else self._completion_resource_version_tag(circle_id_or_query)
         return f"{self._completion_cache_scope(circle_id_or_query)}|{kind}|{version}:r{resource_version}|{self._completion_hash_payload(payload)}"
 
     def _completion_recent_cache_key(self, keyword: str, limit: int) -> str:
@@ -1199,7 +1201,8 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
         def append_candidate(value: Any) -> None:
             normalized = self.normalize_rjcode(value)
-            if normalized and normalized not in seen:
+            metadata = metadata_map.get(normalized) or {}
+            if normalized and normalized not in seen and not is_unreleased(metadata.get("release_date")):
                 seen.add(normalized)
                 candidates.append(normalized)
 
@@ -1208,7 +1211,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
         async def _check_variant(variant: Dict[str, Any]) -> Optional[str]:
             normalized = self.normalize_rjcode(variant.get("rjcode"))
-            if not normalized:
+            if not normalized or is_unreleased((metadata_map.get(normalized) or {}).get("release_date")):
                 return None
             async with sem:
                 ok = await self._is_public_catalog_variant(
@@ -1225,7 +1228,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
         async def _check_extra(candidate: Any) -> Optional[str]:
             normalized = self.normalize_rjcode(candidate)
-            if not normalized:
+            if not normalized or is_unreleased((metadata_map.get(normalized) or {}).get("release_date")):
                 return None
             variant = next((
                 item for item in public_variants
@@ -1739,58 +1742,8 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             return value
         return self._build_dlsite_cover_url(rjcode, is_unreleased=False, resized=False) or value
 
-    # 预售作品在 DLsite 上常把发售日写成"未定" / "未確定" / "TBD" 等，
-    # 没有具体年月可以解析。这种作品同样属于"尚未发售"，应当：
-    # 1) 后端给前端置 ``is_unreleased=True``，触发 WorkCard / WorkListRow 上的
-    #    📅 未发售 徽章和蓝色光圈，不再"消失成普通卡片"；
-    # 2) 前端按发售日排序时把它沉到末尾（发售日最迟），等 DLsite 后续公布
-    #    实际日期再随刷新流程归位。
-    _UNRELEASED_DATE_KEYWORDS = (
-        "未定",
-        "未確定",
-        "未确定",
-        "未発表",
-        "未发表",
-        "発売日未定",
-        "发售日未定",
-        "発売予定",
-        "予定",
-        "tbd",
-        "tba",
-        "coming soon",
-    )
-
     def _is_future_release_date(self, value: Any) -> bool:
-        text = str(value or "").strip()
-        if not text:
-            return False
-        lowered = text.lower()
-        # 关键字优先：含有"未定" / "TBD" / "予定" 等就直接判未发售，
-        # 不再去匹配年月日（DLsite 偶尔会写"2026年 予定"这种混合形态，
-        # 但只要带上"予定"语义就视同预售）。
-        if any(keyword.lower() in lowered for keyword in self._UNRELEASED_DATE_KEYWORDS):
-            return True
-        match = re.search(r"(\d{4})[-/年](\d{1,2})(?:[-/月](\d{1,2}))?", text)
-        if not match:
-            return False
-        year = int(match.group(1))
-        month = int(match.group(2))
-        if match.group(3):
-            day = int(match.group(3))
-        elif "下旬" in text:
-            # 下旬 = 21日以降、月末扱いで 28 日とする
-            day = 28
-        elif "中旬" in text:
-            day = 20
-        elif "上旬" in text:
-            day = 10
-        else:
-            day = 1
-        try:
-            release = date(year, month, day)
-        except ValueError:
-            return False
-        return release > date.today()
+        return is_unreleased(value)
 
     def _product_looks_like_asmr_work(self, product: Optional[Dict[str, Any]]) -> Optional[bool]:
         if not isinstance(product, dict) or not product:
@@ -1919,10 +1872,12 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
     def _load_cached_metadata_map(self, db, rjcodes: List[str]) -> Dict[str, Dict[str, Any]]:
         normalized_codes = []
+        seen_codes = set()
         for code in rjcodes or []:
             normalized = self.normalize_rjcode(code)
-            if normalized and normalized not in normalized_codes:
+            if normalized and normalized not in seen_codes:
                 normalized_codes.append(normalized)
+                seen_codes.add(normalized)
         if not normalized_codes:
             return {}
         cached_map = {
@@ -2010,6 +1965,8 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         item: Dict[str, Any],
         candidate_rjcodes: List[str],
     ) -> str:
+        if item.get("is_unreleased") or is_unreleased(item.get("release_date")):
+            return ""
         original_release_date = item.get("original_release_date")
         normalized_original_date = self._completion_full_release_date(original_release_date)
         if normalized_original_date:
@@ -2050,8 +2007,10 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         return next((str(value or "").strip() for value in raw_values if str(value or "").strip()), "")
 
     def _completion_release_timestamp(self, item: Dict[str, Any]) -> int:
+        unreleased = item.get("is_unreleased") or is_unreleased(item.get("release_date"))
         raw = str(
-            item.get("original_release_date")
+            (item.get("release_date") if unreleased else item.get("original_release_date"))
+            or item.get("original_release_date")
             or item.get("release_date")
             or item.get("date")
             or item.get("release_at")
@@ -2061,27 +2020,9 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         if not raw:
             return placeholder if item.get("is_unreleased") else 0
 
-        full = re.search(r"(\d{4})\D+(\d{1,2})\D+(\d{1,2})", raw)
-        if full:
-            try:
-                return int(datetime(int(full.group(1)), int(full.group(2)), int(full.group(3))).timestamp())
-            except Exception:
-                pass
-
-        phase = re.search(r"(\d{4})\D+(\d{1,2})\D*(上旬|中旬|下旬)", raw)
-        if phase:
-            try:
-                day = 9 if phase.group(3) == "上旬" else (19 if phase.group(3) == "中旬" else 28)
-                return int(datetime(int(phase.group(1)), int(phase.group(2)), day).timestamp())
-            except Exception:
-                pass
-
-        month = re.search(r"(\d{4})\D+(\d{1,2})", raw)
-        if month:
-            try:
-                return int(datetime(int(month.group(1)), int(month.group(2)), 1).timestamp())
-            except Exception:
-                pass
+        end = release_date_end(raw)
+        if end:
+            return int(datetime.combine(end, datetime.min.time()).timestamp())
 
         return placeholder if item.get("is_unreleased") else 0
 
@@ -3243,6 +3184,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             return sorted(
                 rows,
                 key=lambda item: (
+                    int(bool(item.get("is_unreleased")) or is_unreleased(item.get("release_date"))) * direction,
                     self._completion_release_timestamp(item) * direction,
                     str(item.get("title") or ""),
                 ),
@@ -3318,20 +3260,27 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             get_resource_source_service().schedule_circle(scope)
         while True:
             version = await asyncio.to_thread(self._completion_version_tag, scope)
+            resource_version = await asyncio.to_thread(self._completion_resource_version_tag, scope)
+            query = dict(tab=tab, page=page, page_size=page_size, include_dl_only=include_dl_only,
+                         status_filters=status_filters, owned_filter=owned_filter, compare_filter=compare_filter,
+                         search=search, sort=sort, view_mode=view_mode, resource_version=resource_version)
+            if cache_enabled:
+                cached = await asyncio.to_thread(self._list_circle_completion_works_sync, scope, None, version, **query)
+                if cached is not None:
+                    if (version == await asyncio.to_thread(self._completion_version_tag, scope)
+                            and resource_version == await asyncio.to_thread(self._completion_resource_version_tag, scope)):
+                        return cached
+                    continue
             state = await self._get_completion_view_state(scope, readonly=True)
-            if not cache_enabled or version == await asyncio.to_thread(self._completion_version_tag, scope):
-                break
-        return await asyncio.to_thread(
-            self._list_circle_completion_works_sync, scope, state, version,
-            tab=tab, page=page, page_size=page_size, include_dl_only=include_dl_only,
-            status_filters=status_filters, owned_filter=owned_filter, compare_filter=compare_filter,
-            search=search, sort=sort, view_mode=view_mode,
-        )
+            result = await asyncio.to_thread(self._list_circle_completion_works_sync, scope, state, version, **query)
+            if not cache_enabled or (version == await asyncio.to_thread(self._completion_version_tag, scope)
+                                    and resource_version == await asyncio.to_thread(self._completion_resource_version_tag, scope)):
+                return result
 
     def _list_circle_completion_works_sync(
         self,
         circle_id_or_query: str,
-        state: Dict[str, Any],
+        state: Optional[Dict[str, Any]],
         version: str,
         *,
         tab: str = "missing",
@@ -3344,6 +3293,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         search: str = "",
         sort: str = "updated_desc",
         view_mode: str = "list",
+        resource_version: Optional[str] = None,
     ) -> Dict[str, Any]:
         normalized_filters = self._completion_status_filters(status_filters)
         tab_key = str(tab or "missing").strip().lower()
@@ -3364,6 +3314,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 "view_mode": "card" if card_mode else "list",
             },
             version_tag=version,
+            resource_version_tag=resource_version,
         )
         selection_key = query_cache_key
         query_cache_key = f"{selection_key}|page:{safe_page_request}:{safe_page_size}"
@@ -3376,7 +3327,42 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         lock = self._completion_selection_locks[hash(selection_key) % len(self._completion_selection_locks)]
         with lock:
             selection = self._completion_selection_cache.get(selection_key) if cache_enabled else None
+            projection_page = None
+            if selection is None and cache_enabled and resource_version is not None:
+                from .circle_completion_projection import build_projection_rows, publish_projection, read_projection_page
+                projection_key = self._completion_query_cache_key(
+                    "projection", circle_id_or_query, {}, version_tag=version, resource_version_tag=resource_version,
+                )
+                projection_query = dict(
+                    tab=tab_key, include_dl_only=bool(include_dl_only), status_filters=normalized_filters,
+                    owned_filter=str(owned_filter or "all").strip().lower(),
+                    compare_filter=str(compare_filter or "all").strip().lower(), search=str(search or ""),
+                    sort=str(sort or "updated_desc").strip().lower(), view_mode="card" if card_mode else "list",
+                )
+                projection_page = read_projection_page(
+                    projection_key, safe_page_request, safe_page_size, session_factory=SessionLocal, **projection_query,
+                )
+                if projection_page is None and state is not None:
+                    items = self._completion_items_with_resources(circle_id_or_query, state)
+                    summary = self._completion_summary_from_items(state["catalog"], items)
+                    published = publish_projection(
+                        projection_key, circle_id_or_query, f"{version}:r{resource_version}",
+                        build_projection_rows(self, items), summary,
+                        lambda: version == self._completion_version_tag(circle_id_or_query)
+                        and resource_version == self._completion_resource_version_tag(circle_id_or_query),
+                        session_factory=SessionLocal,
+                    )
+                    if not published:
+                        return None
+                    projection_page = read_projection_page(
+                        projection_key, safe_page_request, safe_page_size, session_factory=SessionLocal, **projection_query,
+                    )
             if selection is None:
+                if projection_page is not None:
+                    selection = {"rows": projection_page["rows"], "summary": projection_page["summary"]}
+            if selection is None:
+                if state is None:
+                    return None
                 catalog = state["catalog"]
                 items = self._completion_items_with_resources(circle_id_or_query, state)
                 if card_mode and tab_key in {"missing", "owned"}:
@@ -3413,18 +3399,18 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 summary = self._completion_summary_from_items(catalog, items, visible_items=filtered)
                 if tab_key == "missing":
                     summary["missing_count"] = len(filtered)
-                from .circle_completion_presentation import present_completion_rows
-                present_completion_rows(self, grouped_filtered)
                 selection = {"rows": grouped_filtered, "summary": summary}
                 if cache_enabled:
                     self._completion_selection_cache[selection_key] = selection
         grouped_filtered = selection["rows"]
         summary = selection["summary"]
-        total = len(grouped_filtered)
+        total = projection_page["total"] if projection_page is not None else len(grouped_filtered)
         page_count = max(1, (total + safe_page_size - 1) // safe_page_size)
         safe_page = max(1, min(page_count, safe_page_request))
         start = (safe_page - 1) * safe_page_size
-        page_items = grouped_filtered[start:start + safe_page_size]
+        page_items = deepcopy(grouped_filtered if projection_page is not None else grouped_filtered[start:start + safe_page_size])
+        from .circle_completion_presentation import present_completion_rows
+        present_completion_rows(self, page_items)
         if tab_key == "compare":
             payload_items = [self._build_completion_compare_item(item) for item in page_items]
         else:
@@ -3438,6 +3424,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             "page_size": safe_page_size,
             "page_count": page_count,
             "status_filters": normalized_filters,
+            "data_version": f"{version}:r{resource_version or self._completion_resource_version_tag(circle_id_or_query)}",
         }
         if cache_enabled:
             self._completion_l1_l2_set(
@@ -3477,6 +3464,8 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         limiter = asyncio.Semaphore(4)
         async def resolve_date(entry):
             code, item, candidates = entry
+            if item.get("is_unreleased") or is_unreleased(item.get("release_date")):
+                return code, ""
             async with limiter:
                 return code, await self._completion_resolve_bonus_probe_release_date(item, candidates)
         dates = await asyncio.gather(*(resolve_date(entry) for entry in date_items))
@@ -4272,6 +4261,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
     def _build_local_download_session_map(self, db, works: List[CircleWork], link_map_by_canonical: Dict[str, Dict[str, Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
         lookup_rjcodes: List[str] = []
+        seen_lookup_codes = set()
         canonical_candidates: Dict[str, List[str]] = {}
         for row in works or []:
             canonical = self.normalize_rjcode(row.canonical_rjcode)
@@ -4287,38 +4277,41 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     linked_codes.append(normalized)
             canonical_candidates[canonical] = [code for code in linked_codes if code]
             for code in linked_codes:
-                if code and code not in lookup_rjcodes:
+                if code and code not in seen_lookup_codes:
                     lookup_rjcodes.append(code)
+                    seen_lookup_codes.add(code)
 
         if not lookup_rjcodes:
             return {}
 
+        download_root = func.nullif(func.btrim(func.coalesce(
+            func.nullif(ASMRDownloadSession.local_download_root, ""),
+            ASMRDownloadSession.statistics["download_root"].astext,
+        )), "")
         rows = (
-            db.query(ASMRDownloadSession)
-            .filter(ASMRDownloadSession.rjcode.in_(lookup_rjcodes))
-            .order_by(ASMRDownloadSession.updated_at.desc())
+            db.query(
+                ASMRDownloadSession.id, ASMRDownloadSession.rjcode,
+                download_root.label("download_root"), ASMRDownloadSession.local_downloaded_count,
+                ASMRDownloadSession.updated_at,
+            )
+            .filter(
+                ASMRDownloadSession.rjcode.in_(lookup_rjcodes),
+                ASMRDownloadSession.local_download_ready.is_(True),
+                download_root.isnot(None),
+            )
+            .distinct(ASMRDownloadSession.rjcode)
+            .order_by(ASMRDownloadSession.rjcode, ASMRDownloadSession.updated_at.desc())
             .all()
         )
         session_by_rj: Dict[str, Dict[str, Any]] = {}
         for row in rows:
-            session = row.to_dict()
-            statistics = dict(session.get("statistics") or {})
-            local_root = str(session.get("local_download_root") or statistics.get("download_root") or "").strip()
-            local_count = int(session.get("local_downloaded_count") or 0)
-            # 详情页切换频繁，这里优先使用数据库中已持久化的下载状态，
-            # 避免每次点击社团都触发大量磁盘 exists / walk 检查。
-            # 只有明确的 local_download_ready 标志才视为「已下载可入库」，
-            # 不能用 local_count > 0 兜底，避免下载了一半的临时文件被误判为完成。
-            local_ready = bool(local_root and session.get("local_download_ready"))
-            if not local_ready:
-                continue
-            normalized_rj = self.normalize_rjcode(session.get("rjcode"))
+            normalized_rj = self.normalize_rjcode(row.rjcode)
             if normalized_rj and normalized_rj not in session_by_rj:
                 session_by_rj[normalized_rj] = {
-                    "session_id": str(session.get("id") or "").strip(),
-                    "download_root": local_root,
-                    "downloaded_count": local_count,
-                    "updated_at": session.get("updated_at"),
+                    "session_id": str(row.id or "").strip(),
+                    "download_root": row.download_root,
+                    "downloaded_count": int(row.local_downloaded_count or 0),
+                    "updated_at": row.updated_at.isoformat() if row.updated_at else None,
                 }
 
         result: Dict[str, Dict[str, Any]] = {}
@@ -5479,6 +5472,14 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         snapshot.all_rjcodes = sorted(all_rjcodes_set)
 
         unique_canonicals = sorted(canonical_to_chain.keys())
+        def load_unreleased_codes():
+            with SessionLocal() as db:
+                return {
+                    row.rjcode for row in db.query(WorkMetadata).filter(
+                        WorkMetadata.rjcode.in_(snapshot.all_rjcodes)
+                    ).all() if is_unreleased(row.release_date)
+                }
+        unreleased_codes = await asyncio.to_thread(load_unreleased_codes)
 
         # 用本次官方 product 响应确认作品归属；只有归属明确且目录完整，才允许目录缺失短路。
         maker_reader = getattr(self.dlsite_service, "index_product_makers", None)
@@ -5551,7 +5552,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             rjcode: str,
         ) -> Tuple[Optional[Dict[str, Any]], Optional[List[Any]]]:
             normalized = self.normalize_rjcode(rjcode)
-            if not normalized:
+            if not normalized or normalized in unreleased_codes:
                 return None, None
             if normalized in asmr_probe_once:
                 if perf:
@@ -8430,6 +8431,8 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         probe_payloads = await load_probe_inputs()
         async def run_payload(payload: tuple[str, Dict[str, Any], Dict[str, Dict[str, Any]], Dict[str, Any]]) -> tuple[str, str]:
             canonical, item, metadata_map, canonical_info = payload
+            if item.get("is_unreleased") or is_unreleased(item.get("release_date")):
+                return canonical, ""
             async with asmr_semaphore:
                 # ★ Phase 2：传 snapshot 让 _find_public_downloadable_work 全本地查询，
                 #   不再调 fetch_work_info / fetch_track_list 打 HTTP。
@@ -9868,8 +9871,10 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 )
                 if is_bonus_work:
                     exact = self._completion_bonus_display_rjcode(canonical, row.display_rjcode, metadata_map)
-                    _, asmr_probe_status = await self.asmr_service.fetch_work_info_with_status(exact)
                     actual_rjcode = None
+                    asmr_probe_status = ASMR_PROBE_STATUS_MISSING
+                    if not is_unreleased((metadata_map.get(exact) or metadata).get("release_date")):
+                        _, asmr_probe_status = await self.asmr_service.fetch_work_info_with_status(exact)
                     if asmr_probe_status == ASMR_PROBE_STATUS_AVAILABLE:
                         tracks, asmr_probe_status = await self.asmr_service.fetch_track_list_with_status(exact)
                         if tracks:

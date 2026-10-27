@@ -75,7 +75,8 @@ def validate_configuration_update(current, candidate):
             raise ValueError("存在未完成搬运记录，不能更改恢复记录目录")
     if not candidate.file_move.host_enabled:
         return
-    changed = (current.file_move != candidate.file_move or
+    changed = (current.file_move.model_dump(exclude={"filter_verify_hashes"}) !=
+               candidate.file_move.model_dump(exclude={"filter_verify_hashes"}) or
                business_roots(current) != business_roots(candidate))
     if not changed:
         return

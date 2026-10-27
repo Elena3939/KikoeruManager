@@ -592,6 +592,11 @@
                 </section>
               </div>
             </section>
+            <ConflictDiagnostics
+              v-if="activeConflict.has_diagnostics"
+              :key="activeConflict.id"
+              :conflict-id="activeConflict.id"
+            />
           </div>
         </section>
 
@@ -786,6 +791,7 @@ import {
   Folder, Music, File, X, FileEdit,
 } from 'lucide-vue-next'
 import ConflictMergeWorkbench from '../components/conflicts/ConflictMergeWorkbench.vue'
+import ConflictDiagnostics from '../components/conflicts/ConflictDiagnostics.vue'
 import BatchRetryPasswordDialog from '../components/conflicts/BatchRetryPasswordDialog.vue'
 import RetryPasswordsDialog from '../components/conflicts/RetryPasswordsDialog.vue'
 import VolumeRenameDialog from '../components/conflicts/VolumeRenameDialog.vue'
@@ -1811,8 +1817,8 @@ function startProcessingPoller() {}
 
 function getConflictTaskId(conflict) {
   return String(
-    conflict?.linked_task?.id ||
     conflict?.new_metadata?.resolution_task_id ||
+    conflict?.linked_task?.id ||
     conflict?.task_id ||
     ''
   ).trim()
@@ -1843,6 +1849,8 @@ function handleConflictRealtimeEvent(event) {
 
 function handleConflictTaskPayload(payload) {
   if (payload?.type !== 'task_center_changed') return
+  // 旧任务被替代时仍携带原来的失败状态，不代表新一轮重试失败。
+  if (payload.reason === 'retry_superseded') return
   const taskId = String(payload.engine_task_id || payload.entity_id || '').trim()
   if (!taskId) return
 
@@ -1874,6 +1882,8 @@ function handleConflictTaskPayload(payload) {
     markConflictRetrying(conflict.id, false)
   }
   fetchConflicts().then(() => {
+    const current = conflicts.value.find(item => item.id === conflict.id)
+    if (current && getConflictTaskId(current) !== taskId) return
     if (status === 'completed' && action === 'RETRY' && !conflicts.value.some(item => item.id === conflict.id)) {
       ElMessage.success('重试成功，已移出问题作品')
     } else if (status === 'failed' && action === 'RETRY') {
@@ -1957,7 +1967,12 @@ async function resolveSkip(conflict) {
 }
 
 async function startRetry(conflict, payload = {}) {
-  return conflictApi.retry(conflict.id, payload)
+  const result = await conflictApi.retry(conflict.id, payload)
+  updateConflictLinkedTask(conflict.id, {
+    engine_task_id: result.task_id,
+    status: result.already_running ? 'processing' : 'pending',
+  }, 'RETRY')
+  return result
 }
 
 // 弹"多密码"对话框，返回用户输入的 passwords 数组（空数组 = 留空走默认）；
@@ -2733,16 +2748,23 @@ async function handleBatchRetryConfirm(entries) {
   const successes = []
   const failures = []
   try {
+    const response = await conflictApi.retryBatch(targets.map(conflict => ({
+      conflict_id: conflict.id,
+      ...buildConflictRetryPayload(conflict, inputMap[conflict.id] || {}),
+    })))
+    const results = new Map((response.items || []).map(item => [item.conflict_id, item]))
     for (const conflict of targets) {
-      try {
-        const input = inputMap[conflict.id] || {}
-        const payload = buildConflictRetryPayload(conflict, input)
-        const result = await startRetry(conflict, payload)
+      const result = results.get(conflict.id)
+      if (result?.success) {
+        updateConflictLinkedTask(conflict.id, {
+          engine_task_id: result.task_id,
+          status: result.already_running ? 'processing' : 'pending',
+        }, 'RETRY')
         markConflictRetrying(conflict.id, true)
         successes.push(conflict)
         startRetryPoller(result.task_id, conflict.id)
-      } catch (error) {
-        failures.push({ conflict, message: resolveErrorMessage(error, '提交重试失败') })
+      } else {
+        failures.push({ conflict, message: result?.message || '提交重试失败' })
       }
     }
     await fetchConflicts()

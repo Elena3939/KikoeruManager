@@ -90,6 +90,18 @@ def _add_metadata_row(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("force", [False, True])
+async def test_unreleased_bonus_refresh_never_requests(service, db_session, stub_dlsite, force):
+    _add_metadata_row(db_session, "RJ01709662")
+    row = db_session.query(WorkMetadata).filter_by(rjcode="RJ01709662").one()
+    row.release_date = "2098年10月上旬"
+    db_session.commit()
+    result = await service.lazy_refresh_bonus_for_cached_rjcodes(["RJ01709662"], force=force)
+    assert result == {}
+    assert stub_dlsite.calls == []
+
+
+@pytest.mark.asyncio
 async def test_lazy_refresh_backfills_old_entry_without_checked_at(
     service: MetadataService,
     db_session,

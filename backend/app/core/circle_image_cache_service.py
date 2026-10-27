@@ -11,7 +11,7 @@
 - 写入用 ``.tmp`` 中间文件 + ``replace`` 原子化，避免半成品文件被前端读到。
 - 并发：批量预热与按需下载共享受控的 ``Semaphore(6)``，避免一批缺图同时占满
   连接池导致排队请求把总超时预算耗尽。
-- 空文件保护：``has_local`` 必须 size > 0 才算命中，否则会被当作丢失重新下载。
+- 内容校验：只命中可解码的图片，文件未变化时复用校验结果。
 - 复用 dlsite 代理配置：从 ``config.metadata.http_proxy`` 拿，与 DLsite 服务一致。
 - 失败不抛异常：所有错误只 log warning / debug，由调用方展示占位图或提供重试。
 """
@@ -29,6 +29,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import httpx
+from PIL import Image
+
+from .http_client_lifecycle import HttpClientLifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -54,11 +57,14 @@ class CircleImageCacheService:
         self._client: Optional[httpx.AsyncClient] = None
         self._client_proxy_url: str = ""
         self._client_lock: Optional[asyncio.Lock] = None
+        self._client_lifecycle = HttpClientLifecycle()
         self._cache_dir: Optional[Path] = None
         self._download_locks: Dict[str, asyncio.Lock] = {}
         self._background_download_tasks: Dict[str, asyncio.Task] = {}
         self._failed_until: Dict[str, float] = {}
+        self._failure_details: Dict[str, str] = {}
         self._download_semaphore: Optional[asyncio.Semaphore] = None
+        self._validated_images: Dict[Path, tuple] = {}
 
     # ------------------------------------------------------------------
     # 路径 / 命名
@@ -186,8 +192,31 @@ class CircleImageCacheService:
         if path is None:
             return False
         try:
-            return path.is_file() and path.stat().st_size > 0
+            stat = path.stat()
+            if not path.is_file() or not 0 < stat.st_size <= self.MAX_FILE_SIZE:
+                return False
+            signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            cached = self._validated_images.get(path)
+            if cached is not None and cached[0] == signature:
+                return cached[1]
+            valid = self._is_valid_image(path)
+            if len(self._validated_images) >= self.MAX_FAILURE_CACHE_ENTRIES:
+                self._validated_images.pop(next(iter(self._validated_images)))
+            self._validated_images[path] = (signature, valid)
+            return valid
         except OSError:
+            return False
+
+    @staticmethod
+    def _is_valid_image(path: Path) -> bool:
+        try:
+            with Image.open(path) as image:
+                image.verify()
+            # JPEG 的 verify 不解码像素，截断内容仍需实际读取才能识别。
+            with Image.open(path) as image:
+                image.load()
+            return True
+        except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
             return False
 
     def get_local_url(self, rjcode: str, variant: str = "card", *, allow_missing: bool = False) -> str:
@@ -240,10 +269,7 @@ class CircleImageCacheService:
             source = self.get_local_path(alias, variant)
             if source is None:
                 continue
-            try:
-                if not source.is_file() or source.stat().st_size <= 0:
-                    continue
-            except OSError:
+            if not self.has_local(alias, variant):
                 continue
 
             tmp_path: Optional[Path] = None
@@ -262,7 +288,9 @@ class CircleImageCacheService:
                             target_fp.write(chunk)
                 if copied <= 0:
                     raise OSError("历史封面缓存为空")
-                if target.is_file() and target.stat().st_size > 0:
+                if not self._is_valid_image(tmp_path):
+                    continue
+                if self.has_local(normalized_target, variant):
                     self._clear_known_missing(normalized_target, variant)
                     return target
                 os.replace(tmp_path, target)
@@ -332,15 +360,42 @@ class CircleImageCacheService:
             for cached_key, until in list(self._failed_until.items()):
                 if until <= now:
                     self._failed_until.pop(cached_key, None)
+                    self._failure_details.pop(cached_key, None)
             if len(self._failed_until) >= self.MAX_FAILURE_CACHE_ENTRIES:
                 oldest_key = min(self._failed_until, key=self._failed_until.get)
                 self._failed_until.pop(oldest_key, None)
+                self._failure_details.pop(oldest_key, None)
         self._failed_until[key] = now + self.FAILURE_COOLDOWN_SECONDS
 
     def _clear_failure(self, rjcode: str, variant: str) -> None:
         key = self._failure_key(rjcode, variant)
         if key:
             self._failed_until.pop(key, None)
+            self._failure_details.pop(key, None)
+
+    def _set_failure_detail(self, rjcode: str, variant: str, code: str) -> None:
+        key = self._failure_key(rjcode, variant)
+        if key not in self._failure_details and len(self._failure_details) >= self.MAX_FAILURE_CACHE_ENTRIES:
+            self._failure_details.pop(next(iter(self._failure_details)))
+        self._failure_details[key] = code
+
+    def failure_detail(self, rjcode: str, variant: str = "card") -> Dict[str, str]:
+        code = self._failure_details.get(self._failure_key(rjcode, variant), "")
+        if self.has_known_missing(rjcode, variant):
+            return {"error_code": "not_found", "detail": "DLsite CDN 的候选封面均返回 404"}
+        if "tls-handshake" in code:
+            detail = "封面连接的 TLS 握手失败或超时，请检查" + ("元数据代理链路" if ":proxy" in code else "CDN 连通性")
+        elif "ConnectTimeout" in code:
+            detail = "封面连接超时，请检查元数据代理或 CDN 连通性"
+        elif "PoolTimeout" in code:
+            detail = "封面连接池等待超时，异常连接池已回收，可重试"
+        elif "ReadTimeout" in code:
+            detail = "封面响应读取超时"
+        elif "total-timeout" in code:
+            detail = "封面下载超过总时间限制，请检查元数据代理或 CDN 连通性"
+        else:
+            detail = "封面下载失败，请检查日志中的具体错误"
+        return {"error_code": code or "download_failed", "detail": detail}
 
     def resolve_filename(self, filename: str) -> Optional[Path]:
         """供 API 路由使用：将外部传入的文件名映射回缓存目录下的真实路径。
@@ -409,7 +464,7 @@ class CircleImageCacheService:
         target = self.get_local_path(rjcode, variant)
         if target is None:
             return None
-        if self.has_local(rjcode, variant):
+        if not force and self.has_local(rjcode, variant):
             return target
         if not force and self.has_known_missing(rjcode, variant):
             return None
@@ -425,11 +480,14 @@ class CircleImageCacheService:
         if lock is None:
             return None
         async with lock:
-            if self.has_local(rjcode, variant):
+            if not force and self.has_local(rjcode, variant):
                 return target
+            if force:
+                self._clear_known_missing(rjcode, variant)
             if not force and self._is_in_failure_cooldown(rjcode, variant):
                 return None
             failures: List[str] = []
+            self._failure_details.pop(self._failure_key(rjcode, variant), None)
             saw_404 = False
             saw_non_404 = False
             try:
@@ -458,11 +516,16 @@ class CircleImageCacheService:
                             if retryable:
                                 break
             except TimeoutError:
-                failures.append("total-timeout")
+                cancelled = self._failure_details.get(self._failure_key(rjcode, variant), "")
+                failures.append(
+                    cancelled.replace("cancelled:", "total-timeout:", 1)
+                    if cancelled.startswith("cancelled:") else "total-timeout"
+                )
                 saw_non_404 = True
             if saw_404 and not saw_non_404:
                 self._mark_known_missing(rjcode, variant)
             self._remember_failure(rjcode, variant)
+            self._set_failure_detail(rjcode, variant, ",".join(failures) or "unknown")
             log = logger.warning if log_failure else logger.debug
             log(
                 "[社团补全/封面缓存] 按需下载失败 rjcode=%s variant=%s outcomes=%s deadline_seconds=%s cooldown_seconds=%s",
@@ -523,16 +586,17 @@ class CircleImageCacheService:
                 and self._client_proxy_url != proxy_url
             ):
                 logger.info(
-                    "[社团补全/封面缓存] 元数据代理已变更，重建 HTTP 客户端: %s",
-                    proxy_url or "直连",
+                    "[社团补全/封面缓存] 元数据代理已变更，重建 HTTP 客户端 mode=%s",
+                    "proxy" if proxy_url else "direct",
                 )
-                await self._client.aclose()
+                await self._client_lifecycle.retire(self._client)
                 self._client = None
                 self._client_proxy_url = ""
 
             if self._client is None or self._client.is_closed:
 
                 client_kwargs: Dict[str, Any] = {
+                    "trust_env": False,
                     "headers": {
                         "User-Agent": (
                             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -573,10 +637,17 @@ class CircleImageCacheService:
                 self._client_proxy_url = proxy_url
             return self._client
 
+    def _discard_client(self, client) -> None:
+        if self._client is client:
+            self._client = None
+            self._client_proxy_url = ""
+
     async def close(self) -> None:
-        for task in list(self._background_download_tasks.values()):
+        tasks = list(self._background_download_tasks.values())
+        for task in tasks:
             if not task.done():
                 task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         self._background_download_tasks.clear()
         client = self._client
         self._client = None
@@ -691,9 +762,28 @@ class CircleImageCacheService:
             return False, "invalid-target", False
 
         tmp_path: Optional[Path] = None
+        phase = "connect"
+        mode = "direct"
+
+        async def trace(name, _info):
+            nonlocal phase
+            if name.endswith("connect_tcp.started"):
+                phase = "tcp-connect"
+            elif name.endswith("start_tls.started"):
+                phase = "tls-handshake"
+            elif name.endswith("send_request_headers.started"):
+                phase = "request"
+            elif name.endswith("receive_response_headers.started"):
+                phase = "response-headers"
+            elif name.endswith("receive_response_body.started"):
+                phase = "response-body"
+
         try:
             client = await self._get_client()
-            async with client.stream("GET", url) as response:
+            mode = "proxy" if self._client_proxy_url else "direct"
+            async with self._client_lifecycle.use(client, self._discard_client), client.stream(
+                "GET", url, extensions={"trace": trace}
+            ) as response:
                 if response.status_code != 200:
                     status = int(response.status_code)
                     return False, f"status={status}", status == 429 or status >= 500
@@ -736,12 +826,18 @@ class CircleImageCacheService:
                 if downloaded == 0:
                     raise RuntimeError("封面下载内容为空")
 
+                if not await asyncio.to_thread(self._is_valid_image, tmp_path):
+                    return False, "invalid-image", False
+
             # 原子替换不删除已有目标；另一并发请求或读者始终只会看到完整文件。
             os.replace(tmp_path, target_path)
             tmp_path = None
             return True, "", False
         except httpx.TransportError as exc:
-            return False, type(exc).__name__, True
+            return False, f"{type(exc).__name__}:{phase}:{mode}", True
+        except asyncio.CancelledError:
+            self._set_failure_detail(normalized, variant, f"cancelled:{phase}:{mode}")
+            raise
         except Exception as exc:
             return False, type(exc).__name__, False
         finally:
@@ -768,7 +864,8 @@ class CircleImageCacheService:
                 source_url,
                 variant=variant,
             )
-            if ok or not retryable or attempt >= self.MAX_TRANSIENT_RETRIES:
+            if (ok or not retryable or attempt >= self.MAX_TRANSIENT_RETRIES
+                    or outcome.startswith(("ConnectTimeout", "PoolTimeout"))):
                 return ok, outcome, retryable
             await asyncio.sleep(self.RETRY_DELAY_SECONDS * (attempt + 1))
         return False, outcome, retryable
@@ -791,7 +888,7 @@ class CircleImageCacheService:
         if lock is None:
             return False
         async with lock:
-            if self.has_local(normalized, variant):
+            if not force and self.has_local(normalized, variant):
                 self._clear_failure(normalized, variant)
                 self._clear_known_missing(normalized, variant)
                 return True

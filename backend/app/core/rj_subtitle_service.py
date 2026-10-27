@@ -33,7 +33,7 @@ class RJSubtitleService:
     SUBTITLE_EXTENSIONS = {'.lrc', '.vtt', '.srt', '.ass', '.ssa'}
     AUDIO_EXTENSIONS = {'.wav', '.mp3', '.flac', '.m4a', '.ogg', '.wma', '.aac'}
     CHINESE_LANGS = {'CHI_HANS', 'CHI_SIMP', 'CHI_HANT', 'CHI_TRAD'}
-    _AVAILABILITY_CACHE_SCHEMA_VERSION = "v1"
+    _AVAILABILITY_CACHE_SCHEMA_VERSION = "v2"
     _AVAILABILITY_CACHE_L1_MAX_SIZE = 512
     _AVAILABILITY_CACHE_L1_TTL_SECONDS = 30
     # CJK 字符标记：子串匹配即可（几乎不会出现误命中）
@@ -117,7 +117,7 @@ class RJSubtitleService:
             for child in children:
                 if not child.is_dir():
                     continue
-                if child.name.lower() == 'subtitles':
+                if child.name.lower() in {'subtitles', 'subtitles [ai]'}:
                     continue
                 if self.extract_rjcode(child.name):
                     try:
@@ -178,7 +178,7 @@ class RJSubtitleService:
             for child in children:
                 if not child.is_dir():
                     continue
-                if child.name.lower() == 'subtitles':
+                if child.name.lower() in {'subtitles', 'subtitles [ai]'}:
                     continue
                 if self.extract_rjcode(child.name):
                     resolved = str(child.resolve())
@@ -203,7 +203,7 @@ class RJSubtitleService:
         """收集 RJ 文件夹中的音频文件，跳过 subtitles/"""
         audio_files = []
         for root, dirs, files in os.walk(folder):
-            dirs[:] = [name for name in dirs if name.lower() != 'subtitles']
+            dirs[:] = [name for name in dirs if name.lower() not in {'subtitles', 'subtitles [ai]'}]
             for file in files:
                 ext = os.path.splitext(file)[1].lower()
                 if ext in self.AUDIO_EXTENSIONS:
@@ -212,20 +212,18 @@ class RJSubtitleService:
         return audio_files
 
     def _count_existing_subtitles(self, folder: Path) -> int:
-        subtitle_dir = folder / 'subtitles'
-        if not subtitle_dir.exists():
-            return 0
-
         count = 0
-        for root, _dirs, files in os.walk(subtitle_dir):
-            for file in files:
-                if os.path.splitext(file)[1].lower() in self.SUBTITLE_EXTENSIONS:
-                    count += 1
+        for name in ('subtitles', 'subtitles [AI]'):
+            for root, _dirs, files in os.walk(folder / name):
+                for file in files:
+                    if os.path.splitext(file)[1].lower() in self.SUBTITLE_EXTENSIONS:
+                        count += 1
         return count
 
     def _is_remote_subtitles_relative_path(self, relative_path: str) -> bool:
         normalized = str(PurePosixPath(relative_path or '')).replace('\\', '/').lower().lstrip('/')
-        return normalized == 'subtitles' or normalized.startswith('subtitles/')
+        return any(normalized == name or normalized.startswith(name + '/')
+                   for name in ('subtitles', 'subtitles [ai]'))
 
     def _collect_remote_audio_entries(self, items: List[Dict]) -> List[Dict]:
         audio_entries = []
@@ -342,7 +340,7 @@ class RJSubtitleService:
             children = await manager._list_remote_directory(client, current_path)
             for child in children:
                 name = child.get('name') or ''
-                if manager._should_skip_entry(name) or name.lower() == 'subtitles':
+                if manager._should_skip_entry(name) or name.lower() in {'subtitles', 'subtitles [ai]'}:
                     continue
                 if not child.get('isdir', False):
                     continue
@@ -454,7 +452,7 @@ class RJSubtitleService:
             recurse_paths: List[str] = []
             for child in sorted(children, key=lambda item: str(item.get('name') or '').lower()):
                 name = child.get('name') or ''
-                if manager._should_skip_entry(name) or name.lower() == 'subtitles':
+                if manager._should_skip_entry(name) or name.lower() in {'subtitles', 'subtitles [ai]'}:
                     continue
                 if not child.get('isdir', False):
                     continue
@@ -904,6 +902,7 @@ class RJSubtitleService:
         # 按原始优先级顺序评估结果，取最高优先级且有字幕的版本
         attempts: List[Dict] = []
         best_source: Optional[Dict] = None
+        asmr_sources = []
         for work, raw in zip(ordered_works, raw_results):
             if isinstance(raw, BaseException):
                 logger.warning("[RJ字幕] 候选版本查询异常: rj=%s error=%s", work.workno, raw)
@@ -933,7 +932,7 @@ class RJSubtitleService:
                 'subtitle_count': len(subtitle_files),
                 'title': work_info.get('title', ''),
             })
-            if subtitle_files and best_source is None:
+            if subtitle_files:
                 # 取最先遇到的（即最高优先级）有字幕版本
                 best_source = {
                     'rjcode': work.workno,
@@ -942,8 +941,118 @@ class RJSubtitleService:
                     'title': work_info.get('title', ''),
                     'subtitle_files': subtitle_files,
                 }
+                best_source['source_provider'] = 'asmr.one'
+                for is_ai in (False, True):
+                    group = [item for item in subtitle_files if self._is_ai_subtitle(item) == is_ai]
+                    if group:
+                        asmr_sources.append({
+                            **best_source, 'subtitle_files': group, 'subtitle_is_ai': is_ai,
+                        })
 
-        return best_source, attempts
+        human_asmr = [item for item in asmr_sources if not item['subtitle_is_ai']]
+        if human_asmr:
+            return human_asmr[0], attempts
+
+        # YAAS 字幕合集按原作编号，不用翻译版 RJ 去命中同号音声包。
+        original_codes = [work.workno for work in ordered_works if work.work_type == 'original']
+        if not original_codes:
+            linked = await self.asmr_service.get_linked_works_from_dlsite(rjcode)
+            original_codes = [work.workno for work in linked if work.work_type == 'original']
+        from .yaas_subtitle_service import get_yaas_subtitle_service
+        yaas = get_yaas_subtitle_service()
+        yaas_sources, yaas_attempts = await yaas.sources(original_codes) if original_codes else ([], [])
+        attempts.extend(yaas_attempts)
+        human = [item for item in yaas_sources if not item['subtitle_is_ai']]
+        machine = [item for item in yaas_sources if item['subtitle_is_ai']]
+        options = human + asmr_sources + machine
+        audio_works = [dict(workno=work.workno, lang=work.lang, work_type=work.work_type)
+                       for work in ordered_works if work.lang in self.CHINESE_LANGS]
+        if options:
+            chosen = dict(options[0])
+            chosen['fallback_sources'] = options[1:]
+            chosen['deferred_audio_works'] = audio_works
+            return chosen, attempts
+        # 音声包仅在实际抓取时探测，预览不宣称未检查的音声包有字幕。
+        if audio_works:
+            return dict(rjcode=rjcode, lang='', work_type='', title='',
+                        subtitle_files=[], deferred_audio_works=audio_works), attempts
+        return None, attempts
+
+    @staticmethod
+    def _is_ai_subtitle(item):
+        return bool(item.get('subtitle_is_ai')) or bool(re.search(
+            r'(?<![a-z])(?:ai|whisper)(?![a-z])',
+            ' '.join(str(item.get(key) or '') for key in
+                     ('relative_path', 'source_relative_path', 'name')), re.I))
+
+    async def _prepare_fetch_source(self, source, attempts, temp_dir, *, task_id, should_cancel, progress_callback):
+        """验证字幕候选；全部无效后按 MP3、原档顺序提取关联中文音声字幕。"""
+        from types import SimpleNamespace
+        from .yaas_subtitle_service import get_yaas_subtitle_service
+        yaas = get_yaas_subtitle_service()
+        options = [source] + list(source.get('fallback_sources') or [])
+        for option in options:
+            if should_cancel and should_cancel():
+                raise asyncio.CancelledError()
+            if option.get('subtitle_files'):
+                return option
+            if not option.get('archive_files'):
+                continue
+            try:
+                return await yaas.materialize(option, temp_dir, task_id=task_id,
+                    should_cancel=should_cancel, progress_callback=progress_callback)
+            except Exception as exc:
+                attempts.append(dict(source='yaas', rjcode=option['rjcode'],
+                                     subtitle_count=0, reason=str(exc)))
+        works = [SimpleNamespace(**work) for work in source.get('deferred_audio_works') or []]
+        try:
+            audio = await yaas.audio_sources(works) if works else []
+        except Exception as exc:
+            attempts.append(dict(source='yaas', subtitle_count=0, reason=str(exc)))
+            return None
+        for option in audio:
+            if should_cancel and should_cancel():
+                raise asyncio.CancelledError()
+            try:
+                return await yaas.materialize(option, temp_dir, task_id=task_id,
+                    should_cancel=should_cancel, progress_callback=progress_callback)
+            except Exception as exc:
+                attempts.append(dict(source='yaas', rjcode=option['rjcode'],
+                                     subtitle_count=0, reason=str(exc)))
+        return None
+
+    async def _download_subtitle_candidate(self, subtitle, dest_path, *, progress_callback, should_cancel):
+        local = subtitle.get('local_subtitle_path')
+        if local:
+            if should_cancel and should_cancel():
+                raise asyncio.CancelledError()
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            if os.path.abspath(local) != os.path.abspath(dest_path):
+                await asyncio.to_thread(shutil.copyfile, local, dest_path)
+            size = os.path.getsize(dest_path)
+            progress_callback(size, size)
+            return True
+        return await self.asmr_service.download_file(
+            subtitle['media_download_url'], dest_path,
+            progress_callback=progress_callback, cancel_check=should_cancel)
+
+    async def _prepare_fetch_temp(self, source, attempts, temp_dir, **kwargs):
+        try:
+            prepared = await self._prepare_fetch_source(source, attempts, temp_dir, **kwargs)
+            if prepared is None:
+                raise ValueError('所有字幕候选均未通过校验，关联中文 MP3 和原档也未找到可用字幕')
+            from .task_engine import get_task_engine
+            parent = get_task_engine().get_task(kwargs['task_id']) if kwargs.get('task_id') else None
+            if parent:
+                parent.task_metadata.update({
+                    'source_provider': prepared.get('source_provider', 'asmr.one'),
+                    'subtitle_is_ai': bool(prepared.get('subtitle_is_ai')),
+                })
+                parent.mark_changed('subtitle_source')
+            return prepared
+        except BaseException:
+            await asyncio.to_thread(shutil.rmtree, temp_dir, True)
+            raise
 
     def _get_subtitle_availability_cache_state(self) -> Tuple[TTLCache, Dict[str, asyncio.Task], asyncio.Lock]:
         """兼容测试中绕过 __init__ 构造的轻量 service。"""
@@ -1044,13 +1153,16 @@ class RJSubtitleService:
             source, attempts = await self.find_best_subtitle_source(normalized_rjcode)
             payload = {
                 "rjcode": normalized_rjcode,
-                "has_subtitle": bool(source),
+                "has_subtitle": bool(source and (source.get('subtitle_files') or source.get('archive_files'))),
+                "subtitle_verified": bool(source and source.get('subtitle_files')),
                 "selected_source": {
                     "rjcode": source.get("rjcode", ""),
                     "lang": source.get("lang", ""),
                     "work_type": source.get("work_type", ""),
                     "title": source.get("title", ""),
                     "subtitle_count": len(source.get("subtitle_files", []) or []),
+                    "source_provider": source.get("source_provider", ""),
+                    "subtitle_is_ai": bool(source.get("subtitle_is_ai", False)),
                 } if source else None,
                 "attempts": list(attempts or []),
             }
@@ -1617,6 +1729,7 @@ class RJSubtitleService:
                     'subtitle_path': subtitle['path'],
                     'subtitle_name': subtitle['name'],
                     'output_subtitle_name': f"{output_base}{ext}",
+                    'subtitle_is_ai': bool(subtitle.get('subtitle_is_ai')),
                     'match_type': match_type,
                     'match_score': score,
                 })
@@ -1768,11 +1881,16 @@ class RJSubtitleService:
         normalized = str(PurePosixPath(path if str(path).startswith('/') else f'/{path}'))
         return normalized
 
-    async def _ensure_remote_subtitle_dir(self, client, folder_path: str) -> str:
+    @staticmethod
+    def _subtitle_directory_name(is_ai=False):
+        return 'subtitles [AI]' if is_ai else 'subtitles'
+
+    async def _ensure_remote_subtitle_dir(self, client, folder_path: str, *, is_ai=False) -> str:
         normalized_folder = str(PurePosixPath(folder_path if folder_path.startswith('/') else f'/{folder_path}'))
         folder_info = await client.stat(normalized_folder)
         canonical_folder = self._resolve_remote_info_item_path(folder_info, normalized_folder)
-        subtitle_dir = str(PurePosixPath(canonical_folder) / 'subtitles')
+        directory_name = self._subtitle_directory_name(is_ai)
+        subtitle_dir = str(PurePosixPath(canonical_folder) / directory_name)
 
         try:
             subtitle_info = await client.stat(subtitle_dir)
@@ -1782,7 +1900,7 @@ class RJSubtitleService:
                 raise
 
         try:
-            await client.create_folder(canonical_folder, 'subtitles')
+            await client.create_folder(canonical_folder, directory_name)
         except Exception as exc:
             if self._is_synology_error_code(exc, 117):
                 return subtitle_dir
@@ -1987,11 +2105,12 @@ class RJSubtitleService:
                 deleted_subtitles = self._count_remote_existing_subtitles(remote_items)
                 subtitle_dir = manager._normalize_remote_path(str(PurePosixPath(folder_path) / 'subtitles'))
                 client = manager.get_cached_synology_client(library.synology)
-                try:
-                    await client.delete(subtitle_dir)
-                except Exception as exc:
-                    if not self._is_synology_error_codes(exc, 118, 119, 408):
-                        raise
+                for name in ('subtitles', 'subtitles [AI]'):
+                    try:
+                        await client.delete(manager._normalize_remote_path(str(PurePosixPath(folder_path) / name)))
+                    except Exception as exc:
+                        if not self._is_synology_error_codes(exc, 118, 119, 408):
+                            raise
                 return {
                     'subtitle_dir': subtitle_dir,
                     'deleted_subtitles': deleted_subtitles,
@@ -2002,8 +2121,10 @@ class RJSubtitleService:
         subtitle_path = folder / 'subtitles'
         subtitle_dir = str(subtitle_path)
         deleted_subtitles = self._count_existing_subtitles(folder)
-        if subtitle_path.exists():
-            await asyncio.to_thread(shutil.rmtree, subtitle_path)
+        for name in ('subtitles', 'subtitles [AI]'):
+            subtitle_path = folder / name
+            if subtitle_path.exists():
+                await asyncio.to_thread(shutil.rmtree, subtitle_path)
         return {
             'subtitle_dir': subtitle_dir,
             'deleted_subtitles': deleted_subtitles,
@@ -2035,7 +2156,7 @@ class RJSubtitleService:
         progress_callback: Optional[Callable[[int, str], None]] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
     ) -> Tuple[str, List[Dict], List[str], List[str]]:
-        subtitle_dir = folder / 'subtitles'
+        subtitle_dir = folder / self._subtitle_directory_name(match_result.get('subtitle_is_ai'))
         subtitle_dir.mkdir(parents=True, exist_ok=True)
         existing_names = self._list_local_existing_subtitle_names(subtitle_dir)
         used_names: set[str] = set()
@@ -2149,7 +2270,7 @@ class RJSubtitleService:
         progress_callback: Optional[Callable[[int, str], None]] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
     ) -> Tuple[str, List[Dict], List[str], List[str]]:
-        subtitle_dir = folder / 'subtitles'
+        subtitle_dir = folder / self._subtitle_directory_name(any(item.get('subtitle_is_ai') for item in downloaded_files))
         subtitle_dir.mkdir(parents=True, exist_ok=True)
         existing_names = self._list_local_existing_subtitle_names(subtitle_dir)
         used_names: set[str] = set()
@@ -2242,7 +2363,8 @@ class RJSubtitleService:
             raise RuntimeError('远程库存未配置群晖连接参数')
 
         client = manager.get_cached_synology_client(library.synology)
-        subtitle_dir = await self._ensure_remote_subtitle_dir(client, folder_path)
+        subtitle_dir = await self._ensure_remote_subtitle_dir(
+            client, folder_path, is_ai=any(item.get('subtitle_is_ai') for item in downloaded_files))
         existing_names = await self._get_remote_existing_subtitle_names(client, subtitle_dir)
         # 清理上次中断遗留的临时上传文件，保证写入幂等
         await self._cleanup_stranded_upload_temps(client, subtitle_dir, existing_names)
@@ -2584,7 +2706,8 @@ class RJSubtitleService:
             raise RuntimeError('远程库存未配置群晖连接参数')
 
         client = manager.get_cached_synology_client(library.synology)
-        subtitle_dir = await self._ensure_remote_subtitle_dir(client, folder_path)
+        subtitle_dir = await self._ensure_remote_subtitle_dir(
+            client, folder_path, is_ai=bool(match_result.get('subtitle_is_ai')))
         existing_names = await self._get_remote_existing_subtitle_names(client, subtitle_dir)
         # 清理上次中断遗留的临时上传文件，保证写入幂等
         await self._cleanup_stranded_upload_temps(client, subtitle_dir, existing_names)
@@ -2809,6 +2932,8 @@ class RJSubtitleService:
         os.makedirs(temp_root, exist_ok=True)
         temp_dir = tempfile.mkdtemp(prefix=f"{rjcode}_", dir=temp_root)
 
+        source = await self._prepare_fetch_temp(source, attempts, temp_dir, task_id=task_id,
+            should_cancel=should_cancel, progress_callback=progress_callback)
         downloaded_files = []
         content_deduped_files: List[Dict] = []
         failed_files = []
@@ -2868,11 +2993,10 @@ class RJSubtitleService:
                     if file_progress_callback:
                         file_progress_callback(file_name, current, total_files, downloaded_bytes, total_bytes)
 
-                ok = await self.asmr_service.download_file(
-                    subtitle['media_download_url'],
-                    dest_path,
+                ok = await self._download_subtitle_candidate(
+                    subtitle, dest_path,
                     progress_callback=download_progress,
-                    cancel_check=should_cancel,
+                    should_cancel=should_cancel,
                 )
 
                 if should_cancel and should_cancel():
@@ -2885,6 +3009,7 @@ class RJSubtitleService:
                         'path': dest_path,
                         'relative_path': rel_path,
                         'display_name': preview_name,
+                        'subtitle_is_ai': bool(source.get('subtitle_is_ai')),
                     })
                 else:
                     failed_files.append({
@@ -2936,6 +3061,8 @@ class RJSubtitleService:
                 progress_callback(80, '匹配远程音频与字幕')
 
             downloaded_subtitles = self.subtitle_service._scan_subtitle_files(temp_dir)
+            for item in downloaded_subtitles:
+                item['subtitle_is_ai'] = bool(source.get('subtitle_is_ai'))
             if not downloaded_subtitles:
                 return {
                     'success': False,
@@ -2975,10 +3102,12 @@ class RJSubtitleService:
                 should_cancel=should_cancel,
             )
             match_result = ai_result.get('match_result') or match_result
+            match_result['subtitle_is_ai'] = bool(source.get('subtitle_is_ai'))
             ai_metadata = ai_result.get('metadata') or {}
             ai_auto_applied = bool(ai_metadata.get('ai_auto_applied'))
             if ai_auto_applied:
-                subtitle_dir_preview = await self._ensure_remote_subtitle_dir(cached_client, folder_path)
+                subtitle_dir_preview = await self._ensure_remote_subtitle_dir(
+                    cached_client, folder_path, is_ai=bool(source.get('subtitle_is_ai')))
                 existing_names = await self._get_remote_existing_subtitle_names(cached_client, subtitle_dir_preview)
                 conflicts = self._validate_ai_auto_output_conflicts(match_result, existing_names, overwrite)
                 if conflicts:
@@ -3037,6 +3166,8 @@ class RJSubtitleService:
                 'source_lang': source['lang'],
                 'source_work_type': source['work_type'],
                 'source_title': source['title'],
+                'source_provider': source.get('source_provider', 'asmr.one'),
+                'subtitle_is_ai': bool(source.get('subtitle_is_ai', False)),
                 'search_attempts': attempts,
                 'downloaded_count': len(downloaded_files),
                 'download_files': downloaded_files,
@@ -3142,6 +3273,8 @@ class RJSubtitleService:
         os.makedirs(temp_root, exist_ok=True)
         temp_dir = tempfile.mkdtemp(prefix=f"{rjcode}_", dir=temp_root)
 
+        source = await self._prepare_fetch_temp(source, attempts, temp_dir, task_id=task_id,
+            should_cancel=should_cancel, progress_callback=progress_callback)
         downloaded_files = []
         content_deduped_files: List[Dict] = []
         failed_files = []
@@ -3201,11 +3334,10 @@ class RJSubtitleService:
                     if file_progress_callback:
                         file_progress_callback(file_name, current, total_files, downloaded_bytes, total_bytes)
 
-                ok = await self.asmr_service.download_file(
-                    subtitle['media_download_url'],
-                    dest_path,
+                ok = await self._download_subtitle_candidate(
+                    subtitle, dest_path,
                     progress_callback=download_progress,
-                    cancel_check=should_cancel,
+                    should_cancel=should_cancel,
                 )
 
                 if should_cancel and should_cancel():
@@ -3218,6 +3350,7 @@ class RJSubtitleService:
                         'path': dest_path,
                         'relative_path': rel_path,
                         'display_name': preview_name,
+                        'subtitle_is_ai': bool(source.get('subtitle_is_ai')),
                     })
                 else:
                     failed_files.append({
@@ -3269,6 +3402,8 @@ class RJSubtitleService:
                 progress_callback(80, "匹配音频与字幕")
 
             downloaded_subtitles = self.subtitle_service._scan_subtitle_files(temp_dir)
+            for item in downloaded_subtitles:
+                item['subtitle_is_ai'] = bool(source.get('subtitle_is_ai'))
             if not downloaded_subtitles:
                 return {
                     'success': False,
@@ -3307,10 +3442,11 @@ class RJSubtitleService:
                 should_cancel=should_cancel,
             )
             match_result = ai_result.get('match_result') or match_result
+            match_result['subtitle_is_ai'] = bool(source.get('subtitle_is_ai'))
             ai_metadata = ai_result.get('metadata') or {}
             ai_auto_applied = bool(ai_metadata.get('ai_auto_applied'))
             if ai_auto_applied:
-                subtitle_dir_preview = folder / 'subtitles'
+                subtitle_dir_preview = folder / self._subtitle_directory_name(source.get('subtitle_is_ai'))
                 existing_names = self._list_local_existing_subtitle_names(subtitle_dir_preview)
                 conflicts = self._validate_ai_auto_output_conflicts(match_result, existing_names, overwrite)
                 if conflicts:
@@ -3362,6 +3498,8 @@ class RJSubtitleService:
                 'source_lang': source['lang'],
                 'source_work_type': source['work_type'],
                 'source_title': source['title'],
+                'source_provider': source.get('source_provider', 'asmr.one'),
+                'subtitle_is_ai': bool(source.get('subtitle_is_ai', False)),
                 'search_attempts': attempts,
                 'downloaded_count': len(downloaded_files),
                 'download_files': downloaded_files,

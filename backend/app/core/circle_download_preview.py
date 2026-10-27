@@ -7,6 +7,15 @@ from ..models.database import CircleCatalog, CircleWork
 
 
 class CircleDownloadPreviewMixin:
+    def _unreleased_download_codes(self, codes):
+        from .circle_completion_service import SessionLocal
+        from ..models.database import WorkMetadata
+        from .release_dates import is_unreleased
+
+        with SessionLocal() as db:
+            return {row.rjcode for row in db.query(WorkMetadata).filter(
+                WorkMetadata.rjcode.in_(codes)).all() if is_unreleased(row.release_date)}
+
     def _sync_download_version_links(self, context, links):
         """预览发现的已验证语言链同步到社团索引，不改变作品归组身份。"""
         from uuid import uuid4
@@ -96,6 +105,8 @@ class CircleDownloadPreviewMixin:
 
     async def _discover_download_versions(self, context, clicked, refresh=False):
         """合并 DLsite 语言关系与源站实际收录关系；特典不扩散关联。"""
+        if clicked in await asyncio.to_thread(self._unreleased_download_codes, [clicked]):
+            return []
         versions = {clicked: dict(rjcode=clicked, title=context['title'], language_label='未知语言')}
         error = ''
         verified_links = []
@@ -120,7 +131,10 @@ class CircleDownloadPreviewMixin:
             # 是否曾下载/缓存过文件来判定该语言是否可下载。
             # 展示编号可能是尚未收录的翻译发行页；原作的收录关系仍可指向真实译本。
             seeds = dict.fromkeys([clicked, context['canonical_rjcode']])
+            unreleased = await asyncio.to_thread(self._unreleased_download_codes, list(seeds))
             for seed in seeds:
+                if seed in unreleased:
+                    continue
                 try:
                     async with self._download_preview_limiter():
                         work_info, _ = await self.asmr_resource_service._get_remote_source_payload(seed, refresh=refresh)
@@ -150,10 +164,11 @@ class CircleDownloadPreviewMixin:
                     error = str(exc)
             if verified_links:
                 await asyncio.to_thread(self._sync_download_version_links, context, verified_links)
+        unreleased = await asyncio.to_thread(self._unreleased_download_codes, list(versions))
         descriptors = [dict(context, **versions[code], requested_rjcode=clicked, clicked_rjcode=clicked,
                      resolved_rjcode=code, selected_version=code == clicked,
                      discovery_only=True, discovery_error=error, probe_status='pending')
-                for code in [clicked, *sorted(set(versions) - {clicked})]]
+                for code in [clicked, *sorted(set(versions) - {clicked})] if code not in unreleased]
         descriptors = await asyncio.to_thread(self._describe_download_versions, descriptors)
         for item in descriptors:
             if item['rjcode'] in source_available:
@@ -180,6 +195,8 @@ class CircleDownloadPreviewMixin:
         target = self.normalize_rjcode(rjcode)
         if not target:
             raise ValueError('无效的下载 RJ')
+        if target in await asyncio.to_thread(self._unreleased_download_codes, [target]):
+            raise ValueError('未发售作品不探测下载来源')
         if context['is_bonus_work']:
             if target != self.normalize_rjcode(context['display_rjcode']):
                 raise ValueError('特典只能下载自身精确 RJ')

@@ -116,6 +116,10 @@ backend/tempView/
 backend/_conflicts/
 backend/pytest_tmp*/
 backend/.codex-index-*-tmp/
+backend/.test-tmp*/
+backend/.test-tmp-*.txt
+backend/.test-activity-fix-*/
+tools/verify-circle-real-covers.mjs
 
 # Local runtime helper scripts output
 .runtime/

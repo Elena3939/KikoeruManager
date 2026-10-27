@@ -81,6 +81,7 @@ class ASMRDownloadService:
         self._metadata_pace_lock = asyncio.Lock()
         self._metadata_next_request = 0.0
         self._rate_limit_until = 0.0
+        self._api_proxy = self._get_proxy()
         # linked_* 关联作品信息缓存：key=f"linked_{workno}"；TTL+LRU 控上限
         self._cache: TTLCache = TTLCache(max_size=1024, ttl_seconds=300, name="asmr_download.linked")
         self._cache_ttl = 300  # 5分钟缓存（给现有内层 TTL 判定用，兼容）
@@ -107,6 +108,12 @@ class ASMRDownloadService:
         logger.info(f"切换 API 服务器到: {self._get_api_base()}")
 
     def _asmr_api_circuit_remaining(self) -> int:
+        proxy = self._get_proxy()
+        if proxy != self._api_proxy:
+            self._api_proxy = proxy
+            self._record_asmr_api_success()
+            self._rate_limit_until = 0.0
+            self._metadata_next_request = 0.0
         remaining = math.ceil(max(0.0, max(self._api_circuit_open_until, self._rate_limit_until) - time.monotonic()))
         return remaining
 
@@ -140,6 +147,9 @@ class ASMRDownloadService:
         logger.warning("[ASMR] 收到 HTTP 429，元数据探测冷却 %.1f 秒", cooldown)
 
     def _record_asmr_api_failure(self, reason: str) -> None:
+        # 同一批在途请求的迟到失败不能续期或重复触发已开启的熔断。
+        if self._api_circuit_open_until > time.monotonic():
+            return
         self._api_failure_count += 1
         self._api_circuit_reason = str(reason or "request_failed")[:200]
         if self._api_failure_count < self.CIRCUIT_FAILURE_THRESHOLD:
@@ -156,7 +166,7 @@ class ASMRDownloadService:
         remaining = self._asmr_api_circuit_remaining()
         if remaining <= 0:
             return False
-        logger.warning(
+        logger.debug(
             "[ASMR] API 熔断中，跳过%s rj=%s remaining=%ss reason=%s",
             action,
             rjcode,
@@ -545,7 +555,7 @@ class ASMRDownloadService:
                         return None, ASMR_PROBE_STATUS_UNAVAILABLE
                     elif response.status == 404:
                         self._record_asmr_api_success()
-                        logger.warning(f"[ASMR] 作品不存在: {rjcode}")
+                        logger.info(f"[ASMR] 作品不存在: {rjcode}")
                         return None, ASMR_PROBE_STATUS_MISSING
                     else:
                         self._record_asmr_api_failure(f"workInfo HTTP {response.status}")
@@ -555,7 +565,7 @@ class ASMRDownloadService:
                         await self._switch_api()
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 self._record_asmr_api_failure(e.__class__.__name__)
-                logger.error(f"[ASMR] 请求作品信息失败: {e}")
+                logger.warning("[ASMR] 请求作品信息失败 rj=%s type=%s", rjcode, type(e).__name__)
                 if self._asmr_api_circuit_open():
                     return None, ASMR_PROBE_STATUS_UNAVAILABLE
                 await self._switch_api()

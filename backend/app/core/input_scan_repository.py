@@ -49,6 +49,53 @@ class SourceChanged(ValueError):
     """源证据变化需要重新观察；与业务校验失败分开处理。"""
 
 
+def handoff_conflict_claims(db, conflict, task_id):
+    """与问题记录更新共用事务；整组交接，保留扫描历史，不释放保护。"""
+    source_lock(db)
+    metadata = conflict.new_metadata or {}
+    owners = {
+        str(value) for value in (
+            conflict.task_id, metadata.get("failed_task_id"),
+            metadata.get("retry_origin_task_id"),
+        ) if value and str(value) != task_id
+    }
+    sources = [
+        path for path in (
+            conflict.new_path, metadata.get("retry_source_path"),
+            metadata.get("rename_retry_archive_source_path"),
+            metadata.get("rename_retry_original_source_path"),
+        ) if path
+    ]
+    paths = {path_key(path) for path in sources}
+    claims = db.query(InputSourceClaim).filter(
+        InputSourceClaim.owner_type == "task", InputSourceClaim.owner_id.in_(owners),
+    ).all()
+    for owner in {claim.owner_id for claim in claims}:
+        record = db.get(TaskRecord, owner)
+        if (
+            record is None
+            or record.status not in {"waiting_manual", "failed", "cancelled", "completed"}
+            or path_key(record.source_path) not in paths
+        ):
+            raise SourceOccupied("task", owner)
+        candidate = db.query(InputScanCandidate).filter_by(task_id=owner).first()
+        if candidate and (candidate.preparation or {}).get("normalization", {}).get("status") == "prepared":
+            raise SourceOccupied("task", owner)
+        other_problem = db.query(ConflictWork.id).filter(
+            ConflictWork.task_id == owner, ConflictWork.id != conflict.id,
+            ConflictWork.status.in_(["PENDING", "PROCESSING"]),
+        ).first()
+        if other_problem:
+            raise SourceOccupied("task", owner)
+    previous_owners = {claim.path_key: claim.owner_id for claim in claims}
+    for claim in claims:
+        claim.owner_id = task_id
+        claim.updated_at = get_local_now()
+    db.flush()
+    check_input_claims(db, sources, task_id=task_id)
+    return previous_owners
+
+
 def check_input_claims(db, paths, *, owner_type="", owner_id="", task_id=""):
     """调用方持有 source_lock；终态且没有未解决问题的任务才释放占用。"""
     keys = {path_key(path) for path in paths}
@@ -58,6 +105,21 @@ def check_input_claims(db, paths, *, owner_type="", owner_id="", task_id=""):
         if claim.owner_type == "task" and claim.owner_id == task_id:
             continue
         if claim.owner_type == "task":
+            # 旧版本重试只改了问题记录的 task_id；用记录中的原任务关联修复历史交接。
+            if task_id:
+                problems = db.query(ConflictWork).filter(
+                    ConflictWork.task_id == task_id,
+                    ConflictWork.status.in_(["PENDING", "PROCESSING"]),
+                ).all()
+                for problem in problems:
+                    metadata = problem.new_metadata or {}
+                    if claim.owner_id in {
+                        metadata.get("failed_task_id"), metadata.get("retry_origin_task_id"),
+                    }:
+                        handoff_conflict_claims(db, problem, task_id)
+                        break
+                if claim.owner_id == task_id:
+                    continue
             task = db.get(TaskRecord, claim.owner_id)
             candidate = db.query(InputScanCandidate).filter_by(task_id=claim.owner_id).first()
             if candidate and (candidate.preparation or {}).get("normalization", {}).get("status") == "prepared":

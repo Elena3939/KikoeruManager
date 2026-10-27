@@ -260,6 +260,61 @@ def _configure_service(monkeypatch, db_session, source_dir, processed_dir, tmp_p
     return service, session_factory
 
 
+@pytest.mark.parametrize("legacy_handoff", [False, True])
+def test_conflict_retry_claims_allow_complete_volume_archive(
+    db_session, tmp_path, monkeypatch, legacy_handoff,
+):
+    from uuid import uuid4
+    from app.core.input_scan_repository import handoff_conflict_claims, path_key
+    from app.models.database import ConflictWork, InputSourceClaim, Task as TaskRecord
+
+    source_dir, processed_dir = tmp_path / "input", tmp_path / "processed"
+    source_dir.mkdir()
+    members = [source_dir / f"RJ14131437.7z.{index:03d}" for index in (1, 2)]
+    for index, path in enumerate(members):
+        path.write_bytes(bytes([index]) * 100)
+    old_id, retry_id = str(uuid4()), str(uuid4())
+    db_session.add(TaskRecord(
+        id=old_id, type="auto_process", status="waiting_manual", source_path=str(members[0]),
+    ))
+    conflict = ConflictWork(
+        id=str(uuid4()), task_id=old_id, new_path=str(members[0]),
+        conflict_type="EXTRACT_FAILED", status="PENDING",
+        new_metadata={"failed_task_id": old_id},
+    )
+    db_session.add(conflict)
+    for path in members:
+        db_session.add(InputSourceClaim(
+            path_key=path_key(str(path)), source_path=str(path),
+            owner_type="task", owner_id=old_id,
+        ))
+    db_session.flush()
+    if not legacy_handoff:
+        handoff_conflict_claims(db_session, conflict, retry_id)
+    conflict.task_id, conflict.status = retry_id, "PROCESSING"
+    db_session.flush()
+    service, factory = _configure_service(
+        monkeypatch, db_session, source_dir, processed_dir, tmp_path,
+    )
+
+    queued = service.enqueue_sync(str(members[0]), task_id=retry_id)
+    assert queued["queued"] is True
+    with factory() as db:
+        assert {row.owner_id for row in db.query(InputSourceClaim)} == {retry_id}
+    claim = service._claim_next_job_sync()
+    assert claim["job_id"] == queued["job_id"]
+    for index, source in enumerate(claim["source_manifest"]):
+        service._move_member_sync(claim["job_id"], claim["lease_epoch"], index, source)
+    service._complete_job_sync(claim["job_id"], claim["lease_epoch"])
+
+    assert all(not path.exists() for path in members)
+    for index, path in enumerate(members):
+        assert (processed_dir / path.name).read_bytes() == bytes([index]) * 100
+    with factory() as db:
+        assert db.get(DeferredArchiveJob, queued["job_id"]).status == "completed"
+        assert db.get(TaskRecord, old_id).status == "waiting_manual"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source_kind", ["archive", "temporary", "missing_temporary", "original_metadata"])
 async def test_skip_archives_original_zip_and_volumes(db_session, tmp_path, monkeypatch, source_kind):

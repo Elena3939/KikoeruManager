@@ -28,6 +28,9 @@ def compact_import_rows(db, condition):
         "task_completed_at", "extract_phase_duration_ms", "extract_execution_duration_ms", "archive_input", "archive_size_bytes", "extract_output_bytes",
         "filtered_count", "filtered_size", "mode", "success_count", "failed_count", "total_count",
         "deleted_file_count", "deleted_folder_count", "deleted_bytes", "unknown_size_count", "unknown_type_count", "delete_history_version",
+        "retry_projection", "retry_batch_id", "retry_updated_at", "retry_result_status",
+        "submission_failed_count", "already_running_count",
+        "schema_version", "scan_id", "producer_closed", "scan_closed", "execution_status",
     )
     args = [arg for key in keys for arg in (key, ActivityLog.detail[key])]
     rows = db.query(
@@ -87,6 +90,12 @@ def list_batch_lite(db, query, *, page, limit, status=None, searching=False):
         ActivityLog.id, ActivityLog.action, sql_import_result_status(ActivityLog).label("status"), ActivityLog.created_at,
         case((ActivityLog.action == "batch_start", cast(func.coalesce(
             ActivityLog.detail.op("->>")("created_count"), "0"), Integer)), else_=0).label("expected"),
+        case((ActivityLog.action == "batch_start", cast(func.coalesce(
+            ActivityLog.detail.op("->>")("submission_failed_count"), "0"), Integer)), else_=0).label("submission_failed"),
+        case((or_(
+            ActivityLog.detail.op("->>")("mode") == "conflict_retry_batch",
+            ActivityLog.detail.op("->>")("retry_projection") == "true",
+        ), 1), else_=0).label("retry_batch"),
         func.row_number().over(
             partition_by=(kind, ActivityLog.category, key, func.coalesce(ActivityLog.task_id, ActivityLog.id)),
             order_by=(ActivityLog.created_at.desc(), ActivityLog.id.desc()),
@@ -100,11 +109,13 @@ def list_batch_lite(db, query, *, page, limit, status=None, searching=False):
     result = and_(members.c.action.in_(IMPORT_RESULT_ACTIONS), members.c.attempt == 1)
     count = func.count().filter(result)
     success = func.count().filter(and_(result, members.c.status.in_(("success", "completed"))))
-    failed = func.count().filter(and_(result, members.c.status.in_(("failed", "error"))))
+    failed = func.count().filter(and_(result, members.c.status.in_(("failed", "error")))) + func.max(members.c.submission_failed)
     partial = func.count().filter(and_(result, members.c.status == "partial_success"))
     unfinished = func.count().filter(and_(result, ~members.c.status.in_(
         ("success", "completed", "failed", "error", "partial_success"))))
     batch_status = case(
+        (and_(func.max(members.c.retry_batch) == 1,
+              or_(count < func.max(members.c.expected), unfinished > 0)), "incomplete"),
         (and_(failed > 0, success > 0), "partial_success"),
         (failed > 0, "failed"), (partial > 0, "partial_success"),
         (or_(count == 0, count < func.max(members.c.expected), unfinished > 0), "incomplete"),

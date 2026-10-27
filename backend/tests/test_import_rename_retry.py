@@ -242,15 +242,21 @@ async def test_conflict_retry_builds_process_existing_task_for_checkpoint(tmp_pa
             conflict.new_metadata["retry_source_path"] = conflict.new_path
 
     class FakeQuery:
+        def __init__(self, model):
+            self.model = model
+
         def filter(self, *_args, **_kwargs):
             return self
 
+        def order_by(self, *_args):
+            return self
+
         def first(self):
-            return conflict
+            return conflict if self.model is database_module.ConflictWork else None
 
     class FakeDb:
-        def query(self, *_args, **_kwargs):
-            return FakeQuery()
+        def query(self, model, *_args, **_kwargs):
+            return FakeQuery(model)
 
         def commit(self):
             return None
@@ -274,6 +280,9 @@ async def test_conflict_retry_builds_process_existing_task_for_checkpoint(tmp_pa
     fake_engine.submit = submit
     monkeypatch.setattr(database_module, "get_db", lambda: iter([FakeDb()]))
     monkeypatch.setattr(routes_module, "get_task_engine", lambda: fake_engine)
+    monkeypatch.setattr("app.core.input_scan_repository.source_lock", Mock())
+    monkeypatch.setattr("app.core.input_scan_repository.handoff_conflict_claims", Mock())
+    monkeypatch.setattr("app.core.conflict_retry_activity.log_retry_batch", Mock())
 
     result = await routes_module.retry_extract_failed_conflict("conflict-rename")
 

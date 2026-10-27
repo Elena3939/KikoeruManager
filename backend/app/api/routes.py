@@ -5099,6 +5099,14 @@ class ConflictRetryRequest(BaseModel):
     ignore_garbled: bool = False
 
 
+class ConflictBatchRetryItem(ConflictRetryRequest):
+    conflict_id: str
+
+
+class ConflictBatchRetryRequest(BaseModel):
+    items: List[ConflictBatchRetryItem]
+
+
 class ConflictFilenamePreviewRequest(BaseModel):
     filename_encoding: Optional[str] = None
     password: Optional[str] = None
@@ -6502,24 +6510,9 @@ async def get_conflicts(include_stats: bool = False):
     from ..core.conflict_resolution_service import get_conflict_resolution_service
     from ..core.task_engine import TaskStatus
     from ..models.database import ConflictWork, Task as TaskRecord, get_db
-    from ..core.json_safety import safe_json_value
-
-    def _normalize_conflict_metadata(raw_metadata):
-        if isinstance(raw_metadata, dict):
-            return safe_json_value(dict(raw_metadata))
-        if raw_metadata in (None, "", []):
-            return {}
-        if isinstance(raw_metadata, str):
-            with contextlib.suppress(Exception):
-                parsed = json.loads(raw_metadata)
-                if isinstance(parsed, dict):
-                    return safe_json_value(parsed)
-            return safe_json_value({"raw_metadata": raw_metadata})
-        if isinstance(raw_metadata, list):
-            return safe_json_value({"raw_metadata": raw_metadata})
-        with contextlib.suppress(Exception):
-            return safe_json_value(dict(raw_metadata))
-        return safe_json_value({"raw_metadata": str(raw_metadata)})
+    from ..core.conflict_metadata import (
+        CONFLICT_DIAGNOSTIC_FIELDS, conflict_list_metadata, parse_conflict_metadata,
+    )
 
     active_task_statuses = {
         TaskStatus.PENDING.value,
@@ -6571,12 +6564,13 @@ async def get_conflicts(include_stats: bool = False):
         # ---- 第一阶段：串行处理 DB 写入（状态恢复）和纯计算字段 ----
         # SQLAlchemy session 不能并发使用，所以这一段保持串行。
         _t_phase1_start = time.monotonic()
+        metadata_by_id = {}
         for conflict in conflicts:
             try:
-                conflict.new_metadata = _normalize_conflict_metadata(conflict.new_metadata)
+                metadata_by_id[conflict.id] = parse_conflict_metadata(conflict.new_metadata)
                 normalized_status = str(conflict.status or "").strip().upper()
                 if normalized_status == "PROCESSING":
-                    _nm = _normalize_conflict_metadata(conflict.new_metadata)
+                    _nm = metadata_by_id[conflict.id]
                     _recovery_task_id = str((_nm.get("resolution_task_id") or conflict.task_id or "")).strip()
                     linked_task_status = _get_linked_task_status(_recovery_task_id)
                     # 特殊情况：resolution_task_id 未设置（KEEP_NEW 历史 bug，已补存）且
@@ -6599,7 +6593,7 @@ async def get_conflicts(include_stats: bool = False):
                     )
                     if linked_task_status not in active_task_statuses or _is_stale_keep_new or _is_retry_waiting_manual_done or _is_keep_new_waiting_manual_done:
                         conflict.status = "PENDING"
-                        next_metadata = _normalize_conflict_metadata(conflict.new_metadata)
+                        next_metadata = dict(_nm)
                         if _is_retry_waiting_manual_done or _is_keep_new_waiting_manual_done:
                             next_metadata["retry_result"] = "failed"
                             next_metadata["resolution_task_state"] = "failed"
@@ -6611,6 +6605,7 @@ async def get_conflicts(include_stats: bool = False):
                             next_metadata["resolution_task_state"] = "stale_processing_recovered"
                             next_metadata["resolution_recovered_at"] = datetime.now().isoformat()
                         conflict.new_metadata = next_metadata
+                        metadata_by_id[conflict.id] = next_metadata
                         db.commit()
             except Exception as exc:
                 logger.error(
@@ -6621,7 +6616,7 @@ async def get_conflicts(include_stats: bool = False):
                     exc_info=True,
                 )
                 db.rollback()
-                conflict.new_metadata = _normalize_conflict_metadata(getattr(conflict, "new_metadata", None))
+                metadata_by_id[conflict.id] = parse_conflict_metadata(conflict.new_metadata)
 
 
         _t_phase1_ms = (time.monotonic() - _t_phase1_start) * 1000
@@ -6641,7 +6636,7 @@ async def get_conflicts(include_stats: bool = False):
                 conflict_type=str(conflict.conflict_type or ""),
                 existing_path=str(conflict.existing_path or ""),
                 new_path=str(conflict.new_path or ""),
-                new_metadata=_normalize_conflict_metadata(conflict.new_metadata),
+                new_metadata=metadata_by_id[conflict.id],
                 status=str(conflict.status or ""),
                 created_at=conflict.created_at,
             )
@@ -6703,8 +6698,9 @@ async def get_conflicts(include_stats: bool = False):
                             "is_remote": False,
                             "stats": None,
                         },
-                        "new_path_kind": "archive" if os.path.isfile(str(conflict_obj.new_path or "")) else "folder",
-                        "metadata": _normalize_conflict_metadata(conflict_obj.new_metadata),
+                        "new_path_kind": "archive" if await asyncio.to_thread(
+                            os.path.isfile, str(conflict_obj.new_path or ""),
+                        ) else "folder",
                         "context_error": str(exc),
                     }
 
@@ -6719,11 +6715,13 @@ async def get_conflicts(include_stats: bool = False):
         conflict_items = []
         for index, conflict in enumerate(conflict_snapshots):
             context = contexts[index]
+            # describe 的其它业务调用仍可取 metadata；列表不重复携带整份诊断。
+            context.pop("metadata", None)
             available_actions = context.pop("available_actions", ["SKIP"])
 
             linked_task_info = None
             linked_task_id = str(
-                (_normalize_conflict_metadata(conflict.new_metadata).get("resolution_task_id") or conflict.task_id or "")
+                (conflict.new_metadata.get("resolution_task_id") or conflict.task_id or "")
             ).strip()
             if linked_task_id:
                 linked_task = engine.get_task(linked_task_id)
@@ -6744,7 +6742,8 @@ async def get_conflicts(include_stats: bool = False):
                     "conflict_type": conflict.conflict_type,
                     "existing_path": conflict.existing_path,
                     "new_path": conflict.new_path,
-                    "new_metadata": _normalize_conflict_metadata(conflict.new_metadata),
+                    "new_metadata": conflict_list_metadata(conflict.new_metadata),
+                    "has_diagnostics": bool(CONFLICT_DIAGNOSTIC_FIELDS.intersection(conflict.new_metadata)),
                     "status": conflict.status,
                     "created_at": conflict.created_at.isoformat() if conflict.created_at else None,
                     "available_actions": available_actions,
@@ -6776,6 +6775,21 @@ async def get_conflicts(include_stats: bool = False):
                 db.close()
             except Exception:
                 logger.debug("/api/conflicts finally 关闭 db 失败", exc_info=True)
+
+@app.get("/api/conflicts/{conflict_id}/diagnostics")
+def get_conflict_diagnostics(conflict_id: str, db: Session = Depends(get_db)):
+    """单条诊断在线程池按需读取，避免列表轮询携带大块明细。"""
+    from ..core.conflict_metadata import conflict_diagnostic_metadata, parse_conflict_metadata
+    from ..models.database import ConflictWork
+
+    conflict = db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
+    if conflict is None:
+        raise HTTPException(status_code=404, detail="问题作品不存在")
+    return {
+        "id": conflict_id,
+        "metadata": conflict_diagnostic_metadata(parse_conflict_metadata(conflict.new_metadata)),
+    }
+
 
 @app.get("/api/conflicts/count")
 def get_conflicts_count(db: Session = Depends(get_db)):
@@ -6865,12 +6879,48 @@ async def preview_conflict_archive_filenames(conflict_id: str, payload: Optional
 
 @app.post("/api/conflicts/{conflict_id}/retry")
 async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[ConflictRetryRequest] = None):
+    from ..core.conflict_retry_activity import log_retry_batch
+
+    batch_id = str(uuid.uuid4())
+    result = await _retry_extract_failed_conflict(conflict_id, payload, batch_id=batch_id)
+    log_retry_batch(batch_id, [{**result, "conflict_id": conflict_id}])
+    return result
+
+
+@app.post("/api/conflicts/retry-batch")
+async def retry_conflicts_batch(payload: ConflictBatchRetryRequest):
+    from ..core.conflict_retry_activity import log_retry_batch
+
+    if not payload.items or len(payload.items) > 500:
+        raise HTTPException(status_code=400, detail="每批必须包含 1 至 500 个问题作品")
+    if len({item.conflict_id for item in payload.items}) != len(payload.items):
+        raise HTTPException(status_code=400, detail="同一批次不能重复提交相同问题作品")
+    batch_id = str(uuid.uuid4())
+    results = []
+    for item in payload.items:
+        try:
+            result = await _retry_extract_failed_conflict(item.conflict_id, item, batch_id=batch_id)
+            results.append({**result, "conflict_id": item.conflict_id})
+        except HTTPException as exc:
+            results.append({"conflict_id": item.conflict_id, "success": False, "message": str(exc.detail)})
+        except Exception:
+            logger.exception("问题作品批量重试提交失败：%s", item.conflict_id)
+            results.append({"conflict_id": item.conflict_id, "success": False, "message": "提交重试异常，请查看服务端日志"})
+    log_retry_batch(batch_id, results)
+    return {"batch_id": batch_id, "items": results}
+
+
+async def _retry_extract_failed_conflict(
+    conflict_id: str, payload: Optional[ConflictRetryRequest], *, batch_id: str,
+):
     """重试问题作品中的失败项。"""
     from ..models.database import ConflictWork, get_db
     from ..core.task_engine import TaskStatus
+    from ..core.input_scan_repository import SourceOccupied, handoff_conflict_claims, source_lock
 
     db = next(get_db())
     try:
+        source_lock(db)
         conflict = db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
         if not conflict:
             raise HTTPException(status_code=404, detail="问题作品不存在")
@@ -6946,6 +6996,7 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
                         status_code=409,
                         detail="同源任务已存在但不是可注入密码的等待态，请等待当前任务结束后再用指定密码重试",
                     )
+            handoff_conflict_claims(db, conflict, existing_task.id)
             conflict.status = "PROCESSING"
             conflict.task_id = existing_task.id
             next_metadata = dict(conflict.new_metadata or {})
@@ -6981,6 +7032,7 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
                 "message": "已存在同源重试任务，继续跟踪当前任务",
                 "task_id": existing_task.id,
                 "already_running": True,
+                "batch_id": existing_metadata.get("batch_id"),
             }
 
         source_task_type = str(conflict_metadata.get("source_task_type") or TaskType.AUTO_PROCESS.value).strip()
@@ -6992,6 +7044,18 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             engine.cleanup_retry_output_artifacts(failed_task_id, source_path)
 
         retry_metadata = dict(conflict_metadata) if is_rename_retry or is_api_rename_retry else {}
+        from ..core.conflict_retry_activity import retry_origin
+
+        origin = retry_origin(db, engine, conflict)
+        retry_metadata.update({
+            **origin,
+            "retry_batch_id": batch_id,
+            "batch_id": batch_id,
+            "session_id": batch_id,
+            "source_page": "conflicts",
+            "source_action": "conflict_retry",
+            "source_label": "问题作品 / 重试作品",
+        })
         # 解压重试仍然是合集父任务，不能丢掉已确认的作品清单再绑定第一个 RJ。
         from ..core.archive_identity import aggregate_rjcodes
         if aggregate_rjcodes(conflict_metadata):
@@ -7008,6 +7072,9 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             "resolution_error",
             "resolution_task_state",
             "resolution_task_id",
+            "parent_task_id",
+            "scan_id",
+            "candidate_id",
         ):
             retry_metadata.pop(key, None)
         if is_rename_retry:
@@ -7051,6 +7118,45 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
         if conflict.rjcode and not aggregate_rjcodes(retry_metadata):
             task.task_metadata["inferred_rjcode"] = conflict.rjcode
 
+        previous_claim_owners = handoff_conflict_claims(db, conflict, task.id)
+        conflict.status = "PROCESSING"
+        next_metadata = dict(conflict.new_metadata or {})
+        next_metadata["resolution_task_state"] = "queued"
+        next_metadata["resolution_action"] = "RETRY"
+        next_metadata["resolution_requested_at"] = datetime.now().isoformat()
+        next_metadata.update(origin)
+        next_metadata["resolution_task_id"] = task.id
+        conflict.task_id = task.id
+        conflict.new_metadata = next_metadata
+        db.commit()
+
+        from ..core.conflict_retry_activity import log_retry_queued
+
+        try:
+            await engine.submit(task)
+        except BaseException:
+            # 入队未成功时恢复同一问题的归属，不能遗留无法执行的“处理中”记录。
+            from ..models.database import InputSourceClaim
+
+            db.rollback()
+            source_lock(db)
+            db.refresh(conflict)
+            if (
+                conflict.task_id == task.id
+                and (conflict.new_metadata or {}).get("resolution_task_state") == "queued"
+            ):
+                for claim in db.query(InputSourceClaim).filter(
+                    InputSourceClaim.owner_type == "task",
+                    InputSourceClaim.owner_id == task.id,
+                    InputSourceClaim.path_key.in_(previous_claim_owners),
+                ):
+                    claim.owner_id = previous_claim_owners[claim.path_key]
+                conflict.task_id = failed_task_id or None
+                conflict.status = "PENDING"
+                conflict.new_metadata = conflict_metadata
+                db.commit()
+            raise
+
         # 问题作品重试会创建新的引擎任务，但旧的 waiting_manual 任务仍然保留。
         # 标记旧任务已被本次重试替代，任务中心据此隐藏旧行；状态保持原样，审计仍可追溯。
         if failed_task_id:
@@ -7068,19 +7174,8 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
 
                     get_task_center_materialization_service().delete_engine_item(failed_task.id)
 
-        conflict.status = "PROCESSING"
-        next_metadata = dict(conflict.new_metadata or {})
-        next_metadata["resolution_task_state"] = "queued"
-        next_metadata["resolution_action"] = "RETRY"
-        next_metadata["resolution_requested_at"] = datetime.now().isoformat()
-        conflict.new_metadata = next_metadata
-        await engine.submit(task)
-        conflict.task_id = task.id
-        conflict.new_metadata = {
-            **dict(conflict.new_metadata or {}),
-            "resolution_task_id": task.id,
-        }
-        db.commit()
+        if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}:
+            log_retry_queued(task)
         if specified_passwords:
             if len(specified_passwords) > 1:
                 message = f"已开始使用 {len(specified_passwords)} 个指定密码依次重试失败问题项"
@@ -7093,7 +7188,13 @@ async def retry_extract_failed_conflict(conflict_id: str, payload: Optional[Conf
             "message": message,
             "task_id": task.id,
             "already_running": False,
+            "batch_id": batch_id,
         }
+    except SourceOccupied as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail=f"源文件仍被其他任务占用，不能重试：{exc.owner_id}",
+        ) from exc
     finally:
         db.close()
 
@@ -8033,21 +8134,24 @@ async def _resolve_conflict_inline(conflict_id: str, action: dict):
                 
                 filter_path_transforms: list[dict[str, str]] = []
                 if config.rename.flatten_single_subfolder:
-                    renamed_path = rename_service._flatten_single_subfolder(
+                    renamed_path = await rename_service.flatten_single_subfolder(
                         renamed_path,
                         operation_sink=filter_path_transforms,
                     )
                     logger.info(f"保留新版 - 扁平化后路径: {renamed_path}")
 
                 if config.rename.remove_empty_folders:
-                    rename_service.remove_empty_folders(renamed_path, remove_root=False)
+                    await rename_service.remove_empty_folders_async(renamed_path, remove_root=False)
 
                 # 简繁转换（与 AUTO_PROCESS 流程保持一致）
                 if hasattr(config, 'asmr_sync') and getattr(config.asmr_sync, 'simplify_chinese_enabled', False):
                     from ..core.subtitle_sync_service import get_subtitle_sync_service
                     subtitle_svc = get_subtitle_sync_service()
                     task.update_progress(80, "字幕繁简转换中")
-                    simplify_result = subtitle_svc.convert_subtitles_to_simplified_in_folder(renamed_path)
+                    from ..core.fs_utils import run_file_operation_async
+                    simplify_result = await run_file_operation_async(
+                        subtitle_svc.convert_subtitles_to_simplified_in_folder, renamed_path,
+                    )
                     if simplify_result['converted_files'] > 0:
                         logger.info(f"字幕繁简转换完成: 处理 {simplify_result['total_files']} 个文件, "
                                    f"转换 {simplify_result['converted_files']} 个文件")
@@ -8148,19 +8252,22 @@ async def _resolve_conflict_inline(conflict_id: str, action: dict):
 
                     filter_path_transforms: list[dict[str, str]] = []
                     if config.rename.flatten_single_subfolder:
-                        renamed_path = rename_service._flatten_single_subfolder(
+                        renamed_path = await rename_service.flatten_single_subfolder(
                             renamed_path,
                             operation_sink=filter_path_transforms,
                         )
 
                     if config.rename.remove_empty_folders:
-                        rename_service.remove_empty_folders(renamed_path, remove_root=False)
+                        await rename_service.remove_empty_folders_async(renamed_path, remove_root=False)
 
                     # 简繁转换
                     if hasattr(config, 'asmr_sync') and getattr(config.asmr_sync, 'simplify_chinese_enabled', False):
                         from ..core.subtitle_sync_service import get_subtitle_sync_service
                         subtitle_svc = get_subtitle_sync_service()
-                        simplify_result = subtitle_svc.convert_subtitles_to_simplified_in_folder(renamed_path)
+                        from ..core.fs_utils import run_file_operation_async
+                        simplify_result = await run_file_operation_async(
+                            subtitle_svc.convert_subtitles_to_simplified_in_folder, renamed_path,
+                        )
                         if simplify_result['converted_files'] > 0:
                             logger.info(f"字幕繁简转换完成: 处理 {simplify_result['total_files']} 个文件, "
                                        f"转换 {simplify_result['converted_files']} 个文件")
@@ -17698,6 +17805,7 @@ class CircleCompletionBonusProbeStartRequest(BaseModel):
     maker_id: str = ""
     release_dates: List[str] = []
     selected_rjcodes_by_date: Dict[str, List[str]] = {}
+    force_refresh: bool = False
     mode: str = "normal"
     gap_limit: int = 500
     batch_size: Optional[int] = None
@@ -18252,6 +18360,8 @@ def _serialize_rj_subtitle_task_status(task) -> dict:
         "started_at": task.started_at.isoformat() if task.started_at else None,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
         "source_lang": metadata.get("source_lang", ""),
+        "source_provider": metadata.get("source_provider", ""),
+        "subtitle_is_ai": bool(metadata.get("subtitle_is_ai", False)),
         "source_work_type": metadata.get("source_work_type", ""),
         "source_title": metadata.get("source_title", ""),
         "source_mode": metadata.get("source_mode", ""),
@@ -20411,6 +20521,13 @@ async def circle_completion_bonus_probe_start(request: CircleCompletionBonusProb
                     normalized_codes.append(normalized_code)
             if normalized_codes:
                 selected_rjcodes_by_date[normalized_date] = normalized_codes
+        if request.force_refresh and (
+            not selected_rjcodes_by_date
+            or any(date not in selected_rjcodes_by_date for date in release_dates)
+        ):
+            raise ValueError("强制重查必须指定选中原作，不能重查整个社团")
+        if request.force_refresh and not release_dates:
+            release_dates = list(selected_rjcodes_by_date)
         if not release_dates:
             release_dates = service.list_indexed_release_dates(circle_id, maker_id, mode=mode)
         if not release_dates:
@@ -20515,6 +20632,7 @@ async def circle_completion_bonus_probe_start(request: CircleCompletionBonusProb
                 "skipped_completed_release_dates": skipped_completed_release_dates,
                 "selected_rjcodes_by_date": selected_rjcodes_by_date,
                 "mode": mode,
+                "force_refresh": request.force_refresh,
                 "gap_limit": gap_limit,
                 "batch_size": batch_size,
                 "concurrency": concurrency,
@@ -20994,11 +21112,12 @@ async def circle_completion_cover(filename: str):
     image_cache_service = get_circle_image_cache_service()
     rjcode, variant = image_cache_service._parse_filename(filename)
     cache_path = image_cache_service.resolve_filename(filename)
-    if cache_path is not None and not image_cache_service.has_local(rjcode, variant):
+    cached = cache_path is not None and await asyncio.to_thread(image_cache_service.has_local, rjcode, variant)
+    if cache_path is not None and not cached:
         # 缺图不能阻塞 HTTP 请求：下载放入受控后台任务，当前请求立即返回 404。
         # 前端会显示占位并可稍后重试，避免每张图占用 12 秒事件循环预算。
         image_cache_service.schedule_ensure_for_filename(filename)
-    if cache_path is None or not image_cache_service.has_local(rjcode, variant):
+    if not cached:
         raise HTTPException(status_code=404, detail="封面未缓存")
     return FileResponse(
         str(cache_path),
@@ -21031,7 +21150,7 @@ async def circle_completion_fetch_cover(payload: CircleCompletionCoverFetchReque
             "success": False,
             "rjcode": rjcode,
             "variant": variant,
-            "detail": "封面暂时无法下载",
+            **service.failure_detail(rjcode, variant),
         }
     return {
         "success": True,

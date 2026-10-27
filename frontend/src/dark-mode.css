@@ -1,3 +1,11 @@
+html.kikoerumanager-dark .conflict-diagnostics {
+  color: var(--km-dark-text);
+}
+
+html.kikoerumanager-dark .conflict-diagnostics pre {
+  background: var(--km-dark-elevated);
+}
+
 html.kikoerumanager-dark .dash-archive-list-type {
   color: var(--km-dark-text-muted);
 }
@@ -2466,6 +2474,55 @@ html.kikoerumanager-dark .rpd-window .rpd-input::placeholder,
 html.kikoerumanager-dark .brp-window .brp-input::placeholder,
 html.kikoerumanager-dark .vrd-window .vrd-row-input::placeholder {
   color: var(--km-dark-text-subtle) !important;
+}
+
+/* 批量重试按元素区分文字、输入底色和状态，避免浅色局部样式残留。 */
+html.kikoerumanager-dark .brp-window .brp-row {
+  background: transparent !important;
+}
+
+html.kikoerumanager-dark .brp-window .brp-row-label {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .brp-window :is(.brp-row-meta, .brp-summary, .brp-mobile-label, .brp-input-icon, .brp-list-head) {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .brp-window .brp-tabs {
+  border-color: var(--km-dark-border) !important;
+}
+
+html.kikoerumanager-dark .brp-window :is(.brp-input-shell, .brp-row-icon) {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark body .brp-window .brp-input-shell .brp-input {
+  background: transparent !important;
+}
+
+html.kikoerumanager-dark .brp-window .brp-row-icon.is-warn,
+html.kikoerumanager-dark .brp-window .brp-pill.is-amber {
+  background: var(--km-dark-amber-bg) !important;
+  color: var(--km-dark-amber) !important;
+  border-color: var(--km-dark-border-strong) !important;
+}
+
+html.kikoerumanager-dark .brp-window .brp-pill.is-active {
+  background: var(--km-dark-green-bg) !important;
+  color: var(--km-dark-green) !important;
+}
+
+html.kikoerumanager-dark .brp-window .brp-pill:is(.is-active, .is-amber) b {
+  color: inherit !important;
+}
+
+html.kikoerumanager-dark .brp-window .brp-btn-primary {
+  background: var(--km-dark-primary-button-bg) !important;
+  color: var(--km-dark-primary-button-text) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(

@@ -3,14 +3,14 @@
     <Transition name="brp-fade">
       <div
         v-if="visible"
-        class="brp-overlay fixed inset-0 z-[4000] flex items-center justify-center p-6 max-[820px]:p-3"
+        class="el-overlay brp-overlay fixed inset-0 z-[4000] flex items-center justify-center p-6 max-[820px]:p-3"
         @click.self="handleCancel"
       >
-        <div class="brp-window relative w-full max-w-[960px] max-h-[calc(100vh-3rem)] flex flex-col rounded-3xl overflow-hidden" @mousedown.stop>
+        <div class="brp-window relative w-full max-w-[960px] max-h-[calc(100dvh-3rem)] flex flex-col rounded-2xl overflow-hidden" role="dialog" aria-modal="true" aria-labelledby="batch-retry-title" @mousedown.stop>
           <!-- Header -->
           <header class="brp-header flex items-start justify-between gap-4 px-7 pt-6 pb-4 flex-none">
             <div class="min-w-0 flex-1">
-              <h1 class="brp-title text-2xl font-bold tracking-tight">批量重试</h1>
+              <h1 id="batch-retry-title" class="brp-title text-xl font-bold">批量重试</h1>
               <p class="brp-subtitle text-sm m-0 mt-1.5">选中的失败压缩包，可以为每个包单独指定密码和文件名编码</p>
               <p v-if="apiRenameCount" class="brp-subtitle text-sm m-0 mt-1.5">另有 {{ apiRenameCount }} 项 API 重命名将一并重试，无需密码。</p>
             </div>
@@ -34,7 +34,7 @@
           <!-- Body：直接平铺 grid 行，无嵌套卡片 -->
           <div class="brp-body flex-1 min-h-0 overflow-y-auto px-7 py-2">
             <!-- Grid head -->
-            <div class="brp-grid brp-list-head text-xs font-semibold uppercase tracking-[0.12em]">
+            <div class="brp-grid brp-list-head text-xs font-semibold">
               <span>问题项</span>
               <span>密码</span>
               <span>文件名编码</span>
@@ -51,31 +51,37 @@
                   <FileArchive v-else :size="15" :stroke-width="2" />
                 </span>
                 <div class="min-w-0 flex-1">
-                  <div class="brp-row-label truncate">{{ item.label }}</div>
+                  <div class="brp-row-label truncate" :title="item.label">{{ item.label }}</div>
                   <div class="brp-row-meta truncate">{{ item.conflictType || '问题作品' }}</div>
                 </div>
               </div>
 
-              <label class="brp-input-shell flex min-w-0 items-center gap-2">
-                <KeyRound :size="14" :stroke-width="2.2" class="flex-shrink-0 text-slate-400" />
-                <input
-                  v-model="item.password"
-                  type="text"
-                  class="brp-input"
-                  placeholder="可留空"
-                  autocomplete="off"
-                  @keydown.enter.prevent="handleConfirm"
-                  @keydown.stop
-                >
+              <label class="brp-password-field">
+                <span class="brp-mobile-label">密码</span>
+                <span class="brp-input-shell flex min-w-0 items-center gap-2">
+                  <KeyRound :size="14" :stroke-width="2.2" class="brp-input-icon flex-shrink-0" />
+                  <input
+                    v-model="item.password"
+                    type="text"
+                    class="brp-input"
+                    placeholder="可留空"
+                    :aria-label="`${item.label} 的密码`"
+                    autocomplete="off"
+                    @keydown.enter.prevent="handleConfirm"
+                    @keydown.stop
+                  >
+                </span>
               </label>
 
-              <AppDropdown
-                v-model="item.filenameEncoding"
-                :options="resolvedEncodingOptions"
-                :width="180"
-                :menu-min-width="260"
-                :show-trigger-badge="false"
-              />
+              <div class="brp-encoding-field">
+                <span class="brp-mobile-label">文件名编码</span>
+                <AppDropdown
+                  v-model="item.filenameEncoding"
+                  :options="resolvedEncodingOptions"
+                  :menu-min-width="260"
+                  :show-trigger-badge="false"
+                />
+              </div>
             </div>
           </div>
 
@@ -87,12 +93,12 @@
             <div class="flex items-center gap-3">
               <button
                 type="button"
-                class="brp-btn-secondary px-6 h-10 rounded-xl font-bold"
+                class="brp-btn-secondary px-6 h-10 rounded-lg font-bold"
                 @click="handleCancel"
               >取消</button>
               <button
                 type="button"
-                class="brp-btn-primary px-7 h-10 rounded-xl font-bold text-white"
+                class="brp-btn-primary px-7 h-10 rounded-lg font-bold text-white"
                 @click="handleConfirm"
               >开始批量重试</button>
             </div>
@@ -191,13 +197,6 @@ function handleCancel() {
 </script>
 
 <style scoped>
-/* ============================================================
-   BatchRetryPasswordDialog 玻璃壳风格
-   ----------------------------------------------------------------
-   单层半透白 backdrop-blur shell + 直接平铺 grid 行（无嵌套卡片）+
-   主操作 #111827 深色实心 / 次操作半透灰，对齐社团补全下载预览。
-============================================================ */
-
 .brp-fade-enter-active,
 .brp-fade-leave-active { transition: opacity 0.22s ease; }
 .brp-fade-enter-active .brp-window,
@@ -213,22 +212,23 @@ function handleCancel() {
   filter: blur(1px);
 }
 
-/* Overlay：只承载点击关闭，不压暗、不虚化背景 */
 .brp-overlay {
-  background: transparent;
+  background: rgba(0, 0, 0, 0.32);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
 
-/* Shell：对齐社团补全预览的白色毛玻璃壳 */
 .brp-window {
-  background: rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  box-shadow:
-    0 30px 80px rgba(15, 23, 42, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  background: #fff;
+  color: #0f172a;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.18);
+  letter-spacing: 0;
+}
+
+.brp-window :is(button, input, [tabindex]):is(:focus, :focus-visible) {
+  outline: none;
+  box-shadow: none;
 }
 
 /* Header */
@@ -239,7 +239,6 @@ function handleCancel() {
 .brp-title {
   margin: 0;
   color: #0f172a;
-  letter-spacing: -0.02em;
   line-height: 1.15;
 }
 
@@ -259,7 +258,10 @@ function handleCancel() {
 .brp-close:hover {
   background: rgba(241, 245, 249, 0.72);
   color: #334155;
+  transform: translateY(-2px) scale(1.02);
 }
+
+.brp-close:active { transform: scale(0.96); }
 
 .brp-close svg {
   transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -286,10 +288,8 @@ function handleCancel() {
   color: #475569;
   font-size: 11.5px;
   font-weight: 500;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   white-space: nowrap;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .brp-pill b {
@@ -317,20 +317,20 @@ function handleCancel() {
 /* Body grid：直接平铺，无内部卡片，无独立背景 */
 .brp-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px) 200px;
-  column-gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 240px) minmax(160px, 200px);
+  column-gap: 20px;
   align-items: center;
 }
 
 .brp-list-head {
   padding: 10px 4px 8px;
-  color: #94a3b8;
+  color: #64748b;
   border-bottom: 1px solid rgba(15, 23, 42, 0.04);
 }
 
 .brp-row {
-  min-height: 56px;
-  padding: 10px 4px;
+  min-height: 72px;
+  padding: 14px 4px;
   border-bottom: 1px solid rgba(15, 23, 42, 0.04);
 }
 
@@ -345,12 +345,10 @@ function handleCancel() {
   flex: 0 0 32px;
   align-items: center;
   justify-content: center;
-  border-radius: 10px;
+  border-radius: 8px;
   border: 1px solid rgba(15, 23, 42, 0.06);
-  background: rgba(255, 255, 255, 0.55);
+  background: #f1f5f9;
   color: #475569;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .brp-row-icon.is-warn {
@@ -368,30 +366,33 @@ function handleCancel() {
 .brp-row-meta {
   margin-top: 1px;
   font-size: 11px;
-  color: #94a3b8;
+  color: #64748b;
 }
 
-/* Input：半透白 backdrop-blur，无独立卡片包裹 */
+.brp-password-field,
+.brp-encoding-field { min-width: 0; }
+.brp-mobile-label { display: none; }
+.brp-input-icon { color: #64748b; }
+
 .brp-input-shell {
   height: 38px;
   padding: 0 12px;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.6);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  border-radius: 8px;
+  background: #f8fafc;
   transition: background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .brp-input-shell:focus-within {
   background: rgba(255, 255, 255, 0.92);
   border-color: rgba(15, 23, 42, 0.22);
-  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.06);
+  box-shadow: none;
 }
 
 .brp-input {
   width: 100%;
   min-width: 0;
+  padding: 0;
   border: 0;
   outline: none;
   background: transparent;
@@ -412,18 +413,33 @@ function handleCancel() {
 
 .brp-summary {
   color: #64748b;
+  line-height: 1.6;
+}
+
+.brp-encoding-field :deep(.app-dd-root),
+.brp-encoding-field :deep(.app-dd-trigger-anchor),
+.brp-encoding-field :deep(.app-dd-trigger) {
+  width: 100%;
+  min-width: 0;
+}
+
+.brp-encoding-field :deep(.app-dd-trigger) {
+  height: 38px;
+  border-radius: 8px;
+  box-shadow: none;
 }
 
 /* Buttons：与社团预览 primary-cta / secondary-cta 同款 */
 .brp-btn-primary,
 .brp-btn-secondary {
+  border-radius: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   border: 0;
   cursor: pointer;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
   white-space: nowrap;
   font-size: 13px;
   transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -456,8 +472,15 @@ function handleCancel() {
 
 @media (max-width: 820px) {
   .brp-grid {
-    grid-template-columns: minmax(0, 1fr);
-    row-gap: 10px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+  }
+  .brp-row > :first-child { grid-column: 1 / -1; }
+  .brp-mobile-label {
+    display: block;
+    margin-bottom: 6px;
+    color: #64748b;
+    font-size: 12px;
   }
   .brp-list-head { display: none; }
   .brp-row {
@@ -473,5 +496,16 @@ function handleCancel() {
     width: 100%;
     justify-content: flex-end;
   }
+}
+
+@media (max-width: 480px) {
+  .brp-window { max-height: calc(100dvh - 24px); }
+  .brp-header, .brp-tabs, .brp-body, .brp-footer {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .brp-subtitle { font-size: 12px; }
+  .brp-grid { column-gap: 10px; }
+  .brp-footer .flex > button { flex: 1; padding: 0 12px; }
 }
 </style>

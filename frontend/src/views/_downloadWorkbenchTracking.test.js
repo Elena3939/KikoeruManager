@@ -96,7 +96,7 @@ describe('下载工作台任务跟踪', () => {
     expect(getDownloadBatchPercent(selectTrackedDownloadTasks(batch.taskIds, snapshot))).toBe(7)
   })
 
-  it('新下载继续跟踪此前正在下载、暂停和等待重试的任务', () => {
+  it('新下载继续跟踪此前正在下载、暂停、等待重试和失败的任务', () => {
     const snapshot = [
       { id: 'new-task', status: 'pending', created_at: '2026-10-12T10:00:00' },
       ...['processing', 'paused', 'pending', 'waiting_retry'].map(status => ({ id: status, status })),
@@ -105,7 +105,24 @@ describe('下载工作台任务跟踪', () => {
     ]
     const batch = resolveTrackedDownloadBatch(snapshot.map(task => task.id), ['new-task'], snapshot)
 
-    expect(batch.taskIds).toEqual(['new-task', 'processing', 'paused', 'pending', 'waiting_retry'])
+    expect(batch.taskIds).toEqual(['new-task', 'processing', 'paused', 'pending', 'waiting_retry', 'failed'])
+  })
+
+  it.each([
+    { status: 'failed' },
+    { status: 'partial_failed' },
+    { status: 'completed', display_status: 'partial_failed' },
+  ])('旧失败任务跨批次和恢复均保留：%j', fields => {
+    const snapshot = [
+      { id: 'new-task', status: 'pending', created_at: '2026-10-27T10:00:00' },
+      { id: 'retryable', ...fields, completed_at: '2026-10-26T10:00:00' },
+      { id: 'success', status: 'completed', completed_at: '2026-10-26T10:00:00' },
+    ]
+    const batch = resolveTrackedDownloadBatch(snapshot.map(task => task.id), ['new-task'], snapshot)
+    expect(batch.taskIds).toEqual(['new-task', 'retryable'])
+    expect(resolveTrackedDownloadBatch(
+      batch.taskIds, ['new-task'], snapshot, batch.batchStartedAt,
+    )).toEqual(batch)
   })
 
   it('本批次完成项和本次提交之后才完成的旧活跃任务继续留在队列', () => {

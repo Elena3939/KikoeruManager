@@ -7196,8 +7196,8 @@ class ExtractService:
         """读取压缩包清单（命中 list 缓存即秒回），返回顶层路径段内出现的不同 RJ 号。
 
         用于解压前判断合集包：``len(result) >= 2`` 即可视为多 RJ 合集，
-        上游应跳过基于"第一个 RJ"的整体查重，把判重交给解压后的多作品拆分流程，
-        避免合集里第一个 RJ 已在库存就把整个大包判成"完全重复"。
+        上游应对全部 RJ 查库存，全部直接命中才整体判重；
+        部分命中时继续解压后的多作品拆分流程，不能只根据第一个 RJ 拦截整个包。
 
         清单读取失败 / 加密读不出 / file_list 为空时统一返回 ``[]``，调用方应
         当作"无法判定"，回退到原查重逻辑。
@@ -8060,6 +8060,8 @@ class ExtractService:
                         'size': int(size_value or 0),
                         'is_dir': 'D' in attr_value,
                         'encrypted': {'+': True, '-': False}.get(current.get('Encrypted')),
+                        'is_link': bool(current.get('Symbolic Link') or current.get('Hard Link')
+                                        or re.search(r'(?:^|\s)l[rwx-]{9}', attr_value)),
                     })
                 except ValueError:
                     pass
@@ -8451,6 +8453,23 @@ class ExtractService:
         if not listed_password and not listed_no_password and "" in unique_passwords:
             unique_passwords = ["", *[pwd for pwd in unique_passwords if pwd != ""]]
         uses_zstd_7z_method = self._archive_uses_zstd_7z_method(archive_info)
+        extraction_executable = self.seven_zip
+        if uses_zstd_7z_method:
+            if not await self._ensure_7z_zstd_available():
+                self._set_extract_meta(
+                    task,
+                    extract_failure_reason="unsupported_method",
+                    extract_zstd_backend_missing=True,
+                )
+                return False, None, "unsupported_method"
+            # 算法支持与密码验证分开：没有小条目不能成为拒绝兼容后端的依据。
+            extraction_executable = self.seven_zip_zstd
+            self._set_extract_meta(
+                task,
+                extract_zstd_backend=os.path.basename(extraction_executable),
+                extract_zstd_backend_path=extraction_executable,
+                extract_zstd_method=str(archive_info.method or ""),
+            )
 
         # 预读目录可用说明压缩包结构至少可读；后续若遇疑似"损坏"特征，
         # 更可能是头加密 + 错密码，而不是真的坏包，用于最后定性判断。
@@ -8484,6 +8503,7 @@ class ExtractService:
                     magic_entry,
                     timeout=self.PROBE_MAGIC_TIMEOUT,
                     task=task,
+                    seven_zip_executable=extraction_executable,
                 )
                 if result == "ok":
                     saw_ok = True
@@ -8503,6 +8523,7 @@ class ExtractService:
                     entry,
                     timeout=self.PROBE_TIMEOUT_SECONDS,
                     task=task,
+                    seven_zip_executable=extraction_executable,
                 )
                 if result in {"ok", "unsupported_method", "corrupt", "wrong_password"}:
                     return result
@@ -8881,7 +8902,7 @@ class ExtractService:
                 return False, None, "source_missing"
             password_args = [f'-p{password}'] if password else []
             cmd = [
-                self.seven_zip, 'x',
+                extraction_executable, 'x',
                 '-y',  # 自动确认
                 '-o' + output_path,  # 输出目录
                 '-bsp1', # 启用进度输出
@@ -8984,6 +9005,7 @@ class ExtractService:
                             file_list=getattr(archive_info, 'file_list', None),
                             task=task,
                             allow_full_test=False,
+                            seven_zip_executable=extraction_executable,
                         )
                     # 探测期间被 cancel/pause kill 掉，按 stop_reason 决策
                     if task.is_cancelled():
@@ -9250,6 +9272,8 @@ class ExtractService:
                         await self._cleanup_extract_attempt(output_path)
                         return False, None, "extract_incomplete"
                     self._set_extract_meta(task, extract_verified=True)
+                    if uses_zstd_7z_method:
+                        self._set_extract_meta(task, extract_zstd_backend_success=True)
                     await self._finalize_successful_extract_password(
                         archive_info,
                         task,
@@ -9271,6 +9295,13 @@ class ExtractService:
                 stderr_lower = stderr_text.lower()
 
                 if self._looks_like_unsupported_method_error(stderr_text):
+                    if uses_zstd_7z_method:
+                        self._set_extract_meta(
+                            task,
+                            extract_failure_reason="unsupported_method",
+                            extract_zstd_backend_error=stderr_text[:1000],
+                        )
+                        return False, None, "unsupported_method"
                     zstd_probe_result = await probe_7z_zstd_backend(password)
                     if task.is_cancelled():
                         return False, None, "cancelled"

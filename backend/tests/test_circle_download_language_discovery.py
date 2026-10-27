@@ -12,6 +12,11 @@ class PreviewService(CircleDownloadPreviewMixin):
     normalize_rjcode = staticmethod(lambda value: str(value or '').upper())
 
 
+@pytest.fixture(autouse=True)
+def released_test_versions(monkeypatch):
+    monkeypatch.setattr(PreviewService, "_unreleased_download_codes", lambda self, codes: set())
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('failure', [ValueError('未找到作品'), ASMRSourceUnavailableError('源站暂不可用')])
 async def test_uncollected_display_edition_discovers_actual_translation(failure, monkeypatch):

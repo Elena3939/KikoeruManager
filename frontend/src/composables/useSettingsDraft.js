@@ -92,6 +92,7 @@ export function normalizeLibraryConfig(library, index = 1) {
 export const defaultConfig = {
   file_move: {
     host_enabled: false,
+    filter_verify_hashes: false,
     socket_path: '/app/data/.host-file-mover/control.sock',
     request_timeout_seconds: 30,
     journal_path: ''

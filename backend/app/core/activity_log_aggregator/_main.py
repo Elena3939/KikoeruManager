@@ -342,7 +342,11 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
             "created_at": row.get("created_at"),
             "latest_activity_at": row.get("created_at"),
             "detail": {
-                "mode": "import_batch_start_synthetic",
+                "mode": (
+                    "conflict_retry_batch"
+                    if detail.get("mode") == "conflict_retry_item" and not detail.get("retry_projection")
+                    else "import_batch_start_synthetic"
+                ),
                 "batch_id": batch_id,
                 "requested_count": 0,
                 "created_count": 0,
@@ -432,6 +436,8 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                 continue
             merged_import_batch_child_ids.add(row_id)
             child_category_label = "子处理任务" if row_category == "process_existing" else ("子解压任务" if category_key == "auto_import" else "子处理任务")
+            if (row.get("detail") or {}).get("mode") == "conflict_retry_item":
+                child_category_label = "重试作品"
             child_row = _make_tree_child(
                 row,
                 relation="import_item",
@@ -493,7 +499,17 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
             if (category_key, batch_id) not in synthetic_import_batch_keys and batch_created_at != datetime.min:
                 batch_duration_ms = max(0, int((duration_end_at - batch_created_at).total_seconds() * 1000))
 
-            if failed_child_count > 0 and (extract_completed_count + duplicate_count + subtitle_pending_count) > 0:
+            unfinished = (
+                len(result_rows) < int(batch_detail.get("created_count") or batch_detail.get("multi_rj_subtask_count") or 0)
+                or any(import_result_status(item) not in {"success", "completed", "failed", "error", "partial_success"} for item in result_rows)
+            )
+            retrying_batch = (
+                batch_detail.get("mode") == "conflict_retry_batch"
+                or any((item.get("detail") or {}).get("retry_projection") for item in result_rows)
+            )
+            if retrying_batch and unfinished:
+                batch_row["status"] = "incomplete"
+            elif failed_child_count > 0 and (extract_completed_count + duplicate_count + subtitle_pending_count) > 0:
                 batch_row["status"] = "partial_success"
             elif failed_child_count > 0:
                 batch_row["status"] = "failed"
@@ -548,6 +564,16 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                 summary_parts.append(f"耗时 {minutes} 分 {seconds} 秒" if minutes else f"耗时 {seconds} 秒")
             if batch_row.get("action") == "batch_start":
                 batch_row["summary"] = f"{'批量创建解压任务' if category_key == 'auto_import' else '批量创建已有目录处理任务'}，{'，'.join(summary_parts)}"
+                if batch_detail.get("mode") == "conflict_retry_batch":
+                    submission_failed = int(batch_detail.get("submission_failed_count") or 0)
+                    if submission_failed:
+                        if batch_row["status"] != "incomplete":
+                            batch_row["status"] = "partial_success" if (extract_completed_count + duplicate_count + subtitle_pending_count + partial_child_count) else "failed"
+                        summary_parts.append(f"提交失败 {submission_failed} 个")
+                    label = "批量重试作品" if int(batch_detail.get("requested_count") or 0) > 1 else "重试作品"
+                    batch_row["summary"] = f"{label}，{'，'.join(summary_parts)}"
+                    batch_row["result_status"] = batch_row["status"]
+                    batch_row["category_label"] = "重试作品"
             next_detail = {
                 **batch_detail,
                 "child_rows": sorted(
@@ -581,7 +607,10 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
 
     from ..input_scan_protocol import scan_batch_status
     for batch_row in import_batch_rows_by_key.values():
-        status = scan_batch_status(batch_row.get("detail"))
+        detail = batch_row.get("detail") or {}
+        status = scan_batch_status(detail)
+        if detail.get("retry_updated_at") and detail.get("producer_closed") and detail.get("scan_closed"):
+            status = None
         if status is not None:
             batch_row["status"] = batch_row["result_status"] = status
             if status == "incomplete":

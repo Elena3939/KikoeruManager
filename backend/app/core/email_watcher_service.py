@@ -1219,20 +1219,29 @@ class EmailWatcherService:
 
             while not self._stop_event.is_set():
                 client.idle()
+                reconnect = False
                 try:
                     # 阻塞等待服务器 pushback，超时后重新 IDLE（RFC 要求不超过 29 分钟）
                     deadline = time.monotonic() + idle_timeout
                     while True:
                         responses = client.idle_check(timeout=min(30, max(0, deadline - time.monotonic())))
+                        if any(isinstance(r, tuple) and r and r[0] == b"BYE" for r in responses):
+                            raise IMAPClient.AbortError("邮件服务器已结束 IDLE 会话")
                         from ..config.settings import get_config
                         if self._stop_event.is_set() or get_config().email_watcher != config.email_watcher:
                             # 保存代理或账号后及时断开旧连接，由外层读取新配置重连。
-                            return
+                            reconnect = True
+                            break
                         if responses or time.monotonic() >= deadline:
                             break
-                finally:
+                except BaseException:
+                    # 读连接失败后不再发送 DONE，避免二次 Broken pipe 覆盖原始异常。
+                    raise
+                else:
                     client.idle_done()
 
+                if reconnect:
+                    return
                 if self._stop_event.is_set():
                     break
 

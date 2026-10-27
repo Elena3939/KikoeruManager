@@ -240,6 +240,7 @@ class TaskCenterService:
         TaskType.AUTO_PROCESS: "import",
         TaskType.PROCESS_EXISTING_FOLDER: "existing_folder",
         TaskType.RJ_SUBTITLE_FETCH: "rj_subtitle",
+        TaskType.RJ_SUBTITLE_EXTRACT: "rj_subtitle",
         TaskType.ASMR_SYNC_DOWNLOAD: "asmr_sync",
         TaskType.LIBRARY_FOLDER_COMPLETION_PREVIEW: "asmr_sync",
         TaskType.HTTP_DOWNLOAD: "http_download",
@@ -1250,12 +1251,17 @@ class TaskCenterService:
             self._append_metric(metrics, "目标库", metadata.get("target_library_id"))
         elif domain == "rj_subtitle":
             title = self._safe_text(metadata.get("folder_name")) or self._basename(metadata.get("folder_path")) or self._basename(source_path) or "RJ 字幕任务"
+            if task.type == TaskType.RJ_SUBTITLE_EXTRACT:
+                title = f"字幕爬取临时解压 · {rjcode}"
             subtitle = self._safe_text(metadata.get("source_title")) or self._safe_text(metadata.get("folder_path"))
             source_label = source_label or "库存页 / 抓字幕"
             source_action = source_action or self._safe_text(metadata.get("source_mode")) or "rj_subtitle_fetch"
             source_page = source_page or "library"
             self._append_metric(metrics, "RJ", rjcode or metadata.get("actual_rjcode"))
             self._append_metric(metrics, "下载", metadata.get("downloaded_count"))
+            self._append_metric(metrics, "字幕来源", metadata.get("source_provider"))
+            if metadata.get("subtitle_is_ai"):
+                self._append_metric(metrics, "字幕类型", "AI 字幕")
             self._append_metric(metrics, "现有字幕", metadata.get("existing_subtitle_count"))
             self._append_metric(metrics, "写入", len(metadata.get("written_files") or []))
             if metadata.get("ai_match_mode") and metadata.get("ai_match_mode") != "rule":

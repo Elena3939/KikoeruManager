@@ -1,6 +1,8 @@
 file_move:
   # 安装宿主执行器并验收后才能开启；异常会保留来源并报错，不转为完整复制。
   host_enabled: false
+  # 过滤保存、迁移和复原时额外重读源文件与副本校验 SHA-256；默认关闭。
+  filter_verify_hashes: false
   socket_path: /app/data/.host-file-mover/control.sock
   request_timeout_seconds: 30
   # 留空时使用数据目录下的 file-moves。

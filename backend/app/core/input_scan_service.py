@@ -507,8 +507,14 @@ class InputScanService:
             if not re.fullmatch(r"scan_stage_[0-9a-f]{32}", os.path.basename(path)) or os.path.islink(path):
                 raise ValueError("扫描临时目录身份不合法，拒绝清理")
             def cleanup():
-                if os.path.exists(path):
-                    shutil.rmtree(path)
+                def onerror(function, failed_path, exc_info):
+                    # 文件被并发移走属于已清理；权限和磁盘异常必须保留。
+                    if not isinstance(exc_info[1], FileNotFoundError):
+                        raise exc_info[1].with_traceback(exc_info[2])
+
+                shutil.rmtree(path, onerror=onerror)
+                if os.path.lexists(path):
+                    raise OSError(f"扫描临时目录仍存在，保留清理账本: {path}")
             await finish_thread(cleanup)
             await finish_thread(self.repository.clear_stage, owner, path)
 

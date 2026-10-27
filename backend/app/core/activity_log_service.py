@@ -685,6 +685,7 @@ def write_activity_log(
     *,
     transaction=None,
     event_key: Optional[str] = None,
+    created_at: Optional[datetime] = None,
 ) -> None:
     """入队一条操作记录（Phase 1：异步批量写）。
 
@@ -737,6 +738,8 @@ def write_activity_log(
         "parent_id": parent_id_value,
         "searchable_text": searchable_text,
     }
+    if created_at is not None:
+        payload["created_at"] = created_at
     if transaction is not None:
         payload["event_key"] = event_key
         get_activity_log_writer().insert_once(transaction, payload)
@@ -885,12 +888,23 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
     category = type_map.get(tt, CATEGORY_AUTO_IMPORT) if tt else CATEGORY_AUTO_IMPORT
 
     if st == TaskStatus.PROCESSING:
+        metadata = task.task_metadata or {}
+        pending_detail = {"task_type": getattr(tt, "value", str(getattr(task, "type", "")))}
+        if metadata.get("retry_from_conflicts") and metadata.get("retry_batch_id"):
+            category = CATEGORY_AUTO_IMPORT
+            pending_detail.update({
+                "mode": "conflict_retry_item",
+                "batch_id": metadata["retry_batch_id"],
+                "session_id": metadata["retry_batch_id"],
+                "retry_batch_id": metadata["retry_batch_id"],
+                "conflict_resolution_action": "RETRY",
+            })
         write_event(
             category=category,
             action="task_finished_incomplete",
             status="incomplete",
             summary=(task.current_step or "任务结束时仍为处理中").strip()[:4000],
-            detail=_sanitize_for_db_json({"task_type": getattr(tt, "value", str(getattr(task, "type", "")))}),
+            detail=_sanitize_for_db_json(pending_detail),
             rjcode=(getattr(task, "rjcode", None) or (task.task_metadata or {}).get("rjcode") or "").strip().upper() or None,
             task_id=task.id,
             source_path=task.source_path,
@@ -1403,10 +1417,46 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
     # 新记录持久化业务结果，旧记录由读路径按明确证据兼容；不改变任务执行状态。
     from .activity_log_outcomes import annotate_outcome
 
+    if meta.get("retry_from_conflicts") and meta.get("retry_batch_id"):
+        detail["conflict_resolution_action"] = "RETRY"
     result = {"category": category, "action": action, "status": status, "summary": summary, "detail": detail}
     annotate_outcome(result)
     if result.get("outcome"):
         detail["business_outcome"] = result["outcome"]
+
+    if meta.get("retry_from_conflicts") and meta.get("retry_batch_id"):
+        category = CATEGORY_AUTO_IMPORT
+        detail.update({
+            "mode": "conflict_retry_item",
+            "batch_id": meta.get("retry_batch_id"),
+            "session_id": meta.get("retry_batch_id"),
+            "retry_batch_id": meta.get("retry_batch_id"),
+            "retry_origin_task_id": meta.get("retry_origin_task_id"),
+            "retry_origin_batch_id": meta.get("retry_origin_batch_id"),
+            "conflict_id": meta.get("retry_conflict_id"),
+            "conflict_resolution_action": "RETRY",
+        })
+        summary = f"重试作品：{summary}"
+        origin_task_id = str(meta.get("retry_origin_task_id") or "")
+        if origin_task_id and meta.get("retry_origin_batch_id"):
+            origin_detail = {
+                **detail,
+                "batch_id": meta.get("retry_origin_batch_id"),
+                "session_id": meta.get("retry_origin_batch_id"),
+                "parent_task_id": meta.get("retry_origin_parent_task_id"),
+                "retry_projection": True,
+                "retry_task_id": task.id,
+                "retry_batch_id": meta.get("retry_batch_id"),
+            }
+            if meta.get("retry_origin_started_at"):
+                origin_detail["task_started_at"] = meta["retry_origin_started_at"]
+            write_event(
+                event_key=f"{event_key}:retry-origin" if event_key else None,
+                category=meta.get("retry_origin_category") or category,
+                action=action, status=status, summary=summary,
+                detail=origin_detail, rjcode=rj or None, task_id=origin_task_id,
+                source_path=meta.get("retry_origin_source_path") or task.source_path,
+            )
 
     write_event(
         category=category,
@@ -2107,6 +2157,9 @@ def log_conflict_resolution_activity(
     }
     if extra:
         detail.update(extra)
+    # 重试由任务生命周期记录完整业务结果，不再生成第二条顶层处理记录。
+    if detail.get("retry_batch_id") and action.upper() == "RETRY":
+        return
     write_activity_log(
         category=CATEGORY_CONFLICT_RESOLUTION,
         action="conflict_resolved",

@@ -52,6 +52,9 @@ const failedBonusImageKeys = ref(new Set())
 const failedBonusCoverCodes = ref(new Set())
 
 let resizeObserver = null
+let plainImageObserver = null
+const plainVisibleKeys = shallowRef(new Set())
+const plainCells = new Map()
 let motionTimer = null
 let scrollIdleTimer = null
 const imageLoadTimers = new Map()
@@ -479,19 +482,17 @@ const itemViewModels = computed(() => pagedGroups.value.map((group, index) => {
     itemOwned,
     groupOwned,
     completionDimmed,
-    selected: matchesWorkCodeSet(item, props.selectedCodes),
-    flashed: matchesWorkCodeSet(item, props.flashedCodes),
-    located: matchesWorkCodeSet(item, props.locatedCodes),
+    get selected() { return matchesWorkCodeSet(item, props.selectedCodes) },
+    get flashed() { return matchesWorkCodeSet(item, props.flashedCodes) },
+    get located() { return matchesWorkCodeSet(item, props.locatedCodes) },
+    columnIndex: index % Math.max(1, columnCount.value),
   }
 }))
 const rowViewModels = computed(() => {
   const columns = Math.max(1, columnCount.value)
   const rows = []
   for (let start = 0; start < itemViewModels.value.length; start += columns) {
-    rows.push(itemViewModels.value.slice(start, start + columns).map((viewModel, offset) => ({
-      ...viewModel,
-      columnIndex: offset,
-    })))
+    rows.push(itemViewModels.value.slice(start, start + columns))
   }
   return rows
 })
@@ -525,7 +526,7 @@ const renderedViewModels = computed(() => usePlainRender.value ? itemViewModels.
   : virtualRows.value.flatMap(row => getRowItems(row.index)))
 const visibleImageKeys = computed(() => {
   if (usePlainRender.value) {
-    return itemViewModels.value.flatMap(item => [
+    return itemViewModels.value.filter(item => plainVisibleKeys.value.has(item.key)).flatMap(item => [
       item.key,
       ...(props.mode === 'card' && item.bonuses.length ? [bonusCollectionKey(item)] : []),
     ])
@@ -562,6 +563,33 @@ const pageSizeModel = computed({
 function updateViewportWidth() {
   const width = scrollRef.value?.clientWidth || viewportRef.value?.clientWidth || 0
   viewportWidth.value = Math.max(0, Math.round(width))
+}
+
+function observePlainCell(element, key) {
+  const previous = plainCells.get(key)
+  if (previous === element) return
+  if (previous) plainImageObserver?.unobserve(previous)
+  if (!element) {
+    plainCells.delete(key)
+    if (plainVisibleKeys.value.has(key)) {
+      const next = new Set(plainVisibleKeys.value)
+      next.delete(key)
+      plainVisibleKeys.value = next
+    }
+    return
+  }
+  plainCells.set(key, element)
+  element.dataset.imageKey = key
+  plainImageObserver ||= new IntersectionObserver(entries => {
+    const next = new Set(plainVisibleKeys.value)
+    for (const entry of entries) {
+      const imageKey = entry.target.dataset.imageKey
+      if (entry.isIntersecting) next.add(imageKey)
+      else next.delete(imageKey)
+    }
+    plainVisibleKeys.value = next
+  }, { rootMargin: '160px 0px' })
+  plainImageObserver.observe(element)
 }
 
 function itemKey(item, fallbackIndex) {
@@ -896,6 +924,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  plainImageObserver?.disconnect()
+  plainCells.clear()
   if (imagePumpFrame !== null) cancelAnimationFrame(imagePumpFrame)
   imagePumpFrame = null
   if (motionTimer) {
@@ -926,6 +956,7 @@ onBeforeUnmount(() => {
       <div v-if="usePlainRender" class="circle-work-plain" :class="[`is-${mode}`]" :style="{ gridTemplateColumns }">
         <div
           v-for="viewModel in itemViewModels"
+          :ref="element => observePlainCell(element, viewModel.key)"
           :key="viewModel.key"
           class="circle-work-plain-cell"
           :class="[`is-${mode}`, {

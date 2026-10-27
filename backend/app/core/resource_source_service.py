@@ -22,6 +22,7 @@ from sqlalchemy import cast
 
 from ..models.database import ResourceSourceProbe, SessionLocal
 from .redis_service import get_redis_service
+from .release_dates import is_unreleased
 
 SOURCE = 'imoutoheaven'
 ARCHIVE_PASSWORD = 'south-plus'
@@ -30,6 +31,10 @@ ROOTS = tuple('/SP后端1[音声分区]/' + name for name in (
     'DLSite归档合集-离散', 'DLSite月份合集-离散',
 ))
 VERSION = 1
+
+
+class ResourceSourceError(ValueError):
+    """保留 YAAS 失败阶段和源站原因，避免任务层误报为传输异常。"""
 
 
 def normalize_rj(value):
@@ -230,9 +235,13 @@ class ResourceSourceService:
                 await self.cooldown(5 * 2 ** attempt)
                 continue
             if body.get('code') != 200:
-                raise ValueError(f"YAAS 接口返回错误：{body.get('code')}")
+                reason = re.sub(r"https?://[^\s\"'<>]+", "[YAAS 下载地址]",
+                    str(body.get('message') or '源站未提供错误原因'))
+                reason = ' '.join(reason.split())[:500]
+                raise ResourceSourceError(
+                    f"YAAS 接口 {endpoint} 失败（状态码 {body.get('code')}）：{reason}")
             return body.get('data') or {}
-        raise ValueError('YAAS 限流，请稍后重试')
+        raise ResourceSourceError('YAAS 限流，请稍后重试')
 
     def cached(self, rjcode):
         with SessionLocal() as db:
@@ -295,6 +304,8 @@ class ResourceSourceService:
 
     async def probe(self, rjcode, refresh=False):
         rjcode = normalize_rj(rjcode)
+        if await asyncio.to_thread(self._is_unreleased, rjcode):
+            return {'status': 'skipped', 'skip_reason': 'unreleased', 'candidates': [], 'fresh': False}
         if not refresh:
             old = await asyncio.to_thread(self.cached, rjcode)
             if old['fresh']:
@@ -395,8 +406,12 @@ class ResourceSourceService:
             download_root=downloader._download_root(),
             summary={'selectable_total': len(resources)}, grouped_resources=[])
 
-    async def resolve_file(self, path):
-        path = public_path(path)
+    async def resolve_file(self, path, *, subtitle_only=False):
+        if subtitle_only:
+            from .yaas_subtitle_service import subtitle_path
+            path = subtitle_path(path)
+        else:
+            path = public_path(path)
         data = await self.request('get', {'path': path, 'password': ''})
         url = str(data.get('raw_url') or '')
         from .http_download_service import get_http_download_service
@@ -408,24 +423,24 @@ class ResourceSourceService:
             for _ in range(6):
                 parts = urlsplit(url)
                 if parts.scheme != 'https' or not (parts.hostname or '').endswith('.imoutoheaven.org'):
-                    raise ValueError('YAAS 返回了非预期下载地址')
+                    raise ResourceSourceError('YAAS 返回了非预期下载地址')
                 await downloader.validate_url(url)
                 await self.pace()
                 async with client.stream('GET', url, headers={'Range': 'bytes=0-0'}) as response:
                     if response.status_code in {301, 302, 303, 307, 308}:
                         location = response.headers.get('location')
                         if not location:
-                            raise ValueError('YAAS 下载节点缺少跳转地址')
+                            raise ResourceSourceError('YAAS 下载节点缺少跳转地址')
                         url = urljoin(url, location)
                         continue
                     if response.status_code in {429, 503}:
                         await self.cooldown(30)
                         continue
                     if response.status_code not in {200, 206}:
-                        raise ValueError(f'YAAS 下载节点返回 HTTP {response.status_code}')
+                        raise ResourceSourceError(f'YAAS 下载节点返回 HTTP {response.status_code}')
                     return {'url': url, 'size_bytes': int(data.get('size') or 0),
                             'filename': posixpath.basename(path)}
-        raise ValueError('YAAS 下载节点跳转或限流次数过多，请稍后重试')
+        raise ResourceSourceError('YAAS 下载节点跳转或限流次数过多，请稍后重试')
 
     async def combine_plan(self, rjcode, asmr_builder, refresh=False, *, exact=False):
         """旧客户端仍可只调原计划；新客户端显式请求两个来源。"""
@@ -543,8 +558,15 @@ class ResourceSourceService:
             tasks.append({'task_id': task.id, 'rjcode': requested, 'source_provider': SOURCE})
         return tasks
 
+    def _is_unreleased(self, rjcode):
+        from ..models.database import WorkMetadata
+        with SessionLocal() as db:
+            row = db.query(WorkMetadata.release_date).filter(WorkMetadata.rjcode == rjcode).first()
+            return bool(row and is_unreleased(row.release_date))
+
     def enqueue_circle(self, circle_id):
         from ..models.database import CircleWork
+        from ..models.database import WorkMetadata
         with SessionLocal() as db:
             codes = set()
             for row in db.query(CircleWork.canonical_rjcode, CircleWork.display_rjcode,
@@ -552,21 +574,37 @@ class ResourceSourceService:
                 codes.add(row.canonical_rjcode)
                 codes.add(row.display_rjcode)
                 codes.update(row.linked_rjcodes or [])
+            unreleased = {
+                row.rjcode for row in db.query(WorkMetadata).filter(
+                    WorkMetadata.rjcode.in_(codes - {None})
+                ).all() if is_unreleased(row.release_date)
+            }
             values = [dict(source=SOURCE, rjcode=code, probe_version=VERSION,
-                           status='pending', candidates=[], error='') for code in sorted(codes - {None})
+                           status='pending', candidates=[], error='') for code in sorted(codes - {None} - unreleased)
                       if re.fullmatch(r'RJ\d{6,8}', str(code or ''))]
             for offset in range(0, len(values), 500):
                 db.execute(insert(ResourceSourceProbe).values(values[offset:offset + 500]).on_conflict_do_nothing())
             db.commit()
 
     def pending_codes(self):
+        from ..models.database import WorkMetadata
         with SessionLocal() as db:
-            return db.query(ResourceSourceProbe.rjcode).filter(
+            query = db.query(ResourceSourceProbe.rjcode, WorkMetadata.release_date).outerjoin(
+                WorkMetadata, WorkMetadata.rjcode == ResourceSourceProbe.rjcode
+            ).filter(
                 ResourceSourceProbe.source == SOURCE,
                 ResourceSourceProbe.probe_version == VERSION,
                 (ResourceSourceProbe.expires_at.is_(None)) |
                 (ResourceSourceProbe.expires_at < datetime.now()),
-            ).order_by(ResourceSourceProbe.checked_at.asc().nullsfirst()).limit(20).all()
+            ).order_by(ResourceSourceProbe.checked_at.asc().nullsfirst(), ResourceSourceProbe.rjcode)
+            result, offset = [], 0
+            while len(result) < 20:
+                rows = query.offset(offset).limit(100).all()
+                result.extend((row.rjcode,) for row in rows if not is_unreleased(row.release_date))
+                if len(rows) < 100:
+                    break
+                offset += 100
+            return result[:20]
 
     async def worker(self):
         while True:

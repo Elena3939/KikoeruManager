@@ -657,6 +657,11 @@ export const logApi = {
 }
 
 export const conflictApi = {
+  diagnostics: async (conflictId, { signal } = {}) => {
+    const response = await apiClient.get(`/conflicts/${encodeURIComponent(conflictId)}/diagnostics`, { signal })
+    return response.data
+  },
+
   // includeStats=false 时跳过远程 stat（目录大小、文件数、创建时间），列表秒回；
   // includeStats=true 时算完整统计，群晖 Docker / 网络挂载下可能比较慢，前端给 120s 兜底，
   // 避免 axios 默认 60s 在慢盘上误杀。前端通常先发 false 拿列表，再后台异步发 true 补齐 stats。
@@ -677,6 +682,11 @@ export const conflictApi = {
 
   retry: async (conflictId, payload = {}) => {
     const response = await apiClient.post(`/conflicts/${conflictId}/retry`, payload)
+    return response.data
+  },
+
+  retryBatch: async (items) => {
+    const response = await apiClient.post('/conflicts/retry-batch', { items }, { timeout: 120000 })
     return response.data
   },
 

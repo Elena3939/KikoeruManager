@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { reactive } from 'vue'
 import FileMoveSettingsPanel from './FileMoveSettingsPanel.vue'
 import AppDropdown from '../common/AppDropdown.vue'
+import SettingsToggleRow from './SettingsToggleRow.vue'
 import { fileMoveApi } from '../../api'
 
 vi.mock('../../api', () => ({ fileMoveApi: { status: vi.fn(), probe: vi.fn() } }))
@@ -11,7 +12,7 @@ let wrapper
 let config
 const running = () => ({
   enabled: false, online: true, ready: true,
-  settings: { host_enabled: false, socket_path: '/socket', request_timeout_seconds: 30, journal_path: '' },
+  settings: { host_enabled: false, filter_verify_hashes: false, socket_path: '/socket', request_timeout_seconds: 30, journal_path: '' },
   roots: [{ path: '/source' }, { path: '/target' }],
   service: { mapping_version: 'v1' },
   journal: { sampled: 0, states: {} }
@@ -34,6 +35,18 @@ async function openPanel() {
 }
 
 describe('文件移动设置运行态', () => {
+  it('复制和克隆共用过滤哈希开关并记录未保存变更', async () => {
+    await openPanel()
+    const toggle = wrapper.findAllComponents(SettingsToggleRow)
+      .find(row => row.props('title') === '过滤文件搬运 SHA-256 校验')
+    expect(toggle.props('modelValue')).toBe(false)
+    toggle.vm.$emit('update:modelValue', true)
+    await flushPromises()
+    expect(config.file_move.filter_verify_hashes).toBe(true)
+    expect(wrapper.text()).toContain('参数有未保存变更')
+    expect(wrapper.text()).toContain('流式复制和快速克隆共用此开关')
+  })
+
   it('展示并允许选择未被当前业务配置选中的挂载目录', async () => {
     const status = running()
     status.roots.push({ path: '/anime_dowm', configured: false, mapped: true, available: true, exists: true })

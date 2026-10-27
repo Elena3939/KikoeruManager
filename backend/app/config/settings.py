@@ -60,6 +60,7 @@ class LibraryConfigItem(BaseModel):
 class FileMoveConfig(BaseModel):
     """跨挂载文件移动；宿主映射由独立安装工具管理。"""
     host_enabled: bool = False
+    filter_verify_hashes: bool = False
     socket_path: str = "/app/data/.host-file-mover/control.sock"
     request_timeout_seconds: float = Field(default=30.0, gt=0, le=3600)
     journal_path: str = ""

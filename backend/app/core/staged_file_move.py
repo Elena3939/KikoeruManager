@@ -30,8 +30,8 @@ def _check_scope():
         raise asyncio.CancelledError()
 
 
-async def run_file_operation_async(operation, *args, **kwargs):
-    """把取消传入同步文件事务，并等待线程退出后才交还业务调用方。"""
+async def run_file_operation_async(operation, *args, cancel_at_checkpoints=True, **kwargs):
+    """在线程执行文件操作；组合事务可延后取消，始终等待线程退出。"""
     stopped = threading.Event()
     token = _cancel_scope.set(stopped)
     try:
@@ -41,7 +41,8 @@ async def run_file_operation_async(operation, *args, **kwargs):
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:
-        stopped.set()
+        if cancel_at_checkpoints:
+            stopped.set()
         while not worker.done():
             try:
                 await asyncio.shield(worker)
@@ -356,6 +357,7 @@ def copy_path_exclusive_sync(source, destination, *, progress_cb=None, checkpoin
                 fsync_directory(dst)
     check()
     _phase("校验", source, destination, phase_cb)
+    # 仅显式开启时重读内容；来源身份、目录成员和目标大小始终校验。
     if verify_hashes:
         for relative, value in frozen.items():
             if not stat.S_ISREG(value["mode"]):

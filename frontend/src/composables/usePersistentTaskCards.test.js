@@ -7,6 +7,44 @@ vi.mock('../api', () => ({ asmrSyncApi: { status: vi.fn() }, httpDownloadApi: { 
 beforeEach(() => { localStorage.clear(); vi.resetModules() })
 afterEach(() => { vi.useRealTimers() })
 describe('任务小窗持久恢复', () => {
+  it.each([
+    ['http', 'httpDownloadApi'],
+    ['baidu', 'baiduNetdiskApi'],
+    ['asmr', 'asmrSyncApi'],
+  ])('%s 下载失败及部分失败跨刷新长期保留，重试成功后仍按原计时消失', async (source, apiName) => {
+    vi.useFakeTimers()
+    const api = (await import('../api'))[apiName]
+    const cards = await import('./usePersistentTaskCards')
+    cards.rememberTaskCard('download', {
+      taskSource: source, taskIds: ['one', 'two'], title: '下载任务正在后台运行',
+    }, '/asmr-sync')
+    const tasks = [
+      { id: 'one', status: 'failed', error_message: '没有通过校验的下载项' },
+      { id: 'two', status: 'completed', display_status: 'partial_failed', progress: 100 },
+    ]
+    api.status.mockResolvedValue({ tasks, total_tasks: 2 })
+    await cards.refreshPersistentTaskCards()
+    vi.advanceTimersByTime(24 * 60 * 60 * 1000)
+    cards.expirePersistentTaskCards()
+    expect(cards.persistentTaskCards.download.dismissed).not.toBe(true)
+    expect(cards.persistentTaskCards.download.expiresAt).toBeUndefined()
+    vi.resetModules()
+    const restored = await import('./usePersistentTaskCards')
+    const restoredApi = (await import('../api'))[apiName]
+    restoredApi.status.mockResolvedValue({ tasks, total_tasks: 2 })
+    await restored.refreshPersistentTaskCards()
+    expect(restored.verifiedTaskCards.has('download')).toBe(true)
+    expect(restored.persistentTaskCards.download.props.completed).toBe(false)
+    expect(restored.persistentTaskCards.download.props.detailText).toBe('没有通过校验的下载项')
+    restoredApi.status.mockResolvedValue({
+      tasks: tasks.map(task => ({ id: task.id, status: 'completed', progress: 100 })), total_tasks: 2,
+    })
+    await restored.refreshPersistentTaskCards()
+    vi.advanceTimersByTime(restored.TASK_CARD_RETENTION_MS)
+    restored.expirePersistentTaskCards()
+    expect(restored.persistentTaskCards.download.dismissed).toBe(true)
+  })
+
   it.each([['asmr', 'asmrSyncApi'], ['http', 'httpDownloadApi'], ['baidu', 'baiduNetdiskApi'], ['upload', 'localUploadApi'], ['subtitle', 'rjSubtitleApi']])('%s 恢复后标题、完成动画标记和进度随服务端状态一起更新', async (source, apiName) => {
     const api = (await import('../api'))[apiName]
     const { rememberTaskCard, persistentTaskCards, refreshPersistentTaskCards } = await import('./usePersistentTaskCards')

@@ -149,9 +149,13 @@ class ActivityLogWriter:
         try:
             with get_resource_budget_service().acquire_sync("database_write", reason="activity_log.flush"):
                 db.bulk_save_objects([ActivityLog(**payload) for payload in batch])
+                from .conflict_retry_activity import sync_retry_parent
+                sync_retry_parent(db, batch)
                 self._upsert_daily_stats(db, batch)
                 get_activity_log_rollup_service().upsert_from_payloads(db, batch)
                 db.commit()
+            if db.info.pop("_activity_log_parent_changed", False):
+                get_activity_log_row_dict_cache().invalidate()
             self._last_write_ts = time.time()
             return
         except Exception:
@@ -167,9 +171,14 @@ class ActivityLogWriter:
                 try:
                     with get_resource_budget_service().acquire_sync("database_write", reason="activity_log.flush_one"):
                         db2.add(ActivityLog(**payload))
+                        db2.flush()
+                        from .conflict_retry_activity import sync_retry_parent
+                        sync_retry_parent(db2, [payload])
                         self._upsert_daily_stats(db2, [payload])
                         get_activity_log_rollup_service().upsert_from_payloads(db2, [payload])
                         db2.commit()
+                    if db2.info.pop("_activity_log_parent_changed", False):
+                        get_activity_log_row_dict_cache().invalidate()
                     self._last_write_ts = time.time()
                 except Exception:
                     db2.rollback()
@@ -193,6 +202,8 @@ class ActivityLogWriter:
         ).returning(ActivityLog.id)).scalar()
         if not inserted:
             return False
+        from .conflict_retry_activity import sync_retry_parent
+        sync_retry_parent(db, [payload])
         self._upsert_daily_stats(db, [payload], strict=True)
         get_activity_log_rollup_service().upsert_from_payloads(db, [payload])
         self.invalidate_after_commit(db)
@@ -212,11 +223,14 @@ class ActivityLogWriter:
             if not session.in_nested_transaction():
                 writer = session.info.pop(key, None)
                 if writer is not None:
+                    if session.info.pop("_activity_log_parent_changed", False):
+                        get_activity_log_row_dict_cache().invalidate()
                     writer._last_write_ts = time.time()
 
         def rolled_back(session):
             if not session.in_nested_transaction():
                 session.info.pop(key, None)
+                session.info.pop("_activity_log_parent_changed", None)
 
         event.listen(db, "after_commit", committed)
         event.listen(db, "after_rollback", rolled_back)

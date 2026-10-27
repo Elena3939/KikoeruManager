@@ -14,6 +14,53 @@ from app.core.task_engine import Task, TaskEngine, TaskStatus, TaskType
 CODES = ["RJ01410151", "RJ01428862"]
 
 
+@pytest.mark.parametrize("wrapper", [
+    "20250513", "合集/20250513", "1.20250513", "合集/20250513/社团",
+])
+def test_numeric_collection_wrapper_does_not_hide_nine_works(tmp_path, wrapper):
+    codes = [
+        "RJ01323538", "RJ01333845", "RJ01336829", "RJ01339741", "RJ01352269",
+        "RJ01358411", "RJ01359193", "RJ01360818", "RJ01365912",
+    ]
+    for code in codes:
+        path = tmp_path / wrapper / code
+        path.mkdir(parents=True)
+        (path / "track.wav").write_bytes(code.encode())
+    engine = TaskEngine.__new__(TaskEngine)
+
+    found = engine._detect_multi_rj_subfolders(str(tmp_path))
+
+    assert {entry["rjcode"] for entry in found} == set(codes)
+    assert {entry["path"] for entry in found} == {
+        str((tmp_path / wrapper / code).resolve()) for code in codes
+    }
+
+
+def test_numeric_work_directories_remain_supported(tmp_path):
+    for code in CODES:
+        path = tmp_path / "合集" / code[2:]
+        path.mkdir(parents=True)
+        (path / "track.wav").write_bytes(b"audio")
+    engine = TaskEngine.__new__(TaskEngine)
+
+    found = engine._detect_multi_rj_subfolders(str(tmp_path))
+
+    assert {entry["rjcode"] for entry in found} == set(CODES)
+    assert all(Path(entry["path"]).name == entry["rjcode"][2:] for entry in found)
+
+
+def test_explicit_work_keeps_nested_bonus_with_its_payload(tmp_path):
+    for code in CODES:
+        (tmp_path / code / "RJ01323538 特典").mkdir(parents=True)
+        (tmp_path / code / "RJ01333845 特典").mkdir()
+    engine = TaskEngine.__new__(TaskEngine)
+
+    found = engine._detect_multi_rj_subfolders(str(tmp_path))
+
+    assert {entry["rjcode"] for entry in found} == set(CODES)
+    assert all(Path(entry["path"]).parent == tmp_path for entry in found)
+
+
 @pytest.mark.asyncio
 async def test_dispatch_failure_preserves_moved_payload(tmp_path, monkeypatch):
     from app.config import settings
