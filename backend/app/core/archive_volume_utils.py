@@ -211,6 +211,37 @@ def get_archive_volume_paths(file_path: str) -> List[str]:
     return group.volumes if group else [file_path]
 
 
+def archive_source_identity(file_path: str) -> Optional[dict]:
+    """归档和所有已识别分卷共同决定缓存身份，增删或替换任一卷均失效。"""
+    if not file_path:
+        return None
+    try:
+        absolute_path = os.path.abspath(file_path)
+        filename = normalize_part_volume_filename(os.path.basename(file_path))
+        # 普通 7z、伪装媒体和可执行后端不需要枚举兄弟项；ZIP/RAR 等尾卷仍需跟踪增删。
+        may_have_volumes = re.search(
+            r"(?:\.part\d+(?:\.(?:rar|zip|7z|exe))?|\.(?:zip|rar|exe|[zer]\d{2}|\d{3}))$",
+            filename, re.IGNORECASE,
+        )
+        paths = set(get_archive_volume_paths(absolute_path)) if may_have_volumes else set()
+        paths.add(absolute_path)
+        # 截断 ZIP 尾卷的格式判定仍由解压器负责，这里只跟踪同名兄弟卷变化。
+        if file_path.lower().endswith(".zi"):
+            base = os.path.basename(file_path)[:-3]
+            directory = os.path.dirname(os.path.abspath(file_path))
+            paths.update(
+                os.path.join(directory, name) for name in os.listdir(directory)
+                if re.fullmatch(rf"{re.escape(base)}\.z\d{{2}}", name, re.IGNORECASE)
+            )
+        members = []
+        for path in sorted(paths):
+            info = os.stat(path)
+            members.append([path, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns])
+        return {"members": members}
+    except OSError:
+        return None
+
+
 def get_archive_total_size(file_path: str) -> int:
     """统计压缩包总大小，分卷包返回整组大小。"""
 

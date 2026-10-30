@@ -56,6 +56,7 @@ class LinkedSubtitleImportService:
     PENDING_SOURCE_MODE = "linked_translation_archive_pending"
     EXISTING_SUBTITLE_SOURCE_MODE = "linked_translation_archive_existing_subtitle_conflict"
     PENDING_EXECUTING_STATUS = "PROCESSING"
+    ARCHIVE_SCAN_VERSION = 2
     TERMINAL_PROBE_STATUSES = {"missing_password", "extract_failed", "nested_extract_failed"}
     PENDING_EXECUTION_LEASE_SECONDS = max(
         60,
@@ -372,7 +373,9 @@ class LinkedSubtitleImportService:
                 probe_task.task_metadata = dict(probe_task.task_metadata or {})
                 probe_task.task_metadata["manual_retry_passwords"] = inherited_passwords
                 probe_task.task_metadata["manual_retry_password"] = inherited_passwords[0]
-                probe_task.task_metadata["manual_retry_password_only"] = True
+                probe_task.task_metadata["manual_retry_password_only"] = bool(
+                    task is not None and (task.task_metadata or {}).get("manual_retry_password_only")
+                )
             extract_future = asyncio.create_task(self.extract_service.extract(probe_task))
             try:
                 extracted_dir = await asyncio.shield(extract_future)
@@ -418,6 +421,15 @@ class LinkedSubtitleImportService:
                 }
 
             extracted_subtitles = await asyncio.to_thread(self._scan_source_subtitles, extracted_dir, extracted_dir)
+            if (probe_task.task_metadata or {}).get("nested_archive_failures") or (probe_task.task_metadata or {}).get("nested_incomplete"):
+                failures = (probe_task.task_metadata or {}).get("nested_archive_failures") or []
+                if not isinstance(failures, list):
+                    failures = [str(failures)]
+                return "", [], {
+                    "status": "nested_extract_failed",
+                    "reason": "嵌套归档扫描未完成：" + "；".join(str(item) for item in failures[:3]),
+                    "discovered_subtitle_count": len(extracted_subtitles),
+                }
             if not extracted_subtitles:
                 raw_nested_failures = (probe_task.task_metadata or {}).get("nested_archive_failures") or []
                 nested_failures = (
@@ -1384,6 +1396,9 @@ class LinkedSubtitleImportService:
         source_subtitles: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         preview.update({
+            "archive_scan_version": self.ARCHIVE_SCAN_VERSION,
+            "archive_scan_complete": True,
+            "archive_scan_identity": self._archive_scan_identity(str(preview.get("archive_path") or preview.get("source_path") or "")),
             "source_subtitle_dir": stage_dir,
             "staged_subtitle_dir": stage_dir,
             "source_has_subtitles": bool(source_subtitles),
@@ -1407,7 +1422,15 @@ class LinkedSubtitleImportService:
         existing_stage_dir = str(
             preview.get("source_subtitle_dir") or preview.get("staged_subtitle_dir") or ""
         ).strip()
-        if existing_stage_dir and os.path.isdir(existing_stage_dir):
+        source_identity = self._archive_scan_identity(archive_path)
+        if (
+            source_identity is not None
+            and
+            preview.get("archive_scan_version") == self.ARCHIVE_SCAN_VERSION
+            and preview.get("archive_scan_complete") is True
+            and preview.get("archive_scan_identity") == source_identity
+            and existing_stage_dir and os.path.isdir(existing_stage_dir)
+        ):
             source_subtitles = self._scan_source_subtitles(existing_stage_dir, source_root=existing_stage_dir)
             return self._apply_staged_subtitles_to_preview(
                 preview,
@@ -1416,6 +1439,16 @@ class LinkedSubtitleImportService:
             )
 
         stage_dir, source_subtitles, probe_result = await self._collect_archive_subtitles_to_stage(archive_path, hint_password=hint_password)
+        final_identity = self._archive_scan_identity(archive_path)
+        if source_identity is not None and final_identity != source_identity:
+            if stage_dir:
+                self._cleanup_stage_dir(stage_dir)
+            stage_dir, source_subtitles = "", []
+            probe_result = {"status": "extract_failed", "reason": "字幕扫描期间来源已变化，请重新预检"}
+        preview["archive_path"] = archive_path
+        preview["archive_scan_version"] = self.ARCHIVE_SCAN_VERSION
+        preview["archive_scan_complete"] = (probe_result or {}).get("status") in {"ok", "no_subtitles"}
+        preview["archive_scan_identity"] = final_identity
         if not source_subtitles:
             if stage_dir:
                 self._cleanup_stage_dir(stage_dir)
@@ -1430,6 +1463,12 @@ class LinkedSubtitleImportService:
             stage_dir=stage_dir,
             source_subtitles=source_subtitles,
         )
+
+    @staticmethod
+    def _archive_scan_identity(archive_path: str) -> Optional[Dict[str, Any]]:
+        """来源发生变化时，旧工作区和旧零字幕结论同时失效。"""
+        from .archive_volume_utils import archive_source_identity
+        return archive_source_identity(archive_path)
 
     def _is_path_in_library(self, library_id: str, folder_path: str) -> bool:
         try:
@@ -3014,6 +3053,13 @@ class LinkedSubtitleImportService:
         preview = dict(prepared_preview or {})
         if not preview:
             preview = await self.preview_archive_import(archive_path, preferred_library_id=preferred_library_id)
+        if (
+            preview.get("archive_scan_version") != self.ARCHIVE_SCAN_VERSION
+            or preview.get("archive_scan_complete") is not True
+            or self._archive_scan_identity(archive_path) is None
+            or preview.get("archive_scan_identity") != self._archive_scan_identity(archive_path)
+        ):
+            preview = await self._stage_archive_subtitles_for_preview(archive_path, preview)
         if preview.get("source_subtitle_probe_status") in self.TERMINAL_PROBE_STATUSES:
             raise LinkedSubtitleExtractFailed(preview)
         if not (preview.get("source_subtitle_dir") or preview.get("staged_subtitle_dir")):
@@ -4487,7 +4533,17 @@ class LinkedSubtitleImportService:
             if current_status != "PENDING":
                 raise ValueError("字幕补配预检单当前状态不可执行")
             previous_preview = dict((record.analysis_info or {}).get("preview") or {})
-            if previous_preview.get("source_subtitle_probe_status") in self.TERMINAL_PROBE_STATUSES:
+            if (
+                previous_preview.get("source_subtitle_probe_status") in self.TERMINAL_PROBE_STATUSES
+                and (
+                    previous_preview.get("archive_scan_version") != self.ARCHIVE_SCAN_VERSION
+                    or (
+                        previous_preview.get("archive_scan_identity") is not None
+                        and previous_preview.get("archive_scan_identity")
+                        == self._archive_scan_identity(str(record.new_path or ""))
+                    )
+                )
+            ):
                 self._convert_pending_extract_problem(record, previous_preview)
                 db.commit()
                 raise LinkedSubtitleExtractFailed(previous_preview)

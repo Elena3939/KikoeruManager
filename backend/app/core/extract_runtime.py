@@ -21,11 +21,8 @@ class ArchiveFingerprintCache(MutableMapping):
 
     @staticmethod
     def fingerprint(path):
-        try:
-            stat = os.stat(path)
-            return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
-        except OSError:
-            return None
+        from .archive_volume_utils import archive_source_identity
+        return archive_source_identity(path)
 
     def __getitem__(self, path):
         fingerprint, value = self._values[path]
