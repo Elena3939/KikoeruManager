@@ -147,6 +147,8 @@ const FALLBACK_POLL_INTERVAL_MS = 30000
 const FALLBACK_POLL_MAX_INTERVAL_MS = 120000
 let lastDetailFetchedAt = 0
 let lastDetailSyncSignature = ''
+let detailRequestVersion = 0
+const detailRequests = new Map()
 let fallbackPollDelayMs = FALLBACK_POLL_INTERVAL_MS
 
 const domainOptions = [
@@ -345,6 +347,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  detailRequestVersion += 1
   window.removeEventListener('kikoerumanager:events:message', handleTaskCenterStreamEvent)
   if (typeof document !== 'undefined') {
     document.removeEventListener('visibilitychange', handleVisibilityChange)
@@ -603,12 +606,17 @@ async function refreshTaskCenter(showMessage = false, options = {}) {
 }
 
 async function fetchSelectedItemDetail(itemId, options = {}) {
-  const { force = false, silent = false } = options
-  if (!force && detailLoading.value) return
+  const { silent = false } = options
+  const requestVersion = ++detailRequestVersion
   if (!silent) detailLoading.value = true
   try {
-    const detail = await taskCenterApi.getItem({ item_id: itemId, _t: Date.now() })
-    if (selectedItemId.value === itemId) {
+    let request = detailRequests.get(itemId)
+    if (!request) {
+      request = taskCenterApi.getItem({ item_id: itemId, _t: Date.now() })
+      detailRequests.set(itemId, request)
+    }
+    const detail = await request
+    if (selectedItemId.value === itemId && requestVersion === detailRequestVersion) {
       selectedItemDetail.value = detail || null
       const currentSummary = items.value.find((item) => item.id === itemId)
       lastDetailSyncSignature = buildSummarySyncSignature(currentSummary || detail || {})
@@ -617,7 +625,8 @@ async function fetchSelectedItemDetail(itemId, options = {}) {
   } catch (error) {
     console.error('获取任务详情失败:', error)
   } finally {
-    if (!silent) detailLoading.value = false
+    detailRequests.delete(itemId)
+    if (requestVersion === detailRequestVersion) detailLoading.value = false
   }
 }
 
@@ -821,33 +830,10 @@ function buildTreeRows(treeItems = []) {
       parentKey = joined
     })
   }
-  // 压掉重复同名 / RJ 前缀的包装目录
-  const dedupeTreeDirs = (nodes) => {
-    const dirKey = (name) => String(name || '').toLowerCase().replace(/rj0?/g, '').replace(/[^a-z0-9]/g, '')
-    const walk = (items, parentName = '') => {
-      const out = []
-      const pk = dirKey(parentName)
-      for (const item of items || []) {
-        if (!item.children || !item.children.length) { out.push(item); continue }
-        item.children = walk(item.children, item.label)
-        const ck = dirKey(item.label)
-        if (pk && ck && (ck === pk || ck.includes(pk) || pk.includes(ck))) {
-          out.push(...item.children)
-        } else if (item.children.length === 1 && item.children[0].children && item.children[0].children.length) {
-          const childKey = dirKey(item.children[0].label)
-          if (childKey && ck && (childKey === ck || childKey.includes(ck) || ck.includes(childKey))) {
-            out.push({ ...item.children[0], label: item.label || item.children[0].label, key: item.key })
-          } else { out.push(item) }
-        } else { out.push(item) }
-      }
-      return out
-    }
-    return walk(nodes)
-  }
-  const dedupedRoots = dedupeTreeDirs(roots)
+  const collator = new Intl.Collator('zh-Hans-CN', { numeric: true })
   const compareNodes = (left, right) => {
     if (left.type !== right.type) return left.type === 'dir' ? -1 : 1
-    return left.label.localeCompare(right.label, 'zh-Hans-CN-u-kn-true')
+    return collator.compare(left.label, right.label)
   }
   const rows = []
   const walk = (nodes, depth = 0) => {
@@ -880,7 +866,7 @@ function buildTreeRows(treeItems = []) {
       if (hasChildren && expanded) walk(node.children, depth + 1)
     }
   }
-  walk(dedupedRoots)
+  walk(roots)
   return rows
 }
 
@@ -1220,7 +1206,8 @@ function resolveFileTreeSnapshot(item) {
   const extractedItems = Array.isArray(metadata.extracted_file_tree_items)
     ? metadata.extracted_file_tree_items
     : (Array.isArray(metadata.file_tree_items) ? metadata.file_tree_items : [])
-  if (item?.status === 'completed' && finalItems.length) {
+  const sourceField = getTaskFileTreeSourceField(item)
+  if (sourceField === 'final_file_tree_items' && finalItems.length) {
     return {
       items: finalItems,
       kind: 'final',
@@ -1256,7 +1243,9 @@ function getTaskFileTreeSourceField(item) {
   const hasFinal = finalItems.length > 0 || Number(metadata.final_file_tree_items_total || 0) > 0
   const hasExtracted = extractedItems.length > 0
     || Number(metadata.extracted_file_tree_items_total || metadata.file_tree_items_total || 0) > 0
-  if (item?.status === 'completed' && hasFinal) return 'final_file_tree_items'
+  const hasFilterHistory = ['filtered_items', 'filtered_files', 'filtered_dirs']
+    .some(field => Array.isArray(metadata[field]) && metadata[field].length > 0)
+  if (item?.status === 'completed' && hasFinal && !(hasExtracted && hasFilterHistory)) return 'final_file_tree_items'
   if (hasExtracted) {
     return Array.isArray(metadata.extracted_file_tree_items) || metadata.extracted_file_tree_items_total
       ? 'extracted_file_tree_items'
@@ -1332,11 +1321,6 @@ function buildFileTreeCacheSignature(item) {
     metadata.file_tree_view_kind || '',
     metadata.final_file_tree_root_label || '',
     metadata.extracted_file_tree_root_label || '',
-    buildFileTreeArraySignature(metadata.final_file_tree_items),
-    buildFileTreeArraySignature(metadata.extracted_file_tree_items),
-    buildFileTreeArraySignature(metadata.file_tree_items),
-    buildFileTreeArraySignature(metadata.upload_files),
-    buildFileTreeArraySignature(metadata.uploaded_files),
     buildFileTreeArraySignature(metadata.download_files),
     metadata.download_files_total || '',
     metadata.download_files_truncated ? 'truncated' : '',

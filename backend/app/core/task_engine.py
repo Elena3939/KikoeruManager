@@ -1071,6 +1071,9 @@ class TaskEngine:
         if (task.task_metadata or {}).get("scan_id"):
             if task._input_persisted_status != task.status or task._input_lifecycle_pending:
                 await asyncio.to_thread(self.persist_task_snapshot, task)
+        elif (task.task_metadata or {}).get("retry_from_conflicts"):
+            if task._input_persisted_status != task.status:
+                await asyncio.to_thread(self.persist_task_snapshot, task)
         if (task.task_metadata or {}).get("conflict_resolution_conflict_id"):
             await asyncio.to_thread(
                 self._refresh_conflict_resolution_progress,
@@ -1374,6 +1377,8 @@ class TaskEngine:
         previous = self._persisted_task_snapshot_versions.get(task.id)
         if self._is_terminal_or_waiting_status(task):
             return True
+        if previous is not None and previous[1] != version_key[1]:
+            return True
         if previous is None:
             return True
         if previous == version_key:
@@ -1404,9 +1409,31 @@ class TaskEngine:
             last_write_at = float(self._materialized_task_center_item_last_write_at.get(item_id, 0.0) or 0.0)
         return time.monotonic() - last_write_at >= max(0.2, self._materialized_progress_min_interval_seconds)
 
+    @classmethod
+    def write_task_snapshot(cls, db, task: Task):
+        """写入调用方事务，由调用方与占用、问题记录一起提交。"""
+        from ..models.database import Task as TaskRecord
+
+        record = db.get(TaskRecord, task.id)
+        if record is None:
+            record = TaskRecord(id=task.id)
+            db.add(record)
+        record.type = task.type.value if isinstance(task.type, TaskType) else str(task.type or "")
+        record.status = task.status.value if isinstance(task.status, TaskStatus) else str(task.status or "")
+        record.source_path = task.source_path
+        record.output_path = task.output_path
+        record.progress = int(task.progress or 0)
+        record.current_step = str(task.current_step or "")[:100]
+        record.error_message = task.error_message
+        record.created_at = task.created_at
+        record.started_at = task.started_at
+        record.completed_at = task.completed_at
+        record.task_metadata = cls._task_persistence_metadata(task)
+        return record
+
     def persist_task_snapshot(self, task: Task) -> None:
         """把需要跨重启保留的任务快照写入 tasks 表。"""
-        from ..models.database import SessionLocal, Task as TaskRecord
+        from ..models.database import SessionLocal
 
         self._ensure_task_context(task)
         if (task.task_metadata or {}).get("scan_id"):
@@ -1430,23 +1457,10 @@ class TaskEngine:
             return
         db = SessionLocal()
         try:
-            record = db.query(TaskRecord).filter(TaskRecord.id == task.id).first()
-            if not record:
-                record = TaskRecord(id=task.id)
-                db.add(record)
-
-            record.type = task.type.value if isinstance(task.type, TaskType) else str(task.type or "")
-            record.status = task.status.value if isinstance(task.status, TaskStatus) else str(task.status or "")
-            record.source_path = task.source_path
-            record.output_path = task.output_path
-            record.progress = int(task.progress or 0)
-            record.current_step = task.current_step
-            record.error_message = task.error_message
-            record.created_at = task.created_at
-            record.started_at = task.started_at
-            record.completed_at = task.completed_at
-            record.task_metadata = self._task_persistence_metadata(task)
+            persisted_status = task.status
+            self.write_task_snapshot(db, task)
             db.commit()
+            task._input_persisted_status = persisted_status
             self._persisted_task_snapshot_versions[task.id] = version_key
             self._persisted_task_snapshot_last_write_at[task.id] = time.monotonic()
         except Exception:
@@ -2264,6 +2278,7 @@ class TaskEngine:
             "garbled_filename_sample",
             "garbled_filename_score_before",
             "garbled_filename_score_after",
+            "garbled_filename_check_passed",
             "garbled_filename_repaired_count",
             "garbled_filename_guard_origin",
             # surrogate 修复统计：让操作记录里能看到本次有几个非 UTF-8 文件名被自动反解
@@ -2295,6 +2310,8 @@ class TaskEngine:
             next_metadata["resolution_updated_at"] = datetime.now().isoformat()
 
             if action == "RETRY":
+                if not metadata.get("scan_id"):
+                    self.write_task_snapshot(db, task)
                 if task.status == TaskStatus.COMPLETED:
                     retry_completed_at = datetime.now().isoformat()
                     next_metadata["retry_result"] = "completed"
@@ -5016,6 +5033,14 @@ class TaskEngine:
             task = self.tasks[task_id]
             should_log_immediately = task.status == TaskStatus.PENDING and task_id not in self.processing
             task.cancel()
+            metadata = task.task_metadata or {}
+            if (
+                metadata.get("retry_from_conflicts") and not metadata.get("scan_id")
+                and task_id not in self.processing and task_id not in self._running_task_ids
+            ):
+                # 未运行任务不会进入执行器收尾；取消也必须提交终态并退回问题项。
+                self._finalize_conflict_resolution_task(task)
+                self.persist_task_snapshot(task)
             archive_job_id = str((task.task_metadata or {}).get("archive_queue_id") or "").strip()
             if archive_job_id:
                 try:

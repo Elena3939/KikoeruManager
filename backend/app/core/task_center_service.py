@@ -83,6 +83,7 @@ class TaskCenterService:
         "garbled_filename_score",
         "garbled_filename_score_before",
         "garbled_filename_score_after",
+        "garbled_filename_check_passed",
         "garbled_filename_repaired_count",
         "garbled_filename_codec_pairs_tried",
         "garbled_filename_guard_origin",
@@ -427,6 +428,18 @@ class TaskCenterService:
                 enriched.get("file_tree_root_label")
             )
         if self._should_skip_directory_file_tree_snapshot(metadata, domain):
+            return enriched
+        # 进行中的目录仍在变化；详情读取只能使用任务已生成的快照，不能和解压争抢磁盘。
+        if self._safe_text(task_status).lower() in {
+            TaskStatus.PENDING.value, TaskStatus.PROCESSING.value, TaskStatus.PAUSED.value,
+            TaskStatus.WAITING_MANUAL.value, TaskStatus.WAITING_RETRY.value,
+        }:
+            return enriched
+        # 有过滤记录时以过滤前快照为准，删除标识沿用原始路径，不重扫过滤后的库存树。
+        if enriched.get("extracted_file_tree_items") and any(
+            enriched.get(field) for field in ("filtered_items", "filtered_files", "filtered_dirs")
+        ):
+            enriched["file_tree_view_kind"] = "extracted_snapshot"
             return enriched
 
         final_candidate_paths: List[str] = []
@@ -2507,6 +2520,10 @@ class TaskCenterService:
             **counts,
         }
 
+    def _get_engine_item_detail(self, task_id: str) -> Optional[Dict[str, Any]]:
+        task = get_task_engine().get_task(task_id)
+        return self._safe_serialize_engine_task(task, mode="detail") if task else None
+
     async def get_item(
         self,
         *,
@@ -2521,11 +2538,13 @@ class TaskCenterService:
         # engine 任务可以直接按 ID 序列化，不要为了一个详情把所有任务都做一次 detail。
         if normalized_item_id.startswith("engine:"):
             engine_task_id = normalized_item_id.split(":", 1)[1].strip()
-            task = get_task_engine().get_task(engine_task_id)
-            return self._safe_serialize_engine_task(task, mode="detail") if task else None
+            return await run_sync_stage(
+                "task_center_detail", self._get_engine_item_detail, engine_task_id
+            )
         if normalized_engine_task_id:
-            task = get_task_engine().get_task(normalized_engine_task_id)
-            return self._safe_serialize_engine_task(task, mode="detail") if task else None
+            return await run_sync_stage(
+                "task_center_detail", self._get_engine_item_detail, normalized_engine_task_id
+            )
 
         # 非 engine 项（例如待处理字幕项）仍走聚合路径。
         items = await self._build_all_items(mode="detail")
@@ -2566,6 +2585,9 @@ class TaskCenterService:
         if requested_field not in self.PAGINATED_DETAIL_FIELDS:
             requested_field = "download_files"
         rows = metadata.get(requested_field)
+        # 详情会把旧 file_tree_items 映射为 extracted_file_tree_items，续页必须使用同一来源。
+        if requested_field == "extracted_file_tree_items" and not rows:
+            rows = metadata.get("file_tree_items")
         if not isinstance(rows, list):
             rows = []
         safe_offset = max(0, int(offset or 0))

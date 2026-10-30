@@ -12,7 +12,7 @@ from sqlalchemy.dialects.postgresql import insert
 from ..models.database import (
     ActivityLog, ConflictWork, DeferredArchiveJob, InputScanCandidate, InputScanEntry,
     InputScanOutbox, InputScanRun, InputSourceClaim, SessionLocal,
-    Task as TaskRecord, get_local_now,
+    Task as TaskRecord, TaskCenterItem, get_local_now,
 )
 
 TERMINAL = frozenset({"submitted", "routed", "skipped", "failed", "cancelled"})
@@ -49,6 +49,48 @@ class SourceChanged(ValueError):
     """源证据变化需要重新观察；与业务校验失败分开处理。"""
 
 
+def _recover_failed_conflict_retry(db, conflict, owner, paths):
+    """仅凭同一问题的失败重试和终态快照补回缺失事实，不释放占用。"""
+    metadata = conflict.new_metadata or {}
+    if not (
+        conflict.status == "PENDING"
+        and str(conflict.task_id or "") == owner
+        and metadata.get("resolution_action") == "RETRY"
+        and metadata.get("resolution_task_state") == "failed"
+        and metadata.get("resolution_task_id") == owner
+        and metadata.get("retry_task_id") == owner
+    ):
+        return None
+    item = db.get(TaskCenterItem, f"engine:{owner}")
+    if not item or item.engine_task_id != owner:
+        return None
+    payload = item.payload_json or {}
+    source = payload.get("source_path")
+    if not (
+        item.status in {"waiting_manual", "failed", "cancelled", "completed"}
+        and payload.get("status") == item.status
+        and payload.get("engine_task_id") == owner
+        and source and path_key(source) in paths
+        and item.kind in {"auto_process", "extract", "process_existing_folder", "rename"}
+    ):
+        return None
+    record = TaskRecord(
+        id=owner, type=item.kind, status=item.status, source_path=source,
+        current_step=str(payload.get("current_step") or "")[:100],
+        error_message=metadata.get("resolution_error") or metadata.get("error_message"),
+        created_at=item.created_at,
+        task_metadata={
+            "retry_from_conflicts": True,
+            "retry_conflict_id": conflict.id,
+            "conflict_resolution_conflict_id": conflict.id,
+            "conflict_resolution_action": "RETRY",
+            "recovered_missing_retry_snapshot": True,
+        },
+    )
+    db.add(record)
+    return record
+
+
 def handoff_conflict_claims(db, conflict, task_id):
     """与问题记录更新共用事务；整组交接，保留扫描历史，不释放保护。"""
     source_lock(db)
@@ -72,6 +114,8 @@ def handoff_conflict_claims(db, conflict, task_id):
     ).all()
     for owner in {claim.owner_id for claim in claims}:
         record = db.get(TaskRecord, owner)
+        if record is None:
+            record = _recover_failed_conflict_retry(db, conflict, owner, paths)
         if (
             record is None
             or record.status not in {"waiting_manual", "failed", "cancelled", "completed"}

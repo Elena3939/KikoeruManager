@@ -141,7 +141,7 @@
 
         <div
           v-if="getGarbledDiagnostic(item)"
-          class="mt-3 rounded-[12px] border border-amber-200 bg-white p-3 shadow-[0_8px_18px_-12px_rgba(217,119,6,0.28)]"
+          class="filename-diagnostic mt-3 rounded-[8px] border border-slate-200 bg-white p-3"
         >
           <div class="flex items-start gap-2">
             <AlertTriangle :size="15" :stroke-width="2.4" class="mt-0.5 flex-shrink-0 text-amber-600" />
@@ -172,7 +172,7 @@
                   <b class="mt-0.5 block text-slate-800">{{ getGarbledDiagnostic(item).origin || '—' }}</b>
                 </div>
               </div>
-              <div v-if="getGarbledDiagnostic(item).topSamples.length" class="mt-2 max-h-[142px] overflow-y-auto rounded-[10px] border border-slate-100 detail-scroll">
+              <div v-if="getGarbledDiagnostic(item).topSamples.length" class="filename-diagnostic-samples mt-2 max-h-[142px] overflow-y-auto rounded-[8px] border border-slate-100">
                 <div
                   v-for="entry in getGarbledDiagnostic(item).topSamples"
                   :key="`${entry.name}-${entry.score}`"
@@ -297,7 +297,7 @@
         </div>
 
         <div class="task-file-tree-card">
-            <div ref="treeScrollRef" class="task-file-tree detail-scroll">
+            <div :ref="setTreeScrollElement" class="task-file-tree detail-scroll" :style="treeViewportStyle">
               <div class="task-file-tree-virtual-canvas" :style="treeVirtualCanvasStyle">
               <div
               v-for="{ virtualRow, entry } in virtualTreeRows"
@@ -479,9 +479,16 @@ const treeScrollRef = ref(null)
 const TREE_ROW_HEIGHT = 34
 const TREE_ROW_OVERSCAN = 18
 const treeRows = computed(() => props.fileTreeSections?.[0]?.rows || [])
+function setTreeScrollElement(element) {
+  treeScrollRef.value = element
+}
+const treeViewportStyle = computed(() => ({
+  height: `${Math.min(560, treeRows.value.length * TREE_ROW_HEIGHT + 20)}px`,
+}))
 const treeRowVirtualizer = useVirtualizer(computed(() => ({
   count: treeRows.value.length,
   getScrollElement: () => treeScrollRef.value,
+  getItemKey: index => treeRows.value[index]?.key ?? index,
   estimateSize: () => TREE_ROW_HEIGHT,
   overscan: TREE_ROW_OVERSCAN,
 })))
@@ -503,14 +510,12 @@ const virtualTreeRows = computed(() => {
   }))
 })
 const treeVirtualCanvasStyle = computed(() => ({
-  height: `${Math.max(
-    treeRowVirtualizer.value.getTotalSize(),
-    treeRows.value.length ? treeRows.value.length * TREE_ROW_HEIGHT : 0,
-  )}px`,
+  height: `${treeRows.value.length * TREE_ROW_HEIGHT}px`,
 }))
 
-watch(() => treeRows.value.length, () => {
-  nextTick(() => treeRowVirtualizer.value.measure())
+watch(() => props.item?.id, () => {
+  closeRestoreMenu()
+  if (treeScrollRef.value) treeScrollRef.value.scrollTop = 0
 }, { flush: 'post' })
 
 onMounted(() => {
@@ -646,6 +651,10 @@ function getGarbledDiagnostic(item) {
   if (!sample && !topSamples.length) return null
   return {
     sample,
+    checkPassed: metadata.garbled_filename_check_passed ?? (
+      Number(metadata.garbled_filename_score_after ?? metadata.garbled_filename_score ?? 0) < 30 &&
+      Number(metadata.garbled_filename_garbled_count || 0) === 0
+    ),
     scoreBefore: Number(metadata.garbled_filename_score_before ?? metadata.garbled_filename_score ?? 0).toFixed(1),
     scoreAfter: Number(metadata.garbled_filename_score_after ?? metadata.garbled_filename_score ?? 0).toFixed(1),
     repairedCount: Number(metadata.garbled_filename_repaired_count || 0),
@@ -668,7 +677,10 @@ function buildGarbledSummary(info) {
   if (info.surrogateRepairedCount) surrogateBits.push(`自动反解 ${info.surrogateRepairedCount} 个非 UTF-8 文件名`)
   if (info.surrogateEscapedCount) surrogateBits.push(`字面转义 ${info.surrogateEscapedCount} 个`)
   const surrogateText = surrogateBits.length ? `；本次${surrogateBits.join('、')}。` : ''
-  return `7zz 已完成解压，但文件名评分达到 ${info.scoreAfter}（阈值 >= 30）${total}${count}。系统已尝试常见编码反解，仍认为存在乱码风险${surrogateText}`
+  const conclusion = info.checkPassed
+    ? '本次复检未超过风险阈值；评分通过不代表所有名称均已恢复。'
+    : '复检仍存在乱码风险。'
+  return `文件名评分 ${info.scoreBefore} → ${info.scoreAfter}（风险阈值 >= 30）${total}${count}。已修复 ${info.repairedCount} 个名称。${conclusion}${surrogateText}`
 }
 
 const treeFilterOptions = [
@@ -881,6 +893,7 @@ function actionToneClass(action) {
 }
 
 .task-file-tree-virtual-canvas > .tree-row {
+  box-sizing: border-box;
   position: absolute;
   top: 0;
   right: 0;
@@ -1226,6 +1239,18 @@ function actionToneClass(action) {
 @keyframes detail-fade-up {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+.filename-diagnostic-samples {
+  background: #f8fafc;
+  scrollbar-color: #94a3b8 transparent;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .filename-diagnostic),
+:global(html.kikoerumanager-dark body #app .tasks-page .filename-diagnostic-samples) {
+  background: var(--tasks-panel) !important;
+  border-color: var(--tasks-border) !important;
+  box-shadow: none !important;
 }
 
 .detail-scroll::-webkit-scrollbar {

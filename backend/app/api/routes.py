@@ -6915,7 +6915,7 @@ async def _retry_extract_failed_conflict(
 ):
     """重试问题作品中的失败项。"""
     from ..models.database import ConflictWork, get_db
-    from ..core.task_engine import TaskStatus
+    from ..core.task_engine import TaskEngine, TaskStatus
     from ..core.input_scan_repository import SourceOccupied, handoff_conflict_claims, source_lock
 
     db = next(get_db())
@@ -7026,6 +7026,8 @@ async def _retry_extract_failed_conflict(
                 existing_task.task_metadata["manual_retry_ignore_garbled"] = True
             if failed_task_id:
                 existing_task.task_metadata["retry_failed_task_id"] = failed_task_id
+            if not existing_task.task_metadata.get("scan_id"):
+                TaskEngine.write_task_snapshot(db, existing_task)
             db.commit()
             return {
                 "success": True,
@@ -7128,6 +7130,7 @@ async def _retry_extract_failed_conflict(
         next_metadata["resolution_task_id"] = task.id
         conflict.task_id = task.id
         conflict.new_metadata = next_metadata
+        TaskEngine.write_task_snapshot(db, task)
         db.commit()
 
         from ..core.conflict_retry_activity import log_retry_queued
@@ -7136,7 +7139,7 @@ async def _retry_extract_failed_conflict(
             await engine.submit(task)
         except BaseException:
             # 入队未成功时恢复同一问题的归属，不能遗留无法执行的“处理中”记录。
-            from ..models.database import InputSourceClaim
+            from ..models.database import InputSourceClaim, Task as TaskRecord
 
             db.rollback()
             source_lock(db)
@@ -7154,6 +7157,11 @@ async def _retry_extract_failed_conflict(
                 conflict.task_id = failed_task_id or None
                 conflict.status = "PENDING"
                 conflict.new_metadata = conflict_metadata
+                record = db.get(TaskRecord, task.id)
+                if record is not None:
+                    record.status = TaskStatus.CANCELLED.value
+                    record.current_step = "重试入队失败，已恢复原问题归属"
+                    record.completed_at = datetime.now()
                 db.commit()
             raise
 
@@ -21110,9 +21118,8 @@ async def circle_completion_cover(filename: str):
     from ..core.circle_image_cache_service import get_circle_image_cache_service
 
     image_cache_service = get_circle_image_cache_service()
-    rjcode, variant = image_cache_service._parse_filename(filename)
     cache_path = image_cache_service.resolve_filename(filename)
-    cached = cache_path is not None and await asyncio.to_thread(image_cache_service.has_local, rjcode, variant)
+    cached = cache_path is not None and await asyncio.to_thread(cache_path.is_file)
     if cache_path is not None and not cached:
         # 缺图不能阻塞 HTTP 请求：下载放入受控后台任务，当前请求立即返回 404。
         # 前端会显示占位并可稍后重试，避免每张图占用 12 秒事件循环预算。
@@ -21145,6 +21152,10 @@ async def circle_completion_fetch_cover(payload: CircleCompletionCoverFetchReque
         variant=variant,
         force=bool(payload.force),
     )
+    if path is not None or service.failure_detail(rjcode, variant).get("error_code") == "not_found":
+        from ..core.circle_completion_service import get_circle_completion_service
+
+        await asyncio.to_thread(get_circle_completion_service().invalidate_completion_cover_cache, rjcode)
     if path is None or not path.is_file():
         return {
             "success": False,
