@@ -77,6 +77,7 @@ class Executor:
             mappings.append(item)
         return {"protocol_version": VERSION, "mapping_version": self.mapping_version,
                 "container_id": self.config["container_id"], "started_at": self.started_at,
+                "capabilities": ["directory_transaction_v1"],
                 "max_connections": 32, "max_executions": 4, "mappings": mappings}
 
     def _lock(self, operation_id):
@@ -137,7 +138,105 @@ class Executor:
             with self.open_path(request["destination_parent"]) as (parent, _):
                 left, right = filesystem_id(source), filesystem_id(parent)
         return {"same_filesystem": left == right, "source_filesystem": left,
-                "target_filesystem": right, "mapping_version": self.mapping_version}
+                "target_filesystem": right, "mapping_version": self.mapping_version,
+                "capabilities": ["directory_transaction_v1"]}
+
+    def directory_transaction(self, request):
+        """目录暂存由应用持有；宿主只克隆成员，不发布、不删除整棵目录。"""
+        operation_id = token(request["operation_id"])
+        with self._lock(operation_id):
+            record = self._read(operation_id)
+            action = request["action"]
+            if action == "begin_directory":
+                parameters = {key: request[key] for key in
+                              ("source", "destination", "mapping_version")}
+                if parameters["mapping_version"] != self.mapping_version:
+                    raise RuntimeError("宿主路径映射已变化")
+                if record:
+                    if record.get("kind") != "directory" or record.get("parameters") != parameters:
+                        raise RuntimeError("目录事务 ID 或参数冲突")
+                    if record["state"] != "preparing":
+                        raise RuntimeError("目录事务已终止")
+                    return record
+                with self.open_path(parameters["source"]) as (source, _):
+                    with self.open_path(parameters["destination"]) as (target, _):
+                        if not stat.S_ISDIR(os.fstat(source).st_mode) or not stat.S_ISDIR(os.fstat(target).st_mode):
+                            raise ValueError("目录事务要求独占暂存目录")
+                        source_path = PurePosixPath(parameters["source"])
+                        target_path = PurePosixPath(parameters["destination"])
+                        if source_path == target_path or source_path in target_path.parents or target_path in source_path.parents:
+                            raise ValueError("目录事务来源和暂存目录不能相互包含")
+                        if os.listdir(target):
+                            raise ValueError("目录事务暂存目录必须为空")
+                        if filesystem_id(source) != filesystem_id(target):
+                            raise RuntimeError("目录事务不能跨文件系统")
+                        record = {
+                            "operation_id": operation_id, "kind": "directory",
+                            "parameters": parameters, "state": "preparing",
+                            "source_identity": identity_stat(os.fstat(source)),
+                            "destination_identity": identity_stat(os.fstat(target)),
+                        }
+                self._save(record)
+                return record
+            if not record or record.get("kind") != "directory":
+                raise RuntimeError("目录事务不存在")
+            if record["state"] != "preparing":
+                raise RuntimeError("目录事务已结束，拒绝继续写入")
+            parameters = record["parameters"]
+            if parameters["mapping_version"] != self.mapping_version:
+                raise RuntimeError("目录事务路径映射已变化")
+            for key in ("source", "destination"):
+                with self.open_path(parameters[key]) as (root, _):
+                    actual = identity_stat(os.fstat(root))
+                    expected = record[key + "_identity"]
+                    if any(actual[field] != expected[field] for field in ("device", "inode")) or stat.S_IFMT(actual["mode"]) != stat.S_IFMT(expected["mode"]):
+                        raise RuntimeError("目录事务根身份发生变化")
+            if action == "finish_directory":
+                record["state"] = "ready"
+                self._save(record)
+                return record
+            if action != "prepare_member":
+                raise ValueError("未知目录事务操作")
+            source_path = PurePosixPath(request["source"])
+            destination_path = PurePosixPath(request["destination"])
+            source_relative = source_path.relative_to(parameters["source"])
+            target_relative = destination_path.relative_to(parameters["destination"])
+            if source_relative.parent != target_relative.parent:
+                raise PermissionError("克隆成员不属于同一目录事务路径")
+            member_id = token(request["member_id"])
+            if destination_path.name != ".kikoerumanager-clone-" + member_id + ".part":
+                raise PermissionError("目录成员必须使用独占克隆暂存名")
+            started = time.monotonic()
+            with self.open_path(str(source_path)) as (source, _):
+                check_regular(os.fstat(source))
+                if identity_stat(os.fstat(source)) != request["source_identity"]:
+                    raise RuntimeError("目录成员来源已变化")
+                with self.open_path(str(destination_path), parent=True) as (parent, name):
+                    if filesystem_id(source) != filesystem_id(parent):
+                        raise RuntimeError("目录成员跨文件系统")
+                    descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                         0o600, dir_fd=parent)
+                    try:
+                        fcntl.ioctl(descriptor, FICLONE, source)
+                        cloned = time.monotonic()
+                        if identity_stat(os.fstat(source)) != request["source_identity"]:
+                            raise RuntimeError("克隆期间来源发生变化")
+                        os.fchown(descriptor, self.config["allowed_uid"], self.config["allowed_gid"])
+                        os.fchmod(descriptor, stat.S_IMODE(os.fstat(source).st_mode))
+                        # 应用恢复最终文件属性后执行文件 fsync，随后提交整树目录屏障。
+                        result = identity_stat(os.fstat(descriptor))
+                    finally:
+                        os.close(descriptor)
+            # 目录项由应用完成整树 fsync 屏障；中断只隔离暂存，绝不清理来源。
+            for key in ("source", "destination"):
+                with self.open_path(parameters[key]) as (root, _):
+                    actual = identity_stat(os.fstat(root))
+                    expected = record[key + "_identity"]
+                    if any(actual[field] != expected[field] for field in ("device", "inode")):
+                        raise RuntimeError("克隆期间目录事务根身份发生变化")
+            return {"destination_identity": result,
+                    "clone_seconds": cloned - started,
+                    "sync_seconds": time.monotonic() - cloned}
 
     def prepare(self, request):
         operation_id = token(request["operation_id"])
@@ -208,6 +307,12 @@ class Executor:
                 return record
             if record["state"] in ("cancelled", "released"):
                 return {"state": record["state"]}
+            if record.get("kind") == "directory":
+                # 与成员操作共用锁；终态落盘后不再接受任何成员写入。
+                # 所有暂存保留给应用按根身份隔离，不猜测崩溃前的成员归属。
+                record["state"] = "cancelled" if request["action"] == "cancel" else "released"
+                self._save(record)
+                return {"state": record["state"]}
             destination = record["parameters"]["destination"]
             try:
                 with self.open_path(destination, parent=True) as (parent, name):
@@ -242,6 +347,8 @@ class Executor:
             return self.probe(request)
         if action == "prepare":
             return self.prepare(request)
+        if action in ("begin_directory", "prepare_member", "finish_directory"):
+            return self.directory_transaction(request)
         if action in ("status", "cancel", "release"):
             return self.control(request)
         raise ValueError("未知文件移动操作")

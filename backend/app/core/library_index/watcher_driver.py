@@ -15,6 +15,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from ..redis_service import get_redis_service
+from ._helpers import should_skip_name, should_skip_relative_path
 from .mutation_service import get_library_index_mutation_service
 
 logger = logging.getLogger(__name__)
@@ -311,7 +312,7 @@ class LibraryIndexWatcherDriver:
                     children = [
                         entry.path
                         for entry in os.scandir(parent)
-                        if entry.is_dir(follow_symlinks=False)
+                        if not should_skip_name(entry.name) and entry.is_dir(follow_symlinks=False)
                     ]
                 except OSError:
                     continue
@@ -349,10 +350,14 @@ class LibraryIndexWatcherDriver:
         if not rows:
             return
         now = time.monotonic()
+        ignored_paths = []
         with self._lock:
             bucket = self._dirty.setdefault(library_id, {})
             for relative_path, _score in rows:
                 normalized_relative = str(relative_path or "").strip().replace("\\", "/").strip("/")
+                if should_skip_relative_path(normalized_relative):
+                    ignored_paths.append(relative_path)
+                    continue
                 if any(part == ".." for part in normalized_relative.split("/")):
                     continue
                 absolute_path = (
@@ -367,6 +372,11 @@ class LibraryIndexWatcherDriver:
                     continue
                 bucket.setdefault(absolute_path, _DirtyPath(first_at=now, last_at=now))
             self._roots[library_id] = root_path
+        if ignored_paths:
+            try:
+                get_redis_service().remove_library_index_dirty_paths_sync(library_id, ignored_paths)
+            except Exception:
+                logger.debug("[索引 watcher] 清除历史内部 dirty 失败", exc_info=True)
 
     def mark_dirty(
         self,
@@ -395,6 +405,8 @@ class LibraryIndexWatcherDriver:
             relative_path = os.path.relpath(normalized, root_path).replace("\\", "/")
             if relative_path == ".":
                 relative_path = ""
+            if should_skip_relative_path(relative_path):
+                return
             if get_library_index_mutation_service().should_suppress_watcher(
                 library_id,
                 relative_path,
@@ -532,6 +544,16 @@ class LibraryIndexWatcherDriver:
     def _requeue(self, library_id: str, absolute_paths: list[str]) -> None:
         now = time.monotonic()
         root_path = self._roots.get(library_id)
+        if root_path:
+            visible_paths = []
+            for path in absolute_paths:
+                try:
+                    relative = os.path.relpath(path, root_path)
+                except ValueError:
+                    continue
+                if not should_skip_relative_path(relative):
+                    visible_paths.append(path)
+            absolute_paths = visible_paths
         with self._lock:
             bucket = self._dirty.setdefault(library_id, {})
             for absolute_path in absolute_paths:
@@ -591,6 +613,15 @@ class LibraryIndexWatcherDriver:
                 continue
             if relative_path == ".":
                 relative_path = ""
+            if should_skip_relative_path(relative_path):
+                try:
+                    get_redis_service().remove_library_index_dirty_paths_sync(
+                        library_id, [relative_path], include_descendants=True,
+                        max_score_ms=dispatch_cutoff_ms,
+                    )
+                except Exception:
+                    logger.debug("[索引 watcher] 清理历史内部路径失败", exc_info=True)
+                continue
             effects.append({
                 "kind": "reconcile",
                 "relative_path": relative_path,
@@ -660,6 +691,8 @@ class LibraryIndexWatcherDriver:
         rows = []
         with os.scandir(directory) as iterator:
             for entry in iterator:
+                if should_skip_name(entry.name):
+                    continue
                 try:
                     stat_result = entry.stat(follow_symlinks=False)
                     is_dir = bool(entry.is_dir(follow_symlinks=False))

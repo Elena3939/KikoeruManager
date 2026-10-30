@@ -41,3 +41,9 @@ def extract_rjcode(value: str) -> Optional[str]:
         return None
     match = _RJ_PATTERN.search(value)
     return match.group(0).upper() if match else None
+
+
+def should_skip_relative_path(relative_path: str) -> bool:
+    """按库存根之下的每个组件过滤，空路径代表可见的库存根。"""
+    parts = str(relative_path or "").replace("\\", "/").split("/")
+    return any(part and should_skip_name(part) for part in parts if part != ".")

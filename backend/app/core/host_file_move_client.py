@@ -40,16 +40,29 @@ class HostMoveClient:
         return self.request("probe", source=os.path.abspath(source),
                             destination_parent=os.path.abspath(destination_parent))
 
-    def clone(self, source, destination, mapping_version, checkpoint, register=None, on_created=None):
+    def begin_directory(self, source, destination, mapping_version, checkpoint, register=None):
+        operation_id = str(uuid.uuid4())
+        checkpoint()
+        if register:
+            register(operation_id)
+        self.request("begin_directory", operation_id=operation_id,
+                     source=os.path.abspath(source), destination=os.path.abspath(destination),
+                     mapping_version=mapping_version, checkpoint=checkpoint)
+        return operation_id
+
+    def clone(self, source, destination, mapping_version, checkpoint, register=None, on_created=None,
+              directory_operation=None):
         operation_id = str(uuid.uuid4())
         pending = os.path.join(os.path.dirname(destination),
                                ".kikoerumanager-clone-" + operation_id + ".part")
         checkpoint()
-        if register:
+        if register and not directory_operation:
             register(operation_id)
         try:
             result = self.request(
-                "prepare", operation_id=operation_id, mapping_version=mapping_version,
+                "prepare_member" if directory_operation else "prepare",
+                operation_id=directory_operation or operation_id, member_id=operation_id,
+                mapping_version=mapping_version,
                 source=os.path.abspath(source), destination=os.path.abspath(pending),
                 source_identity=identity(source), checkpoint=checkpoint,
             )
@@ -61,12 +74,14 @@ class HostMoveClient:
             if on_created:
                 on_created(identity(destination))
             os.unlink(pending)
-            self.request("release", operation_id=operation_id)
+            if not directory_operation:
+                self.request("release", operation_id=operation_id)
+            return result
         except BaseException:
             # cancel 等待正在进行的 ioctl 退出；收不到确认时留下暂存供恢复核对。
             # 执行器从不删除来源或最终目标。
             try:
-                self.request("cancel", operation_id=operation_id)
+                self.request("cancel", operation_id=directory_operation or operation_id)
             except HostMoveError as exc:
                 raise HostMoveError("无法确认宿主克隆已停止，保留来源和暂存等待核对") from exc
             raise

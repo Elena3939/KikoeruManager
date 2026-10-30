@@ -13,6 +13,7 @@ import os
 import shutil
 import stat
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -275,6 +276,27 @@ def copy_path_exclusive_sync(source, destination, *, progress_cb=None, checkpoin
                              buffer_size=BUFFER_SIZE, progress_throttle_bytes=4 * 1024 * 1024,
                              phase_cb=None, on_created=None, register_host_operation=None,
                              verify_hashes=False):
+    transaction = {}
+    try:
+        return _copy_path_exclusive_sync(
+            source, destination, progress_cb=progress_cb, checkpoint=checkpoint,
+            buffer_size=buffer_size, progress_throttle_bytes=progress_throttle_bytes,
+            phase_cb=phase_cb, on_created=on_created,
+            register_host_operation=register_host_operation, verify_hashes=verify_hashes,
+            transaction=transaction,
+        )
+    except BaseException:
+        if transaction.get("operation"):
+            try:
+                transaction["client"].request("cancel", operation_id=transaction["operation"])
+            except Exception:
+                logger.exception("目录克隆取消通知失败，保留原始异常及恢复记录")
+        raise
+
+
+def _copy_path_exclusive_sync(source, destination, *, progress_cb, checkpoint,
+                              buffer_size, progress_throttle_bytes, phase_cb, on_created,
+                              register_host_operation, verify_hashes, transaction):
     """创建独占副本，不发布最终目标、不删来源；保留上层业务的校验与事务。"""
     source, destination = os.fspath(source), os.fspath(destination)
     def check():
@@ -296,6 +318,18 @@ def copy_path_exclusive_sync(source, destination, *, progress_cb=None, checkpoin
     total = sum(row["size"] for row in frozen.values() if stat.S_ISREG(row["mode"]))
     completed, emitted = 0, 0
     hardlinks = {}
+    directory_operation = None
+    clone_seconds = sync_seconds = 0.0
+    if client and stat.S_ISDIR(frozen[""]["mode"]) and (
+        "directory_transaction_v1" in capability.get("capabilities", [])
+    ):
+        os.mkdir(destination)
+        if on_created:
+            on_created(identity(destination))
+        directory_operation = client.begin_directory(
+            source, destination, mapping_version, check, register_host_operation,
+        )
+        transaction.update(client=client, operation=directory_operation)
 
     def emit(force=False):
         nonlocal emitted
@@ -312,8 +346,9 @@ def copy_path_exclusive_sync(source, destination, *, progress_cb=None, checkpoin
         dst = os.path.join(destination, *relative.split("/")) if relative else destination
         mode = value["mode"]
         if stat.S_ISDIR(mode):
-            os.mkdir(dst)
-            if not relative and on_created:
+            if relative or not directory_operation:
+                os.mkdir(dst)
+            if not relative and on_created and not directory_operation:
                 on_created(identity(dst))
         elif stat.S_ISLNK(mode):
             os.symlink(value["link"], dst, target_is_directory=os.path.isdir(src))
@@ -326,8 +361,16 @@ def copy_path_exclusive_sync(source, destination, *, progress_cb=None, checkpoin
                 os.link(hardlinks[key], dst)
                 completed += value["size"]
             elif client:
-                client.clone(src, dst, mapping_version, check, register_host_operation,
-                             on_created=on_created if not relative else None)
+                if directory_operation:
+                    result = client.clone(
+                        src, dst, mapping_version, check,
+                        directory_operation=directory_operation,
+                    )
+                    clone_seconds += result.get("clone_seconds", 0)
+                    sync_seconds += result.get("sync_seconds", 0)
+                else:
+                    client.clone(src, dst, mapping_version, check, register_host_operation,
+                                 on_created=on_created if not relative else None)
                 completed += value["size"]
                 hardlinks[key] = dst
             else:
@@ -346,6 +389,11 @@ def copy_path_exclusive_sync(source, destination, *, progress_cb=None, checkpoin
                     os.fsync(writer.fileno())
                 hardlinks[key] = dst
             shutil.copystat(src, dst, follow_symlinks=False)
+            if directory_operation:
+                started = time.monotonic()
+                with open(dst, "rb+" if os.name == "nt" else "rb") as synced:
+                    os.fsync(synced.fileno())
+                sync_seconds += time.monotonic() - started
         emit()
     # 先处理子项，再恢复父目录时间和权限。
     for relative, value in reversed(list(frozen.items())):
@@ -387,6 +435,13 @@ def copy_path_exclusive_sync(source, destination, *, progress_cb=None, checkpoin
     ):
         raise RuntimeError("搬运副本校验失败，保留来源及暂存")
     fsync_directory(os.path.dirname(os.path.abspath(destination)))
+    if directory_operation:
+        check()
+        client.request("finish_directory", operation_id=directory_operation, checkpoint=check)
+        client.request("release", operation_id=directory_operation)
+        transaction.clear()
+        logger.info("目录快速克隆完成 文件数=%s ioctl及检查耗时=%.3fs 文件同步耗时=%.3fs",
+                    len(hardlinks), clone_seconds, sync_seconds)
     emit(True)
     return frozen
 

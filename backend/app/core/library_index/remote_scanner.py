@@ -29,7 +29,7 @@ import logging
 import time
 from typing import Any, AsyncIterator, Optional
 
-from ._helpers import extract_rjcode, should_skip_name
+from ._helpers import extract_rjcode, should_skip_name, should_skip_relative_path
 from .types import IndexEntry
 
 logger = logging.getLogger(__name__)
@@ -103,6 +103,8 @@ class RemoteScanner:
                     f"subtree 不在 library_root 下: subtree={subtree_path} "
                     f"library_root={library_root}"
                 )
+        if should_skip_relative_path(self._compute_relative(norm_subtree, norm_root)):
+            return
         async for entry in self._search_and_yield(
             library_id=library_id,
             client=client,
@@ -336,6 +338,8 @@ class RemoteScanner:
             mtime_ms = mtime_seconds * 1000 if mtime_seconds else None
 
             relative = self._compute_relative(absolute_path, root_path)
+            if should_skip_relative_path(relative):
+                return None
             parent = self._compute_parent(relative)
             depth = self._compute_depth(relative)
 

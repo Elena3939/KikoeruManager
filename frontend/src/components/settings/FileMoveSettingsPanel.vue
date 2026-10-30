@@ -95,12 +95,12 @@
         <div v-for="row in status?.roots || []" :key="row.path" class="move-path">
           <code>{{ row.path }}</code>
           <span :class="row.mapped && row.available && row.exists ? 'move-ok' : 'move-error'">
-            {{ !row.mapped ? '未映射' : !row.available ? '宿主目录不可访问' : !row.exists ? '应用目录不存在' : '可访问' }}
+            {{ !row.exists ? '应用目录不存在' : row.mapped == null ? '映射状态未知（执行器未连接）' : !row.mapped ? '未映射' : !row.available ? '宿主目录不可访问' : '可访问' }}
           </span>
           <small>{{ row.filesystem || '文件系统身份未知' }}</small>
         </div>
       </div>
-      <p class="move-note">白名单由宿主安装工具根据真实 Docker 挂载生成。修改业务路径或重建容器后需更新安装包，网页不能执行宿主任意命令。</p>
+      <p class="move-note">目录映射由宿主安装工具根据真实 Docker 挂载生成，没有逐目录开关。使用上方“启用宿主快速克隆”统一控制；修改挂载或重建容器时须同步执行器绑定。</p>
     </section>
 
     <section class="move-card">

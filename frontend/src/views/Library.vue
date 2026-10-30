@@ -1576,7 +1576,7 @@
             ></iframe>
           </div>
 
-          <template v-if="mediaPreviewDialog.kind === 'image'">
+          <template v-if="mediaPreviewDialog.kind === 'image' || mediaPreviewDialog.kind === 'pdf'">
             <div class="media-preview-resize-zone media-preview-resize-zone-top" data-direction="n" @pointerdown="handleMediaPreviewResizeStart"></div>
             <div class="media-preview-resize-zone media-preview-resize-zone-right" data-direction="e" @pointerdown="handleMediaPreviewResizeStart"></div>
             <div class="media-preview-resize-zone media-preview-resize-zone-bottom" data-direction="s" @pointerdown="handleMediaPreviewResizeStart"></div>
@@ -3250,7 +3250,7 @@ function clampMediaPreviewDialogOffset (offset, size = mediaPreviewDialogSize.va
 }
 
 const mediaPreviewDialogStyle = computed(() => ({
-  ...(mediaPreviewDialog.value.kind === 'image'
+  ...(mediaPreviewDialog.value.kind === 'image' || mediaPreviewDialog.value.kind === 'pdf'
     ? {
         width: `${mediaPreviewDialogSize.value.width}px`,
         height: `${mediaPreviewDialogSize.value.height}px`,
@@ -3270,7 +3270,7 @@ const mediaPreviewDialogSizeText = computed(() => {
 })
 
 function handleMediaPreviewViewportResize () {
-  if (!mediaPreviewDialog.value.visible || mediaPreviewDialog.value.kind !== 'image') return
+  if (!mediaPreviewDialog.value.visible || !['image', 'pdf'].includes(mediaPreviewDialog.value.kind)) return
   const { maxWidth, maxHeight } = getMediaPreviewViewportBounds()
   const current = mediaPreviewDialogSize.value
   const scale = Math.min(1, maxWidth / Math.max(current.width, 1), maxHeight / Math.max(current.height, 1))
@@ -3420,7 +3420,7 @@ function handleMediaPreviewDragEnd () {
 }
 
 function handleMediaPreviewResizeStart (event) {
-  if (mediaPreviewDialog.value.kind !== 'image') return
+  if (!['image', 'pdf'].includes(mediaPreviewDialog.value.kind)) return
   event.preventDefault()
   event.currentTarget?.setPointerCapture?.(event.pointerId)
   mediaPreviewDialogUserResized.value = true

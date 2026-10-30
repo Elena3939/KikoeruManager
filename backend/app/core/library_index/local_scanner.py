@@ -21,6 +21,7 @@ from typing import Callable, Iterator, Optional
 
 from ._helpers import extract_rjcode as _extract_rjcode
 from ._helpers import should_skip_name as _should_skip
+from ._helpers import should_skip_relative_path
 from .types import IndexEntry
 
 logger = logging.getLogger(__name__)
@@ -116,9 +117,6 @@ class LocalScanner:
             raise FileNotFoundError("subtree_path 为空")
         normalized_root = os.path.abspath(library_root)
         normalized_subtree = os.path.abspath(subtree_path)
-        if not os.path.exists(normalized_subtree):
-            raise FileNotFoundError(f"子树路径不存在: {subtree_path}")
-
         # 越界保护：子树必须在 library_root 下，否则 relative_path 会变成 ../
         # 触发 SnapshotStore 写入异常路径。这里直接拦掉，调用方 catch 后静默。
         if normalized_subtree != normalized_root:
@@ -128,11 +126,16 @@ class LocalScanner:
                 raise ValueError(
                     f"subtree 不在 library_root 下（跨盘符）: {subtree_path}"
                 ) from exc
-            if rel_check.startswith("..") or rel_check in {".", ""}:
+            if rel_check == ".." or rel_check.startswith(".." + os.sep) or rel_check in {".", ""}:
                 raise ValueError(
                     f"subtree 不在 library_root 下: subtree={subtree_path} "
                     f"library_root={library_root}"
                 )
+
+        if should_skip_relative_path(_to_relative_posix(normalized_subtree, normalized_root)):
+            return
+        if not os.path.exists(normalized_subtree):
+            raise FileNotFoundError(f"子树路径不存在: {subtree_path}")
 
         scanned = [0]
         started = time.time()

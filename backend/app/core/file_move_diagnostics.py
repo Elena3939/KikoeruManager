@@ -61,7 +61,7 @@ def runtime_status(config):
                                + "、".join(failed))
     except (HostMoveError, ValueError, KeyError, TypeError) as exc:
         result["error"] = str(exc)
-        result["roots"] = [{"path": path, "mapped": False, "available": False,
+        result["roots"] = [{"path": path, "configured": True, "mapped": None, "available": None,
                             "exists": os.path.isdir(path), "filesystem": ""}
                            for path in business_roots(config)]
     return result

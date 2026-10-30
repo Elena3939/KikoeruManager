@@ -37,6 +37,7 @@ from ...models.database import (
 from ..redis_service import get_redis_service
 from ..resource_budget_service import get_resource_budget_service
 from .local_scanner import LocalScanner
+from ._helpers import should_skip_relative_path
 from .materializer_db import (
     dispose_materializer_engine,
     get_materializer_session_factory,
@@ -898,6 +899,13 @@ class LibraryIndexMutationService:
         generation: int,
     ) -> Optional[int]:
         kind = str(effect.kind or "").lower()
+        if kind == "move" and (
+            should_skip_relative_path(effect.relative_path)
+            or should_skip_relative_path(str(effect.target_path or ""))
+        ):
+            return None
+        if kind in {"upsert", "replace"} and should_skip_relative_path(effect.relative_path):
+            return None
         if kind in {"reconcile", "replace"} and effect.scope == "subtree":
             return None
         if (
@@ -951,6 +959,10 @@ class LibraryIndexMutationService:
         status_deltas: dict[str, dict[str, int]],
     ) -> Optional[int]:
         kind = str(effect.kind or "").lower()
+        if should_skip_relative_path(effect.relative_path) or (
+            kind == "move" and should_skip_relative_path(str(effect.target_path or ""))
+        ):
+            return None
         if kind in {"reconcile", "replace"} and effect.scope == "subtree":
             return None
         if kind == "move" and effect.target_library_id and effect.target_library_id != library_id:
@@ -1266,6 +1278,15 @@ class LibraryIndexMutationService:
             if effect.kind in {"move_target", "reconcile"}
         )
         if not move_targets or move_targets != target_markers:
+            return False
+        if any(
+            should_skip_relative_path(str(effect.relative_path or ""))
+            or (
+                effect.kind == "move"
+                and should_skip_relative_path(str(effect.target_path or ""))
+            )
+            for effect in effects
+        ):
             return False
         return all(
             effect.kind in {"move", "move_target", "reconcile"}
@@ -1671,7 +1692,9 @@ class LibraryIndexMutationService:
             finally:
                 db.close()
 
-        if not os.path.exists(target):
+        from ._helpers import should_skip_relative_path
+
+        if should_skip_relative_path(relative_path) or not os.path.exists(target):
             store.reconcile_entries(
                 library_id,
                 [],

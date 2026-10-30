@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import uuid
 
 from .file_move_protocol import fsync_directory, identity
@@ -45,7 +46,7 @@ def restart_preparing(source):
         if os.path.lexists(stage):
             expected = record.get("stage_identity")
             actual = identity(stage)
-            if not expected or any(actual[key] != expected[key] for key in ("device", "inode", "mode")):
+            if not expected or any(actual[key] != expected[key] for key in ("device", "inode")) or stat.S_IFMT(actual["mode"]) != stat.S_IFMT(expected["mode"]):
                 raise RuntimeError("无法确认暂存根身份，保留现场")
             quarantined = stage + ".interrupted-" + uuid.uuid4().hex
             publish_path(stage, quarantined)
