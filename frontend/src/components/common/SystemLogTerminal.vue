@@ -27,17 +27,22 @@ const props = defineProps({
   taskStatus: { type: String, default: '' },
   maxHeight: { type: Number, default: 380 },
   autoScrollDefault: { type: Boolean, default: true },
+  autoScrollEnabled: { type: Boolean, default: null },
 })
 
-const emit = defineEmits(['clear', 'reconnect'])
+const emit = defineEmits(['clear', 'reconnect', 'update:autoScrollEnabled', 'follow-change'])
 
 const scrollRef = ref(null)
-const autoScroll = ref(props.autoScrollDefault)
+const localAutoScroll = ref(props.autoScrollDefault)
+const autoScroll = computed(() => props.autoScrollEnabled ?? localAutoScroll.value)
 const userPinnedHistory = ref(false)
 const expandedLineKey = ref(null)
 
 let autoScrollRaf = 0
 let resizeObserver = null
+let lastScrollTop = 0
+let touchY = null
+let scrollbarDragging = false
 
 const safeLines = computed(() => Array.isArray(props.lines) ? props.lines : [])
 const lineCount = computed(() => safeLines.value.length)
@@ -66,11 +71,15 @@ const statusMeta = computed(() => {
 
 const rowVirtualizer = useVirtualizer(computed(() => ({
   count: lineCount.value,
+  getItemKey: (index) => lineKey(safeLines.value[index], index),
   getScrollElement: () => scrollRef.value,
   estimateSize: estimateLineSize,
   measureElement: (element) => element?.getBoundingClientRect().height || 32,
   overscan: 12,
 })))
+
+// 底部跟随统一由本组件调度，禁止测高补偿在暂停或阅读历史时改写滚动位置。
+rowVirtualizer.value.shouldAdjustScrollPositionOnItemSizeChange = () => false
 
 const virtualRows = computed(() => rowVirtualizer.value.getVirtualItems())
 const totalSize = computed(() => rowVirtualizer.value.getTotalSize())
@@ -319,24 +328,50 @@ function clearLogs() {
 }
 
 function toggleAutoScroll() {
-  autoScroll.value = !autoScroll.value
-  if (autoScroll.value) {
-    userPinnedHistory.value = false
-    scrollToBottom()
-  }
+  const enabled = !autoScroll.value
+  localAutoScroll.value = enabled
+  emit('update:autoScrollEnabled', enabled)
 }
 
 function handleScroll() {
   const el = scrollRef.value
   if (!el) return
-  if (el.scrollHeight <= el.clientHeight + 2) {
-    userPinnedHistory.value = false
-    autoScroll.value = true
-    return
-  }
+  const movedUp = el.scrollTop < lastScrollTop
+  lastScrollTop = el.scrollTop
   const distance = el.scrollHeight - el.scrollTop - el.clientHeight
-  userPinnedHistory.value = distance > 72
-  if (userPinnedHistory.value) autoScroll.value = false
+  if (movedUp || (!autoScrollRaf && !scrollbarDragging)) {
+    userPinnedHistory.value = distance > 2
+  }
+}
+
+function pinHistory() {
+  const el = scrollRef.value
+  if (!el || el.scrollHeight <= el.clientHeight + 2) return
+  userPinnedHistory.value = true
+  cancelAutoScroll()
+}
+
+function handleTouchStart(event) {
+  touchY = event.touches[0]?.clientY ?? null
+}
+
+function handleTouchMove(event) {
+  const y = event.touches[0]?.clientY ?? null
+  if (y !== null && touchY !== null && y > touchY) pinHistory()
+  touchY = y
+}
+
+function handlePointerDown(event) {
+  const el = scrollRef.value
+  if (!el || event.clientX < el.getBoundingClientRect().left + el.clientLeft + el.clientWidth) return
+  scrollbarDragging = true
+  pinHistory()
+}
+
+function handlePointerUp() {
+  if (!scrollbarDragging) return
+  scrollbarDragging = false
+  handleScroll()
 }
 
 function highlightedTextParts(value) {
@@ -353,59 +388,69 @@ function highlightedTextParts(value) {
     }))
 }
 
-function syncScrollPinState() {
-  const el = scrollRef.value
-  if (!el) return
-  if (el.scrollHeight <= el.clientHeight + 2) {
-    userPinnedHistory.value = false
-    autoScroll.value = true
+function cancelAutoScroll() {
+  if (autoScrollRaf) {
+    window.cancelAnimationFrame(autoScrollRaf)
+    autoScrollRaf = 0
   }
 }
 
 function scrollToBottom() {
-  if (typeof window === 'undefined') return
+  if (typeof window === 'undefined' || !autoScroll.value || userPinnedHistory.value) return
   if (autoScrollRaf) return
   autoScrollRaf = window.requestAnimationFrame(() => {
     autoScrollRaf = 0
-    if (!lineCount.value) return
-    rowVirtualizer.value.scrollToIndex(lineCount.value - 1, { align: 'end' })
+    if (!autoScroll.value || userPinnedHistory.value || !lineCount.value) return
+    const el = scrollRef.value
+    if (!el) return
+    // 直接定位，避免虚拟列表 scrollToIndex 的重试在用户上滚后继续抢位置。
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
+    lastScrollTop = el.scrollTop
   })
 }
 
-watch(lineCount, () => {
+watch(userPinnedHistory, (pinned) => {
+  if (pinned) cancelAutoScroll()
+  emit('follow-change', !pinned)
+}, { flush: 'sync' })
+
+watch(autoScroll, (enabled) => {
+  if (!enabled) cancelAutoScroll()
+  else scrollToBottom()
+}, { flush: 'sync' })
+
+watch(() => props.lines, () => {
   if (expandedLineKey.value && !safeLines.value.some((line, index) => lineKey(line, index) === expandedLineKey.value)) {
     expandedLineKey.value = null
   }
-  nextTick(() => {
-    rowVirtualizer.value.measure()
-    syncScrollPinState()
-  })
-  if (autoScroll.value && !userPinnedHistory.value) scrollToBottom()
-})
+  scrollToBottom()
+}, { flush: 'post' })
 
-watch(() => props.status, () => {
-  if (autoScroll.value && !userPinnedHistory.value) scrollToBottom()
-})
+watch(totalSize, scrollToBottom, { flush: 'post' })
 
 watch(expandedLineKey, () => {
   nextTick(() => {
     rowVirtualizer.value.measure()
-    syncScrollPinState()
   })
 })
 
 onMounted(() => {
+  window.addEventListener('pointerup', handlePointerUp)
+  window.addEventListener('pointercancel', handlePointerUp)
+  scrollToBottom()
   if (typeof ResizeObserver === 'undefined' || !scrollRef.value) return
   resizeObserver = new ResizeObserver(() => {
     nextTick(() => {
       rowVirtualizer.value.measure()
-      syncScrollPinState()
+      scrollToBottom()
     })
   })
   resizeObserver.observe(scrollRef.value)
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('pointerup', handlePointerUp)
+  window.removeEventListener('pointercancel', handlePointerUp)
   if (autoScrollRaf) {
     window.cancelAnimationFrame(autoScrollRaf)
     autoScrollRaf = 0
@@ -433,7 +478,7 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="terminal-icon-button"
-            :title="autoScroll ? '暂停自动滚动' : '恢复自动滚动'"
+            :title="autoScrollEnabled === null ? (autoScroll ? '暂停自动滚动' : '恢复自动滚动') : (autoScroll ? '暂停自动刷新' : '开启自动刷新')"
             @click="toggleAutoScroll"
           >
             <component :is="autoScroll ? CirclePause : CirclePlay" :size="14" :stroke-width="2.35" />
@@ -451,14 +496,24 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="terminal-meta">
-        <span class="terminal-summary">{{ lineCount }} lines · {{ autoScroll ? 'auto-scroll' : 'history pinned' }}</span>
+        <span class="terminal-summary">{{ lineCount }} lines · {{ autoScroll && !userPinnedHistory ? 'auto-scroll' : 'history pinned' }}</span>
         <span class="terminal-status" :class="statusMeta.className">
           <component :is="statusMeta.icon" :size="12" :stroke-width="2.4" />
           {{ statusMeta.label }}
         </span>
       </div>
 
-      <div ref="scrollRef" class="terminal-scroll" @scroll="handleScroll">
+      <div
+        ref="scrollRef"
+        class="terminal-scroll"
+        tabindex="0"
+        @scroll.passive="handleScroll"
+        @wheel.passive="($event.deltaY < 0) && pinHistory()"
+        @touchstart.passive="handleTouchStart"
+        @touchmove.passive="handleTouchMove"
+        @pointerdown="handlePointerDown"
+        @keydown="['ArrowUp', 'PageUp', 'Home'].includes($event.key) && pinHistory()"
+      >
         <div v-if="!lineCount" class="terminal-empty">
           <span class="terminal-empty-text">暂无日志输出</span>
           <span class="terminal-cursor" />

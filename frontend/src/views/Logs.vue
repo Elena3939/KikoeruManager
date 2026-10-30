@@ -22,7 +22,7 @@
           {{ isPaused ? '恢复刷新' : '暂停刷新' }}
         </button>
 
-        <button type="button" class="logs-toolbar-btn is-default" @click="refreshCurrentLogs">
+        <button type="button" class="logs-toolbar-btn is-default" :disabled="!isFullSearch && !canRefreshLive" @click="refreshCurrentLogs">
           <RefreshCw :size="13" />
           刷新
         </button>
@@ -174,6 +174,9 @@
         :status="terminalStatus"
         :error-message="terminalErrorMessage"
         :max-height="terminalMaxHeight"
+        :auto-scroll-enabled="!isPaused && !isFullSearch"
+        @update:auto-scroll-enabled="setAutoRefreshEnabled"
+        @follow-change="onTerminalFollowChange"
         @clear="clearLogs"
         @reconnect="reconnectLogStream"
       />
@@ -368,6 +371,8 @@ const LOG_BLOCK_PREFIX = '__KIKOERUMANAGER_LOG_BLOCK__'
 
 const logs = shallowRef([])
 const isPaused = ref(false)
+const terminalFollowing = ref(true)
+const canRefreshLive = computed(() => !isPaused.value && !isFullSearch.value)
 const logLimit = ref(300)
 
 // 「条数」下拉选项。1000 条对实际排查日志足够，需要更多请用"搜索全历史"或"导出筛选结果"。
@@ -396,6 +401,8 @@ let pendingStreamLines = []
 let liveBackfillInFlight = false
 let lastSparseBackfillAt = 0
 let progressTickerTimer = null
+let streamGeneration = 0
+let pendingStreamOffset = null
 
 const incrementalCount = ref(0)
 const lastFetchMs = ref(0)
@@ -525,6 +532,7 @@ const terminalSubtitle = computed(() => {
     return `全历史检索 · ${fullSearchPageStart.value} / ${fullSearchTotal.value || filteredLogs.value.length}`
   }
   if (isPaused.value) return `已暂停 · ${filteredLogs.value.length} 条匹配 / ${logs.value.length} 条`
+  if (!terminalFollowing.value) return `浏览历史，实时更新中 · ${filteredLogs.value.length} 条匹配 / ${logs.value.length} 条`
   return `${lastFetchMode.value} · ${filteredLogs.value.length} 条匹配 / ${logs.value.length} 条 · offset ${nextOffset >= 0 ? nextOffset : 0}`
 })
 
@@ -614,6 +622,7 @@ function parseLogTimeMs(value) {
 }
 
 function parseTaskProgressLog(log, order = 0) {
+  if (!log?.taskProgressPayload) return null
   const progress = buildTaskProgress(log, order)
   if (!progress) return null
   return {
@@ -836,10 +845,14 @@ function parseLogLines(lines, keyPrefix = '', fullLines = []) {
 }
 
 function togglePause() {
-  isPaused.value = !isPaused.value
+  setAutoRefreshEnabled(isPaused.value)
+}
+
+function setAutoRefreshEnabled(enabled) {
+  isPaused.value = !enabled
   if (isPaused.value) {
     ElMessage.info('已暂停自动刷新')
-    closeLogStream()
+    closeLogStream({ discardPending: true })
     terminalStatus.value = 'disconnected'
   } else {
     ElMessage.success('已恢复实时日志')
@@ -847,23 +860,30 @@ function togglePause() {
   }
 }
 
+function onTerminalFollowChange(following) {
+  terminalFollowing.value = following
+}
+
 function refreshCurrentLogs() {
   if (isFullSearch.value) {
     doFullSearch(true)
     return
   }
-  isPaused.value = false
+  if (!canRefreshLive.value) return
   connectLogStream({ reset: true })
 }
 
 async function refreshLogs(force = false) {
-  if (!force && (isPaused.value || document.visibilityState === 'hidden' || isFullSearch.value)) return
+  if (!canRefreshLive.value || document.visibilityState === 'hidden') return
+  const generation = streamGeneration
+  const requestOffset = nextOffset
 
   try {
     const t0 = performance.now()
     const useIncremental = !force && nextOffset >= 0
     lastFetchMode.value = useIncremental ? 'delta' : force ? 'full(force)' : 'full'
     const data = await logApi.get(logLimit.value, useIncremental ? nextOffset : -1)
+    if (generation !== streamGeneration || !canRefreshLive.value || nextOffset !== requestOffset || pendingStreamLines.length) return
     const logLines = Array.isArray(data.logs) ? data.logs : []
 
     if (typeof data.next_offset === 'number') nextOffset = data.next_offset
@@ -880,7 +900,7 @@ async function refreshLogs(force = false) {
       if (!force && signature === lastLogSignature) return
       lastLogSignature = signature
       incrementalCount.value = 0
-      logs.value = parseLogLines(logLines, 'full-')
+      logs.value = parseLogLines(logLines.slice(-logLimit.value), 'full-')
     }
 
     // OOM 修复：每次刷新后兜底瘦身，一次清 1/2 而不是 1/6，避免每 4 秒触发的
@@ -888,6 +908,7 @@ async function refreshLogs(force = false) {
     trimMapByOldest(parseCache, parseCacheMax.value, Math.max(200, Math.floor(parseCacheMax.value / 2)))
     lastFetchMs.value = Math.round(performance.now() - t0)
   } catch (error) {
+    if (generation !== streamGeneration || !canRefreshLive.value) return
     console.error('获取日志失败:', error)
     terminalStatus.value = 'error'
     terminalErrorMessage.value = error?.response?.data?.detail || error.message || '获取日志失败'
@@ -903,6 +924,7 @@ function resetLiveLogState() {
   streamDroppedCount.value = 0
   parseCache.clear()
   pendingStreamLines = []
+  pendingStreamOffset = null
   if (streamFlushTimer) {
     clearTimeout(streamFlushTimer)
     streamFlushTimer = null
@@ -912,7 +934,7 @@ function resetLiveLogState() {
 function appendParsedLogs(lines, keyPrefix = 'stream-', { reset = false } = {}) {
   const logLines = Array.isArray(lines) ? lines.filter(Boolean) : []
   if (reset) {
-    logs.value = parseLogLines(logLines, keyPrefix)
+    logs.value = parseLogLines(logLines.slice(-logLimit.value), keyPrefix)
     incrementalCount.value = 0
   } else if (logLines.length) {
     const parsed = parseLogLines(logLines, keyPrefix)
@@ -927,7 +949,7 @@ function appendParsedLogs(lines, keyPrefix = 'stream-', { reset = false } = {}) 
 }
 
 async function backfillLiveHistoryIfSparse() {
-  if (isPaused.value || isFullSearch.value || liveBackfillInFlight || logs.value.length >= MIN_LIVE_HISTORY_BACKFILL_LINES) return
+  if (!canRefreshLive.value || liveBackfillInFlight || logs.value.length >= MIN_LIVE_HISTORY_BACKFILL_LINES) return
   const now = Date.now()
   if (now - lastSparseBackfillAt < 10_000) return
   liveBackfillInFlight = true
@@ -943,20 +965,26 @@ async function backfillLiveHistoryIfSparse() {
 
 function flushPendingStreamLines() {
   streamFlushTimer = null
-  if (!pendingStreamLines.length || isPaused.value || isFullSearch.value) return
+  if (!pendingStreamLines.length || !canRefreshLive.value) return
   const lines = pendingStreamLines
   pendingStreamLines = []
+  if (pendingStreamOffset !== null) nextOffset = pendingStreamOffset
+  pendingStreamOffset = null
   appendParsedLogs(lines, `stream-${nextOffset}-`)
 }
 
 function queueStreamLines(lines) {
   if (!Array.isArray(lines) || !lines.length) return
   pendingStreamLines.push(...lines)
+  if (pendingStreamLines.length > logLimit.value) {
+    pendingStreamLines = pendingStreamLines.slice(-logLimit.value)
+  }
   if (streamFlushTimer) return
   streamFlushTimer = setTimeout(flushPendingStreamLines, LOG_FLUSH_INTERVAL)
 }
 
 function closeLogStream({ keepStatus = false, discardPending = false } = {}) {
+  streamGeneration += 1
   const wasPaused = isPaused.value
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
@@ -968,9 +996,12 @@ function closeLogStream({ keepStatus = false, discardPending = false } = {}) {
   }
   if (discardPending) {
     pendingStreamLines = []
-  } else if (pendingStreamLines.length && !isPaused.value && !isFullSearch.value) {
+    pendingStreamOffset = null
+  } else if (pendingStreamLines.length && canRefreshLive.value) {
     const lines = pendingStreamLines
     pendingStreamLines = []
+    if (pendingStreamOffset !== null) nextOffset = pendingStreamOffset
+    pendingStreamOffset = null
     appendParsedLogs(lines, `stream-${nextOffset}-`)
   }
   if (logEventSource) {
@@ -983,7 +1014,7 @@ function closeLogStream({ keepStatus = false, discardPending = false } = {}) {
 }
 
 function scheduleReconnect() {
-  if (isPaused.value || isFullSearch.value || reconnectTimer) return
+  if (!canRefreshLive.value || reconnectTimer) return
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null
     connectLogStream()
@@ -991,13 +1022,14 @@ function scheduleReconnect() {
 }
 
 function handleStreamPayload(event, { reset = false } = {}) {
+  if (!canRefreshLive.value) return
   let payload = {}
   try {
     payload = JSON.parse(event.data || '{}')
   } catch {
     payload = {}
   }
-  if (typeof payload.next_offset === 'number') nextOffset = payload.next_offset
+  if (typeof payload.next_offset === 'number') pendingStreamOffset = payload.next_offset
   const dropped = Number(payload.dropped_count || 0)
   if (Number.isFinite(dropped) && dropped > 0) {
     streamDroppedCount.value += dropped
@@ -1009,6 +1041,11 @@ function handleStreamPayload(event, { reset = false } = {}) {
   terminalErrorMessage.value = ''
   terminalStatus.value = 'connected'
   if (reset || payload.is_full) {
+    pendingStreamLines = []
+    if (streamFlushTimer) clearTimeout(streamFlushTimer)
+    streamFlushTimer = null
+    if (pendingStreamOffset !== null) nextOffset = pendingStreamOffset
+    pendingStreamOffset = null
     lastLogSignature = signature
     appendParsedLogs(lines, 'sse-full-', { reset: true })
     return
@@ -1017,38 +1054,45 @@ function handleStreamPayload(event, { reset = false } = {}) {
   if (lines.length) {
     lastLogSignature = signature
     queueStreamLines(lines)
+  } else if (!pendingStreamLines.length && pendingStreamOffset !== null) {
+    nextOffset = pendingStreamOffset
+    pendingStreamOffset = null
   }
 }
 
 function connectLogStream({ reset = false } = {}) {
+  if (!canRefreshLive.value) return
+  closeLogStream()
   if (typeof EventSource === 'undefined') {
     terminalStatus.value = 'error'
     terminalErrorMessage.value = '当前浏览器不支持 SSE'
     refreshLogs(true)
     return
   }
-  const blocked = isPaused.value || isFullSearch.value
-  closeLogStream()
   if (reset) resetLiveLogState()
-  if (blocked) return
 
   terminalStatus.value = 'connecting'
   terminalErrorMessage.value = ''
   const url = logApi.streamUrl({ lines: logLimit.value, sinceOffset: reset ? -1 : nextOffset })
   const resetOnConnected = reset || nextOffset < 0
   logEventSource = new EventSource(url, { withCredentials: true })
+  const generation = streamGeneration
+  const source = logEventSource
+  const listen = (name, handler) => source.addEventListener(name, (event) => {
+    if (generation === streamGeneration && canRefreshLive.value) handler(event)
+  })
 
-  logEventSource.addEventListener('connected', (event) => handleStreamPayload(event, { reset: resetOnConnected }))
-  logEventSource.addEventListener('reset', (event) => handleStreamPayload(event, { reset: true }))
-  logEventSource.addEventListener('log', (event) => handleStreamPayload(event))
-  logEventSource.addEventListener('heartbeat', (event) => {
+  listen('connected', (event) => handleStreamPayload(event, { reset: resetOnConnected }))
+  listen('reset', (event) => handleStreamPayload(event, { reset: true }))
+  listen('log', (event) => handleStreamPayload(event))
+  listen('heartbeat', (event) => {
     terminalStatus.value = 'connected'
     try {
       const payload = JSON.parse(event.data || '{}')
-      if (typeof payload.next_offset === 'number') nextOffset = payload.next_offset
+      if (typeof payload.next_offset === 'number' && !pendingStreamLines.length) nextOffset = payload.next_offset
     } catch {}
   })
-  logEventSource.addEventListener('stream_error', (event) => {
+  listen('stream_error', (event) => {
     terminalStatus.value = 'error'
     try {
       const payload = JSON.parse(event.data || '{}')
@@ -1058,8 +1102,9 @@ function connectLogStream({ reset = false } = {}) {
     }
   })
   logEventSource.onerror = async () => {
-    if (isPaused.value || isFullSearch.value) return
+    if (generation !== streamGeneration || !canRefreshLive.value) return
     if (await redirectIfSecurityGateExpired()) return
+    if (generation !== streamGeneration || !canRefreshLive.value) return
     terminalStatus.value = 'error'
     terminalErrorMessage.value = '日志流连接中断，正在重连'
     closeLogStream({ keepStatus: true })
@@ -1068,7 +1113,6 @@ function connectLogStream({ reset = false } = {}) {
 }
 
 function reconnectLogStream() {
-  isPaused.value = false
   if (isFullSearch.value) {
     isFullSearch.value = false
   }
@@ -1405,13 +1449,13 @@ async function runLogCleanup(action) {
 onMounted(() => {
   connectLogStream({ reset: true })
   progressTickerTimer = window.setInterval(() => {
-    progressTicker.value = Date.now()
+    if (canRefreshLive.value && document.visibilityState !== 'hidden') progressTicker.value = Date.now()
   }, 1000)
   window.addEventListener('keydown', onWindowKeydown)
 })
 
 onUnmounted(() => {
-  closeLogStream()
+  closeLogStream({ discardPending: true })
   if (progressTickerTimer) {
     clearInterval(progressTickerTimer)
     progressTickerTimer = null
