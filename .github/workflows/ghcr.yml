@@ -12,6 +12,83 @@ env:
   DOCKERHUB_IMAGE: elena39/kikoerumanager
 
 jobs:
+  windows-setup:
+    name: 构建 Windows 安装包
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 准备构建环境
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_NAME -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw '版本标签必须为标准 vX.Y.Z' }
+          python -m venv backend/venv
+          & ./backend/venv/Scripts/python.exe -m pip install -r backend/requirements.txt
+          if ($LASTEXITCODE) { throw 'Python 依赖安装失败' }
+          npm ci --prefix frontend
+          if ($LASTEXITCODE) { throw '前端依赖安装失败' }
+          choco install innosetup --no-progress -y
+          if ($LASTEXITCODE) { throw 'Inno Setup 安装失败' }
+      - name: 准备内置运行依赖
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cache = '.runtime/installer-cache'
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          Invoke-WebRequest 'https://get.enterprisedb.com/postgresql/postgresql-18.4-1-windows-x64-binaries.zip' -OutFile "$cache/postgresql.zip"
+          Expand-Archive "$cache/postgresql.zip" "$cache/postgresql" -Force
+          & ./scripts/install-baidupcs-go.ps1
+          if ($LASTEXITCODE) { throw '百度网盘工具安装失败' }
+          Invoke-WebRequest 'https://cdn.theunarchiver.com/downloads/unarWindows.zip' -OutFile "$cache/unar.zip"
+          Expand-Archive "$cache/unar.zip" "$cache/unar" -Force
+          New-Item -ItemType Directory -Force tools/unar | Out-Null
+          $unar = Get-ChildItem "$cache/unar" -Recurse -Filter unar.exe | Select-Object -First 1
+          if (!$unar) { throw '下载包缺少 unar.exe' }
+          Copy-Item "$($unar.Directory.FullName)/*" tools/unar -Recurse -Force
+          if (!(Test-Path tools/unar/lsar.exe)) { throw '下载包缺少 lsar.exe' }
+          git clone --depth 1 --branch 8.10.2 https://github.com/redis-windows/redis-windows.git "$cache/redis-windows-source"
+          if ($LASTEXITCODE) { throw 'Redis Windows 许可证下载失败' }
+          git clone --depth 1 --branch 8.10.2 https://github.com/redis/redis.git "$cache/redis-source"
+          if ($LASTEXITCODE) { throw 'Redis 许可证下载失败' }
+          New-Item -ItemType Directory -Force "$cache/redis-licenses" | Out-Null
+          Copy-Item "$cache/redis-windows-source/LICENSE*" "$cache/redis-licenses" -Force
+          Copy-Item "$cache/redis-windows-source/LICENSE" "$cache/Redis-Windows-LICENSE.txt" -Force
+          Copy-Item "$cache/redis-source/LICENSE.txt" "$cache/Redis-LICENSE.txt" -Force
+      - name: 生成 Setup 安装包
+        shell: pwsh
+        run: |
+          & ./scripts/build-windows-installer.ps1 -Version ($env:GITHUB_REF_NAME -replace '^v', '') -PostgresRoot "$pwd/.runtime/installer-cache/postgresql/pgsql" -InnoCompiler 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
+          if ($LASTEXITCODE) { throw 'Setup 构建失败' }
+      - name: 保存安装包产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: KikoeruManager-Setup-${{ github.ref_name }}-x64
+          path: |
+            output/windows/KikoeruManager-Setup-*.exe
+            output/windows/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: 发布版本附件
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE) {
+            gh release create $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --verify-tag --title "KikoeruManager $env:GITHUB_REF_NAME" --generate-notes --latest
+            if ($LASTEXITCODE) { throw '创建 Release 失败' }
+          }
+          gh release upload $env:GITHUB_REF_NAME output/windows/KikoeruManager-Setup-*.exe output/windows/SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE) { throw '上传安装包失败' }
+
   # 构建并推送 Docker image——只在 vX.Y.Z tag 推送时触发
   build-and-push:
     runs-on: ubuntu-latest
