@@ -4,6 +4,7 @@ import { useVirtualizer } from '@tanstack/vue-virtual'
 import { Calendar, Gift, PackageCheck } from 'lucide-vue-next'
 import WorkCard from './WorkCard.vue'
 import WorkListRow from './WorkListRow.vue'
+import { sortBonusVariants } from './bonusVariantPriority'
 
 const props = defineProps({
   items: { type: Array, default: () => [] },
@@ -342,8 +343,7 @@ function sortBonusMembers(members) {
     if (member?.cover_available === true || member?.dlsite_cover_available === true) return 2
     return bonusCoverUrl(member) ? 1 : 0
   }
-  return members.map(member => ({ member, priority: coverPriority(member) }))
-    .sort((a, b) => b.priority - a.priority).map(entry => entry.member)
+  return sortBonusVariants(members, coverPriority)
 }
 
 function preferredBonusCollection(item) {
@@ -996,7 +996,7 @@ onBeforeUnmount(() => {
               @retry-cover="emit('ensure-cover', $event, { force: true })"
               @image-settled="markImageSettled(viewModel.key, $event)"
             />
-            <div v-if="viewModel.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
+            <div v-if="mode === 'card' && bonusViewModels.get(viewModel.key)" class="circle-bonus-shelf is-card">
               <button
                 v-for="bonusViewModel in [bonusViewModels.get(viewModel.key)]"
                 :key="bonusViewModel.key"
@@ -1290,7 +1290,7 @@ onBeforeUnmount(() => {
                   @retry-cover="emit('ensure-cover', $event, { force: true })"
                   @image-settled="markImageSettled(cell.key, $event)"
                 />
-                <div v-if="cell.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
+                <div v-if="mode === 'card' && bonusViewModels.get(cell.key)" class="circle-bonus-shelf is-card">
                   <button
                     v-for="bonusViewModel in [bonusViewModels.get(cell.key)]"
                     :key="bonusViewModel.key"

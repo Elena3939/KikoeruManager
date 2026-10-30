@@ -221,7 +221,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
     _COMPLETION_BUILD_LOCK_SECONDS = 12
     _COMPLETION_ALIAS_REDIS_TTL_SECONDS = 86400
     # 同名特典保留待验证候选，并按真实封面选择代表项；升级后重建历史视图缓存。
-    _COMPLETION_CACHE_SCHEMA_VERSION = 23
+    _COMPLETION_CACHE_SCHEMA_VERSION = 24
 
     def __init__(self):
         self.metadata_service = MetadataService()
@@ -654,6 +654,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 self._completion_l1_l2_get, self._completion_state_cache, "state", cache_key, readonly=readonly,
             )
             if isinstance(cached, dict):
+                self._schedule_completion_bonus_covers(state_key, cached)
                 return cached
 
             task = self._completion_state_inflight.get(cache_key)
@@ -690,11 +691,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     self._completion_l1_l2_set, self._completion_state_cache, "state", cache_key, state,
                     ttl_seconds=self._COMPLETION_STATE_REDIS_TTL_SECONDS,
                 )
-                self._schedule_view_cover_cache(
-                    state["catalog"]["circle_id"],
-                    [*state["items"], *state.get("bonus_cover_candidates", [])],
-                    get_circle_image_cache_service(),
-                )
+                self._schedule_completion_bonus_covers(state_key, state)
                 return state
             finally:
                 await asyncio.to_thread(self._completion_release_build_lock, lock_key)
@@ -2184,7 +2181,9 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 and not bool(item.get("cover_confirmed_missing"))
             ]
             confirmed = [item for item in candidates_with_cover if item.get("cover_confirmed_available") is True]
-            pool = confirmed or candidates_with_cover or candidates
+            pool = confirmed or candidates_with_cover
+            if not pool:
+                continue
             plain = [item for item in pool if cls._completion_bonus_numbered_suffix(item) is None]
             if plain:
                 selected.extend(plain)
@@ -2217,6 +2216,21 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
     def _completion_prune_bonus_items(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """从社团补全视图中移除重复编号项和官方无封面特典。"""
+        parents = {
+            code: item for item in items if not item.get("is_bonus_work")
+            for code in self._completion_item_codes(item)
+        }
+        available_parent_codes = set(parents)
+        for item in items:
+            if not item.get("is_bonus_work"):
+                continue
+            parent = parents.get(self._completion_bonus_parent_code(item, available_parent_codes))
+            if parent is not None:
+                item["bonus_parent"] = {
+                    key: parent.get(key) for key in (
+                        "canonical_rjcode", "display_rjcode", "title", "owned", "circle_id", "circle_name",
+                    )
+                }
         visible_items: List[Dict[str, Any]] = []
         top_level_bonus_groups: Dict[str, List[Dict[str, Any]]] = {}
         for candidate in items:
@@ -2560,6 +2574,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         metadata_map_all: Dict[str, Dict[str, Any]],
         local_download_session_map: Optional[Dict[str, Dict[str, Any]]] = None,
         image_cache_service: Optional[Any] = None,
+        check_cover_files: bool = True,
         include_source_compare: bool = False,
         include_heavy_fields: bool = False,
         now_local_for_view: Optional[datetime] = None,
@@ -2722,17 +2737,19 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 normalized_remote_cover,
                 stored_display_rjcode or row.canonical_rjcode,
             )
-            if cover_cache_rjcode and cover_cache_rjcode != stored_display_rjcode:
+            if check_cover_files and cover_cache_rjcode and cover_cache_rjcode != stored_display_rjcode:
                 # 兼容旧版本：它把翻译展示 RJ 当缓存文件名，当前读路径则按图片
                 # URL 的真实 RJ 取文件。只复制本地旧文件，不在浏览路径触网。
                 image_cache_service.restore_from_legacy_alias(
                     cover_cache_rjcode,
                     [stored_display_rjcode],
+                    verify_target=False,
                 )
                 image_cache_service.restore_from_legacy_alias(
                     cover_cache_rjcode,
                     [stored_display_rjcode],
                     variant="list",
+                    verify_target=False,
                 )
             local_cover_url = image_cache_service.get_local_url(
                 cover_cache_rjcode,
@@ -2743,11 +2760,11 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 variant="list",
                 allow_missing=True,
             )
-            cover_confirmed_available = is_bonus_work and bool(
+            cover_confirmed_available = check_cover_files and is_bonus_work and bool(
                 image_cache_service.get_local_url(cover_cache_rjcode)
                 or image_cache_service.get_local_url(cover_cache_rjcode, variant="list")
             )
-            cover_known_missing = (
+            cover_known_missing = check_cover_files and (
                 image_cache_service.has_known_missing(cover_cache_rjcode)
                 and image_cache_service.has_known_missing(cover_cache_rjcode, variant="list")
             )
@@ -3008,6 +3025,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 metadata_map_all=metadata_map_all,
                 local_download_session_map=local_download_session_map,
                 image_cache_service=image_cache_service,
+                check_cover_files=False,
                 include_source_compare=True,
                 include_heavy_fields=False,
                 now_local_for_view=now_local_for_view,
@@ -3016,6 +3034,16 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         ]
         items = self._completion_apply_explicit_bonus_parent_codes(items, link_rows)
         items = self._completion_attach_bonus_parent_codes(items)
+        bonus_codes = [item["display_rjcode"] for item in items if item.get("is_bonus_work")]
+        cover_facts = image_cache_service.cover_facts(bonus_codes, refresh=True) if bonus_codes else {}
+        for item in items:
+            if not item.get("is_bonus_work"):
+                continue
+            fact = cover_facts.get(item["display_rjcode"])
+            item["cover_confirmed_available"] = fact is True
+            item["cover_confirmed_missing"] = fact is False
+            if fact is False:
+                item["cover_available"] = False
         self._completion_apply_early_bonus_status(items, early_bonus_state_map)
         # 去重前仅保存探测需要的 RJ，避免在 Redis state 内重复序列化完整作品。
         bonus_cover_candidates = [
@@ -3193,8 +3221,11 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
     async def build_circle_completion_summary(self, circle_id_or_query: str, *, include_dl_only: bool = True) -> Dict[str, Any]:
 
+        from .request_performance import measure_stage
+
         cache_enabled = not self._completion_state_builder_overridden()
-        scope = await self._resolve_completion_scope(circle_id_or_query) if cache_enabled else circle_id_or_query
+        with measure_stage("circle_scope_ms"):
+            scope = await self._resolve_completion_scope(circle_id_or_query) if cache_enabled else circle_id_or_query
         if cache_enabled:
             from .resource_source_service import get_resource_source_service
             get_resource_source_service().schedule_circle(scope)
@@ -3253,28 +3284,33 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         sort: str = "updated_desc",
         view_mode: str = "list",
     ) -> Dict[str, Any]:
+        from .request_performance import measure_stage, run_sync_stage
+
         cache_enabled = not self._completion_state_builder_overridden()
         scope = await self._resolve_completion_scope(circle_id_or_query) if cache_enabled else circle_id_or_query
         if cache_enabled:
             from .resource_source_service import get_resource_source_service
             get_resource_source_service().schedule_circle(scope)
         while True:
-            version = await asyncio.to_thread(self._completion_version_tag, scope)
-            resource_version = await asyncio.to_thread(self._completion_resource_version_tag, scope)
+            version = await run_sync_stage("circle_version", self._completion_version_tag, scope)
+            resource_version = await run_sync_stage("circle_resource_version", self._completion_resource_version_tag, scope)
             query = dict(tab=tab, page=page, page_size=page_size, include_dl_only=include_dl_only,
                          status_filters=status_filters, owned_filter=owned_filter, compare_filter=compare_filter,
                          search=search, sort=sort, view_mode=view_mode, resource_version=resource_version)
             if cache_enabled:
-                cached = await asyncio.to_thread(self._list_circle_completion_works_sync, scope, None, version, **query)
+                cached = await run_sync_stage("circle_page_lookup", self._list_circle_completion_works_sync, scope, None, version, **query)
                 if cached is not None:
                     if (version == await asyncio.to_thread(self._completion_version_tag, scope)
                             and resource_version == await asyncio.to_thread(self._completion_resource_version_tag, scope)):
+                        self._schedule_page_cover_alias_restores(scope, cached.get("items") or [])
                         return cached
                     continue
-            state = await self._get_completion_view_state(scope, readonly=True)
-            result = await asyncio.to_thread(self._list_circle_completion_works_sync, scope, state, version, **query)
+            with measure_stage("circle_state_ms"):
+                state = await self._get_completion_view_state(scope, readonly=True)
+            result = await run_sync_stage("circle_page_build", self._list_circle_completion_works_sync, scope, state, version, **query)
             if not cache_enabled or (version == await asyncio.to_thread(self._completion_version_tag, scope)
                                     and resource_version == await asyncio.to_thread(self._completion_resource_version_tag, scope)):
+                self._schedule_page_cover_alias_restores(scope, result.get("items") or [])
                 return result
 
     def _list_circle_completion_works_sync(
@@ -3342,7 +3378,9 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 projection_page = read_projection_page(
                     projection_key, safe_page_request, safe_page_size, session_factory=SessionLocal, **projection_query,
                 )
-                if projection_page is None and state is not None:
+                # 卡片首屏优先返回；首次同步生成投影会为多种视图/筛选组合
+                # 全量分类并写入数据库，耗时与当前页大小无关。
+                if projection_page is None and state is not None and not card_mode:
                     items = self._completion_items_with_resources(circle_id_or_query, state)
                     summary = self._completion_summary_from_items(state["catalog"], items)
                     published = publish_projection(
@@ -6462,6 +6500,12 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     if perf:
                         perf.inc("dlsite_summary_light_verifications")
                     if product_payload:
+                        # 列表 chip 只是候选提示；product.json 的 work_type 才是作品形态权威值。
+                        # 游戏 / CG 等内容可能因作品卡片标签带有音声词而被 chip 误标为音声。
+                        if self._product_looks_like_asmr_work(product_payload) is False:
+                            if perf:
+                                perf.inc("dlsite_non_audio_filtered_after_metadata")
+                            return None
                         image_main = product_payload.get("image_main") if isinstance(product_payload.get("image_main"), dict) else {}
                         cover_url = ""
                         if isinstance(image_main, dict):
@@ -7423,27 +7467,23 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
         image_cache_service = get_circle_image_cache_service()
         # 只跟踪特典的确定性结论，避免为整个社团的普通作品重复 stat 文件。
-        tracked = [(code, variant) for code in bonus_codes or [] for variant in ("card", "list")]
-
         def cover_state():
-            return tuple(
-                (image_cache_service.has_local(code, variant=variant), image_cache_service.has_known_missing(code, variant=variant))
-                for code, variant in tracked
-            )
-
-        previous_cover_state = cover_state()
+            return image_cache_service.cover_facts(bonus_codes) if bonus_codes else {}
 
         async def _runner() -> None:
+            previous_cover_state = await asyncio.to_thread(cover_state)
             normal_cover_changed = False
             try:
                 # 隐藏特典没有可靠的图片 URL。复用按需下载的完整候选验证，
                 # 404 穷尽才标无图，网络异常仍保持未知；限制为四个后台 worker。
-                pending_bonus_codes = iter(bonus_codes or [])
+                pending_bonus_codes = iter(
+                    code for code in bonus_codes or [] if previous_cover_state.get(code) is None
+                )
 
                 async def cache_bonus_worker() -> None:
                     for code in pending_bonus_codes:
                         await image_cache_service.ensure_local_for_filename(f"{code}.jpg", log_failure=False)
-                        if not image_cache_service.has_local(code):
+                        if image_cache_service.cover_facts([code]).get(code) is not True:
                             await image_cache_service.ensure_local_for_filename(f"{code}_sam.jpg", log_failure=False)
 
                 if bonus_codes:
@@ -7460,7 +7500,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 # 任务结束后从字典清除，避免长期占用内存
                 self._cover_cache_tasks.pop(circle_id, None)
                 # 网络异常/短冷却没有新结论，不反复清空整社团的分页缓存。
-                if normal_cover_changed or cover_state() != previous_cover_state:
+                if normal_cover_changed or await asyncio.to_thread(cover_state) != previous_cover_state:
                     self.invalidate_completion_view_cache(circle_id)
 
         try:
@@ -7472,6 +7512,27 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             return None
         self._cover_cache_tasks[circle_id] = task
         return task
+
+    def invalidate_completion_cover_cache(self, rjcode):
+        """封面结论变化只失效包含该作品的社团。"""
+        from sqlalchemy import or_
+
+        code = self.normalize_rjcode(rjcode)
+        with SessionLocal() as db:
+            circles = db.query(CircleWork.circle_id).filter(or_(
+                CircleWork.canonical_rjcode == code, CircleWork.display_rjcode == code,
+            )).distinct().all()
+        for (circle_id,) in circles:
+            self.invalidate_completion_view_cache(circle_id)
+
+    def _schedule_completion_bonus_covers(self, circle_id, state):
+        """只在后台验证尚无结论的特典，列表读路径不访问单张图片。"""
+        candidates = state.get("bonus_cover_candidates") or []
+        codes = list(dict.fromkeys(
+            self.normalize_rjcode(item.get("display_rjcode")) for item in candidates
+        ))
+        if codes:
+            self._schedule_circle_cover_cache(circle_id, [], [], bonus_codes=[code for code in codes if code])
 
     def _schedule_view_cover_cache(
         self,
@@ -7544,12 +7605,27 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             walk(item)
         return self._schedule_circle_cover_cache(circle_id, cover_pairs, thumb_pairs, bonus_codes=bonus_codes)
 
+    def _schedule_page_cover_alias_restores(self, circle_id, items):
+        """只为当前页排入历史别名迁移，响应路径不访问图片文件。"""
+        image_cache_service = get_circle_image_cache_service()
+        for item in items:
+            for member in self._completion_group_members(item):
+                target = image_cache_service.cache_rjcode_for_url(
+                    member.get("remote_image_url"), member.get("display_rjcode"),
+                )
+                self._queue_circle_cover_alias_restore(
+                    circle_id, image_cache_service, target, member.get("display_rjcode"),
+                    check_legacy=False,
+                )
+
     def _queue_circle_cover_alias_restore(
         self,
         circle_id: str,
         image_cache_service: Any,
         target_rjcode: Any,
         legacy_rjcode: Any,
+        *,
+        check_legacy: bool = True,
     ) -> Optional[asyncio.Task]:
         """后台补建历史 display RJ 封面别名，不阻塞社团浏览读路径。"""
 
@@ -7558,7 +7634,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         if not target or not legacy or target == legacy:
             return None
         # 大多数作品不存在旧错名缓存；先做廉价 stat，避免为每行创建空任务。
-        if not (
+        if check_legacy and not (
             image_cache_service.has_local(legacy)
             or image_cache_service.has_local(legacy, variant="list")
         ):
@@ -7710,6 +7786,47 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             if normalized_filter is not None:
                 query = query.filter(CircleWork.canonical_rjcode.in_(normalized_filter))
             rows = query.all()
+            bonus_link_pairs = {
+                (
+                    self.normalize_rjcode(link.canonical_rjcode),
+                    self.normalize_rjcode(link.linked_rjcode),
+                )
+                for link in db.query(WorkCanonicalLink)
+                .filter(
+                    WorkCanonicalLink.evidence_status == "verified",
+                    WorkCanonicalLink.link_type == "bonus",
+                    WorkCanonicalLink.canonical_rjcode.in_([
+                        row.canonical_rjcode for row in rows
+                    ]),
+                )
+                .all()
+            } if rows else set()
+            own_metadata_codes = {
+                self.normalize_rjcode(code)
+                for row in rows
+                for code in [
+                    row.canonical_rjcode,
+                    *(
+                        []
+                        if (
+                            self.normalize_rjcode(row.canonical_rjcode),
+                            self.normalize_rjcode(row.display_rjcode),
+                        ) in bonus_link_pairs
+                        else [row.display_rjcode]
+                    ),
+                ]
+                if self.normalize_rjcode(code)
+            }
+            checked_bonus_states = {
+                self.normalize_rjcode(metadata.rjcode): {
+                    "is_bonus_work": bool(metadata.is_bonus_work),
+                    "has_bonus": bool(metadata.has_bonus),
+                }
+                for metadata in db.query(WorkMetadata)
+                .filter(WorkMetadata.rjcode.in_(own_metadata_codes))
+                .all()
+                if metadata.bonus_info_checked_at is not None
+            } if own_metadata_codes else {}
             confirmed_bonus_rjcodes = self._confirmed_bonus_rjcodes(
                 db,
                 [row.canonical_rjcode for row in rows],
@@ -7720,7 +7837,11 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 own_codes: List[str] = []
                 for code in [
                     row.canonical_rjcode,
-                    row.display_rjcode,
+                    *(
+                        []
+                        if (canonical, self.normalize_rjcode(row.display_rjcode)) in bonus_link_pairs
+                        else [row.display_rjcode]
+                    ),
                 ]:
                     normalized = self.normalize_rjcode(code)
                     if normalized and normalized not in own_codes:
@@ -7730,7 +7851,24 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     normalized = self.normalize_rjcode(code)
                     if normalized and normalized not in related:
                         related.append(normalized)
-                new_is_bonus = bool(row.is_bonus_work) or canonical in confirmed_bonus_rjcodes
+                canonical_bonus_state = (
+                    bonus_updates.get(canonical)
+                    or checked_bonus_states.get(canonical)
+                )
+                if canonical_bonus_state is None:
+                    canonical_bonus_state = next(
+                        (
+                            bonus_updates.get(code) or checked_bonus_states.get(code)
+                            for code in own_codes
+                            if bonus_updates.get(code) or checked_bonus_states.get(code)
+                        ),
+                        None,
+                    )
+                new_is_bonus = (
+                    bool(canonical_bonus_state.get("is_bonus_work"))
+                    if canonical_bonus_state is not None
+                    else bool(row.is_bonus_work)
+                ) or canonical in confirmed_bonus_rjcodes
                 new_has_bonus = bool(row.has_bonus)
                 hit = False
                 own_bonus_seen = False
@@ -9161,7 +9299,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 item["cover_confirmed_missing"] = bool(item["is_bonus_work"] and cover_known_missing)
                 metadata_entry = metadata_map.get(stored_display_rjcode) or {}
                 if item["is_bonus_work"] and str(metadata_entry.get("metadata_verification_status") or "").strip().lower() == "verified":
-                    item["dlsite_cover_available"] = bool(str(metadata_entry.get("cover_url") or "").strip())
+                    item["dlsite_cover_available"] = True if str(metadata_entry.get("cover_url") or "").strip() else None
                 else:
                     item["dlsite_cover_available"] = True
                 item["thumb_image_url"] = local_thumb_url or local_cover_url or (

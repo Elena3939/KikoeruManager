@@ -2082,6 +2082,15 @@ class DLsiteBonusProbeService:
         row.cached_at = datetime.now()
         row.updated_at = datetime.now()
 
+    def _lock_bonus_probe_circle(self, db, circle_id: str) -> None:
+        bind = db.get_bind()
+        if bind.dialect.name != "postgresql":
+            return
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": f"dlsite-bonus-probe:{circle_id}"},
+        )
+
     def _upsert_bonus_works(
         self,
         circle_id: str,
@@ -2097,6 +2106,8 @@ class DLsiteBonusProbeService:
         db = SessionLocal()
         inserted_or_updated = 0
         try:
+            # 同一社团的日期 worker 可能命中相同 RJ；锁住整个事务，避免查后插入竞态。
+            self._lock_bonus_probe_circle(db, circle_id)
             catalog = db.query(CircleCatalog).filter(CircleCatalog.circle_id == circle_id).first()
             maker_name = str((catalog.circle_name if catalog else "") or "").strip()
             if catalog:

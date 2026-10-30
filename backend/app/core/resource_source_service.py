@@ -455,7 +455,7 @@ class ResourceSourceService:
             try:
                 if isinstance(plan, BaseException):
                     raise plan
-                if plan and plan.get('selectable_resources') and (source != SOURCE or any(
+                if plan and (plan.get('selectable_resources') or plan.get('filtered_out_resources')) and (source != SOURCE or any(
                         row.get('complete') for row in plan['selectable_resources'])):
                     options.append({**plan, 'source_provider': source})
                 elif source == SOURCE and plan:

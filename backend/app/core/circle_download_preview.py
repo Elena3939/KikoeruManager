@@ -1,12 +1,18 @@
 """社团下载的语言发现与精确版本计划。归组编号不代表下载目标。"""
 import asyncio
 import os
+import re
 from copy import deepcopy
 
 from ..models.database import CircleCatalog, CircleWork
 
 
 class CircleDownloadPreviewMixin:
+    def _download_rjcode(self, value):
+        """预览链路只接受可解析成完整 RJ 编号的值，拒绝把原始脏文本落库。"""
+        normalized = self.normalize_rjcode(value)
+        return normalized if re.fullmatch(r"[RVB]J(?:\d{6}|\d{8})", normalized) else ""
+
     def _unreleased_download_codes(self, codes):
         from .circle_completion_service import SessionLocal
         from ..models.database import WorkMetadata
@@ -24,13 +30,20 @@ class CircleDownloadPreviewMixin:
         from .circle_completion_service import SessionLocal
         from ..models.database import WorkCanonicalLink
 
-        canonical = context['canonical_rjcode']
-        codes = list(dict.fromkeys([canonical, *[item['rjcode'] for item in links]]))
+        canonical = self._download_rjcode(context.get('canonical_rjcode'))
+        if not canonical:
+            return
+        valid_links = []
+        for item in links:
+            code = self._download_rjcode(item.get('rjcode'))
+            if code and item.get('work_type') in {'original', 'translation', 'child_translation'}:
+                valid_links.append({**item, 'rjcode': code})
+        codes = list(dict.fromkeys([canonical, *[item['rjcode'] for item in valid_links]]))
         with SessionLocal() as db:
             affected = db.query(CircleWork).filter(
                 CircleWork.canonical_rjcode == canonical,
                 CircleWork.is_bonus_work.isnot(True)).all()
-            for item in links:
+            for item in valid_links:
                 statement = insert(WorkCanonicalLink).values(
                     id=str(uuid4()), canonical_rjcode=canonical, linked_rjcode=item['rjcode'],
                     link_type=item['work_type'], lang=item.get('lang') or '',
@@ -51,6 +64,9 @@ class CircleDownloadPreviewMixin:
 
     def _download_preview_context(self, circle_id, canonical):
         from .circle_completion_service import SessionLocal
+        canonical = self._download_rjcode(canonical)
+        if not canonical:
+            raise ValueError("作品 RJ 编号无效")
         with SessionLocal() as db:
             catalog = db.query(CircleCatalog).filter_by(circle_id=circle_id).first()
             row = db.query(CircleWork).filter_by(circle_id=circle_id, canonical_rjcode=canonical).first()
@@ -105,6 +121,12 @@ class CircleDownloadPreviewMixin:
 
     async def _discover_download_versions(self, context, clicked, refresh=False):
         """合并 DLsite 语言关系与源站实际收录关系；特典不扩散关联。"""
+        clicked = self._download_rjcode(clicked)
+        if not clicked:
+            return []
+        context = {**context, 'canonical_rjcode': self._download_rjcode(context.get('canonical_rjcode'))}
+        if not context['canonical_rjcode']:
+            return []
         if clicked in await asyncio.to_thread(self._unreleased_download_codes, [clicked]):
             return []
         versions = {clicked: dict(rjcode=clicked, title=context['title'], language_label='未知语言')}
@@ -118,7 +140,7 @@ class CircleDownloadPreviewMixin:
                     linked = await self.dlsite_service.get_linked_works(clicked, refresh=refresh)
                 for link in linked.values():
                     data = link if isinstance(link, dict) else link.to_dict()
-                    code = self.normalize_rjcode(data.get('workno'))
+                    code = self._download_rjcode(data.get('workno'))
                     if (code and data.get('work_type') in {'original', 'translation', 'child_translation'}
                             and data.get('evidence_status') == 'verified'):
                         versions[code] = dict(rjcode=code, title=data.get('title') or code,
@@ -144,7 +166,7 @@ class CircleDownloadPreviewMixin:
                     for edition in work_info.get('other_language_editions_in_db') or []:
                         if edition.get('source_type') != 'DLSITE':
                             continue
-                        code = self.normalize_rjcode(edition.get('source_id'))
+                        code = self._download_rjcode(edition.get('source_id'))
                         if not code:
                             continue
                         source_available.add(code)
@@ -239,7 +261,7 @@ class CircleDownloadPreviewMixin:
                 plan = await get_resource_source_service().combine_plan(target, build_asmr, exact=True)
         identity = dict(context, rjcode=target, requested_rjcode=target, resolved_rjcode=target,
                         title=plan.get('title') or context['title'], discovery_only=False,
-                        probe_status='available' if plan.get('selectable_resources') else 'missing')
+                        probe_status='available' if plan.get('selectable_resources') or plan.get('filtered_out_resources') else 'missing')
         plan.update(identity)
         for option in plan.get('source_options', []):
             if self.normalize_rjcode(option.get('rjcode')) != target:
@@ -273,7 +295,7 @@ class CircleDownloadPreviewMixin:
                         circle_id, canonical, version['rjcode'],
                         include_resource_sources=include_resource_sources,
                         available_sources={source['id'] for source in version['resource_sources']})
-                    if not plan.get('selectable_resources'):
+                    if not plan.get('selectable_resources') and not plan.get('filtered_out_resources'):
                         return None
                     return {**version, **plan, 'selected_version': version['rjcode'] == clicked,
                             'language_label': version['language_label'], 'discovery_only': False}

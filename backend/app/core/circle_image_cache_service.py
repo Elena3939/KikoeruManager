@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -65,6 +66,39 @@ class CircleImageCacheService:
         self._failure_details: Dict[str, str] = {}
         self._download_semaphore: Optional[asyncio.Semaphore] = None
         self._validated_images: Dict[Path, tuple] = {}
+        self._cover_file_names: Optional[Set[str]] = None
+        self._cover_facts_lock = threading.RLock()
+
+    def cover_facts(self, rjcodes: Iterable[str], *, refresh: bool = False) -> Dict[str, Optional[bool]]:
+        """冷构建只读一次目录名称，其余由下载结果维护，不逐图 stat 或解码。"""
+        with self._cover_facts_lock:
+            if refresh or self._cover_file_names is None:
+                try:
+                    with os.scandir(self.cache_dir) as entries:
+                        self._cover_file_names = {entry.name for entry in entries}
+                except OSError:
+                    # 目录读取失败不是无图结论，下一次允许重新读取。
+                    return {}
+            names = self._cover_file_names
+            result = {}
+            for code in rjcodes:
+                card = self._filename_for(code)
+                thumb = self._filename_for(code, "list")
+                if card in names or thumb in names:
+                    result[code] = True
+                elif f".{card}.missing" in names and f".{thumb}.missing" in names:
+                    result[code] = False
+                else:
+                    result[code] = None
+            return result
+
+    def _update_cover_file_name(self, name: str, *, present: bool) -> None:
+        with self._cover_facts_lock:
+            if self._cover_file_names is not None:
+                if present:
+                    self._cover_file_names.add(name)
+                else:
+                    self._cover_file_names.discard(name)
 
     # ------------------------------------------------------------------
     # 路径 / 命名
@@ -153,6 +187,7 @@ class CircleImageCacheService:
             return
         try:
             marker.write_text("confirmed-http-404\n", encoding="ascii")
+            self._update_cover_file_name(marker.name, present=True)
         except OSError:
             logger.warning(
                 "[社团补全/封面缓存] 写入无图标记失败 rjcode=%s variant=%s",
@@ -167,6 +202,7 @@ class CircleImageCacheService:
             return
         try:
             marker.unlink(missing_ok=True)
+            self._update_cover_file_name(marker.name, present=False)
         except OSError:
             logger.debug(
                 "[社团补全/封面缓存] 清理无图标记失败 rjcode=%s variant=%s",
@@ -198,14 +234,30 @@ class CircleImageCacheService:
             signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
             cached = self._validated_images.get(path)
             if cached is not None and cached[0] == signature:
+                if cached[1]:
+                    self._update_cover_file_name(path.name, present=True)
                 return cached[1]
             valid = self._is_valid_image(path)
             if len(self._validated_images) >= self.MAX_FAILURE_CACHE_ENTRIES:
                 self._validated_images.pop(next(iter(self._validated_images)))
             self._validated_images[path] = (signature, valid)
+            self._update_cover_file_name(path.name, present=valid)
             return valid
         except OSError:
             return False
+
+    def _remember_valid_image(self, path: Path) -> None:
+        try:
+            stat = path.stat()
+            if not path.is_file() or not 0 < stat.st_size <= self.MAX_FILE_SIZE:
+                return
+            signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            if len(self._validated_images) >= self.MAX_FAILURE_CACHE_ENTRIES:
+                self._validated_images.pop(next(iter(self._validated_images)))
+            self._validated_images[path] = (signature, True)
+            self._update_cover_file_name(path.name, present=True)
+        except OSError:
+            return
 
     @staticmethod
     def _is_valid_image(path: Path) -> bool:
@@ -228,12 +280,12 @@ class CircleImageCacheService:
         filename = self._filename_for(rjcode, variant)
         if not filename:
             return ""
+        if allow_missing:
+            return f"{self.URL_PATH_PREFIX}{filename}"
         if self.has_local(rjcode, variant):
             return f"{self.URL_PATH_PREFIX}{filename}"
         if self.has_known_missing(rjcode, variant):
             return ""
-        if allow_missing:
-            return f"{self.URL_PATH_PREFIX}{filename}"
         return ""
 
     def resolve_display_url(self, rjcode: Any, fallback_url: Any = "", variant: str = "card") -> str:
@@ -249,16 +301,26 @@ class CircleImageCacheService:
         aliases: Iterable[Any],
         *,
         variant: str = "card",
+        verify_target: bool = True,
     ) -> Optional[Path]:
         """把历史上按展示 RJ 写入的缓存补到图片实际 RJ 名下。
 
         旧版本把翻译版 ``display_rjcode`` 当作缓存文件名，而视图读取使用
         图片 URL 中的原作 RJ。这里仅在目标文件缺失时从已存在的旧别名流式复制，
-        通过原子替换落盘，不触发网络请求，也不删除原文件。
+        通过原子替换落盘，不触发网络请求，也不删除原文件。列表构建可关闭目标图校验，
+        将完整性检查留给封面 API，避免为整社团作品同步解码本地图片。
         """
 
         target = self.get_local_path(str(target_rjcode or ""), variant)
-        if target is None or self.has_local(str(target_rjcode or ""), variant):
+        if target is None:
+            return None
+        if not verify_target:
+            try:
+                if target.is_file():
+                    return target
+            except OSError:
+                pass
+        if self.has_local(str(target_rjcode or ""), variant):
             return target
 
         normalized_target = self.normalize_rjcode(target_rjcode)
@@ -295,6 +357,7 @@ class CircleImageCacheService:
                     return target
                 os.replace(tmp_path, target)
                 tmp_path = None
+                self._remember_valid_image(target)
                 self._clear_known_missing(normalized_target, variant)
                 logger.info(
                     "[社团补全/封面缓存] 已修复历史别名 target=%s alias=%s variant=%s",
@@ -524,6 +587,9 @@ class CircleImageCacheService:
                 saw_non_404 = True
             if saw_404 and not saw_non_404:
                 self._mark_known_missing(rjcode, variant)
+                other_variant = "list" if variant == "card" else "card"
+                if set(self._candidate_source_urls(rjcode, variant)) == set(self._candidate_source_urls(rjcode, other_variant)):
+                    self._mark_known_missing(rjcode, other_variant)
             self._remember_failure(rjcode, variant)
             self._set_failure_detail(rjcode, variant, ",".join(failures) or "unknown")
             log = logger.warning if log_failure else logger.debug
@@ -832,6 +898,7 @@ class CircleImageCacheService:
             # 原子替换不删除已有目标；另一并发请求或读者始终只会看到完整文件。
             os.replace(tmp_path, target_path)
             tmp_path = None
+            self._remember_valid_image(target_path)
             return True, "", False
         except httpx.TransportError as exc:
             return False, f"{type(exc).__name__}:{phase}:{mode}", True

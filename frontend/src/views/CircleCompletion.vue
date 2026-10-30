@@ -1119,6 +1119,20 @@
           <span>{{ workContextMenu.item.title || workContextMenu.item.canonical_rjcode || '作品操作' }}</span>
           <small>{{ circleWorkVersionRjcode(workContextMenu.item) }}</small>
         </div>
+        <StatefulButton
+          v-if="workContextParent"
+          unstyled
+          class="circle-work-context-item circle-work-context-parent"
+          :show-default-icons="false"
+          :title="workContextParent.title || workContextParent.display_rjcode"
+          @click="handleWorkContextAction('parent')"
+        >
+          <ExternalLink :size="14" />
+          <span class="circle-work-parent-label">
+            <strong>本体 {{ workContextParent.display_rjcode || workContextParent.canonical_rjcode }}</strong>
+            <small>{{ workContextParent.title || '查看本体' }}</small>
+          </span>
+        </StatefulButton>
         <button type="button" class="circle-work-context-item" @click.stop="handleWorkContextAction('refresh')">
           <RefreshCw :size="14" />
           <span>刷新状态</span>
@@ -5925,6 +5939,21 @@ const workContextNeedsCover = computed(() => {
     && !String(item?.image_url || item?.thumb_image_url || item?.remote_image_url || '').trim()
 })
 
+const workContextParent = computed(() => {
+  const item = workContextMenu.item
+  if (!item?.is_bonus_work) return null
+  const parent = item.bonus_parent
+  const code = normalizeRjcode(parent?.canonical_rjcode || item.bonus_parent_rjcode)
+  if (!code || code === normalizeRjcode(item.display_rjcode)) return null
+  return {
+    ...parent,
+    canonical_rjcode: code,
+    display_rjcode: parent?.display_rjcode || code,
+    circle_id: parent?.circle_id || item.circle_id || activeCircleId.value,
+    circle_name: parent?.circle_name || item.circle_name || detail.circle_name,
+  }
+})
+
 async function ensureWorkCover(item, options = {}) {
   const code = coverCode(item)
   if (!code) return false
@@ -5947,6 +5976,9 @@ async function ensureWorkCover(item, options = {}) {
       if (!result?.success || !result?.cover_url) {
         markWorkCoverFailed(item)
         if (!options?.silent) ElMessage.warning(result?.detail || '封面暂时无法下载')
+        if (item?.is_bonus_work && result?.error_code === 'not_found') {
+          await refreshActiveCircle({ preferCache: false })
+        }
         return false
       }
       coverOverrides.value = {
@@ -5989,7 +6021,7 @@ function openWorkContextMenu(item, event) {
   if (!selectedCanonicals.value.has(code)) toggleSelection(item, event)
   workContextMenu.item = item
   const menuWidth = 212
-  const menuHeight = workContextNeedsCover.value ? 160 : 124
+  const menuHeight = (workContextNeedsCover.value ? 160 : 124) + (workContextParent.value ? 62 : 0)
   workContextMenu.x = Math.max(8, Math.min(Number(event?.clientX || 0), window.innerWidth - menuWidth - 8))
   workContextMenu.y = Math.max(8, Math.min(Number(event?.clientY || 0), window.innerHeight - menuHeight - 8))
   workContextMenu.visible = true
@@ -5997,8 +6029,17 @@ function openWorkContextMenu(item, event) {
 
 async function handleWorkContextAction(action) {
   const item = workContextMenu.item
+  const parent = workContextParent.value
   closeWorkContextMenu()
   if (!item) return
+  if (action === 'parent' && parent) {
+    try {
+      await jumpToHeroWorkSearchResult(parent)
+    } catch (error) {
+      ElMessage.error(error.response?.data?.detail || '定位本体失败')
+    }
+    return
+  }
   if (action === 'cover') {
     await ensureWorkCover(item, { force: true, silent: false })
     return
@@ -9559,6 +9600,9 @@ body.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animatio
   position: fixed;
   z-index: 3000;
   width: 212px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   padding: 7px;
   border: 1px solid color-mix(in srgb, var(--circle-border-soft, #dbe4ef) 86%, transparent);
   border-radius: 10px;
@@ -9626,6 +9670,28 @@ body.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animatio
 .circle-work-context-item:disabled {
   cursor: not-allowed;
   opacity: .4;
+}
+
+.circle-work-context-parent {
+  min-height: 56px;
+}
+
+.circle-work-parent-label {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.circle-work-context-parent strong,
+.circle-work-context-parent small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.circle-work-context-parent small {
+  font-size: 11px;
+  color: var(--circle-text-subtle, #94a3b8);
 }
 
 /* 公共窗口尺寸在 components 层使用 important，此处在同层按用途覆盖。 */

@@ -264,7 +264,15 @@
                 @choose-source="chooseSource" @choose-row="chooseSourceRow" @toggle-root="togglePlanExpand" @toggle-expand="toggleExpand"
                 @toggle-all="togglePlanAll" @toggle-row="toggleTreeRow">
                 <template #toolbar>
-      <div v-if="!previewLoading && settingsSite === 'asmr.one' && previewSelectableResources.length" class="file-type-toolbar flex flex-wrap items-center gap-1.5">
+      <div v-if="!previewLoading && settingsSite === 'asmr.one'" class="file-type-toolbar flex flex-wrap items-center gap-1.5">
+        <label class="file-list-toggle flex items-center gap-2 text-xs">
+          <span>完整文件列表</span>
+          <button type="button" class="path-option-toggle" role="switch" aria-label="完整文件列表"
+            :class="{ active: showAllResources }" :aria-checked="showAllResources"
+            :disabled="starting" @click="toggleResourceFilter">
+            <span class="path-toggle-thumb" aria-hidden="true" />
+          </button>
+        </label>
         <button
           v-for="chip in previewFileTypeChips"
           :key="chip.key"
@@ -344,6 +352,7 @@ const props = defineProps({
 const emit = defineEmits(['submit', 'update:visible', 'versions-updated'])
 
 const planStates = ref([])
+const showAllResources = ref(false)
 const activePlans = computed(() => planStates.value.filter(plan => plan.selected_version !== false))
 const selectedDownloadPlans = computed(() => activePlans.value.filter(plan =>
   !plan.source_selection_required && plan.selected_resource_count > 0))
@@ -733,9 +742,10 @@ onBeforeUnmount(() => {
 })
 
 watch(() => props.plans, (plans) => {
+  showAllResources.value = false
   planStates.value = Array.isArray(plans)
     ? plans.filter(plan => !plan.discovery_only && !plan.preview_error
-      && (plan.selectable_resources?.length || plan.source_selection_required))
+      && (plan.selectable_resources?.length || plan.filtered_out_resources?.length || plan.source_selection_required))
       .map(plan => buildPlanState({ ...plan, selected_version: true,
         selectable_resources: (plan.selectable_resources || []).map(resource => ({ ...resource,
           selected: plan.selected_version !== false && resource.selected })) }))
@@ -881,20 +891,45 @@ function buildPlanState(plan) {
   if (plan.source_selection_required) {
     plan = { ...plan, source_provider: '', selectable_resources: [] }
   }
-  const resources = (plan?.selectable_resources || []).map(item => ({
+  const resources = plan.matchingResources || (plan?.selectable_resources || []).map(item => ({
     ...item,
     relative_path: plan.source_provider === 'imoutoheaven' ? (item.download_name || item.name) : item.relative_path,
     selected: Boolean(item.selected),
     recommended: Boolean(item.selected),
     recommended_skip_reasons: item.recommended_skip_reasons || []
   }))
-  const tree = buildTree(resources)
+  const filteredResources = plan.allResources ? plan.filtered_out_resources : (plan.filtered_out_resources || []).map(item => ({
+    ...item, selected: false, recommended: false,
+    recommended_skip_reasons: item.recommended_skip_reasons || []
+  }))
+  const allResources = [...resources, ...filteredResources]
+  const selectableResources = showAllResources.value ? allResources : resources
+  const tree = buildTree(selectableResources)
   const expandedIds = new Set(tree.map(node => node.id))
-  const state = { ...plan, selectable_resources: resources, tree, expandedIds, rootExpanded: true, flatRows: [] }
+  const state = { ...plan, filtered_out_resources: filteredResources, matchingResources: resources,
+    allResources, selectable_resources: selectableResources, tree, expandedIds, rootExpanded: true, flatRows: [] }
   if (plan.source_selection_required) state.sourcePreviews = (plan.source_options || []).map(option =>
     buildPlanState({ ...option, language_label: plan.language_label, source_selection_required: false, source_options: [] }))
   refreshPlanTree(state)
   return state
+}
+
+function toggleResourceFilter() {
+  showAllResources.value = !showAllResources.value
+  const visited = new Set()
+  function updatePlan(plan) {
+    if (!plan || visited.has(plan)) return
+    visited.add(plan)
+    if ((plan.source_provider || 'asmr.one') === 'asmr.one') {
+      plan.selectable_resources = showAllResources.value ? plan.allResources : plan.matchingResources
+      plan.tree = buildTree(plan.selectable_resources)
+      plan.expandedIds = new Set([...plan.expandedIds, ...plan.tree.map(node => node.id)])
+      refreshPlanTree(plan)
+    }
+    plan.sourcePreviews?.forEach(updatePlan)
+    Object.values(plan.sourceStates || {}).forEach(updatePlan)
+  }
+  planStates.value.forEach(updatePlan)
 }
 
 function chooseSource(plan, option, resource = null) {
