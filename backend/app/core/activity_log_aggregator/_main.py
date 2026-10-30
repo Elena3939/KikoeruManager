@@ -1674,7 +1674,6 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
         "task_cancelled": 25,
     }
     child_action_relations = {
-        "resource_downloaded": ("asmr_resource", "下载文件"),
         "resource_uploaded": ("asmr_upload", "上传文件"),
         "resource_verify_failed": ("asmr_verify_failed", "校验失败"),
         "session_started": ("asmr_session", "下载开始"),
@@ -1787,6 +1786,37 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
             or (uploaded_bytes / max(duration_ms / 1000, 1) if uploaded_bytes > 0 and duration_ms > 0 else 0)
             or 0
         )
+        average_download_speed_bytes = int(
+            session_complete_detail.get("average_download_speed_bytes")
+            or task_finished_detail.get("average_download_speed_bytes")
+            or (
+                session_complete_detail.get("average_speed_bytes")
+                or task_finished_detail.get("average_speed_bytes")
+            )
+            or (downloaded_bytes / max(duration_ms / 1000, 1) if downloaded_bytes > 0 and duration_ms > 0 else 0)
+            or 0
+        )
+        download_files = list(
+            session_complete_detail.get("download_files")
+            or task_finished_detail.get("download_files")
+            or parent_detail.get("download_files")
+            or []
+        )
+        if not download_files:
+            download_files = [
+                {
+                    "name": str((item.get("detail") or {}).get("resource_name") or ""),
+                    "relative_path": str(
+                        (item.get("detail") or {}).get("resource_path")
+                        or (item.get("detail") or {}).get("resource_name")
+                        or ""
+                    ),
+                    "size_bytes": int((item.get("detail") or {}).get("size_bytes") or 0),
+                    "status": str(item.get("status") or ""),
+                }
+                for item in resource_rows
+                if isinstance(item.get("detail"), dict)
+            ]
         original_parent_status = str(parent_row.get("status") or "").strip() or "success"
         # 计算任务状态
         rollup_status = original_parent_status
@@ -1827,8 +1857,10 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                 summary_parts.append(_format_bytes_short(uploaded_bytes))
             elif downloaded_bytes > 0:
                 summary_parts.append(_format_bytes_short(downloaded_bytes))
-            if average_upload_speed_bytes > 0:
-                summary_parts.append(f"平均 {_format_bytes_short(average_upload_speed_bytes)}/s")
+            if uploaded_bytes > 0 and average_upload_speed_bytes > 0:
+                summary_parts.append(f"平均上传 {_format_bytes_short(average_upload_speed_bytes)}/s")
+            elif average_download_speed_bytes > 0:
+                summary_parts.append(f"平均下载 {_format_bytes_short(average_download_speed_bytes)}/s")
             if duration_ms > 0:
                 summary_parts.append(f"耗时 {_format_duration_short(duration_ms)}")
             parent_row["summary"] = " / ".join(summary_parts)
@@ -1855,7 +1887,9 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
             "upload_mode": upload_mode or None,
             "uploaded_count": uploaded_count,
             "uploaded_bytes": uploaded_bytes,
+            "average_download_speed_bytes": average_download_speed_bytes,
             "average_upload_speed_bytes": average_upload_speed_bytes,
+            "download_files": download_files[:200],
             "uploaded_files": uploaded_files[:200],
             "recovered_by_success": rollup_status == "success" and original_parent_status == "failed",
             "child_rows": child_rows,

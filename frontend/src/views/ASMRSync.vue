@@ -176,48 +176,6 @@
       @load-files="task => loadFullWorkbenchTaskFiles(task, baiduNetdiskWorkbenchTasks)"
     />
 
-    <Transition :name="backgroundFloatingCardTransitionName" mode="out-in">
-      <BackgroundFloatingCard
-        v-if="activeBackgroundFloatingCard"
-        :key="activeBackgroundFloatingCard.id"
-        v-bind="activeBackgroundFloatingCard.props"
-        position-group="download-pager"
-        @action="handleVisibleBackgroundFloatingCardAction"
-      >
-        <template #navigation>
-          <div v-if="visibleBackgroundFloatingCards.length > 1" class="asmr-floating-pager-controls" role="group" aria-label="切换下载小窗">
-            <button
-              type="button"
-              class="asmr-floating-page-btn"
-              title="上一张"
-              @click="switchBackgroundFloatingCard(-1)"
-            >
-              <ChevronLeft :size="15" :stroke-width="2.4" />
-            </button>
-            <div class="asmr-floating-page-dots">
-              <button
-                v-for="(card, index) in visibleBackgroundFloatingCards"
-                :key="card.id"
-                type="button"
-                class="asmr-floating-page-dot"
-                :class="{ 'is-active': index === activeBackgroundFloatingCardIndex }"
-                :title="card.label"
-                @click="setBackgroundFloatingCardIndex(index)"
-              />
-            </div>
-            <button
-              type="button"
-              class="asmr-floating-page-btn"
-              title="下一张"
-              @click="switchBackgroundFloatingCard(1)"
-            >
-              <ChevronRight :size="15" :stroke-width="2.4" />
-            </button>
-          </div>
-        </template>
-      </BackgroundFloatingCard>
-    </Transition>
-
     <!-- Enhanced Download Workbench Dialog -->
     <DownloadTaskWorkbenchDialog
       v-model:visible="enhancedDownloadWorkbenchVisible"
@@ -634,8 +592,6 @@ import {
   Activity,
   Hourglass,
   Loader2,
-  ChevronLeft,
-  ChevronRight,
 } from 'lucide-vue-next'
 import { asmrSyncApi, baiduNetdiskApi, configApi, httpDownloadApi, libraryApi, taskApi, taskCenterApi } from '../api'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
@@ -644,7 +600,6 @@ import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
-import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.vue'
 import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
 import AsmrEnhancedDownloadPanel from '../components/asmr/AsmrEnhancedDownloadPanel.vue'
@@ -942,12 +897,6 @@ const enhancedProcessingTasks = computed(() => enhancedDownloadWorkbenchTasks.va
 const enhancedPendingTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => ['pending', 'paused', 'waiting_retry'].includes(String(t.status || ''))))
 const enhancedCompletedTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => t.status === 'completed' && String(t.display_status || '') !== 'partial_failed'))
 const enhancedFailedTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => ['failed', 'partial_failed'].includes(String(t.display_status || t.status || ''))))
-const showEnhancedDownloadBackgroundCard = computed(() => (
-  enhancedDownloadWorkbenchBackgroundActive.value
-  && !enhancedDownloadWorkbenchVisible.value
-  && enhancedDownloadWorkbenchTasks.value.length > 0
-  && enhancedDownloadWorkbenchTaskIds.value.length > 0
-))
 const enhancedActiveBackgroundTask = computed(() => enhancedProcessingTasks.value[0] || enhancedPendingTasks.value[0] || enhancedDownloadWorkbenchTasks.value[0] || null)
 const enhancedBackgroundPercent = computed(() => {
   if (!enhancedDownloadWorkbenchTasks.value.length) return 0
@@ -1010,12 +959,6 @@ const httpDownloadProcessingTasks = computed(() => httpDownloadWorkbenchTasks.va
 const httpDownloadPendingTasks = computed(() => httpDownloadWorkbenchTasks.value.filter(t => ['pending', 'paused', 'waiting_retry'].includes(String(t.status || ''))))
 const httpDownloadCompletedTasks = computed(() => httpDownloadWorkbenchTasks.value.filter(t => t.status === 'completed' && String(t.display_status || '') !== 'partial_failed'))
 const httpDownloadFailedTasks = computed(() => httpDownloadWorkbenchTasks.value.filter(t => ['failed', 'partial_failed'].includes(String(t.display_status || t.status || ''))))
-const showHttpDownloadBackgroundCard = computed(() => (
-  httpDownloadWorkbenchBackgroundActive.value
-  && !httpDownloadWorkbenchVisible.value
-  && httpDownloadWorkbenchTasks.value.length > 0
-  && httpDownloadWorkbenchTaskIds.value.length > 0
-))
 const httpDownloadActiveBackgroundTask = computed(() => httpDownloadProcessingTasks.value[0] || httpDownloadPendingTasks.value[0] || httpDownloadWorkbenchTasks.value[0] || null)
 const httpDownloadBackgroundPercent = computed(() => {
   if (!httpDownloadWorkbenchTasks.value.length) return 0
@@ -1067,12 +1010,6 @@ const baiduNetdiskProcessingTasks = computed(() => baiduNetdiskWorkbenchTasks.va
 const baiduNetdiskPendingTasks = computed(() => baiduNetdiskWorkbenchTasks.value.filter(t => ['pending', 'paused', 'waiting_retry'].includes(String(t.status || ''))))
 const baiduNetdiskCompletedTasks = computed(() => baiduNetdiskWorkbenchTasks.value.filter(t => t.status === 'completed' && String(t.display_status || '') !== 'partial_failed'))
 const baiduNetdiskFailedTasks = computed(() => baiduNetdiskWorkbenchTasks.value.filter(t => ['failed', 'partial_failed'].includes(String(t.display_status || t.status || ''))))
-const showBaiduNetdiskBackgroundCard = computed(() => (
-  baiduNetdiskWorkbenchBackgroundActive.value
-  && !baiduNetdiskWorkbenchVisible.value
-  && baiduNetdiskWorkbenchTasks.value.length > 0
-  && baiduNetdiskWorkbenchTaskIds.value.length > 0
-))
 const baiduNetdiskActiveBackgroundTask = computed(() => baiduNetdiskProcessingTasks.value[0] || baiduNetdiskPendingTasks.value[0] || baiduNetdiskWorkbenchTasks.value[0] || null)
 const baiduNetdiskBackgroundPercent = computed(() => getDownloadBatchPercent(baiduNetdiskWorkbenchTasks.value))
 const baiduNetdiskBackgroundCompleted = computed(() => (
@@ -1115,76 +1052,6 @@ const baiduNetdiskBackgroundCardProps = computed(() => ({ positionKey: '/asmr-sy
     { key: 'resume', label: '恢复工作台', variant: 'blue' }
   ]
 }))
-
-const activeBackgroundFloatingCardIndex = ref(0)
-const backgroundFloatingCardDirection = ref(1)
-const visibleBackgroundFloatingCards = computed(() => {
-  const cards = []
-  if (showBaiduNetdiskBackgroundCard.value) {
-    cards.push({
-      id: 'baidu-netdisk',
-      label: '百度网盘下载',
-      props: baiduNetdiskBackgroundCardProps.value,
-      onAction: handleBaiduNetdiskBackgroundCardAction
-    })
-  }
-  if (showHttpDownloadBackgroundCard.value) {
-    cards.push({
-      id: 'http-download',
-      label: 'HTTP 外链下载',
-      props: httpDownloadBackgroundCardProps.value,
-      onAction: handleHttpDownloadBackgroundCardAction
-    })
-  }
-  if (showEnhancedDownloadBackgroundCard.value) {
-    cards.push({
-      id: 'enhanced-download',
-      label: 'ASMR 增强下载',
-      props: enhancedDownloadBackgroundCardProps.value,
-      onAction: handleEnhancedDownloadBackgroundCardAction
-    })
-  }
-  return cards
-})
-const activeBackgroundFloatingCard = computed(() => visibleBackgroundFloatingCards.value[activeBackgroundFloatingCardIndex.value] || visibleBackgroundFloatingCards.value[0] || null)
-const backgroundFloatingCardTransitionName = computed(() => (
-  backgroundFloatingCardDirection.value >= 0
-    ? 'asmr-floating-card-page-next'
-    : 'asmr-floating-card-page-prev'
-))
-
-function setBackgroundFloatingCardIndex(index) {
-  const cards = visibleBackgroundFloatingCards.value
-  if (!cards.length) return
-  const nextIndex = Math.max(0, Math.min(cards.length - 1, Number(index || 0)))
-  if (nextIndex === activeBackgroundFloatingCardIndex.value) return
-  backgroundFloatingCardDirection.value = nextIndex > activeBackgroundFloatingCardIndex.value ? 1 : -1
-  activeBackgroundFloatingCardIndex.value = nextIndex
-}
-
-function switchBackgroundFloatingCard(step) {
-  const cards = visibleBackgroundFloatingCards.value
-  if (cards.length <= 1) return
-  const direction = Number(step || 1) >= 0 ? 1 : -1
-  backgroundFloatingCardDirection.value = direction
-  activeBackgroundFloatingCardIndex.value = (activeBackgroundFloatingCardIndex.value + direction + cards.length) % cards.length
-}
-
-function handleVisibleBackgroundFloatingCardAction(action) {
-  activeBackgroundFloatingCard.value?.onAction?.(action)
-}
-
-watch(visibleBackgroundFloatingCards, (cards, previousCards = []) => {
-  if (!cards.length) {
-    activeBackgroundFloatingCardIndex.value = 0
-    return
-  }
-  const activeId = previousCards[activeBackgroundFloatingCardIndex.value]?.id
-  const nextIndex = activeId ? cards.findIndex(card => card.id === activeId) : -1
-  activeBackgroundFloatingCardIndex.value = nextIndex >= 0
-    ? nextIndex
-    : Math.min(activeBackgroundFloatingCardIndex.value, cards.length - 1)
-}, { flush: 'sync' })
 
 // 格式化下次重试时间
 const formatNextRetryTime = (isoString) => {
@@ -1587,16 +1454,6 @@ function dismissBaiduWorkbenchTask(task) {
   if (!baiduNetdiskWorkbenchTaskIds.value.length) clearBaiduNetdiskWorkbenchState()
 }
 
-function handleEnhancedDownloadBackgroundCardAction(action) {
-  if (action === 'resume') {
-    resumeEnhancedDownloadWorkbench()
-    return
-  }
-  if (action === 'close') {
-    closeEnhancedDownloadWorkbench()
-  }
-}
-
 // --- HTTP Download Workbench Management ---
 
 function persistHttpDownloadWorkbenchState() {
@@ -1713,16 +1570,6 @@ function resumeHttpDownloadWorkbench() {
 function closeHttpDownloadWorkbench() {
   dismissPersistentTaskCard('/asmr-sync:http:download')
   clearHttpDownloadWorkbenchState()
-}
-
-function handleHttpDownloadBackgroundCardAction(action) {
-  if (action === 'resume') {
-    resumeHttpDownloadWorkbench()
-    return
-  }
-  if (action === 'close') {
-    closeHttpDownloadWorkbench()
-  }
 }
 
 async function pauseHttpDownloadTask(task) {
@@ -1956,16 +1803,6 @@ function resumeBaiduNetdiskWorkbench() {
 function closeBaiduNetdiskWorkbench() {
   dismissPersistentTaskCard('/asmr-sync:baidu:download')
   clearBaiduNetdiskWorkbenchState()
-}
-
-function handleBaiduNetdiskBackgroundCardAction(action) {
-  if (action === 'resume') {
-    resumeBaiduNetdiskWorkbench()
-    return
-  }
-  if (action === 'close') {
-    closeBaiduNetdiskWorkbench()
-  }
 }
 
 function resolveBaiduNetdiskTaskId(task) {
@@ -3168,129 +3005,6 @@ button:disabled { cursor: not-allowed; }
 .lib-info-value > b { display: inline-block; transform-origin: center; }
 
 /* 后台浮动卡片 transition 已迁移至 index.css 全局 .floating-card-* 规范 */
-
-.asmr-floating-pager-controls {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 3px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.10);
-}
-
-.asmr-floating-page-btn,
-.asmr-floating-page-dot {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  outline: none;
-  box-shadow: none;
-  color: #64748b;
-  background: transparent;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.asmr-floating-page-btn:focus,
-.asmr-floating-page-btn:focus-visible,
-.asmr-floating-page-dot:focus,
-.asmr-floating-page-dot:focus-visible {
-  outline: none;
-  box-shadow: none;
-}
-
-.asmr-floating-page-btn {
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
-}
-
-.asmr-floating-page-btn:hover {
-  color: #2563eb;
-  background: rgba(37, 99, 235, 0.09);
-  transform: translateY(-1px) scale(1.05);
-}
-
-.asmr-floating-page-btn:active {
-  transform: scale(0.94);
-}
-
-.asmr-floating-page-dots {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.asmr-floating-page-dot {
-  width: 7px;
-  height: 7px;
-  padding: 0;
-  border-radius: 999px;
-  background: #cbd5e1;
-}
-
-.asmr-floating-page-dot.is-active {
-  width: 17px;
-  background: #2563eb;
-}
-
-.asmr-floating-card-page-next-enter-active,
-.asmr-floating-card-page-next-leave-active,
-.asmr-floating-card-page-prev-enter-active,
-.asmr-floating-card-page-prev-leave-active {
-  transition:
-    opacity 0.24s ease,
-    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.asmr-floating-card-page-next-enter-from {
-  opacity: 0;
-  transform: translateX(26px) rotateY(-16deg) scale(0.96);
-}
-
-.asmr-floating-card-page-next-leave-to {
-  opacity: 0;
-  transform: translateX(-26px) rotateY(16deg) scale(0.96);
-}
-
-.asmr-floating-card-page-prev-enter-from {
-  opacity: 0;
-  transform: translateX(-26px) rotateY(16deg) scale(0.96);
-}
-
-.asmr-floating-card-page-prev-leave-to {
-  opacity: 0;
-  transform: translateX(26px) rotateY(-16deg) scale(0.96);
-}
-
-html.kikoerumanager-dark .asmr-floating-pager-controls {
-  border-color: rgba(255, 255, 255, 0.12);
-  background: rgba(28, 29, 34, 0.92);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
-html.kikoerumanager-dark .asmr-floating-page-btn,
-html.kikoerumanager-dark .asmr-floating-page-dot {
-  color: rgba(244, 244, 245, 0.7);
-}
-
-html.kikoerumanager-dark .asmr-floating-page-btn:hover {
-  color: #f8fafc;
-  background: rgba(255, 255, 255, 0.10);
-}
-
-html.kikoerumanager-dark .asmr-floating-page-dot {
-  background: rgba(255, 255, 255, 0.28);
-}
-
-html.kikoerumanager-dark .asmr-floating-page-dot.is-active {
-  background: #93c5fd;
-}
 
 /* ==============================================================
  * 顶部状态条 lib-info-strip（对齐 Library / Conflicts / SubtitleImport）

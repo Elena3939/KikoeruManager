@@ -2440,24 +2440,40 @@ class ASMRResourceService:
 
     async def _upload_to_local(self, source_path: str, target_root: str, relative_path: str, progress_callback=None, cancel_check=None, pause_wait=None) -> str:
         destination = os.path.join(target_root, self._sanitize_relative_path(relative_path))
-        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        destination_dir = os.path.dirname(destination)
+        os.makedirs(destination_dir, exist_ok=True)
+        temporary_path = os.path.join(
+            destination_dir,
+            f".kikoerumanager-asmr-upload-{uuid.uuid4().hex}.part",
+        )
         uploaded = 0
         total_size = os.path.getsize(source_path) if os.path.exists(source_path) else 0
-        async with get_resource_budget_service().acquire("disk_io_local", reason="asmr.upload_local"):
-            with open(source_path, "rb") as src, open(destination, "wb") as dst:
-                while True:
-                    if cancel_check and cancel_check():
-                        return ""
-                    if pause_wait:
-                        await pause_wait()
-                    chunk = src.read(1024 * 256)
-                    if not chunk:
-                        break
-                    dst.write(chunk)
-                    uploaded += len(chunk)
-                    if progress_callback:
-                        progress_callback(uploaded, total_size)
-        return destination
+        try:
+            async with get_resource_budget_service().acquire("disk_io_local", reason="asmr.upload_local"):
+                with open(source_path, "rb") as src, open(temporary_path, "xb") as dst:
+                    while True:
+                        if cancel_check and cancel_check():
+                            return ""
+                        if pause_wait:
+                            await pause_wait()
+                        chunk = src.read(1024 * 256)
+                        if not chunk:
+                            break
+                        dst.write(chunk)
+                        uploaded += len(chunk)
+                        if progress_callback:
+                            progress_callback(uploaded, total_size)
+                    dst.flush()
+                    os.fsync(dst.fileno())
+            if cancel_check and cancel_check():
+                return ""
+            os.replace(temporary_path, destination)
+            return destination
+        finally:
+            try:
+                os.remove(temporary_path)
+            except FileNotFoundError:
+                pass
 
     async def _upload_to_synology(
         self,
@@ -3427,25 +3443,6 @@ class ASMRResourceService:
                     "resource_type": resource.get("resource_type"),
                     "resource": resource,
                 }
-                if session_id:
-                    log_asmr_sync_event(
-                        "resource_downloaded",
-                        summary=f"{rjcode} / {display_name} 下载完成",
-                        session_id=session_id,
-                        rjcode=rjcode,
-                        task_id=task.id,
-                        detail={
-                            "resource_count": total_files,
-                            "network_retry_count": max_retries,
-                            "resource_name": display_name,
-                            "resource_path": relative_path,
-                            "local_path": destination,
-                            "upload_path": uploaded_path,
-                            "size_bytes": os.path.getsize(destination) if os.path.exists(destination) else 0,
-                            "upload_mode": upload_options["mode"],
-                            "target_path": upload_options["target_path"],
-                        },
-                    )
                 async with state_lock:
                     completed_count += 1
                     task.update_progress(min(96, 5 + int(completed_count / total_files * 86)), f"已完成 {completed_count}/{total_files} 个文件")
@@ -3809,6 +3806,16 @@ class ASMRResourceService:
                         "downloaded_bytes": total_bytes,
                         "duration_ms": duration_ms,
                         "download_root": download_root,
+                        "average_download_speed_bytes": session_performance_metrics["average_speed_bytes"],
+                        "download_files": [
+                            {
+                                "name": item.get("name") or "",
+                                "relative_path": item.get("relative_path") or item.get("name") or "",
+                                "size_bytes": int(item.get("size_bytes") or 0),
+                                "status": "completed",
+                            }
+                            for item in success_files
+                        ],
                         "target_path": final_output_path or upload_options["target_path"],
                         "upload_mode": upload_options["mode"],
                         "uploaded_count": len(uploaded_files),

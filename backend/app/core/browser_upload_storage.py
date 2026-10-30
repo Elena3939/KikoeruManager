@@ -58,11 +58,11 @@ def atomic_json(path, value):
     os.replace(pending, path)
 
 
-def receive_chunk(path, offset, data, digest, expected_size):
+def receive_chunk(path, offset, data, digest, expected_size, receipt_path=None):
     actual_digest = hashlib.sha256(data).hexdigest()
     if actual_digest != digest:
         raise ValueError('分块 SHA-256 校验失败，未接收该块')
-    receipt = path.with_suffix('.json')
+    receipt = Path(receipt_path) if receipt_path else path.with_suffix('.json')
     checkpoint = json.loads(receipt.read_text('utf-8')) if receipt.exists() else {'offset': 0, 'chunks': []}
     confirmed = checkpoint['offset']
     if offset < confirmed:
@@ -88,8 +88,8 @@ def receive_chunk(path, offset, data, digest, expected_size):
     return checkpoint
 
 
-def recover_checkpoint(path):
-    receipt = path.with_suffix('.json')
+def recover_checkpoint(path, receipt_path=None):
+    receipt = Path(receipt_path) if receipt_path else path.with_suffix('.json')
     if not path.exists() or not receipt.exists():
         return {'offset': 0, 'chunks': []}
     saved = json.loads(receipt.read_text('utf-8'))

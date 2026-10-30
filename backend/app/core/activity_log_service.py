@@ -994,10 +994,20 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
         postprocess_options = meta.get("postprocess_options") if isinstance(meta.get("postprocess_options"), dict) else {}
         source_action = str(meta.get("source_action") or "").strip()
         downloaded_bytes = int(performance_metrics.get("downloaded_bytes") or 0)
+        duration_ms = int(performance_metrics.get("duration_ms") or _duration_ms_for_task(task) or 0)
+        average_download_speed_bytes = int(
+            performance_metrics.get("average_download_speed_bytes")
+            or performance_metrics.get("average_speed_bytes")
+            or (
+                downloaded_bytes / max(duration_ms / 1000, 1)
+                if downloaded_bytes > 0 and duration_ms > 0
+                else 0
+            )
+            or 0
+        )
         success_count = int(performance_metrics.get("success_count") or 0)
         failed_count = int(performance_metrics.get("failed_count") or 0)
         uploaded_count = int(performance_metrics.get("uploaded_count") or len(uploaded_files) or 0)
-        duration_ms = int(performance_metrics.get("duration_ms") or _duration_ms_for_task(task) or 0)
         uploaded_bytes = int(
             performance_metrics.get("uploaded_bytes")
             or upload_runtime.get("total_bytes")
@@ -1029,8 +1039,10 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
                 summary_parts.append(_format_bytes(uploaded_bytes))
             elif downloaded_bytes > 0:
                 summary_parts.append(_format_bytes(downloaded_bytes))
-            if average_upload_speed_bytes > 0:
-                summary_parts.append(f"平均 {_format_bytes(average_upload_speed_bytes)}/s")
+            if uploaded_bytes > 0 and average_upload_speed_bytes > 0:
+                summary_parts.append(f"平均上传 {_format_bytes(average_upload_speed_bytes)}/s")
+            elif average_download_speed_bytes > 0:
+                summary_parts.append(f"平均下载 {_format_bytes(average_download_speed_bytes)}/s")
             if duration_ms > 0:
                 summary_parts.append(f"耗时 {_format_duration_ms(duration_ms)}")
             summary = " / ".join(summary_parts)[:4000]
@@ -1048,7 +1060,18 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
             "uploaded_count": uploaded_count,
             "downloaded_bytes": downloaded_bytes,
             "uploaded_bytes": uploaded_bytes,
+            "average_download_speed_bytes": average_download_speed_bytes,
             "average_upload_speed_bytes": average_upload_speed_bytes,
+            "download_files": [
+                {
+                    "name": str(item.get("name") or item.get("file_name") or ""),
+                    "relative_path": str(item.get("relative_path") or item.get("file_name") or ""),
+                    "size_bytes": int(item.get("size_bytes") or item.get("total") or item.get("downloaded") or 0),
+                    "status": str(item.get("stage") or item.get("status") or ""),
+                }
+                for item in list(meta.get("download_files") or [])
+                if isinstance(item, dict)
+            ][:200],
             "duration_ms": duration_ms,
             "uploaded_files": uploaded_files[:200],
         }

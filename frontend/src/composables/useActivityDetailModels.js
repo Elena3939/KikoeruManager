@@ -563,7 +563,7 @@ const HIGHLIGHT_LABELS = {
   retry_failed_count: '重试失败数', retry_recovered_item_count: '重试补回项数',
   recovered_item_count: '补回项数', recovered_selected_size: '补回体积',
   batch_task_count: '下载任务数', downloaded_bytes: '下载大小', uploaded_bytes: '上传大小',
-  average_upload_speed_bytes: '平均上传速度', download_root: '下载目录',
+  average_download_speed_bytes: '平均下载速度', average_upload_speed_bytes: '平均上传速度', download_root: '下载目录',
   final_output_path: '最终入库路径', target_path: '上传目标', target_library_id: '目标库存',
   target_subdir: '库存前缀目录', source_base_path: '来源根目录', upload_mode: '上传模式',
   uploaded_count: '上传文件数', selected_dir_count: '上传目录数', circle_name: '社团名',
@@ -662,7 +662,7 @@ function normalizeHighlightValue(key, value) {
     return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm:ss') : value
   }
   if (HIGHLIGHT_BYTE_KEYS.has(key)) return formatBytes(value)
-  if (key === 'average_upload_speed_bytes') return `${formatBytes(value)}/s`
+  if (key === 'average_download_speed_bytes' || key === 'average_upload_speed_bytes') return `${formatBytes(value)}/s`
   if (key.includes('rjcode')) return normalizeRjcode(value)
   return value
 }
@@ -693,6 +693,7 @@ function detailHighlights(row) {
     if ((value === undefined || value === null || value === '') && k === 'rjcode') value = row?.rjcode
     if ((value === undefined || value === null || value === '') && k === 'task_id') value = row?.task_id
     if (value === undefined || value === null) continue
+    if (k.endsWith('_speed_bytes') && Number(value || 0) <= 0) continue
     value = normalizeHighlightValue(k, value)
     if (!String(value || '').trim()) continue
     pushed.add(k)

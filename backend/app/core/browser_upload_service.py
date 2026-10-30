@@ -95,12 +95,17 @@ class BrowserUploadService:
             if not state:
                 continue
             state['files'][file['id']] = file
+            try:
+                self.receipt(sid, file['id'])
+            except OSError:
+                logger.warning('迁移浏览器上传分块回执失败：%s', file['relative_path'], exc_info=True)
             if state['status'] == 'cancelled':
                 if file['status'] not in FILE_TERMINAL:
                     file.update(status='cancelled', reason=state.get('reason', '会话已取消'))
                 continue
             if file['status'] not in FILE_TERMINAL:
                 try:
+                    self.receipt(sid, file['id'])
                     if await self.recover_commit(state, file):
                         state['_dirty'].add(file['id'])
                         continue
@@ -109,7 +114,8 @@ class BrowserUploadService:
                     state['_dirty'].add(file['id'])
                     logger.exception('恢复浏览器上传失败：%s', file['relative_path'])
                     continue
-                checkpoint = await asyncio.to_thread(recover_checkpoint, self.part(sid, file['id']))
+                checkpoint = await asyncio.to_thread(recover_checkpoint, self.part(sid, file['id']),
+                    self.receipt(sid, file['id']))
                 file['received'] = checkpoint['offset']
                 if not file.get('is_directory') and file['received'] == file['size'] and self.part(sid, file['id']).exists():
                     file['sha256'] = await asyncio.to_thread(digest_file, self.part(sid, file['id']))
@@ -154,6 +160,16 @@ class BrowserUploadService:
     def journal(self, state, file):
         return self.part(state['id'], file['id']).with_suffix('.commit')
 
+    def receipt(self, sid, fid):
+        receipt = self.root / sid / (fid + '.json')
+        legacy = self.part(sid, fid).with_suffix('.json')
+        if legacy != receipt and legacy.exists():
+            if receipt.exists():
+                legacy.unlink(missing_ok=True)
+            else:
+                legacy.replace(receipt)
+        return receipt
+
     async def recover_commit(self, state, file):
         journal = self.journal(state, file)
         if not journal.exists():
@@ -190,6 +206,7 @@ class BrowserUploadService:
         if committed:
             file.update(status='completed', stage='完成', final_path=target, written=file['size'], received=file['size'], reason='')
             state.setdefault('_index_paths', set()).add(PurePosixPath(file['relative_path']).parts[0])
+            await asyncio.to_thread(self.part(state['id'], file['id']).unlink, missing_ok=True)
         await asyncio.to_thread(journal.unlink, missing_ok=True)
         return committed
 
@@ -373,7 +390,7 @@ class BrowserUploadService:
             if file['status'] not in {'receiving', 'ready', 'writing', 'completed', 'conflict'}:
                 raise ValueError('文件不处于接收阶段')
             if file['status'] != 'receiving':
-                receipt = self.part(state['id'], file['id']).with_suffix('.json')
+                receipt = self.receipt(state['id'], file['id'])
                 checkpoint = await asyncio.to_thread(lambda: json.loads(receipt.read_text('utf-8')))
                 match = next((c for c in checkpoint['chunks'] if c['offset'] == offset), None)
                 if not match or match['sha256'] != hashlib.sha256(data).hexdigest() or match['sha256'] != digest or match['size'] != len(data):
@@ -381,7 +398,8 @@ class BrowserUploadService:
                 return {'offset': checkpoint['offset']}
             state['_receivers'] = state.get('_receivers', 0) + 1
             try:
-                checkpoint = await asyncio.to_thread(receive_chunk, self.part(state['id'], file['id']), offset, data, digest, file['size'])
+                checkpoint = await asyncio.to_thread(receive_chunk, self.part(state['id'], file['id']), offset,
+                    data, digest, file['size'], self.receipt(state['id'], file['id']))
             finally:
                 state['_receivers'] -= 1
             file['received'] = checkpoint['offset']
@@ -470,7 +488,8 @@ class BrowserUploadService:
         lock = self.locks.setdefault((state['id'], file['id']), asyncio.Lock())
         async with lock:
             if file['status'] in {'receiving', 'failed'}:
-                return await asyncio.to_thread(recover_checkpoint, self.part(state['id'], file['id']))
+                return await asyncio.to_thread(recover_checkpoint, self.part(state['id'], file['id']),
+                    self.receipt(state['id'], file['id']))
             return {'offset': file.get('received', 0), 'chunks': []}
 
     def check_writing(self, state):
