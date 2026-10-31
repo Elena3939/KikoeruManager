@@ -217,6 +217,8 @@ export const defaultConfig = {
     enabled: true,
     api_base_url: 'https://api.asmr-200.com/api',
     max_concurrent_downloads: 3,
+    http_proxy_enabled: true,
+    download_proxy_enabled: false,
     http_proxy: '',
     retry_interval_hours: 1.0,
     max_retry_count: 10,
@@ -431,6 +433,9 @@ export const defaultConfig = {
     statement_timeout_ms: 120000,
     startup_health_check: true
   },
+  task_center: {
+    materialized_summary_enabled: false
+  },
   resource_budget: {
     enabled: true,
     disk_io_local: 2,
@@ -579,6 +584,7 @@ function hydrateConfig(data = {}) {
     notification_email: { ...defaultConfig.notification_email, ...(data?.notification_email || {}) },
     notification_center: { ...defaultConfig.notification_center, ...(data?.notification_center || {}) },
     database: { ...defaultConfig.database, ...(data?.database || {}) },
+    task_center: { ...defaultConfig.task_center, ...(data?.task_center || {}) },
     resource_budget: { ...defaultConfig.resource_budget, ...(data?.resource_budget || {}) },
     security_gate: { ...defaultConfig.security_gate, ...(data?.security_gate || {}) },
     classification: data?.classification || defaultConfig.classification
@@ -636,6 +642,7 @@ function serializeConfig(config) {
     notification_email: payload.notification_email,
     notification_center: payload.notification_center,
     database: payload.database,
+    task_center: payload.task_center,
     resource_budget: payload.resource_budget,
     security_gate: payload.security_gate
   }

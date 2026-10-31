@@ -1937,7 +1937,7 @@ export const httpDownloadApi = {
   },
 
   status: async (options = {}) => {
-    const response = await apiClient.get('/http-download/status', { params: options.compact ? { compact: true } : undefined })
+    const response = await apiClient.get('/http-download/status', { params: options })
     return response.data
   },
 
@@ -2103,7 +2103,7 @@ export const baiduNetdiskApi = {
   },
 
   status: async (options = {}) => {
-    const response = await apiClient.get('/baidu-netdisk/status', { params: options.compact ? { compact: true } : undefined })
+    const response = await apiClient.get('/baidu-netdisk/status', { params: options })
     return response.data
   },
 
@@ -2509,6 +2509,9 @@ export const subtitleImportApi = {
 }
 
 export const circleCompletionApi = {
+  subtitleRepairTargets: async payload => (await apiClient.post('/circle-completion/subtitle-repair/targets', payload)).data,
+  subtitleRepairStart: async payload => (await apiClient.post('/circle-completion/subtitle-repair/start', payload)).data,
+  subtitleRepairTasks: async payload => (await apiClient.post('/circle-completion/subtitle-repair/tasks', payload)).data,
   getLibraryLocations: async (rjcode) => {
     const response = await apiClient.get(`/circle-completion/library-locations/${encodeURIComponent(rjcode)}`)
     return response.data

@@ -1,4 +1,5 @@
 <script setup>
+import SubtitleRepairActions from './SubtitleRepairActions.vue'
 import { circleWorkVersionRjcode } from '../../utils/circleWorkVersion'
 import { computed, inject, ref, watch } from 'vue'
 import { FileText, LibraryBig, Server, X, PackageCheck, Layers, ExternalLink, Calendar, Gift, LoaderCircle, RefreshCw } from 'lucide-vue-next'
@@ -58,13 +59,12 @@ const variantLabel = computed(() =>
   props.item?.owned ? (props.item.owned_variant?.group_short_label || '原作') : (props.item.preferred_variant?.group_short_label || '原作')
 )
 const downloadRjcode = computed(() => circleWorkVersionRjcode(props.item))
-const canRepairSubtitle = computed(() => Boolean(props.item?.subtitle_repairable))
 const showOriginalSubtitleState = computed(() =>
   Boolean(props.item?.owned)
   && (props.item?.owned_variant?.group_key || 'original') === 'original'
 )
 const originalSubtitleLabel = computed(() => {
-  if (canRepairSubtitle.value) return '可补配'
+  if (props.item?.subtitle_missing_target_count) return props.item?.subtitle_present ? '部分无字幕' : '无字幕'
   return props.item?.subtitle_present ? '有字幕' : '无字幕'
 })
 
@@ -285,6 +285,9 @@ function onImgLoad(event) {
           <span class="wlr-release"><Calendar :size="10" />{{ releaseLabel }}</span>
         </template>
       </div>
+      <span v-if="isMobile && (showOriginalSubtitleState || item.subtitle_missing_target_count)" class="wlr-mobile-subtitle">
+        {{ showOriginalSubtitleState ? originalSubtitleLabel : '原作无字幕' }}
+      </span>
     </div>
 
     <!-- 来源/变体（移动端隐藏） -->
@@ -299,9 +302,10 @@ function onImgLoad(event) {
         <span class="wlr-pill" :class="item.server_owned ? 'pill-owned' : 'pill-missing'">
           <component :is="item.server_owned ? Server : X" :size="10" />{{ item.server_owned ? '已收录' : '未收录' }}
         </span>
-        <span v-if="showOriginalSubtitleState" class="wlr-pill" :class="canRepairSubtitle ? 'pill-repair' : (item.subtitle_present ? 'pill-subtitle' : 'pill-subtitle-none')">
+        <span v-if="showOriginalSubtitleState" class="wlr-pill" :class="item.subtitle_present && !item.subtitle_missing_target_count ? 'pill-subtitle' : 'pill-subtitle-none'">
           <FileText :size="10" />{{ originalSubtitleLabel }}
         </span>
+        <span v-if="item.subtitle_missing_target_count && !showOriginalSubtitleState" class="wlr-pill pill-subtitle-none"><FileText :size="10" />原作无字幕</span>
         <span class="wlr-pill" :class="(item.has_downloadable_source ?? item.has_asmr_one) ? 'pill-ok' : 'pill-none'">
           <LibraryBig :size="10" />{{ (item.has_downloadable_source ?? item.has_asmr_one) ? '可下载' : '无源' }}
         </span>
@@ -310,6 +314,7 @@ function onImgLoad(event) {
     </div>
 
     <!-- 操作区（移动端始终可见） -->
+    <SubtitleRepairActions :item="item" class="wlr-repair-actions" />
     <div class="wlr-actions" :class="{ 'is-mobile-visible': isMobile }" @click.stop>
       <slot name="actions">
         <button
@@ -520,6 +525,7 @@ html.kikoerumanager-dark .work-list-row.is-selected {
 .wlr-title-text {
   display: inline;
 }
+.wlr-mobile-subtitle { font-size: 10px; color: var(--circle-text-muted, #6b7280); }
 
 .wlr-new-badge {
   display: inline-flex;
@@ -763,6 +769,8 @@ html.kikoerumanager-dark .work-list-row.is-selected {
 
 /* 窄屏紧凑处理（含桌面浏览器模拟移动端场景）*/
 @media (max-width: 640px) {
+  .work-list-row:has(.wlr-repair-actions) { flex-wrap: wrap; }
+  .wlr-repair-actions { order: 6; flex-basis: calc(100% - 44px); margin-left: 44px; }
   .work-list-row {
     width: 100%;
     min-width: 0;

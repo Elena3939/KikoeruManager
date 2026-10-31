@@ -1,5 +1,12 @@
 <template>
   <div class="system-stack">
+    <section class="system-card">
+      <SettingsToggleRow
+        v-model="config.task_center.materialized_summary_enabled"
+        title="任务列表加速"
+        subtitle="保存后立即生效，无需重启。"
+      />
+    </section>
     <section class="system-card system-hero-card">
       <div class="system-hero-copy">
         <div class="card-title">
@@ -473,6 +480,9 @@ const redisStats = computed(() => {
 })
 
 function ensureSystemConfig() {
+  if (!props.config.task_center) {
+    props.config.task_center = { materialized_summary_enabled: false }
+  }
   if (!props.config.database) {
     props.config.database = { ...defaultDatabaseConfig }
   } else {

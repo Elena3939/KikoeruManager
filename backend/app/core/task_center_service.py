@@ -27,6 +27,7 @@ from .baidu_netdisk_service import (
     sanitize_baidu_netdisk_metadata,
 )
 from ..models.database import ConflictWork, SessionLocal
+from ..config.settings import get_config
 
 logger = logging.getLogger(__name__)
 _runtime_batch = ContextVar("task_center_runtime_batch", default=None)
@@ -2123,7 +2124,7 @@ class TaskCenterService:
             logger.exception("[任务中心] 读取等待重试任务失败，当前轮次已跳过 waiting retry items")
             return list(self._waiting_retry_cache or [])
 
-    def _build_overview_counts(self, items: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
+    def _build_overview_counts(self, items: List[Dict[str, Any]], *, grouped=False) -> Dict[str, Dict[str, int]]:
         counts_by_domain = {
             key: 0 for key in self.DOMAIN_LABELS.keys()
             if key != "all"
@@ -2135,10 +2136,11 @@ class TaskCenterService:
         for item in items:
             domain = self._safe_text(item.get("domain"))
             status = self._safe_text(item.get("status"))
+            count = int(item["count"]) if grouped else 1
             if domain in counts_by_domain:
-                counts_by_domain[domain] += 1
+                counts_by_domain[domain] += count
             if status in counts_by_status:
-                counts_by_status[status] += 1
+                counts_by_status[status] += count
 
         return {
             "counts_by_domain": counts_by_domain,
@@ -2333,6 +2335,16 @@ class TaskCenterService:
         from .task_center_materialization_service import get_task_center_materialization_service
 
         service = get_task_center_materialization_service()
+        result = service.list_summary_page(
+            domain=domain, subtype=subtype, status=status, search=search, limit=limit, offset=offset,
+            status_priority=self.STATUS_PRIORITY, domain_priority=self.DOMAIN_PRIORITY,
+        )
+        if result is not None:
+            counts = self._build_overview_counts(result.pop("counts"), grouped=True)
+            return {
+                **result, **counts, "mode": "materialized_summary",
+                "generated_at": datetime.now().isoformat(),
+            }
         rows = service.list_identity_projection()
         original_rows = list(rows)
         rows = self._refresh_legacy_materialized_items(rows)
@@ -2478,7 +2490,7 @@ class TaskCenterService:
         normalized_mode = self._safe_text(mode).lower() or "detail"
         safe_limit = max(1, min(int(limit or 200), 500))
         safe_offset = max(0, int(offset or 0))
-        if normalized_mode == "summary" and os.getenv("KIKOERUMANAGER_TASK_CENTER_MATERIALIZED_SUMMARY", "").strip().lower() in {"1", "true", "yes", "on"}:
+        if normalized_mode == "summary" and get_config().task_center.materialized_summary_enabled:
             try:
                 materialized = await run_sync_stage("task_center_sql", self.list_materialized_items,
                     domain=domain,

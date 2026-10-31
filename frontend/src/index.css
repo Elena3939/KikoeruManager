@@ -2075,4 +2075,5 @@ button:hover .page-head-btn-icon-slot:not(.animate-spin) {
 .task-toast-icon .task-toast-success-animation { width: 36px; height: 36px; flex-shrink: 0; }
 .task-toast-icon.is-success:has(.task-toast-success-animation) { background: transparent; }
 .task-toast-meta { margin-top: 4px; font-variant-numeric: tabular-nums; }
+.task-toast-timing { display: block; margin-top: 4px; color: var(--toast-muted); font-size: 10px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .task-toast-mini, .task-toast-mini-expand { height: 30px; }

@@ -80,6 +80,9 @@ backend/data/
 data/
 # 本机 Redis 下载包与运行配置；Docker 镜像自行安装 Redis。
 tools/redis/
+tools/7zip/
+tools/node/
+tools/python/
 update_dialog.py
 backend/app/version.txt
 

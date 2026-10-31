@@ -1022,6 +1022,9 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
         upload_options = meta.get("upload_options") if isinstance(meta.get("upload_options"), dict) else {}
         target_path = str(upload_options.get("target_path") or "").strip()
         upload_mode = str(upload_options.get("mode") or "").strip() or None
+        if upload_options.get("enabled") is False and not uploaded_count and not uploaded_bytes:
+            upload_mode = "disabled"
+            target_path = ""
         target_library_id = str(
             meta.get("target_library_id")
             or postprocess_options.get("target_library_id")

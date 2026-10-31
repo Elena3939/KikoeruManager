@@ -1,5 +1,6 @@
 <script setup>
 import { circleWorkVersionRjcode } from '../../utils/circleWorkVersion'
+import SubtitleRepairActions from './SubtitleRepairActions.vue'
 import { computed, inject, ref, watch } from 'vue'
 import { LibraryBig, Calendar, Gift, LoaderCircle, RefreshCw } from 'lucide-vue-next'
 import ExternalSearchSourceChips from './ExternalSearchSourceChips.vue'
@@ -132,13 +133,12 @@ const displayVariant = computed(() =>
   props.item?.owned ? (props.item.owned_variant?.group_short_label || '原作') : (props.item.preferred_variant?.group_short_label || '原作')
 )
 const displayVariantRjcode = computed(() => circleWorkVersionRjcode(props.item))
-const canRepairSubtitle = computed(() => Boolean(props.item?.subtitle_repairable))
 const showOriginalSubtitleState = computed(() =>
   Boolean(props.item?.owned)
   && (props.item?.owned_variant?.group_key || 'original') === 'original'
 )
 const originalSubtitleLabel = computed(() => {
-  if (canRepairSubtitle.value) return '可补配'
+  if (props.item?.subtitle_missing_target_count) return props.item?.subtitle_present ? '部分无字幕' : '无字幕'
   return props.item?.subtitle_present ? '有字幕' : '无字幕'
 })
 
@@ -339,19 +339,23 @@ function preventNativeShiftSelection(event) {
           </span>
           <template v-else>
             <span class="tag-chip" :class="item.server_owned ? 'is-primary' : 'is-danger'">{{ item.server_owned ? '已收录' : '未收录' }}</span>
-            <span v-if="showOriginalSubtitleState" class="tag-chip" :class="canRepairSubtitle ? 'is-repair' : (item.subtitle_present ? 'is-subtitle' : 'is-subtitle-none')">{{ originalSubtitleLabel }}</span>
+            <span v-if="showOriginalSubtitleState" class="tag-chip" :class="item.subtitle_present && !item.subtitle_missing_target_count ? 'is-subtitle' : 'is-subtitle-none'">{{ originalSubtitleLabel }}</span>
+            <span v-if="item.subtitle_missing_target_count && !showOriginalSubtitleState" class="tag-chip is-subtitle-none">原作无字幕</span>
             <span class="tag-chip" :class="(item.has_downloadable_source ?? item.has_asmr_one) ? 'is-success' : 'is-disabled'">{{ (item.has_downloadable_source ?? item.has_asmr_one) ? '可下载' : '无源' }}</span>
             <ExternalSearchSourceChips :item="externalSearchItem" @open="emit('external-search', $event)" />
           </template>
         </div>
       </slot>
 
-      <slot name="actions">
+      <div class="work-bottom-actions">
+        <SubtitleRepairActions :item="item" compact />
+        <slot name="actions">
         <div v-if="(item.has_downloadable_source ?? item.has_asmr_one) || item.local_download_ready" class="work-actions">
           <button v-if="item.local_download_ready" class="work-action-btn upload" @click.stop="emit('reimport', item)">入库</button>
           <button class="work-action-btn" @click.stop="emit('preview', item.canonical_rjcode)">预览</button>
         </div>
-      </slot>
+        </slot>
+      </div>
     </div>
   </article>
 </template>
@@ -928,6 +932,8 @@ function preventNativeShiftSelection(event) {
 }
 
 /* ── 操作区 ── */
+.work-bottom-actions { display: flex; align-items: center; gap: 4px; min-width: 0; height: 28px; }
+.work-bottom-actions .work-actions { width: auto; min-width: 0; flex: 1; }
 .work-actions {
   display: flex;
   justify-content: stretch;

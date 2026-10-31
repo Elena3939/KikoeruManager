@@ -50,6 +50,9 @@ database:
   auto_explain_enabled: false
   auto_explain_threshold_ms: 1000
   search_backend: pg_trgm
+task_center:
+  # 任务中心列表加速，保存后即时生效。
+  materialized_summary_enabled: false
 redis:
   enabled: true
   required: true
@@ -185,6 +188,8 @@ asmr_sync:
   enabled: false
   api_base_url: https://api.asmr-200.com/api
   max_concurrent_downloads: 3
+  http_proxy_enabled: true  # 接口使用代理
+  download_proxy_enabled: false  # 文件下载默认直连
   http_proxy: ''
   retry_interval_hours: 1.0
   max_retry_count: 10

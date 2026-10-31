@@ -4853,30 +4853,64 @@ class BaiduNetdiskService:
             )
             task.update_progress(max(2, task.progress), "已创建百度网盘临时目录，开始转存")
             await self._check_task_active(task, cancel_event)
-            await self._transfer_share_item_with_retry(
-                task,
-                row,
-                cookie,
-                remote_tmp_dir,
-                share_url=share_url,
-                pass_code=pass_code,
-                download_files=download_files,
-                started=started,
-                cancel_event=cancel_event,
-                confirm_transferred=lambda: self._confirm_remote_temporary_transfer_file(
-                    pcsgo_path,
+            download_remote_path = remote_tmp_dir
+            try:
+                await self._transfer_share_item_with_retry(
+                    task,
+                    row,
+                    cookie,
                     remote_tmp_dir,
-                    expected_name,
-                    expected_size,
-                    row=row,
-                    cookie=cookie,
-                    env=env,
-                    log_path=log_path,
-                    task=task,
+                    share_url=share_url,
+                    pass_code=pass_code,
+                    download_files=download_files,
+                    started=started,
                     cancel_event=cancel_event,
-                ),
-            )
-            self._append_log(task, f"百度网盘分享文件已转存到临时目录 {remote_tmp_dir}", "info")
+                    confirm_transferred=lambda: self._confirm_remote_temporary_transfer_file(
+                        pcsgo_path,
+                        remote_tmp_dir,
+                        expected_name,
+                        expected_size,
+                        row=row,
+                        cookie=cookie,
+                        env=env,
+                        log_path=log_path,
+                        task=task,
+                        cancel_event=cancel_event,
+                    ),
+                )
+                self._append_log(task, f"百度网盘分享文件已转存到临时目录 {remote_tmp_dir}", "info")
+            except BaiduNetdiskError as exc:
+                error_text = self._sanitize_error(exc).lower()
+                already_exists = any(
+                    marker in error_text
+                    for marker in ("已存在", "already exists", "file exists")
+                ) or bool(re.search(r"(?:errno|错误码|失败)\s*[:：]?\s*-8\b", error_text))
+                if not already_exists:
+                    raise
+                try:
+                    existing_path = await self._find_existing_baidu_file_path(
+                        row,
+                        cookie,
+                        expected_name,
+                        expected_size,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as lookup_error:
+                    self._append_log(
+                        task,
+                        f"百度网盘文件已存在，但查找已有文件失败: {self._sanitize_error(lookup_error)}",
+                        "warning",
+                    )
+                    raise exc
+                if not existing_path:
+                    raise
+                download_remote_path = existing_path
+                self._append_log(
+                    task,
+                    f"百度网盘已有匹配文件，跳过转存并直接下载 {existing_path}",
+                    "info",
+                )
             max_parallel, _max_download_load = self._baidu_pcs_go_download_limits()
             max_download_load = self._baidu_global_download_limit()
             self._append_log(
@@ -4884,7 +4918,14 @@ class BaiduNetdiskService:
                 f"BaiduPCS-Go 高速下载参数：线程 {max_parallel}，全局同时文件 {max_download_load}，模式 locate，不限速",
                 "info",
             )
-            task.update_progress(max(2, task.progress), "百度网盘转存完成，开始高速下载")
+            task.update_progress(
+                max(2, task.progress),
+                (
+                    "百度网盘已有文件，开始高速下载"
+                    if download_remote_path != remote_tmp_dir
+                    else "百度网盘转存完成，开始高速下载"
+                ),
+            )
             low_speed_enabled, low_speed_threshold, low_speed_duration, refresh_limit = (
                 self._baidu_low_speed_refresh_policy(row)
             )
@@ -4929,7 +4970,7 @@ class BaiduNetdiskService:
                     self._refresh_runtime(task, download_files, started=started, current=row)
                     try:
                         await self._run_baidu_pcs_go_command(
-                            self._baidu_pcs_go_download_args(pcsgo_path, remote_tmp_dir, savedir),
+                            self._baidu_pcs_go_download_args(pcsgo_path, download_remote_path, savedir),
                             env=env,
                             log_path=log_path,
                             task=task,
@@ -5187,6 +5228,63 @@ class BaiduNetdiskService:
             if re.search(rf"(?<!\d){expected_bytes}(?!\d)", size_text):
                 return True
         return False
+
+    async def _find_existing_baidu_file_path(
+        self,
+        row: Dict[str, Any],
+        cookie: str,
+        expected_name: str,
+        expected_size: int,
+    ) -> str:
+        expected_base = os.path.basename(str(expected_name or "").replace("\\", "/").rstrip("/"))
+        expected_bytes = max(0, int(expected_size or 0))
+        if not expected_base or expected_bytes <= 0:
+            return ""
+        query = urlencode({
+            "recursion": "1",
+            "key": expected_base,
+            "page": "1",
+            "num": "100",
+            "order": "name",
+            "desc": "0",
+            "showempty": "0",
+            "web": "1",
+            "channel": "chunlei",
+            "app_id": "250528",
+            "bdstoken": str(row.get("bdstoken") or ""),
+            "logid": self._make_web_logid(cookie),
+            "clienttype": "0",
+        })
+        data = await self._fetch_json(
+            f"https://pan.baidu.com/api/search?{query}",
+            cookie,
+            timeout=20,
+            referer="https://pan.baidu.com/disk/home",
+            use_requests=True,
+        )
+        if _safe_int(data.get("errno", data.get("err_no", 0)), 0):
+            return ""
+        total_count = _safe_int(data.get("total", data.get("total_count", 0)))
+        file_rows = data.get("list") if isinstance(data.get("list"), list) else []
+        if total_count > 100 or len(file_rows) >= 100:
+            return ""
+        matches = []
+        for item in file_rows:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("server_filename") or item.get("name") or "").strip()
+            size = _safe_int(item.get("size") or item.get("size_bytes"))
+            if name != expected_base or size != expected_bytes:
+                continue
+            path = str(item.get("path") or "").strip().replace("\\", "/")
+            if not path:
+                continue
+            if os.path.basename(path.rstrip("/")) != expected_base:
+                path = f"{path.rstrip('/')}/{expected_base}"
+            if not path.startswith("/") or ".." in path.split("/"):
+                continue
+            matches.append(path)
+        return matches[0] if len(matches) == 1 else ""
 
     async def _cleanup_remote_temporary_transfer_dir(
         self,

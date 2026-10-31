@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 
 import httpx
 
-from .resource_source_service import ARCHIVE_PASSWORD, SOURCE, normalize_rj, package_groups
+from .resource_source_service import ARCHIVE_PASSWORD, SOURCE, ResourceSourceStale, normalize_rj, package_groups
 from .ttl_cache import TTLCache
 
 BASE = '/SP后端1[音声分区]'
@@ -44,6 +44,25 @@ def subtitle_path(path):
 def exact_code(value, code):
     codes = {match.group().upper() for match in RJ_RE.finditer(str(value))}
     return codes == {code}
+
+
+def cached_archive_files(source):
+    """仅保留安全的资源定位，不保存签名直链或任意扩展字段。"""
+    from .resource_source_service import public_path
+    files = []
+    subtitle_package = source.get('subtitle_package', True)
+    for row in source.get('archive_files') or []:
+        try:
+            path = subtitle_path(row['path']) if subtitle_package else public_path(row['path'])
+            name, size = str(row['name']), int(row['size'])
+            if ('?' in path or '#' in path or PurePosixPath(path).name != name
+                    or not exact_code(name, source.get('rjcode')) or size <= 0
+                    or (subtitle_package and size > SUBTITLE_LIMIT)):
+                return []
+            files.append(dict(name=name, path=path, size=size))
+        except (KeyError, TypeError, ValueError):
+            return []
+    return files
 
 
 def audio_archive_files(files, code):
@@ -107,6 +126,16 @@ class YaasSubtitleService:
     def __init__(self):
         self._indexes = TTLCache(max_size=8, ttl_seconds=21600, name='yaas.subtitle.index')
         self._inflight = {}
+
+    async def invalidate_indexes(self):
+        """清除字幕目录索引；仅在已命中的资源实际失效后调用。"""
+        from .redis_service import get_redis_service
+
+        self._indexes.clear()
+        redis = get_redis_service()
+        for name, _ in COLLECTIONS:
+            await asyncio.to_thread(
+                redis.delete_json, 'yaas-subtitle', 'index', 'index-v1:' + name)
 
     async def _index(self, name):
         cached = self._indexes.get(name)
@@ -239,7 +268,7 @@ class YaasSubtitleService:
             raise ValueError('YAAS 包体积超过限制或大小未知')
         resolved = await service.resolve_file(row['path'], subtitle_only=subtitle_package)
         if int(resolved['size_bytes']) != expected:
-            raise ValueError('YAAS 资源大小已变化，请刷新索引')
+            raise ResourceSourceStale('YAAS 资源大小已变化，请刷新索引')
         stem, ext = downloader._split_custom_archive_filename(row['name'])
         filename = downloader._filename_with_extract_password(stem, ARCHIVE_PASSWORD, ext)
         target = os.path.join(directory, filename)
@@ -248,6 +277,8 @@ class YaasSubtitleService:
             async with httpx.AsyncClient(timeout=60, follow_redirects=False,
                                         proxy=downloader._proxy_url(SOURCE) or None) as client:
                 async with client.stream('GET', resolved['url']) as response:
+                    if response.status_code in {404, 410}:
+                        raise ResourceSourceStale('YAAS 已探测资源下载地址失效')
                     response.raise_for_status()
                     async for chunk in response.aiter_bytes(256 * 1024):
                         if should_cancel and should_cancel():

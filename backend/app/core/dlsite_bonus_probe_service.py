@@ -31,6 +31,7 @@ from .dlsite_service import (
     normalize_product_probe_feature_classification,
 )
 from .resource_budget_service import get_resource_budget_service
+from .circle_image_cache_service import get_circle_image_cache_service
 
 logger = logging.getLogger(__name__)
 _POSTGRES_BIGINT_MAX = 9223372036854775807
@@ -1271,6 +1272,7 @@ class DLsiteBonusProbeService:
             and not bool(feature.is_sale)
             and bool(feature.is_free)
             and (confirmed_hit or feature.dl_count == 0)
+            and get_circle_image_cache_service().cover_facts([feature.workno]).get(feature.workno) is not False
         )
 
     def _selected_hidden_hit_matches_release_date(
@@ -1552,6 +1554,9 @@ class DLsiteBonusProbeService:
         target_original_rjcodes: Optional[Sequence[str]],
         result: Dict[str, Any],
     ) -> Dict[str, Any]:
+        hidden_hits = self._exclude_coverless_bonus_features(hidden_hits)
+        result["hit_count"] = len(hidden_hits)
+        result["hit_rjcodes"] = [feature.workno for feature in hidden_hits]
         inserted_count = int(result.get("inserted_count") or 0)
         inserted_count += self._upsert_bonus_works(
             circle_id,
@@ -1971,6 +1976,7 @@ class DLsiteBonusProbeService:
     ) -> None:
         if not circle_id:
             return
+        hidden_hits = self._exclude_coverless_bonus_features(hidden_hits)
         normalized_maker = str(maker_id or "").strip().upper()
         normalized_date = self.normalize_date(release_date)
         db = SessionLocal()
@@ -2091,6 +2097,107 @@ class DLsiteBonusProbeService:
             {"lock_key": f"dlsite-bonus-probe:{circle_id}"},
         )
 
+    def _exclude_coverless_bonus_features(
+        self, features: Sequence[DLsiteProductProbeFeature]
+    ) -> List[DLsiteProductProbeFeature]:
+        if not features:
+            return []
+        facts = get_circle_image_cache_service().cover_facts(
+            [self.normalize_rjcode(feature.workno) for feature in features]
+        )
+        return [
+            feature for feature in features
+            if facts.get(self.normalize_rjcode(feature.workno)) is not False
+        ]
+
+    def remove_coverless_bonus_works(self, rjcodes: Sequence[str]) -> int:
+        """删除已确认无图的特典业务记录，保留无图标记作为后续探测的排除依据。"""
+        codes = self._dedupe(rjcodes)
+        facts = get_circle_image_cache_service().cover_facts(codes)
+        excluded = {code for code in codes if facts.get(code) is False}
+        if not excluded:
+            return 0
+        db = SessionLocal()
+        affected_circles = set()
+        affected_codes = set(excluded)
+        removed = 0
+        try:
+            links = db.query(WorkCanonicalLink).filter(or_(
+                WorkCanonicalLink.canonical_rjcode.in_(excluded),
+                WorkCanonicalLink.linked_rjcode.in_(excluded),
+            )).all()
+            parents = {
+                link.canonical_rjcode for link in links
+                if link.link_type == "bonus" and link.canonical_rjcode not in excluded
+            }
+            affected_codes.update(link.canonical_rjcode for link in links)
+            affected_codes.update(link.linked_rjcode for link in links)
+            rows = db.query(CircleWork).filter(or_(
+                CircleWork.canonical_rjcode.in_(affected_codes),
+                CircleWork.display_rjcode.in_(excluded),
+            )).all()
+            affected_circles.update(row.circle_id for row in rows)
+            for circle in sorted(affected_circles):
+                self._lock_bonus_probe_circle(db, circle)
+            for link in links:
+                db.delete(link)
+            db.query(DLsiteBonusProbeHitIndex).filter(
+                DLsiteBonusProbeHitIndex.bonus_rjcode.in_(excluded)
+            ).delete(synchronize_session=False)
+            db.query(DLsiteBonusProbeCache).filter(
+                DLsiteBonusProbeCache.rjcode.in_(excluded)
+            ).update({DLsiteBonusProbeCache.is_hidden_bonus_audio: False}, synchronize_session=False)
+            db.query(WorkMetadata).filter(
+                WorkMetadata.rjcode.in_(excluded),
+                WorkMetadata.is_bonus_work == True,  # noqa: E712
+            ).delete(synchronize_session=False)
+            db.flush()
+            remaining_parents = {
+                link.canonical_rjcode for link in db.query(WorkCanonicalLink).filter(
+                    WorkCanonicalLink.canonical_rjcode.in_(parents),
+                    WorkCanonicalLink.link_type == "bonus",
+                    WorkCanonicalLink.evidence_status == "verified",
+                ).all()
+            } if parents else set()
+            cleared_parents = parents - remaining_parents
+            for row in rows:
+                if row.canonical_rjcode in excluded and row.is_bonus_work:
+                    db.delete(row)
+                    removed += 1
+                    continue
+                row.linked_rjcodes = [
+                    code for code in row.linked_rjcodes or [] if code not in excluded
+                ]
+                if row.display_rjcode in excluded:
+                    row.display_rjcode = row.canonical_rjcode
+                    metadata = db.query(WorkMetadata).filter_by(rjcode=row.canonical_rjcode).first()
+                    row.title = (metadata.work_name if metadata else "") or row.canonical_rjcode
+                if row.canonical_rjcode in cleared_parents:
+                    row.has_bonus = False
+            if cleared_parents:
+                db.query(WorkMetadata).filter(WorkMetadata.rjcode.in_(cleared_parents)).update(
+                    {WorkMetadata.has_bonus: False}, synchronize_session=False
+                )
+                # 删除命中不等于已完成整个日期扫描，回到待确认而不是直接写 no_bonus。
+                db.query(DLsiteBonusOriginalProbeState).filter(
+                    DLsiteBonusOriginalProbeState.original_rjcode.in_(cleared_parents),
+                    DLsiteBonusOriginalProbeState.status == "has_bonus",
+                ).delete(synchronize_session=False)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+        from .circle_completion_service import get_circle_completion_service
+
+        circle_service = get_circle_completion_service()
+        for code in affected_codes:
+            circle_service._metadata_cache.pop(code, None)
+        for circle in affected_circles:
+            circle_service.invalidate_completion_view_cache(circle)
+        return removed
+
     def _upsert_bonus_works(
         self,
         circle_id: str,
@@ -2101,6 +2208,9 @@ class DLsiteBonusProbeService:
         target_original_rjcodes: Optional[Sequence[str]] = None,
     ) -> int:
         if not circle_id or not features:
+            return 0
+        features = self._exclude_coverless_bonus_features(features)
+        if not features:
             return 0
         normalized_probe_date = self.normalize_date(probe_release_date)
         db = SessionLocal()

@@ -51,7 +51,7 @@
             </div>
           </header>
 
-          <main class="v1-body v1-scrollbar">
+          <main ref="bodyScrollRef" class="v1-body v1-scrollbar" @transitionend="updateFileScrollMargin">
             <slot name="transfer-content">
             <article
               v-for="task in filteredTasks"
@@ -243,7 +243,7 @@
                               class="v1-file-row"
                               :ref="entry.virtualRow ? measureVirtualFileRow : undefined"
                               :data-index="entry.virtualRow?.index"
-                              :style="entry.virtualRow ? { transform: `translate3d(0, ${entry.virtualRow.start}px, 0)` } : undefined"
+                              :style="entry.virtualRow ? { transform: `translate3d(0, ${entry.virtualRow.start - fileScrollMargin}px, 0)` } : undefined"
                             >
                             <div class="v1-file-row-top">
                               <div class="v1-file-row-main">
@@ -322,6 +322,11 @@
                 <span class="v1-footer-value">{{ aggregatedTransferEta }}</span>
               </div>
               <div class="v1-footer-divider"></div>
+              <div v-if="backendDownloadSummary" class="v1-footer-block">
+                <span class="v1-footer-label">预计完成</span>
+                <span class="v1-footer-value">{{ estimatedDownloadCompletion }}</span>
+              </div>
+              <div v-if="backendDownloadSummary" class="v1-footer-divider"></div>
               <div class="v1-footer-block">
                 <span class="v1-footer-label">剩余任务</span>
                 <span class="v1-footer-value">{{ remainingTaskSummary }}</span>
@@ -343,19 +348,21 @@
 <script setup>
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import { Archive, AlertCircle, ArrowUpToLine, CheckCircle2, Clock3, Cloud, CloudDownload, Download, HardDriveUpload, Minimize2, Pause, Play, RefreshCw, Search, TriangleAlert, X, XCircle, Zap } from 'lucide-vue-next'
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onUpdated, ref, watch } from 'vue'
+import { useResizeObserver } from '@vueuse/core'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import downloadIconAnimation from '../../assets/anime/download-icon-clean.json?url'
 import uploadToCloudAnimation from '../../assets/anime/Uploading to cloud.lottie'
 import successConfettiAnimation from '../../assets/anime/success confetti.lottie'
 import AppLottieProgressBar from '../common/AppLottieProgressBar.vue'
 import AppEmptyState from '../common/AppEmptyState.vue'
-import { getDownloadBatchPercent } from '../../utils/downloadProgress.js'
+import { getDownloadBatchPercent, getMatchingDownloadSummary, formatDownloadEta, formatDownloadCompletion } from '../../utils/downloadProgress.js'
 
 const props = defineProps({
   enableTaskDismiss: { type: Boolean, default: true },
   visible: { type: Boolean, default: false },
   tasks: { type: Array, default: () => [] },
+  downloadSummary: { type: Object, default: null },
   refreshing: { type: Boolean, default: false },
   retryingKeys: { type: Array, default: () => [] },
   retryingSessionIds: { type: Array, default: () => [] },
@@ -393,7 +400,9 @@ const activeFilter = ref('all')
 const searchQuery = ref('')
 const expandedTaskIds = ref(new Set())
 const localSpinning = ref(false)
+const bodyScrollRef = ref(null)
 const virtualFileListRef = ref(null)
+const fileScrollMargin = ref(0)
 const unifiedRowsCache = new WeakMap()
 const isUploadMode = computed(() => props.transferMode === 'upload')
 
@@ -442,7 +451,7 @@ const filteredTasks = computed(() => {
 const virtualFileTask = computed(() => {
   let candidate = null
   let candidateLength = 0
-  for (const task of mergedTasks.value) {
+  for (const task of filteredTasks.value) {
     if (!expandedTaskIds.value.has(task.id)) continue
     const length = getUnifiedFileRows(task).length
     if (length > candidateLength) {
@@ -458,7 +467,8 @@ const virtualFileRows = computed(() => {
 })
 const fileRowVirtualizer = useVirtualizer(computed(() => ({
   count: virtualFileRows.value.length,
-  getScrollElement: () => virtualFileListRef.value,
+  getScrollElement: () => bodyScrollRef.value,
+  scrollMargin: fileScrollMargin.value,
   estimateSize: () => 36,
   measureElement: element => element?.getBoundingClientRect().height || 36,
   overscan: 12,
@@ -473,6 +483,18 @@ function isVirtualizedFileTask(task) {
 function setVirtualFileListRef(element) {
   virtualFileListRef.value = element || null
 }
+
+// 文件列表共用工作台滚动容器，偏移需包含前面的任务与路径信息。
+function updateFileScrollMargin() {
+  const body = bodyScrollRef.value
+  const list = virtualFileListRef.value
+  if (!body || !list) return
+  fileScrollMargin.value = list.getBoundingClientRect().top
+    - body.getBoundingClientRect().top + body.scrollTop - body.clientTop
+}
+
+useResizeObserver([bodyScrollRef, virtualFileListRef], updateFileScrollMargin)
+onUpdated(updateFileScrollMargin)
 
 function measureVirtualFileRow(element) {
   if (element) fileRowVirtualizer.value.measureElement(element)
@@ -511,6 +533,16 @@ function isFileRetrying(task, file) {
 }
 
 const pausedTasks = computed(() => mergedTasks.value.filter(task => isTaskPaused(task)))
+const backendDownloadSummary = computed(() => !isUploadMode.value && !shouldShowUploadMetrics.value
+  ? getMatchingDownloadSummary(props.downloadSummary, props.tasks) : null)
+const estimatedDownloadCompletion = computed(() => {
+  const summary = backendDownloadSummary.value
+  return summary?.eta_status === 'completed' ? '已完成'
+    : summary?.eta_status === 'paused' ? '已暂停'
+      : summary?.eta_status === 'needs_attention' ? '需要处理'
+        : summary?.eta_status === 'cancelled' ? '已取消'
+          : formatDownloadCompletion(summary?.estimated_completion_at)
+})
 const shouldShowUploadMetrics = computed(() => {
   if (isUploadMode.value || props.showUploadEta) return true
   return mergedTasks.value.some((task) => {
@@ -523,7 +555,8 @@ const shouldShowUploadMetrics = computed(() => {
   })
 })
 const totalDownloadSpeed = computed(() => {
-  const speed = processingTasks.value.reduce((sum, task) => sum + getVisibleDownloadSpeed(task), 0)
+  const speed = backendDownloadSummary.value?.speed_bytes_per_sec
+    ?? processingTasks.value.reduce((sum, task) => sum + getVisibleDownloadSpeed(task), 0)
   if (speed > 0) return formatSpeed(speed)
   if (!processingTasks.value.length && pausedTasks.value.length) return '已暂停'
   return '—'
@@ -535,12 +568,18 @@ const totalUploadSpeed = computed(() => {
   return '—'
 })
 const totalRemainingTransferBytes = computed(() => {
+  if (backendDownloadSummary.value) return backendDownloadSummary.value.remaining_bytes
   return processingTasks.value.reduce((sum, task) => {
     return sum + getTaskRemainingBytes(task)
   }, 0)
 })
 const remainingTransferSize = computed(() => formatSize(totalRemainingTransferBytes.value))
 const aggregatedTransferEta = computed(() => {
+  if (backendDownloadSummary.value) {
+    const summary = backendDownloadSummary.value
+    return { completed: '已完成', paused: '已暂停', needs_attention: '需要处理', cancelled: '已取消' }[summary.eta_status]
+      || formatDownloadEta(summary.eta_seconds)
+  }
   const downloadSpeed = processingTasks.value.reduce((sum, task) => sum + getVisibleDownloadSpeed(task), 0)
   const uploadSpeed = processingTasks.value.reduce((sum, task) => sum + getVisibleUploadSpeed(task), 0)
   const downloadRemainingBytes = processingTasks.value.reduce((sum, task) => sum + getDownloadRemainingBytes(task), 0)
@@ -1058,15 +1097,17 @@ function isDownloadOnlyTask(task) {
 function isUploadEnabled(task) {
   if (isUploadMode.value) return true
   if (isDownloadOnlyTask(task)) return false
+  const hasUploadRows = (Array.isArray(task?.upload_files) && task.upload_files.length > 0) || (Array.isArray(task?.uploaded_files) && task.uploaded_files.length > 0)
+  if (hasUploadRows) return true
+  const uploadOptions = task?.task_metadata?.upload_options || task?.upload_options
+  if (typeof uploadOptions?.enabled === 'boolean') return uploadOptions.enabled
+  if (String(task?.task_metadata?.upload_mode || task?.upload_mode || '').trim() === 'disabled') return false
   const explicitUpload = Boolean(
     task?.task_metadata?.upload_options?.enabled ||
     task?.upload_options?.enabled ||
     ['local', 'synology'].includes(String(task?.task_metadata?.upload_mode || task?.upload_mode || '').trim())
   )
   if (explicitUpload) return true
-
-  const hasUploadRows = (Array.isArray(task?.upload_files) && task.upload_files.length > 0) || (Array.isArray(task?.uploaded_files) && task.uploaded_files.length > 0)
-  if (hasUploadRows) return true
 
   const finalPath = String(getFinalOutputPath(task) || '').trim()
   const downloadRoot = String(getDownloadRoot(task) || '').trim()
@@ -1676,7 +1717,7 @@ function buildUnifiedFileRows(task) {
 .v1-icon-button:hover { background: rgba(244, 244, 245, 0.92); color: #18181b; transform: translateY(-1px) scale(1.03); border-color: rgba(24, 24, 27, 0.18); box-shadow: 0 8px 18px rgba(24, 24, 27, 0.1); }
 .v1-icon-button:active { transform: translateY(0) scale(0.98); }
 .v1-icon-button.spinning svg { animation: v1-refresh-spin .9s linear infinite; }
-.v1-body { flex: 1; overflow-y: auto; padding: 14px 36px 12px; background: rgba(248, 250, 252, 0.74); }
+.v1-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; padding: 14px 36px 12px; background: rgba(248, 250, 252, 0.74); }
 .v1-task-card { position: relative; margin-bottom: 10px; border: 1px solid rgba(148, 163, 184, 0.24); border-radius: 14px; background: rgba(255, 255, 255, 0.9); box-shadow: 0 8px 18px rgba(15, 23, 42, 0.045); overflow: hidden; cursor: pointer; transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease, background-color .22s ease; }
 .v1-task-card::before {
   content: "";
@@ -1776,15 +1817,9 @@ function buildUnifiedFileRows(task) {
 .v1-file-list {
   display: grid;
   gap: 0;
-  max-height: 520px;
-  overflow: auto;
-  content-visibility: auto;
-  contain-intrinsic-size: 520px;
-  overscroll-behavior: contain;
 }
 .v1-file-list.is-virtualized {
   display: block;
-  contain: strict;
 }
 .v1-file-virtual-canvas {
   position: relative;
@@ -1873,9 +1908,12 @@ function buildUnifiedFileRows(task) {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
-.v1-scrollbar::-webkit-scrollbar { width: 6px; }
+.v1-scrollbar { scrollbar-width: thin; scrollbar-color: var(--km-scrollbar-thumb) transparent; }
+.v1-scrollbar::-webkit-scrollbar { width: 5px; height: 5px; }
+.v1-scrollbar::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 .v1-scrollbar::-webkit-scrollbar-track { background: transparent; }
-.v1-scrollbar::-webkit-scrollbar-thumb { background: #a1a1aa; border-radius: 999px; }
+.v1-scrollbar::-webkit-scrollbar-thumb { background: var(--km-scrollbar-thumb); border: 0; border-radius: 999px; box-shadow: none; }
+.v1-scrollbar::-webkit-scrollbar-thumb:hover { background: var(--km-scrollbar-thumb-hover); }
 
 :global(html.kikoerumanager-dark .v1-shell) {
   border-color: rgba(255, 255, 255, 0.1);

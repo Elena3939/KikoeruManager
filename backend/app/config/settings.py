@@ -276,6 +276,8 @@ class ASMRSyncConfig(BaseModel):
     enabled: bool = True
     api_base_url: str = "https://api.asmr-200.com/api"
     max_concurrent_downloads: int = 3
+    http_proxy_enabled: bool = True  # 接口代理开关，保留已有接口代理配置
+    download_proxy_enabled: bool = False  # 文件默认直连，节省代理流量
     http_proxy: Optional[str] = None
     retry_interval_hours: float = 1.0# 重试间隔（小时）
     max_retry_count: int = 10  # 最大重试次数
@@ -741,6 +743,11 @@ class UiConfig(BaseModel):
     library: LibraryUiConfig = LibraryUiConfig()
 
 
+class TaskCenterConfig(BaseModel):
+    """任务中心读路径配置，保存后即时生效。"""
+    materialized_summary_enabled: bool = False
+
+
 class AppConfig(BaseModel):
     """应用配置"""
     storage: StorageConfig = StorageConfig()
@@ -784,6 +791,7 @@ class AppConfig(BaseModel):
     bonus_probe: BonusProbeConfig = BonusProbeConfig()
     resource_budget: ResourceBudgetConfig = ResourceBudgetConfig()
     database: DatabaseConfig = DatabaseConfig()
+    task_center: TaskCenterConfig = Field(default_factory=TaskCenterConfig)
     security_gate: SecurityGateConfig = SecurityGateConfig()
     ui: UiConfig = UiConfig()
 

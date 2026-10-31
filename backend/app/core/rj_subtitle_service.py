@@ -855,8 +855,24 @@ class RJSubtitleService:
         self,
         rjcode: str,
         progress_callback: Optional[Callable[[int, str], None]] = None,
+        preferred_source: Optional[Dict] = None,
     ) -> Tuple[Optional[Dict], List[Dict]]:
         """查找最合适的中文字幕来源（并发搜索所有候选版本，按优先级选最优）"""
+        preferred_attempts: List[Dict] = []
+        if preferred_source:
+            if progress_callback:
+                progress_callback(12, f"复用社团已探测来源 {preferred_source.get('rjcode', '')}")
+            deferred = []
+            for hint in [preferred_source] + list(preferred_source.get('fallback_hints') or []):
+                preferred, hint_attempts = await self._find_preferred_subtitle_source(hint)
+                preferred_attempts.extend(hint_attempts)
+                if preferred:
+                    return preferred, preferred_attempts
+                if hint.get('kind') == 'translated_audio' and hint.get('lang') in self.CHINESE_LANGS:
+                    deferred.append(dict(workno=hint['rjcode'], lang=hint['lang'], work_type=hint['work_type']))
+            if deferred:
+                return dict(rjcode=rjcode, subtitle_files=[], deferred_audio_works=deferred), preferred_attempts
+
         initial_work_info = None
         if progress_callback:
             progress_callback(12, f"获取 ASMR 作品信息 {rjcode}")
@@ -900,7 +916,7 @@ class RJSubtitleService:
             progress_callback(26, "并发搜索完成，选择最优来源...")
 
         # 按原始优先级顺序评估结果，取最高优先级且有字幕的版本
-        attempts: List[Dict] = []
+        attempts: List[Dict] = list(preferred_attempts)
         best_source: Optional[Dict] = None
         asmr_sources = []
         for work, raw in zip(ordered_works, raw_results):
@@ -978,6 +994,73 @@ class RJSubtitleService:
                         subtitle_files=[], deferred_audio_works=audio_works), attempts
         return None, attempts
 
+    async def _find_preferred_subtitle_source(self, hint: Dict) -> Tuple[Optional[Dict], List[Dict]]:
+        """按已探测位置取字幕，下载直链只在执行时获取。"""
+        source_rjcode = str(hint.get('rjcode') or '').strip().upper()
+        provider = str(hint.get('provider') or '').strip().lower()
+        if not re.fullmatch(r'RJ(?:\d{6}|\d{8})', source_rjcode):
+            return None, []
+        attempts = []
+        try:
+            if provider == 'asmr.one':
+                from types import SimpleNamespace
+
+                tracks = await self.asmr_service.fetch_track_list(source_rjcode)
+                if tracks is None:
+                    raise ValueError('ASMR 文件列表暂不可访问')
+                work = SimpleNamespace(
+                    workno=source_rjcode,
+                    lang=hint.get('lang') or 'JPN',
+                    work_type=hint.get('work_type') or 'requested',
+                )
+                subtitle_files = self._collect_subtitle_candidates(
+                    work, self.asmr_service._flatten_tracks(tracks or []))
+                attempts.append({'rjcode': source_rjcode, 'subtitle_count': len(subtitle_files),
+                                 **({'reason': '探测来源已失效'} if not subtitle_files else {})})
+                if subtitle_files:
+                    matching = [item for item in subtitle_files
+                                if self._is_ai_subtitle(item) == bool(hint.get('is_ai'))]
+                    if matching:
+                        return {
+                            'rjcode': source_rjcode,
+                            'lang': work.lang,
+                            'work_type': work.work_type,
+                            'title': '',
+                            'subtitle_files': matching,
+                            'source_provider': 'asmr.one',
+                            'subtitle_is_ai': bool(hint.get('is_ai')),
+                        }, attempts
+            elif provider == 'yaas':
+                from .yaas_subtitle_service import cached_archive_files, get_yaas_subtitle_service
+
+                files = cached_archive_files(hint)
+                if files:
+                    return dict(rjcode=source_rjcode, lang=hint.get('lang') or 'CHI_HANS',
+                                work_type=hint.get('work_type') or 'original', title='',
+                                source_provider='yaas', subtitle_is_ai=bool(hint.get('is_ai')),
+                                subtitle_files=[], archive_files=files,
+                                subtitle_package=hint.get('subtitle_package', True)), attempts
+                yaas = get_yaas_subtitle_service()
+                if hint.get('kind') == 'translated_audio':
+                    from types import SimpleNamespace
+                    sources = await yaas.audio_sources([SimpleNamespace(
+                        workno=source_rjcode, lang=hint.get('lang'), work_type=hint.get('work_type'))])
+                else:
+                    sources, attempts = await yaas.sources([source_rjcode])
+                    if not sources and any(attempt.get('reason') for attempt in attempts):
+                        raise ValueError('YAAS 字幕目录暂不可访问')
+                for source in sources:
+                    if (source.get('rjcode', '').upper() == source_rjcode
+                            and bool(source.get('subtitle_is_ai')) == bool(hint.get('is_ai'))):
+                        return source, attempts
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.info('[RJ字幕] 已探测来源暂不可访问 rj=%s provider=%s type=%s',
+                        source_rjcode, provider, type(exc).__name__)
+            raise ValueError('已探测字幕来源暂不可访问，请稍后重试') from exc
+        return None, attempts
+
     @staticmethod
     def _is_ai_subtitle(item):
         return bool(item.get('subtitle_is_ai')) or bool(re.search(
@@ -989,8 +1072,10 @@ class RJSubtitleService:
         """验证字幕候选；全部无效后按 MP3、原档顺序提取关联中文音声字幕。"""
         from types import SimpleNamespace
         from .yaas_subtitle_service import get_yaas_subtitle_service
+        from .resource_source_service import ResourceSourceStale
         yaas = get_yaas_subtitle_service()
         options = [source] + list(source.get('fallback_sources') or [])
+        stale = None
         for option in options:
             if should_cancel and should_cancel():
                 raise asyncio.CancelledError()
@@ -1002,6 +1087,9 @@ class RJSubtitleService:
                 return await yaas.materialize(option, temp_dir, task_id=task_id,
                     should_cancel=should_cancel, progress_callback=progress_callback)
             except Exception as exc:
+                if isinstance(exc, ResourceSourceStale):
+                    stale = exc
+                    stale.source = option
                 attempts.append(dict(source='yaas', rjcode=option['rjcode'],
                                      subtitle_count=0, reason=str(exc)))
         works = [SimpleNamespace(**work) for work in source.get('deferred_audio_works') or []]
@@ -1009,6 +1097,8 @@ class RJSubtitleService:
             audio = await yaas.audio_sources(works) if works else []
         except Exception as exc:
             attempts.append(dict(source='yaas', subtitle_count=0, reason=str(exc)))
+            if stale:
+                raise stale
             return None
         for option in audio:
             if should_cancel and should_cancel():
@@ -1017,8 +1107,13 @@ class RJSubtitleService:
                 return await yaas.materialize(option, temp_dir, task_id=task_id,
                     should_cancel=should_cancel, progress_callback=progress_callback)
             except Exception as exc:
+                if isinstance(exc, ResourceSourceStale):
+                    stale = exc
+                    stale.source = option
                 attempts.append(dict(source='yaas', rjcode=option['rjcode'],
                                      subtitle_count=0, reason=str(exc)))
+        if stale:
+            raise stale
         return None
 
     async def _download_subtitle_candidate(self, subtitle, dest_path, *, progress_callback, should_cancel):
@@ -1036,9 +1131,37 @@ class RJSubtitleService:
             subtitle['media_download_url'], dest_path,
             progress_callback=progress_callback, cancel_check=should_cancel)
 
-    async def _prepare_fetch_temp(self, source, attempts, temp_dir, **kwargs):
+    async def _prepare_fetch_temp(self, source, attempts, temp_dir, *, source_hint=None, rjcode='', **kwargs):
         try:
-            prepared = await self._prepare_fetch_source(source, attempts, temp_dir, **kwargs)
+            from .resource_source_service import ResourceSourceStale, get_resource_source_service
+            try:
+                prepared = await self._prepare_fetch_source(source, attempts, temp_dir, **kwargs)
+            except ResourceSourceStale as exc:
+                if not source_hint:
+                    raise
+                if kwargs.get('should_cancel') and kwargs['should_cancel']():
+                    raise asyncio.CancelledError()
+                from .yaas_subtitle_service import get_yaas_subtitle_service
+                stale_source = exc.source or source
+                if stale_source.get('subtitle_package', True):
+                    await get_yaas_subtitle_service().invalidate_indexes()
+                else:
+                    await get_resource_source_service().probe(stale_source['rjcode'], refresh=True)
+                # 仅来源删除或替换时重定位一次；网络、解压和磁盘异常不触发重搜。
+                refreshed_hint = {key: value for key, value in source_hint.items() if key != 'archive_files'}
+                if refreshed_hint.get('fallback_hints'):
+                    refreshed_hint['fallback_hints'] = [
+                        {key: value for key, value in hint.items() if key != 'archive_files'}
+                        for hint in refreshed_hint['fallback_hints']
+                    ]
+                retry_source, retry_attempts = await self.find_best_subtitle_source(
+                    rjcode, progress_callback=kwargs.get('progress_callback'), preferred_source=refreshed_hint)
+                attempts.extend(retry_attempts or [])
+                if not retry_source:
+                    raise ValueError('探测来源已失效，重新搜索后仍未找到可用的中文字幕来源')
+                await asyncio.to_thread(shutil.rmtree, temp_dir, True)
+                os.makedirs(temp_dir, exist_ok=True)
+                prepared = await self._prepare_fetch_source(retry_source, attempts, temp_dir, **kwargs)
             if prepared is None:
                 raise ValueError('所有字幕候选均未通过校验，关联中文 MP3 和原档也未找到可用字幕')
             from .task_engine import get_task_engine
@@ -1151,6 +1274,7 @@ class RJSubtitleService:
 
         async def load() -> Dict[str, Any]:
             source, attempts = await self.find_best_subtitle_source(normalized_rjcode)
+            from .yaas_subtitle_service import cached_archive_files
             payload = {
                 "rjcode": normalized_rjcode,
                 "has_subtitle": bool(source and (source.get('subtitle_files') or source.get('archive_files'))),
@@ -1163,6 +1287,9 @@ class RJSubtitleService:
                     "subtitle_count": len(source.get("subtitle_files", []) or []),
                     "source_provider": source.get("source_provider", ""),
                     "subtitle_is_ai": bool(source.get("subtitle_is_ai", False)),
+                    **({"archive_files": cached_archive_files(source),
+                        "subtitle_package": source.get("subtitle_package", True)}
+                       if source.get("source_provider") == "yaas" else {}),
                 } if source else None,
                 "attempts": list(attempts or []),
             }
@@ -2869,6 +2996,7 @@ class RJSubtitleService:
         progress_callback: Optional[Callable[[int, str], None]] = None,
         file_progress_callback: Optional[Callable[[str, int, int, int, int], None]] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
+        source_hint: Optional[Dict] = None,
     ) -> Dict:
         from ..config.settings import get_config
         from .library_manager import get_library_manager
@@ -2913,10 +3041,12 @@ class RJSubtitleService:
         if should_cancel and should_cancel():
             raise asyncio.CancelledError()
 
-        source, attempts = await self.find_best_subtitle_source(
-            rjcode,
-            progress_callback=progress_callback,
-        )
+        if source_hint:
+            source, attempts = await self.find_best_subtitle_source(
+                rjcode, progress_callback=progress_callback, preferred_source=source_hint)
+        else:
+            source, attempts = await self.find_best_subtitle_source(
+                rjcode, progress_callback=progress_callback)
         if not source:
             return {
                 'success': False,
@@ -2933,7 +3063,8 @@ class RJSubtitleService:
         temp_dir = tempfile.mkdtemp(prefix=f"{rjcode}_", dir=temp_root)
 
         source = await self._prepare_fetch_temp(source, attempts, temp_dir, task_id=task_id,
-            should_cancel=should_cancel, progress_callback=progress_callback)
+            should_cancel=should_cancel, progress_callback=progress_callback,
+            source_hint=source_hint, rjcode=rjcode)
         downloaded_files = []
         content_deduped_files: List[Dict] = []
         failed_files = []
@@ -3202,6 +3333,7 @@ class RJSubtitleService:
         progress_callback: Optional[Callable[[int, str], None]] = None,
         file_progress_callback: Optional[Callable[[str, int, int, int, int], None]] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
+        source_hint: Optional[Dict] = None,
     ) -> Dict:
         """处理单个 RJ 文件夹"""
         from ..config.settings import get_config
@@ -3225,6 +3357,7 @@ class RJSubtitleService:
                     progress_callback=progress_callback,
                     file_progress_callback=file_progress_callback,
                     should_cancel=should_cancel,
+                    source_hint=source_hint,
                 )
 
         config = get_config()
@@ -3254,10 +3387,12 @@ class RJSubtitleService:
         if should_cancel and should_cancel():
             raise asyncio.CancelledError()
 
-        source, attempts = await self.find_best_subtitle_source(
-            rjcode,
-            progress_callback=progress_callback,
-        )
+        if source_hint:
+            source, attempts = await self.find_best_subtitle_source(
+                rjcode, progress_callback=progress_callback, preferred_source=source_hint)
+        else:
+            source, attempts = await self.find_best_subtitle_source(
+                rjcode, progress_callback=progress_callback)
         if not source:
             return {
                 'success': False,
@@ -3274,7 +3409,8 @@ class RJSubtitleService:
         temp_dir = tempfile.mkdtemp(prefix=f"{rjcode}_", dir=temp_root)
 
         source = await self._prepare_fetch_temp(source, attempts, temp_dir, task_id=task_id,
-            should_cancel=should_cancel, progress_callback=progress_callback)
+            should_cancel=should_cancel, progress_callback=progress_callback,
+            source_hint=source_hint, rjcode=rjcode)
         downloaded_files = []
         content_deduped_files: List[Dict] = []
         failed_files = []

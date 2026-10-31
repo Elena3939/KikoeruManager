@@ -1,5 +1,6 @@
 import { reactive, watch, onBeforeUnmount, onActivated, onDeactivated } from 'vue'
 import { asmrSyncApi, httpDownloadApi, baiduNetdiskApi, localUploadApi, rjSubtitleApi } from '../api'
+import { getMatchingDownloadSummary, formatDownloadSummary, getDownloadBatchPercent } from '../utils/downloadProgress.js'
 
 const STORAGE = 'kikoerumanager.ui.persistentTaskCards'
 function read() {
@@ -75,6 +76,8 @@ export function usePersistentTaskWorkbench(route, source, ids, visible, backgrou
     const card = persistentTaskCards[id]
     if (!card || route.path !== routePath) return
     ids.value = [...card.props.taskIds]
+    if (options.batchTaskIds) options.batchTaskIds.value = [...(card.props.batchTaskIds || card.props.taskIds.slice(0, 1))]
+    if (options.batchStartedAt) options.batchStartedAt.value = card.props.batchStartedAt || ''
     await refresh({ silent: false })
     if (options.tasks && !options.tasks.value?.length) {
       delete persistentTaskCards[id]
@@ -115,9 +118,11 @@ export function saveTaskCards() {
 export function rememberTaskCard(id, props, route) {
   if (!props.taskIds?.length) return
   // 只保存数据字段，图标组件和运行时回调不进入持久化 JSON。
-  const { title, subtitle, detailText, badgeText, metaText, kind, tone, percentage, completed, positionKey, taskSource, taskIds, metrics } = props
+  const { title, subtitle, detailText, badgeText, metaText, timingText, sampledAt, batchTaskIds, batchStartedAt, kind, tone, percentage, completed, positionKey, taskSource, taskIds, metrics } = props
   const previous = persistentTaskCards[id]
-  persistentTaskCards[id] = { ...(previous && sameTasks(previous.props.taskIds, taskIds) ? previous : {}), id, route, props: { title, subtitle, detailText, badgeText, metaText, kind, tone, percentage, completed, positionKey, taskSource, taskIds: taskIds.map(String), metrics: (metrics || []).map(({ key, label, value, tone }) => ({ key, label, value, tone })), actions: [{ key: 'resume', label: '打开工作台' }, { key: 'close', label: '关闭' }] } }
+  const sameBatch = previous && sameTasks(previous.props.taskIds, taskIds)
+  if (sameBatch && sampledAt && Date.parse(sampledAt) < Date.parse(previous.props.sampledAt)) return
+  persistentTaskCards[id] = { ...(sameBatch ? previous : {}), id, route, props: { title, subtitle, detailText, badgeText, metaText, timingText, sampledAt, batchTaskIds, batchStartedAt, kind, tone, percentage, completed, positionKey, taskSource, taskIds: taskIds.map(String), metrics: (metrics || []).map(({ key, label, value, tone }) => ({ key, label, value, tone })), actions: [{ key: 'resume', label: '打开工作台' }, { key: 'close', label: '关闭' }] } }
   if (!persistentTaskCards[id].dismissed) verifiedTaskCards.add(id)
   saveTaskCards()
 }
@@ -127,16 +132,33 @@ export async function refreshPersistentTaskCards() {
   for (const card of Object.values(persistentTaskCards)) {
     if (mountedTaskCards.has(card.id)) continue
     const source = card.props.taskSource
-    if (!groups.has(source)) groups.set(source, [])
-    groups.get(source).push(card)
+    // 下载统计按批次返回，多个小窗不能共用合并后的一份总计。
+    const groupKey = ['http', 'baidu'].includes(source)
+      ? JSON.stringify([source, [...card.props.taskIds].sort(), [...(card.props.batchTaskIds || card.props.taskIds.slice(0, 1))].sort(), card.props.batchStartedAt || ''])
+      : source
+    if (!groups.has(groupKey)) groups.set(groupKey, [])
+    groups.get(groupKey).push(card)
   }
-  await Promise.allSettled([...groups].map(async ([source, cards]) => {
+  await Promise.allSettled([...groups.values()].map(async cards => {
+    const source = cards[0].props.taskSource
     const ids = [...new Set(cards.flatMap(card => card.props.taskIds))]
     const api = { asmr: asmrSyncApi, http: httpDownloadApi, baidu: baiduNetdiskApi, upload: localUploadApi, subtitle: rjSubtitleApi }[source]
     if (!api) return
-    const result = source === 'asmr' ? await api.status(ids, { compact: true }) : await api.status({ task_ids: ids.join(','), include_hidden: true, compact: true })
+    const batchOptions = ['http', 'baidu'].includes(source) ? {
+      batch_task_ids: (cards[0].props.batchTaskIds || cards[0].props.taskIds.slice(0, 1)).join(','),
+      batch_started_at: cards[0].props.batchStartedAt || '',
+    } : {}
+    const result = source === 'asmr' ? await api.status(ids, { compact: true }) : await api.status({ task_ids: ids.join(','), include_hidden: true, compact: true, ...batchOptions })
     if (!Array.isArray(result.tasks)) return
     for (const card of cards) {
+      // 页面或另一轮刷新已更新卡片时，丢弃迟到响应。
+      if (persistentTaskCards[card.id] !== card) continue
+      const summary = getMatchingDownloadSummary(result.download_summary, result.tasks)
+      if (summary && Date.parse(summary.sampled_at) < Date.parse(card.props.sampledAt)) continue
+      if (summary && result.batch_started_at) {
+        card.props.taskIds = [...summary.task_ids]
+        card.props.batchStartedAt = result.batch_started_at
+      }
       const tasks = result.tasks.filter(task => card.props.taskIds.includes(String(task.id)))
       const completeSnapshot = ['asmr', 'upload', 'subtitle'].includes(source) || Number(result.total_tasks) <= result.tasks.length
       if (!tasks.length) {
@@ -149,7 +171,11 @@ export async function refreshPersistentTaskCards() {
       const active = tasks.find(task => failedStatuses.has(taskStatus(task))) || tasks.find(task => !autoDismissStatuses.has(taskStatus(task))) || tasks[0]
       card.props.percentage = card.props.completed
         ? 100
-        : tasks.reduce((sum, task) => sum + Math.max(0, Math.min(100, Number(task.progress) || 0)), 0) / tasks.length
+        : summary?.progress_percent ?? (['http', 'baidu'].includes(source) ? getDownloadBatchPercent(tasks)
+          : tasks.reduce((sum, task) => sum + Math.max(0, Math.min(100, Number(task.progress) || 0)), 0) / tasks.length)
+      if (summary) {
+        Object.assign(card.props, formatDownloadSummary(summary), { sampledAt: summary.sampled_at })
+      }
       card.props.subtitle = active.work_title || active.folder_name || active.rjcode || card.props.subtitle
       card.props.detailText = active.failure_reason || active.error_message || active.current_step || active.status_label || ''
       card.props.metrics = ['processing', 'pending', 'paused', 'completed', 'failed', 'partial_failed', 'cancelled'].map(key => ({ key, label: { processing: '进行中', pending: '等待', paused: '暂停', completed: '完成', failed: '失败', partial_failed: '部分失败', cancelled: '已取消' }[key], tone: failedStatuses.has(key) ? 'danger' : key, value: tasks.filter(task => taskStatus(task) === key || (key === 'cancelled' && taskStatus(task) === 'canceled')).length }))

@@ -281,6 +281,7 @@ class TaskCenterItem(Base):
     business_key = Column(Text)
     searchable_text = Column(Text)
     payload_json = Column(JSON)
+    list_projection = Column(JSON)
     version = Column(Integer, default=0)
     created_at = Column(DateTime, default=get_local_now)
     updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
@@ -557,6 +558,8 @@ class CircleWork(Base):
         Index('idx_circle_work_unique', 'circle_id', 'canonical_rjcode', unique=True),
         Index('idx_circle_works_circle_updated', 'circle_id', 'updated_at'),
         Index('idx_circle_works_circle_asmr', 'circle_id', 'has_asmr_one'),
+        Index('idx_circle_works_linked_rjcodes_gin', 'linked_rjcodes',
+              postgresql_using='gin', postgresql_ops={'linked_rjcodes': 'jsonb_path_ops'}),
     )
 
     def to_dict(self):
@@ -2496,6 +2499,11 @@ def _pg_table_size(conn, table_name: str) -> int:
 
 
 _POSTGRES_BUSINESS_INDEX_SPECS = (
+    {
+        "name": "idx_circle_works_linked_rjcodes_gin",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_circle_works_linked_rjcodes_gin ON circle_works USING gin (linked_rjcodes jsonb_path_ops)",
+        "fragments": ("circle_works", "gin", "linked_rjcodes", "jsonb_path_ops"),
+    },
     # 操作历史：列表常按 category + created_at 倒序取窗口；detail.session_id 用于详情关联子项。
     {
         "name": "idx_activity_category_created_desc",
@@ -4461,7 +4469,13 @@ def _migrate_compat_schema(conn) -> None:
         "dlsite_bonus_probe_cache",
         "notification_inbox_items",
         "work_metadata",
+        "task_center_items",
     ))
+    if "task_center_items" in existing_tables:
+        conn.execute(text("ALTER TABLE task_center_items ADD COLUMN IF NOT EXISTS list_projection JSONB"))
+        from ..core.task_center_list_projection import backfill_list_projections
+
+        backfill_list_projections(conn)
     if "tasks" in existing_tables:
         type_length = conn.execute(text(
             "SELECT character_maximum_length FROM information_schema.columns "

@@ -115,9 +115,11 @@
           <SettingsFieldCard label="重试 Cron">
             <input v-model="config.asmr_sync.retry_cron" class="field-input" type="text" placeholder="0 */1 * * *">
           </SettingsFieldCard>
+          <SettingsToggleRow v-model="config.asmr_sync.http_proxy_enabled" title="接口使用代理" subtitle="作品查询、文件列表等 ASMR 接口请求使用代理。" />
+          <SettingsToggleRow v-model="config.asmr_sync.download_proxy_enabled" title="文件下载使用代理" subtitle="默认关闭，音频、字幕等文件直连下载，节省代理流量。" />
           <div class="mini-grid two">
-            <SettingsFieldCard label="HTTP 代理" hint="用于 asmr.one 音频下载。">
-              <input v-model="config.asmr_sync.http_proxy" class="field-input" type="text" placeholder="127.0.0.1:7890">
+            <SettingsFieldCard label="ASMR 代理地址" hint="接口和文件下载共用此地址，分别由上方开关控制；留空则直连。">
+              <input v-model="config.asmr_sync.http_proxy" :disabled="!config.asmr_sync.http_proxy_enabled && !config.asmr_sync.download_proxy_enabled" class="field-input" type="text" placeholder="留空则直连">
             </SettingsFieldCard>
             <SettingsFieldCard label="元数据代理" hint="用于 DLsite 元数据、社团作品列表、封面抓取，以及 Kikoeru 查重前的 DLsite 关联链查询。">
               <div class="service-inline-row metadata-proxy-row">

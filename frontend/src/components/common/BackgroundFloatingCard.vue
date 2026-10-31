@@ -60,6 +60,7 @@
             </div>
             <span v-if="metaText" class="task-toast-context task-toast-meta">{{ metaText }}</span>
             <span v-else-if="!visibleMetrics.length" class="task-toast-context">{{ detailText || badgeText }}</span>
+            <span v-if="timingText" class="task-toast-timing">{{ timingText }}</span>
           </div>
           <div v-if="bodyActions.length" class="task-toast-actions">
             <button v-for="action in bodyActions" :key="action.key" type="button" :class="['task-toast-action', { 'is-primary': action.key === 'resume' }]" :title="action.label" @click="emit('action', action.key)">
@@ -104,6 +105,7 @@ const props = defineProps({
   title: { type: String, default: '后台任务正在运行' },
   subtitle: { type: String, default: '' },
   metaText: { type: String, default: '' },
+  timingText: { type: String, default: '' },
   detailText: { type: String, default: '' },
   badgeText: { type: String, default: '' },
   kind: { type: String, default: 'upload' },

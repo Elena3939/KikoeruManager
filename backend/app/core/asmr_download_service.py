@@ -184,8 +184,11 @@ class ASMRDownloadService:
         except Exception:
             return None
 
-    def _get_proxy(self) -> Optional[str]:
+    def _get_proxy(self, *, for_download: bool = False) -> Optional[str]:
         config = self._get_runtime_config()
+        switch = "download_proxy_enabled" if for_download else "http_proxy_enabled"
+        if config is not None and not getattr(config, switch, not for_download):
+            return None
         proxy = getattr(config, "http_proxy", None) if config else None
         if not proxy:
             return None
@@ -203,8 +206,8 @@ class ASMRDownloadService:
             return ""
         return re.sub(r"//([^/@]+)@", "//***:***@", proxy)
 
-    def _proxy_request_kwargs(self) -> Dict:
-        proxy = self._get_proxy()
+    def _proxy_request_kwargs(self, *, for_download: bool = False) -> Dict:
+        proxy = self._get_proxy(for_download=for_download)
         return {"proxy": proxy} if proxy else {}
 
     def _browser_like_headers(self, referer: Optional[str] = None) -> Dict[str, str]:
@@ -841,7 +844,6 @@ class ASMRDownloadService:
             是否成功
         """
         session = await self._get_session()
-        request_kwargs = self._proxy_request_kwargs()
         request_headers = self._download_headers()
         request_url = self._build_download_request_url(url)
         request_url_text = str(request_url)
@@ -921,7 +923,7 @@ class ASMRDownloadService:
                         request_url,
                         headers=request_headers,
                         timeout=aiohttp.ClientTimeout(total=30),
-                        **request_kwargs,
+                        **self._proxy_request_kwargs(for_download=True),
                     ) as head_response:
                         if head_response.status == 200:
                             remote_size = int(head_response.headers.get('content-length', 0))
@@ -968,7 +970,7 @@ class ASMRDownloadService:
                     request_url,
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=None, connect=10, sock_connect=10, sock_read=timeout),
-                    **request_kwargs,
+                    **self._proxy_request_kwargs(for_download=True),
                 ) as response:
                     # 处理响应状态
                     if resume_offset > 0 and response.status == 206:

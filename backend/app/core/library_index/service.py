@@ -2034,6 +2034,10 @@ class LibraryIndexService:
     ) -> dict[str, int]:
         return self._store.count_descendant_dirs_many(library_id, relative_paths)
 
+    def summarize_subtitle_targets_many(self, library_id, relative_paths, *, audio_extensions, subtitle_extensions):
+        return self._store.summarize_subtitle_targets_many(library_id, relative_paths,
+            audio_extensions=audio_extensions, subtitle_extensions=subtitle_extensions)
+
     def summarize_descendant_files_many(
         self,
         library_id: str,

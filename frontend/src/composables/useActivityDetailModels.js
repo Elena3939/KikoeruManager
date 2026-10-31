@@ -672,6 +672,12 @@ function detailHighlights(row) {
   if (!d || typeof d !== 'object') return []
   const out = []
   const category = String(row?.category || '').trim()
+  const downloadOnly = category === 'asmr_sync'
+    && !Number(d.uploaded_count || 0)
+    && !Number(d.uploaded_bytes || 0)
+    && !(Array.isArray(d.uploaded_files) && d.uploaded_files.length)
+    && (d.upload_mode === 'disabled' || d.upload_enabled === false || d.uploaded_count === 0)
+  const uploadKeys = new Set(['upload_mode', 'uploaded_count', 'uploaded_bytes', 'average_upload_speed_bytes', 'upload_path', 'target_path'])
   const keys = row?.action === 'batch_start' && ['auto_import', 'process_existing', 'extract'].includes(category)
     ? ['participating_archive_count', 'aggregate_archive_size_bytes', 'aggregate_extract_output_bytes',
       'batch_duration_ms', 'result_task_count', ...Object.keys(HIGHLIGHT_LABELS)]
@@ -684,6 +690,7 @@ function detailHighlights(row) {
   const pushedLabels = new Set()
   for (const k of keys) {
     if (pushed.has(k)) continue
+    if (downloadOnly && uploadKeys.has(k)) continue
     const label = k === 'duration_ms' && ['auto_import', 'process_existing', 'extract'].includes(category)
       ? '任务总耗时'
       : k === 'archive_count' && ['auto_import', 'extract'].includes(category)

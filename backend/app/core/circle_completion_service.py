@@ -221,7 +221,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
     _COMPLETION_BUILD_LOCK_SECONDS = 12
     _COMPLETION_ALIAS_REDIS_TTL_SECONDS = 86400
     # 同名特典保留待验证候选，并按真实封面选择代表项；升级后重建历史视图缓存。
-    _COMPLETION_CACHE_SCHEMA_VERSION = 24
+    _COMPLETION_CACHE_SCHEMA_VERSION = 25
 
     def __init__(self):
         self.metadata_service = MetadataService()
@@ -259,6 +259,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         self._completion_local_namespace = uuid.uuid4().hex
         self._completion_selection_cache = TTLCache(max_size=128, ttl_seconds=60, name="circle.completion_selection")
         self._completion_selection_locks = [threading.Lock() for _ in range(32)]
+        self._completion_resource_locks = [threading.Lock() for _ in range(32)]
         self._completion_redis_lock_tokens: Dict[str, str] = {}
         self._completion_redis_lock_guard = threading.Lock()
         # ⚠ canonical cache 必须够大装下"大社团一次索引涉及的所有链路 RJ"：
@@ -421,13 +422,19 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
     def _completion_resource_version_tag(self, scope):
         scope = self._completion_cache_scope(scope)
+        from ..models.database import LibraryIndexStatus
+        with SessionLocal() as db:
+            index_rows = db.query(LibraryIndexStatus.library_id, LibraryIndexStatus.status,
+                LibraryIndexStatus.active_generation, LibraryIndexStatus.materialized_seq,
+                LibraryIndexStatus.accepted_seq, LibraryIndexStatus.view_revision).order_by(LibraryIndexStatus.library_id).all()
+        index_tag = self._completion_hash_payload([list(row) for row in index_rows])
         service, client = self._completion_redis_client()
         if service is not None and client is not None:
             try:
-                return str(client.get(service.key('circle-completion', 'resource-version', scope)) or 0)
+                return str(client.get(service.key('circle-completion', 'resource-version', scope)) or 0) + ':i' + index_tag
             except Exception:
                 logger.debug('读取资源覆盖层版本失败', exc_info=True)
-        return str(self._completion_local_versions.get('resource:' + scope, 0))
+        return str(self._completion_local_versions.get('resource:' + scope, 0)) + ':i' + index_tag
 
     def invalidate_completion_resource_cache(self, circle_id):
         """来源变化不失效基础作品、元数据与特典关系。"""
@@ -453,14 +460,18 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         if self._completion_state_builder_overridden():
             return self._completion_prune_bonus_items(deepcopy(state['items']))
         key = self._completion_query_cache_key('resources', scope, {})
-        cached = self._completion_view_cache.get(key)
-        if cached is None:
-            from .resource_source_service import get_resource_source_service
-            items = self._completion_copy_resource_rows(state['items'])
-            with SessionLocal() as db:
-                get_resource_source_service().decorate_items(db, items)
-            self._completion_view_cache[key] = items
-            cached = items
+        with self._completion_resource_locks[hash(key) % len(self._completion_resource_locks)]:
+            cached = self._completion_l1_l2_get(self._completion_view_cache, 'resources', key, readonly=True)
+            if cached is None:
+                from .resource_source_service import get_resource_source_service
+                items = self._completion_copy_resource_rows(state['items'])
+                with SessionLocal() as db:
+                    get_resource_source_service().decorate_items(db, items)
+                    from .circle_subtitle_repair_service import get_circle_subtitle_repair_service
+                    get_circle_subtitle_repair_service().decorate_items(db, items)
+                self._completion_l1_l2_set(self._completion_view_cache, 'resources', key, items,
+                    ttl_seconds=self._COMPLETION_STATE_REDIS_TTL_SECONDS)
+                cached = items
         return self._completion_copy_resource_rows(cached)
 
     @staticmethod
@@ -2803,6 +2814,10 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 ],
             ])),
             "has_asmr_one": has_asmr_one,
+            "subtitle_translation_rjcodes": [
+                variant["rjcode"] for variant in self._sort_linked_variants(view_canonical_info, stored_display_rjcode)
+                if self._variant_group(variant.get("link_type"), variant.get("lang"))["key"] in {"simplified", "traditional"}
+            ],
             "asmr_available_rjcode": available_rjcode,
             "image_url": local_cover_url or local_thumb_url or (normalized_remote_cover if cover_available else ""),
             "cover_available": cover_available,
@@ -2849,12 +2864,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             "server_match_primary_rjcode": server_match_primary_rjcode,
             "owned_variant": owned_variant,
             "subtitle_present": local_subtitle_present,
-            "subtitle_repairable": bool(
-                local_owned
-                and owned_variant.get("group_key") == "original"
-                and not local_subtitle_present
-                and str((asmr_compare or {}).get("primary_badge") or "").strip() in {"简中", "繁中"}
-            ),
+            "subtitle_repairable": False,
             "status_tags": [
                 *(["库存已收录"] if local_owned else []),
                 *(["本地已下载"] if local_download else []),
@@ -3226,9 +3236,6 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         cache_enabled = not self._completion_state_builder_overridden()
         with measure_stage("circle_scope_ms"):
             scope = await self._resolve_completion_scope(circle_id_or_query) if cache_enabled else circle_id_or_query
-        if cache_enabled:
-            from .resource_source_service import get_resource_source_service
-            get_resource_source_service().schedule_circle(scope)
         while True:
             version = await asyncio.to_thread(self._completion_version_tag, scope)
             state = await self._get_completion_view_state(scope, readonly=True)
@@ -3288,9 +3295,6 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
         cache_enabled = not self._completion_state_builder_overridden()
         scope = await self._resolve_completion_scope(circle_id_or_query) if cache_enabled else circle_id_or_query
-        if cache_enabled:
-            from .resource_source_service import get_resource_source_service
-            get_resource_source_service().schedule_circle(scope)
         while True:
             version = await run_sync_stage("circle_version", self._completion_version_tag, scope)
             resource_version = await run_sync_stage("circle_resource_version", self._completion_resource_version_tag, scope)
@@ -6797,22 +6801,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
         db = SessionLocal()
         try:
-            db.query(LibraryOwnedWork).delete()
-            for canonical, info in merged.items():
-                db.add(LibraryOwnedWork(
-                    canonical_rjcode=canonical,
-                    owned_rjcodes=sorted(info["owned_rjcodes"]),
-                    primary_folder_path=info["primary_folder_path"],
-                    library_id=info["primary_library_id"],
-                    folder_count=info["folder_count"],
-                    folder_size=info["folder_size"],
-                    file_count=info["file_count"],
-                    owned_paths=info["owned_paths"],
-                    has_local_subtitles=bool(info["has_local_subtitles"]),
-                    subtitle_file_count=int(info["subtitle_file_count"] or 0),
-                    subtitle_dir=info["subtitle_dir"],
-                    updated_at=datetime.now(),
-                ))
+            self._replace_local_owned_snapshot(db, merged)
             db.commit()
         except Exception:
             db.rollback()
@@ -6825,6 +6814,53 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         self.invalidate_completion_view_cache()
         return {"owned_count": len(merged)}
 
+    @staticmethod
+    def _replace_local_owned_snapshot(db, merged: Dict[str, Dict[str, Any]]) -> None:
+        """同事务校准拥有态；未变化行保留原时间戳，不重复删除和插入。"""
+        from sqlalchemy import or_, select
+        from sqlalchemy.dialects.postgresql import insert
+
+        table = LibraryOwnedWork.__table__
+        fields = [column.name for column in table.c
+                  if column.name not in {"canonical_rjcode", "created_at", "updated_at"}]
+        existing = {
+            row["canonical_rjcode"]: dict(row)
+            for row in db.execute(select(table.c.canonical_rjcode, *[table.c[key] for key in fields])).mappings()
+        }
+        rows = []
+        now = datetime.now()
+        for canonical, info in sorted(merged.items()):
+            row = {
+                "canonical_rjcode": canonical,
+                "owned_rjcodes": sorted(info["owned_rjcodes"]),
+                "primary_folder_path": info["primary_folder_path"],
+                "library_id": info["primary_library_id"],
+                "folder_count": info["folder_count"],
+                "folder_size": info["folder_size"],
+                "file_count": info["file_count"],
+                # 并发聚合的顺序不稳定，统一排序以免产生无意义更新。
+                "owned_paths": sorted(info["owned_paths"]),
+                "has_local_subtitles": bool(info["has_local_subtitles"]),
+                "subtitle_file_count": int(info["subtitle_file_count"] or 0),
+                "subtitle_dir": info["subtitle_dir"],
+                "created_at": now,
+                "updated_at": now,
+            }
+            previous = existing.get(canonical)
+            if previous is None or any(previous[key] != row[key] for key in fields):
+                rows.append(row)
+        for start in range(0, len(rows), 500):
+            batch = rows[start:start + 500]
+            statement = insert(table).values(batch)
+            db.execute(statement.on_conflict_do_update(
+                index_elements=[table.c.canonical_rjcode],
+                set_={key: statement.excluded[key] for key in [*fields, "updated_at"]},
+                where=or_(*(table.c[key].is_distinct_from(statement.excluded[key]) for key in fields)),
+            ))
+        obsolete = sorted(existing.keys() - merged.keys())
+        for start in range(0, len(obsolete), 500):
+            db.execute(table.delete().where(table.c.canonical_rjcode.in_(obsolete[start:start + 500])))
+
     async def sync_owned_for_rj(self, rjcode: str, folder_path: str = "", library_id: str = "") -> None:
         """单 RJ 入库后增量同步本地拥有态索引。
 
@@ -6833,7 +6869,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         1. **反向匹配 linked_rjcodes**：CircleWork 索引时算出来的 canonical 与
            入库时 `resolve_canonical_rj` 算出来的 canonical 可能因为 DLsite
            数据更新或解析逻辑差异而不一致，单写一条 `LibraryOwnedWork(canonical=A)`
-           会让 LEFT JOIN 在另一个 canonical 上漏匹配。这里用 JSON 文本匹配
+           会让 LEFT JOIN 在另一个 canonical 上漏匹配。这里用 JSONB 精确包含查询
            兜底：只要 `CircleWork.linked_rjcodes` 含当前 RJ，就把这条 row 的
            `canonical_rjcode` 也写进 LibraryOwnedWork。
 
@@ -6857,11 +6893,12 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         ) or normalized_rj
 
         # 函数内部局部 import，与本文件其他位置（search_circles）一致，避免污染顶层 import。
-        from sqlalchemy import Text as sa_Text, cast as sa_cast, or_ as sa_or
+        from sqlalchemy import or_ as sa_or
 
         affected_circle_ids: set[str] = set()
         target_canonicals: set[str] = set()
         reverse_match_count = 0
+        state_changed = False
         from .library_manager import get_library_manager
 
         index_hits = get_library_manager().find_rj_in_ready_index(
@@ -6883,8 +6920,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         db = SessionLocal()
         try:
             # === 反向匹配：找出所有 CircleWork 行，其 canonical 或 linked_rjcodes 关联到本次 RJ ===
-            # 优先索引点查；linked_rjcodes JSON LIKE 仅作为兜底（覆盖 canonical 不一致的边界）。
-            json_pattern = f'%"{normalized_rj}"%'
+            # JSONB 精确包含查询复用 GIN 索引，覆盖 canonical 不一致的边界。
             related_rows = (
                 db.query(
                     CircleWork.canonical_rjcode.label("canonical_rjcode"),
@@ -6897,7 +6933,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                         CircleWork.canonical_rjcode == canonical,
                         CircleWork.canonical_rjcode == normalized_rj,
                         CircleWork.display_rjcode == normalized_rj,
-                        sa_cast(CircleWork.linked_rjcodes, sa_Text).like(json_pattern),
+                        CircleWork.linked_rjcodes.contains([normalized_rj]),
                     )
                 )
                 .all()
@@ -6951,7 +6987,9 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     row.has_local_subtitles = True
                     row.subtitle_file_count = max(int(row.subtitle_file_count or 0), hit_subtitle_count)
                     row.subtitle_dir = hit_subtitle_dir or row.subtitle_dir
-                row.updated_at = now_ts
+                if row in db.new or db.is_modified(row, include_collections=True):
+                    row.updated_at = now_ts
+                    state_changed = True
             db.commit()
         except Exception:
             db.rollback()
@@ -6960,6 +6998,8 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         finally:
             db.close()
 
+        if not state_changed:
+            return
         logger.info(
             "[社团补全] 入库同步 rj=%s canonical=%s -> 写入 %d 个 canonical(反向匹配 %d 行)，影响社团=%s",
             normalized_rj,
@@ -7488,6 +7528,17 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
                 if bonus_codes:
                     await asyncio.gather(*(cache_bonus_worker() for _ in range(min(4, len(bonus_codes)))))
+                    missing_codes = [
+                        code for code, fact in (await asyncio.to_thread(cover_state)).items()
+                        if fact is False
+                    ]
+                    if missing_codes:
+                        from .dlsite_bonus_probe_service import get_dlsite_bonus_probe_service
+
+                        await asyncio.to_thread(
+                            get_dlsite_bonus_probe_service().remove_coverless_bonus_works,
+                            missing_codes,
+                        )
                 if cover_pairs:
                     results = await image_cache_service.download_many(cover_pairs)
                     normal_cover_changed = any(results.values())
@@ -7821,6 +7872,10 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 self.normalize_rjcode(metadata.rjcode): {
                     "is_bonus_work": bool(metadata.is_bonus_work),
                     "has_bonus": bool(metadata.has_bonus),
+                    "work_name": metadata.work_name,
+                    "cover_url": metadata.cover_url,
+                    "price_text": metadata.price_text,
+                    "release_date": metadata.release_date,
                 }
                 for metadata in db.query(WorkMetadata)
                 .filter(WorkMetadata.rjcode.in_(own_metadata_codes))
@@ -7871,8 +7926,6 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 ) or canonical in confirmed_bonus_rjcodes
                 new_has_bonus = bool(row.has_bonus)
                 hit = False
-                own_bonus_seen = False
-                own_is_bonus = False
                 for rj in related:
                     payload = bonus_updates.get(rj)
                     if not payload:
@@ -7880,12 +7933,22 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     hit = True
                     # linked RJ 可能是挂在父作品上的特典，只能影响 has_bonus，
                     # 不能把父行自身误标成 is_bonus_work。
-                    if rj in own_codes:
-                        own_bonus_seen = True
-                        own_is_bonus = own_is_bonus or bool(payload.get("is_bonus_work"))
                     new_has_bonus = new_has_bonus or bool(payload.get("has_bonus"))
-                if own_bonus_seen:
-                    new_is_bonus = own_is_bonus or canonical in confirmed_bonus_rjcodes
+                # canonical 的明确结论优先，不能再被展示特典的 True 覆盖。
+                display = self.normalize_rjcode(row.display_rjcode)
+                display_state = bonus_updates.get(display) or checked_bonus_states.get(display) or {}
+                if not new_is_bonus and display != canonical and (
+                    (canonical, display) in bonus_link_pairs or display_state.get("is_bonus_work")
+                ):
+                    canonical_metadata = checked_bonus_states.get(canonical) or {}
+                    row.display_rjcode = canonical
+                    row.title = canonical_metadata.get("work_name") or canonical
+                    row.image_url = self._normalize_dlsite_cover_url(
+                        canonical_metadata.get("cover_url"), canonical,
+                        is_unreleased=self._is_future_release_date(canonical_metadata.get("release_date")),
+                    )
+                    row.price_text = canonical_metadata.get("price_text") or None
+                    changed = True
                 if new_is_bonus != bool(row.is_bonus_work) or (hit and new_has_bonus != bool(row.has_bonus)):
                     row.is_bonus_work = new_is_bonus
                     row.has_bonus = new_has_bonus
@@ -8411,7 +8474,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             bucket["is_bonus_work"] = bool(canonical_metadata.get("is_bonus_work")) or bool(preferred_metadata.get("is_bonus_work"))
             bucket["has_bonus"] = bool(canonical_metadata.get("has_bonus")) or bool(preferred_metadata.get("has_bonus"))
             release_date = str(canonical_metadata.get("release_date") or metadata.get("release_date") or item.get("release_date") or "").strip()
-            is_unreleased = self._is_future_release_date(release_date)
+            work_is_unreleased = self._is_future_release_date(release_date)
             def _valid_cover(*urls: Any) -> str:
                 for u in urls:
                     s = str(u or "").strip()
@@ -8426,7 +8489,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     item.get("image_url"),
                 ),
                 bucket.get("display_rjcode") or canonical or rjcode,
-                is_unreleased=is_unreleased,
+                is_unreleased=work_is_unreleased,
             )
             bucket["linked_rjcodes"] = public_linked_rjcodes or bucket["linked_rjcodes"]
             bucket["preferred_variant_label"] = self._variant_label(preferred_variant["link_type"], preferred_variant["lang"])
@@ -9397,12 +9460,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 }
                 item["subtitle_present"] = bool(item["local_subtitle_present"])
                 asmr_compare = item["source_compare"].get("asmr_one") if isinstance(item["source_compare"], dict) else {}
-                item["subtitle_repairable"] = bool(
-                    completion_owned
-                    and item["owned_variant"].get("group_key") == "original"
-                    and not item["subtitle_present"]
-                    and str((asmr_compare or {}).get("primary_badge") or "").strip() in {"简中", "繁中"}
-                )
+                item["subtitle_repairable"] = False
                 item["status_tags"] = [
                     *(["库存已收录"] if local_owned else []),
                     *(["本地已下载"] if item["local_download_ready"] else []),
@@ -9420,11 +9478,16 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                         and str((metadata_map.get(variant["rjcode"]) or {}).get("work_name") or "").strip()
                     ],
                 ]))
+                item["subtitle_translation_rjcodes"] = [
+                    variant["rjcode"] for variant in self._sort_linked_variants(view_canonical_info, stored_display_rjcode)
+                    if self._variant_group(variant.get("link_type"), variant.get("lang"))["key"] in {"simplified", "traditional"}
+                ]
                 items.append(item)
 
             from .resource_source_service import get_resource_source_service
             get_resource_source_service().decorate_items(db, items)
-            get_resource_source_service().schedule_circle(catalog.circle_id)
+            from .circle_subtitle_repair_service import get_circle_subtitle_repair_service
+            get_circle_subtitle_repair_service().decorate_items(db, items)
             self._schedule_view_cover_cache(catalog.circle_id, items, image_cache_service)
 
             visible_items = []
@@ -10001,12 +10064,26 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                         metadata = fetched_metadata
                 linked_rjcodes = [variant["rjcode"] for variant in allowed_variants if variant.get("rjcode")]
 
-                is_bonus_work = (
-                    canonical in verified_bonus_rjcodes
-                    or bool(row.is_bonus_work)
-                    or bool((metadata_map.get(canonical) or {}).get("is_bonus_work"))
-                    or bool((metadata_map.get(self.normalize_rjcode(preferred_variant.get("rjcode"))) or {}).get("is_bonus_work"))
+                canonical_metadata = metadata_map.get(canonical) or {}
+                canonical_bonus_known = bool(
+                    canonical_metadata.get("bonus_info_checked_at")
+                    or canonical_metadata.get("is_bonus_work")
                 )
+                is_bonus_work = canonical in verified_bonus_rjcodes or (
+                    bool(canonical_metadata.get("is_bonus_work"))
+                    if canonical_bonus_known else bool(row.is_bonus_work)
+                )
+                # 历史展示 RJ 可能已串到特典；不能把它当本体的语言版本继续使用。
+                if canonical_bonus_known and not is_bonus_work and bool(
+                    (metadata_map.get(second_pass_preferred) or {}).get("is_bonus_work")
+                ):
+                    preferred_variant = {"rjcode": canonical, "link_type": "original", "lang": "JPN"}
+                    preferred_title = str(canonical_metadata.get("work_name") or canonical)
+                    allowed_variants = [
+                        variant for variant in allowed_variants
+                        if not (metadata_map.get(self.normalize_rjcode(variant.get("rjcode"))) or {}).get("is_bonus_work")
+                    ]
+                    linked_rjcodes = [variant["rjcode"] for variant in allowed_variants if variant.get("rjcode")]
                 if is_bonus_work:
                     exact = self._completion_bonus_display_rjcode(canonical, row.display_rjcode, metadata_map)
                     actual_rjcode = None
@@ -10112,19 +10189,11 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 row.maker_id = str(metadata.get("maker_id") or row.maker_id or "").strip() or row.maker_id
                 row.maker_name = str(metadata.get("maker_name") or row.maker_name or "").strip() or row.maker_name
                 display_metadata = metadata_map.get(row.display_rjcode) or metadata or {}
-                # canonical 是特典字段权威来源（特典本身只在原作的 product/info/ajax 上成立），
-                # display(=preferred) 可能是简中/繁中翻译版，自身的 is_oly 几乎一定是 false。
-                # 必须 OR(canonical, display) 才能让原作有特典 / 翻译版被选成 preferred 时
-                # 也正确显示特典 chip。
+                # 自身类型沿用前面核验的 canonical 结论；附带特典信息可跨语言聚合。
                 canonical_metadata_for_row = metadata_map.get(canonical) or {}
                 release_date = str(display_metadata.get("release_date") or metadata.get("release_date") or "").strip()
                 row.price_text = str(display_metadata.get("price_text") or metadata.get("price_text") or row.price_text or "").strip() or None
-                row.is_bonus_work = (
-                    bool(is_bonus_work)
-                    or bool(canonical_metadata_for_row.get("is_bonus_work"))
-                    or bool(display_metadata.get("is_bonus_work"))
-                    or bool(metadata.get("is_bonus_work"))
-                )
+                row.is_bonus_work = is_bonus_work
                 row.has_bonus = (
                     bool(row.has_bonus)
                     or bool(canonical_metadata_for_row.get("has_bonus"))

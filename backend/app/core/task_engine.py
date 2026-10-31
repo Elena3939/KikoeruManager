@@ -1537,16 +1537,19 @@ class TaskEngine:
                         self._materialized_snapshot_worker_scheduled = False
                         return
 
-                for item_id, (item, version, metadata, item_fp) in pending.items():
+                eligible = {}
+                for item_id, snapshot in pending.items():
+                    item, version, metadata, item_fp = snapshot
                     with self._materialized_snapshot_lock:
                         written_version = int(self._materialized_task_center_item_written_versions.get(item_id, -1))
                     if version < written_version:
                         continue
-                    try:
-                        service.upsert_engine_item(item, version=version, metadata=metadata)
-                    except Exception:
-                        logger.warning("[任务中心物化] 后台写入快照失败: item_id=%s", item_id, exc_info=True)
-                        continue
+                    eligible[item_id] = snapshot
+                written_ids = service.upsert_engine_snapshots(
+                    (item, version, metadata) for item, version, metadata, _ in eligible.values()
+                )
+                for item_id in written_ids:
+                    item, version, metadata, item_fp = eligible[item_id]
                     with self._materialized_snapshot_lock:
                         current_written = int(self._materialized_task_center_item_written_versions.get(item_id, -1))
                         if version >= current_written:
@@ -1617,11 +1620,12 @@ class TaskEngine:
                     continue
                 metadata = dict(row.task_metadata or {})
                 source_mode = str(metadata.get("source_mode") or "").strip().lower()
-                if source_mode not in {"linked_translation_archive_import", "subtitle_folder_import"}:
+                is_circle_repair = metadata.get('source_action') == 'circle_subtitle_repair'
+                if source_mode not in {"linked_translation_archive_import", "subtitle_folder_import"} and not is_circle_repair:
                     continue
                 is_waiting_manual = bool(metadata.get("awaiting_manual_match"))
                 is_manual_completed = bool(metadata.get("manual_match_completed"))
-                if not (is_waiting_manual or is_manual_completed):
+                if not (is_waiting_manual or is_manual_completed or is_circle_repair):
                     continue
 
                 task_type = self._coerce_task_type(row.type)
@@ -1638,6 +1642,12 @@ class TaskEngine:
                     row.completed_at = None
                     metadata["manual_match_recovered_at"] = datetime.now().isoformat()
                     row.task_metadata = metadata
+                recovered_circle = is_circle_repair and not is_waiting_manual and self._coerce_task_status(row.status) in {TaskStatus.PENDING, TaskStatus.PROCESSING}
+                if recovered_circle:
+                    row.status = TaskStatus.FAILED.value
+                    row.current_step = "上次进程中断，请在字幕工作台重试"
+                    row.error_message = row.current_step
+                    row.completed_at = datetime.now()
                 task = Task(
                     task_type=task_type,
                     source_path=row.source_path or metadata.get("folder_path") or "",
@@ -1658,7 +1668,7 @@ class TaskEngine:
                 self._ensure_task_context(task)
                 self.tasks[task.id] = task
                 loaded_count += 1
-                if recovered_manual:
+                if recovered_manual or recovered_circle:
                     recovered_tasks.append(task)
             if recovered_tasks:
                 db.commit()
@@ -7054,6 +7064,7 @@ class TaskEngine:
     async def _process_rj_subtitle_fetch(self, task: Task):
         """处理 RJ 字幕抓取任务"""
         from .rj_subtitle_service import get_rj_subtitle_service
+        from .library_manager import get_library_manager
 
         rj_service = get_rj_subtitle_service()
         folder_path = task.task_metadata.get('folder_path') or task.source_path
@@ -7165,7 +7176,21 @@ class TaskEngine:
                 else:
                     append_progress_log("未发现旧字幕，按强制模式重新抓取", 6, 'warning')
 
-            if bool(task.task_metadata.get('skip_if_existing_subtitles')) and rjcode != "未知":
+            folder_scope = task.task_metadata.get('existing_subtitle_scope') == 'folder'
+            if folder_scope:
+                from .circle_subtitle_repair_service import get_circle_subtitle_repair_service, SubtitleRepairTargetSkipped
+                try:
+                    await get_circle_subtitle_repair_service().inspect_target({
+                        'library_id': library_id, 'folder_path': folder_path, 'rjcode': rjcode,
+                    })
+                except (SubtitleRepairTargetSkipped, FileNotFoundError) as exc:
+                    task.task_metadata['subtitle_repair_skipped_reason'] = str(exc)
+                    task.update_progress(100, f'跳过抓取：{exc}')
+                    append_progress_log(task.current_step, 100, 'warning')
+                    task.complete()
+                    task.current_step = f'跳过抓取：{exc}'
+                    return
+            if not folder_scope and bool(task.task_metadata.get('skip_if_existing_subtitles')) and rjcode != "未知":
                 try:
                     local_hits = get_library_manager().find_rj_in_ready_index([rjcode], library_ids=[library_id] if library_id else None)
                 except Exception:
@@ -7238,6 +7263,8 @@ class TaskEngine:
                 progress_callback=progress_callback,
                 file_progress_callback=file_progress_callback,
                 should_cancel=task.is_cancelled,
+                source_hint=task.task_metadata.get('subtitle_source_hint')
+                if task.task_metadata.get('source_action') == 'circle_subtitle_repair' else None,
             )
 
             if task.is_cancelled():
@@ -7506,6 +7533,8 @@ class TaskEngine:
                     progress_callback=progress_callback,
                     cancel_callback=task.is_cancelled,
                 )
+                from .resource_source_service import get_resource_source_service
+                get_resource_source_service().schedule_circle(str(result.get('circle_id') or ''))
                 last_successful_result = result
                 success_count += 1
                 result_summary = dict(result.get('summary') or {})
@@ -7663,6 +7692,8 @@ class TaskEngine:
                 progress_callback=progress_callback,
                 cancel_callback=task.is_cancelled,
             )
+            from .resource_source_service import get_resource_source_service
+            get_resource_source_service().schedule_codes(canonical_rjcodes, refresh=True)
 
         task.task_metadata = {
             **(task.task_metadata or {}),

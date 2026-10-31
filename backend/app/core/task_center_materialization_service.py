@@ -2,10 +2,13 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
-from sqlalchemy import case, func
+from sqlalchemy import Text, any_, case, cast, func, or_, text
+from sqlalchemy.dialects.postgresql import ARRAY, insert
+from sqlalchemy.exc import DBAPIError, DataError, IntegrityError, StatementError
 
 from .task_engine import TaskStatus
 from .json_safety import safe_text
+from .task_center_list_projection import build_list_projection
 from .resource_budget_service import get_resource_budget_service
 from ..models.database import SessionLocal, TaskCenterItem
 
@@ -44,16 +47,16 @@ class TaskCenterMaterializationService:
         ]
         return " ".join(safe_text(part, strip=True).lower() for part in parts if safe_text(part, strip=True))
 
-    def upsert_item(
+    def _snapshot_values(
         self,
         item: Dict[str, Any],
         *,
         version: int = 0,
         metadata: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    ) -> Optional[Dict[str, Any]]:
         item_id = safe_text(item.get("id"), strip=True)
         if not item_id:
-            return
+            return None
 
         engine_task_id = safe_text(item.get("engine_task_id") or item.get("entity_id"), strip=True)
 
@@ -64,33 +67,92 @@ class TaskCenterMaterializationService:
             payload_metadata.get("business_key") or source_metadata.get("business_key"),
             strip=True,
         )
+        try:
+            snapshot_version = int(version or 0)
+        except (TypeError, ValueError, OverflowError):
+            logger.warning("[任务中心物化] 忽略无效版本的快照")
+            return None
         now = datetime.now()
+        return {
+            "item_id": item_id,
+            "engine_task_id": engine_task_id,
+            "domain": safe_text(item.get("domain"), strip=True),
+            "status": safe_text(item.get("status"), strip=True),
+            "kind": safe_text(item.get("kind"), strip=True),
+            "title": safe_text(item.get("title"), strip=True),
+            "source_page": safe_text(item.get("source_page"), strip=True),
+            "source_action": safe_text(item.get("source_action"), strip=True),
+            "business_key": business_key,
+            "searchable_text": self._item_searchable_text(item, metadata),
+            "payload_json": item,
+            "list_projection": build_list_projection(item),
+            "version": snapshot_version,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def _write_snapshot_batch(self, rows: List[Dict[str, Any]]) -> set[str]:
+        if not rows:
+            return set()
+        # 同批相同主键只写最后一份，避免 ON CONFLICT 一条语句重复更新同一行。
+        unique_rows = {row["item_id"]: row for row in rows}
+        table = TaskCenterItem.__table__
+        statement = insert(table).values([unique_rows[key] for key in sorted(unique_rows)])
+        fields = [key for key in rows[0] if key not in {"item_id", "created_at", "updated_at"}]
+        statement = statement.on_conflict_do_update(
+            index_elements=[table.c.item_id],
+            set_={key: statement.excluded[key] for key in [*fields, "updated_at"]},
+            where=or_(*(table.c[key].is_distinct_from(statement.excluded[key]) for key in fields)),
+        )
         db = SessionLocal()
         try:
             with get_resource_budget_service().acquire_sync("database_write", reason="task_center.materialize_upsert"):
-                record = db.query(TaskCenterItem).filter(TaskCenterItem.item_id == item_id).first()
-                if not record:
-                    record = TaskCenterItem(item_id=item_id, created_at=now)
-                    db.add(record)
-
-                record.engine_task_id = engine_task_id
-                record.domain = safe_text(item.get("domain"), strip=True)
-                record.status = safe_text(item.get("status"), strip=True)
-                record.kind = safe_text(item.get("kind"), strip=True)
-                record.title = safe_text(item.get("title"), strip=True)
-                record.source_page = safe_text(item.get("source_page"), strip=True)
-                record.source_action = safe_text(item.get("source_action"), strip=True)
-                record.business_key = business_key
-                record.searchable_text = self._item_searchable_text(item, metadata)
-                record.payload_json = item
-                record.version = int(version or 0)
-                record.updated_at = now
+                db.execute(statement)
                 db.commit()
-        except Exception:
+            return set(unique_rows)
+        except Exception as exc:
             db.rollback()
-            logger.warning("[任务中心物化] 写入快照失败: item_id=%s", item_id, exc_info=True)
+            logger.warning("[任务中心物化] 写入快照失败: count=%s error=%s", len(unique_rows), type(exc).__name__)
+            isolate_rows = isinstance(exc, (DataError, IntegrityError)) or (
+                isinstance(exc, StatementError) and not isinstance(exc, DBAPIError)
+            )
         finally:
             db.close()
+        # 单条坏数据不能阻止同批其它任务落库；拆半定位，正常路径仍只提交一次。
+        if isolate_rows and len(unique_rows) > 1:
+            values = list(unique_rows.values())
+            middle = len(values) // 2
+            return self._write_snapshot_batch(values[:middle]) | self._write_snapshot_batch(values[middle:])
+        return set()
+
+    def upsert_item(
+        self,
+        item: Dict[str, Any],
+        *,
+        version: int = 0,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        row = self._snapshot_values(item, version=version, metadata=metadata)
+        if row:
+            self._write_snapshot_batch([row])
+
+    def upsert_engine_snapshots(
+        self, snapshots: Iterable[tuple[Dict[str, Any], int, Dict[str, Any]]],
+    ) -> set[str]:
+        """合并后台快照提交，保留每个任务自己的版本和元数据。"""
+        written: set[str] = set()
+        batch = []
+        for item, version, metadata in snapshots:
+            if not safe_text(item.get("id"), strip=True).startswith("engine:"):
+                continue
+            row = self._snapshot_values(item, version=version, metadata=metadata)
+            if row:
+                batch.append(row)
+            if len(batch) >= 250:
+                written.update(self._write_snapshot_batch(batch))
+                batch = []
+        written.update(self._write_snapshot_batch(batch))
+        return written
 
     def upsert_engine_item(
         self,
@@ -113,16 +175,22 @@ class TaskCenterMaterializationService:
     ) -> int:
         metadata_by_task_id = metadata_by_task_id or {}
         count = 0
+        batch = []
         for item in items:
             if not isinstance(item, dict):
                 continue
             engine_task_id = safe_text(item.get("engine_task_id") or item.get("entity_id"), strip=True)
-            self.upsert_item(
+            row = self._snapshot_values(
                 item,
                 version=version,
                 metadata=metadata_by_task_id.get(engine_task_id),
             )
-            count += 1
+            if row:
+                batch.append(row)
+            if len(batch) >= 250:
+                count += len(self._write_snapshot_batch(batch))
+                batch = []
+        count += len(self._write_snapshot_batch(batch))
         return count
 
     def upsert_engine_items(
@@ -133,18 +201,12 @@ class TaskCenterMaterializationService:
         metadata_by_task_id: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> int:
         metadata_by_task_id = metadata_by_task_id or {}
-        count = 0
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            engine_task_id = safe_text(item.get("engine_task_id") or item.get("entity_id"), strip=True)
-            self.upsert_engine_item(
-                item,
-                version=version,
-                metadata=metadata_by_task_id.get(engine_task_id),
-            )
-            count += 1
-        return count
+        return self.upsert_items(
+            (item for item in items if isinstance(item, dict)
+             and safe_text(item.get("id"), strip=True).startswith("engine:")),
+            version=version,
+            metadata_by_task_id=metadata_by_task_id,
+        )
 
     def prune_items(self, valid_item_ids: Iterable[str]) -> int:
         valid_ids = {
@@ -157,7 +219,7 @@ class TaskCenterMaterializationService:
             with get_resource_budget_service().acquire_sync("database_write", reason="task_center.materialize_prune"):
                 query = db.query(TaskCenterItem)
                 if valid_ids:
-                    query = query.filter(~TaskCenterItem.item_id.in_(valid_ids))
+                    query = query.filter(~(TaskCenterItem.item_id == any_(cast(sorted(valid_ids), ARRAY(Text)))))
                 deleted = query.delete(synchronize_session=False)
                 db.commit()
             return int(deleted or 0)
@@ -194,7 +256,7 @@ class TaskCenterMaterializationService:
             with get_resource_budget_service().acquire_sync("database_write", reason="task_center.materialize_prune_engine"):
                 query = db.query(TaskCenterItem)
                 if valid_ids:
-                    query = query.filter(~TaskCenterItem.engine_task_id.in_(valid_ids))
+                    query = query.filter(~(TaskCenterItem.engine_task_id == any_(cast(sorted(valid_ids), ARRAY(Text)))))
                 deleted = query.delete(synchronize_session=False)
                 db.commit()
             return int(deleted or 0)
@@ -274,13 +336,21 @@ class TaskCenterMaterializationService:
 
         db = SessionLocal()
         try:
-            query = db.query(TaskCenterItem)
+            query = db.query(TaskCenterItem.payload_json)
             def field(key, default):
                 replacements = {item_id: safe_text(item.get(key)) for item_id, item in (overrides or {}).items()}
                 return case(replacements, value=TaskCenterItem.item_id, else_=default) if replacements else default
 
             if ordered_ids is not None:
-                query = query.filter(TaskCenterItem.item_id.in_(ordered_ids))
+                # 一次数组参数替代超长 IN + CASE，避免重数据下超过绑定参数上限。
+                positions = {item_id: position for position, item_id in enumerate(ordered_ids)}
+                ids = sorted(positions, key=positions.get)
+                ordering = (
+                    func.unnest(cast(ids, ARRAY(Text)))
+                    .table_valued("item_id", with_ordinality="position")
+                    .render_derived(name="task_order")
+                )
+                query = query.join(ordering, TaskCenterItem.item_id == ordering.c.item_id)
             if subtype and subtype != "all":
                 query = query.filter(field("subtype", TaskCenterItem.payload_json["subtype"].as_string()) == subtype)
             if normalized_domain and normalized_domain != "all":
@@ -300,9 +370,8 @@ class TaskCenterMaterializationService:
                         text = text + " " + part
                     query = query.filter(text.ilike(like, escape="!"))
             total = query.count()
-            order = ([case({item_id: position for position, item_id in enumerate(ordered_ids)},
-                           value=TaskCenterItem.item_id, else_=len(ordered_ids))]
-                     if ordered_ids else [TaskCenterItem.updated_at.desc(), TaskCenterItem.created_at.desc()])
+            order = ([ordering.c.position] if ordered_ids is not None
+                     else [TaskCenterItem.updated_at.desc(), TaskCenterItem.created_at.desc()])
             rows = (
                 query.order_by(*order)
                 .offset(safe_offset)
@@ -323,6 +392,122 @@ class TaskCenterMaterializationService:
         finally:
             db.close()
 
+    def list_summary_page(
+        self, *, domain=None, subtype=None, status=None, search=None, limit=200, offset=0,
+        status_priority, domain_priority,
+    ):
+        """在同一个数据库快照内完成替代去重、统计与分页，只读取本页 payload。"""
+        import json
+
+        params = {
+            "domain": safe_text(domain, strip=True), "status": safe_text(status, strip=True),
+            "subtype": subtype or "", "search": safe_text(search, strip=True).lower(),
+            "limit": max(1, min(int(limit or 200), 500)), "offset": max(0, int(offset or 0)),
+            "status_priority": json.dumps(status_priority), "domain_priority": json.dumps(domain_priority),
+        }
+        params["pattern"] = "%" + _escape_ilike_pattern(params["search"]) + "%"
+        db = SessionLocal()
+        try:
+            # 替代关系合并后按键开窗，避免 JSON 投影行数估算偏低触发嵌套扫描。
+            result = db.execute(text("""
+                WITH base AS MATERIALIZED (
+                    SELECT t.item_id, t.created_at, t.updated_at, p.*
+                    FROM task_center_items t
+                    CROSS JOIN LATERAL jsonb_to_record(NULLIF(t.list_projection, 'null'::jsonb)) AS p(
+                        id text, entity text, waiting_entity text, domain text, status text,
+                        kind text, stamp double precision, path_key jsonb, retry text,
+                        superseded boolean, recovered jsonb, legacy boolean, search text, subtype text)
+                ), waiting AS (
+                    SELECT *, row_number() OVER (
+                        PARTITION BY waiting_entity ORDER BY updated_at DESC, created_at DESC, item_id
+                    ) AS position FROM base WHERE kind = 'asmr_sync_waiting_retry'
+                ), deduped AS MATERIALIZED (
+                    SELECT item_id, id, entity, domain, status, kind, stamp, path_key,
+                           retry, superseded, recovered, search, subtype
+                    FROM base WHERE kind <> 'asmr_sync_waiting_retry'
+                    UNION ALL
+                    SELECT item_id, id, entity, domain, status, kind, stamp, path_key,
+                           retry, superseded, recovered, search, subtype
+                    FROM waiting WHERE position = 1
+                ), targets AS MATERIALIZED (
+                    SELECT d.item_id, COALESCE(NULLIF(d.stamp, 0), '-Infinity'::float8) AS stamp,
+                           k.key
+                    FROM deduped d CROSS JOIN LATERAL (
+                        SELECT jsonb_build_array('entity', d.entity) AS key
+                        UNION ALL
+                        SELECT jsonb_build_array('path', d.path_key)
+                        WHERE d.path_key <> 'null'::jsonb
+                    ) k
+                    WHERE left(d.id, 7) = 'engine:'
+                      AND d.status IN ('pending','processing','paused','waiting_manual','waiting_retry')
+                ), candidates AS (
+                    SELECT d.item_id, COALESCE(NULLIF(d.stamp, 0), 'Infinity'::float8) AS stamp,
+                           jsonb_build_array('entity', d.retry) AS key
+                    FROM deduped d
+                    WHERE left(d.id, 7) = 'engine:' AND d.retry <> ''
+                    UNION ALL
+                    SELECT d.item_id, COALESCE(NULLIF(d.stamp, 0), 'Infinity'::float8),
+                           jsonb_build_array('entity', r.value)
+                    FROM deduped d CROSS JOIN LATERAL jsonb_array_elements_text(d.recovered) r(value)
+                    WHERE left(d.id, 7) = 'engine:' AND d.status = 'completed'
+                    UNION ALL
+                    SELECT d.item_id, COALESCE(NULLIF(d.stamp, 0), 'Infinity'::float8),
+                           jsonb_build_array('path', d.path_key)
+                    FROM deduped d
+                    WHERE left(d.id, 7) = 'engine:' AND d.status = 'completed'
+                      AND d.path_key <> 'null'::jsonb
+                ), relations AS (
+                    SELECT DISTINCT item_id, key, stamp AS candidate_stamp, NULL::float8 AS target_stamp
+                    FROM candidates
+                    UNION ALL
+                    SELECT item_id, key, NULL::float8, stamp FROM targets
+                ), ranked AS (
+                    SELECT *, first_value(item_id) OVER w AS first_id,
+                           first_value(candidate_stamp) OVER w AS first_stamp,
+                           nth_value(item_id, 2) OVER w AS second_id,
+                           nth_value(candidate_stamp, 2) OVER w AS second_stamp
+                    FROM relations WINDOW w AS (
+                        PARTITION BY key ORDER BY candidate_stamp DESC NULLS LAST, item_id
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+                ), blocked AS (
+                    SELECT DISTINCT item_id FROM ranked WHERE target_stamp IS NOT NULL
+                      AND ((first_id <> item_id AND first_stamp >= target_stamp)
+                           OR (second_id <> item_id AND second_stamp >= target_stamp))
+                ), visible AS MATERIALIZED (
+                    SELECT d.item_id, d.id, d.domain, d.status, d.stamp, d.search, d.subtype FROM deduped d
+                    WHERE NOT EXISTS (SELECT 1 FROM blocked b WHERE b.item_id = d.item_id)
+                      AND NOT (d.superseded AND (d.status = 'failed' OR
+                          (left(d.id, 7) = 'engine:' AND d.status IN
+                          ('pending','processing','paused','waiting_manual','waiting_retry'))))
+                ), filtered AS MATERIALIZED (
+                    SELECT item_id, id, domain, status, stamp FROM visible
+                    WHERE (:domain IN ('','all') OR domain = :domain)
+                      AND (:status IN ('','all') OR status = :status)
+                      AND (:subtype IN ('','all') OR subtype = :subtype)
+                      AND (:search = '' OR search ILIKE :pattern ESCAPE '!')
+                ), page AS (
+                    SELECT item_id, row_number() OVER (ORDER BY
+                        COALESCE((CAST(:status_priority AS jsonb)->>status)::int,99),
+                        COALESCE((CAST(:domain_priority AS jsonb)->>domain)::int,99),
+                        stamp DESC, id COLLATE "C") AS position
+                    FROM filtered ORDER BY position LIMIT :limit OFFSET :offset
+                )
+                SELECT
+                    NOT EXISTS (SELECT 1 FROM base WHERE legacy OR id IS NULL) AS ready,
+                    (SELECT count(*) FROM filtered) AS total,
+                    COALESCE((SELECT jsonb_agg(t.payload_json ORDER BY p.position)
+                        FROM page p JOIN task_center_items t USING(item_id)), '[]'::jsonb) AS items,
+                    COALESCE((SELECT jsonb_agg(s) FROM (
+                        SELECT domain, status, count(*) AS count FROM visible GROUP BY domain, status
+                    ) s), '[]'::jsonb) AS counts
+            """), params).mappings().one()
+            if not result["ready"]:
+                return None
+            return {"items": result["items"], "total": result["total"],
+                    "offset": params["offset"], "limit": params["limit"], "counts": result["counts"]}
+        finally:
+            db.close()
+
     def list_identity_projection(self) -> List[Dict[str, Any]]:
         """仅取去重/排序依赖；大 payload 只在 SQL 分页后读取。"""
         fields = ("id", "entity_id", "engine_task_id", "domain", "status", "kind", "subtype",
@@ -334,7 +519,8 @@ class TaskCenterMaterializationService:
             columns = [payload[key].as_string() for key in fields]
             columns.extend(payload["details"]["metadata"][key] for key in metadata_keys)
             rows = (db.query(*columns)
-                    .order_by(TaskCenterItem.updated_at.desc(), TaskCenterItem.created_at.desc()).all())
+                    .order_by(TaskCenterItem.updated_at.desc(), TaskCenterItem.created_at.desc(),
+                              TaskCenterItem.item_id).all())
             items = []
             for row in rows:
                 item = {key: value for key, value in zip(fields, row) if value is not None}
@@ -412,7 +598,8 @@ class TaskCenterMaterializationService:
             rows = {
                 safe_text(row.item_id, strip=True): dict(row.payload_json or {})
                 for row in db.query(TaskCenterItem)
-                .filter(TaskCenterItem.item_id.in_([safe_text(item.get("id"), strip=True) for item in expected]))
+                .filter(TaskCenterItem.item_id == any_(cast(
+                    [safe_text(item.get("id"), strip=True) for item in expected], ARRAY(Text))))
                 .all()
             }
         finally:

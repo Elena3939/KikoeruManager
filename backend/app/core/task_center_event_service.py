@@ -91,6 +91,10 @@ def build_task_center_event(task, reason: str = "progress") -> dict[str, Any]:
         "current_step": str(getattr(task, "current_step", "") or ""),
         "updated_at": now,
     }
+    if str(getattr(getattr(task, "type", None), "value", getattr(task, "type", "")) or "") == "rj_subtitle_fetch":
+        event["rjcode"] = str(metadata.get("rjcode") or "")
+        event["circle_id"] = str(metadata.get("circle_id") or "")
+        event["circle_canonical_rjcode"] = str(metadata.get("circle_canonical_rjcode") or "")
     if event["domain"] == "upload":
         runtime = metadata.get("upload_runtime")
         if isinstance(runtime, dict):

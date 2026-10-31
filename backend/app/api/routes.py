@@ -3036,6 +3036,7 @@ class ConfigResponse(BaseModel):
     bonus_probe: Optional[dict] = None
     resource_budget: Optional[dict] = None
     database: Optional[dict] = None
+    task_center: Optional[dict] = None
     security_gate: Optional[dict] = None
     ui: Optional[dict] = None
 
@@ -3997,6 +3998,7 @@ def get_configuration():
         bonus_probe=config.bonus_probe.model_dump() if hasattr(config, 'bonus_probe') else None,
         resource_budget=config.resource_budget.model_dump() if hasattr(config, 'resource_budget') else None,
         database=_mask_database_config(config),
+        task_center=config.task_center.model_dump(),
         security_gate=get_security_gate_service().sanitize_config() if hasattr(config, 'security_gate') else None,
         ui=config.ui.model_dump() if hasattr(config, 'ui') else None,
     )
@@ -4697,6 +4699,14 @@ async def update_configuration(request: Request):
                 config_data['notification_center'] = nc_cfg.model_dump()
             except Exception as e:
                 logger.error(f"[NOTIFICATION] notification_center 配置验证失败: {e}")
+
+        if 'task_center' in config_data:
+            try:
+                from ..config.settings import TaskCenterConfig
+                task_center_cfg = TaskCenterConfig(**config_data['task_center'])
+                config_data['task_center'] = task_center_cfg.model_dump()
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(status_code=400, detail="任务中心配置无效") from exc
 
         if 'resource_budget' in config_data and config_data['resource_budget']:
             try:
@@ -16942,11 +16952,9 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
                 })
                 continue
 
-            task = Task(
-                task_type=TaskType.RJ_SUBTITLE_FETCH,
-                source_path=folder_path,
-                auto_classify=False,
-                metadata={
+            from ..core.rj_subtitle_task_service import create_or_reuse_subtitle_task
+            task, reused = await create_or_reuse_subtitle_task(
+                engine, folder_path=folder_path, metadata={
                     "folder_path": folder_path,
                     "rjcode": rjcode,
                     "folder_name": folder_name,
@@ -16972,7 +16980,10 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
                 }
             )
 
-            await engine.submit(task)
+            if reused:
+                skipped_duplicate += 1
+                skipped_items.append({**reused, "queue_state": "existing_task", "queue_message": "任务已存在"})
+                continue
             created_tasks.append({
                 "task_id": task.id,
                 "rjcode": rjcode,
@@ -17204,34 +17215,39 @@ async def rj_subtitle_manual_complete(
         task.completed_at = datetime.now()
         task.current_step = summary
 
-        if linked_finalize_result.get("applied"):
-            _target_rj = str(
-                task.task_metadata.get("target_rjcode")
-                or task.task_metadata.get("actual_rjcode")
-                or task.task_metadata.get("rjcode")
-                or request.rjcode
-                or ""
-            ).strip().upper()
-            _target_folder = str(
-                task.task_metadata.get("target_folder_path")
-                or task.task_metadata.get("folder_path")
-                or request.folder_path
-                or task.source_path
-                or ""
-            ).strip()
-            _target_library_id = str(
-                task.task_metadata.get("target_library_id")
-                or task.task_metadata.get("library_id")
-                or request.library_id
-                or ""
-            ).strip()
-            _target_subtitle_dir = str(
-                linked_finalize_result.get("final_subtitle_dir")
-                or task.task_metadata.get("subtitle_dir")
-                or ""
-            )
-            _target_subtitle_count = int(linked_finalize_result.get("final_file_count") or 0)
+        _target_rj = str(
+            task.task_metadata.get("target_rjcode")
+            or task.task_metadata.get("actual_rjcode")
+            or task.task_metadata.get("rjcode")
+            or request.rjcode
+            or ""
+        ).strip().upper()
+        _target_folder = str(
+            task.task_metadata.get("target_folder_path")
+            or task.task_metadata.get("folder_path")
+            or request.folder_path
+            or task.source_path
+            or ""
+        ).strip()
+        _target_library_id = str(
+            task.task_metadata.get("target_library_id")
+            or task.task_metadata.get("library_id")
+            or request.library_id
+            or ""
+        ).strip()
+        _target_subtitle_dir = str(
+            linked_finalize_result.get("final_subtitle_dir")
+            or task.task_metadata.get("subtitle_dir")
+            or ""
+        )
+        _target_subtitle_count = max(
+            int(linked_finalize_result.get("final_file_count") or 0),
+            int(task.task_metadata.get("downloaded_count") or 0),
+            len(task.task_metadata.get("written_files") or []),
+            applied_pairs,
+        )
 
+        if _target_rj and _target_folder and _target_subtitle_count > 0:
             async def _sync_circle_subtitle_state_after_manual_complete() -> None:
                 try:
                     from ..core.circle_completion_service import get_circle_completion_service
@@ -18044,6 +18060,9 @@ def _download_status_cache_get(cache_key: str, version) -> Optional[Dict[str, An
 
 
 def _download_status_cache_set(cache_key: str, version, payload: Dict[str, Any]) -> Dict[str, Any]:
+    if cache_key not in _DOWNLOAD_STATUS_CACHE and len(_DOWNLOAD_STATUS_CACHE) >= 64:
+        oldest = min(_DOWNLOAD_STATUS_CACHE, key=lambda key: _DOWNLOAD_STATUS_CACHE[key]["cached_at"])
+        _DOWNLOAD_STATUS_CACHE.pop(oldest, None)
     _DOWNLOAD_STATUS_CACHE[cache_key] = {
         "version": version,
         "cached_at": time.monotonic(),
@@ -18110,6 +18129,20 @@ def _serialize_http_download_task(task, *, compact: bool = False, runtime: Optio
     if merged_failed_files:
         failed_files = merged_failed_files
     performance_metrics = metadata.get("performance_metrics") if isinstance(metadata.get("performance_metrics"), dict) else {}
+    download_runtime = dict(metadata.get("download_runtime") or performance_metrics.get("download_runtime") or {})
+    # 汇总先于文件预览裁剪，旧任务缺少运行态时也不能只统计前 120 个文件。
+    if "total_bytes" not in download_runtime:
+        download_runtime["total_bytes"] = sum(
+            max(0, int(item.get("size_bytes") or item.get("size") or item.get("total") or 0))
+            for item in download_files
+        )
+    if "transferred_bytes" not in download_runtime:
+        download_runtime["transferred_bytes"] = sum(
+            max(0, int(
+                (item.get("size_bytes") or item.get("size") or item.get("total") or 0)
+                if item.get("status") == "completed" else (item.get("downloaded") or 0)
+            )) for item in download_files
+        )
     success_count = int(performance_metrics.get("success_count") or 0)
     if not success_count:
         success_count = len([item for item in download_files if str((item or {}).get("status") or "") == "completed"])
@@ -18144,7 +18177,7 @@ def _serialize_http_download_task(task, *, compact: bool = False, runtime: Optio
         "download_files": download_files,
         "download_files_total": download_files_total,
         "download_files_truncated": download_files_truncated,
-        "download_runtime": metadata.get("download_runtime", {}),
+        "download_runtime": download_runtime,
         "failed_files": [sanitize_download_item(item) for item in failed_files if isinstance(item, dict)],
         "progress_log": metadata.get("progress_log", []),
         "performance_metrics": performance_metrics,
@@ -19050,27 +19083,40 @@ async def http_download_google_drive_oauth_token(request: GoogleDriveOAuthTokenR
 _DOWNLOAD_STATUS_LOCKS = {}
 
 
-async def _download_status_response(domain: str, task_type, compact: bool):
+async def _download_status_response(
+    domain: str, task_type, compact: bool, task_ids: str = "",
+    batch_task_ids: str = "", batch_started_at: str = "",
+):
     key = (domain, compact)
     lock = _DOWNLOAD_STATUS_LOCKS.setdefault(key, asyncio.Lock())
     async with lock:
-        return await _build_download_status_response(domain, task_type, compact)
+        return await _build_download_status_response(
+            domain, task_type, compact, task_ids, batch_task_ids, batch_started_at,
+        )
 
 
-async def _build_download_status_response(domain: str, task_type, compact: bool):
+async def _build_download_status_response(
+    domain: str, task_type, compact: bool, task_ids: str = "",
+    batch_task_ids: str = "", batch_started_at: str = "",
+):
     from ..core.task_engine import get_task_engine
     from ..core.redis_service import get_redis_service
     from ..core.request_performance import measure_stage
+    from ..core.download_progress import select_download_batch, summarize_download_tasks
 
     engine = get_task_engine()
     version = engine.get_task_type_version(task_type)
-    cache_key = f"{domain}:{int(compact)}"
+    selected_ids = frozenset(value.strip() for value in task_ids.split(",") if value.strip())
+    batch_ids = frozenset(value.strip() for value in batch_task_ids.split(",") if value.strip())
+    cache_key = (domain, compact, tuple(sorted(selected_ids)), tuple(sorted(batch_ids)), batch_started_at)
     cached = await run_sync_stage("download_cache", _download_status_cache_get, cache_key, version)
     if cached is not None:
         return cached
     # 仅在主循环捕获选定业务域的状态，工作线程不遍历可变 Task 对象。
     with measure_stage("download_snapshot_ms"):
         tasks = engine.get_tasks_by_type(task_type)
+        if selected_ids:
+            tasks = [task for task in tasks if str(task.id) in selected_ids]
         total_tasks = len(tasks)
         counts = {status: 0 for status in ("processing", "pending", "completed", "failed")}
         for task in tasks:
@@ -19081,7 +19127,7 @@ async def _build_download_status_response(domain: str, task_type, compact: bool)
             field: copy.deepcopy(getattr(task, field, None))
             for field in ("id", "type", "status", "progress", "current_step", "error_message",
                           "created_at", "started_at", "completed_at", "output_path", "task_metadata")
-        }) for task in tasks[:50]]
+        }) for task in (tasks if selected_ids else tasks[:50])]
 
     def build():
         with measure_stage("download_runtime_ms"):
@@ -19094,6 +19140,14 @@ async def _build_download_status_response(domain: str, task_type, compact: bool)
                 "tasks": [_serialize_http_download_task(task, compact=compact, runtime=runtimes.get(task.id, {}))
                           for task in snapshots],
             }
+            if selected_ids and (batch_ids or batch_started_at):
+                payload["tasks"], payload["batch_started_at"] = select_download_batch(
+                    payload["tasks"], batch_ids, batch_started_at,
+                )
+                payload["total_tasks"] = len(payload["tasks"])
+                for status in counts:
+                    payload[status] = sum(row["status"] == status for row in payload["tasks"])
+            payload["download_summary"] = summarize_download_tasks(payload["tasks"])
         if domain == "baidu_netdisk":
             from ..core.baidu_netdisk_service import get_baidu_netdisk_service
             service = get_baidu_netdisk_service()
@@ -19104,11 +19158,15 @@ async def _build_download_status_response(domain: str, task_type, compact: bool)
 
 
 @app.get("/api/http-download/status")
-async def http_download_status(compact: bool = False):
+async def http_download_status(
+    compact: bool = False, task_ids: str = "", batch_task_ids: str = "", batch_started_at: str = "",
+):
     from ..core.task_engine import TaskType
 
     try:
-        return await _download_status_response("http_download", TaskType.HTTP_DOWNLOAD, compact)
+        return await _download_status_response(
+            "http_download", TaskType.HTTP_DOWNLOAD, compact, task_ids, batch_task_ids, batch_started_at,
+        )
     except Exception as exc:
         logger.warning("获取 HTTP 下载状态失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"获取状态失败: {str(exc)}")
@@ -19127,11 +19185,15 @@ async def baidu_netdisk_backend_health(refresh: bool = False):
 
 
 @app.get("/api/baidu-netdisk/status")
-async def baidu_netdisk_status(compact: bool = False):
+async def baidu_netdisk_status(
+    compact: bool = False, task_ids: str = "", batch_task_ids: str = "", batch_started_at: str = "",
+):
     from ..core.task_engine import TaskType
 
     try:
-        return await _download_status_response("baidu_netdisk", TaskType.BAIDU_NETDISK_DOWNLOAD, compact)
+        return await _download_status_response(
+            "baidu_netdisk", TaskType.BAIDU_NETDISK_DOWNLOAD, compact, task_ids, batch_task_ids, batch_started_at,
+        )
     except Exception as exc:
         logger.warning("获取百度网盘状态失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"获取状态失败: {str(exc)}")
@@ -20910,6 +20972,53 @@ async def circle_completion_works(
     except Exception as exc:
         logger.error("查询社团补全作品分页失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"查询社团补全作品分页失败: {str(exc)}")
+
+
+class CircleSubtitleRepairLocation(BaseModel):
+    library_id: str = Field(min_length=1)
+    folder_path: str = Field(min_length=1)
+
+
+class CircleSubtitleRepairRequest(BaseModel):
+    circle_id: str
+    canonical_rjcodes: List[str] = Field(min_length=1, max_length=100)
+    selections: Optional[Dict[str, List[CircleSubtitleRepairLocation]]] = None
+
+
+@app.post("/api/circle-completion/subtitle-repair/targets")
+async def circle_subtitle_repair_targets(request: CircleSubtitleRepairRequest):
+    from ..core.circle_subtitle_repair_service import get_circle_subtitle_repair_service
+    service = get_circle_subtitle_repair_service()
+    try:
+        groups = await asyncio.to_thread(service.resolve_targets, request.circle_id, request.canonical_rjcodes)
+        states = await asyncio.to_thread(service.task_states, request.circle_id, request.canonical_rjcodes)
+        from ..core.rj_subtitle_task_service import location_key
+        for group in groups:
+            tasks = states.get(group['canonical_rjcode'], [])
+            for target in group['targets']:
+                target['task'] = next((task for task in tasks if location_key(task['library_id'], task['folder_path']) == location_key(target['library_id'], target['folder_path'])), None)
+        return {"success": True, "items": groups}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/circle-completion/subtitle-repair/start")
+async def circle_subtitle_repair_start(request: CircleSubtitleRepairRequest):
+    from ..core.circle_subtitle_repair_service import get_circle_subtitle_repair_service
+    try:
+        selections = {code: [location.model_dump() for location in locations] for code, locations in request.selections.items()} if request.selections is not None else None
+        return await get_circle_subtitle_repair_service().start(request.circle_id, request.canonical_rjcodes, selections)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/circle-completion/subtitle-repair/tasks")
+async def circle_subtitle_repair_tasks(request: CircleSubtitleRepairRequest):
+    from ..core.circle_subtitle_repair_service import get_circle_subtitle_repair_service
+    if len(request.canonical_rjcodes) > 100:
+        raise HTTPException(status_code=400, detail="每次最多查询 100 个作品")
+    states = await asyncio.to_thread(get_circle_subtitle_repair_service().task_states, request.circle_id, request.canonical_rjcodes)
+    return {"success": True, "items": states}
 
 
 @app.post("/api/circle-completion/external-search")

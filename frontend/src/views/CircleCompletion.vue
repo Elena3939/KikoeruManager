@@ -206,6 +206,67 @@
 
       <main class="circle-main">
         <section class="toolbar-card">
+          <div class="mobile-circle-controls">
+            <div class="mobile-circle-select-row">
+              <AppDropdown
+                v-model="circleSortKey"
+                :options="circleSortKeyOptions"
+                class="mobile-circle-sort"
+                :width="132"
+                :menu-min-width="170"
+                :show-trigger-badge="false"
+              />
+            </div>
+            <div class="mobile-circle-filter-row">
+              <el-input
+                v-model="circleSearch"
+                placeholder="搜索已缓存社团"
+                clearable
+                @input="searchCachedCircles"
+              >
+                <template #prefix><Search :size="14" /></template>
+              </el-input>
+              <div class="mobile-circle-filters">
+                <button type="button" class="sidebar-filter-chip" :class="{ active: circleCompletionFilter === 'all' }" @click="circleCompletionFilter = 'all'">全部</button>
+                <button type="button" class="sidebar-filter-chip" :class="{ active: circleCompletionFilter === 'completed' }" @click="circleCompletionFilter = 'completed'">已补全</button>
+                <button type="button" class="sidebar-filter-chip" :class="{ active: circleCompletionFilter === 'incomplete' }" @click="circleCompletionFilter = 'incomplete'">未补全</button>
+                <button type="button" class="sidebar-filter-chip new-work" :class="{ active: circleCompletionFilter === 'new_works' }" @click="circleCompletionFilter = 'new_works'">✦ 新作</button>
+              </div>
+            </div>
+            <div class="mobile-circle-list-actions">
+              <el-button
+                text
+                class="sidebar-refresh-button"
+                :loading="batchBonusProbeRunning"
+                :disabled="indexing || isRefreshJobActive || isBonusProbeJobActive"
+                @click="startBonusProbeForVisibleCircles"
+              >
+                <Gift :size="12" />
+                批量特典
+              </el-button>
+              <el-button text class="sidebar-refresh-button" @click="loadRecentCircles">刷新社团列表</el-button>
+            </div>
+            <div v-if="activeCircleId" class="mobile-circle-summary">
+              <span class="mobile-circle-summary-name">{{ detail.circle_name || activeCircleId }}</span>
+              <span class="mobile-circle-summary-status" :class="getCircleCompletionState(displayCircleList.find(circle => circle.circle_id === activeCircleId) || detail)">
+                {{ getCircleOwnedPercent(displayCircleList.find(circle => circle.circle_id === activeCircleId) || detail) }}% 已收录
+              </span>
+            </div>
+            <div v-if="displayCircleList.length" class="mobile-circle-rail">
+              <button
+                v-for="circle in displayCircleList"
+                :key="`mobile-${circle.circle_id}`"
+                type="button"
+                class="mobile-circle-chip"
+                :class="{ active: activeCircleId === circle.circle_id }"
+                :title="circle.circle_name || circle.circle_id"
+                @click="selectCircle(circle.circle_id)"
+              >
+                <span>{{ circle.circle_name || circle.circle_id }}</span>
+                <small>{{ getCircleOwnedPercent(circle) }}%</small>
+              </button>
+            </div>
+          </div>
           <div class="toolbar-main">
             <div class="toolbar-copy">
               <div class="toolbar-title">{{ detail.circle_name || '未选择社团' }}</div>
@@ -711,6 +772,9 @@
                 <div v-if="ownedWorks.length > 0 && selectedActiveCanonicalRJCodes.length > 0" class="selection-bar">
                   <span class="selection-count">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorksTotal }}</span>
                   <div class="flex items-center gap-2">
+                    <StatefulButton unstyled class="batch-action-button" :disabled="subtitleRepair.busy.value" @click="() => subtitleRepair.create(selectedActiveCanonicalRJCodes)">
+                      <Subtitles :size="13" />创建字幕补配任务
+                    </StatefulButton>
                     <button type="button" class="batch-action-button" :class="{ 'is-busy': selectingAllWorks }" :disabled="selectingAllWorks" @click="selectAllVisibleWorks">
                       <RefreshCw v-if="selectingAllWorks" :size="13" class="batch-action-spinner" />
                       {{ selectingAllWorks ? '正在全选' : '全选' }}
@@ -1108,6 +1172,7 @@
       />
     </Transition>
 
+    <SubtitleRepairTargetsDialog :model="subtitleRepair" />
     <Teleport to="body">
       <div
         v-if="workContextMenu.visible && workContextMenu.item"
@@ -1136,6 +1201,12 @@
         <button type="button" class="circle-work-context-item" @click.stop="handleWorkContextAction('refresh')">
           <RefreshCw :size="14" />
           <span>刷新状态</span>
+        </button>
+        <StatefulButton v-if="workContextMenu.item.subtitle_repairable" unstyled class="circle-work-context-item" :disabled="subtitleRepair.busy.value" @click="() => { const item = workContextMenu.item; closeWorkContextMenu(); return subtitleRepair.create(item) }">
+          <Subtitles :size="14" />创建字幕补配任务
+        </StatefulButton>
+        <button v-if="subtitleRepair.tasks(workContextMenu.item).length" type="button" class="circle-work-context-item" @click="() => { const item = workContextMenu.item; closeWorkContextMenu(); subtitleRepair.view(item) }">
+          <Subtitles :size="14" />查看字幕任务
         </button>
         <StatefulButton unstyled class="circle-work-context-item" :show-default-icons="false" :disabled="!workContextMenu.item.owned || locatingLibraryWork" :title="!workContextMenu.item.owned ? '当前作品未收录' : undefined" @click="locateWorkInLibrary(workContextMenu.item)">
           <template #prefix="{ state }">
@@ -1210,11 +1281,13 @@
 <script setup>
 import { usePersistentTaskWorkbench, dismissPersistentTaskCard, dismissWorkbenchTask } from '../composables/usePersistentTaskCards'
 import { getAsmrDownloadSessionId, getDownloadEngineTaskId } from '../utils/downloadTaskIdentity.js'
-import { computed, markRaw, onActivated, onBeforeUnmount, onMounted, provide, reactive, ref, shallowReactive, watch } from 'vue'
+import { computed, markRaw, onActivated, onBeforeUnmount, onDeactivated, onMounted, provide, reactive, ref, shallowReactive, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useRoute, useRouter } from 'vue-router'
 import { circleWorkVersionRjcode } from '../utils/circleWorkVersion'
 import StatefulButton from '../components/ui/stateful-button.vue'
+import SubtitleRepairTargetsDialog from '../components/circle/SubtitleRepairTargetsDialog.vue'
+import { useCircleSubtitleRepair } from '../composables/useCircleSubtitleRepair'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import celebrateImg from '../assets/celebrate.png'
 import confettiAnimation from '../assets/anime/Confetti.lottie'
@@ -1394,11 +1467,8 @@ let circleDetailAbortController = null
 let externalSearchRequestSeq = 0
 let externalSearchAbortController = null
 let externalSearchRealtimeRefreshTimer = null
-let circleDetailPrefetchTimer = null
-let circleDetailPrefetchIdleId = null
-let circleDetailPrefetchIdleIsTimeout = false
-let circleDetailPrefetchRunning = false
-let circleDetailPrefetchController = null
+let circlePageActive = true
+const dirtyCircleFacts = new Set()
 let circleWorksFetchTimer = null
 let circleSearchFetchTimer = null
 let heroWorkSearchFetchTimer = null
@@ -1803,38 +1873,6 @@ async function handleNewReleaseNotification(event) {
   }
 }
 
-// === 入库 → 社团补全状态实时刷新 ===
-// 后端 sync_owned_for_rj 在写完 LibraryOwnedWork 后会通过 SSE 广播
-// circle_owned_synced 事件，useNotifications 转发为 kikoerumanager:circle:owned-synced
-// 自定义事件。这里订阅后做两件事：
-//   1. 永远刷新左侧目录的 missing 计数（loadRecentCircles）
-//   2. 仅当事件命中当前打开的社团时刷新右侧详情（refreshActiveCircle）
-//
-// 用 300ms debounce + 命中集合，避免批量入库（一次几十条）触发刷新风暴；
-// 命中判断推迟到 timer fire 时点，避免 300ms 内 activeCircleId 切换导致用陈旧值。
-let _circleOwnedSyncedTimer = null
-const _circleOwnedSyncedHits = new Set()
-function handleCircleOwnedSynced(event) {
-  const detail = event?.detail || {}
-  const circleIds = Array.isArray(detail.circle_ids) ? detail.circle_ids : []
-  for (const cid of circleIds) {
-    const normalized = String(cid || '').trim()
-    if (normalized) _circleOwnedSyncedHits.add(normalized)
-  }
-  if (_circleOwnedSyncedTimer) clearTimeout(_circleOwnedSyncedTimer)
-  _circleOwnedSyncedTimer = setTimeout(async () => {
-    _circleOwnedSyncedTimer = null
-    const hits = new Set(_circleOwnedSyncedHits)
-    _circleOwnedSyncedHits.clear()
-    try {
-      const tasks = [loadRecentCircles()]
-      if (activeCircleId.value && hits.has(activeCircleId.value)) {
-        tasks.push(refreshActiveCircle())
-      }
-      await Promise.all(tasks)
-    } catch (_) { /* 静默：不影响其他交互 */ }
-  }, 300)
-}
 const uploadWorkbenchBackgroundActive = ref(false)
 const uploadWorkbenchRefreshing = ref(false)
 const worksPageSizes = [10, 20, 50, 100]
@@ -2576,6 +2614,8 @@ const ownedWorks = computed(() => {
   return activeTab.value === 'owned' ? (detail.works || []) : []
 })
 
+const subtitleRepair = useCircleSubtitleRepair(activeCircleId, computed(() => detail.works || []))
+
 const ownedWorksStats = computed(() => {
   return {
     total: Number(detail.owned_stats?.total || 0),
@@ -3090,8 +3130,6 @@ onMounted(async () => {
   window.addEventListener('pointerdown', closeWorkContextMenu)
   window.addEventListener('keydown', handleCircleCompletionKeydown)
   window.addEventListener('kikoerumanager:notification:new', handleNewReleaseNotification)
-  window.addEventListener('kikoerumanager:circle:owned-synced', handleCircleOwnedSynced)
-  window.addEventListener('kikoerumanager:circle:subtitle-synced', handleCircleOwnedSynced)
   window.addEventListener('kikoerumanager:events:message', handleCircleTaskRealtimeEvent)
   hydrateIndexJobState()
   hydrateRefreshJobState()
@@ -3122,7 +3160,10 @@ watch(() => route.fullPath, () => {
 })
 
 onActivated(() => {
-  applyRouteCircleTarget({ force: true }).catch(() => {})
+  circlePageActive = true
+  applyRouteCircleTarget().then(applied => {
+    if (!applied && dirtyCircleFacts.has(activeCircleId.value)) scheduleCircleWorksRefresh()
+  }).catch(() => {})
   if (indexJob.job_id && ['pending', 'processing'].includes(String(indexJob.status || ''))) {
     indexing.value = true
     pollIndexJob(indexJob.job_id)
@@ -3131,11 +3172,6 @@ onActivated(() => {
     refreshingCurrentCircle.value = true
     pollRefreshJob(refreshJob.job_id, { silentFinish: true })
   } else if (refreshJob.job_id && refreshJob.status === 'completed') {
-    if (refreshJob.changed_codes?.length && activeCircleId.value) {
-      refreshActiveCircle({ summaryOnly: false }).then(() => {
-        flashChangedWorks(refreshJob.changed_codes)
-      }).catch(() => {})
-    }
     resumeRefreshJobAutoHide()
   }
   if (isBonusProbeJobActive.value) {
@@ -3150,10 +3186,16 @@ onActivated(() => {
   }
 })
 
+onDeactivated(() => {
+  circlePageActive = false
+  if (circleWorksFetchTimer) {
+    clearTimeout(circleWorksFetchTimer)
+    circleWorksFetchTimer = null
+  }
+})
+
 onBeforeUnmount(() => {
   circlePageDisposed = true
-  circleDetailPrefetchController?.abort()
-  circleDetailPrefetchController = null
   if (externalSearchRealtimeRefreshTimer) {
     clearTimeout(externalSearchRealtimeRefreshTimer)
     externalSearchRealtimeRefreshTimer = null
@@ -3161,26 +3203,10 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerdown', closeWorkContextMenu)
   window.removeEventListener('keydown', handleCircleCompletionKeydown)
   window.removeEventListener('kikoerumanager:notification:new', handleNewReleaseNotification)
-  window.removeEventListener('kikoerumanager:circle:owned-synced', handleCircleOwnedSynced)
-  window.removeEventListener('kikoerumanager:circle:subtitle-synced', handleCircleOwnedSynced)
   window.removeEventListener('kikoerumanager:events:message', handleCircleTaskRealtimeEvent)
-  if (_circleOwnedSyncedTimer) {
-    clearTimeout(_circleOwnedSyncedTimer)
-    _circleOwnedSyncedTimer = null
-  }
   if (completeConfettiTimer) {
     clearTimeout(completeConfettiTimer)
     completeConfettiTimer = null
-  }
-  if (circleDetailPrefetchTimer) {
-    clearTimeout(circleDetailPrefetchTimer)
-    circleDetailPrefetchTimer = null
-  }
-  if (circleDetailPrefetchIdleId !== null) {
-    if (!circleDetailPrefetchIdleIsTimeout && typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(circleDetailPrefetchIdleId)
-    else clearTimeout(circleDetailPrefetchIdleId)
-    circleDetailPrefetchIdleId = null
-    circleDetailPrefetchIdleIsTimeout = false
   }
   if (circleDetailAbortController) {
     circleDetailAbortController.abort()
@@ -3219,7 +3245,7 @@ let circleWorksRefreshRevision = 0
 let circleWorksRefreshQueued = false
 let circlePageDisposed = false
 function scheduleCircleWorksRefresh(delay = 0) {
-  if (circlePageDisposed || !activeCircleId.value || suppressCircleWorksRefresh) return
+  if (circlePageDisposed || !circlePageActive || !activeCircleId.value || suppressCircleWorksRefresh) return
   circleWorksRefreshRevision += 1
   if (circleWorksFetchTimer) clearTimeout(circleWorksFetchTimer)
   if (delay <= 0) {
@@ -3228,7 +3254,7 @@ function scheduleCircleWorksRefresh(delay = 0) {
       circleWorksRefreshQueued = true
       queueMicrotask(() => {
         circleWorksRefreshQueued = false
-        if (!circlePageDisposed && activeCircleId.value && !suppressCircleWorksRefresh) void refreshActiveCircleWorks({ showLoading: false })
+        if (!circlePageDisposed && circlePageActive && activeCircleId.value && !suppressCircleWorksRefresh) void refreshActiveCircleWorks({ showLoading: false })
       })
     }
     return
@@ -4546,9 +4572,18 @@ function isTerminalTaskStatus(status) {
 
 function handleCircleTaskRealtimeEvent(event) {
   const detail = event?.detail || {}
-  if (detail.type === 'circle.resource_source.changed' && detail.payload?.circle_id === activeCircleId.value) {
-    invalidateCircleDetailCache(activeCircleId.value)
-    scheduleCircleWorksRefresh(500)
+  if (['circle.subtitle.synced', 'circle.owned.synced', 'circle.resource_source.changed'].includes(detail.type)) {
+    const payload = detail.payload || {}
+    const circles = payload.circle_ids || (payload.circle_id ? [payload.circle_id] : [])
+    for (const circleId of circles) {
+      invalidateCircleDetailCache(circleId)
+      dirtyCircleFacts.add(circleId)
+    }
+    if (circles.includes(activeCircleId.value)) {
+      circleWorksRefreshRevision += 1
+      scheduleCircleWorksRefresh(700)
+      if (detail.type === 'circle.subtitle.synced') subtitleRepair.scheduleRefresh()
+    }
   }
   if (detail?.type === 'circle.external_search.changed') {
     scheduleExternalSearchRealtimeRefresh()
@@ -5104,60 +5139,6 @@ async function jumpToHeroWorkSearchResult(item) {
   }
 }
 
-function scheduleCircleDetailPrefetch() {
-  if (circleDetailLoading.value || circleDetailAbortController) return
-  if (circleDetailPrefetchTimer) {
-    window.clearTimeout(circleDetailPrefetchTimer)
-    circleDetailPrefetchTimer = null
-  }
-  if (circleDetailPrefetchIdleId !== null) {
-    if (!circleDetailPrefetchIdleIsTimeout && typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(circleDetailPrefetchIdleId)
-    else window.clearTimeout(circleDetailPrefetchIdleId)
-    circleDetailPrefetchIdleId = null
-    circleDetailPrefetchIdleIsTimeout = false
-  }
-  circleDetailPrefetchTimer = window.setTimeout(() => {
-    circleDetailPrefetchTimer = null
-    const run = () => {
-      circleDetailPrefetchIdleId = null
-      circleDetailPrefetchIdleIsTimeout = false
-      if (circleDetailLoading.value || circleDetailAbortController) return
-      prefetchNeighborCircleDetails().catch(() => {})
-    }
-    if (typeof window.requestIdleCallback === 'function') {
-      circleDetailPrefetchIdleIsTimeout = false
-      circleDetailPrefetchIdleId = window.requestIdleCallback(run, { timeout: 1200 })
-    } else {
-      circleDetailPrefetchIdleIsTimeout = true
-      circleDetailPrefetchIdleId = window.setTimeout(run, 300)
-    }
-  }, 450)
-}
-
-async function prefetchNeighborCircleDetails() {
-  if (circleDetailPrefetchRunning || circleDetailLoading.value || circleDetailAbortController) return
-  const circleId = activeCircleId.value
-  if (!circleId) return
-  const worksQuery = ['missing', 'owned', 'compare']
-    .filter(tab => tab !== activeTab.value)
-    .map(tab => ({ ...buildCircleWorksQuery({ tab }), page: 1 }))
-    .find(query => !getCachedCircleWorksPage(circleId, query))
-  if (!worksQuery) return
-  const controller = new AbortController()
-  circleDetailPrefetchController = controller
-  circleDetailPrefetchRunning = true
-  try {
-    const revision = circleWorksRefreshRevision
-    const works = await circleCompletionApi.getCircleWorks(circleId, worksQuery, { signal: controller.signal })
-    if (!controller.signal.aborted && circleId === activeCircleId.value && revision === circleWorksRefreshRevision) {
-      setCachedCircleWorksPage(circleId, worksQuery, works)
-    }
-  } finally {
-    if (circleDetailPrefetchController === controller) circleDetailPrefetchController = null
-    circleDetailPrefetchRunning = false
-  }
-}
-
 async function handleEmailCheck() {
   if (emailCheckLoading.value) return
   emailCheckLoading.value = true
@@ -5704,7 +5685,6 @@ async function selectCircle(circleId, options = {}) {
       loading: false
     })
     circleDetailLoading.value = false
-    scheduleCircleDetailPrefetch()
     return
   }
 
@@ -5713,7 +5693,6 @@ async function selectCircle(circleId, options = {}) {
 }
 
 async function refreshActiveCircle(options = {}) {
-  circleDetailPrefetchController?.abort()
   if (!activeCircleId.value) return
   const { preferCache = false, summaryOnly = false } = options
   const requestCircleId = String(activeCircleId.value || '').trim()
@@ -5735,7 +5714,6 @@ async function refreshActiveCircle(options = {}) {
         loading: false
       })
       circleDetailLoading.value = false
-      scheduleCircleDetailPrefetch()
       return
     }
   } else {
@@ -5743,6 +5721,7 @@ async function refreshActiveCircle(options = {}) {
   }
 
   const requestSeq = ++circleDetailRequestSeq
+  const refreshRevision = circleWorksRefreshRevision
   if (circleDetailAbortController) {
     circleDetailAbortController.abort()
   }
@@ -5757,7 +5736,6 @@ async function refreshActiveCircle(options = {}) {
       })
       if (requestSeq !== circleDetailRequestSeq || activeCircleId.value !== requestCircleId) return
       applyCircleSummaryPayload(summary)
-      scheduleCircleDetailPrefetch()
       return
     }
 
@@ -5767,7 +5745,6 @@ async function refreshActiveCircle(options = {}) {
       applyCircleSummaryPayload(cachedWorks)
       applyCircleWorksPayload(cachedWorks)
       setCachedCircleDetail(requestCircleId, buildCachedCircleDetailPayload(cachedWorks, cachedWorks))
-      scheduleCircleDetailPrefetch()
       return
     }
 
@@ -5778,11 +5755,13 @@ async function refreshActiveCircle(options = {}) {
       || getCircleWorksPageCacheKey(requestCircleId, worksQuery) !== getCircleWorksPageCacheKey(activeCircleId.value, buildCircleWorksQuery())) return
     applyCircleSummaryPayload(works)
     applyCircleWorksPayload(works)
-    setCachedCircleWorksPage(requestCircleId, worksQuery, works)
-    if (activeTab.value === 'missing' && missingPage.value === 1 && !statusFilters.value.length) {
-      setCachedCircleDetail(requestCircleId, buildCachedCircleDetailPayload(works, works))
+    if (refreshRevision === circleWorksRefreshRevision) {
+      dirtyCircleFacts.delete(requestCircleId)
+      setCachedCircleWorksPage(requestCircleId, worksQuery, works)
+      if (activeTab.value === 'missing' && missingPage.value === 1 && !statusFilters.value.length) {
+        setCachedCircleDetail(requestCircleId, buildCachedCircleDetailPayload(works, works))
+      }
     }
-    scheduleCircleDetailPrefetch()
   } catch (error) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return
     ElMessage.error(error.response?.data?.detail || '加载社团详情失败')
@@ -5791,13 +5770,11 @@ async function refreshActiveCircle(options = {}) {
       circleDetailLoading.value = false
       circleWorksPage.loading = false
       circleDetailAbortController = null
-      scheduleCircleDetailPrefetch()
     }
   }
 }
 
 async function refreshActiveCircleWorks(options = {}) {
-  circleDetailPrefetchController?.abort()
   const circleId = String(activeCircleId.value || '').trim()
   if (!circleId) return
   const requestSeq = ++circleDetailRequestSeq
@@ -5813,7 +5790,6 @@ async function refreshActiveCircleWorks(options = {}) {
     circleWorksPage.loading = false
     circleDetailLoading.value = false
     circleDetailAbortController = null
-    scheduleCircleDetailPrefetch()
     return
   }
 
@@ -5828,7 +5804,10 @@ async function refreshActiveCircleWorks(options = {}) {
       || getCircleWorksPageCacheKey(circleId, worksQuery) !== getCircleWorksPageCacheKey(activeCircleId.value, buildCircleWorksQuery())) return
     applyCircleSummaryPayload(result)
     applyCircleWorksPayload(result)
-    if (refreshRevision === circleWorksRefreshRevision) setCachedCircleWorksPage(circleId, worksQuery, result)
+    if (refreshRevision === circleWorksRefreshRevision) {
+      dirtyCircleFacts.delete(circleId)
+      setCachedCircleWorksPage(circleId, worksQuery, result)
+    }
   } catch (error) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return
     if (requestSeq !== circleDetailRequestSeq || activeCircleId.value !== circleId
@@ -5839,7 +5818,6 @@ async function refreshActiveCircleWorks(options = {}) {
       circleWorksPage.loading = false
       circleDetailLoading.value = false
       circleDetailAbortController = null
-      scheduleCircleDetailPrefetch()
     }
   }
 }
@@ -6021,7 +5999,7 @@ function openWorkContextMenu(item, event) {
   if (!selectedCanonicals.value.has(code)) toggleSelection(item, event)
   workContextMenu.item = item
   const menuWidth = 212
-  const menuHeight = (workContextNeedsCover.value ? 160 : 124) + (workContextParent.value ? 62 : 0)
+  const menuHeight = (workContextNeedsCover.value ? 160 : 124) + (workContextParent.value ? 62 : 0) + 76
   workContextMenu.x = Math.max(8, Math.min(Number(event?.clientX || 0), window.innerWidth - menuWidth - 8))
   workContextMenu.y = Math.max(8, Math.min(Number(event?.clientY || 0), window.innerHeight - menuHeight - 8))
   workContextMenu.visible = true
@@ -6407,10 +6385,6 @@ async function refreshUploadWorkbench(options = {}) {
     trackedUploadTasks.value = nextTrackedTasks
     if (nextTrackedTasks.length) {
       trackedUploadTaskIds.value = nextTrackedTasks.map(task => task.id)
-    }
-    const justCompleted = trackedUploadTasks.value.some(task => ['completed', 'failed'].includes(String(task?.status || '')))
-    if (justCompleted && activeCircleId.value) {
-      await refreshActiveCircle({ summaryOnly: false })
     }
     const stillActive = trackedUploadTasks.value.some(task => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(task?.status || '')))
     if (stillActive || uploadWorkbenchVisible.value || uploadWorkbenchBackgroundActive.value) startUploadWorkbenchPolling()
@@ -7442,6 +7416,9 @@ body.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animatio
   min-height: 0;
   overflow: hidden;
 }
+.mobile-circle-controls {
+  display: none;
+}
 .circle-sidebar {
   min-height: 0;
   overflow: hidden;
@@ -7461,6 +7438,7 @@ body.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animatio
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  container-type: inline-size;
 }
 .circle-empty-state {
   flex: 1;
@@ -7542,6 +7520,30 @@ body.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animatio
   font-size: 11px !important;
   font-weight: 700 !important;
   line-height: 1 !important;
+}
+@container (max-width: 640px) {
+  .toolbar-main {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+  .toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    min-width: 0;
+    flex: 1 1 100%;
+    justify-content: stretch;
+    gap: 5px;
+  }
+  .toolbar-actions .batch-action-button {
+    width: 100%;
+    min-width: 0;
+    min-height: 32px;
+    height: auto;
+    padding: 5px 6px;
+    white-space: normal;
+    line-height: 1.25 !important;
+  }
 }
 .metric-pill {
   display: inline-flex;
@@ -9286,6 +9288,121 @@ body.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animatio
     height: auto !important;
     min-height: 0 !important;
   }
+  .circle-sidebar {
+    display: none !important;
+  }
+  .mobile-circle-controls {
+    display: grid;
+    gap: 7px;
+  }
+  .mobile-circle-select-row {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .mobile-circle-sort {
+    min-width: 0;
+  }
+  .mobile-circle-filter-row {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+  }
+  .mobile-circle-filter-row :deep(.el-input__wrapper) {
+    min-height: 32px;
+  }
+  .mobile-circle-filters {
+    display: flex;
+    gap: 5px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .mobile-circle-filters::-webkit-scrollbar {
+    display: none;
+  }
+  .mobile-circle-list-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 24px;
+  }
+  .mobile-circle-list-actions .sidebar-refresh-button {
+    height: 24px;
+    margin: 0;
+    padding: 0 5px;
+    font-size: 10px;
+  }
+  .mobile-circle-filters .sidebar-filter-chip {
+    flex: 0 0 auto;
+    min-width: 0;
+    height: 25px;
+    padding: 0 9px;
+  }
+  .mobile-circle-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+    padding-top: 2px;
+  }
+  .mobile-circle-summary-name {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--circle-text-strong, #1f2937);
+    font-size: 12px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mobile-circle-summary-status {
+    flex: 0 0 auto;
+    color: var(--circle-tag-success, #059669);
+    font-size: 10px;
+    font-weight: 700;
+  }
+  .mobile-circle-rail {
+    display: flex;
+    gap: 6px;
+    margin: -1px -2px 0;
+    padding: 1px 2px 2px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .mobile-circle-rail::-webkit-scrollbar {
+    display: none;
+  }
+  .mobile-circle-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    max-width: 180px;
+    height: 27px;
+    padding: 0 9px;
+    border: 1px solid var(--circle-border-soft, #e2e8f0);
+    border-radius: 5px;
+    background: var(--circle-surface, #fff);
+    color: var(--circle-text-muted, #64748b);
+    font-size: 10px;
+  }
+  .mobile-circle-chip span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mobile-circle-chip small {
+    flex: 0 0 auto;
+    color: var(--circle-text-subtle, #94a3b8);
+    font-size: 9px;
+  }
+  .mobile-circle-chip.active {
+    border-color: var(--circle-tag-primary, #2563eb);
+    background: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 8%, var(--circle-surface, #fff));
+    color: var(--circle-tag-primary, #2563eb);
+  }
+  .mobile-circle-chip.active small {
+    color: inherit;
+  }
 
   /* 顶部页头紧凑 margin */
   .circle-page-header { margin: 4px 6px 0; }
@@ -9345,19 +9462,47 @@ body.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animatio
 
   /* 主区 toolbar-card 紧凑 padding + 工具按钮折行 */
   .toolbar-card {
-    padding: 10px 12px 8px;
+    padding: 9px 10px 8px;
     min-height: 0;
-    gap: 6px;
+    gap: 8px;
   }
-  .toolbar-title { font-size: 13px; }
+  .toolbar-copy { display: none; }
   .toolbar-subtitle { font-size: 11px; }
   .toolbar-main { gap: 6px; flex-wrap: wrap; }
+  .toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    gap: 5px;
+  }
+  .toolbar-actions .batch-action-button {
+    width: 100%;
+    min-width: 0;
+    height: auto;
+    min-height: 30px;
+    padding: 5px 6px;
+    white-space: normal;
+    line-height: 1.25 !important;
+  }
   .toolbar-stats-row {
     gap: 6px;
-    flex-direction: column;
-    align-items: stretch;
+    align-items: flex-start;
   }
-  .toolbar-metrics { gap: 4px; }
+  .toolbar-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    gap: 4px;
+  }
+  .toolbar-metrics .metric-pill {
+    min-width: 0;
+    justify-content: flex-start;
+    height: 24px;
+    padding: 0 6px;
+    overflow: hidden;
+    font-size: 10px;
+    white-space: nowrap;
+  }
 
   /* circle-tabs-wrapper 内的 toolbar-right-actions：默认 absolute 会和 tabs 标签重叠，
    * 移动端改 static、独占一行并允许 wrap */

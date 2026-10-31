@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from typing import Iterable, Iterator, Optional, Sequence, Union
 
-from sqlalchemy import and_, case, delete, exists, func, or_, select, text
+from sqlalchemy import String, and_, case, column, delete, exists, func, or_, select, text, true, values
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -4047,6 +4047,33 @@ class SnapshotStore:
                 }
                 for row in rows
             }
+
+    def summarize_subtitle_targets_many(self, library_id, relative_paths, *, audio_extensions, subtitle_extensions):
+        """在活动索引视图批量统计字幕目标，不读取整棵文件树。"""
+        paths = list(dict.fromkeys(str(path or '').strip('/') for path in relative_paths))
+        if not paths:
+            return {}
+        def pattern(extensions):
+            return r'\.(' + '|'.join(re.escape(ext.lstrip('.')) for ext in extensions) + r')$'
+        with self._read_session() as db:
+            roots = values(column('relative_path', String), name='subtitle_roots').data([(path,) for path in paths]).alias('roots')
+            audio = and_(func.lower(LibraryIndexEntry.name).op('~')(pattern(audio_extensions)),
+                         ~func.lower(LibraryIndexEntry.relative_path).contains('/subtitles/'),
+                         ~func.lower(LibraryIndexEntry.relative_path).contains('/subtitles [ai]/'))
+            subtitle = func.lower(LibraryIndexEntry.name).op('~')(pattern(subtitle_extensions))
+            # 聚合留在 LATERAL 内，按目标路径走索引，避免先物化全库存再和每个目录范围连接。
+            summary = self._active_view_query(db, db.query(
+                func.count(LibraryIndexEntry.id).filter(audio).label('audio_count'),
+                func.count(LibraryIndexEntry.id).filter(subtitle).label('subtitle_count'),
+            ).select_from(LibraryIndexEntry), library_ids=[library_id]).filter(
+                LibraryIndexEntry.library_id == library_id, LibraryIndexEntry.entry_type == 'file',
+                LibraryIndexEntry.relative_path >= roots.c.relative_path + '/',
+                LibraryIndexEntry.relative_path < roots.c.relative_path + '0',
+            ).correlate(roots).subquery().lateral('subtitle_summary')
+            query = db.query(roots.c.relative_path, summary.c.audio_count, summary.c.subtitle_count).select_from(
+                roots.join(summary, true()),
+            )
+            return {row.relative_path: {'audio_count': int(row.audio_count), 'subtitle_count': int(row.subtitle_count)} for row in query.all()}
 
     def count_library_entries(
         self,

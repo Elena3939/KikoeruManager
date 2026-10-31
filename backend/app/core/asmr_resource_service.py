@@ -2507,9 +2507,11 @@ class ASMRResourceService:
     def _resolve_upload_options(self, task_metadata: Dict[str, Any]) -> Dict[str, Any]:
         config = get_config().asmr_sync
         upload_options = dict(task_metadata.get("upload_options") or {})
+        mode = str(upload_options.get("mode") or getattr(config, "auto_upload_mode", "local")).strip().lower()
+        enabled = bool(upload_options.get("enabled", getattr(config, "auto_upload_enabled", False))) and mode != "disabled"
         return {
-            "enabled": bool(upload_options.get("enabled", getattr(config, "auto_upload_enabled", False))),
-            "mode": str(upload_options.get("mode") or getattr(config, "auto_upload_mode", "local")).lower(),
+            "enabled": enabled,
+            "mode": mode if enabled else "disabled",
             "target_path": str(upload_options.get("target_path") or getattr(config, "auto_upload_target_path", "")).strip(),
             "library_id": str(upload_options.get("library_id") or getattr(config, "auto_upload_library_id", "")).strip(),
         }

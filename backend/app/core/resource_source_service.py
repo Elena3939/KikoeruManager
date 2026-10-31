@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 import hashlib
 import os
 import posixpath
@@ -35,6 +35,14 @@ VERSION = 1
 
 class ResourceSourceError(ValueError):
     """保留 YAAS 失败阶段和源站原因，避免任务层误报为传输异常。"""
+
+
+class ResourceSourceStale(ResourceSourceError):
+    """已探测资源被删除或替换，需要重新定位。"""
+
+    def __init__(self, message, *, source=None):
+        super().__init__(message)
+        self.source = source
 
 
 def normalize_rj(value):
@@ -105,6 +113,7 @@ def package_groups(rows, rjcode):
 class ResourceSourceService:
     def __init__(self):
         self._worker = None
+        self._subtitle_worker = None
         self._inflight = {}
         self._enqueued = {}
         self._queue_tasks = set()
@@ -122,10 +131,49 @@ class ResourceSourceService:
         async def enqueue():
             try:
                 await asyncio.to_thread(self.enqueue_circle, circle_id)
+                from .circle_subtitle_repair_service import get_circle_subtitle_repair_service
+                await asyncio.to_thread(get_circle_subtitle_repair_service().enqueue_circle_probe, circle_id)
             except Exception:
                 self._enqueued.pop(circle_id, None)
                 import logging
                 logging.getLogger(__name__).exception('YAAS 社团探测入队失败')
+        task = asyncio.create_task(enqueue())
+        self._queue_tasks.add(task)
+        task.add_done_callback(self._queue_tasks.discard)
+
+    def schedule_codes(self, codes, *, refresh=False):
+        normalized = list(dict.fromkeys(normalize_rj(code) for code in codes if normalize_rj(code)))
+        if not normalized or self._worker is None or self._worker.done():
+            return
+
+        async def enqueue():
+            try:
+                from ..models.database import ResourceSourceProbe
+                from sqlalchemy.dialects.postgresql import insert
+
+                def add_yaas_probes():
+                    values = [dict(source=SOURCE, rjcode=code, probe_version=VERSION,
+                                   status='pending', candidates=[], error='') for code in normalized]
+                    with SessionLocal() as db:
+                        for offset in range(0, len(values), 500):
+                            statement = insert(ResourceSourceProbe).values(values[offset:offset + 500])
+                            db.execute(statement.on_conflict_do_nothing())
+                            if refresh:
+                                db.query(ResourceSourceProbe).filter(
+                                    ResourceSourceProbe.source == SOURCE,
+                                    ResourceSourceProbe.probe_version == VERSION,
+                                    ResourceSourceProbe.rjcode.in_(normalized[offset:offset + 500]),
+                                ).update({ResourceSourceProbe.status: 'pending', ResourceSourceProbe.expires_at: datetime.now()}, synchronize_session=False)
+                        db.commit()
+
+                await asyncio.to_thread(add_yaas_probes)
+                from .circle_subtitle_repair_service import get_circle_subtitle_repair_service
+                await asyncio.to_thread(get_circle_subtitle_repair_service().enqueue_probe_codes,
+                                        normalized, refresh=refresh)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception('选中作品资源探测入队失败')
+
         task = asyncio.create_task(enqueue())
         self._queue_tasks.add(task)
         task.add_done_callback(self._queue_tasks.discard)
@@ -229,6 +277,8 @@ class ResourceSourceService:
                     seconds = 5 * 2 ** attempt
                 await self.cooldown(max(1, min(seconds, 3600)))
                 continue
+            if endpoint == 'get' and response.status_code in {404, 410}:
+                raise ResourceSourceStale('YAAS 已探测资源不存在')
             response.raise_for_status()
             body = response.json()
             if body.get('code') in {429, 503}:
@@ -238,7 +288,8 @@ class ResourceSourceService:
                 reason = re.sub(r"https?://[^\s\"'<>]+", "[YAAS 下载地址]",
                     str(body.get('message') or '源站未提供错误原因'))
                 reason = ' '.join(reason.split())[:500]
-                raise ResourceSourceError(
+                error_type = ResourceSourceStale if endpoint == 'get' and body.get('code') in {404, 410} else ResourceSourceError
+                raise error_type(
                     f"YAAS 接口 {endpoint} 失败（状态码 {body.get('code')}）：{reason}")
             return body.get('data') or {}
         raise ResourceSourceError('YAAS 限流，请稍后重试')
@@ -250,15 +301,16 @@ class ResourceSourceService:
                 return {'status': 'pending', 'candidates': [], 'error': '', 'fresh': False}
             return {'status': row.status, 'candidates': row.candidates or [], 'error': row.error,
                     'checked_at': row.checked_at.isoformat() if row.checked_at else None,
-                    'fresh': bool(row.expires_at and row.expires_at > datetime.now())}
+                    # 资源事实只在显式刷新后重查，旧记录的过期时间不再触发联网。
+                    'fresh': row.status != 'pending'}
 
-    def _save(self, rjcode, *, status, candidates, error='', ttl=300):
+    def _save(self, rjcode, *, status, candidates, error=''):
         with SessionLocal() as db:
             old = db.get(ResourceSourceProbe, (SOURCE, rjcode, VERSION))
             changed = old is None or (old.status, old.candidates or [], old.error or "") != (status, candidates or [], error or "")
             values = dict(source=SOURCE, rjcode=rjcode, probe_version=VERSION, status=status,
                           candidates=candidates, error=error, checked_at=datetime.now(),
-                          expires_at=datetime.now() + timedelta(seconds=ttl))
+                          expires_at=None)
             db.execute(insert(ResourceSourceProbe).values(**values).on_conflict_do_update(
                 index_elements=['source', 'rjcode', 'probe_version'], set_=values))
             db.commit()
@@ -352,7 +404,7 @@ class ResourceSourceService:
                                 raise ValueError('YAAS 目录分页异常')
                     candidates = package_groups(rows, rjcode)
                     await asyncio.to_thread(self._save, rjcode, status='hit' if candidates else 'missing',
-                        candidates=candidates, ttl=86400 if candidates else 21600)
+                        candidates=candidates)
                 except Exception as exc:
                     await asyncio.to_thread(self._save, rjcode, status='error',
                         candidates=old['candidates'], error='YAAS 探测失败，请稍后重试')
@@ -436,6 +488,8 @@ class ResourceSourceService:
                     if response.status_code in {429, 503}:
                         await self.cooldown(30)
                         continue
+                    if response.status_code in {404, 410}:
+                        raise ResourceSourceStale('YAAS 已探测资源下载地址失效')
                     if response.status_code not in {200, 206}:
                         raise ResourceSourceError(f'YAAS 下载节点返回 HTTP {response.status_code}')
                     return {'url': url, 'size_bytes': int(data.get('size') or 0),
@@ -594,8 +648,7 @@ class ResourceSourceService:
             ).filter(
                 ResourceSourceProbe.source == SOURCE,
                 ResourceSourceProbe.probe_version == VERSION,
-                (ResourceSourceProbe.expires_at.is_(None)) |
-                (ResourceSourceProbe.expires_at < datetime.now()),
+                ResourceSourceProbe.status == 'pending',
             ).order_by(ResourceSourceProbe.checked_at.asc().nullsfirst(), ResourceSourceProbe.rjcode)
             result, offset = [], 0
             while len(result) < 20:
@@ -611,7 +664,7 @@ class ResourceSourceService:
             try:
                 rows = await asyncio.to_thread(self.pending_codes)
                 for offset in range(0, len(rows), 2):
-                    await asyncio.gather(*(self.probe(code) for (code,) in rows[offset:offset + 2]))
+                    await asyncio.gather(*(self.probe(code, refresh=True) for (code,) in rows[offset:offset + 2]))
                 await asyncio.sleep(5)
             except asyncio.CancelledError:
                 raise
@@ -619,11 +672,28 @@ class ResourceSourceService:
                 logging.getLogger(__name__).exception('YAAS 后台探测失败')
                 await asyncio.sleep(30)
 
+    async def subtitle_worker(self):
+        from .circle_subtitle_repair_service import get_circle_subtitle_repair_service
+        while True:
+            try:
+                await get_circle_subtitle_repair_service().probe_pending()
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logging.getLogger(__name__).exception('社团字幕后台探测失败')
+                await asyncio.sleep(30)
+
     def start(self):
         if self._worker is None or self._worker.done():
             self._worker = asyncio.create_task(self.worker(), name='yaas-source-probe')
+        if self._subtitle_worker is None or self._subtitle_worker.done():
+            self._subtitle_worker = asyncio.create_task(self.subtitle_worker(), name='circle-subtitle-probe')
 
     async def stop(self):
+        if self._subtitle_worker:
+            self._subtitle_worker.cancel()
+            await asyncio.gather(self._subtitle_worker, return_exceptions=True)
         if self._worker:
             self._worker.cancel()
             await asyncio.gather(self._worker, return_exceptions=True)
