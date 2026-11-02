@@ -796,6 +796,22 @@ class InputScanRepository:
                 scan_id=scan_id,
             ).group_by(InputScanCandidate.state).all())
             total = sum(counts.values())
+            skip_counts = {}
+            if counts.get("skipped"):
+                reasons = db.query(
+                    func.split_part(InputScanCandidate.reason, ":", 1),
+                    TaskRecord.status, func.count(),
+                ).outerjoin(
+                    TaskRecord,
+                    InputScanCandidate.reason == func.concat("task:", TaskRecord.id),
+                ).filter(
+                    InputScanCandidate.scan_id == scan_id, InputScanCandidate.state == "skipped",
+                ).group_by(
+                    func.split_part(InputScanCandidate.reason, ":", 1), TaskRecord.status,
+                ).all()
+                for owner, status, count in reasons:
+                    key = f"task_{status}" if owner == "task" and status else owner or "other"
+                    skip_counts[key] = skip_counts.get(key, 0) + count
             pending = sum(value for state, value in counts.items() if state not in TERMINAL)
             scan_status = run.scan_status
             if run.producer_closed and not pending and scan_status == "running":
@@ -860,6 +876,7 @@ class InputScanRepository:
                 "revision": run.revision, "counts": counts, "discovered_groups": total,
                 "total_candidates": total if run.producer_closed else None,
                 "found_count": counts.get("submitted", 0), "pending_count": pending,
+                "skip_counts": skip_counts,
                 "coverage": run.coverage or {}, "policy": run.policy or {}, "task_outcomes": dict(task_counts),
                 "root_path": run.root_path, "created_at": run.created_at.isoformat(),
                 "message": "扫描中" if scan_status == "running" else "扫描" + {

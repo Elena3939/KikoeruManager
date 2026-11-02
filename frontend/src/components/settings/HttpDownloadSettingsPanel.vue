@@ -427,7 +427,7 @@ import StatefulButton from '../ui/stateful-button.vue'
 import PikPakStateIcon from './PikPakStateIcon.vue'
 import AppDropdown from '../common/AppDropdown.vue'
 import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
-import { HTTP_DOWNLOAD_PLATFORM_META } from '../common/httpDownloadPlatformMeta'
+import { CLOUDFLARE_ICON, HTTP_DOWNLOAD_PLATFORM_META } from '../common/httpDownloadPlatformMeta'
 import { API_BASE, configApi, httpDownloadApi } from '../../api'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
 
@@ -449,10 +449,11 @@ const httpProxyPlatformOptions = [
   { value: 'transferit', label: 'Transfer.it', description: 'Transfer.it 分享解析和专用下载。' },
   { value: 'onedrive', label: 'OneDrive', description: 'OneDrive 分享直链解析。' },
   { value: 'google_drive', label: 'Google Drive', description: 'Drive OAuth、API、确认页和文件下载。' },
-  { value: 'pikpak', label: 'PikPak', description: 'PikPak 登录、转存、解析和文件下载。' }
+  { value: 'pikpak', label: 'PikPak', description: 'PikPak 登录、转存、解析和文件下载。' },
+  { value: 'imoutoheaven', label: 'Cloudflare Turnstile', description: 'YAAS 来源的服务端请求使用代理；浏览器验证与下载使用浏览器自身网络设置。', icon: CLOUDFLARE_ICON }
 ].map(option => ({
   ...option,
-  icon: HTTP_DOWNLOAD_PLATFORM_META[option.value]?.icon || Link
+  icon: option.icon || HTTP_DOWNLOAD_PLATFORM_META[option.value]?.icon || Link
 }))
 const googleDriveOAuthClientModeOptions = [
   { value: 'builtin', label: '内置应用' },

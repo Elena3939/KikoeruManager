@@ -17,10 +17,7 @@
       @go="(path) => router.push(path)"
     />
 
-    <div v-if="inputScan" class="mb-2 flex flex-wrap items-center gap-3 text-sm text-slate-500 dark:text-slate-400">
-      <span>{{ inputScan.message }} · 已发现 {{ inputScan.discovered_groups }} 组 · 已交接 {{ inputScan.found_count }} 组 · 待处理 {{ inputScan.pending_count }} 组</span>
-      <StatefulButton v-if="scanning && !inputScan.cancel_requested" size="sm" variant="ghost" @click="cancelScan">取消扫描</StatefulButton>
-    </div>
+    <DashboardScanStatus v-if="inputScan" :snapshot="inputScan" :scanning="scanning" :on-cancel="cancelScan" />
 
     <main class="grid min-h-0 flex-1 grid-cols-1 items-stretch gap-3 overflow-hidden lg:grid-cols-[minmax(0,1fr)_360px]">
       <DashboardActiveTasks
@@ -85,7 +82,7 @@ import { normalizeTaskCenterRealtimePayloads, patchTaskCenterItemListBatch } fro
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 import { useInputScan } from '../composables/useInputScan'
-import StatefulButton from '../components/ui/stateful-button.vue'
+import DashboardScanStatus from '../components/dashboard/DashboardScanStatus.vue'
 
 const router = useRouter()
 const realtimeEvents = useRealtimeEvents()

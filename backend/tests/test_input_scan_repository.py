@@ -64,6 +64,29 @@ def test_changed_source_and_failed_commit_leave_no_task(repository, tmp_path, mo
         assert db.query(InputScanCandidate).one().state == "ready"
 
 
+def test_snapshot_explains_skipped_owners(repository, tmp_path):
+    scan_id, candidate, path = discover(repository, tmp_path)
+    with repository.session_factory.begin() as db:
+        db.add(TaskRecord(
+            id="retry-owner", type="auto_process", status="waiting_retry", source_path=str(path),
+        ))
+    repository.update_candidate(
+        candidate["id"], candidate["version"], state="skipped", reason="task:retry-owner",
+    )
+    repository.discover(scan_id, [{
+        "group_key": "archive", "source_path": str(path) + ".other",
+        "members": [str(path) + ".other"],
+    }])
+    other = repository.due(scan_id)[0]
+    repository.update_candidate(
+        other["id"], other["version"], state="skipped", reason="deferred_archive:archive-owner",
+    )
+    snapshot = repository.snapshot(scan_id)
+    assert snapshot["skip_counts"] == {"task_waiting_retry": 1, "deferred_archive": 1}
+    assert snapshot["counts"]["skipped"] == 2
+    assert snapshot["found_count"] == 0
+
+
 def test_cancel_fences_late_commit_and_preserves_submitted(repository, tmp_path):
     scan_id, candidate, path = discover(repository, tmp_path)
     assert repository.cancel(scan_id)

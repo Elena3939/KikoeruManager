@@ -199,7 +199,10 @@ async def test_remote_commit_lost_response_keeps_final_and_removes_backup(setup_
     service = factory()
     state, file = await prepare(service, path='file.bin')
     await service.chunk(state, file, 0, b'hello', hashlib.sha256(b'hello').hexdigest())
+    staged = service.part(state['id'], file['id'])
     library, client = remote_service(service)
+    # 远程库存接收文件位于暂存盘；模拟器切库时同步迁移测试分块。
+    staged.replace(service.part(state['id'], file['id']))
     state['target_path'] = '/library'
     client.files['/library/file.bin'] = b'old'
     client.lose_response = True

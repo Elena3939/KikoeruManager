@@ -243,7 +243,7 @@ export const defaultConfig = {
     download_root: '',
     aria2_path: 'aria2c',
     proxy_url: '',
-    proxy_platforms: ['http', 'gofile', 'transferit', 'onedrive', 'google_drive', 'pikpak'],
+    proxy_platforms: ['http', 'gofile', 'transferit', 'onedrive', 'google_drive', 'pikpak', 'imoutoheaven'],
     max_concurrent_downloads: 3,
     split: 8,
     max_connection_per_server: 8,

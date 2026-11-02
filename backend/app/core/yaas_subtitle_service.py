@@ -13,7 +13,7 @@ import httpx
 from .resource_source_service import ARCHIVE_PASSWORD, SOURCE, ResourceSourceStale, normalize_rj, package_groups
 from .ttl_cache import TTLCache
 
-BASE = '/SP后端1[音声分区]'
+BASE = '/SP后端1[音声分区]/LRCs'
 COLLECTIONS = (
     ('DLSite 官中VTT', False),
     ('风花雪月汉化组音声LRC合集', False),
@@ -139,7 +139,7 @@ class YaasSubtitleService:
 
     async def _index(self, name):
         cached = self._indexes.get(name)
-        if cached is not None:
+        if cached is not None and self._valid_cached_index(name, cached):
             return cached
         if name in self._inflight:
             return await asyncio.shield(self._inflight[name])
@@ -150,7 +150,7 @@ class YaasSubtitleService:
             redis = get_redis_service()
             key = 'index-v1:' + name
             cached = await asyncio.to_thread(redis.get_json, 'yaas-subtitle', 'index', key)
-            if isinstance(cached, list):
+            if isinstance(cached, list) and self._valid_cached_index(name, cached):
                 self._indexes[name] = cached
                 return cached
             service = get_resource_source_service()
@@ -197,6 +197,28 @@ class YaasSubtitleService:
                 done.exception()
         task.add_done_callback(finished)
         return await asyncio.shield(task)
+
+    @staticmethod
+    def _valid_cached_index(collection, rows):
+        """拒绝旧版本错误编码或越界路径，避免坏缓存永久阻断字幕抓取。"""
+        prefix = f'{BASE}/{collection}/'
+        if not isinstance(rows, list):
+            return False
+        for row in rows:
+            if not isinstance(row, dict):
+                return False
+            name = str(row.get('name') or '')
+            path = str(row.get('path') or '')
+            try:
+                size = int(row.get('size') or 0)
+            except (TypeError, ValueError):
+                return False
+            if (not name or not path.startswith(prefix)
+                    or PurePosixPath(path).name != name
+                    or not is_single_archive(name)
+                    or size <= 0 or size > SUBTITLE_LIMIT):
+                return False
+        return True
 
     async def sources(self, original_codes):
         """缓存目录而非每个 RJ 全站搜索；失败目录不缓存为无字幕。"""

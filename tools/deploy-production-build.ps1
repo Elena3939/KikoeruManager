@@ -4,10 +4,13 @@ param(
     [switch]$DryRun,
     [ValidatePattern('^v\d+\.\d+\.\d+$')]
     [string]$RuntimeBaseTag,
+    [ValidatePattern('^[a-f0-9]{40}$')]
+    [string]$RuntimeBaseRevision,
     [string]$ReleaseId
 )
 
 $ErrorActionPreference = 'Stop'
+if ($RuntimeBaseTag -and $RuntimeBaseRevision) { throw '运行环境基线 tag 和 revision 不能同时指定。' }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $connectScript = Join-Path $repoRoot '.codex\ssh\connect-production.ps1'
@@ -61,17 +64,20 @@ $packageOverrides = Join-Path ([System.IO.Path]::GetTempPath()) "kikoerumanager-
 
 try {
     $runtimeImage = $null
-    if ($RuntimeBaseTag) {
+    if ($RuntimeBaseTag -or $RuntimeBaseRevision) {
         $hostname = (& $connectScript 'hostname' | Out-String).Trim()
         if ($LASTEXITCODE -ne 0 -or $hostname -ne 'Elena') { throw '生产主机校验失败。' }
-        $runtimeRevision = (& git -C $repoRoot rev-parse --verify "$RuntimeBaseTag^{commit}" | Out-String).Trim()
+        $runtimeRef = if ($RuntimeBaseRevision) { $RuntimeBaseRevision } else { $RuntimeBaseTag }
+        $runtimeRevision = (& git -C $repoRoot rev-parse --verify "$runtimeRef^{commit}" | Out-String).Trim()
         if ($LASTEXITCODE -ne 0) { throw '运行环境基线不存在。' }
-        $runtimeChanges = @(& git -C $repoRoot diff --name-only $RuntimeBaseTag -- Dockerfile backend/Dockerfile backend/requirements.txt docker frontend/package.json frontend/package-lock.json frontend/pnpm-lock.yaml)
+        $runtimeChanges = @(& git -C $repoRoot diff --name-only $runtimeRef -- Dockerfile backend/Dockerfile backend/requirements.txt docker frontend/package.json frontend/package-lock.json frontend/pnpm-lock.yaml)
         if ($LASTEXITCODE -ne 0 -or $runtimeChanges.Count) { throw '运行环境发生变化，不能复用基线镜像。' }
         $identity = (& $connectScript -Sudo '/var/packages/Docker/target/usr/bin/docker inspect --format ''{{.Image}} {{index .Config.Labels "org.opencontainers.image.version"}} {{index .Config.Labels "org.opencontainers.image.revision"}}'' elena39-kikoerumanager' | Out-String).Trim()
         if ($LASTEXITCODE -ne 0 -or $identity -notmatch '^sha256:[a-f0-9]{64} ') { throw '无法确认生产镜像身份。' }
         $runtimeImage = $identity.Split(' ')[0]
-        if ($identity -ne "$runtimeImage $($RuntimeBaseTag.Substring(1)) $runtimeRevision") { throw '生产运行环境与指定基线不一致。' }
+        $identityParts = $identity.Split(' ', [StringSplitOptions]::RemoveEmptyEntries)
+        if ($identityParts.Count -ne 3 -or $identityParts[2] -ne $runtimeRevision) { throw '生产源码修订与指定基线不一致。' }
+        if ($RuntimeBaseTag -and $identityParts[1].TrimStart('v') -ne $RuntimeBaseTag.Substring(1)) { throw '生产版本与指定基线不一致。' }
     }
     # 完整镜像也只使用本机构建的前端，生产不安装 Node 或运行 npm。
     & npm --prefix (Join-Path $repoRoot 'frontend') run build

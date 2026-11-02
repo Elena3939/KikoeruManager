@@ -164,6 +164,8 @@ function updateOverlay(el, binding) {
     return
   }
 
+  clearHideTimer(el)
+
   if (el.__appLoadingOverlay && el.__appLoadingOverlay.style.display !== 'none') {
     renderOverlay(el, options)
     return

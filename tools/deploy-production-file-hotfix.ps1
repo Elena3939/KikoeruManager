@@ -2,7 +2,9 @@
 param(
     [string]$LocalFile = 'backend\app\core\library_folder_completion_service.py',
     [string]$ContainerPath = '/app/app/core/library_folder_completion_service.py',
-    [string]$ReleaseId
+    [string]$ReleaseId,
+    [ValidatePattern('^[a-f0-9-]{36}$')]
+    [string[]]$IgnoredTaskIds = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,7 +53,7 @@ if ($LASTEXITCODE -ne 0) {
     throw '本地源码上传失败。'
 }
 
-& $connectScript -Sudo "/bin/sh '$remoteScript' '$remoteFile' '$ContainerPath' '$ReleaseId' '$expectedHash'"
+& $connectScript -Sudo "/bin/sh '$remoteScript' '$remoteFile' '$ContainerPath' '$ReleaseId' '$expectedHash' '$($IgnoredTaskIds -join ',')'"
 if ($LASTEXITCODE -ne 0) {
     throw "生产热补丁失败: $ReleaseId"
 }

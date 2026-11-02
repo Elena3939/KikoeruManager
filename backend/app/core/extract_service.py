@@ -1188,6 +1188,302 @@ class ExtractService:
         suspects.sort(key=lambda x: x["index"])
         return suspects
 
+    def _build_disguised_zip_source_volume_set(
+        self,
+        volume_set: 'VolumeSet',
+        suspects: List[Dict[str, Any]],
+    ) -> Optional['VolumeSet']:
+        """把可证明完整的 ZIP 伪装分卷整理成标准顺序，但不改源文件。"""
+        if not volume_set or volume_set.type != "zip_volume_main" or not suspects:
+            return None
+
+        base_name = str(volume_set.base_name or "")
+        directory = os.path.dirname(volume_set.entry_path or (volume_set.volumes or [""])[0])
+        if not base_name or not directory:
+            return None
+
+        indexed: Dict[int, str] = {}
+        final_path: Optional[str] = None
+        seen_paths: set[str] = set()
+        expected_zip_name = f"{base_name}.zip"
+
+        for source in volume_set.volumes:
+            normalized = os.path.normcase(os.path.normpath(source))
+            if normalized in seen_paths:
+                return None
+            seen_paths.add(normalized)
+            name = os.path.basename(source)
+            if name.lower() == expected_zip_name.lower():
+                if final_path is not None:
+                    return None
+                final_path = source
+                continue
+            match = re.fullmatch(rf"{re.escape(base_name)}\.z(\d{{2}})", name, re.IGNORECASE)
+            if not match:
+                return None
+            index = int(match.group(1))
+            if index in indexed:
+                return None
+            indexed[index] = source
+
+        for suspect in suspects:
+            source = str(suspect.get("path") or "")
+            name = os.path.basename(source)
+            index = int(suspect.get("index") or 0)
+            if not source or index < 1 or index > 99:
+                return None
+            normalized = os.path.normcase(os.path.normpath(source))
+            if normalized in seen_paths or index in indexed:
+                return None
+            if self._clean_disguised_volume_name(name, base_name) != f"{base_name}.z{index:02d}":
+                return None
+            seen_paths.add(normalized)
+            indexed[index] = source
+
+        if final_path is None or not indexed:
+            return None
+        indices = sorted(indexed)
+        if indices != list(range(1, indices[-1] + 1)):
+            return None
+
+        ordered = [indexed[index] for index in indices] + [final_path]
+        for source in ordered:
+            try:
+                if not os.path.isfile(source) or os.path.getsize(source) < 1024:
+                    return None
+            except OSError:
+                return None
+        return VolumeSet(base_name, ordered, "zip_volume_main", entry_path=final_path)
+
+    def _collect_disguised_zip_source_volume_set(
+        self,
+        archive_path: str,
+        volume_set: Optional['VolumeSet'] = None,
+    ) -> Optional['VolumeSet']:
+        """收集完整的 ZIP 伪装分卷组；不完整时返回 None 交给人工流程。"""
+        if volume_set is not None and volume_set.type == "zip_volume_main":
+            suspects = self._scan_disguised_supplementary_siblings(volume_set)
+            return self._build_disguised_zip_source_volume_set(volume_set, suspects)
+        # 数字后缀只说明卷名形态，不能据此排除具有尾目录证据的 ZIP 分卷。
+        if volume_set is not None and volume_set.type != "7z_volume":
+            return None
+
+        sibling_set = self._collect_disguised_zip_source_volume_set_from_siblings(archive_path)
+        if sibling_set:
+            return sibling_set
+
+        detection = self._detect_disguised_set_with_clean_target(archive_path)
+        if not detection or detection.get("detected_kind") != "zip":
+            return None
+        target_name = os.path.basename(archive_path)
+        match = re.fullmatch(r"(?P<base>.+)\.zip", target_name, re.IGNORECASE)
+        if not match:
+            return None
+        base_name = match.group("base")
+        files = list(detection.get("suspect_files") or [])
+        source_set = VolumeSet(
+            base_name,
+            [archive_path],
+            "zip_volume_main",
+            entry_path=archive_path,
+        )
+        suspects = [
+            item for item in files
+            if os.path.normcase(os.path.normpath(str(item.get("path") or "")))
+            != os.path.normcase(os.path.normpath(archive_path))
+        ]
+        return self._build_disguised_zip_source_volume_set(source_set, suspects)
+
+    def _collect_disguised_zip_source_volume_set_from_siblings(
+        self,
+        archive_path: str,
+    ) -> Optional['VolumeSet']:
+        """从任意一个 ZIP 伪装卷反推出完整卷组。
+
+        这覆盖主卷本身也被改名的情况，例如 ``xxx.z删ip`` +
+        ``xxx.z删01`` + ``xxx.z删02``，以及主卷伪装、分卷标准命名的混合情况。
+        只有清洗后得到连续的 ``.z01... .zip`` 且至少有一个真实伪装名时才接受。
+        """
+        if not archive_path or not os.path.isfile(archive_path):
+            return None
+
+        target_name = os.path.basename(archive_path)
+        split_at = target_name.rfind(".")
+        if split_at <= 0:
+            return None
+        base_name = target_name[:split_at]
+        if len(base_name) < 3:
+            return None
+        directory = os.path.dirname(archive_path)
+        if not directory:
+            return None
+
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            return None
+
+        expected_main = f"{base_name}.zip"
+        indexed: Dict[int, str] = {}
+        final_path: Optional[str] = None
+        seen_paths: set[str] = set()
+        disguised_found = False
+        has_legacy_numeric_parts = any(
+            os.path.isfile(os.path.join(directory, entry))
+            and re.fullmatch(rf"{re.escape(base_name)}\.7\d{{2}}", entry, re.IGNORECASE)
+            for entry in entries
+        )
+        legacy_numeric_parts_used = False
+
+        for entry in entries:
+            if not entry.lower().startswith(f"{base_name}.".lower()):
+                continue
+            source = os.path.join(directory, entry)
+            if not os.path.isfile(source):
+                continue
+
+            clean_name: Optional[str]
+            if entry.lower() == expected_main.lower():
+                clean_name = expected_main
+            else:
+                clean_name = self._clean_disguised_volume_name(entry, base_name)
+                if (
+                    has_legacy_numeric_parts
+                    and clean_name
+                    and clean_name.lower() == f"{base_name}.7z".lower()
+                    and self._is_disguised_volume_suffix(entry[len(base_name) + 1:])
+                ):
+                    clean_name = expected_main
+                if clean_name is None:
+                    suffix = entry[len(base_name) + 1:] if entry.startswith(f"{base_name}.") else ""
+                    cleaned_suffix = self._DISGUISE_WORDS_PATTERN.sub("", suffix)
+                    cleaned_suffix = "".join(c for c in cleaned_suffix if ord(c) < 128)
+                    cleaned_suffix = re.sub(r"\.+", ".", cleaned_suffix).strip(".")
+                    if cleaned_suffix.lower() == "zip":
+                        clean_name = expected_main
+                    elif (
+                        has_legacy_numeric_parts
+                        and self._is_disguised_volume_suffix(suffix)
+                        and cleaned_suffix.lower() == "7z"
+                    ):
+                        clean_name = expected_main
+                if clean_name is None:
+                    match = re.fullmatch(
+                        rf"{re.escape(base_name)}\.z(\d{{2}})",
+                        entry,
+                        re.IGNORECASE,
+                    )
+                    clean_name = entry if match else None
+                if (
+                    clean_name is None
+                    and has_legacy_numeric_parts
+                    and (match := re.fullmatch(rf"{re.escape(base_name)}\.7(\d{{2}})", entry, re.IGNORECASE))
+                ):
+                    clean_name = f"{base_name}.z{match.group(1)}"
+                    legacy_numeric_parts_used = True
+            if not clean_name:
+                continue
+
+            normalized = os.path.normcase(os.path.normpath(source))
+            if normalized in seen_paths:
+                return None
+            seen_paths.add(normalized)
+            disguised_found = disguised_found or (
+                os.path.basename(clean_name).lower() != entry.lower()
+            )
+
+            if clean_name.lower() == expected_main.lower():
+                if final_path is not None:
+                    return None
+                final_path = source
+                continue
+
+            match = re.fullmatch(
+                rf"{re.escape(base_name)}\.z(\d{{2}})",
+                clean_name,
+                re.IGNORECASE,
+            )
+            if not match:
+                continue
+            index = int(match.group(1))
+            if index in indexed:
+                return None
+            indexed[index] = source
+
+        if not disguised_found or final_path is None or not indexed:
+            return None
+        indices = sorted(indexed)
+        if indices != list(range(1, indices[-1] + 1)):
+            return None
+
+        ordered = [indexed[index] for index in indices] + [final_path]
+        for source in ordered:
+            try:
+                if os.path.getsize(source) < 1024:
+                    return None
+            except OSError:
+                return None
+        if legacy_numeric_parts_used and not self._is_confirmed_zip_tail(
+            final_path,
+            directory,
+            base_name,
+            expected_volume_count=len(ordered),
+        ):
+            return None
+        return VolumeSet(base_name, ordered, "zip_volume_main", entry_path=final_path)
+
+    async def _prepare_disguised_zip_volume_view(
+        self,
+        volume_set: 'VolumeSet',
+        task: Optional[Task] = None,
+        *,
+        track_task_metadata: bool = True,
+    ) -> 'VolumeSet':
+        """为伪装 ZIP 分卷创建标准 .zNN/.zip 临时视图，保留所有源文件。"""
+        temp_dir = await self._create_temp_dir_with_fallback(
+            "kikoerumanager_disguised_zip_",
+            "extract.disguised_zip_volume_view",
+        )
+        paths: List[str] = []
+        names = [
+            *[f"{volume_set.base_name}.z{index:02d}" for index in range(1, len(volume_set.volumes))],
+            f"{volume_set.base_name}.zip",
+        ]
+        try:
+            for source, name in zip(volume_set.volumes, names):
+                if task is not None and task.is_cancelled():
+                    raise asyncio.CancelledError()
+                target = os.path.join(temp_dir, name)
+                try:
+                    await asyncio.to_thread(os.symlink, os.path.abspath(source), target)
+                except OSError:
+                    async with get_resource_budget_service().acquire(
+                        "disk_io_local",
+                        reason="extract.disguised_zip_volume_view",
+                    ):
+                        await asyncio.to_thread(self._link_or_copy_file, source, target)
+                paths.append(target)
+        except BaseException:
+            await asyncio.to_thread(shutil.rmtree, temp_dir, True)
+            raise
+
+        if task is not None and track_task_metadata:
+            self._set_extract_meta(task, disguised_zip_volume_view={
+                "temp_dir": temp_dir,
+                "source_path": task.source_path,
+                "volume_count": len(paths),
+            })
+        logger.info(
+            "[VolumeSet] 已创建伪装 ZIP 标准卷名视图，保留原始来源: volumes=%s",
+            len(paths),
+        )
+        return VolumeSet(
+            volume_set.base_name,
+            paths,
+            "zip_volume_main",
+            entry_path=paths[-1],
+        )
+
     # 干净 archive 后缀白名单：用于"target 是干净 archive 名 + 兄弟全伪装"场景的入口判定。
     # 仅放真实压缩包扩展名 + 长度合理（防止 .a / .z 单字符误中）；保持小集合是为了避免
     # 把 .png / .txt 等无关后缀文件误吞进伪装兄弟扫描。
@@ -2059,7 +2355,10 @@ class ExtractService:
     @staticmethod
     def _command_arg_text(arg: Any) -> str:
         if isinstance(arg, bytes):
-            return os.fsdecode(arg)
+            try:
+                return os.fsdecode(arg)
+            except UnicodeDecodeError:
+                return repr(arg)
         return str(arg)
 
     @classmethod
@@ -2138,7 +2437,7 @@ class ExtractService:
 
     @classmethod
     def _format_command_for_log(cls, cmd: List[Any]) -> str:
-        return " ".join(cls._redact_command_args(cmd))
+        return " ".join(cls._command_arg_text(arg) for arg in cmd)
 
     @staticmethod
     def _shorten_progress_text(value: str, max_chars: int = 60) -> str:
@@ -2385,9 +2684,23 @@ class ExtractService:
                 os.remove(view_path)
                 logger.info("[Extract] 已清理伪装 ZIP 临时视图: %s", view_path)
 
+    async def _cleanup_disguised_zip_volume_view(self, task: Optional[Task]) -> None:
+        metadata = getattr(task, "task_metadata", None)
+        if not isinstance(metadata, dict):
+            return
+        view = metadata.pop("disguised_zip_volume_view", None)
+        if not isinstance(view, dict):
+            return
+        temp_dir = str(view.get("temp_dir") or "").strip()
+        if not temp_dir or not os.path.basename(temp_dir).startswith("kikoerumanager_disguised_zip_"):
+            return
+        await asyncio.to_thread(shutil.rmtree, temp_dir, True)
+        logger.info("[Extract] 已清理伪装 ZIP 分卷临时视图: %s", temp_dir)
+
     async def _cleanup_extract_runtime_state(self, task: Task) -> None:
         """收口解压运行期临时状态清理，避免失败/取消分支漏还原。"""
         self._cleanup_embedded_zip_view(task)
+        await self._cleanup_disguised_zip_volume_view(task)
         await self._rollback_exe_e_remap(task)
         await self._rollback_zip_numeric_remap(task)
         await self._rollback_part_exe_remap(task)
@@ -2432,6 +2745,7 @@ class ExtractService:
                 return result
         finally:
             try:
+                await self._cleanup_disguised_zip_volume_view(task)
                 view = (task.task_metadata or {}).pop("password_part_volume_view", None)
                 if view:
                     await asyncio.to_thread(shutil.rmtree, view["temp_dir"])
@@ -2502,6 +2816,23 @@ class ExtractService:
 
         # 3. 检查是否是分卷
         volume_set = self._detect_volume_set(archive_path)
+        disguised_zip_source_set = self._collect_disguised_zip_source_volume_set(
+            archive_path, volume_set,
+        )
+
+        if disguised_zip_source_set:
+            volume_set = disguised_zip_source_set
+            self._set_extract_meta(
+                task,
+                disguised_zip_volume_source_path=original_archive_path,
+                disguised_zip_volume_count=len(volume_set.volumes),
+            )
+            logger.info(
+                "[Extract] 完整 ZIP 伪装分卷将使用标准临时卷名视图: source=%s volumes=%s",
+                original_archive_path,
+                len(volume_set.volumes),
+            )
+
         if not volume_set:
             # _detect_volume_set 没认出分卷组：在进入单体解压链路之前先跑一道
             # 启发式"伪装多卷"探测。命中（首卷魔数 + 同前缀连续数字兄弟 +
@@ -2517,13 +2848,18 @@ class ExtractService:
             # 这种 case：扫描伪装兄弟（base_name 前缀 + 非 ASCII suffix + 末尾
             # 数字 + ≥ 1KB），命中就抛 DisguisedVolumeSetError，避免下游解压拿
             # 残缺分卷组挣扎、最后报"无正确密码"误导用户。
-            self._maybe_raise_disguised_supplementary(archive_path, task, volume_set)
+            if not disguised_zip_source_set:
+                self._maybe_raise_disguised_supplementary(archive_path, task, volume_set)
         if volume_set:
             self._set_extract_meta(task, extract_stage="wait_volume_set")
             task.update_progress(15, "等待分卷组完整")
             if not await self._wait_for_complete_set(volume_set, task):
                 raise Exception("分卷组不完整或等待超时")
-            archive_path = volume_set.entry_path or volume_set.volumes[0]
+            if disguised_zip_source_set:
+                volume_set = await self._prepare_disguised_zip_volume_view(volume_set, task)
+                archive_path = volume_set.entry_path
+            else:
+                archive_path = volume_set.entry_path or volume_set.volumes[0]
 
             if volume_set.type in {"part_password", "zip_truncated_tail"}:
                 volume_set = await self._prepare_password_part_volume_view(volume_set, task)
@@ -2639,6 +2975,7 @@ class ExtractService:
         # 5. 确定输出路径
         output_name_path = (
             str((task.task_metadata or {}).get("embedded_zip_source_path") or "").strip()
+            or str((task.task_metadata or {}).get("disguised_zip_volume_source_path") or "").strip()
             or archive_path
         )
         output_name = str(hinted_rjcode or Path(output_name_path).stem).strip()  # 去除首尾空格，避免Windows路径错误
@@ -3968,6 +4305,35 @@ class ExtractService:
         task: Optional[Task] = None,
         inherited_passwords: Optional[List[str]] = None,
     ) -> tuple[bool, Optional[str]]:
+        nested_volume_set = self._detect_volume_set(archive_path)
+        disguised_zip_source_set = self._collect_disguised_zip_source_volume_set(
+            archive_path, nested_volume_set,
+        )
+
+        if disguised_zip_source_set:
+            volume_view = await self._prepare_disguised_zip_volume_view(
+                disguised_zip_source_set,
+                task,
+                track_task_metadata=False,
+            )
+            try:
+                if task is not None and task.is_cancelled():
+                    raise asyncio.CancelledError()
+                return await self._try_extract_nested_payload(
+                    volume_view.entry_path,
+                    output_path,
+                    parent_password,
+                    task,
+                    inherited_passwords,
+                    password_lookup_path=archive_path,
+                )
+            finally:
+                await asyncio.to_thread(
+                    shutil.rmtree,
+                    os.path.dirname(volume_view.entry_path),
+                    True,
+                )
+
         offset = await asyncio.to_thread(detect_embedded_zip_offset, archive_path)
         if offset:
             descriptor, view_path = await self._create_temp_file_with_fallback(
@@ -5239,7 +5605,13 @@ class ExtractService:
         return None
 
     @staticmethod
-    def _is_confirmed_zip_tail(path: str, directory: str, base_name: str) -> bool:
+    def _is_confirmed_zip_tail(
+        path: str,
+        directory: str,
+        base_name: str,
+        *,
+        expected_volume_count: Optional[int] = None,
+    ) -> bool:
         """仅接受 EOCD、中央目录位置和连续兄弟卷全部吻合的 .zi 尾卷。"""
         try:
             with open(path, "rb") as stream:
@@ -5292,6 +5664,8 @@ class ExtractService:
                 stream.seek(cd_offset)
                 if stream.read(4) != b"PK\x01\x02":
                     return False
+            if expected_volume_count is not None:
+                return expected_volume_count == disk + 1
             indices = sorted(
                 int(match.group(1)) for name in os.listdir(directory)
                 if (match := re.fullmatch(rf"{re.escape(base_name)}\.z(\d{{2}})", name, re.IGNORECASE))
@@ -7278,6 +7652,8 @@ class ExtractService:
         cache_key: Optional[Tuple[str, str]] = None,
     ) -> Optional[List[Dict]]:
         password_args = [f'-p{password}'] if password else []
+        if not password:
+            password_args.append('-p-')
         mcp_args = self._get_mcp_args(archive_path, filename_encoding=filename_encoding)
         commands = [
             [self.seven_zip, 'l', '-ba', *mcp_args, *password_args, archive_path],
@@ -7452,6 +7828,7 @@ class ExtractService:
             self.seven_zip,
             "l",
             "-slt",
+            "-p-",  # 显式占位密码，避免加密文件头在关闭标准输入时触发交互中断。
             *self._get_mcp_args(archive_path),
             archive_path,
         ]

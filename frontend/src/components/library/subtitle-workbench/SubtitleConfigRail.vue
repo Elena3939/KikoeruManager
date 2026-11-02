@@ -815,7 +815,9 @@ function removeActiveSubtitleFilterRule() {
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   display: grid;
   min-height: 0;
-  overflow: hidden;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .subtitle-switch {
@@ -1400,7 +1402,7 @@ html.dark .subtitle-config-card .subtitle-stepper-btn:first-child {
 
 .subtitle-quick-grid {
   display: grid;
-  grid-template-columns: minmax(112px, 1.1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
 }
 
@@ -1420,12 +1422,12 @@ html.dark .subtitle-config-card .subtitle-stepper-btn:first-child {
 
 .subtitle-quick-label {
   min-width: 0;
-  overflow: hidden;
+  flex: 1 1 auto;
   color: #334155;
   font-size: 11.5px;
   font-weight: 800;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .subtitle-settings-block:hover {

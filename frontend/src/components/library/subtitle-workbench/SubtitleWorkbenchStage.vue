@@ -5,7 +5,7 @@
       :class="gridClass"
     >
       <aside
-        class="relative min-w-0 overflow-visible rounded-[18px] border border-slate-200 bg-white transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+        class="subtitle-workbench-left-rail relative min-w-0 overflow-visible border-r border-slate-200 bg-white transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
         :class="leftRailCollapsed ? 'grid content-start gap-2 px-2 py-2.5' : 'grid grid-rows-[auto_minmax(0,1fr)] gap-3 px-3 py-3'"
       >
         <!-- 浮动收纳手柄 -->
@@ -66,7 +66,7 @@
 
         <!-- 展开态 -->
         <template v-else>
-          <div v-if="ctx.railModes.length > 1" class="flex gap-1 rounded-[12px] border border-slate-200 bg-white p-1" style="position: relative; z-index: 60; pointer-events: auto; isolation: isolate;">
+          <div v-if="ctx.railModes.length > 1" class="subtitle-rail-tabs flex gap-1" style="position: relative; z-index: 60; pointer-events: auto; isolation: isolate;">
             <button
               v-for="item in ctx.railModes"
               :key="item.key"
@@ -197,22 +197,52 @@ const props = defineProps({
 const leftRailCollapsed = ref(false)
 const isRightCollapsed = computed(() => Boolean(props.ctx?.contextDrawerCtx?.drawerCollapsed))
 const gridClass = computed(() => {
-  if (leftRailCollapsed.value && isRightCollapsed.value) return 'grid-cols-[56px_minmax(0,1fr)_56px]'
-  if (leftRailCollapsed.value) return 'grid-cols-[56px_minmax(0,1fr)_minmax(292px,0.26fr)]'
-  if (isRightCollapsed.value) return 'grid-cols-[minmax(252px,0.22fr)_minmax(0,1fr)_56px]'
-  return 'grid-cols-[minmax(252px,0.22fr)_minmax(0,1fr)_minmax(292px,0.26fr)]'
+  if (leftRailCollapsed.value && isRightCollapsed.value) return 'is-both-collapsed'
+  if (leftRailCollapsed.value) return 'is-left-collapsed'
+  if (isRightCollapsed.value) return 'is-right-collapsed'
+  return 'is-rails-expanded'
 })
 </script>
 
 <style scoped>
+.subtitle-workbench-stage > div {
+  --subtitle-left-width: 272px;
+  --subtitle-right-width: 312px;
+  grid-template-columns: var(--subtitle-left-width) minmax(0, 1fr) var(--subtitle-right-width);
+}
+
+.subtitle-workbench-stage > .is-left-collapsed {
+  grid-template-columns: 56px minmax(0, 1fr) var(--subtitle-right-width);
+}
+
+.subtitle-workbench-stage > .is-right-collapsed {
+  grid-template-columns: var(--subtitle-left-width) minmax(0, 1fr) 56px;
+}
+
+.subtitle-workbench-stage > .is-both-collapsed {
+  grid-template-columns: 56px minmax(0, 1fr) 56px;
+}
+
+@media (min-width: 641px) and (max-width: 1199px) {
+  .subtitle-workbench-stage > div {
+    --subtitle-left-width: 250px;
+    --subtitle-right-width: 310px;
+    overflow-x: auto;
+  }
+  .subtitle-workbench-stage > div > div {
+    min-width: 480px;
+  }
+}
+
 .subtitle-stage-tabs {
   position: relative;
   z-index: 60;
   display: flex;
   gap: 6px;
-  padding: 5px;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
+  padding: 0 0 8px;
+  border: 0;
+  border-bottom: 1px solid #e2e8f0;
+  border-radius: 0;
   background: #ffffff;
   isolation: isolate;
   pointer-events: auto;

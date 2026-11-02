@@ -87,6 +87,7 @@
                     </div>
 
                     <div class="v1-task-actions" @click.stop>
+                      <button v-if="task.task_metadata?.browser_verification_required" type="button" class="v1-inline-action primary" @click="openVerification(task)"><Play :size="13" />浏览器下载</button>
                       <template v-if="isTaskProcessing(task)">
                         <button type="button" class="v1-inline-action" aria-label="暂停任务" @click="emit('pause-task', task)" title="暂停">
                           <Pause :size="13" />
@@ -346,6 +347,8 @@
 </template>
 
 <script setup>
+import { ElMessage } from 'element-plus'
+import { openVerificationPopup } from '../../utils/browserVerificationPopup'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import { Archive, AlertCircle, ArrowUpToLine, CheckCircle2, Clock3, Cloud, CloudDownload, Download, HardDriveUpload, Minimize2, Pause, Play, RefreshCw, Search, TriangleAlert, X, XCircle, Zap } from 'lucide-vue-next'
 import { computed, nextTick, onUpdated, ref, watch } from 'vue'
@@ -397,6 +400,14 @@ const emit = defineEmits([
 ])
 
 const activeFilter = ref('all')
+async function openVerification(task) {
+  try {
+    await openVerificationPopup(task.active_task_id || task.id)
+    emit('refresh')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '打开浏览器下载失败')
+  }
+}
 const searchQuery = ref('')
 const expandedTaskIds = ref(new Set())
 const localSpinning = ref(false)
@@ -419,7 +430,7 @@ const titleText = computed(() => String(props.title || 'Download Manager'))
 const subtitleText = computed(() => String(props.subtitle || '社团补全下载任务'))
 const emptyTitleText = computed(() => String(props.emptyTitle || '暂无符合筛选的下载任务'))
 const processingTasks = computed(() => mergedTasks.value.filter(task => isTaskProcessing(task)))
-const pendingTasks = computed(() => mergedTasks.value.filter(task => ['pending', 'paused', 'waiting_retry'].includes(String(task?.display_status || task?.status || ''))))
+const pendingTasks = computed(() => mergedTasks.value.filter(task => ['pending', 'paused', 'waiting_retry', 'waiting_manual'].includes(String(task?.display_status || task?.status || ''))))
 const partialFailedTasks = computed(() => mergedTasks.value.filter(task => getTaskTone(task) === 'warning'))
 const completedTasks = computed(() => mergedTasks.value.filter(task => getTaskTone(task) === 'success'))
 
@@ -434,7 +445,7 @@ const filterTabs = computed(() => ([
 const filteredTasks = computed(() => {
   let list = mergedTasks.value || []
   if (activeFilter.value === 'processing') list = list.filter(task => isTaskProcessing(task))
-  else if (activeFilter.value === 'pending') list = list.filter(task => ['pending', 'paused', 'waiting_retry'].includes(String(task?.display_status || task?.status || '')))
+  else if (activeFilter.value === 'pending') list = list.filter(task => ['pending', 'paused', 'waiting_retry', 'waiting_manual'].includes(String(task?.display_status || task?.status || '')))
   else if (activeFilter.value === 'partial_failed') list = list.filter(task => getTaskTone(task) === 'warning')
   else if (activeFilter.value === 'completed') list = list.filter(task => getTaskTone(task) === 'success')
 
@@ -881,6 +892,7 @@ function getTaskMergeKey(task) {
 }
 
 function getTaskSortScore(task) {
+  if (task.task_metadata?.browser_verification_required) return 375
   const status = String(task?.status || '')
   if (status === 'processing') return 500
   if (status === 'pending') return 400
@@ -965,6 +977,7 @@ function getTaskRowsCompletionState(task) {
 }
 
 function deriveMergedStatus(task, sourceTasks) {
+  if (task.task_metadata?.browser_verification_required) return 'waiting_manual'
   const statuses = (sourceTasks || []).map(item => String(item?.status || ''))
   const { allCompleted, hasDanger, hasSuccess } = getTaskRowsCompletionState(task)
   const hasFinalOutputPath = getFinalOutputPath(task) !== '处理中'
@@ -982,6 +995,7 @@ function deriveMergedStatus(task, sourceTasks) {
 }
 
 function deriveMergedDisplayStatus(task, sourceTasks, mergedStatus) {
+  if (task.task_metadata?.browser_verification_required) return 'waiting_manual'
   const { allCompleted, hasDanger, hasSuccess } = getTaskRowsCompletionState(task)
   if ((sourceTasks || []).some(item => String(item?.status || '') === 'paused')) return 'paused'
   if (hasAnyActiveRuntime(task)) return 'processing'
@@ -1235,6 +1249,7 @@ function hasTaskFailures(task) {
 }
 
 function getDownloadTaskStatusLabel(task) {
+  if (task.task_metadata?.browser_verification_required) return '等待验证'
   const status = String(task?.display_status || task?.status || '')
   const map = { pending: '等待中', processing: '处理中', completed: '已完成', cancelled: '已取消', partial_failed: '部分失败', failed: '失败', paused: '已暂停', waiting_retry: '等待重试' }
   if (status === 'completed' && isUploadEnabled(task)) return '已上传 / 已入库'

@@ -624,8 +624,7 @@
         @pointerdown.capture="onTableMarqueePointerDown"
         @keydown="handleLibraryTableKeydown"
       >
-        <Transition name="lib-file-table-swap" mode="out-in">
-        <div :key="libraryTableKey" ref="tableRef" class="lib-file-table" role="table" aria-label="库内文件列表">
+        <div ref="tableRef" class="lib-file-table" role="table" aria-label="库内文件列表">
           <div class="lib-file-table-head" role="rowgroup">
             <div class="lib-file-table-header-row" role="row">
               <div class="lib-file-th is-name" role="columnheader">
@@ -708,7 +707,6 @@
           <div v-if="!libraryTableRows.length" class="lib-file-empty-row">暂无文件</div>
         </div>
         </div>
-        </Transition>
         <div
           v-if="tableMarqueeState.visible"
           class="lib-table-marquee-box"
@@ -2045,6 +2043,8 @@ const router = useRouter()
 
 const loading = ref(false)
 
+const libraryInitializing = ref(true)
+
 const statsLoading = ref(false)
 
 const isRefreshingCurrentPageIndex = ref(false)
@@ -2108,7 +2108,7 @@ const circleWorkTotal = ref(0)
 
 const circleLoading = ref(false)
 
-const libraryContentLoading = computed(() => loading.value || circleLoading.value || libraryViewModeSwitching.value)
+const libraryContentLoading = computed(() => libraryInitializing.value || loading.value || circleLoading.value || libraryViewModeSwitching.value)
 
 const circleKeyword = ref('')
 
@@ -2674,7 +2674,7 @@ async function refreshCircleLibraryView (options = {}) {
   circleAbortController = controller
   const shouldShowLoading = !options.silent
 
-  circleLoading.value = shouldShowLoading
+  circleLoading.value = circleLoading.value || shouldShowLoading
 
   circleErrorMessage.value = ''
 
@@ -6317,30 +6317,6 @@ const canFilterDeleteCurrentFolder = computed(() => {
 
 })
 
-const libraryTableKey = computed(() => [
-
-  libraryViewMode.value,
-
-  selectedLibraryId.value || 'default',
-
-  libraryViewMode.value === 'circle'
-    ? circleVirtualCurrentPath.value
-    : (currentPath.value || browseRootPath.value || '/'),
-
-  activeLibraryPage.value,
-
-  activeLibraryPageSize.value,
-
-  sortBy.value,
-
-  sortOrder.value,
-
-  searchQuery.value.trim()
-
-].join('::'))
-
-
-
 
 
 
@@ -7297,6 +7273,8 @@ const subtitleConfigCtx = computed(() => ({
 
 const subtitleTaskStageCtx = computed(() => ({
 
+  refreshBrowserDownloadTasks: () => refreshRJSubtitleStatus(false, { silent: true }),
+
   subtitleQueueTasks: subtitleQueueTasks.value,
 
   visibleSubtitleTasks: visibleSubtitleTasks.value,
@@ -7620,21 +7598,19 @@ async function initializeLibraryPage () {
 
   if (libraryInitialized) return
 
-  restoreUploadWorkbenchState()
-
-  await loadLibraryViewPreferences()
-
-  await loadLibraries()
+  try {
+    restoreUploadWorkbenchState()
+    await loadLibraryViewPreferences()
+    await loadLibraries()
+    await nextTick()
+    await refreshLibrary()
+  } finally {
+    libraryInitializing.value = false
+  }
 
   await loadRJSubtitlePreferences()
 
   restoreSubtitleScanWorkspace()
-
-  if (libraryViewMode.value === 'circle') {
-
-    await refreshCircleLibraryView({ silent: true })
-
-  }
 
   if (selectedLibraryId.value) {
 
@@ -8330,6 +8306,8 @@ watch(selectedLibraryId, async (newId, oldId) => {
 
   clearSubtitleInspectorState()
 
+  if (libraryInitializing.value && !oldId) return
+
   if (libraryViewMode.value === 'circle') {
 
     refreshStats(false, { silent: true })
@@ -8878,14 +8856,19 @@ function handleLibraryIndexStatusChange (status, source = 'store') {
 
   if (Number.isFinite(nextViewRevision) && (!Number.isFinite(previousViewRevision) || nextViewRevision > previousViewRevision)) {
     clearCircleViewRequestCache()
+    const circleInterrupted = libraryViewMode.value === 'circle' && Boolean(circleAbortController)
+    const circleSilent = !circleLoading.value
     ++circleRefreshSequence
     circleAbortController?.abort()
     circleAbortController = null
     if (String(selectedLibraryId.value || '') === libraryId) {
       const interrupted = directoryRequestGate.diagnostics().requestInFlight
+      const silent = !loading.value
       invalidateDirectoryViewRequests()
-      if (interrupted) scheduleListPoll(files.value, { index_refresh_pending: true })
+      // 已知索引版本已更新，立即补读并延续原请求的加载态。
+      if (interrupted) refreshLibrary({ silent })
     }
+    if (circleInterrupted) refreshCircleLibraryView({ silent: circleSilent })
   }
   flushPendingIndexFenceRefreshes()
 
@@ -9123,7 +9106,7 @@ async function refreshLibraryInternal (options = {}) {
 
   listPolling.value = silent
 
-  loading.value = !silent
+  loading.value = loading.value || !silent
 
   try {
 
@@ -26253,31 +26236,6 @@ usePersistentTaskWorkbench(route, 'subtitle', persistentSubtitleIds, subtitleDia
   opacity: 0.46;
 
   box-shadow: none;
-
-}
-
-.lib-file-table-swap-enter-active,
-.lib-file-table-swap-leave-active {
-
-  transition:
-    opacity 0.22s ease,
-    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-
-}
-
-.lib-file-table-swap-enter-from {
-
-  opacity: 0;
-
-  transform: translateY(10px) scale(0.992);
-
-}
-
-.lib-file-table-swap-leave-to {
-
-  opacity: 0;
-
-  transform: translateY(-8px) scale(0.996);
 
 }
 

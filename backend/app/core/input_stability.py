@@ -75,8 +75,11 @@ def check_task_sources(task, config, *, paths=None, max_wait=1800, now=None):
     wait = metadata.get("input_source_wait") or {"started_at": now}
     if now - wait["started_at"] >= max_wait:
         raise TimeoutError(f"等待文件稳定或可读超时 ({max_wait}秒): {task.source_path}")
-    # 手扫单包没有观察窗口，过期证据也必须重新观察。
-    if not evidence.get("needs_stability") or now - evidence.get("observed_at", 0) > 15:
+    # 已完成的观察窗口可以跨越耗时预检；observe_sources 会重新核对整组身份和策略。
+    # 未完成的过期窗口仍需重建，手扫单包的身份采样也不能当作稳定证据。
+    if not evidence.get("needs_stability") or (
+        not evidence.get("verified") and now - evidence.get("observed_at", 0) > 15
+    ):
         evidence = {}
     try:
         evidence, reason = observe_sources(

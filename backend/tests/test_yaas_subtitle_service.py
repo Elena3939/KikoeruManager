@@ -33,12 +33,30 @@ def test_exact_rj(name, expected):
 
 def test_path_authorization_separates_subtitle_and_audio():
     path = yaas.BASE + '/' + yaas.COLLECTIONS[0][0] + '/RJ123456.zip'
+    assert yaas.BASE == '/SP后端1[音声分区]/LRCs'
     assert yaas.subtitle_path('/guest' + path) == path
     with pytest.raises(ValueError):
         resources.public_path(path)
-    for invalid in (path + '/../x.zip', path.replace('/RJ', '\\RJ'), yaas.BASE + '/other/RJ123456.zip'):
+    for invalid in (
+        path + '/../x.zip',
+        path.replace('/RJ', '\\RJ'),
+        yaas.BASE + '/other/RJ123456.zip',
+        '/SP后端1[音声分区]/' + yaas.COLLECTIONS[0][0] + '/RJ123456.zip',
+    ):
         with pytest.raises(ValueError):
             yaas.subtitle_path(invalid)
+
+
+def test_cached_index_rejects_legacy_mojibake_path():
+    collection = yaas.COLLECTIONS[0][0]
+    valid = [{
+        'name': 'RJ123456.zip',
+        'path': f'{yaas.BASE}/{collection}/RJ123456.zip',
+        'size': 100,
+    }]
+    legacy = [{**valid[0], 'path': '/SP���1[��������]/LRCs/合集/RJ123456.zip'}]
+    assert yaas.YaasSubtitleService._valid_cached_index(collection, valid)
+    assert not yaas.YaasSubtitleService._valid_cached_index(collection, legacy)
 
 
 @pytest.mark.parametrize('entry', [
@@ -87,6 +105,7 @@ async def test_index_singleflight_cache_and_archive_limits(monkeypatch):
     name = yaas.COLLECTIONS[0][0]
     first, second = await asyncio.gather(service._index(name), service._index(name))
     assert first == second
+    assert calls == [yaas.BASE + '/' + name]
     assert [item['name'] for item in first] == ['RJ123456.zip']
     assert await service._index(name) == first
     assert len(calls) == 1

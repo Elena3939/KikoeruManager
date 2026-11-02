@@ -22,6 +22,7 @@ function mountViewport(options) {
 }
 
 const originalResizeObserver = globalThis.ResizeObserver
+const originalIntersectionObserver = globalThis.IntersectionObserver
 const originalRequestAnimationFrame = globalThis.requestAnimationFrame
 const originalCancelAnimationFrame = globalThis.cancelAnimationFrame
 const originalClientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth')
@@ -31,6 +32,12 @@ let mockClientHeight = 600
 
 describe('CircleWorksViewport', () => {
   beforeAll(() => {
+    globalThis.IntersectionObserver = class {
+      constructor(callback) { this.callback = callback }
+      observe(target) { this.callback([{ target, isIntersecting: true }]) }
+      unobserve() {}
+      disconnect() {}
+    }
     // 确定性执行图片调度帧，避免 flushPromises 早于浏览器的下一帧。
     let frameId = 0
     const frames = new Map()
@@ -70,6 +77,7 @@ describe('CircleWorksViewport', () => {
   })
 
   afterAll(() => {
+    globalThis.IntersectionObserver = originalIntersectionObserver
     globalThis.requestAnimationFrame = originalRequestAnimationFrame
     globalThis.cancelAnimationFrame = originalCancelAnimationFrame
     globalThis.ResizeObserver = originalResizeObserver

@@ -264,11 +264,18 @@ class DLsiteBonusProbeService:
             if not bool(row.is_bonus_work) and row.canonical_rjcode
         )
 
-    def _completed_original_state_map(self, db, circle_id: str, rjcodes: Sequence[str]) -> Dict[str, str]:
+    def _completed_original_state_map(
+        self,
+        db,
+        circle_id: str,
+        rjcodes: Sequence[str],
+        *,
+        release_date: str = "",
+    ) -> Dict[str, str]:
         normalized = self._dedupe(rjcodes)
         if not circle_id or not normalized:
             return {}
-        rows = (
+        query = (
             db.query(DLsiteBonusOriginalProbeState)
             .filter(
                 DLsiteBonusOriginalProbeState.circle_id == circle_id,
@@ -276,8 +283,11 @@ class DLsiteBonusProbeService:
                 DLsiteBonusOriginalProbeState.strategy_version == self.PROBE_STRATEGY_VERSION,
                 DLsiteBonusOriginalProbeState.status.in_(("no_bonus", "has_bonus")),
             )
-            .all()
         )
+        normalized_date = self.normalize_date(release_date)
+        if normalized_date:
+            query = query.filter(DLsiteBonusOriginalProbeState.release_date == normalized_date)
+        rows = query.all()
         return {
             self.normalize_rjcode(row.original_rjcode): str(row.status or "").strip()
             for row in rows
@@ -1213,6 +1223,7 @@ class DLsiteBonusProbeService:
         concurrency: int,
         progress_callback: Optional[Callable[[int, int], None]] = None,
         force_refresh: bool = False,
+        expected_release_date: str = "",
     ) -> Tuple[Dict[str, DLsiteProductProbeFeature], int, int]:
         normalized = self._dedupe(rjcodes)
         if not normalized:
@@ -1221,9 +1232,18 @@ class DLsiteBonusProbeService:
         cache_options = {"force_refresh": True} if force_refresh else {}
         features = await asyncio.to_thread(self._load_cached_features_sync, normalized, **cache_options)
 
+        normalized_expected_date = self.normalize_date(expected_release_date)
         missing = [
             workno for workno in normalized
-            if workno not in features or self._needs_dl_count_refresh(features[workno])
+            if (
+                workno not in features
+                or self._needs_dl_count_refresh(features[workno])
+                or (
+                    normalized_expected_date
+                    and self.normalize_date(features[workno].release_date)
+                    and self.normalize_date(features[workno].release_date) != normalized_expected_date
+                )
+            )
         ]
         request_count = 0
         checked_count = len(normalized) - len(missing)
@@ -1367,7 +1387,12 @@ class DLsiteBonusProbeService:
                 continue
             same_date_originals.append(canonical)
 
-        state_map = self._completed_original_state_map(db, normalized_circle, same_date_originals)
+        state_map = self._completed_original_state_map(
+            db,
+            normalized_circle,
+            same_date_originals,
+            release_date=normalized_date,
+        )
         has_bonus_count = sum(1 for value in state_map.values() if value == "has_bonus")
         no_bonus_count = sum(1 for value in state_map.values() if value == "no_bonus")
         concluded_count = has_bonus_count + no_bonus_count
@@ -1407,7 +1432,16 @@ class DLsiteBonusProbeService:
             worknos = self._public_original_worknos_from_rows(rows)
             if not worknos:
                 return []
-            state_map = {} if include_checked else self._completed_original_state_map(db, circle_id, worknos)
+            state_map = (
+                {}
+                if include_checked
+                else self._completed_original_state_map(
+                    db,
+                    circle_id,
+                    worknos,
+                    release_date=release_date,
+                )
+            )
             metadata_rows = (
                 db.query(WorkMetadata)
                 .filter(WorkMetadata.rjcode.in_(worknos))
@@ -1601,7 +1635,9 @@ class DLsiteBonusProbeService:
                 f"发售日 {release_date} 的 RJ 探测范围超出预算，已沉淀命中线索但不产出无特典结论"
             )
         elif result.get("incomplete"):
-            result["error_message"] = "候选 RJ 未全部取得稳定结果，保留命中线索但不产出无特典结论"
+            result["error_message"] = result.get("error_message") or (
+                "候选 RJ 未全部取得稳定结果，保留命中线索但不产出无特典结论"
+            )
         elif original_summary["pending_count"] != 0:
             raise RuntimeError(
                 f"发售日 {release_date} 仍有 {original_summary['pending_count']} 个原作未形成特典结论"
@@ -2400,18 +2436,33 @@ class DLsiteBonusProbeService:
             worknos = self._public_original_worknos_from_rows(rows)
             if not worknos:
                 return []
-            state_map = self._completed_original_state_map(db, normalized_circle_id, worknos)
             query = db.query(WorkMetadata).filter(WorkMetadata.rjcode.in_(worknos), WorkMetadata.release_date != None)  # noqa: E711
             if normalized_maker_id:
                 query = query.filter(WorkMetadata.maker_id == normalized_maker_id)
+            completed_states = {
+                (
+                    self.normalize_rjcode(row.original_rjcode),
+                    self.normalize_date(row.release_date),
+                )
+                for row in db.query(DLsiteBonusOriginalProbeState)
+                .filter(
+                    DLsiteBonusOriginalProbeState.circle_id == normalized_circle_id,
+                    DLsiteBonusOriginalProbeState.original_rjcode.in_(worknos),
+                    DLsiteBonusOriginalProbeState.strategy_version == self.PROBE_STRATEGY_VERSION,
+                    DLsiteBonusOriginalProbeState.status.in_(("no_bonus", "has_bonus")),
+                )
+                .all()
+            }
             dates = []
             for row in query.all():
                 if bool(row.is_bonus_work) or is_unreleased(row.release_date):
                     continue
-                if state_map.get(self.normalize_rjcode(row.rjcode)) in {"no_bonus", "has_bonus"}:
-                    continue
                 normalized_date = self.normalize_date(row.release_date)
-                if normalized_date and normalized_date not in dates:
+                if not normalized_date:
+                    continue
+                if (self.normalize_rjcode(row.rjcode), normalized_date) in completed_states:
+                    continue
+                if normalized_date not in dates:
                     dates.append(normalized_date)
             dates.sort(reverse=True)
             if str(mode or "normal") != "deep":
@@ -2493,7 +2544,12 @@ class DLsiteBonusProbeService:
                 ).first()
             )
             if target_rjcodes and not force_refresh:
-                states = self._completed_original_state_map(db, circle_id, target_rjcodes)
+                states = self._completed_original_state_map(
+                    db,
+                    circle_id,
+                    target_rjcodes,
+                    release_date=release_date,
+                )
                 if set(target_rjcodes).issubset(states):
                     return {
                         "circle_id": circle_id, "maker_id": maker_id,
@@ -2542,6 +2598,7 @@ class DLsiteBonusProbeService:
             )
             if target_rjcodes:
                 query = query.filter(DLsiteBonusOriginalProbeState.original_rjcode.in_(target_rjcodes))
+                query = query.filter(DLsiteBonusOriginalProbeState.release_date == release_date)
             else:
                 query = query.filter(DLsiteBonusOriginalProbeState.release_date == release_date)
             states = query.all()
@@ -2726,11 +2783,40 @@ class DLsiteBonusProbeService:
                 release_date=normalized_date,
             )
             if self._parse_status_blocks_conclusion(parse_status):
-                raise RuntimeError(f"DLsite 日期页解析异常，未产出特典结论：{normalized_date} ({parse_status})")
+                error_message = f"DLsite 日期页解析异常，未产出特典结论：{normalized_date} ({parse_status})"
+                # 日期页异常只阻止整日结论，不能丢弃此前已确认的缓存特典。
+                if hidden_hits_by_rjcode:
+                    return await asyncio.to_thread(
+                        self._finish_probe_date_result,
+                        circle_id=normalized_circle_id,
+                        maker_id=normalized_maker_id,
+                        release_date=normalized_date,
+                        gap_limit=gap_limit,
+                        mode_key=mode_key,
+                        hidden_hits=list(hidden_hits_by_rjcode.values()),
+                        target_original_rjcodes=normalized_target_rjcodes if selected_scope else None,
+                        result={
+                            "circle_id": normalized_circle_id,
+                            "maker_id": normalized_maker_id,
+                            "release_date": normalized_date,
+                            "parse_status": parse_status,
+                            "public_count": len(public_worknos),
+                            "date_page_public_count": len(date_page_worknos),
+                            "cached_hit_count": cached_hit_count,
+                            "request_count": request_count,
+                            "probe_count": 0,
+                            "inserted_count": inserted_count,
+                            "incomplete": True,
+                            "error_message": error_message,
+                            "reused_hit_index": True,
+                        },
+                    )
+                raise RuntimeError(error_message)
             public_features, cached_hits, requests = await self._load_or_probe_features(
                 public_worknos,
                 batch_size=batch_size,
                 concurrency=concurrency,
+                expected_release_date=normalized_date,
                 **cache_options,
             )
             cached_hit_count += cached_hits
@@ -2841,6 +2927,7 @@ class DLsiteBonusProbeService:
                             shard_candidates,
                             batch_size=batch_size,
                             concurrency=concurrency,
+                            expected_release_date=normalized_date,
                             **cache_options,
                             progress_callback=lambda checked, total, offset=checked_before: emit_probe_progress(
                                 offset + checked,

@@ -48,6 +48,12 @@ function remember() {
   localStorage.setItem(STORAGE, JSON.stringify(Array.from(runtime.values(), s => ({ id: s.id, token: s.token, terminalAt: s.terminalAt }))))
 }
 
+function forgetSession(session) {
+  runtime.delete(session.id)
+  session.sources.clear()
+  remember()
+}
+
 // 仅移除终态会话的展示和恢复记录，不删除已落地文件。
 export function dismissBrowserUpload(id) {
   const session = runtime.get(id)
@@ -353,7 +359,16 @@ async function poll(session) {
       do {
         const result = await request(session, `?offset=${offset}&limit=200`)
         if (runtime.get(session.id) !== session) return
-        if (revision === undefined) revision = result.revision
+        const { files, revision: currentRevision, ...summary } = result
+        Object.assign(session, summary)
+        // 恢复只接续未完成上传；历史成功与取消会话不重新挂回工作台。
+        if (session.restoring && ['completed', 'cancelled'].includes(session.status)) {
+          forgetSession(session)
+          refreshView()
+          return
+        }
+        if (revision === undefined) revision = currentRevision
+        if (!files.length && offset < result.total_entries) throw new Error('上传清单分页未前进，请重新刷新')
         for (const incoming of result.files) session.files.set(incoming.id, { ...session.files.get(incoming.id), ...incoming })
         offset += result.files.length
         if (offset >= result.total_entries) break
@@ -400,6 +415,11 @@ async function poll(session) {
       window.dispatchEvent(new CustomEvent('library-browser-upload-finished', { detail: { libraryId: session.library_id, path: session.target_path } }))
     }
   } catch (error) {
+    if (error.status === 404 && session.restoring) {
+      forgetSession(session)
+      refreshView()
+      return
+    }
     session.connectionError = error.message
     if (error.status === 409) {
       session.snapshotNeeded = true
@@ -480,13 +500,15 @@ export function initializeBrowserUploads() {
     onClose: closeBrowserUploadWorkbench })
   let saved = []
   try { saved = JSON.parse(localStorage.getItem(STORAGE) || '[]') } catch (_) { /* 无历史会话 */ }
+  if (!Array.isArray(saved)) saved = []
   for (const item of saved) {
-    if (!item.id || !item.token) continue
+    if (!item?.id || !item.token || (item.terminalAt && Date.now() - item.terminalAt >= UPLOAD_RETENTION_MS)) continue
     const session = makeSession({ ...item, status: 'receiving', source_label: '恢复上传', needsSource: true, snapshotNeeded: true, restoring: true })
     session.needsSource = true
     runtime.set(item.id, session)
     void poll(session)
   }
+  remember()
   if (!runtime.size) manager.patchWorkbenchState(UPLOAD_WORKBENCH, { cardVisible: false, backgroundActive: false })
   let polling = false
   setInterval(async () => {

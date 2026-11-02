@@ -1087,6 +1087,8 @@ class RJSubtitleService:
                 return await yaas.materialize(option, temp_dir, task_id=task_id,
                     should_cancel=should_cancel, progress_callback=progress_callback)
             except Exception as exc:
+                if getattr(exc, 'verification_url', ''):
+                    raise
                 if isinstance(exc, ResourceSourceStale):
                     stale = exc
                     stale.source = option
@@ -1107,6 +1109,8 @@ class RJSubtitleService:
                 return await yaas.materialize(option, temp_dir, task_id=task_id,
                     should_cancel=should_cancel, progress_callback=progress_callback)
             except Exception as exc:
+                if getattr(exc, 'verification_url', ''):
+                    raise
                 if isinstance(exc, ResourceSourceStale):
                     stale = exc
                     stale.source = option
@@ -1163,6 +1167,10 @@ class RJSubtitleService:
                 os.makedirs(temp_dir, exist_ok=True)
                 prepared = await self._prepare_fetch_source(retry_source, attempts, temp_dir, **kwargs)
             if prepared is None:
+                reasons = [str(item.get('reason') or '').strip() for item in attempts
+                           if str(item.get('reason') or '').strip()]
+                if reasons:
+                    raise ValueError(f'字幕候选下载或校验失败：{reasons[-1]}')
                 raise ValueError('所有字幕候选均未通过校验，关联中文 MP3 和原档也未找到可用字幕')
             from .task_engine import get_task_engine
             parent = get_task_engine().get_task(kwargs['task_id']) if kwargs.get('task_id') else None

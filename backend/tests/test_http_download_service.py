@@ -2988,6 +2988,63 @@ def test_retry_selection_items_keep_google_drive_api_metadata(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_pikpak_download_link_retries_restore_null_response(monkeypatch):
+    import app.core.http_download_service as http_download_service_module
+
+    service = HttpDownloadService()
+    calls = {"count": 0, "refresh": 0, "sleeps": []}
+
+    class Client:
+        captcha_token = "stale-token"
+
+        async def get_download_url(self, _file_id):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise ValueError("proto: (line 1:271): invalid value for string type: null")
+            return {
+                "name": "RJ01730325.7z.005",
+                "web_content_link": "https://cdn.example/file",
+            }
+
+    async def fake_refresh(*_args, **_kwargs):
+        calls["refresh"] += 1
+
+    async def fake_sleep(delay):
+        calls["sleeps"].append(delay)
+
+    monkeypatch.setattr(service, "_refresh_pikpak_login_with_password", fake_refresh)
+    monkeypatch.setattr(http_download_service_module.asyncio, "sleep", fake_sleep)
+
+    result = await service._pikpak_download_link(Client(), "restored-id", max_attempts=2)
+
+    assert result["_download_url"] == "https://cdn.example/file"
+    assert calls["count"] == 2
+    assert calls["refresh"] == 0
+    assert calls["sleeps"] == [2.0]
+
+
+@pytest.mark.asyncio
+async def test_pikpak_download_link_keeps_transient_error_after_bounded_retries(monkeypatch):
+    import app.core.http_download_service as http_download_service_module
+
+    service = HttpDownloadService()
+
+    class Client:
+        captcha_token = "stale-token"
+
+        async def get_download_url(self, _file_id):
+            raise ValueError("proto: invalid value for string type: null")
+
+    async def fake_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(http_download_service_module.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(HttpDownloadError, match="解析下载直链失败"):
+        await service._pikpak_download_link(Client(), "restored-id", max_attempts=2)
+
+
+@pytest.mark.asyncio
 async def test_resolve_pikpak_materialize_filters_selected_failed_item(monkeypatch, tmp_path):
     bind_config(
         monkeypatch,

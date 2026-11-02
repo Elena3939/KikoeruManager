@@ -55,7 +55,7 @@
       :class="{ 'is-pairing-mode': showPairing && !showTree }"
       v-app-loading="{ loading: view.subtitleInspectorLoading || view.subtitleInspectorDeleting || view.subtitlePairApplying, text: '正在处理字幕目录...', size: 124 }"
     >
-      <div class="flex items-center justify-between gap-3 flex-wrap px-4 py-3 rounded-[12px] border border-slate-200 bg-white">
+      <div class="subtitle-inspector-summary flex items-center justify-between gap-3 flex-wrap px-2 py-3 border-b border-slate-200 bg-white">
 
         <div class="flex items-center gap-2.5 min-w-0">
           <span class="subtitle-folder-mark flex-shrink-0 inline-flex items-center justify-center w-8 h-8"><FolderOpen :size="18" :stroke-width="2.35" /></span>
@@ -86,7 +86,7 @@
       </div>
 
       <div v-if="showPairing" class="subtitle-pairing-stage flex min-h-0 flex-col gap-3">
-        <div class="grid gap-3 px-4 py-3.5 rounded-[12px] border border-slate-200 bg-white">
+        <div class="subtitle-pairing-toolbar grid gap-3 px-2 py-3.5 border-b border-slate-200 bg-white">
 
           <div class="flex flex-col gap-1.5 min-w-0">
             <div class="flex items-center gap-2">
@@ -219,11 +219,11 @@
       </div>
       </div>
 
-      <div v-if="showPairing && view.activeSubtitleTaskProgressLogs?.length" class="subtitle-pairing-progress-log flex flex-col gap-2 p-3 rounded-[13px] bg-slate-50 border border-slate-200">
-        <div class="flex items-center justify-between">
+      <details v-if="showPairing && view.activeSubtitleTaskProgressLogs?.length" class="subtitle-pairing-progress-log border-t border-slate-200">
+        <summary class="flex cursor-pointer items-center justify-between gap-2 py-3">
           <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">过程日志</span>
           <span class="text-[11px] text-slate-400">{{ view.activeSubtitleTaskProgressLogs.length }} 条</span>
-        </div>
+        </summary>
         <div class="flex flex-col gap-px">
           <div v-for="(entry, idx) in view.activeSubtitleTaskProgressLogs" :key="`pair-log-${idx}`" class="flex items-start gap-2 py-1 border-b border-slate-100 last:border-b-0">
             <span class="flex-shrink-0 text-[10px] text-slate-400 tabular-nums mt-0.5">{{ view.formatProgressLogTime(entry.time) }}</span>
@@ -231,7 +231,7 @@
             <span class="text-[11.5px] text-slate-700 leading-relaxed">{{ entry.message }}</span>
           </div>
         </div>
-      </div>
+      </details>
 
       <div v-if="showTree" class="grid gap-3">
         <div class="subtitle-tree-search-shell group/search flex items-center gap-2 rounded-[12px] border border-slate-200 bg-slate-50/60 px-3 py-2 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] focus-within:border-sky-400 focus-within:bg-white focus-within:shadow-[0_0_0_3px_rgba(56,189,248,0.15)] hover:border-slate-300">
@@ -1585,8 +1585,7 @@ html.dark .subtitle-folder-mark:hover {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 360px;
-  overflow-x: hidden;
-  overflow-y: hidden;
+  overflow: visible;
 }
 
 .subtitle-pairing-grid {
@@ -1605,12 +1604,34 @@ html.dark .subtitle-folder-mark:hover {
 .subtitle-pairing-grid > * {
   min-width: 0;
   min-height: 360px;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+}
+
+.subtitle-pairing-grid > * + * {
+  border-left: 1px solid var(--siw-border, #e2e8f0);
 }
 
 .subtitle-pairing-list {
   min-height: 0;
   max-height: 420px;
-  scrollbar-gutter: stable;
+  overflow-x: hidden;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  scrollbar-width: none;
+  scrollbar-gutter: auto;
+  overscroll-behavior-y: contain;
+}
+
+.subtitle-pairing-list::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.subtitle-pairing-list > * {
+  flex-shrink: 0;
 }
 
 .subtitle-inspector-workbench-scroll.is-pairing-mode {
@@ -1627,8 +1648,19 @@ html.dark .subtitle-folder-mark:hover {
 }
 
 .subtitle-pairing-progress-log {
-  max-height: 220px;
-  overflow: auto;
+  max-height: none;
+  overflow: visible;
+  border-radius: 0;
+  background: transparent;
+}
+
+.subtitle-pairing-progress-log summary::after {
+  content: '+';
+  font-size: 16px;
+}
+
+.subtitle-pairing-progress-log[open] summary::after {
+  content: '-';
 }
 
 .is-spinning { animation: subtitle-spin 1s linear infinite; }
@@ -1647,6 +1679,10 @@ html.dark .subtitle-folder-mark:hover {
 @media (max-width: 1180px) {
   .subtitle-pairing-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .subtitle-pairing-grid > * + * {
+    border-left: 0;
+    border-top: 1px solid var(--siw-border, #e2e8f0);
   }
 }
 </style>

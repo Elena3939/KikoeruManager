@@ -48,7 +48,7 @@ def test_manual_single_archive_only_samples_identity(tmp_path):
     assert not valid_stability_evidence(evidence, [str(path)], checks=3, interval=2, now=101)
 
 
-def test_execution_observes_once_and_resets_expired_evidence(tmp_path):
+def test_execution_refreshes_verified_evidence_after_slow_precheck(tmp_path):
     path = tmp_path / "a.zip"
     path.write_bytes(b"data")
     task = SimpleNamespace(source_path=str(path), task_metadata={"input_members": [str(path)]})
@@ -58,13 +58,53 @@ def test_execution_observes_once_and_resets_expired_evidence(tmp_path):
     assert check_task_sources(task, config, now=102) == "file_changing"
     assert check_task_sources(task, config, now=104) is None
     assert "input_source_wait" not in task.task_metadata
-    assert check_task_sources(task, config, now=130) == "file_changing"
+    assert check_task_sources(task, config, now=130) is None
+    assert task.task_metadata["input_stability"]["observed_at"] == 130
+    assert "input_source_wait" not in task.task_metadata
+    path.write_bytes(b"changed")
+    assert check_task_sources(task, config, now=160) == "file_changing"
     with pytest.raises(TimeoutError):
-        check_task_sources(task, config, now=140, max_wait=10)
+        check_task_sources(task, config, now=170, max_wait=10)
+
+
+def test_expired_unverified_evidence_restarts_window(tmp_path):
+    path = tmp_path / "a.zip"
+    path.write_bytes(b"data")
+    task = SimpleNamespace(source_path=str(path), task_metadata={})
+    config = SimpleNamespace(processing=SimpleNamespace(file_stable_checks=2, file_stable_interval=2))
+    assert check_task_sources(task, config, now=100) == "file_changing"
+    assert check_task_sources(task, config, now=102) == "file_changing"
+    assert check_task_sources(task, config, now=130) == "file_changing"
+    assert task.task_metadata["input_stability"]["consistent_checks"] == 0
+
+
+@pytest.mark.parametrize("change", ["member", "policy", "aria2", "replacement"])
+def test_expired_verified_evidence_rechecks_all_sources(tmp_path, change):
+    path = tmp_path / "a.7z.001"
+    path.write_bytes(b"data")
+    task = SimpleNamespace(source_path=str(path), task_metadata={})
+    config = SimpleNamespace(processing=SimpleNamespace(file_stable_checks=1, file_stable_interval=2))
+    assert check_task_sources(task, config, now=100) == "file_changing"
+    assert check_task_sources(task, config, now=102) is None
+    if change == "member":
+        member = tmp_path / "a.7z.002"
+        member.write_bytes(b"data")
+        task.task_metadata["input_members"].append(str(member))
+    elif change == "policy":
+        config.processing.file_stable_checks = 2
+    elif change == "aria2":
+        (tmp_path / "a.7z.001.aria2").write_bytes(b"")
+    else:
+        replacement = tmp_path / "replacement"
+        replacement.write_bytes(b"data")
+        replacement.replace(path)
+    assert check_task_sources(task, config, now=130) is not None
+    assert not task.task_metadata["input_stability"]["verified"]
 
 
 @pytest.mark.asyncio
-async def test_complete_volume_set_consumes_shared_evidence_without_sleep(tmp_path, monkeypatch):
+@pytest.mark.parametrize("precheck_seconds", [0, 90])
+async def test_complete_volume_set_consumes_shared_evidence_without_sleep(tmp_path, monkeypatch, precheck_seconds):
     from app.core.extract_service import ExtractService
     from app.core.task_engine import Task, TaskType
     from app.config.settings import get_config
@@ -77,7 +117,7 @@ async def test_complete_volume_set_consumes_shared_evidence_without_sleep(tmp_pa
     config = get_config()
     evidence, _ = observe_sources(
         paths, {}, checks=config.processing.file_stable_checks,
-        interval=config.processing.file_stable_interval, now=time.time(),
+        interval=config.processing.file_stable_interval, now=time.time() - precheck_seconds,
     )
     evidence.update(verified=True, consistent_checks=config.processing.file_stable_checks)
     task = Task(TaskType.AUTO_PROCESS, paths[0], metadata={

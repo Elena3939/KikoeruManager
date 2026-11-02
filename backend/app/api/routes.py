@@ -41,6 +41,7 @@ from types import SimpleNamespace
 import uuid
 import yaml
 from ..core.request_performance import request_metrics, run_sync_stage
+from .browser_verification_routes import router as browser_verification_router
 
 # Create logger instance
 logger = logging.getLogger(__name__)
@@ -482,6 +483,7 @@ app = FastAPI(
 app.add_middleware(MediaAwareGZipMiddleware, minimum_size=1024)
 from .browser_upload_routes import router as browser_upload_router
 app.include_router(browser_upload_router)
+app.include_router(browser_verification_router)
 from .file_move_routes import router as file_move_router
 app.include_router(file_move_router)
 
@@ -2478,20 +2480,6 @@ def _library_index_maintenance_config() -> dict:
                 float(os.getenv("KIKOERUMANAGER_LIBRARY_INDEX_GENERATION_CLEANUP_SECONDS", "15") or 15),
             ),
         ),
-        "rjcode_limit": max(
-            100,
-            min(
-                5000,
-                int(os.getenv("KIKOERUMANAGER_LIBRARY_INDEX_RJCODE_BACKFILL_LIMIT", "1000") or 1000),
-            ),
-        ),
-        "rjcode_max_batches": max(
-            1,
-            min(
-                50,
-                int(os.getenv("KIKOERUMANAGER_LIBRARY_INDEX_RJCODE_BACKFILL_MAX_BATCHES", "10") or 10),
-            ),
-        ),
     }
 
 
@@ -2577,7 +2565,6 @@ async def _periodic_library_index_maintenance():
             )
             if (
                 int(result.get("generation_rows_removed") or 0) > 0
-                or int((result.get("rjcodes") or {}).get("repaired") or 0) > 0
                 or int((result.get("status_stats") or {}).get("repaired") or 0) > 0
             ):
                 logger.info("[索引维护] 周期维护完成: %s", result)
@@ -18386,6 +18373,9 @@ def _serialize_rj_subtitle_task_status(task) -> dict:
     metadata = _task_metadata_with_redis_runtime(task)
     status_value, progress, current_step = _task_runtime_response_values(task)
     return {
+        "task_metadata": {
+            "browser_verification_required": bool(metadata.get("browser_verification_required")),
+        },
         "id": task.id,
         "rjcode": metadata.get("rjcode", ""),
         "actual_rjcode": metadata.get("actual_rjcode", ""),

@@ -79,7 +79,10 @@
           </div>
         </div>
 
-        <div class="max-h-[96px] overflow-y-auto break-words text-[12.5px] leading-relaxed text-slate-700 detail-scroll">
+        <div
+          v-if="!item.error_message"
+          class="max-h-[96px] overflow-y-auto break-words text-[12.5px] leading-relaxed text-slate-700 detail-scroll"
+        >
           {{ item.current_step || '-' }}
         </div>
 

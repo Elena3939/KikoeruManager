@@ -1,5 +1,5 @@
 <template>
-  <div class="detail-body">
+  <div class="detail-body" :class="{ 'is-baidu-detail': row?.category === 'baidu_netdisk' }">
     <!-- 顶部：分类 / 状态 / 关闭 -->
     <header class="detail-head">
       <button v-if="canGoBack" class="detail-back" type="button" @click="$emit('back')">
@@ -768,6 +768,10 @@ async function copyText(value) {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.is-baidu-detail .detail-scroll > :deep(.panel) {
+  flex-shrink: 0;
 }
 
 .detail-scroll::-webkit-scrollbar {

@@ -7,7 +7,7 @@
         <div class="entry-section-title">关键字段（{{ highlights.length }} 项）</div>
       </div>
     </div>
-    <dl class="highlight-grid">
+    <dl class="highlight-grid" :class="{ 'baidu-highlights': row?.category === 'baidu_netdisk' }">
       <div
         v-for="hl in highlights"
         :key="`hl-${hl.k}`"
@@ -377,6 +377,7 @@
     v-for="section in entrySections"
     :key="`es-${section.key}`"
     class="panel"
+    :class="{ 'baidu-file-section': row?.category === 'baidu_netdisk' }"
   >
     <div class="entry-section-head">
       <div class="entry-section-head-copy">
@@ -436,7 +437,7 @@
                       :size="20"
                       :class="['entry-icon', m.entryIconClass(entry), { 'is-deleted': entry.variant === 'deleted' }]"
                     />
-                    <span :class="['entry-name', { 'is-deleted': entry.variant === 'deleted', 'is-added': entry.variant === 'added', 'is-changed': entry.variant === 'changed', 'is-failed': entry.variant === 'failed' || entry.variant === 'warning' }]">
+                    <span :title="entry.label || entry.name || entry.relative_path" :class="['entry-name', { 'is-deleted': entry.variant === 'deleted', 'is-added': entry.variant === 'added', 'is-changed': entry.variant === 'changed', 'is-failed': entry.variant === 'failed' || entry.variant === 'warning' }]">
                       {{ entry.label || entry.name || entry.relative_path || '—' }}
                     </span>
                   </span>
@@ -446,6 +447,12 @@
                     class="entry-inline-badge"
                   >{{ badge }}</span>
                 </div>
+                <dl v-if="entry.detailFields?.length" class="entry-detail-fields">
+                  <div v-for="field in entry.detailFields" :key="field.label" class="entry-detail-field">
+                    <dt>{{ field.label }}</dt>
+                    <dd>{{ field.value }}</dd>
+                  </div>
+                </dl>
                 <span v-if="entry.metaText" class="entry-meta-text">{{ entry.metaText }}</span>
               </div>
             </span>
@@ -2677,6 +2684,95 @@ html.kikoerumanager-dark .tree-row:hover {
   flex-basis: calc(100% - 28px);
   margin-left: 28px;
   padding-left: 0;
+}
+
+/* 百度下载的名称、状态与路径分层，长文件名不参与标签的宽度竞争。 */
+.baidu-highlights {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.baidu-highlights .highlight-row {
+  grid-template-columns: 96px minmax(0, 1fr);
+}
+
+.baidu-highlights .highlight-row:not(:last-child) {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.baidu-file-section .tree-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: 12px;
+  padding: 12px;
+}
+
+.baidu-file-section .tree-main {
+  grid-column: 1;
+  align-items: flex-start;
+}
+
+.baidu-file-section .tree-expander-spacer {
+  display: none;
+}
+
+.baidu-file-section .entry-title-row {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.baidu-file-section .entry-primary-line {
+  flex: 1 0 100%;
+  align-items: flex-start;
+}
+
+.baidu-file-section .entry-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.baidu-file-section .entry-main-copy {
+  gap: 8px;
+}
+
+.baidu-file-section .entry-size {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  margin: 0;
+  line-height: 20px;
+  text-align: right;
+}
+
+.baidu-file-section .entry-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0;
+}
+
+.entry-detail-fields {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.entry-detail-field {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #64748b;
+}
+
+.entry-detail-field dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+:global(html.kikoerumanager-dark .entry-detail-field) {
+  color: var(--km-dark-text-secondary, #a1a1aa);
 }
 
 @media (max-width: 640px) {

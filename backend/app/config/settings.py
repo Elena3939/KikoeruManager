@@ -327,7 +327,7 @@ class HttpDownloaderConfig(BaseModel):
     download_root: str = ""
     aria2_path: str = "aria2c"
     proxy_url: str = ""
-    proxy_platforms: List[str] = Field(default_factory=lambda: ["http", "gofile", "transferit", "onedrive", "google_drive", "pikpak"])
+    proxy_platforms: List[str] = Field(default_factory=lambda: ["http", "gofile", "transferit", "onedrive", "google_drive", "pikpak", "imoutoheaven"])
     max_concurrent_downloads: int = 3
     split: int = 8
     max_connection_per_server: int = 8

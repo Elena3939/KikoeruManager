@@ -772,9 +772,6 @@
                 <div v-if="ownedWorks.length > 0 && selectedActiveCanonicalRJCodes.length > 0" class="selection-bar">
                   <span class="selection-count">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorksTotal }}</span>
                   <div class="flex items-center gap-2">
-                    <StatefulButton unstyled class="batch-action-button" :disabled="subtitleRepair.busy.value" @click="() => subtitleRepair.create(selectedActiveCanonicalRJCodes)">
-                      <Subtitles :size="13" />创建字幕补配任务
-                    </StatefulButton>
                     <button type="button" class="batch-action-button" :class="{ 'is-busy': selectingAllWorks }" :disabled="selectingAllWorks" @click="selectAllVisibleWorks">
                       <RefreshCw v-if="selectingAllWorks" :size="13" class="batch-action-spinner" />
                       {{ selectingAllWorks ? '正在全选' : '全选' }}

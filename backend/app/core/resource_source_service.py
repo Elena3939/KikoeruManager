@@ -36,6 +36,11 @@ VERSION = 1
 class ResourceSourceError(ValueError):
     """保留 YAAS 失败阶段和源站原因，避免任务层误报为传输异常。"""
 
+    def __init__(self, message, *, verification_url='', verification_resource_path=''):
+        super().__init__(message)
+        self.verification_url = str(verification_url or '')
+        self.verification_resource_path = str(verification_resource_path or '')
+
 
 class ResourceSourceStale(ResourceSourceError):
     """已探测资源被删除或替换，需要重新定位。"""
@@ -490,6 +495,15 @@ class ResourceSourceService:
                         continue
                     if response.status_code in {404, 410}:
                         raise ResourceSourceStale('YAAS 已探测资源下载地址失效')
+                    if response.status_code == 403:
+                        body = (await response.aread()).decode('utf-8', errors='replace').strip()
+                        if 'pow_required' in body:
+                            raise ResourceSourceError(
+                                'YAAS 下载节点要求 POW 验证，请在当前浏览器打开验证页下载',
+                                verification_url=url,
+                                verification_resource_path=path,
+                            )
+                        raise ResourceSourceError('YAAS 下载节点返回 HTTP 403')
                     if response.status_code not in {200, 206}:
                         raise ResourceSourceError(f'YAAS 下载节点返回 HTTP {response.status_code}')
                     return {'url': url, 'size_bytes': int(data.get('size') or 0),

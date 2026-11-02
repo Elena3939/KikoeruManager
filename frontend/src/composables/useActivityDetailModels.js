@@ -806,6 +806,7 @@ function buildFilterDeleteTreeRows(items) {
         node.type = item.type
         node.sizeText = item.sizeText || ''
         node.metaText = item.metaText || ''
+        node.detailFields = item.detailFields
         node.error = item.error || ''
         node.badges = Array.isArray(item.badges) ? [...item.badges] : []
         node.variant = item.variant || ''
@@ -854,6 +855,7 @@ function buildFilterDeleteTreeRows(items) {
       rows.push({
         key: node.key, label: node.label, type: node.type,
         sizeText: node.sizeText, metaText: node.metaText, error: node.error,
+        detailFields: node.detailFields,
         badges: node.badges, variant: node.variant || '',
         depth, children: node.children.length ? [...node.children] : [],
         expandable: node.children.length > 0,
@@ -1238,14 +1240,15 @@ function mapBaiduDownloadFileItems(items) {
       || (originalRelativePath && originalRelativePath !== relativePath)
     )
     const badges = []
-    if (wasRenamed) badges.push(`重命名为 ${getFileName(relativePath) || customName || relativePath}`)
+    if (wasRenamed) badges.push('已重命名')
     if (hasPassword) badges.push('指定密码')
     if (status === 'completed') badges.push('已完成')
     else if (status === 'failed') badges.push('失败')
     const metaParts = []
-    if (wasRenamed) metaParts.push(`${originalRelativePath || originalName} -> ${relativePath}`)
+    const detailFields = []
+    if (wasRenamed) detailFields.push({ label: '原文件名', value: originalRelativePath || originalName })
     const targetPath = firstNonEmpty(item.local_path, item.target_path, item.output_path)
-    if (targetPath) metaParts.push(targetPath)
+    if (targetPath) detailFields.push({ label: '保存路径', value: targetPath })
     const downloaded = Number(item.downloaded || 0)
     const total = Number(item.total || item.size || item.size_bytes || 0)
     if (downloaded > 0 && total > 0 && downloaded < total) metaParts.push(`${formatBytes(downloaded)} / ${formatBytes(total)}`)
@@ -1257,6 +1260,7 @@ function mapBaiduDownloadFileItems(items) {
       type: item.is_dir ? 'dir' : 'file',
       sizeText: total > 0 ? formatBytes(total) : '',
       metaText: metaParts.join(' · '),
+      detailFields,
       error: String(item.error || item.failure_reason || '').trim(),
       badges,
       variant: status === 'failed' ? 'failed' : '',
@@ -1289,7 +1293,7 @@ function baiduNetdiskEntrySections(row) {
     return sum + Number(m[1] || 0) * (1024 ** power)
   }, 0)
   const passwordCount = downloadFiles.filter((it) => (it.badges || []).includes('指定密码')).length
-  const renamedCount = downloadFiles.filter((it) => (it.badges || []).some((badge) => String(badge).startsWith('重命名为 '))).length
+  const renamedCount = downloadFiles.filter((it) => (it.badges || []).includes('已重命名')).length
   const titleParts = [`${downloadFiles.length || failedFiles.length} 个文件`]
   if (totalBytes > 0) titleParts.push(formatBytes(totalBytes))
   if (renamedCount > 0) titleParts.push(`重命名 ${renamedCount}`)

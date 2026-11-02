@@ -539,7 +539,10 @@ onBeforeUnmount(() => {
                 'is-expanded': isLineExpanded(safeLines[virtualRow.index], virtualRow.index),
               },
             ]"
-            :style="{ transform: `translate3d(0, ${virtualRow.start}px, 0)` }"
+            :style="{
+              minHeight: `${virtualRow.size}px`,
+              transform: `translate3d(0, ${virtualRow.start}px, 0)`,
+            }"
             @click="!isTaskProgressLine(safeLines[virtualRow.index]) && toggleLineDetail(safeLines[virtualRow.index], virtualRow.index, $event)"
           >
             <span class="terminal-time">{{ formatTime(safeLines[virtualRow.index]?.time) }}</span>
@@ -803,6 +806,7 @@ onBeforeUnmount(() => {
 
 .terminal-line {
   position: absolute;
+  top: 0;
   right: 0;
   left: 0;
   display: grid;
@@ -811,6 +815,7 @@ onBeforeUnmount(() => {
   gap: 8px;
   min-height: 32px;
   padding: 5px 14px;
+  box-sizing: border-box;
   border-left: none;
   color: #d4d4d8;
   font-size: 11.5px;

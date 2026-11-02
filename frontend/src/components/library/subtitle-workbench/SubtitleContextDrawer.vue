@@ -1,6 +1,6 @@
 <template>
   <aside
-    class="subtitle-context-drawer relative grid h-full min-h-0 overflow-hidden rounded-[18px] border border-slate-100 bg-white transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+    class="subtitle-context-drawer relative grid h-full min-h-0 overflow-hidden border-l border-slate-100 bg-white transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
     :class="ctx.drawerCollapsed ? 'content-start gap-2 px-2 py-2.5' : 'grid-rows-[auto_auto_minmax(0,1fr)] gap-2 px-2 py-2'"
   >
     <!-- 浮动收纳手柄 -->

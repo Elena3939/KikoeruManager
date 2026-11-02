@@ -445,15 +445,20 @@ def test_compat_status_schema_adds_materializer_watermarks(monkeypatch):
     assert any("ALTER COLUMN accepted_seq SET NOT NULL" in sql for sql in executed)
 
 
-def test_compat_schema_runs_library_index_consistency_upgrade(monkeypatch):
+def test_compat_schema_skips_legacy_library_index_upgrades(monkeypatch):
     called = []
+    monkeypatch.setattr(
+        "app.core.task_center_list_projection.backfill_list_projections",
+        lambda *_args, **_kwargs: None,
+    )
 
     monkeypatch.setattr(database, "_existing_tables", lambda _conn, table_names: set(table_names))
     monkeypatch.setattr(database, "_load_index_definitions", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(database, "_ensure_indexes_exist", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_existing_columns", lambda *_args, **_kwargs: set(_args[2] or ()))
-    monkeypatch.setattr(database, "_migrate_library_index_entries_schema", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(database, "_migrate_library_index_status_schema", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(database, "_migrate_library_index_entries_schema", lambda *_args, **_kwargs: called.append("entries"))
+    monkeypatch.setattr(database, "_migrate_library_index_status_schema", lambda *_args, **_kwargs: called.append("status"))
+    monkeypatch.setattr(database, "_migrate_library_index_derived_tables", lambda *_args, **_kwargs: called.append("derived"))
     monkeypatch.setattr(database, "_migrate_library_index_consistency_tables", lambda *_args, **_kwargs: called.append(True))
     monkeypatch.setattr(database, "_migrate_library_owned_works_schema", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(database, "_migrate_work_canonical_links_schema", lambda *_args, **_kwargs: None)
@@ -464,7 +469,7 @@ def test_compat_schema_runs_library_index_consistency_upgrade(monkeypatch):
 
     database._migrate_compat_schema(_CompatProbeConnection())
 
-    assert called == [True]
+    assert called == []
 
 
 def test_library_index_consistency_schema_is_created_in_postgresql(db_engine):

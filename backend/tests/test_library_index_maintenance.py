@@ -14,6 +14,7 @@ import app.core.library_index.service as service_module
 from app.core.library_index.service import LibraryIndexService
 from app.core.library_index.types import IndexStatus
 from app.core.library_index.snapshot_store import SnapshotRebuildWriter
+from app.core.library_index.snapshot_store import SnapshotStore
 
 
 class _NonReentrantBudget:
@@ -33,7 +34,21 @@ class _NonReentrantBudget:
             self._local.resource = None
 
 
-def test_periodic_rjcode_backfill_does_not_reacquire_write_budget(monkeypatch):
+def test_rjcode_miss_does_not_repair_legacy_rows():
+    store = SnapshotStore(session_factory=Mock())
+    query = Mock()
+    query.filter.return_value = query
+    query.order_by.return_value = query
+    query.limit.return_value = query
+    query.all.return_value = []
+    store._active_view_query = Mock(return_value=query)
+    store._repair_missing_rjcode_rows = Mock(side_effect=AssertionError("不应在查询时修复旧数据"))
+
+    assert store.find_by_rjcode(None, "RJ123456") == []
+    store._repair_missing_rjcode_rows.assert_not_called()
+
+
+def test_periodic_maintenance_does_not_run_legacy_rjcode_backfill(monkeypatch):
     budget = _NonReentrantBudget()
     store = Mock()
 
@@ -56,18 +71,11 @@ def test_periodic_rjcode_backfill_does_not_reacquire_write_budget(monkeypatch):
         Mock(return_value={"repaired": 0, "libraries": {}}),
     )
 
-    result = service.run_periodic_maintenance(
-        rjcode_limit=250,
-        rjcode_max_batches=1,
-    )
+    result = service.run_periodic_maintenance()
 
-    assert result["rjcodes"] == {
-        "scanned": 0,
-        "repaired": 0,
-        "repaired_by_library": {},
-        "batches": 1,
-    }
-    assert budget.acquire_count == 1
+    store.backfill_missing_rjcodes.assert_not_called()
+    assert "rjcodes" not in result
+    assert budget.acquire_count == 0
 
 
 @pytest.mark.asyncio
@@ -105,7 +113,7 @@ async def test_schedule_rebuild_local_offloads_status_write_from_event_loop(monk
     rebuild_local.assert_called_once_with("library-1", "/library")
 
 
-def test_periodic_rjcode_backfill_continues_after_plain_directory_batch(monkeypatch):
+def test_periodic_maintenance_preserves_generation_cleanup_and_status_repair(monkeypatch):
     store = Mock()
     store.backfill_missing_rjcodes.side_effect = [
         {"scanned": 2, "repaired": 0, "repaired_by_library": {}, "has_more": True},
@@ -114,11 +122,11 @@ def test_periodic_rjcode_backfill_continues_after_plain_directory_batch(monkeypa
     service = LibraryIndexService(store=store)
     monkeypatch.setattr(service, "cleanup_retired_generations", Mock(return_value=0))
     monkeypatch.setattr(service, "repair_status_statistics", Mock(return_value={"repaired": 0, "libraries": {}}))
-    result = service.run_periodic_maintenance(rjcode_limit=2, rjcode_max_batches=3)
-    assert store.backfill_missing_rjcodes.call_count == 2
-    assert result["rjcodes"] == {
-        "scanned": 3, "repaired": 1, "repaired_by_library": {"library-1": 1}, "batches": 2,
-    }
+    result = service.run_periodic_maintenance()
+    store.backfill_missing_rjcodes.assert_not_called()
+    assert "rjcodes" not in result
+    service.cleanup_retired_generations.assert_called_once()
+    service.repair_status_statistics.assert_called_once()
 
 
 @pytest.mark.parametrize("changes", [(1, 0, 0), (0, 4999, 0), (0, 0, 5000), (2000, 2000, 1000), (0, 0, 0)])

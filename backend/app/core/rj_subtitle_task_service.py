@@ -33,6 +33,7 @@ def task_payload(task):
         'folder_name': metadata.get('folder_name') or '',
         'library_id': metadata.get('library_id') or '',
         'awaiting_manual_match': status not in {'failed', 'cancelled'} and bool(metadata.get('awaiting_manual_match')) and not metadata.get('manual_match_completed'),
+        'browser_verification_required': status == 'waiting_manual' and bool(metadata.get('browser_verification_required')),
         'skipped_reason': metadata.get('subtitle_repair_skipped_reason') or '',
         'current_step': task.current_step or '',
     }

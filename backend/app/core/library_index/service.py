@@ -919,36 +919,15 @@ class LibraryIndexService:
         generation_chunk_size: int = 1000,
         generation_max_chunks: int = 10,
         generation_time_budget_seconds: float = 15.0,
-        rjcode_limit: int = 1000,
-        rjcode_max_batches: int = 10,
     ) -> dict[str, object]:
         generation_rows = self.cleanup_retired_generations(
             chunk_size=generation_chunk_size,
             max_chunks=generation_max_chunks,
             time_budget_seconds=generation_time_budget_seconds,
         )
-        rjcode_max_batches = max(1, min(int(rjcode_max_batches or 1), 50))
-        rjcodes = {
-            "scanned": 0,
-            "repaired": 0,
-            "repaired_by_library": {},
-            "batches": 0,
-        }
-        for _ in range(rjcode_max_batches):
-            # backfill 内部的 _write_session 已获取写预算，外层重复获取会在并发上限 1 时自锁。
-            batch = self._store.backfill_missing_rjcodes(limit=rjcode_limit)
-            rjcodes["scanned"] += int(batch.get("scanned") or 0)
-            rjcodes["repaired"] += int(batch.get("repaired") or 0)
-            rjcodes["batches"] += 1
-            for library_id, count in (batch.get("repaired_by_library") or {}).items():
-                repaired_by_library = rjcodes["repaired_by_library"]
-                repaired_by_library[library_id] = repaired_by_library.get(library_id, 0) + int(count or 0)
-            if not bool(batch.get("has_more", bool(batch.get("repaired")))):
-                break
         status_stats = self.repair_status_statistics()
         return {
             "generation_rows_removed": generation_rows,
-            "rjcodes": rjcodes,
             "status_stats": status_stats,
         }
 
@@ -1905,7 +1884,6 @@ class LibraryIndexService:
         *,
         entry_type: Optional[str] = 'dir',
         limit: int = 100,
-        repair_missing: bool = True,
     ) -> list[IndexEntry]:
         """按 RJ 号精确查。
 
@@ -1919,7 +1897,6 @@ class LibraryIndexService:
             rjcode,
             entry_type=entry_type,
             limit=limit,
-            repair_missing=repair_missing,
         )
 
     def find_by_rjcodes(

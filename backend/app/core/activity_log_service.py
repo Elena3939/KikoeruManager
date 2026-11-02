@@ -880,6 +880,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
         TaskType.BAIDU_NETDISK_DOWNLOAD: CATEGORY_BAIDU_NETDISK,
         TaskType.BAIDU_NETDISK_UPLOAD: CATEGORY_BAIDU_NETDISK,
         TaskType.LOCAL_LIBRARY_UPLOAD: CATEGORY_UPLOAD,
+        TaskType.BROWSER_UPLOAD: CATEGORY_UPLOAD,
         TaskType.CIRCLE_COMPLETION_INDEX: CATEGORY_CIRCLE_COMPLETION,
         TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED: CATEGORY_CIRCLE_COMPLETION,
         TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH: CATEGORY_CIRCLE_COMPLETION,
@@ -1215,6 +1216,29 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
             "download_files": download_files[:200],
             "failed_files": failed_files[:200],
         }
+    elif tt == TaskType.BROWSER_UPLOAD:
+        upload = meta.get('browser_upload') or {}
+        counts = upload.get('counts') or {}
+        completed = int(counts.get('completed') or 0)
+        failed = int(counts.get('failed') or 0)
+        duration_ms = _duration_ms_for_task(task)
+        if st == TaskStatus.FAILED and completed:
+            status = 'partial_success'
+        summary = f"浏览器上传：完成 {completed} 个文件，失败 {failed} 个，跳过 {int(counts.get('skipped') or 0)} 个"
+        detail = {
+            'source_action': 'browser_upload', 'source_page': 'library',
+            'source_label': task.source_path, 'target_path': task.output_path,
+            'target_library_id': meta.get('library_id'),
+            'uploaded_count': completed, 'failed_count': failed,
+            'skipped_count': int(counts.get('skipped') or 0),
+            'uploaded_bytes': int(upload.get('written_bytes') or 0),
+            'total_files': int(upload.get('total_files') or 0),
+            'duration_ms': duration_ms,
+            'task_started_at': task.started_at.isoformat() if task.started_at else None,
+            'task_completed_at': task.completed_at.isoformat() if task.completed_at else None,
+        }
+        if transaction is not None:
+            write_event = partial(write_event, created_at=task.completed_at)
     elif tt == TaskType.LOCAL_LIBRARY_UPLOAD:
         upload_runtime = meta.get("upload_runtime") if isinstance(meta.get("upload_runtime"), dict) else {}
         uploaded_files = list(meta.get("uploaded_files") or [])

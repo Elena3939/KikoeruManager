@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import { shallowMount } from '@vue/test-utils'
 import CircleWorksViewport from './CircleWorksViewport.vue'
@@ -16,6 +16,15 @@ vi.mock('@tanstack/vue-virtual', async () => {
       scrollToOffset: vi.fn(), measure: vi.fn(),
     })),
   }
+})
+
+beforeEach(() => {
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback) { this.callback = callback }
+    observe(target) { this.callback([{ target, isIntersecting: true }]) }
+    unobserve() {}
+    disconnect() {}
+  })
 })
 
 afterEach(() => {

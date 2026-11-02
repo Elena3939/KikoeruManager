@@ -2734,17 +2734,33 @@ html.kikoerumanager-dark body #app [data-section="dashboard-hero"] :is(
   box-shadow: 0 14px 30px rgba(0, 0, 0, 0.44), inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
 }
 
+html.kikoerumanager-dark body #app .scan-status {
+  color: var(--km-dark-text-muted) !important;
+}
+html.kikoerumanager-dark body #app .scan-status :is(.scan-status-heading, .scan-file) {
+  color: var(--km-dark-text) !important;
+}
+html.kikoerumanager-dark body #app .scan-status .scan-action {
+  background: transparent !important;
+  color: var(--km-dark-text-muted) !important;
+  border: 1px solid transparent !important;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+}
+html.kikoerumanager-dark body #app .scan-status .scan-action:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: var(--km-dark-text) !important;
+}
+html.kikoerumanager-dark body #app .scan-status :is(.scan-details, .scan-detail-row) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
 html.kikoerumanager-dark body #app [data-section="dashboard-command"] .dash-cmd-scan.dash-cmd-scan {
-  background:
-    linear-gradient(180deg, rgba(31, 34, 41, 0.98) 0%, rgba(18, 21, 28, 0.98) 100%) !important;
-  border: 1px solid rgba(96, 165, 250, 0.38) !important;
-  color: #dbeafe !important;
+  border-radius: 8px !important;
+  background: rgba(56, 189, 248, 0.07) !important;
+  border: 1px solid rgba(56, 189, 248, 0.2) !important;
+  color: #bae6fd !important;
   text-shadow: none !important;
-  box-shadow:
-    0 0 0 1px rgba(59, 130, 246, 0.1),
-    0 8px 20px rgba(0, 0, 0, 0.28),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 3px 0 0 rgba(56, 189, 248, 0.58) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark body #app [data-section="dashboard-command"] .dash-cmd-scan.dash-cmd-scan svg {
@@ -2753,28 +2769,17 @@ html.kikoerumanager-dark body #app [data-section="dashboard-command"] .dash-cmd-
 }
 
 html.kikoerumanager-dark body #app [data-section="dashboard-command"] .dash-cmd-scan.dash-cmd-scan:hover {
-  background:
-    linear-gradient(180deg, rgba(39, 44, 54, 1) 0%, rgba(24, 29, 39, 1) 100%) !important;
+  background: rgba(56, 189, 248, 0.12) !important;
   border-color: rgba(125, 211, 252, 0.52) !important;
   color: #eff6ff !important;
-  box-shadow:
-    0 0 0 1px rgba(56, 189, 248, 0.16),
-    0 10px 24px rgba(0, 0, 0, 0.32),
-    0 0 14px rgba(56, 189, 248, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.13),
-    inset 3px 0 0 rgba(125, 211, 252, 0.78) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark body #app [data-section="dashboard-command"] .dash-cmd-scan.dash-cmd-scan:disabled {
-  background:
-    linear-gradient(180deg, rgba(31, 34, 41, 0.72) 0%, rgba(18, 21, 28, 0.72) 100%) !important;
+  background: rgba(56, 189, 248, 0.04) !important;
   border-color: rgba(96, 165, 250, 0.22) !important;
   color: rgba(219, 234, 254, 0.58) !important;
-  box-shadow:
-    0 0 0 1px rgba(59, 130, 246, 0.06),
-    0 8px 18px rgba(0, 0, 0, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    inset 3px 0 0 rgba(56, 189, 248, 0.28) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark body #app :is(
@@ -5927,6 +5932,24 @@ html.kikoerumanager-dark body .el-dialog.custom-preview-modal.remote-folder-pick
 }
 
 /* 后台任务卡片与全局主题共用一套状态。 */
+/* 字幕工作台保持平面分区，避免通用暗色控件规则重新染亮日志。 */
+html.kikoerumanager-dark body .subtitle-import-workbench .subtitle-workbench-stage :is(.subtitle-active-log-panel, .subtitle-active-log-body, .subtitle-log-stream-scroll, .task-log-stream) {
+  background: var(--km-dark-surface) !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body .subtitle-import-workbench .subtitle-workbench-stage :is(.subtitle-settings-block, .subtitle-filter-compact-panel, .subtitle-filter-editor, .subtitle-depth-control, .subtitle-quick-toggle) {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+
+html.kikoerumanager-dark body .subtitle-import-workbench .subtitle-workbench-stage .subtitle-quick-label {
+  color: var(--km-dark-text-strong) !important;
+}
+
 html.kikoerumanager-dark .floating-card.task-toast {
   --toast-text: var(--km-dark-text, #f4f4f5);
   --toast-muted: var(--km-dark-text-muted, #92929a);

@@ -26,7 +26,7 @@ describe('上传完成提醒', () => {
   })
   afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals() })
 
-  it.each(['completed', 'failed', 'cancelled', 'paused', 'receiving'])('零字节 %s 上传的小窗同步真实状态，稳定后不重复持久化', async current => {
+  it.each(['failed', 'paused', 'receiving'])('零字节 %s 上传的小窗同步真实状态，稳定后不重复持久化', async current => {
     status = current
     const uploads = await import('./useBrowserUploads')
     uploads.initializeBrowserUploads()
@@ -75,14 +75,41 @@ describe('上传完成提醒', () => {
     expect(JSON.parse(localStorage.getItem('kikoerumanager.browserUploads'))).toEqual([])
   })
 
-  it.each(['completed', 'cancelled'])('%s 缓存到期自动移除', async terminal => {
+  it.each(['completed', 'cancelled'])('恢复历史 %s 会话立即移除，不重新出现在工作台', async terminal => {
     status = terminal
     const uploads = await import('./useBrowserUploads')
     uploads.initializeBrowserUploads()
     await vi.advanceTimersByTimeAsync(1600)
-    expect(uploads.browserUploads.value).toHaveLength(1)
-    await vi.advanceTimersByTimeAsync(uploads.UPLOAD_RETENTION_MS)
     expect(uploads.browserUploads.value).toEqual([])
+    expect(JSON.parse(localStorage.getItem('kikoerumanager.browserUploads'))).toEqual([])
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('恢复不存在的会话只请求一次并移除缓存', async () => {
+    fetch.mockResolvedValue({ ok: false, status: 404, json: async () => ({ detail: '上传会话不存在' }) })
+    const uploads = await import('./useBrowserUploads')
+    uploads.initializeBrowserUploads()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(uploads.browserUploads.value).toEqual([])
+    expect(JSON.parse(localStorage.getItem('kikoerumanager.browserUploads'))).toEqual([])
+  })
+
+  it('清单空页不能在一次恢复中无限请求', async () => {
+    status = 'receiving'
+    fetch.mockResolvedValue({ ok: true, json: async () => ({ status, files: [], total_entries: 10, revision: 1 }) })
+    const uploads = await import('./useBrowserUploads')
+    uploads.initializeBrowserUploads()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(uploads.browserUploads.value[0].connectionError).toContain('分页未前进')
+  })
+
+  it('畸形缓存不阻断应用启动', async () => {
+    localStorage.setItem('kikoerumanager.browserUploads', '{"id":"history"}')
+    const uploads = await import('./useBrowserUploads')
+    expect(() => uploads.initializeBrowserUploads()).not.toThrow()
+    expect(fetch).not.toHaveBeenCalled()
   })
 
   it('失败任务不会随缓存时间自动消失，关闭窗口才移除', async () => {

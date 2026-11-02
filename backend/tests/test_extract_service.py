@@ -24,6 +24,42 @@ class TestExtractService:
     """测试解压服务"""
 
     @pytest.mark.asyncio
+    async def test_no_password_7z_probe_never_prompts(self, extract_service):
+        extract_service._run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+            [], 2, b"", b"Cannot open encrypted archive. Wrong password?",
+        ))
+        assert await extract_service._probe_7z_no_password_status("sample.7z.001") == "encrypted"
+        command = extract_service._run_7z_command.call_args.args[0]
+        assert "-p-" in command
+
+    @pytest.mark.asyncio
+    async def test_no_password_archive_listing_never_prompts(self, extract_service):
+        extract_service._run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+            [], 2, b"", b"Cannot open encrypted archive. Wrong password?",
+        ))
+
+        assert await extract_service._list_archive_contents_uncached("sample.7z") is None
+
+        commands = [item.args[0] for item in extract_service._run_7z_command.await_args_list]
+        assert len(commands) == 2
+        assert all("-p-" in command for command in commands)
+
+    @pytest.mark.asyncio
+    async def test_password_archive_listing_preserves_supplied_password(self, extract_service):
+        extract_service._run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+            [], 2, b"", b"Cannot open encrypted archive. Wrong password?",
+        ))
+
+        assert await extract_service._list_archive_contents_uncached(
+            "sample.7z",
+            password="secret",
+        ) is None
+
+        command = extract_service._run_7z_command.await_args_list[0].args[0]
+        assert "-psecret" in command
+        assert "-p-" not in command
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("name", ["RJ01410151", "[社团][RJ01428862]", "01410151", "RJ01410151_1"])
     async def test_collapse_wrapper_preserves_work_identity(self, extract_service, tmp_path, name):
         wrapper = tmp_path / name
@@ -583,8 +619,8 @@ class TestExtractService:
 
         assert FileProcessor().is_archive(disguised_path) is True
 
-    def test_format_command_for_log_redacts_text_and_bytes_passwords(self, extract_service):
-        """str / bytes argv 都不能把密码写入日志。"""
+    def test_format_command_for_log_keeps_text_and_bytes_passwords(self, extract_service):
+        """解压命令日志保留文本和 bytes 密码，便于定位实际密码尝试。"""
         cmd = [
             "7zz",
             "x",
@@ -596,12 +632,12 @@ class TestExtractService:
             b"-p\xce\xd2\xbe\xf5\xb5\xc3\xce\xd2\xca\xc7",
         ]
 
-        redacted = extract_service._format_command_for_log(cmd)
+        formatted = extract_service._format_command_for_log(cmd)
 
-        assert "super_secret" not in redacted
-        assert "another_secret" not in redacted
-        assert "\\xce\\xd2" not in redacted
-        assert redacted.count("********") == 3
+        assert "-psuper_secret" in formatted
+        assert "another_secret" in formatted
+        assert repr(b"-p\xce\xd2\xbe\xf5\xb5\xc3\xce\xd2\xca\xc7") in formatted
+        assert "********" not in formatted
 
     def test_winzip_aes_detection_accepts_method_99(self, extract_service, temp_dir):
         archive_path = os.path.join(temp_dir, "aes-method.zip")
@@ -2355,6 +2391,7 @@ class TestExtractService:
         parent_dir = os.path.join(temp_dir, "RJ01624471(20260531南＋冒険者本体)")
         os.makedirs(parent_dir, exist_ok=True)
         archive_path = os.path.join(parent_dir, "bonus.zip")
+        self._write_fake_volume(archive_path, b"PK\x03\x04", total_size=8 * 1024)
         # 清单与轻量探测独立模拟，完整解压次数断言只统计实际 x 进程。
         extract_service._list_archive_contents = AsyncMock(return_value=[
             {"name": "large.wav", "size": 8 * 1024**3, "encrypted": True, "is_dir": False},
@@ -2413,6 +2450,7 @@ class TestExtractService:
         """未加密外层包装壳中的 RJ 内层包必须尝试内层文件名对应的 RJ 密码。"""
         extract_service._verify_extraction = AsyncMock(return_value=True)
         archive_path = os.path.join(temp_dir, "RJ01524818.z删ip")
+        self._write_fake_volume(archive_path, b"PK\x03\x04", total_size=8 * 1024)
         # 清单与轻量探测独立模拟，完整解压次数断言只统计实际 x 进程。
         extract_service._list_archive_contents = AsyncMock(return_value=[
             {"name": "large.wav", "size": 8 * 1024**3, "encrypted": True, "is_dir": False},
@@ -2452,6 +2490,7 @@ class TestExtractService:
     async def test_nested_extract_includes_manual_retry_password(self, extract_service, temp_dir):
         """手动重试指定密码必须传递到外层解压发现的内层压缩包。"""
         archive_path = os.path.join(temp_dir, "密码：3个多月了还是0进展.rrar")
+        self._write_fake_volume(archive_path, b"Rar!\x1a\x07\x01\x00", total_size=8 * 1024)
         # 清单与轻量探测独立模拟，完整解压次数断言只统计实际 x 进程。
         extract_service._list_archive_contents = AsyncMock(return_value=[
             {"name": "large.wav", "size": 8 * 1024**3, "encrypted": True, "is_dir": False},
@@ -4674,6 +4713,135 @@ Encrypted = +
         assert result is not None
         # 魔数失败，仍按扩展名归类为 zip
         assert result['detected_kind'] == 'zip'
+
+    def test_collect_disguised_zip_source_volume_set_from_disguised_main(self, extract_service, temp_dir):
+        """主卷也被伪装成 ``.z删ip`` 时，仍应按 ZIP 分卷组卷。"""
+        main_path = os.path.join(temp_dir, 'RJ01524818.z删ip')
+        z01_path = os.path.join(temp_dir, 'RJ01524818.z删01')
+        z02_path = os.path.join(temp_dir, 'RJ01524818.z删02')
+        self._write_fake_volume(main_path, b'PK\x03\x04', total_size=8 * 1024)
+        self._write_fake_volume(z01_path, b'', total_size=8 * 1024)
+        self._write_fake_volume(z02_path, b'', total_size=8 * 1024)
+
+        volume_set = extract_service._collect_disguised_zip_source_volume_set(main_path)
+
+        assert volume_set is not None
+        assert [os.path.basename(path) for path in volume_set.volumes] == [
+            'RJ01524818.z删01',
+            'RJ01524818.z删02',
+            'RJ01524818.z删ip',
+        ]
+        assert os.path.basename(volume_set.entry_path) == 'RJ01524818.z删ip'
+
+    @staticmethod
+    def _write_split_zip_tail(path, disk_number: int, zip64: bool = False):
+        prefix = b'\x00' * 2048
+        central_directory = b'PK\x01\x02' + (b'\x00' * 42)
+        extended = b''
+        if zip64:
+            record_offset = len(prefix) + len(central_directory)
+            extended = struct.pack(
+                '<4sQ2H2L4Q', b'PK\x06\x06', 44, 20, 45,
+                disk_number, disk_number, 1, 1, len(central_directory), len(prefix),
+            ) + struct.pack('<4sLQL', b'PK\x06\x07', disk_number, record_offset, disk_number + 1)
+        eocd = struct.pack(
+            '<4s4H2LH',
+            b'PK\x05\x06',
+            disk_number,
+            disk_number,
+            1,
+            1,
+            len(central_directory),
+            len(prefix),
+            0,
+        )
+        with open(path, 'wb') as stream:
+            stream.write(prefix + central_directory + extended + eocd)
+
+    def test_collect_legacy_numeric_disguised_zip_volumes_from_tail_evidence(
+        self, extract_service, temp_dir,
+    ):
+        """`.701/.702/.7删z` 按卷号组装，且尾卷磁盘编号必须吻合。"""
+        first = os.path.join(temp_dir, '1919.701')
+        second = os.path.join(temp_dir, '1919.702')
+        final = os.path.join(temp_dir, '1919.7删z')
+        self._write_fake_volume(first, b'PK\x07\x08', total_size=8 * 1024)
+        self._write_fake_volume(second, b'\x00', total_size=8 * 1024)
+        self._write_split_zip_tail(final, disk_number=2)
+
+        volume_set = extract_service._collect_disguised_zip_source_volume_set_from_siblings(first)
+
+        assert volume_set is not None
+        assert [os.path.basename(path) for path in volume_set.volumes] == [
+            '1919.701',
+            '1919.702',
+            '1919.7删z',
+        ]
+        assert os.path.basename(volume_set.entry_path) == '1919.7删z'
+
+    def test_collect_legacy_numeric_disguised_zip_rejects_tail_volume_mismatch(
+        self, extract_service, temp_dir,
+    ):
+        first = os.path.join(temp_dir, '1919.701')
+        second = os.path.join(temp_dir, '1919.702')
+        final = os.path.join(temp_dir, '1919.7删z')
+        self._write_fake_volume(first, b'PK\x07\x08', total_size=8 * 1024)
+        self._write_fake_volume(second, b'\x00', total_size=8 * 1024)
+        self._write_split_zip_tail(final, disk_number=1)
+
+        assert extract_service._collect_disguised_zip_source_volume_set_from_siblings(first) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('zip64', [False, True])
+    async def test_nested_numeric_zip_group_overrides_generic_volume_detection(
+        self, extract_service, temp_dir, zip64,
+    ):
+        """真实嵌套入口不能因 .701 被识别为数字分卷而绕过 ZIP 组卷。"""
+        first = os.path.join(temp_dir, '1919.701')
+        second = os.path.join(temp_dir, '1919.702')
+        final = os.path.join(temp_dir, '1919.7删z')
+        self._write_fake_volume(first, b'PK\x07\x08', total_size=8 * 1024)
+        self._write_fake_volume(second, b'\x00', total_size=8 * 1024)
+        self._write_split_zip_tail(final, disk_number=2, zip64=zip64)
+        detected = extract_service._detect_volume_set(first)
+        assert detected.type == '7z_volume'
+        assert detected.volumes == [first, second]
+        view_dir = os.path.join(temp_dir, 'volume-view')
+        os.mkdir(view_dir)
+        extract_service._create_temp_dir_with_fallback = AsyncMock(return_value=view_dir)
+
+        async def check_payload(path, output, parent, task, inherited, **kwargs):
+            assert path == os.path.join(view_dir, '1919.zip')
+            assert sorted(os.listdir(view_dir)) == ['1919.z01', '1919.z02', '1919.zip']
+            assert kwargs['password_lookup_path'] == first
+            assert parent == 'parent-candidate'
+            assert inherited == ['inherited-candidate']
+            with open(os.path.join(view_dir, '1919.z01'), 'rb') as stream:
+                assert stream.read(4) == b'PK\x07\x08'
+            return True, None
+
+        extract_service._try_extract_nested_payload = AsyncMock(side_effect=check_payload)
+        result = await extract_service._try_extract_nested_direct(
+            first, os.path.join(temp_dir, 'output'),
+            parent_password='parent-candidate', inherited_passwords=['inherited-candidate'],
+        )
+
+        assert result == (True, None)
+        extract_service._try_extract_nested_payload.assert_awaited_once()
+        assert not os.path.exists(view_dir)
+        assert all(os.path.isfile(path) for path in [first, second, final])
+
+    def test_numeric_7z_group_without_zip_tail_remains_unchanged(
+        self, extract_service, temp_dir,
+    ):
+        """普通数字分卷没有 ZIP 尾目录证据时不能改判为 ZIP。"""
+        first = os.path.join(temp_dir, 'archive.001')
+        second = os.path.join(temp_dir, 'archive.002')
+        self._write_fake_volume(first, b'7z\xbc\xaf\x27\x1c', total_size=8 * 1024)
+        self._write_fake_volume(second, b'\x00', total_size=8 * 1024)
+        detected = extract_service._detect_volume_set(first)
+        assert detected.type == '7z_volume'
+        assert extract_service._collect_disguised_zip_source_volume_set(first, detected) is None
 
     # ------------------------------------------------------------------
     # 多 RJ 合集预检：覆盖大包内首个子作品命中库存导致整包被判重的回归

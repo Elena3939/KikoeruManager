@@ -66,6 +66,28 @@ const failedFile = {
 }
 
 describe('百度网盘操作历史文件详情', () => {
+  it('重命名文件分别保留原名和保存路径，标签不再包含完整文件名', () => {
+    const name = '[09] RJ01556272 (ywind130).请勿在线解压.7z'
+    const original = '[09] RJ01556272.请勿在线解压.7z'
+    const target = `/down_anime/百度网盘_20261102_223041/${name}`
+    const model = useActivityDetailModels(ref(createBaiduRow([{
+      name: original, relative_path: name, original_relative_path: original,
+      local_path: target, size: 1024, downloaded: 1024, total: 1024,
+      status: 'completed', has_extract_password: true,
+    }], [])))
+    const section = model.entrySections.value[0]
+    const [entry] = model.flattenEntryRows(section.rows)
+
+    expect(section.title).toContain('重命名 1')
+    expect(entry.label).toBe(name)
+    expect(entry.badges).toEqual(['已重命名', '指定密码', '已完成'])
+    expect(entry.detailFields).toEqual([
+      { label: '原文件名', value: original },
+      { label: '保存路径', value: target },
+    ])
+    expect(entry.metaText).toBe('')
+  })
+
   it('失败文件不会在下载文件和下载失败中重复显示', () => {
     const model = useActivityDetailModels(ref(createBaiduRow([failedFile], [failedFile])))
 

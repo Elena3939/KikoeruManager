@@ -4559,10 +4559,7 @@ def _migrate_compat_schema(conn) -> None:
                    "ON circle_external_search_records "
                    "(source, probe_schema_version, priority DESC, next_probe_at, id)",
         })
-    _migrate_library_index_entries_schema(conn, existing_tables)
-    _migrate_library_index_status_schema(conn, existing_tables)
-    _migrate_library_index_derived_tables(conn)
-    _migrate_library_index_consistency_tables(conn)
+    # 库存历史数据升级仅由显式迁移执行，正常启动不扫描或回填业务表。
     _migrate_library_owned_works_schema(conn, existing_tables)
     _migrate_work_canonical_links_schema(conn, existing_tables)
     _migrate_dlsite_bonus_probe_cache_schema(conn, existing_tables)

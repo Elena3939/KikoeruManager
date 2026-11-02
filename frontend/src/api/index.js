@@ -556,6 +556,9 @@ export const watcherApi = {
 }
 
 export const scanApi = {
+  candidates: async (scanId, after) => (await apiClient.get(`/scan/${encodeURIComponent(scanId)}/candidates`, {
+    params: { limit: 100, ...(after ? { after } : {}) },
+  })).data,
   scan: async (requestKey) => {
     const response = await apiClient.post('/scan', null, {
       params: { background: true, ...(requestKey ? { request_key: requestKey } : {}) }
@@ -2366,6 +2369,11 @@ export const rjSubtitleApi = {
     })
     return response.data
   }
+}
+
+export const browserVerificationApi = {
+  open: async (taskId) => (await apiClient.post(`/browser-verification/task/${encodeURIComponent(taskId)}/open`)).data,
+  handoff: async (taskId) => (await apiClient.post(`/browser-verification/task/${encodeURIComponent(taskId)}/handoff`)).data,
 }
 
 export const aiSubtitleMatchApi = {

@@ -52,11 +52,18 @@ class BrowserUploadService:
     def _persist(self, state, files):
         with self.db() as db:
             row = db.get(BrowserUploadSession, state['id'])
+            previous = dict(row.state) if row is not None else {}
             if row is None:
                 row = BrowserUploadSession(id=state['id'], token_hash=state['_token_hash'],
                     library_id=state['library_id'], target_path=state['target_path'])
                 db.add(row)
             row.state = {k: v for k, v in state.items() if not k.startswith('_') and k != 'files'}
+            if state['status'] in TERMINAL:
+                key = self.audit_key(state)
+                if state.get('logged_event_key') != key and previous.get('logged_event_key') != key:
+                    from .activity_log_service import _build_and_write_task_lifecycle_log
+                    _build_and_write_task_lifecycle_log(self.audit_snapshot(state), transaction=db, event_key=key)
+                row.state = {**row.state, 'logged_event_key': key}
             row.updated_at = datetime.now()
             for offset in range(0, len(files), 1000):
                 statement = insert(BrowserUploadFile).values([
@@ -69,10 +76,13 @@ class BrowserUploadService:
 
     async def save(self, state, files=()):
         # 在事件循环上冻结快照，线程中不读取正被进度回调修改的对象。
+        self.finalize_state(state)
         files = list(files)
         async with state.setdefault('_save_lock', asyncio.Lock()):
             snapshot = {k: v for k, v in state.items() if not k.startswith('_') and k != 'files'}
             snapshot['_token_hash'] = state['_token_hash']
+            if state['status'] in TERMINAL:
+                snapshot['_audit_summary'] = self.summary(state)
             frozen = [dict(f) for f in files]
             await asyncio.to_thread(self._persist, snapshot, frozen)
 
@@ -86,6 +96,11 @@ class BrowserUploadService:
         rows, files = await asyncio.to_thread(load)
         for sid, token_hash, state, updated in rows:
             state.update(id=sid, _token_hash=token_hash, files={}, _dirty=set(), _last_save=time.monotonic())
+            if state['status'] in TERMINAL and 'audit_revision' not in state:
+                # 旧终态已产生历史；升级恢复只建立基线，绝不重放完成事件。
+                state['audit_revision'] = 0
+                state['logged_event_key'] = self.audit_key(state)
+            state['_restored_terminal'] = state['status'] in {'completed', 'cancelled'}
             if updated < datetime.now() - timedelta(days=7) and state['status'] not in TERMINAL:
                 state['status'] = 'cancelled'
                 state['reason'] = '会话超过七天无活动，已过期'
@@ -165,9 +180,27 @@ class BrowserUploadService:
         legacy = self.part(sid, fid).with_suffix('.json')
         if legacy != receipt and legacy.exists():
             if receipt.exists():
+                if digest_file(receipt) != digest_file(legacy):
+                    raise OSError('新旧上传回执不一致，保留两份回执供核对')
                 legacy.unlink(missing_ok=True)
             else:
-                legacy.replace(receipt)
+                # 回执与库存可能分属不同挂载点，先提交目标卷上的副本再删除来源。
+                receipt.parent.mkdir(parents=True, exist_ok=True)
+                pending = receipt.with_name(receipt.name + '.' + uuid.uuid4().hex + '.tmp')
+                try:
+                    with legacy.open('rb') as source, pending.open('xb') as output:
+                        shutil.copyfileobj(source, output, 1024 * 1024)
+                        output.flush()
+                        os.fsync(output.fileno())
+                    if digest_file(pending) != digest_file(legacy):
+                        raise OSError('上传回执迁移校验失败，保留原回执')
+                    os.replace(pending, receipt)
+                    from .file_move_protocol import fsync_directory
+                    fsync_directory(receipt.parent)
+                    legacy.unlink()
+                    fsync_directory(legacy.parent)
+                finally:
+                    pending.unlink(missing_ok=True)
         return receipt
 
     async def recover_commit(self, state, file):
@@ -310,6 +343,7 @@ class BrowserUploadService:
         state = dict(id=sid, library_id=library.id, library_name=library.name,
             target_path=target, target_type=library.type, source_label=source_label[:500],
             created_at=datetime.now().isoformat(), status='receiving', enumerated=False,
+            audit_revision=0,
             last_activity=time.time(),
             conflict_policy='', files={}, _token_hash=hashlib.sha256(token.encode()).hexdigest(),
             _dirty=set(), _last_save=time.monotonic())
@@ -443,12 +477,18 @@ class BrowserUploadService:
             if state['status'] not in TERMINAL:
                 state['status'] = 'paused'
         elif action == 'resume':
+            if state['status'] in TERMINAL:
+                raise ValueError('已结束会话不能恢复，请重试具体失败文件')
             if state['status'] != 'cancelled':
                 state['status'] = 'receiving'
         elif action == 'enumeration_failed':
             if state['status'] not in TERMINAL:
                 state.update(status='paused', reason=(reason or '读取来源目录失败，请重新选择原来源')[:2000])
         elif action == 'cancel':
+            if state['status'] == 'completed':
+                raise ValueError('已完成会话不能取消')
+            if state['status'] == 'failed':
+                state.pop('completed_at', None)
             state['status'] = 'cancelled'
             for file in state['files'].values():
                 if file['status'] not in FILE_TERMINAL and file['status'] != 'writing':
@@ -465,6 +505,10 @@ class BrowserUploadService:
                 raise ValueError('仅可处理失败或冲突文件')
             if state['status'] == 'cancelled':
                 raise ValueError('已取消会话不能重试')
+            if state['status'] in TERMINAL:
+                state['audit_revision'] = int(state.get('audit_revision', 0)) + 1
+                state.pop('completed_at', None)
+                state.pop('logged_event_key', None)
             if action == 'conflict':
                 if decision not in {'skip', 'replace', 'keep_both'}:
                     raise ValueError('冲突选项无效')
@@ -692,12 +736,20 @@ class BrowserUploadService:
                     self.finish(state)
 
     def finish(self, state):
+        self.finalize_state(state)
+        self.publish(state)
+
+    @staticmethod
+    def finalize_state(state):
         files = state['files'].values()
         if state['status'] == 'receiving' and state['enumerated'] and all(f['status'] in FILE_TERMINAL for f in files):
             state['status'] = 'failed' if any(f['status'] == 'failed' for f in state['files'].values()) else 'completed'
-        self.publish(state)
+        if state['status'] in TERMINAL and not state.get('_restored_terminal'):
+            state.setdefault('completed_at', datetime.now().isoformat())
 
     def publish(self, state):
+        if state['status'] in TERMINAL and not state.get('_restored_terminal'):
+            state.setdefault('completed_at', datetime.now().isoformat())
         now = time.monotonic()
         if now - state.get('_last_publish', 0) < .75:
             return
@@ -711,6 +763,8 @@ class BrowserUploadService:
                 revision += 1
                 changes.append((revision, dict(file)))
         state['_revision'] = revision
+        if state.get('_restored_terminal'):
+            return
         # 挂入同一任务模型与事件物化链，但永不进入普通执行队列。
         from .task_engine import Task, TaskType, TaskStatus, get_task_engine
         engine = get_task_engine()
@@ -724,6 +778,9 @@ class BrowserUploadService:
         status = {'receiving': TaskStatus.PROCESSING, 'paused': TaskStatus.PAUSED,
                   'completed': TaskStatus.COMPLETED, 'failed': TaskStatus.FAILED, 'cancelled': TaskStatus.CANCELLED}[state['status']]
         with task._set_state_silent():
+            task.created_at = datetime.fromisoformat(state['created_at'])
+            task.started_at = task.created_at
+            task.completed_at = datetime.fromisoformat(state['completed_at']) if state.get('completed_at') else None
             task.status = status
             task.current_step = '读取目录' if not state['enumerated'] else ('等待冲突' if summary['counts']['conflict'] else '浏览器上传／写入库存')
             if state['status'] in TERMINAL:
@@ -732,10 +789,25 @@ class BrowserUploadService:
             task.task_metadata = {**task.task_metadata, 'browser_upload': summary, 'target_path': state['target_path'],
                 'source_label': state['source_label'], 'library_id': state['library_id'], 'externally_managed': True}
         task.mark_changed('progress')
-        if state['status'] in TERMINAL and state.get('_logged_status') != state['status']:
-            state['_logged_status'] = state['status']
-            from .activity_log_service import log_task_lifecycle_event
-            log_task_lifecycle_event(task)
+
+    @staticmethod
+    def audit_key(state):
+        return f"browser-upload:{state['id']}:{int(state.get('audit_revision', 0))}:{state['status']}"
+
+    @staticmethod
+    def audit_snapshot(state):
+        from .task_engine import TaskType, TaskStatus
+        return dict(id=state['id'], type=TaskType.BROWSER_UPLOAD,
+            status={'completed': TaskStatus.COMPLETED, 'failed': TaskStatus.FAILED, 'cancelled': TaskStatus.CANCELLED}[state['status']],
+            current_step=state.get('reason') or '', error_message=state.get('reason') or '',
+            source_path=state['source_label'], output_path=state['target_path'], rjcode='',
+            is_cancelled=state['status'] == 'cancelled',
+            created_at=datetime.fromisoformat(state['created_at']),
+            started_at=datetime.fromisoformat(state['created_at']),
+            completed_at=datetime.fromisoformat(state['completed_at']) if state.get('completed_at') else None,
+            task_metadata={'source_page': 'library', 'source_action': 'browser_upload',
+                'browser_upload': state.get('_audit_summary') or {},
+                'library_id': state['library_id'], 'target_path': state['target_path']})
 
     async def maintenance(self):
         while True:

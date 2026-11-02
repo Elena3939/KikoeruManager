@@ -7,6 +7,7 @@ const repair = inject('circleSubtitleRepair', null)
 const tasks = computed(() => repair?.tasks(props.item) || [])
 const label = computed(() => {
   const list = tasks.value
+  if (list.some(task => task.browser_verification_required)) return '浏览器下载'
   if (list.some(task => task.awaiting_manual_match || task.status === 'waiting_manual')) return '待配对'
   if (list.some(task => task.status === 'processing')) return '爬取中'
   if (list.some(task => ['pending', 'paused', 'waiting_retry'].includes(task.status))) return '已加入'
@@ -21,7 +22,7 @@ const evidence = computed(() => (props.item.subtitle_repair_sources || []).map(s
 
 <template>
   <div v-if="repair && (item.subtitle_repairable || tasks.length)" class="circle-subtitle-actions" :class="{ 'is-compact': compact }" @click.stop @dblclick.stop @pointerdown.stop>
-    <StatefulButton v-if="item.subtitle_repairable" unstyled class="circle-subtitle-action" :title="evidence" :disabled="repair.busy()" :show-default-icons="false" @click="() => repair.create(item)">
+    <StatefulButton v-if="!tasks.length && item.subtitle_repairable" unstyled class="circle-subtitle-action" :title="evidence" :disabled="repair.busy()" :show-default-icons="false" @click="() => repair.create(item)">
       <Subtitles :size="12" /><span class="circle-subtitle-action-text">可补配</span>
     </StatefulButton>
     <button v-if="tasks.length" type="button" class="circle-subtitle-action is-task" :title="`查看字幕任务（${tasks.length}）`" @click="repair.view(item)">
@@ -32,8 +33,8 @@ const evidence = computed(() => (props.item.subtitle_repair_sources || []).map(s
 
 <style scoped>
 .circle-subtitle-actions { display: flex; flex-wrap: nowrap; gap: 4px; min-width: 0; flex-shrink: 0; font-size: 11px; line-height: 1; }
-.circle-subtitle-action { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 24px; border: 1px solid #b8dfcf; border-radius: 5px; padding: 2px 6px; color: #087658; background: #eaf7ef; font-size: 11px; line-height: 1; cursor: pointer; transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
-.circle-subtitle-action.is-task { color: #4658a2; background: #eff2ff; border-color: #cdd4ef; }
+.circle-subtitle-action { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 24px; min-width: 52px; border: 1px solid color-mix(in srgb, var(--circle-tag-success, #059669) 28%, transparent); border-radius: 5px; padding: 2px 6px; color: var(--circle-tag-success, #087658); background: color-mix(in srgb, var(--circle-tag-success-soft, #ecfdf5) 86%, transparent); font-size: 11px; line-height: 1; cursor: pointer; transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.circle-subtitle-action.is-task { color: var(--circle-tag-indigo, #4658a2); background: color-mix(in srgb, var(--circle-tag-indigo-soft, #eef2ff) 86%, transparent); border-color: color-mix(in srgb, var(--circle-tag-indigo, #4f46e5) 24%, transparent); }
 .circle-subtitle-action:hover:not(:disabled) { transform: translateY(-2px) scale(1.02); }
 .circle-subtitle-action:hover svg { transform: rotate(6deg); }
 .circle-subtitle-action:active:not(:disabled) { transform: scale(.96); }

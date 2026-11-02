@@ -1614,18 +1614,23 @@ class TaskEngine:
         loaded_count = 0
         recovered_tasks = []
         try:
-            rows = db.query(TaskRecord).filter(TaskRecord.type == TaskType.RJ_SUBTITLE_FETCH.value).all()
+            rows = db.query(TaskRecord).filter(
+                (TaskRecord.type == TaskType.RJ_SUBTITLE_FETCH.value)
+                | ((TaskRecord.type == TaskType.HTTP_DOWNLOAD.value)
+                   & TaskRecord.task_metadata['browser_verification_required'].as_boolean().is_(True))
+            ).all()
             for row in rows:
                 if row.id in self.tasks:
                     continue
                 metadata = dict(row.task_metadata or {})
                 source_mode = str(metadata.get("source_mode") or "").strip().lower()
                 is_circle_repair = metadata.get('source_action') == 'circle_subtitle_repair'
-                if source_mode not in {"linked_translation_archive_import", "subtitle_folder_import"} and not is_circle_repair:
+                is_browser_wait = bool(metadata.get('browser_verification_required'))
+                if source_mode not in {"linked_translation_archive_import", "subtitle_folder_import"} and not is_circle_repair and not is_browser_wait:
                     continue
                 is_waiting_manual = bool(metadata.get("awaiting_manual_match"))
                 is_manual_completed = bool(metadata.get("manual_match_completed"))
-                if not (is_waiting_manual or is_manual_completed or is_circle_repair):
+                if not (is_waiting_manual or is_manual_completed or is_circle_repair or is_browser_wait):
                     continue
 
                 task_type = self._coerce_task_type(row.type)
@@ -1642,7 +1647,14 @@ class TaskEngine:
                     row.completed_at = None
                     metadata["manual_match_recovered_at"] = datetime.now().isoformat()
                     row.task_metadata = metadata
-                recovered_circle = is_circle_repair and not is_waiting_manual and self._coerce_task_status(row.status) in {TaskStatus.PENDING, TaskStatus.PROCESSING}
+                recovered_browser = is_browser_wait and self._coerce_task_status(row.status) not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+                if recovered_browser:
+                    row.status = TaskStatus.WAITING_MANUAL.value
+                    row.current_step = '请在当前浏览器重新验证并下载'
+                    row.completed_at = None
+                    metadata.pop('browser_verification_session_id', None)
+                    row.task_metadata = metadata
+                recovered_circle = is_circle_repair and not is_waiting_manual and not recovered_browser and self._coerce_task_status(row.status) in {TaskStatus.PENDING, TaskStatus.PROCESSING}
                 if recovered_circle:
                     row.status = TaskStatus.FAILED.value
                     row.current_step = "上次进程中断，请在字幕工作台重试"
@@ -1668,7 +1680,7 @@ class TaskEngine:
                 self._ensure_task_context(task)
                 self.tasks[task.id] = task
                 loaded_count += 1
-                if recovered_manual or recovered_circle:
+                if recovered_manual or recovered_circle or recovered_browser:
                     recovered_tasks.append(task)
             if recovered_tasks:
                 db.commit()
@@ -4958,6 +4970,9 @@ class TaskEngine:
             metadata['ai_match_mode'] = str(overrides.get('ai_match_mode') or 'rule_ai_auto').lower()
         if 'ai_confidence_threshold' in overrides:
             metadata['ai_confidence_threshold'] = overrides.get('ai_confidence_threshold')
+        metadata.pop('browser_verification_session_id', None)
+        metadata['browser_verification_required'] = False
+        metadata['browser_verification_url'] = ''
         task.task_metadata = metadata
         self.processing.discard(task.id)
         if task.rjcode:
@@ -6858,6 +6873,18 @@ class TaskEngine:
                         raise asyncio.CancelledError()
                     completed, failed = refresh_merged_attempt_state()
                 except Exception as exc:
+                    if getattr(exc, 'verification_url', ''):
+                        if task.is_cancelled():
+                            raise asyncio.CancelledError()
+                        task.task_metadata.update(browser_verification_required=True,
+                            browser_verification_resource_path=getattr(exc, 'verification_resource_path', ''),
+                            browser_verification_url=exc.verification_url)
+                        task.current_step = '等待 YAAS 浏览器验证'
+                        task.error_message = 'YAAS 下载需要在当前浏览器验证并下载'
+                        task.status = TaskStatus.WAITING_MANUAL
+                        task.mark_changed('status')
+                        await asyncio.to_thread(self.persist_task_snapshot, task)
+                        return
                     last_error = str(exc)
                     completed, failed = refresh_merged_attempt_state()
                     if failed and attempt_index < max_auto_retries and not task.is_cancelled():
@@ -7263,8 +7290,8 @@ class TaskEngine:
                 progress_callback=progress_callback,
                 file_progress_callback=file_progress_callback,
                 should_cancel=task.is_cancelled,
-                source_hint=task.task_metadata.get('subtitle_source_hint')
-                if task.task_metadata.get('source_action') == 'circle_subtitle_repair' else None,
+                source_hint=(task.task_metadata.get('subtitle_source_hint') or {}
+                    if task.task_metadata.get('source_action') == 'circle_subtitle_repair' else None),
             )
 
             if task.is_cancelled():
@@ -7412,6 +7439,22 @@ class TaskEngine:
                 invalidate_subtitle_folder_summary_cache()
                 enqueue_cleaned_subtitle_index_delete()
                 raise asyncio.CancelledError()
+            verification_url = str(getattr(e, 'verification_url', '') or '').strip()
+            if verification_url and 'POW' in str(e).upper():
+                task.task_metadata.update({
+                    'browser_verification_required': True,
+                    'browser_verification_resource_path': str(getattr(e, 'verification_resource_path', '') or ''),
+                    'browser_verification_url': verification_url,
+                })
+                task.current_step = '等待在当前浏览器验证并下载'
+                task.error_message = str(e)
+                task.status = TaskStatus.WAITING_MANUAL
+                task.completed_at = datetime.now()
+                append_progress_log(task.current_step, task.progress, 'warning')
+                task.mark_changed('status')
+                await asyncio.to_thread(self.persist_task_snapshot, task)
+                logger.warning('[%s] RJ 字幕抓取等待浏览器验证', rjcode)
+                return
             logger.error(f"[{rjcode}] RJ 字幕抓取任务失败: {e}", exc_info=True)
             try:
                 enqueue_cleaned_subtitle_index_delete()

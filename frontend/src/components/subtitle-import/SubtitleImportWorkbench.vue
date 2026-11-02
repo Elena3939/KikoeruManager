@@ -9,6 +9,16 @@
         <button
           type="button"
           class="siw-action-btn"
+          v-if="activeTask?.task_metadata?.browser_verification_required && activeTask?.task_metadata?.browser_verification_url"
+          title="在浏览器中验证并下载"
+          @click="openBrowserVerification"
+        >
+          <ExternalLink class="siw-action-icon" :stroke-width="2.3" />
+          <span>浏览器下载</span>
+        </button>
+        <button
+          type="button"
+          class="siw-action-btn"
           :disabled="manualRefreshing || taskRefreshing"
           title="刷新状态"
           @click="refreshTaskStatus(true, { inspect: true, forceInspect: true, showOverlay: false })"
@@ -53,6 +63,7 @@
         <SubtitleWorkbenchStage :ctx="subtitleWorkbenchStageCtx" />
       </div>
     </SubtitleWorkbenchShell>
+
 
     <Teleport to="body">
       <Transition name="siw-dialog-fade">
@@ -145,7 +156,8 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Folder, FolderOpen, Loader2, Minimize2, RefreshCw, Trash2, X } from 'lucide-vue-next'
+import { ExternalLink, Folder, FolderOpen, Loader2, Minimize2, RefreshCw, Trash2, X } from 'lucide-vue-next'
+import { openVerificationPopup } from '../../utils/browserVerificationPopup'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
 import { aiSubtitleMatchApi, libraryApi, rjSubtitleApi, subtitleImportApi } from '../../api'
 import { runWithConcurrency } from '../../composables/useAsyncBatch'
@@ -668,6 +680,7 @@ function getRJSubtitleTaskStatusType(task) {
 
 function getTaskStatusLabel(task) {
   if (!task) return '未知状态'
+  if (task.task_metadata?.browser_verification_required) return '等待浏览器验证'
   if (task.manual_match_completed) return '已完成补配'
   if (task.awaiting_manual_match) return '待筛选与配对'
   if (task.status === 'processing') return '处理中'
@@ -679,6 +692,7 @@ function getTaskStatusLabel(task) {
 
 function getTaskManualStateText(task) {
   if (!task) return ''
+  if (task.task_metadata?.browser_verification_required) return '浏览器下载后导入字幕'
   if (task.manual_match_completed) return `已应用 ${task.manual_match_applied_pairs || 0} 组`
   if (task.awaiting_manual_match) return '等待你筛选和配对'
   return ''
@@ -716,6 +730,17 @@ function getTaskStateClass(task) {
 function getTaskFailureReason(task) {
   if (!task) return ''
   return String(task?.error_message || task?.current_step || '').trim()
+}
+
+async function openBrowserVerification() {
+  const task = activeTask.value
+  if (!task) return
+  try {
+    await openVerificationPopup(task.active_task_id || task.id)
+    await refreshTaskStatus(false)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '打开浏览器下载失败')
+  }
 }
 
 function getTaskProgressText(task) {
@@ -2778,6 +2803,7 @@ const subtitleConfigCtx = computed(() => ({
   setRetargetCandidateSelection: value => { retargetCandidateSelection.value = value }
 }))
 const subtitleTaskStageCtx = computed(() => ({
+  refreshBrowserDownloadTasks: () => refreshTaskStatus(false),
   subtitleQueueTasks: linkedTasks.value,
   visibleSubtitleTasks: visibleSubtitleTasks.value,
   subtitleQueueLoading: taskLoading.value && !taskLoadedOnce.value && !linkedTasks.value.length,

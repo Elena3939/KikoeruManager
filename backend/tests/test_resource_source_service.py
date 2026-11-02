@@ -254,6 +254,31 @@ async def test_resolve_landing_before_aria2_and_reject_foreign_redirect(monkeypa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('platform', ['nt', 'posix'])
+async def test_resolve_file_reports_pow_required(monkeypatch, platform):
+    from types import SimpleNamespace
+    monkeypatch.setattr(module, 'os', SimpleNamespace(name=platform))
+    from app.core import http_download_service
+    service = ResourceSourceService()
+    monkeypatch.setattr(service, 'request', AsyncMock(return_value={
+        'raw_url': 'https://landing.imoutoheaven.org/file?sign=secret', 'size': 10}))
+    monkeypatch.setattr(service, 'pace', AsyncMock())
+    downloader = HttpDownloadService()
+    monkeypatch.setattr(downloader, 'validate_url', AsyncMock())
+    monkeypatch.setattr(downloader, '_proxy_url', lambda *args: '')
+    monkeypatch.setattr(http_download_service, 'get_http_download_service', lambda: downloader)
+    transport = httpx.MockTransport(lambda request: httpx.Response(403, content=b'{"code":"pow_required"}'))
+    client_class = httpx.AsyncClient
+    monkeypatch.setattr(module.httpx, 'AsyncClient', lambda **kwargs:
+        client_class(**kwargs, transport=transport))
+    with pytest.raises(ValueError, match='POW') as error:
+        await service.resolve_file(ROOTS[0] + '/RJ123456.rar')
+    assert error.value.verification_url.endswith('/file?sign=secret')
+    assert error.value.verification_resource_path == ROOTS[0] + '/RJ123456.rar'
+    assert not hasattr(error.value, 'verification_session_id')
+
+
+@pytest.mark.asyncio
 async def test_broken_packages_are_not_a_download_source(monkeypatch):
     service = ResourceSourceService()
     monkeypatch.setattr(service, 'plan', AsyncMock(return_value={

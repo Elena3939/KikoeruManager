@@ -67,7 +67,7 @@
       <div
         v-if="showOverview && ctx.activeSubtitleTask"
         :key="ctx.activeSubtitleTask.id"
-        class="subtitle-active-log-panel rounded-[16px] border border-slate-200/80 bg-white p-4 shadow-[0_2px_12px_rgba(15,23,42,0.04)]"
+        class="subtitle-active-log-panel bg-white px-2 py-3"
       >
         <div class="flex items-center justify-between gap-3">
           <div class="flex items-center gap-2.5 min-w-0">
@@ -83,6 +83,13 @@
               <div class="mt-0.5 text-[11.5px] font-medium text-slate-500 truncate">{{ ctx.getTaskDisplayRJCode(ctx.activeSubtitleTask) }}</div>
             </div>
           </div>
+          <div class="flex flex-wrap items-center justify-end gap-2">
+          <StatefulButton
+            v-if="ctx.activeSubtitleTask.task_metadata?.browser_verification_required"
+            size="sm"
+            tone="warning"
+            @click="openBrowserDownload"
+          ><ExternalLink :size="14" />浏览器下载</StatefulButton>
           <span
             class="subtitle-active-status-pill"
             :class="[
@@ -92,9 +99,10 @@
           >
             {{ ctx.getRJSubtitleTaskStatusLabel(ctx.activeSubtitleTask) }}
           </span>
+          </div>
         </div>
 
-        <div class="subtitle-active-log-body mt-3 rounded-[12px] border border-slate-100 bg-gradient-to-b from-[#fafcff] to-white">
+        <div class="subtitle-active-log-body mt-3 border-t border-slate-100">
           <div
             v-if="shouldShowMetaPanel(ctx.activeSubtitleTask)"
             class="border-b border-slate-100 px-3 py-3"
@@ -343,6 +351,10 @@ import {
 } from 'lucide-vue-next'
 import AppEmptyState from '../../common/AppEmptyState.vue'
 import AppLoadingAnimation from '../../common/AppLoadingAnimation.vue'
+import StatefulButton from '../../ui/stateful-button.vue'
+import { ElMessage } from 'element-plus'
+import { ExternalLink } from 'lucide-vue-next'
+import { openVerificationPopup } from '../../../utils/browserVerificationPopup'
 
 const props = defineProps({
   ctx: {
@@ -404,6 +416,16 @@ const ctx = computed(() => ({
   ...(props.ctx || {})
 }))
 const clearMenuOpen = ref(false)
+async function openBrowserDownload() {
+  const task = ctx.value.activeSubtitleTask
+  if (!task) return
+  try {
+    await openVerificationPopup(task.active_task_id || task.id)
+    await ctx.value.refreshBrowserDownloadTasks?.()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '打开浏览器下载失败')
+  }
+}
 
 const showOverview = computed(() => ['full', 'overview'].includes(props.mode))
 const showQueue = computed(() => ['full', 'queue'].includes(props.mode))
@@ -863,8 +885,8 @@ function getTaskMetaItems(task) {
 
 .subtitle-source-ai { color: #b45309; background: #fffbeb; }
 .subtitle-source-label { color: #047857; background: #ecfdf5; }
-:global(html.kikoerumanager-dark) .subtitle-source-ai { color: #fcd34d; background: #422006; }
-:global(html.kikoerumanager-dark) .subtitle-source-label { color: #6ee7b7; background: #022c22; }
+:global(html.kikoerumanager-dark .subtitle-source-ai) { color: #fcd34d; background: #422006; }
+:global(html.kikoerumanager-dark .subtitle-source-label) { color: #6ee7b7; background: #022c22; }
 
 .subtitle-task-card {
   display: grid;
@@ -1129,7 +1151,7 @@ html.dark .subtitle-active-status-pill.is-violet {
 .subtitle-task-stage-scroll.is-immersive-overview .subtitle-log-stream-scroll {
   max-height: none;
   flex: 1 1 auto;
-  min-height: 280px;
+  min-height: 0;
 }
 
 .task-log-empty-state {

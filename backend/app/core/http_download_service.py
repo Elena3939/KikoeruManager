@@ -3906,7 +3906,7 @@ class HttpDownloadService:
             return f"{int(size)} {units[index]}"
         return f"{size:.1f} {units[index]}"
 
-    async def _pikpak_download_link(self, client, file_id: str, *, allow_missing: bool = False, max_attempts: int = 5) -> Dict[str, Any]:
+    async def _pikpak_download_link(self, client, file_id: str, *, allow_missing: bool = False, max_attempts: int = 8) -> Dict[str, Any]:
         # captcha/init 对副账号偶发 400，单次失败极易丢分卷。下载阶段多次重试(失败则重新登录刷新匹配 token + 退避)，
         # 预览阶段(allow_missing)只试一次保持响应速度。
         attempts = 1 if allow_missing else max(1, max_attempts)
@@ -3918,6 +3918,11 @@ class HttpDownloadService:
             except Exception as exc:
                 last_error = exc
                 info = None
+                # PikPak 在转存尚未完成时会返回包含 null 字符串字段的错误。
+                # get_download_url 会把 captcha token 留在 client 上，下一次请求前必须丢弃，
+                # 否则重试仍可能命中同一个失效 token。
+                with contextlib.suppress(Exception):
+                    client.captcha_token = None
             if isinstance(info, dict):
                 url = str(info.get("web_content_link") or "").strip()
                 if not url:
@@ -3932,10 +3937,26 @@ class HttpDownloadService:
                 last_error = HttpDownloadError("PikPak 未返回可下载链接，可能需要会员权限或文件仍在转码/审核")
             if attempt < attempts:
                 account = getattr(client, "_kikoeru_pikpak_account", None)
-                if account and account.username and account.password and account.password != "********":
+                error_text = str(last_error or "").lower()
+                transient_file_state = (
+                    "invalid value for string type: null" in error_text
+                    or "仍在转码" in error_text
+                    or "仍在审核" in error_text
+                    or "not ready" in error_text
+                    or "processing" in error_text
+                )
+                if (
+                    not transient_file_state
+                    and account
+                    and account.username
+                    and account.password
+                    and account.password != "********"
+                ):
                     with contextlib.suppress(Exception):
                         await self._refresh_pikpak_login_with_password(client, account, stage="解析下载直链")
-                await asyncio.sleep(min(1.0 * attempt, 4.0))
+                # 转存接口返回 RESTORE_START 后，文件详情通常需要数秒才能生成直链。
+                # 退避上限 8 秒，避免 20+ 分卷并发时把账号 API 打爆。
+                await asyncio.sleep(min(2.0 * attempt, 8.0))
         if allow_missing:
             return {}
         if isinstance(last_error, HttpDownloadError):
@@ -6049,6 +6070,8 @@ class HttpDownloadService:
             if (task.task_metadata or {}).get("resource_source") == "imoutoheaven":
                 from .resource_source_service import ResourceSourceError
                 if isinstance(exc, (HttpDownloadError, ResourceSourceError)):
+                    if isinstance(exc, ResourceSourceError) and exc.verification_url:
+                        raise
                     message = re.sub(r"https?://[^\s\"'<>]+", "[YAAS 下载地址]", str(exc))
                     raise HttpDownloadError(message) from None
                 if isinstance(exc, httpx.TimeoutException):
@@ -6110,7 +6133,8 @@ class HttpDownloadService:
         task.task_metadata.pop("pikpak_retry_rebuild_share", None)
         if metadata.get("resource_source") == "imoutoheaven":
             from .resource_source_service import ARCHIVE_PASSWORD, get_resource_source_service
-            resolved = await get_resource_source_service().resolve_file(metadata.get("yaas_path"))
+            resolved = await get_resource_source_service().resolve_file(
+                metadata.get("yaas_path"))
             await self.validate_url(resolved['url'])
             expected = int(metadata.get("yaas_size") or 0)
             if expected <= 0 or resolved['size_bytes'] != expected:

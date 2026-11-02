@@ -5,6 +5,8 @@ SOURCE_FILE=${1:?missing source file}
 CONTAINER_PATH=${2:?missing container path}
 RELEASE_ID=${3:?missing release id}
 EXPECTED_HASH=${4:?missing source hash}
+IGNORED_TASK_IDS=${5:-}
+case "$IGNORED_TASK_IDS" in *[!0-9a-f,-]*) exit 1 ;; esac
 
 DOCKER=/var/packages/Docker/target/usr/bin/docker
 CONTAINER=elena39-kikoerumanager
@@ -49,7 +51,7 @@ DATA_SOURCE=$("$DOCKER" inspect --format '{{range .Mounts}}{{if eq .Destination 
 ACTUAL_HASH=$(sha256sum "$SOURCE_FILE" | awk '{print $1}')
 [ "$ACTUAL_HASH" = "$EXPECTED_HASH" ] || fail '上传文件 SHA-256 不匹配'
 
-PROCESSING=$("$DOCKER" exec "$CONTAINER" sh -lc 'export PGPASSWORD="$POSTGRES_PASSWORD"; psql -h 127.0.0.1 -p 5432 -U kikoerumanager -d kikoerumanager -Atc "SELECT count(*) FROM task_center_items WHERE status = chr(112)||chr(114)||chr(111)||chr(99)||chr(101)||chr(115)||chr(115)||chr(105)||chr(110)||chr(103);"' | tr -d '[:space:]')
+PROCESSING=$("$DOCKER" exec "$CONTAINER" sh -lc 'export PGPASSWORD="$POSTGRES_PASSWORD"; psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U kikoerumanager -d kikoerumanager -Atc "SELECT count(*) FROM task_center_items WHERE status = '\''processing'\'' AND NOT (COALESCE(engine_task_id, '\'''\'') = ANY(string_to_array('\''"$1"'\'', '\'','\'')));"' sh "$IGNORED_TASK_IDS" | tr -d '[:space:]')
 case "$PROCESSING" in
   0) ;;
   ''|*[!0-9]*) fail '无法确认 processing 任务数量' ;;

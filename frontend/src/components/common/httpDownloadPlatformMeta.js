@@ -5,6 +5,7 @@ import googleDriveIconUrl from '../../assets/platforms/google-drive.ico'
 import onedriveIconUrl from '../../assets/platforms/onedrive.ico'
 import pikpakIconUrl from '../../assets/platforms/pikpak.png'
 import transferitIconUrl from '../../assets/platforms/transferit.ico'
+import cloudflareIconUrl from '../../assets/platforms/cloudflare.png'
 
 const PLATFORM_ICON_URLS = {
   baidu_netdisk: baiduNetdiskIconUrl,
@@ -35,6 +36,7 @@ const ONEDRIVE_ICON = createPlatformIconComponent(PLATFORM_ICON_URLS.onedrive, '
 const PIKPAK_ICON = createPlatformIconComponent(PLATFORM_ICON_URLS.pikpak, 'PikPak')
 const TRANSFERIT_ICON = createPlatformIconComponent(PLATFORM_ICON_URLS.transferit, 'Transfer.it')
 const BAIDU_NETDISK_ICON = createPlatformIconComponent(PLATFORM_ICON_URLS.baidu_netdisk, '百度网盘')
+export const CLOUDFLARE_ICON = createPlatformIconComponent(cloudflareIconUrl, 'Cloudflare')
 
 export const HTTP_DOWNLOAD_PLATFORM_META = {
   http: {

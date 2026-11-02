@@ -14,6 +14,187 @@
   color: var(--siw-text);
 }
 
+/* 两种字幕入口共用布局，弹窗宽度不再受库存页的旧上限限制。 */
+.subtitle-workbench-dialog:has(.subtitle-import-workbench),
+.subtitle-import-workbench-dialog:has(.subtitle-import-workbench) {
+  width: calc(100vw - 48px);
+  max-width: 1760px;
+  max-height: calc(100dvh - 24px);
+}
+
+.subtitle-import-workbench .subtitle-workbench-stage :is(.subtitle-settings-block, .subtitle-filter-compact-panel, .subtitle-filter-editor) {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.subtitle-import-workbench .subtitle-workbench-stage .subtitle-settings-block {
+  padding: 12px 4px;
+  border-bottom: 1px solid var(--siw-border) !important;
+}
+
+.subtitle-import-workbench .subtitle-settings-block .subtitle-quick-grid :is(.subtitle-depth-control, .subtitle-quick-toggle) {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 5px 0;
+  min-height: 34px;
+}
+
+.subtitle-import-workbench .subtitle-config-card :is(.subtitle-stepper, .subtitle-switch, .subtitle-index-query-options, .subtitle-naming-switch, .subtitle-ai-mode-switch) {
+  flex-shrink: 0;
+}
+
+.subtitle-import-workbench .subtitle-workbench-stage .subtitle-config-card .subtitle-index-query-option {
+  white-space: nowrap;
+  min-width: 54px;
+  min-height: 30px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--siw-text) !important;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+
+.subtitle-import-workbench .subtitle-config-card .subtitle-index-query-options {
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--siw-border-strong);
+  background: var(--siw-surface);
+  border-radius: 8px;
+}
+
+.subtitle-import-workbench .subtitle-workbench-stage .subtitle-config-card .subtitle-index-query-option.active {
+  background: #0369a1 !important;
+  color: #ffffff !important;
+  border-color: #0284c7 !important;
+  box-shadow: none;
+}
+
+.subtitle-import-workbench .subtitle-config-card .subtitle-index-query-option:not(.active):hover {
+  background: var(--siw-surface-soft);
+  border-color: var(--siw-border-strong);
+}
+
+.subtitle-import-workbench .subtitle-config-card .subtitle-ai-mode-row {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.subtitle-import-workbench .subtitle-config-card .subtitle-ai-mode-switch {
+  width: 100%;
+}
+
+.subtitle-import-workbench .subtitle-config-card,
+.subtitle-import-workbench .subtitle-config-card > div {
+  align-content: start;
+}
+
+.subtitle-import-workbench .subtitle-workbench-stage :is(.subtitle-quick-label, .subtitle-queue-label) {
+  color: var(--siw-text) !important;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  line-height: 1.5;
+}
+
+.subtitle-import-workbench .subtitle-workbench-stage .subtitle-queue-filter {
+  min-width: 0;
+  height: auto;
+  min-height: 34px;
+}
+
+.subtitle-import-workbench .subtitle-workbench-stage :is(.subtitle-active-log-panel, .subtitle-active-log-body, .subtitle-log-stream-scroll, .task-log-stream) {
+  background: var(--siw-surface) !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  border-radius: 0;
+}
+
+.subtitle-import-workbench .subtitle-inspector-workbench-scroll {
+  padding: 0 4px;
+}
+
+.subtitle-import-workbench :is(.subtitle-task-stage-scroll, .subtitle-inspector-workbench-scroll, .subtitle-log-stream-scroll, .subtitle-config-card, .subtitle-scan-rail-root, .subtitle-queue-body, .subtitle-workbench-scrollbar) {
+  scrollbar-width: thin;
+  scrollbar-color: var(--siw-soft) transparent;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+.subtitle-import-workbench ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.subtitle-import-workbench ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.subtitle-import-workbench ::-webkit-scrollbar-thumb {
+  border: 2px solid var(--siw-surface);
+  border-radius: 6px;
+  background: var(--siw-soft);
+}
+
+.subtitle-import-workbench ::-webkit-scrollbar-button {
+  display: none;
+}
+
+.subtitle-import-workbench .subtitle-pairing-list::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.subtitle-import-workbench .subtitle-workbench-stage .subtitle-log-stream-scroll {
+  scrollbar-color: var(--siw-muted) var(--siw-surface);
+}
+
+.subtitle-import-workbench .subtitle-workbench-stage .scan-rail-segment {
+  height: auto;
+  min-height: 32px;
+}
+
+.subtitle-import-workbench .subtitle-workbench-stage .scan-rail-segment > span:not(.scan-rail-segment-count) {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .subtitle-workbench-dialog:has(.subtitle-import-workbench),
+  .subtitle-import-workbench-dialog:has(.subtitle-import-workbench) {
+    width: 100vw;
+    max-height: 100dvh;
+  }
+  .subtitle-import-workbench .subtitle-workbench-stage > div {
+    overflow-y: auto;
+  }
+  .subtitle-import-workbench .subtitle-workbench-stage > div > div {
+    flex: 0 0 640px;
+    min-height: 640px;
+  }
+  .subtitle-import-workbench .subtitle-context-drawer {
+    flex: 0 0 480px;
+    min-height: 480px;
+  }
+  .subtitle-import-workbench .subtitle-workbench-left-rail {
+    flex: 0 0 220px;
+    min-height: 220px;
+  }
+  .subtitle-import-workbench .subtitle-workbench-stage .task-log-row {
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: 4px 10px;
+  }
+  .subtitle-import-workbench .task-log-message {
+    grid-column: 2;
+  }
+}
+
 .siw-shell {
   display: flex;
   width: 100%;
@@ -23,7 +204,7 @@
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--siw-border);
-  border-radius: 22px;
+  border-radius: 12px;
   background: var(--siw-surface);
   box-shadow: var(--siw-shadow);
 }
@@ -654,3 +835,31 @@ body.kikoerumanager-dark .subtitle-import-workbench :is([class*="shadow-"], .sha
 .kikoerumanager-dark .subtitle-import-workbench :is([class*="shadow-"], .shadow-sm, .shadow, .shadow-md, .shadow-lg, .shadow-xl, .shadow-2xl) {
   box-shadow: none !important;
 }
+
+.browser-verification-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, .62);
+}
+.browser-verification-dialog {
+  width: min(920px, 96vw);
+  max-height: 92vh;
+  overflow: auto;
+  border: 1px solid var(--km-dark-border, #d8dee5);
+  border-radius: 10px;
+  background: var(--circle-surface, #fff);
+  color: var(--circle-text-strong, #1f2937);
+  padding: 18px;
+}
+.browser-verification-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.browser-verification-head h3 { margin: 0; font-size: 16px; }
+.browser-verification-head p { margin: 5px 0 0; color: var(--circle-text-muted, #64748b); font-size: 12px; }
+.browser-verification-preview { display: grid; place-items: center; min-height: 420px; margin-top: 14px; overflow: auto; border: 1px solid var(--circle-border, #d8dee5); background: #f4f6f8; }
+.browser-verification-preview img { display: block; max-width: 100%; cursor: crosshair; }
+.browser-verification-error { color: #be123c; font-size: 12px; }
+html.kikoerumanager-dark .browser-verification-dialog { background: var(--km-dark-surface); color: var(--km-dark-text-strong); border-color: var(--km-dark-border); }
+html.kikoerumanager-dark .browser-verification-preview { background: #111718; border-color: var(--km-dark-border); }

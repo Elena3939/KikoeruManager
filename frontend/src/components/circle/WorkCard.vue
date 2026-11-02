@@ -926,14 +926,15 @@ function preventNativeShiftSelection(event) {
   align-items: center;
   flex-wrap: nowrap;
   min-width: 0;
-  overflow: visible;
+  overflow: hidden;
   height: 24px;
   padding-top: 3px;
 }
 
 /* ── 操作区 ── */
 .work-bottom-actions { display: flex; align-items: center; gap: 4px; min-width: 0; height: 28px; }
-.work-bottom-actions .work-actions { width: auto; min-width: 0; flex: 1; }
+.work-bottom-actions > :deep(.circle-subtitle-actions) { flex: 0 1 auto; min-width: 0; }
+.work-bottom-actions .work-actions { width: auto; min-width: 0; flex: 1 1 auto; }
 .work-actions {
   display: flex;
   justify-content: stretch;
@@ -980,6 +981,13 @@ function preventNativeShiftSelection(event) {
     transform .18s cubic-bezier(.34,1.56,.64,1),
     background-color .18s ease,
     border-color .18s ease;
+}
+.work-tags > .tag-chip {
+  width: 0;
+  max-width: 76px;
+  flex: 1 1 0;
+  min-width: 0;
+  box-sizing: border-box;
 }
 .work-card:hover .tag-chip {
   transform: translateY(-1px);
@@ -1198,6 +1206,7 @@ function preventNativeShiftSelection(event) {
   padding: 0 6px;
   border-radius: 8px;
   font-size: 9px;
+  white-space: nowrap;
   font-weight: 800;
   line-height: 1;
   cursor: pointer;

@@ -3,6 +3,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { circleCompletionApi } from '../api'
 import { useRealtimeEvents } from './useRealtimeEvents'
+import { openVerificationPopup, reserveVerificationPopup } from '../utils/browserVerificationPopup'
 
 export function useCircleSubtitleRepair(circleId, items) {
   const router = useRouter()
@@ -20,10 +21,12 @@ export function useCircleSubtitleRepair(circleId, items) {
   let realtimeStarted = false
   let unsubscribeTasks = null
   let unsubscribeSubtitle = null
+  let browserDownload = null
+  let browserDownloadTimer = null
   const codeOf = item => String(item?.canonical_rjcode || '').toUpperCase()
   const keyOf = target => JSON.stringify([target.library_id, target.folder_path])
   const tasks = item => states.value[codeOf(item)] || []
-  const statusLabel = task => task?.skipped_reason ? '已跳过' : task?.awaiting_manual_match ? '待配对' : ({ pending: '已加入', processing: '爬取中', waiting_manual: '待配对', completed: '已结束', failed: '失败', paused: '已暂停', cancelled: '已取消', waiting_retry: '等待重试' }[task?.status] || task?.status || '')
+  const statusLabel = task => task?.browser_verification_required ? '浏览器下载' : task?.skipped_reason ? '已跳过' : task?.awaiting_manual_match ? '待配对' : ({ pending: '已加入', processing: '爬取中', waiting_manual: '待配对', completed: '已结束', failed: '失败', paused: '已暂停', cancelled: '已取消', waiting_retry: '等待重试' }[task?.status] || task?.status || '')
   const payload = codes => ({ circle_id: requestCircle.value || circleId.value, canonical_rjcodes: codes })
   async function refresh() {
     if (!active) return
@@ -91,6 +94,7 @@ export function useCircleSubtitleRepair(circleId, items) {
   }
   let unsubscribeTasksBatch = null
   function stopRealtime() {
+    closePendingBrowserDownload()
     active = false
     revision++
     clearTimeout(pendingRefresh)
@@ -103,11 +107,65 @@ export function useCircleSubtitleRepair(circleId, items) {
     unsubscribeTasks = unsubscribeTasksBatch = unsubscribeSubtitle = null
     realtimeEvents.stop()
   }
-  function openTask(task) {
+  async function openTask(task) {
     visible.value = false
+    if (task.browser_verification_required) {
+      try {
+        await openVerificationPopup(task.task_id)
+        await refresh()
+      } catch (error) { ElMessage.error(error.message || '打开浏览器下载失败') }
+      return
+    }
     return router.push({ name: 'Library', query: { subtitleDialog: '1', subtitleTaskId: task.task_id, subtitleLibraryId: task.library_id, subtitleFolderPath: task.folder_path, subtitleRjcode: task.rjcode, subtitleStage: task.awaiting_manual_match ? 'pairing' : 'overview' } })
   }
-  async function submit(codes, selections) {
+  function closePendingBrowserDownload() {
+    clearTimeout(browserDownloadTimer)
+    browserDownloadTimer = null
+    browserDownload?.popup.close()
+    browserDownload = null
+  }
+  function reserveBrowserDownload(codes) {
+    const sources = codes.flatMap(code => items.value.find(item => codeOf(item) === code)?.subtitle_repair_sources || [])
+    if (sources.length && !sources.some(source => source.provider === 'yaas')) return null
+    closePendingBrowserDownload()
+    return reserveVerificationPopup()
+  }
+  async function checkBrowserDownload() {
+    const pending = browserDownload
+    if (!pending) return
+    if (pending.popup.closed) { closePendingBrowserDownload(); return }
+    try {
+      const response = await circleCompletionApi.subtitleRepairTasks(pending.request)
+      if (browserDownload !== pending) return
+      const rows = Object.values(response.items || {}).flat().filter(task => pending.ids.has(task.task_id))
+      const ready = rows.find(task => task.browser_verification_required)
+      if (ready) {
+        // 清理只关闭仍在等待的空白窗口，已经交给用户验证的窗口归浏览器管理。
+        browserDownload = null
+        await openVerificationPopup(ready.task_id, pending.popup)
+        await refresh()
+        return
+      }
+      if (rows.length && rows.every(task => !['pending', 'processing', 'waiting_retry'].includes(task.status))) {
+        const failed = rows.find(task => task.status === 'failed')
+        if (failed) ElMessage.error(failed.current_step || '字幕爬取失败，请查看任务详情')
+        closePendingBrowserDownload()
+        await refresh()
+        return
+      }
+      if (!rows.length) {
+        closePendingBrowserDownload()
+        await refresh()
+        return
+      }
+    } catch (error) {
+      if (browserDownload === pending) closePendingBrowserDownload()
+      ElMessage.error(error.response?.data?.detail || error.message || '读取浏览器下载任务失败')
+      return
+    }
+    if (browserDownload === pending) browserDownloadTimer = setTimeout(checkBrowserDownload, 1000)
+  }
+  async function submit(codes, selections, popup) {
     const response = await circleCompletionApi.subtitleRepairStart({ ...payload(codes), ...(selections ? { selections } : {}) })
     const count = response.created_count || 0
     const reused = response.reused_count || 0
@@ -117,6 +175,14 @@ export function useCircleSubtitleRepair(circleId, items) {
     if (failed.length) ElMessage.warning(failed.slice(0, 3).map(item => `${item.canonical_rjcode}：${item.reason}`).join('；'))
     const choose = (response.items || []).filter(item => item.state === 'selection_required')
     if (choose.length && requestCircle.value === circleId.value) { groups.value = choose; selected.value = []; visible.value = true; viewOnly.value = false }
+    if (popup) {
+      const ids = new Set((response.items || []).filter(item => ['created', 'reused'].includes(item.state)).map(item => item.task_id).filter(Boolean))
+      if (!ids.size || !active || requestCircle.value !== circleId.value) popup.close()
+      else {
+        browserDownload = { popup, ids, request: payload(codes) }
+        void checkBrowserDownload()
+      }
+    }
     await refresh()
     return response
   }
@@ -125,31 +191,36 @@ export function useCircleSubtitleRepair(circleId, items) {
     busy.value = true
     requestCircle.value = circleId.value
     viewOnly.value = false
+    let popup = null
     try {
       const codes = Array.isArray(input) ? [...new Set(input)] : [codeOf(input)]
       if (!codes.length) return
       if (codes.length > 100) { ElMessage.warning('每次最多创建 100 个作品的字幕任务'); return }
+      popup = reserveBrowserDownload(codes)
       const response = await circleCompletionApi.subtitleRepairTargets(payload(codes))
-      if (requestCircle.value !== circleId.value) return
+      if (requestCircle.value !== circleId.value) { popup?.close(); return }
       groups.value = response.items || []
       if (groups.value.some(group => group.targets.length > 1)) {
+        popup?.close()
         selected.value = []
         visible.value = true
-      } else { await submit(codes) }
-    } catch (error) { ElMessage.error(error.response?.data?.detail || '创建字幕任务失败') }
+      } else { await submit(codes, undefined, popup) }
+    } catch (error) { popup?.close(); ElMessage.error(error.response?.data?.detail || error.message || '创建字幕任务失败') }
     finally { busy.value = false }
   }
   async function confirm() {
     if (busy.value || !selected.value.length) return
     busy.value = true
+    let popup = null
     try {
       const selections = {}
       for (const group of groups.value) {
         selections[group.canonical_rjcode] = group.targets.filter(target => selected.value.includes(`${group.canonical_rjcode}:${keyOf(target)}`))
       }
+      popup = reserveBrowserDownload(Object.keys(selections))
       visible.value = false
-      await submit(Object.keys(selections), selections)
-    } catch (error) { ElMessage.error(error.response?.data?.detail || '创建字幕任务失败'); visible.value = true }
+      await submit(Object.keys(selections), selections, popup)
+    } catch (error) { popup?.close(); ElMessage.error(error.response?.data?.detail || error.message || '创建字幕任务失败'); visible.value = true }
     finally { busy.value = false }
   }
   function view(item) {
@@ -162,7 +233,7 @@ export function useCircleSubtitleRepair(circleId, items) {
   }
   provide('circleSubtitleRepair', { tasks, create, view, busy: () => busy.value })
   watch(() => [circleId.value, items.value.map(codeOf).join('|')], () => { states.value = {}; void refresh() })
-  watch(circleId, () => { visible.value = false })
+  watch(circleId, () => { visible.value = false; closePendingBrowserDownload() })
   onMounted(startRealtime)
   onActivated(startRealtime)
   onDeactivated(stopRealtime)
