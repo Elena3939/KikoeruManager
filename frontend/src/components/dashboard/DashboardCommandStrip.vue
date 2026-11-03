@@ -3,25 +3,12 @@
       <!-- 主操作：扫描 -->
       <button
         type="button"
-        class="dash-cmd-btn dash-cmd-scan group inline-flex h-9 w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3.5 text-[13px] font-medium text-sky-700 shadow-none transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-sky-300 hover:bg-sky-100 active:translate-y-0 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-60 sm:w-auto sm:justify-start"
+        class="dash-cmd-btn dash-cmd-scan inline-flex h-9 w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 text-[13px] font-medium text-slate-700 shadow-sm transition-colors duration-200 hover:border-sky-300 hover:bg-sky-50 hover:text-sky-700 disabled:cursor-wait disabled:opacity-70 sm:w-auto sm:justify-start"
         :disabled="scanning"
         @click="$emit('scan')"
       >
-        <span class="dash-icon-swap relative inline-flex h-[15px] w-[15px] items-center justify-center">
-          <Search
-            v-if="!scanning"
-            :size="15"
-            :stroke-width="2"
-            class="dash-icon-default"
-          />
-          <Search
-            v-else
-            :size="15"
-            :stroke-width="2"
-            class="animate-spin"
-          />
-          <SearchCheck v-if="!scanning" :size="15" :stroke-width="2" class="dash-icon-hover" />
-        </span>
+        <LoaderCircle v-if="scanning" :size="15" :stroke-width="2" class="animate-spin" />
+        <Search v-else :size="15" :stroke-width="2" class="text-sky-600" />
         <span>{{ scanning ? '扫描中' : '扫描处理' }}</span>
       </button>
 
@@ -83,11 +70,11 @@ import {
   AlertTriangle,
   ListChecks,
   ListTodo,
+  LoaderCircle,
   PauseCircle,
   Play,
   PlayCircle,
   Search,
-  SearchCheck,
   ShieldAlert,
   StopCircle,
 } from 'lucide-vue-next'

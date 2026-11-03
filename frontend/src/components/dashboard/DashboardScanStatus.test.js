@@ -31,4 +31,20 @@ describe('扫描状态条', () => {
     expect(wrapper.text()).not.toContain('/old.zip')
     wrapper.unmount()
   })
+  it('加载时有状态提示，按交接和等待区分颜色语义', async () => {
+    let resolve
+    scanApi.candidates.mockReset().mockReturnValueOnce(new Promise(done => { resolve = done }))
+    const wrapper = create()
+    await wrapper.find('button').trigger('click')
+    expect(wrapper.text()).toContain('正在加载扫描明细')
+    resolve([
+      { id: 'sent', state: 'submitted', source_path: '/input/sent' },
+      { id: 'wait', state: 'ready', source_path: '/input/wait' },
+    ])
+    await flushPromises()
+    expect(wrapper.find('.is-submitted').text()).toBe('已交接')
+    expect(wrapper.find('.is-waiting').text()).toBe('等待交接')
+    expect(wrapper.find('.scan-details').exists()).toBe(true)
+    wrapper.unmount()
+  })
 })

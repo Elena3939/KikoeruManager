@@ -807,7 +807,8 @@ class InputScanRepository:
                 ).filter(
                     InputScanCandidate.scan_id == scan_id, InputScanCandidate.state == "skipped",
                 ).group_by(
-                    func.split_part(InputScanCandidate.reason, ":", 1), TaskRecord.status,
+                    func.split_part(InputScanCandidate.reason, ":", 1),
+                    InputScanCandidate.reason, TaskRecord.status,
                 ).all()
                 for owner, status, count in reasons:
                     key = f"task_{status}" if owner == "task" and status else owner or "other"
