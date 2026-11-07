@@ -8,6 +8,7 @@ import re
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -281,6 +282,29 @@ def install(bundle, root, container, docker, production=False):
     print("执行器已安装；应用 host_enabled 未修改，须独立验收后显式启用")
 
 
+def refresh(root, container, docker, production=False):
+    """容器重建后重新核对挂载和身份，沿用已安装的执行器及解释器。"""
+    installation_root(str(root))
+    if (production or container == "elena39-kikoerumanager") and (
+            socket.gethostname() != "Elena" or container != "elena39-kikoerumanager"):
+        raise RuntimeError("生产主机或容器不匹配")
+    current = root / "current"
+    if not current.exists():
+        raise RuntimeError("宿主执行器尚未安装，不能刷新")
+    previous = json.loads((current / "config.json").read_text())
+    command = next(line[len("ExecStart="):] for line in (current / SERVICE).read_text(encoding="utf-8").splitlines()
+                   if line.startswith("ExecStart="))
+    host_python = command.split(" ", 1)[0]
+    inspected = json.loads(run(docker, "inspect", container))[0]
+    uid = int(run(docker, "exec", container, "id", "-u"))
+    gid = int(run(docker, "exec", container, "id", "-g"))
+    with tempfile.TemporaryDirectory(prefix="kikoerumanager-mover-refresh-") as temporary:
+        bundle = Path(temporary) / "bundle"
+        make_bundle(bundle, inspected, [row["container"] for row in previous["mappings"]],
+                    uid, gid, str(root), current, host_python)
+        install(bundle, root, container, docker, production)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inspect-json", type=Path)
@@ -288,7 +312,8 @@ def main():
     parser.add_argument("--app-config-json", type=Path, help="应用配置 JSON；仅提取业务路径，不打包原配置")
     parser.add_argument("--uid", type=int)
     parser.add_argument("--gid", type=int)
-    parser.add_argument("--bundle", required=True, type=Path)
+    parser.add_argument("--bundle", type=Path)
+    parser.add_argument("--refresh", action="store_true", help="按当前容器身份刷新已安装执行器")
     parser.add_argument("--root", default="/var/lib/kikoerumanager-file-mover")
     parser.add_argument("--host-python", default="/bin/python3", help="已核实的宿主 Python 3.8+ 绝对路径；安装前实测版本")
     parser.add_argument("--install", action="store_true")
@@ -297,7 +322,11 @@ def main():
     parser.add_argument("--docker", default="/var/packages/Docker/target/usr/bin/docker")
     args = parser.parse_args()
     canonical(args.root)
-    if args.install:
+    if args.refresh:
+        refresh(Path(args.root), args.container, args.docker, args.production)
+    elif args.bundle is None:
+        parser.error("准备或安装需要 --bundle")
+    elif args.install:
         install(args.bundle, Path(args.root), args.container, args.docker, args.production)
     else:
         if args.inspect_json is None or args.uid is None or args.gid is None:

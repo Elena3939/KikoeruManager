@@ -1821,6 +1821,8 @@ class ASMRResourceService:
         if download_root:
             await self._wait_session_tasks_released(session_id)
             cleaned = await self._cleanup_download_root(download_root)
+            if not cleaned:
+                raise OSError("下载缓存清理失败，请重试关闭任务")
         return {**session, "cleaned": cleaned, "cleaned_path": download_root if cleaned else ""}
 
     async def _wait_session_tasks_released(self, session_id: str, timeout_seconds: float = 5.0) -> None:

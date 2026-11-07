@@ -1340,8 +1340,16 @@ class DLsiteApiService:
                     str(cached_data.get('final_url') or page_url),
                 )
 
+        self.cache.pop(f"page_html_status:{page_url}", None)
         try:
             response = await self._guarded_get(page_url, headers=self._get_browser_headers())
+            if response.status_code == 404:
+                self.cache[f"page_html_status:{page_url}"] = {
+                    'status': 404,
+                    'timestamp': datetime.now(),
+                }
+                logger.debug("[DLsite] 预期内页面不存在（404）: %s", page_url)
+                return '', page_url
             response.raise_for_status()
             text = str(response.text or '')
             if not text.strip() or self._is_unavailable_product_page(text):
@@ -1404,7 +1412,7 @@ class DLsiteApiService:
         # 这里 ``asyncio.gather`` 让两个不同 URL 同时跑；另一处任务在并发抓同 URL
         # 时也会在 inflight 层共享字节，零浪费。
         async def fetch_one(url: str) -> tuple[str, Optional[Dict]]:
-            logger.info("[DLsite] 尝试页面元数据抓取: %s", url)
+            logger.debug("[DLsite] 尝试页面元数据抓取: %s", url)
             page_text, final_url = await self._fetch_page_html_with_url(url)
             product = self._parse_product_from_html(workno, url, final_url, page_text) if page_text else None
             return url, product
@@ -1438,7 +1446,18 @@ class DLsiteApiService:
                 return product
 
         for url, _ in results:
-            logger.info("[DLsite] 页面元数据未提取到有效字段: requested=%s url=%s", workno, url)
+            logger.debug("[DLsite] 页面元数据未提取到有效字段: requested=%s url=%s", workno, url)
+        missing_kinds = []
+        for url, _ in results:
+            status = self.cache.get(f"page_html_status:{url}") or {}
+            if status.get('status') == 404:
+                missing_kinds.append('announce' if '/announce/' in url else 'work')
+        if missing_kinds:
+            logger.info(
+                "[DLsite] %s 页面 fallback 无结果（%s 404）",
+                workno,
+                '/'.join(dict.fromkeys(missing_kinds)),
+            )
         return None
 
     async def _resolve_embedded_translation_original(
@@ -1665,11 +1684,12 @@ class DLsiteApiService:
             if datetime.now() - cached_data['timestamp'] < self.cache_ttl and cached_data.get('data'):
                 return dict(cached_data['data'] or {})
 
-        logger.info("[DLsite] 尝试页面 fallback: %s", page_url)
+        logger.debug("[DLsite] 尝试页面 fallback: %s", page_url)
         # ★ 走共享 HTML 层：同一个 page_url 已经被 _fetch_product_page_metadata 或别处
         # 拉过时直接复用字节，不再重复打网络。
         page_text, final_url = await self._fetch_page_html_with_url(page_url)
         if not page_text:
+            # work / announce 的最终结果由元数据 fallback 统一汇总，避免同一链路重复 INFO。
             self.cache.pop(cache_key, None)
             return {}
 
@@ -1694,7 +1714,7 @@ class DLsiteApiService:
                 result.get('translation_workno') or '',
             )
         else:
-            logger.info("[DLsite] 页面 fallback 未命中: requested=%s", workno)
+            logger.debug("[DLsite] 页面 fallback 未命中: requested=%s", workno)
         return result
 
     async def _is_public_work_available(self, rjcode: str, locale: Optional[str] = None) -> bool:
@@ -2307,7 +2327,7 @@ class DLsiteApiService:
                 }
                 return data
             if response.status_code == 404:
-                logger.warning("API 返回 404: %s", log_url)
+                logger.debug("[DLsite] 预期内页面不存在（404）: %s", log_url)
                 return None
 
             logger.error("API 请求失败: %s, 状态码: %s", log_url, response.status_code)

@@ -119,6 +119,7 @@ class ResourceSourceService:
     def __init__(self):
         self._worker = None
         self._subtitle_worker = None
+        self._subtitle_target_worker = None
         self._inflight = {}
         self._enqueued = {}
         self._queue_tasks = set()
@@ -698,13 +699,30 @@ class ResourceSourceService:
                 logging.getLogger(__name__).exception('社团字幕后台探测失败')
                 await asyncio.sleep(30)
 
+    async def subtitle_target_worker(self):
+        from .circle_subtitle_repair_service import get_circle_subtitle_repair_service
+        while True:
+            try:
+                worked = await asyncio.to_thread(get_circle_subtitle_repair_service().refresh_target_snapshots)
+                await asyncio.sleep(.2 if worked else 5)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logging.getLogger(__name__).exception('社团字幕目录摘要更新失败')
+                await asyncio.sleep(30)
+
     def start(self):
         if self._worker is None or self._worker.done():
             self._worker = asyncio.create_task(self.worker(), name='yaas-source-probe')
         if self._subtitle_worker is None or self._subtitle_worker.done():
             self._subtitle_worker = asyncio.create_task(self.subtitle_worker(), name='circle-subtitle-probe')
+        if self._subtitle_target_worker is None or self._subtitle_target_worker.done():
+            self._subtitle_target_worker = asyncio.create_task(self.subtitle_target_worker(), name='circle-subtitle-targets')
 
     async def stop(self):
+        if self._subtitle_target_worker:
+            self._subtitle_target_worker.cancel()
+            await asyncio.gather(self._subtitle_target_worker, return_exceptions=True)
         if self._subtitle_worker:
             self._subtitle_worker.cancel()
             await asyncio.gather(self._subtitle_worker, return_exceptions=True)

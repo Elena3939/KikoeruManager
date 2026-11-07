@@ -5959,3 +5959,14 @@ html.kikoerumanager-dark .floating-card.task-toast {
   border-color: rgba(255, 255, 255, .12);
   box-shadow: 0 18px 48px rgba(0, 0, 0, .32);
 }
+
+/* 日志活动任务及独立历史搜索 */
+html.kikoerumanager-dark .logs-page .logs-search-panel { background: var(--km-dark-surface, #18181b); border-color: var(--km-dark-border, #3f3f46); color: var(--km-dark-text, #e4e4e7); }
+html.kikoerumanager-dark .logs-page .logs-active-tasks { background: rgba(24, 24, 27, 0.7); border-color: rgba(113, 113, 122, 0.48); color: var(--km-dark-text, #e4e4e7); }
+html.kikoerumanager-dark .logs-page .logs-active-task { border-color: var(--km-dark-border-soft, #303036); }
+html.kikoerumanager-dark .logs-page .logs-active-label { color: var(--km-dark-text, #e4e4e7); }
+html.kikoerumanager-dark .logs-page :is(.logs-active-phase, .logs-active-timing, .logs-active-heading small) { color: var(--km-dark-text-muted, #a1a1aa); }
+html.kikoerumanager-dark .logs-page .logs-active-track { background: var(--km-dark-elevated, #27272a); }
+html.kikoerumanager-dark .logs-page :is(.logs-active-speed, .logs-active-title strong, .logs-active-title > svg) { color: #38bdf8; }
+html.kikoerumanager-dark .logs-page .logs-search-result { background: var(--km-dark-surface, #27272a); border-color: var(--km-dark-border, #3f3f46); color: var(--km-dark-text, #e4e4e7); }
+html.kikoerumanager-dark .logs-page .logs-search-result small { color: var(--km-dark-muted, #a1a1aa); }

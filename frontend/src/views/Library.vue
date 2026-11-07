@@ -1257,11 +1257,13 @@
       v-if="showUploadBackgroundCard"
       position-key="library-upload" task-source="upload" :task-ids="trackedUploadTaskIds"
       kind="upload"
+      v-bind="uploadTransferCardProps"
       :title="uploadBackgroundTitleText"
       :subtitle="activeBackgroundUploadTask ? getUploadBackgroundTargetLabel(activeBackgroundUploadTask) : ''"
       :badge-text="formatFileSize(uploadBackgroundTotalBytes)"
-      :meta-text="uploadBackgroundEtaText"
-      :percentage="uploadBackgroundPercent"
+      :meta-text="uploadTransferCardProps.metaText"
+      :timing-text="uploadTransferCardProps.timingText"
+      :percentage="uploadTransferCardProps.percentage"
       :completed="uploadBackgroundCompleted"
       :detail-text="uploadBackgroundDetailText"
       :metrics="[
@@ -1269,7 +1271,7 @@
         { key: 'pending', label: '等待中', value: pendingUploadTasks.length },
         { key: 'completed', label: '完成', value: completedUploadTasks.length },
         { key: 'failed', label: '失败', value: failedUploadTasks.length },
-        { key: 'speed', label: '速度', value: formatSpeed(uploadBackgroundSpeedValue) }
+        { key: 'speed', label: '上传速度', value: formatSpeed(uploadBackgroundSpeedValue) }
       ]"
       :actions="[{ key: 'close', label: '关闭' }, { key: 'resume', label: '恢复工作台' }]"
       @action="$event === 'resume' ? resumeUploadWorkbenchFromBackground() : closeUploadWorkbench()"
@@ -1820,6 +1822,7 @@
 <script setup>
 import { usePersistentTaskWorkbench } from '../composables/usePersistentTaskCards'
 import { getBackendUploadEta, mergeUploadTaskSnapshot } from '../utils/uploadTaskSnapshot'
+import { getTransferCardProgress } from '../utils/transferCardProgress.js'
 
 import { useLibraryExternalUpload } from '../composables/useLibraryExternalUpload'
 
@@ -3068,6 +3071,8 @@ const failedUploadTasks = computed(() => trackedUploadTasks.value.filter(task =>
 const showUploadBackgroundCard = computed(() => uploadWorkbenchBackgroundActive.value && !uploadWorkbenchVisible.value && trackedUploadTaskIds.value.length > 0 && trackedUploadTasks.value.length > 0)
 
 const activeBackgroundUploadTask = computed(() => processingUploadTasks.value[0] || pendingUploadTasks.value[0] || trackedUploadTasks.value[0] || null)
+
+const uploadTransferCardProps = computed(() => getTransferCardProgress(trackedUploadTasks.value, 'upload'))
 
 const uploadBackgroundAggregate = computed(() => {
   const tasks = Array.isArray(trackedUploadTasks.value) ? trackedUploadTasks.value : []
@@ -12112,22 +12117,7 @@ function stopUploadWorkbenchPolling () {
 
 
 function startUploadWorkbenchPolling () {
-
-  if (!trackedUploadTaskIds.value.length) return
-
-  if (realtimeEvents.connected.value) {
-    stopUploadWorkbenchPolling()
-    return
-  }
-
   stopUploadWorkbenchPolling()
-
-  uploadWorkbenchTimer = window.setTimeout(() => {
-
-    refreshUploadWorkbench({ silent: true })
-
-  }, 2000)
-
 }
 
 
@@ -12271,6 +12261,7 @@ function patchUploadTaskFromRealtimeEvent (payload = {}) {
   const status = String(payload.status || current.status || '').trim()
   const next = withBackendUploadSpeeds([mergeUploadTaskSnapshot(current, {
     status,
+    display_status: payload.display_status || status,
     progress: Number.isFinite(Number(payload.progress)) ? Number(payload.progress) : current.progress,
     current_step: payload.current_step ?? current.current_step,
     updated_at: payload.updated_at || current.updated_at,
@@ -12280,7 +12271,7 @@ function patchUploadTaskFromRealtimeEvent (payload = {}) {
   trackedUploadTasks.value = trackedUploadTasks.value.map((task, taskIndex) => taskIndex === index ? next : task)
 
   if (['completed', 'failed', 'cancelled'].includes(status)) {
-    void Promise.allSettled([refreshLibrary(), refreshStats()])
+    if (current.status !== status) void Promise.allSettled([refreshUploadWorkbench({ silent: true }), refreshLibrary(), refreshStats()])
   }
 
   return true
@@ -25409,7 +25400,7 @@ function statsStatusTextDisplay (stats) {
 
 }
 
-usePersistentTaskWorkbench(route, 'upload', trackedUploadTaskIds, uploadWorkbenchVisible, uploadWorkbenchBackgroundActive, refreshUploadWorkbench, { tasks: trackedUploadTasks, id: 'library-upload', title: '库存上传任务' })
+usePersistentTaskWorkbench(route, 'upload', trackedUploadTaskIds, uploadWorkbenchVisible, uploadWorkbenchBackgroundActive, refreshUploadWorkbench, { tasks: trackedUploadTasks, id: 'library-upload', title: '库存上传任务', consumeEvents: false })
 const persistentSubtitleIds = ref(subtitleTasks.value.map(task => String(task.id)))
 watch(subtitleTasks, tasks => { persistentSubtitleIds.value = tasks.map(task => String(task.id)) }, { deep: true })
 usePersistentTaskWorkbench(route, 'subtitle', persistentSubtitleIds, subtitleDialogVisible, subtitleDialogBackgroundActive, () => refreshRJSubtitleStatus(false, { silent: true }), { tasks: subtitleTasks, cardProps: subtitleBackgroundCardProps })

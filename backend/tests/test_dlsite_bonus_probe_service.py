@@ -1649,7 +1649,7 @@ def test_flush_bonus_probe_cache_dirty_once_writes_latest_row(db_session, monkey
     assert fake_redis.acked == ["1-0", "2-0", "3-0"]
 
 
-def test_flush_bonus_probe_cache_dirty_once_acks_failed_batch(monkeypatch) -> None:
+def test_flush_bonus_probe_cache_dirty_once_keeps_failed_batch_pending(monkeypatch) -> None:
     service = _service()
 
     class FakeRedis:
@@ -1679,8 +1679,8 @@ def test_flush_bonus_probe_cache_dirty_once_acks_failed_batch(monkeypatch) -> No
 
     result = service.flush_bonus_probe_cache_dirty_once(limit=10)
 
-    assert result == {"read": 1, "written": 0, "acked": 1, "failed": 1}
-    assert fake_redis.acked == ["1-0"]
+    assert result == {"read": 1, "written": 0, "acked": 0, "failed": 1}
+    assert fake_redis.acked == []
 
 
 def test_select_original_work_for_bonus_uses_same_date_and_nearest_rj() -> None:

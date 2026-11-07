@@ -49,6 +49,7 @@ _STAGE_LABELS = {
 }
 
 _TRIGRAM_INDEXES = (
+    "ix_circle_completion_group_search",
     "idx_activity_logs_searchable_text_trgm",
     "idx_library_index_search_text_trgm",
     "idx_task_center_searchable_text_trgm",

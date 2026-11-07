@@ -832,7 +832,16 @@ class InputScanRepository:
                 execution = "success" if total else "empty"
             if run.scan_status in {"failed", "interrupted"}:
                 execution = "waiting" if run.scan_status == "interrupted" else "failed"
+            finished_at = None
+            if scan_status in {"completed", "cancelled", "failed", "interrupted"}:
+                finished_at = (run.coverage or {}).get("scan_finished_at") or (
+                    run.updated_at if run.scan_status == scan_status else get_local_now()
+                ).isoformat()
             if materialize:
+                finished_at_added = bool(finished_at and not (run.coverage or {}).get("scan_finished_at"))
+                if finished_at_added:
+                    # 扫描提示的期限不随下游任务状态更新而延长。
+                    run.coverage = {**(run.coverage or {}), "scan_finished_at": finished_at}
                 parent = db.get(ActivityLog, run.batch_id)
                 detail = {
                     **((parent.detail if parent else None) or {}), "producer_closed": run.producer_closed,
@@ -841,7 +850,7 @@ class InputScanRepository:
                     "requested_count": total, "created_count": counts.get("submitted", 0) + counts.get("routed", 0),
                     "counts": counts, "task_outcomes": dict(task_counts), "coverage": run.coverage or {},
                 }
-                changed = run.execution_status != execution or run.scan_status != scan_status
+                changed = finished_at_added or run.execution_status != execution or run.scan_status != scan_status
                 if parent and parent.detail != detail:
                     parent.detail = detail
                     db.flush()
@@ -880,6 +889,10 @@ class InputScanRepository:
                 "skip_counts": skip_counts,
                 "coverage": run.coverage or {}, "policy": run.policy or {}, "task_outcomes": dict(task_counts),
                 "root_path": run.root_path, "created_at": run.created_at.isoformat(),
+                "finished_at": datetime.fromisoformat(finished_at).astimezone().isoformat() if finished_at else None,
+                "display_expires_at": (
+                    datetime.fromisoformat(finished_at).astimezone() + timedelta(seconds=60)
+                ).isoformat() if finished_at else None,
                 "message": "扫描中" if scan_status == "running" else "扫描" + {
                     "completed": "完成", "cancelled": "已取消", "interrupted": "已中断", "failed": "失败",
                 }.get(scan_status, "正在取消"),
@@ -962,6 +975,10 @@ class InputScanRepository:
             run = db.query(InputScanRun).filter_by(id=scan_id).with_for_update().one()
             if not run.cancel_requested:
                 run.scan_status = "running"
+                run.coverage = {
+                    key: value for key, value in (run.coverage or {}).items()
+                    if key != "scan_finished_at"
+                }
                 self._touch(run)
 
     def pending_tasks(self):
@@ -975,7 +992,18 @@ class InputScanRepository:
             query = db.query(InputScanCandidate).filter_by(scan_id=scan_id)
             if after:
                 query = query.filter(InputScanCandidate.id > after)
-            return [self._candidate_dict(row) for row in query.order_by(InputScanCandidate.id).limit(min(256, limit))]
+            rows = query.order_by(InputScanCandidate.id).limit(min(256, limit)).all()
+            owner_ids = {
+                row.task_id or row.reason.removeprefix("task:")
+                for row in rows if row.task_id or (row.reason or "").startswith("task:")
+            }
+            statuses = dict(db.query(TaskRecord.id, TaskRecord.status).filter(
+                TaskRecord.id.in_(owner_ids),
+            ).all()) if owner_ids else {}
+            return [{
+                **self._candidate_dict(row),
+                "task_status": statuses.get(row.task_id or (row.reason or "").removeprefix("task:")),
+            } for row in rows]
 
     def outbox(self, limit=64):
         with self.session_factory() as db:

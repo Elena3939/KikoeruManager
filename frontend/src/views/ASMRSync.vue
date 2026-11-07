@@ -197,6 +197,7 @@
       @resume-task="handleResumeEnhancedDownloadTask"
       @cancel-task="handleCancelEnhancedDownloadTask"
       @dismiss-task="dismissEnhancedWorkbenchTask"
+      :cleanup-failed-task="dismissEnhancedWorkbenchTask"
       @load-files="task => loadFullWorkbenchTaskFiles(task, enhancedDownloadWorkbenchTasks)"
     />
 
@@ -571,7 +572,11 @@
 
 <script setup>
 import { usePersistentTaskWorkbench, dismissPersistentTaskCard, dismissWorkbenchTask } from '../composables/usePersistentTaskCards'
+import { useRealtimeEvents } from '../composables/useRealtimeEvents'
+import { normalizeTaskCenterRealtimePayloads } from '../composables/taskCenterEventUtils'
+import { patchTransferTaskEvent } from '../utils/transferTaskEvent'
 import { getAsmrDownloadSessionId, getDownloadEngineTaskId } from '../utils/downloadTaskIdentity.js'
+import { cleanupFailedDownloadTask } from '../utils/failedDownloadTaskCleanup.js'
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -616,6 +621,8 @@ import {
   selectTrackedDownloadTasks,
 } from './_downloadWorkbenchTracking.js'
 import { getDownloadBatchPercent, getMatchingDownloadSummary, formatDownloadSummary } from '../utils/downloadProgress.js'
+import { getTransferCardProgress } from '../utils/transferCardProgress.js'
+import { mergeTransferTaskSnapshot } from '../utils/transferTaskEvent.js'
 
 const { isMobile: isMobileViewport } = useViewport()
 const route = useRoute()
@@ -629,8 +636,6 @@ const ASMR_SYNC_BAIDU_NETDISK_DRAFT_KEY = 'kikoerumanager.asmrSync.baiduNetdiskD
 const ASMR_SYNC_DOWNLOAD_PREVIEW_CACHE_VERSION = 3
 const ASMR_SYNC_DOWNLOAD_PREVIEW_CACHE_TTL_MS = 30 * 60 * 1000
 const ASMR_SYNC_DOWNLOAD_PREVIEW_CACHE_SESSION_ID = getDownloadPreviewCacheSessionId()
-const ASMR_SYNC_STATUS_POLL_MS = 3000
-const ASMR_SYNC_STATUS_POLL_MAX_MS = 120000
 
 function getDownloadPreviewCacheSessionId() {
   const key = '__KIKOERUMANAGER_DOWNLOAD_PREVIEW_CACHE_SESSION_ID__'
@@ -808,8 +813,7 @@ const enhancedUpload = ref({
   targetPath: '',
   libraryId: ''
 })
-let statusInterval = null
-let statusFailureCount = 0
+let stopStatusEvents = null
 let asmrSyncInitialized = false
 let asmrSyncViewActive = false
 
@@ -947,8 +951,7 @@ const enhancedDownloadBackgroundCardProps = computed(() => ({ taskSource: 'asmr'
   subtitle: enhancedActiveBackgroundTask.value
     ? `${enhancedActiveBackgroundTask.value.rjcode || 'RJ'} · ${enhancedActiveBackgroundTask.value.work_title || '-'}`
     : '保留下载队列与进度',
-  metaText: enhancedBackgroundMetaText.value,
-  percentage: enhancedBackgroundPercent.value,
+  ...getTransferCardProgress(enhancedDownloadWorkbenchTasks.value, 'download'),
   completed: enhancedBackgroundCompleted.value,
   metrics: [
     { key: 'processing', label: '进行中', value: enhancedProcessingTasks.value.length, tone: 'info' },
@@ -1350,11 +1353,7 @@ function stopEnhancedDownloadWorkbenchPolling() {
 }
 
 function startEnhancedDownloadWorkbenchPolling() {
-  if (!enhancedDownloadWorkbenchTaskIds.value.length) return
   stopEnhancedDownloadWorkbenchPolling()
-  enhancedDownloadWorkbenchTimer = window.setTimeout(() => {
-    refreshEnhancedDownloadWorkbench()
-  }, 2000)
 }
 
 async function refreshEnhancedDownloadWorkbench(options = {}) {
@@ -1431,6 +1430,7 @@ function mergeWorkbenchTaskRows(previousRows = [], nextRows = []) {
   const previousMap = new Map((previousRows || []).map(task => [String(task?.id || ''), task]))
   return (nextRows || []).map(next => {
     const previous = previousMap.get(String(next?.id || ''))
+    if (next.download_runtime || previous?.download_runtime) next = mergeTransferTaskSnapshot(previous, next)
     if (previous && previous.download_files_truncated === false && next?.download_files_truncated) {
       return {
         ...next,
@@ -1457,7 +1457,13 @@ function closeEnhancedDownloadWorkbench() {
   dismissPersistentTaskCard('/asmr-sync:asmr:asmr')
   clearEnhancedDownloadWorkbenchState()
 }
-function dismissEnhancedWorkbenchTask(task) {
+async function dismissEnhancedWorkbenchTask(task) {
+  try {
+    await cleanupFailedDownloadTask(task)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '清理下载任务失败')
+    return false
+  }
   dismissWorkbenchTask(task, enhancedDownloadWorkbenchTaskIds, enhancedDownloadWorkbenchTasks, '/asmr-sync:asmr:asmr', () => enhancedDownloadWorkbenchRequestGuard.invalidate())
   if (!enhancedDownloadWorkbenchTaskIds.value.length) clearEnhancedDownloadWorkbenchState()
 }
@@ -2460,10 +2466,8 @@ const refreshStatus = async () => {
       const item = scanResults.value.find(i => i.rjcode === task.rjcode)
       if (item) item.status = task.status === 'processing' ? 'downloading' : task.status
     })
-    statusFailureCount = 0
     return true
   } catch (error) {
-    statusFailureCount += 1
     console.error('获取状态失败:', error)
     return false
   } finally {
@@ -2506,38 +2510,32 @@ function backgroundDownloadMetaText(percent, processingTasks, activeTask, failed
 }
 
 function stopStatusPolling () {
-  if (statusInterval) {
-    clearTimeout(statusInterval)
-    statusInterval = null
-  }
+  stopStatusEvents?.()
+  stopStatusEvents = null
 }
 
 function startStatusPolling () {
-  if (!asmrSyncViewActive) return
-  scheduleStatusPolling(ASMR_SYNC_STATUS_POLL_MS)
-}
-
-function scheduleStatusPolling (delay = ASMR_SYNC_STATUS_POLL_MS) {
-  stopStatusPolling()
-  statusInterval = setTimeout(async () => {
-    statusInterval = null
-    if (!asmrSyncViewActive) return
-    if (typeof document !== 'undefined' && document.hidden) {
-      return
+  if (!asmrSyncViewActive || stopStatusEvents) return
+  const realtime = useRealtimeEvents()
+  const handle = event => {
+    for (const payload of normalizeTaskCenterRealtimePayloads(event.detail || {})) {
+      if (payload.task_type !== 'asmr_sync_download') continue
+      const existing = tasks.value.some(task => String(task.id) === String(payload.engine_task_id))
+      if (!existing) { if (!refreshing.value) void refreshStatus(); continue }
+      tasks.value = tasks.value.map(task => patchTransferTaskEvent(task, payload))
+      const item = scanResults.value.find(row => row.rjcode === payload.rjcode)
+      if (item) item.status = payload.status === 'processing' ? 'downloading' : payload.status
     }
-    const ok = await refreshStatus()
-    const nextDelay = ok
-      ? ASMR_SYNC_STATUS_POLL_MS
-      : Math.min(ASMR_SYNC_STATUS_POLL_MAX_MS, ASMR_SYNC_STATUS_POLL_MS * 2 ** Math.min(statusFailureCount, 5))
-    scheduleStatusPolling(nextDelay)
-  }, delay)
+  }
+  window.addEventListener('kikoerumanager:events:message', handle)
+  const stopWatch = watch(realtime.connected, connected => { if (connected) void refreshStatus() })
+  stopStatusEvents = () => { stopWatch(); window.removeEventListener('kikoerumanager:events:message', handle) }
 }
 
 function handleASMRSyncVisibilityChange () {
   if (!asmrSyncViewActive || (typeof document !== 'undefined' && document.hidden)) return
-  statusFailureCount = 0
   refreshStatus()
-  if (!statusInterval) startStatusPolling()
+  startStatusPolling()
 }
 
 async function initializeASMRSyncPage () {

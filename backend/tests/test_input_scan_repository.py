@@ -85,6 +85,49 @@ def test_snapshot_explains_skipped_owners(repository, tmp_path):
     assert snapshot["skip_counts"] == {"task_waiting_retry": 1, "deferred_archive": 1}
     assert snapshot["counts"]["skipped"] == 2
     assert snapshot["found_count"] == 0
+    items = {row["id"]: row for row in repository.candidates(scan_id)}
+    assert items[candidate["id"]]["task_status"] == "waiting_retry"
+    assert items[other["id"]]["task_status"] is None
+
+
+def test_scan_display_expiry_is_fixed_after_closure(repository, tmp_path, monkeypatch):
+    from datetime import datetime, timedelta
+    from app.core import input_scan_repository as module
+
+    now = datetime.now()
+    monkeypatch.setattr(module, "get_local_now", lambda: now)
+    scan_id, candidate, path = discover(repository, tmp_path)
+    task = Task(TaskType.AUTO_PROCESS, str(path))
+    repository.commit_candidate(candidate["id"], candidate["version"], task)
+    assert repository.snapshot(scan_id)["display_expires_at"] is None
+    repository.close_producer(scan_id)
+    closed = repository.snapshot(scan_id, materialize=True)
+    assert closed["execution_status"] == "waiting"
+    assert datetime.fromisoformat(closed["display_expires_at"]) - datetime.fromisoformat(
+        closed["finished_at"],
+    ) == timedelta(seconds=60)
+
+    now += timedelta(hours=1)
+    task.status = TaskStatus.COMPLETED
+    repository.persist_execution(task)
+    completed = repository.snapshot(scan_id, materialize=True)
+    assert completed["execution_status"] == "success"
+    assert completed["display_expires_at"] == closed["display_expires_at"]
+    assert repository.candidates(scan_id)[0]["task_status"] == "completed"
+
+
+@pytest.mark.parametrize("status", ["cancelled", "failed", "interrupted"])
+def test_old_terminal_scans_expire_from_stored_time(repository, tmp_path, status):
+    from datetime import datetime, timedelta
+    scan_id, _, _ = discover(repository, tmp_path)
+    old = datetime.now() - timedelta(days=1)
+    with repository.session_factory.begin() as db:
+        row = db.get(InputScanRun, scan_id)
+        row.scan_status, row.updated_at = status, old
+    snapshot = repository.snapshot(scan_id)
+    assert datetime.fromisoformat(snapshot["display_expires_at"]) == (
+        old.astimezone() + timedelta(seconds=60)
+    )
 
 
 def test_cancel_fences_late_commit_and_preserves_submitted(repository, tmp_path):

@@ -61,6 +61,36 @@ def test_bundle_syncs_all_business_mounts_without_app_config(tmp_path):
     }
 
 
+def test_refresh_rebinds_new_container_and_preserves_installed_sources(tmp_path, monkeypatch):
+    installer = tool("host-file-mover-install")
+    root = tmp_path / "mover"
+    current = root / "current"
+    current.mkdir(parents=True)
+    (current / "config.json").write_text(json.dumps({
+        "container_id": "b" * 64, "mappings": [{"container": "/library", "host": "/old"}]}))
+    (current / installer.SERVICE).write_text(
+        installer.UNIT.format(root=root, python="/usr/local/bin/python3"), encoding="utf-8")
+    for name in installer.FILES:
+        (current / name).write_text("# installed")
+    monkeypatch.setattr(installer.socket, "gethostname", lambda: "Elena")
+    monkeypatch.setattr(installer, "installation_root", lambda value: value)
+    monkeypatch.setattr(installer, "run", lambda *args: json.dumps([inspected()])
+                        if args[1] == "inspect" else "0")
+    checked = []
+
+    def install(bundle, actual_root, container, docker, production):
+        config = json.loads((bundle / "config.json").read_text())
+        assert config["container_id"] == "a" * 64
+        assert config["mappings"][0]["host"] != "/old"
+        assert (bundle / installer.FILES[0]).read_text() == "# installed"
+        assert "ExecStart=/usr/local/bin/python3 " in (bundle / installer.SERVICE).read_text(encoding="utf-8")
+        checked.append(actual_root)
+
+    monkeypatch.setattr(installer, "install", install)
+    installer.refresh(root, "elena39-kikoerumanager", "docker", True)
+    assert checked == [root]
+
+
 @pytest.mark.parametrize("path", ["/app/config", "/app/postgres", "/app/app", "/app/static",
                                   "/app/data/redis", "/etc", "/usr", "/var/lib", "/"])
 def test_mount_discovery_excludes_protected_directories(path):

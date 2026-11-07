@@ -88,7 +88,7 @@ const router = useRouter()
 const realtimeEvents = useRealtimeEvents()
 
 const loading = ref(false)
-const { snapshot: inputScan, scanning, start: startScan, cancel: cancelScan } = useInputScan()
+const { visibleSnapshot: inputScan, scanning, start: startScan, cancel: cancelScan } = useInputScan()
 const watcherRunning = ref(false)
 const taskCenterOverview = ref({
   recent_items: [],

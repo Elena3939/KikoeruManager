@@ -35,6 +35,8 @@ rollback() {
     "$DOCKER" rm -f "$CONTAINER" >/dev/null 2>&1 || true
     "$DOCKER" rename "$BACKUP_CONTAINER" "$CONTAINER" >/dev/null 2>&1 || true
     "$DOCKER" start "$CONTAINER" >/dev/null 2>&1 || true
+    refresh_host_mover || log '回滚后宿主执行器刷新失败，需检查'
+    refresh_synology_registration || log '回滚后群晖登记刷新失败，需检查'
   fi
   cleanup_upload
   exit "$status"
@@ -69,6 +71,7 @@ if [ -e "$RELEASE_DIR" ]; then
 fi
 
 mkdir -p "$CONTEXT_DIR"
+chmod 700 "$RELEASE_DIR"
 tar -xzf "$ARCHIVE_PATH" -C "$CONTEXT_DIR"
 for required in Dockerfile .dockerignore backend/requirements.txt frontend/package-lock.json; do
   [ -f "$CONTEXT_DIR/$required" ] || fail "源码快照缺少构建必需文件: $required"
@@ -111,6 +114,31 @@ require_idle_or_force() {
       log "检测到 $count 个 processing 任务，按 -Force 继续"
       ;;
   esac
+}
+
+refresh_host_mover() {
+  if [ -e /var/lib/kikoerumanager-file-mover/current/config.json ]; then
+    /bin/python3 "$CONTEXT_DIR/tools/host-file-mover-install.py" --refresh --production
+  fi
+}
+
+refresh_synology_registration() {
+  /bin/python3 "$CONTEXT_DIR/tools/sync-production-synology.py" "$RELEASE_DIR"
+}
+
+backup_database() {
+  log '迁移前备份生产数据库'
+  umask 077
+  "$DOCKER" exec "$CONTAINER" sh -lc '
+    export PGPASSWORD="$POSTGRES_PASSWORD"
+    pg_dump -h 127.0.0.1 -U kikoerumanager -d kikoerumanager -Fc
+  ' > "$RELEASE_DIR/database-before.dump.partial"
+  "$DOCKER" exec -i "$CONTAINER" pg_restore --list \
+    < "$RELEASE_DIR/database-before.dump.partial" > "$RELEASE_DIR/database-before.list"
+  [ -s "$RELEASE_DIR/database-before.list" ] || fail '数据库备份目录校验失败'
+  mv "$RELEASE_DIR/database-before.dump.partial" "$RELEASE_DIR/database-before.dump"
+  sha256sum "$RELEASE_DIR/database-before.dump" > "$RELEASE_DIR/database-before.sha256"
+  chmod 600 "$RELEASE_DIR/database-before.dump" "$RELEASE_DIR/database-before.list" "$RELEASE_DIR/database-before.sha256"
 }
 
 build_image() {
@@ -211,8 +239,9 @@ wait_for_health() {
 }
 
 cleanup_old_releases() {
-  kept=0
-  for path in $(ls -1 "$RELEASES_ROOT" 2>/dev/null | sort -r); do
+  kept=1
+  for path in $(ls -1t "$RELEASES_ROOT" 2>/dev/null); do
+    [ "$path" != "$RELEASE_ID" ] || continue
     kept=$((kept + 1))
     if [ "$kept" -le "$KEEP_RELEASES" ]; then
       continue
@@ -223,13 +252,14 @@ cleanup_old_releases() {
     log "已清理过期源码版本: $path"
   done
 
-  kept=0
+  mkdir -p "$RELEASE_DIR/rollback-containers"
   for name in $("$DOCKER" ps -a --format '{{.Names}}' | grep "^${CONTAINER}-rollback-" | sort -r || true); do
-    kept=$((kept + 1))
-    if [ "$kept" -le "$KEEP_RELEASES" ]; then
-      continue
-    fi
-    "$DOCKER" rm -f "$name" >/dev/null 2>&1 || true
+    [ "$("$DOCKER" inspect --format '{{.State.Running}}' "$name")" = 'false' ] || fail "回滚容器仍在运行，拒绝清理: $name"
+    # 恢复信息保存在私有发布目录，回滚镜像沿用三版本保留规则。
+    "$DOCKER" inspect "$name" > "$RELEASE_DIR/rollback-containers/$name.json"
+    chmod 600 "$RELEASE_DIR/rollback-containers/$name.json"
+    "$DOCKER" rm "$name" >/dev/null
+    log "已保存恢复配置并清理旧生产容器: $name"
   done
 }
 
@@ -245,6 +275,8 @@ log '候选镜像已通过容器配置预检'
 
 require_idle_or_force
 BACKUP_CONTAINER="${CONTAINER}-rollback-$RELEASE_ID"
+backup_database
+require_idle_or_force
 log '停止当前生产容器'
 "$DOCKER" stop --time 45 "$CONTAINER"
 "$DOCKER" rename "$CONTAINER" "$BACKUP_CONTAINER"
@@ -257,9 +289,12 @@ clone_container "$BACKUP_CONTAINER" "$CONTAINER" "$IMAGE"
 if ! wait_for_health; then
   fail '新容器在 180 秒内未恢复健康状态'
 fi
+refresh_host_mover || fail '宿主执行器身份刷新或真实容器能力验证失败'
+refresh_synology_registration || fail '群晖生产容器登记校验失败'
 
 printf 'deployed_image_id=%s\n' "$("$DOCKER" image inspect --format '{{.Id}}' "$IMAGE")" >> "$MANIFEST_FILE"
 printf 'deployed_at=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" >> "$MANIFEST_FILE"
+SWITCHED=0
 cleanup_old_releases
 
 log "发布成功: $RELEASE_ID"

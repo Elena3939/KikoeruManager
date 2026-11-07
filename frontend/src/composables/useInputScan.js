@@ -6,6 +6,13 @@ const terminal = new Set(['completed', 'cancelled', 'failed', 'interrupted'])
 
 export function useInputScan() {
   const snapshot = ref(null)
+  const now = ref(Date.now())
+  const visibleSnapshot = computed(() => {
+    const value = snapshot.value
+    if (!value || !terminal.has(value.status)) return value
+    const expiresAt = Date.parse(value.display_expires_at)
+    return Number.isFinite(expiresAt) && now.value >= expiresAt ? null : value
+  })
   const starting = ref(false)
   const realtime = useRealtimeEvents()
   const scanning = computed(() => starting.value || Boolean(
@@ -24,7 +31,7 @@ export function useInputScan() {
     if (current?.scan_id === value.scan_id && Number(current.revision) > Number(value.revision)) return
     if (current?.scan_id !== value.scan_id && current?.created_at > value.created_at) return
     snapshot.value = value
-    lastUpdate = Date.now()
+    now.value = lastUpdate = Date.now()
   }
 
   function reconnect() {
@@ -38,6 +45,7 @@ export function useInputScan() {
   }
 
   async function poll() {
+    now.value = Date.now()
     try {
       if (!snapshot.value) {
         await reconnect()
@@ -85,5 +93,5 @@ export function useInputScan() {
     unsubscribe?.()
     realtime.stop()
   })
-  return { snapshot, scanning, start, cancel, reconnect }
+  return { snapshot, visibleSnapshot, scanning, start, cancel, reconnect }
 }

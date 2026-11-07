@@ -47,4 +47,36 @@ describe('扫描状态条', () => {
     expect(wrapper.find('.scan-details').exists()).toBe(true)
     wrapper.unmount()
   })
+  it('刷新时保留原有行，并按进行中、等待、完成排序及更新颜色', async () => {
+    let resolveRefresh
+    scanApi.candidates.mockReset()
+      .mockResolvedValueOnce([
+        { id: 'done', state: 'submitted', task_status: 'completed', source_path: '/done' },
+        { id: 'wait', state: 'ready', source_path: '/wait' },
+        { id: 'active', state: 'submitted', task_status: 'processing', source_path: '/active' },
+        { id: 'problem', state: 'routed', destination: 'problem', source_path: '/problem' },
+      ])
+      .mockReturnValueOnce(new Promise(done => { resolveRefresh = done }))
+    const wrapper = create()
+    await wrapper.find('button').trigger('click')
+    await flushPromises()
+    const paths = () => wrapper.findAll('.scan-file').map(node => node.text())
+    expect(paths()).toEqual(['/active', '/wait', '/done', '/problem'])
+    expect(wrapper.findAll('.scan-detail-row')[0].find('.is-waiting').text()).toBe('处理中')
+    expect(wrapper.findAll('.scan-detail-row')[3].find('.is-failed').text()).toBe('已转入问题作品')
+    const originalRow = wrapper.findAll('.scan-detail-row')[0].element
+    await wrapper.setProps({ snapshot: { ...snapshot, revision: 2 } })
+    expect(wrapper.text()).not.toContain('正在加载扫描明细')
+    expect(wrapper.findAll('.scan-detail-row')[0].element).toBe(originalRow)
+    resolveRefresh([
+      { id: 'done', state: 'submitted', task_status: 'completed', source_path: '/done' },
+      { id: 'wait', state: 'submitted', task_status: 'processing', source_path: '/wait' },
+      { id: 'active', state: 'submitted', task_status: 'completed', source_path: '/active' },
+      { id: 'problem', state: 'routed', destination: 'problem', source_path: '/problem' },
+    ])
+    await flushPromises()
+    expect(paths()).toEqual(['/wait', '/done', '/active', '/problem'])
+    expect(wrapper.findAll('.scan-detail-row')[2].find('.is-submitted').text()).toBe('已完成')
+    wrapper.unmount()
+  })
 })

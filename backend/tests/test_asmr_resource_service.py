@@ -58,6 +58,56 @@ def create_service():
     return ASMRResourceService(asmr_service=FakeASMRService())
 
 
+@pytest.mark.parametrize("root_exists", [True, False])
+def test_cancel_session_cleanup_removes_cache_if_present(monkeypatch, tmp_path, root_exists):
+    from unittest.mock import AsyncMock
+
+    service = create_service()
+    root = tmp_path / "download-cache"
+    if root_exists:
+        root.mkdir()
+        (root / "voice.mp3.downloading").write_bytes(b"partial")
+    monkeypatch.setattr(service, "control_session", AsyncMock(return_value={"local_download_root": str(root)}))
+    monkeypatch.setattr(service, "_get_latest_session_task_metadata", lambda *_: {})
+    monkeypatch.setattr(service, "_wait_session_tasks_released", AsyncMock())
+
+    result = asyncio.run(service.cancel_session_with_cleanup("session"))
+
+    assert result["cleaned"] is True
+    assert not root.exists()
+
+
+def test_cancel_session_cleanup_failure_is_reported(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    service = create_service()
+    monkeypatch.setattr(service, "control_session", AsyncMock(return_value={"local_download_root": "cache"}))
+    monkeypatch.setattr(service, "_get_latest_session_task_metadata", lambda *_: {})
+    monkeypatch.setattr(service, "_wait_session_tasks_released", AsyncMock())
+    monkeypatch.setattr(service, "_cleanup_download_root", AsyncMock(return_value=False))
+
+    with pytest.raises(OSError, match="下载缓存清理失败"):
+        asyncio.run(service.cancel_session_with_cleanup("session"))
+
+
+def test_cancel_reimport_session_keeps_user_files(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+
+    service = create_service()
+    original = tmp_path / "voice.wav"
+    original.write_bytes(b"keep")
+    monkeypatch.setattr(service, "control_session", AsyncMock(return_value={"local_download_root": str(tmp_path)}))
+    monkeypatch.setattr(service, "_get_latest_session_task_metadata", lambda *_: {"source_action": "reimport_local_download_root"})
+    cleanup = AsyncMock()
+    monkeypatch.setattr(service, "_cleanup_download_root", cleanup)
+
+    result = asyncio.run(service.cancel_session_with_cleanup("session"))
+
+    assert result["cleaned"] is False
+    cleanup.assert_not_awaited()
+    assert original.read_bytes() == b"keep"
+
+
 @pytest.mark.parametrize("resource_type, filename", [
     ("audio", "01.mp3"),
     ("cover", "Folder.jpg"),

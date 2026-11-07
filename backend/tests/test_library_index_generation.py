@@ -335,6 +335,38 @@ def _add_index_entry(
         db.close()
 
 
+def test_index_changes_enqueue_linked_circle_repeatedly_and_on_delete(generation_env):
+    from app.models.database import CircleCatalog, CircleWork, CircleCompletionControl, CircleCompletionDirty
+
+    env = generation_env
+    library_id = "circle-materialization-library"
+    circle, other = "RG900100", "RG900101"
+    code, path = "RJ90010002", "circle/RJ90010002"
+    _seed_active(env, library_id)
+    with env.Session.begin() as db:
+        db.add_all([CircleCatalog(circle_id=circle, circle_name="关联"),
+                    CircleCatalog(circle_id=other, circle_name="无关")])
+        db.add(CircleWork(id="index-circle-work", circle_id=circle,
+                          canonical_rjcode="RJ90010001", display_rjcode="RJ90010001",
+                          linked_rjcodes=[code]))
+    _add_index_entry(env, library_id=library_id, generation=1, relative_path=path, rjcode=code)
+    with env.Session() as db:
+        before = db.get(CircleCompletionControl, circle).requested_seq
+        other_before = db.get(CircleCompletionControl, other).requested_seq
+    for expected in (before + 1, before + 2):
+        with env.Session.begin() as db:
+            env.store._sync_rj_entries_in_session(db, library_id, 1, [path])
+        with env.Session() as db:
+            assert db.get(CircleCompletionControl, circle).requested_seq == expected
+            assert db.get(CircleCompletionControl, other).requested_seq == other_before
+            assert "library_index" in db.get(CircleCompletionDirty, (circle, code)).reasons
+    with env.Session.begin() as db:
+        db.query(LibraryIndexEntry).filter_by(library_id=library_id, relative_path=path).delete()
+        env.store._sync_rj_entries_in_session(db, library_id, 1, [path])
+    with env.Session() as db:
+        assert db.get(CircleCompletionControl, circle).requested_seq == before + 3
+
+
 @pytest.mark.parametrize("scope,mask_path", [
     ("exact", "circle/RJ01570953"),
     ("subtree", "circle"),

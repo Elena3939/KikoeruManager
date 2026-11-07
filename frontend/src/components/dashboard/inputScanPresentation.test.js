@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { describeCandidate, skipReasonLabel } from './inputScanPresentation'
 
 describe('扫描结果说明', () => {
+  it('交接和跳过记录显示关联任务当前状态', () => {
+    expect(describeCandidate({ state: 'submitted', task_status: 'completed' })).toBe('已完成')
+    expect(describeCandidate({ state: 'skipped', reason: 'task:old', task_status: 'waiting_retry' })).toBe('等待重试占用')
+    expect(describeCandidate({ state: 'skipped', reason: 'task:old', task_status: 'completed' })).toBe('关联任务已完成')
+  })
   it('区分等待重试和归档占用', () => {
     expect(skipReasonLabel('task_waiting_retry')).toBe('等待重试占用')
     expect(skipReasonLabel('deferred_archive')).toBe('归档占用')

@@ -7,6 +7,9 @@ const skipLabels = {
   task_pending: '排队任务占用',
   task_processing: '处理中任务占用',
   task_paused: '已暂停任务占用',
+  task_completed: '关联任务已完成',
+  task_cancelled: '关联任务已取消',
+  task_failed: '关联任务已失败',
 }
 
 export function skipReasonLabel(key) {
@@ -14,8 +17,18 @@ export function skipReasonLabel(key) {
 }
 
 export function describeCandidate(item) {
-  if (item.state === 'skipped') return skipReasonLabel(String(item.reason || '').split(':')[0])
+  if (item.state === 'skipped') {
+    const owner = String(item.reason || '').split(':')[0]
+    return skipReasonLabel(owner === 'task' && item.task_status ? `task_${item.task_status}` : owner)
+  }
   if (item.state === 'failed') return `失败：${item.reason === 'source_not_stable' ? '文件稳定等待超时' : item.reason || '未知原因'}`
   if (item.state === 'routed') return ({ problem: '已转入问题作品', subtitle: '已转入字幕流程' })[item.destination] || '已转入其他流程'
+  if (item.state === 'submitted' && item.task_status) {
+    return ({
+      completed: '已完成', failed: '任务失败', cancelled: '任务已取消',
+      pending: '已交接，排队中', processing: '处理中', waiting_retry: '等待重试',
+      waiting_manual: '等待人工处理', paused: '已暂停',
+    })[item.task_status] || '已交接'
+  }
   return ({ submitted: '已交接', cancelled: '已取消', waiting_stable: '等待文件稳定', ready: '等待交接', preflight: '预检中', discovered: '待预检' })[item.state] || '待处理'
 }

@@ -122,7 +122,9 @@ backend/.codex-index-*-tmp/
 backend/.test-tmp*/
 backend/.test-tmp-*.txt
 backend/.test-activity-fix-*/
+backend/.test-transfer-*/
 tools/verify-circle-real-covers.mjs
+tools/xiaobu-multiframe.ps1
 
 # Local runtime helper scripts output
 .runtime/
@@ -134,6 +136,7 @@ tools/7zz-*/
 .tmp_existing_folder_demo_data.py
 
 # pytest 临时目录（conftest.py 把 basetemp 重定向到这里规避 Windows %TEMP% 锁）
+/temp/
 backend/.pytest-*/
 .pytest-*/
 .pytest_cache/

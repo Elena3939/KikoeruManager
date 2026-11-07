@@ -45,6 +45,54 @@ class TestExtractService:
         assert all("-p-" in command for command in commands)
 
     @pytest.mark.asyncio
+    async def test_nested_scan_reuses_disguised_zip_volume_detection(self, extract_service, tmp_path):
+        output_path = tmp_path / "probe-output"
+        output_path.mkdir()
+        main_volume = output_path / "RJ01719148.z删i除p"
+        first_volume = output_path / "RJ01719148.z01"
+        main_volume.write_bytes(b"opaque-main")
+        first_volume.write_bytes(b"opaque-volume")
+
+        volume_set = Mock(
+            volumes=[str(first_volume), str(main_volume)],
+            entry_path=str(main_volume),
+        )
+        task = Task(
+            task_type=TaskType.EXTRACT,
+            source_path=str(tmp_path / "RJ01719148.zip"),
+            metadata={},
+        )
+
+        with patch.object(
+            extract_service,
+            "_detect_by_magic_bytes",
+            new=AsyncMock(return_value=None),
+        ), patch.object(
+            FileProcessor,
+            "is_archive",
+            return_value=False,
+        ), patch.object(
+            extract_service,
+            "_collect_disguised_zip_source_volume_set",
+            return_value=volume_set,
+        ) as collect_mock, patch.object(
+            extract_service,
+            "_try_extract_nested_direct",
+            new=AsyncMock(return_value=(True, "RJ01719148")),
+        ) as extract_mock:
+            result = await extract_service._extract_nested_archives(
+                str(output_path),
+                task,
+                max_depth=1,
+            )
+
+        assert result == 1
+        collect_mock.assert_called_once_with(str(main_volume))
+        extract_mock.assert_awaited_once()
+        assert not main_volume.exists()
+        assert not first_volume.exists()
+
+    @pytest.mark.asyncio
     async def test_password_archive_listing_preserves_supplied_password(self, extract_service):
         extract_service._run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
             [], 2, b"", b"Cannot open encrypted archive. Wrong password?",
@@ -2491,11 +2539,14 @@ class TestExtractService:
         """手动重试指定密码必须传递到外层解压发现的内层压缩包。"""
         archive_path = os.path.join(temp_dir, "密码：3个多月了还是0进展.rrar")
         self._write_fake_volume(archive_path, b"Rar!\x1a\x07\x01\x00", total_size=8 * 1024)
-        # 清单与轻量探测独立模拟，完整解压次数断言只统计实际 x 进程。
+        # 手动密码模式不得在实际 x 解压前读取清单或运行密码探测。
         extract_service._list_archive_contents = AsyncMock(return_value=[
             {"name": "large.wav", "size": 8 * 1024**3, "encrypted": True, "is_dir": False},
         ])
         extract_service._probe_password = AsyncMock(return_value="unknown")
+        extract_service._prepare_password_attempts = AsyncMock(
+            side_effect=AssertionError("手动指定密码不能进入候选探测")
+        )
         output_path = os.path.join(temp_dir, "out")
         os.makedirs(output_path, exist_ok=True)
         task = Task(
@@ -2529,7 +2580,11 @@ class TestExtractService:
             next((arg[2:] for arg in call.args[0] if str(arg).startswith("-p")), "")
             for call in extract_service._run_7z_command.await_args_list
         ]
-        assert tried_passwords == ["", "3个多月了还是0进展"]
+        assert tried_passwords == ["3个多月了还是0进展"]
+        extract_service._prepare_password_attempts.assert_not_awaited()
+        extract_service._list_archive_contents.assert_not_awaited()
+        extract_service._probe_password.assert_not_awaited()
+        extract_service._get_password_candidates_for_archive.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_unencrypted_opaque_zip_extracts_once_without_timeout(
@@ -3335,10 +3390,10 @@ Encrypted = +
         assert extract_service._parse_7z_no_password_status_from_slt("Path = a.txt\nSize = 1\n") is None
 
     @pytest.mark.asyncio
-    async def test_try_extract_manual_retry_skips_no_password_full_extract_when_probe_unknown(
+    async def test_try_extract_manual_retry_extracts_only_specified_password_without_probes(
         self, extract_service, temp_dir,
     ):
-        """手动指定密码重试时，无密码探测无法定性就不能完整解压大包，应直接试指定密码。"""
+        """手动指定密码应直接解压，不先试空密码或执行密码内容探测。"""
         archive_path = os.path.join(temp_dir, "RJ00000002.zip")
         self.create_test_zip(archive_path)
         output_path = os.path.join(temp_dir, "manual-output")
@@ -3356,7 +3411,10 @@ Encrypted = +
             stderr=b"",
         ))
         extract_service._run_7z_command = run_7z_command
-        extract_service._probe_password = AsyncMock(side_effect=["unknown", "ok"])
+        extract_service._probe_password = AsyncMock(side_effect=AssertionError("手动密码不应执行预探测"))
+        extract_service._prepare_password_attempts = AsyncMock(
+            side_effect=AssertionError("手动密码不应执行统一密码探测")
+        )
         extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
         extract_service._verify_extraction = AsyncMock(return_value=True)
         extract_service._cleanup_extract_attempt = AsyncMock()
@@ -3381,16 +3439,12 @@ Encrypted = +
         assert success is True
         assert password == "sxy4649777"
         assert reason == ""
-        assert extract_service._probe_password.await_count == 2
-        first_probe = extract_service._probe_password.await_args_list[0]
-        second_probe = extract_service._probe_password.await_args_list[1]
-        assert first_probe.args[1] == ""
-        assert first_probe.kwargs["allow_full_test"] is False
-        assert second_probe.args[1] == "sxy4649777"
-        assert second_probe.kwargs["allow_full_test"] is False
+        extract_service._probe_password.assert_not_awaited()
+        extract_service._prepare_password_attempts.assert_not_awaited()
         assert run_7z_command.await_count == 1
         first_cmd = run_7z_command.await_args.args[0]
         assert "-psxy4649777" in first_cmd
+        assert not any(arg == "-p" for arg in first_cmd)
 
     @pytest.mark.asyncio
     async def test_try_extract_large_archive_tries_all_vault_passwords_when_probe_unknown(
@@ -3921,10 +3975,10 @@ Encrypted = +
         extract_service._try_unar_extract.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_try_extract_manual_large_zip_prefers_python_password_probe(
+    async def test_try_extract_manual_large_zip_skips_probe_and_uses_zip_compat_fallback(
         self, extract_service, temp_dir,
     ):
-        """用户手动指定中文密码时，大 ZIP 也必须先做 Python 多编码验证。"""
+        """手动密码先完整解压；7zz 对中文 ZIP 密码不兼容时才尝试完整兼容解压。"""
         archive_path = os.path.join(temp_dir, "large-cn-password-manual.zip")
         self.create_test_zip(archive_path)
         output_path = os.path.join(temp_dir, "large-cn-password-manual-output")
@@ -3942,15 +3996,22 @@ Encrypted = +
         extract_service.ZIP_COMPAT_UNAR_FIRST_MIN_BYTES = 1
         extract_service._find_unar_executable = Mock(return_value="/usr/bin/unar")
         extract_service._probe_zip_no_password_status = Mock(return_value="encrypted")
-        extract_service._probe_password = AsyncMock(return_value="wrong_password")
+        extract_service._probe_password = AsyncMock(
+            side_effect=AssertionError("手动密码不能执行内容探测")
+        )
         extract_service._try_extract_zip_with_python = AsyncMock(return_value=(True, "utf-8"))
         extract_service._try_unar_extract = AsyncMock(
-            side_effect=AssertionError("手动密码命中 Python 兼容后端后不应再走 unar")
+            side_effect=AssertionError("大 ZIP 手动密码兼容路径应优先尝试 Python ZIP")
         )
         extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
         extract_service._verify_extraction = AsyncMock(return_value=True)
         extract_service._cleanup_extract_attempt = AsyncMock()
-        extract_service._run_7z_command = AsyncMock(side_effect=AssertionError("不应进入完整 7zz 解压"))
+        extract_service._run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+            args=[],
+            returncode=2,
+            stdout=b"",
+            stderr=b"Wrong password",
+        ))
 
         success, password, reason = await extract_service._try_extract(
             ArchiveInfo(
@@ -3970,6 +4031,8 @@ Encrypted = +
         assert success is True
         assert password == password_value
         assert reason == ""
+        extract_service._probe_password.assert_not_awaited()
+        extract_service._run_7z_command.assert_awaited_once()
         extract_service._try_extract_zip_with_python.assert_awaited_once()
         extract_service._try_unar_extract.assert_not_awaited()
 

@@ -4185,8 +4185,8 @@ class LibraryManager:
                 key = f"{library.id}\0{self._normalize_index_abs_key(library, path)}"
                 if not key.strip("\0"):
                     continue
-                last_seen = float(self._index_read_repair_last_seen.get(key) or 0)
-                if now - last_seen < 5.0:
+                last_seen = self._index_read_repair_last_seen.get(key)
+                if last_seen is not None and now - last_seen < 30.0:
                     continue
                 self._index_read_repair_last_seen[key] = now
                 selected.append(path)

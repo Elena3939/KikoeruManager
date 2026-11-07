@@ -86,6 +86,10 @@ class ArchiveInspectSlotTimeout(Exception):
     """等待 7z 清单/探测槽位超时。调用方应放弃本次预读并走后续兜底。"""
 
 
+class ArchiveMissingVolumeError(Exception):
+    """清单已明确报告缺卷，换密码不能修复归档结构。"""
+
+
 class ArchiveInfo:
     """压缩包信息"""
     def __init__(
@@ -144,7 +148,9 @@ class ExtractService:
     PROBE_ENTRY_TIMEOUT: float = 30.0             # 单条目 t 命令的最大耗时
     PROBE_MAGIC_TIMEOUT: float = 20.0             # 魔数探测（只读前几十字节）超时
     PROBE_MAGIC_ENTRY_LIMIT: int = 3              # 一次密码最多抽样多少个强魔数条目
-    PROBE_FULL_TEST_TIMEOUT: float = 60.0         # 无输出内容验证首轮时限，超时候选延后不限时重试
+    PROBE_FULL_TEST_TIMEOUT: float = 60.0         # 无输出内容验证首轮时限
+    PROBE_FULL_TEST_RETRY_TIMEOUT: float = 120.0
+    PASSWORD_VALIDATION_TIMEOUT: float = 300.0   # 未知密码轮查总时限，耗尽后保留未定
     PROBE_BYTES: int = 2 * 1024 * 1024            # 流式探测读到 2MB 即认为解压流可信
     ZIP_PASSWORD_BYTE_PROBE_BYTES: int = 4 * 1024 * 1024
     PROBE_TIMEOUT_SECONDS: float = 30.0           # 单次流式探测最多等 30s，超时进入无输出验证
@@ -250,14 +256,17 @@ class ExtractService:
         "write error",
         "disk full",
     )
-    _INCOMPLETE_VOLUME_MARKERS: Tuple[str, ...] = (
-        "headers error",
-        "unexpected end of archive",
-        "unexpected end of data",
+    _MISSING_VOLUME_MARKERS: Tuple[str, ...] = (
         "missing volume",
         "required volume",
         "need another volume",
         "next volume is required",
+    )
+    _INCOMPLETE_VOLUME_MARKERS: Tuple[str, ...] = (
+        "headers error",
+        "unexpected end of archive",
+        "unexpected end of data",
+        *_MISSING_VOLUME_MARKERS,
     )
     _PATH_TOO_LONG_MARKERS: Tuple[str, ...] = (
         "file name too long",
@@ -2743,6 +2752,14 @@ class ExtractService:
                 if result is None:
                     node["status"] = "incomplete"
                 return result
+        except ArchiveMissingVolumeError as exc:
+            self._set_extract_meta(
+                task, extract_failure_reason="volume_incomplete",
+                extract_missing_volume_error=str(exc)[:1000],
+            )
+            await self._cleanup_extract_runtime_state(task)
+            task.fail(format_extract_failure_message(task.task_metadata))
+            return None
         finally:
             try:
                 await self._cleanup_disguised_zip_volume_view(task)
@@ -2963,14 +2980,23 @@ class ExtractService:
             return None
 
         # 4. 获取压缩包内文件列表
-        self._set_extract_meta(task, extract_stage="list_archive")
-        task.update_progress(20, "读取压缩包内容")
-        archive_info = await self._get_archive_info(archive_path, password_candidates=password_candidates, task=task)
-        archive_info_from_listing = archive_info is not None
-        if not archive_info:
-            logger.warning("预读取压缩包内容失败，回退为直接尝试解压: %s", archive_path)
+        if manual_retry_passwords and manual_retry_password_only:
+            # 手动指定密码不做解压前清单探测，直接进入带密码的完整解压。
             archive_info = ArchiveInfo(archive_path, [], None)
-            task.update_progress(24, "压缩包预读失败，尝试直接解压")
+            archive_info_from_listing = False
+        else:
+            self._set_extract_meta(task, extract_stage="list_archive")
+            task.update_progress(20, "读取压缩包内容")
+            archive_info = await self._get_archive_info(
+                archive_path,
+                password_candidates=password_candidates,
+                task=task,
+            )
+            archive_info_from_listing = archive_info is not None
+            if not archive_info:
+                logger.warning("预读取压缩包内容失败，回退为直接尝试解压: %s", archive_path)
+                archive_info = ArchiveInfo(archive_path, [], None)
+                task.update_progress(24, "压缩包预读失败，尝试直接解压")
 
         # 5. 确定输出路径
         output_name_path = (
@@ -3027,16 +3053,20 @@ class ExtractService:
             )
             if view_path:
                 archive_path = view_path
-                task.update_progress(24, "读取伪装 ZIP 临时视图内容")
-                archive_info = await self._get_archive_info(
-                    archive_path,
-                    password_candidates=password_candidates,
-                    task=task,
-                )
-                archive_info_from_listing = archive_info is not None
-                if not archive_info:
-                    logger.warning("伪装 ZIP 临时视图预读取失败，回退为直接尝试解压: %s", archive_path)
+                if manual_retry_passwords and manual_retry_password_only:
                     archive_info = ArchiveInfo(archive_path, [], None)
+                    archive_info_from_listing = False
+                else:
+                    task.update_progress(24, "读取伪装 ZIP 临时视图内容")
+                    archive_info = await self._get_archive_info(
+                        archive_path,
+                        password_candidates=password_candidates,
+                        task=task,
+                    )
+                    archive_info_from_listing = archive_info is not None
+                    if not archive_info:
+                        logger.warning("伪装 ZIP 临时视图预读取失败，回退为直接尝试解压: %s", archive_path)
+                        archive_info = ArchiveInfo(archive_path, [], None)
                 self._set_extract_meta(
                     task,
                     extract_stage="extract_embedded_zip_view",
@@ -3670,6 +3700,7 @@ class ExtractService:
                     is_archive = False
                     ext = Path(filename).suffix.lower()
                     detected_archive_type = ""
+                    disguised_volume_set = None
                     if ext in archive_extensions:
                         is_archive = True
                         detected_archive_type = ext.lstrip(".")
@@ -3680,6 +3711,23 @@ class ExtractService:
                         if not is_archive:
                             from .file_processor import FileProcessor
                             is_archive = await asyncio.to_thread(FileProcessor().is_archive, file_path)
+                        if not is_archive:
+                            # 标准 ZIP 分卷非首卷不参与候选探测；否则会为每个 zNN
+                            # 重复扫描同一目录，并可能把非首卷误当成主卷。
+                            if re.search(r"\.z\d{2}$", filename, re.IGNORECASE):
+                                continue
+                            suffix = filename.rsplit(".", 1)[-1] if "." in filename else ""
+                            if not self._is_disguised_volume_suffix(suffix):
+                                continue
+                            # 内层伪装 ZIP 可能既没有标准后缀，首卷内容也无法直接命中
+                            # 魔数；先按同目录完整卷组复用主解压入口的识别逻辑。
+                            disguised_volume_set = await asyncio.to_thread(
+                                self._collect_disguised_zip_source_volume_set,
+                                file_path,
+                            )
+                            if disguised_volume_set:
+                                is_archive = True
+                                detected_archive_type = "zip"
 
                     if not is_archive:
                         continue
@@ -3867,6 +3915,11 @@ class ExtractService:
                         "nested_output_dir": nested_output_dir,
                         "archive_type": detected_archive_type,
                         **(
+                            {"disguised_volume_set": disguised_volume_set}
+                            if disguised_volume_set
+                            else {}
+                        ),
+                        **(
                             {"probe_subtitle_entries": probe_subtitle_entries}
                             if subtitle_probe_mode and probe_subtitle_entries
                             else {}
@@ -3966,7 +4019,7 @@ class ExtractService:
 
                 # 删除原始的嵌套压缩包文件（含分卷）
                 try:
-                    volume_set = self._detect_volume_set(file_path)
+                    volume_set = item.get("disguised_volume_set") or self._detect_volume_set(file_path)
                     if volume_set:
                         for volume_path in volume_set.volumes:
                             if os.path.exists(volume_path):
@@ -4406,6 +4459,10 @@ class ExtractService:
         seen: set = set()
         password_list: List[str] = []
         candidate_sources = {}
+        manual_retry_passwords = self._get_manual_retry_passwords(task)
+        manual_retry_password_only = bool(
+            (task.task_metadata or {}).get("manual_retry_password_only")
+        ) if task is not None else False
 
         def add(p: Optional[str], source="配置密码") -> None:
             v = str(p) if p is not None else ""
@@ -4415,7 +4472,10 @@ class ExtractService:
                 seen.add(v)
                 password_list.append(v)
 
-        if is_unencrypted_opaque_zip:
+        if manual_retry_password_only and manual_retry_passwords:
+            for pwd in manual_retry_passwords:
+                add(pwd, "手动输入")
+        elif is_unencrypted_opaque_zip:
             # ZIP 中央目录已明确所有条目都未加密，不再查询密码库或做多次完整解压。
             # 大型内层 ZIP 的这次正确解压不能套用“候选密码轻量探测”的 45 秒限制。
             add("", "无密码")
@@ -4431,36 +4491,35 @@ class ExtractService:
             # 问题作品手动重试时，指定密码必须继续传递到递归内层包。
             # 外层包可能未加密，或内层包使用的密码与外层不同；只依赖 parent_password
             # 会让用户指定的密码在内层根本没有尝试机会。
-            manual_retry_passwords = self._get_manual_retry_passwords(task)
             for pwd in manual_retry_passwords:
                 add(pwd, "手动输入")
 
-            # 密码库查询只做一次，包含 RJ/文件名/通用条目
-            manual_retry_password_only = bool(
-                (task.task_metadata or {}).get("manual_retry_password_only")
-            ) if task is not None else False
-            if not manual_retry_password_only:
-                vault_candidates = await self._get_password_candidates_for_archive(password_lookup_path or archive_path)
-                for item in vault_candidates:
-                    for source in item.get("sources") or [item.get("source") or "密码库"]:
-                        add(item.get("password"), source)
-                # 外层可能是未加密的包装壳，实际密码只存在于内层归档自身的 RJ 文件名。
-                # 例如 RJ01524818.zip -> RJ01524818.z删ip，内层密码仍是 RJ01524818；
-                # 不能只依赖外层 success_password 或密码库记录。
-                for rj_password in self._get_rj_passwords(password_lookup_path or archive_path):
-                    add(rj_password, "RJ 文件名")
-                for pwd in self.config.extract.password_list:
-                    add(pwd)
+            vault_candidates = await self._get_password_candidates_for_archive(password_lookup_path or archive_path)
+            for item in vault_candidates:
+                for source in item.get("sources") or [item.get("source") or "密码库"]:
+                    add(item.get("password"), source)
+            # 外层可能是未加密的包装壳，实际密码只存在于内层归档自身的 RJ 文件名。
+            # 例如 RJ01524818.zip -> RJ01524818.z删ip，内层密码仍是 RJ01524818；
+            # 不能只依赖外层 success_password 或密码库记录。
+            for rj_password in self._get_rj_passwords(password_lookup_path or archive_path):
+                add(rj_password, "RJ 文件名")
+            for pwd in self.config.extract.password_list:
+                add(pwd)
 
-        opaque_file_list = await self._list_archive_contents(
-            archive_path, password=parent_password or "", task=task,
-            command_timeout=self.PRECHECK_LIST_TIMEOUT_SECONDS,
-            slot_wait_timeout=0,
-            update_task_progress=False,
-        )
-        password_list, nested_probe_results = await self._prepare_password_attempts(
-            archive_path, password_list, opaque_file_list, task=task,
-        )
+        if manual_retry_password_only and manual_retry_passwords:
+            # 指定密码直接进入实际解压；清单与内容验证放到产物生成后执行。
+            opaque_file_list = None
+            nested_probe_results = {}
+        else:
+            opaque_file_list = await self._list_archive_contents(
+                archive_path, password=parent_password or "", task=task,
+                command_timeout=self.PRECHECK_LIST_TIMEOUT_SECONDS,
+                slot_wait_timeout=0,
+                update_task_progress=False,
+            )
+            password_list, nested_probe_results = await self._prepare_password_attempts(
+                archive_path, password_list, opaque_file_list, task=task,
+            )
         if not password_list:
             if task is not None:
                 self._set_extract_meta(task, nested_password_probe_failed=True,
@@ -5541,6 +5600,12 @@ class ExtractService:
 
                 # 查找目录中所有匹配该基础名称和模式的文件
                 volumes = self._find_all_volumes(directory, base_name, pattern)
+                if vtype == "part":
+                    # RAR SFX 可以混用 exe/rar；独立 ZIP/7z 不能冒充 RAR 的同号卷。
+                    extension = match.group(2).lower()
+                    allowed = {"rar", "exe"} if extension in {"rar", "exe"} else {extension}
+                    volumes = [path for path in volumes
+                               if Path(path).suffix.lower().lstrip(".") in allowed]
                 logger.info(f"[VolumeSet] 找到 {len(volumes)} 个分卷: {volumes}")
 
                 # 对于 part 类型的分卷，必须有多个文件才算分卷组
@@ -7674,6 +7739,9 @@ class ExtractService:
                     stderr_text = result.stderr.decode('utf-8', errors='ignore')
                     if result.returncode == -8:
                         raise ArchiveInspectSlotTimeout(stderr_text or "等待 7z 清单/探测槽位超时")
+                    error_text = stderr_text + "\n" + (result.stdout or b"").decode("utf-8", errors="ignore")
+                    if any(marker in error_text.lower() for marker in self._MISSING_VOLUME_MARKERS):
+                        raise ArchiveMissingVolumeError(error_text)
                     logger.warning(
                         f"[7z] 列出压缩包内容失败，返回码: {result.returncode}, 错误: {stderr_text[:500]}"
                     )
@@ -7700,7 +7768,7 @@ class ExtractService:
                 )
                 if file_list:
                     return file_list
-            except ArchiveInspectSlotTimeout:
+            except (ArchiveInspectSlotTimeout, ArchiveMissingVolumeError):
                 raise
             except Exception as e:
                 logger.error(f"列出压缩包内容失败: {e}")
@@ -8747,8 +8815,8 @@ class ExtractService:
             candidate_evidence(archive_info.password, ['预读清单'], header='passed', content='unknown')
 
         if manual_retry_passwords and manual_retry_password_only:
-            # 多个指定密码：先做无密码轻量探测，确认可解再完整解压；否则再按指定密码依次尝试。
-            unique_passwords = ["", *manual_retry_passwords]
+            # 手动重试只尝试用户明确指定的密码，避免空密码/内容探测阻止真实解压。
+            unique_passwords = list(dict.fromkeys(manual_retry_passwords))
             vault_passwords = []
             rj_passwords = []
         else:
@@ -9165,13 +9233,17 @@ class ExtractService:
                 seven_zip_executable=backend,
             )
 
-        unique_passwords, prepared_probe_results = await self._prepare_password_attempts(
-            archive_info.path, unique_passwords, archive_info.file_list,
-            task=task, seven_zip_executable=extraction_executable,
-        )
-        if not unique_passwords:
-            return False, None, str((task.task_metadata or {}).get(
-                "password_probe_failure_reason") or "password_probe_inconclusive")
+        if manual_retry_password_only and manual_retry_passwords:
+            # 指定密码直接进入解压；完整性由后续 _verify_extraction 判定。
+            prepared_probe_results = {}
+        else:
+            unique_passwords, prepared_probe_results = await self._prepare_password_attempts(
+                archive_info.path, unique_passwords, archive_info.file_list,
+                task=task, seven_zip_executable=extraction_executable,
+            )
+            if not unique_passwords:
+                return False, None, str((task.task_metadata or {}).get(
+                    "password_probe_failure_reason") or "password_probe_inconclusive")
         validated_backend = self._password_probe_backend_cache.get(
             archive_info.path, {}
         ).get(unique_passwords[0], extraction_executable)
@@ -9365,7 +9437,9 @@ class ExtractService:
 
                 # 轻量预验证：错密码秒级淘汰，避免跑完整解压才发现 CRC Failed。
                 # 未知候选已由统一调度执行无落盘内容验证，这里复用验证证据。
-                if self.PROBE_BEFORE_EXTRACT:
+                if self.PROBE_BEFORE_EXTRACT and not (
+                    manual_retry_password_only and password in manual_retry_password_set
+                ):
                     task.update_progress(38, f"探测密码 (来源: {password_source})")
                     if password in prepared_probe_results:
                         probe_result = prepared_probe_results[password]
@@ -11007,6 +11081,27 @@ class ExtractService:
         results = {}
         pending = []
         fingerprint = self._archive_fingerprint(archive_path)
+        deadline = time.monotonic() + self.PASSWORD_VALIDATION_TIMEOUT
+
+        async def bounded_probe(method, *args, timeout, **kwargs):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return "timeout"
+            try:
+                return await asyncio.wait_for(
+                    method(*args, timeout=min(timeout, remaining), **kwargs),
+                    timeout=remaining,
+                )
+            except asyncio.TimeoutError:
+                return "timeout"
+
+        def missing_volume():
+            if task is not None:
+                self._set_extract_meta(
+                    task, password_probe_failure_reason="volume_incomplete",
+                    password_candidate_unresolved=len(passwords),
+                )
+            return [], results
 
         def record_progress():
             if task is not None:
@@ -11025,11 +11120,29 @@ class ExtractService:
             if fingerprint != self._archive_fingerprint(archive_path):
                 raise RuntimeError("密码验证期间归档来源已变化")
 
+        # RAR 预读可能因排队失败而没有清单。先读目录发现缺卷，不能为每个
+        # 候选整包扫描几十 GB 后再重复遇到同一个结构错误。
+        if not file_list and self._is_rar_archive(archive_path):
+            try:
+                file_list = await self._list_archive_contents(
+                    archive_path, task=task, command_timeout=self.PROBE_MAGIC_TIMEOUT,
+                )
+            except ArchiveMissingVolumeError as exc:
+                if task is not None:
+                    self._set_extract_meta(task, extract_missing_volume_error=str(exc)[:1000])
+                return missing_volume()
+            except ArchiveInspectSlotTimeout:
+                pass
+
         for password in passwords:
             await checkpoint()
+            if time.monotonic() >= deadline:
+                break
             while True:
-                result = await self._probe_password(
+                result = await bounded_probe(
+                    self._probe_password,
                     archive_path, password, file_list=file_list, task=task,
+                    timeout=self.PROBE_TIMEOUT_SECONDS,
                     allow_full_test=False, seven_zip_executable=seven_zip_executable,
                 )
                 if task is None or task.consume_stop_reason() != "pause":
@@ -11039,6 +11152,8 @@ class ExtractService:
             await checkpoint()
             record_progress()
             candidate_evidence(password, [], content=result)
+            if result == "missing_volume":
+                return missing_volume()
             if result == "ok":
                 return [password], results
             # 非 ASCII ZIP 的另一种密码字节编码必须仍获得兼容后端验证机会。
@@ -11047,17 +11162,20 @@ class ExtractService:
             ):
                 pending.append(password)
 
-        # 一轮超时后放到队尾；所有其它候选先得到机会，最后才取消时间上限。
-        for timeout in (self.PROBE_FULL_TEST_TIMEOUT, None):
+        # 超时候选放到队尾再给一次有限验证机会；未知密码不能无限占用资源。
+        for timeout in (self.PROBE_FULL_TEST_TIMEOUT, self.PROBE_FULL_TEST_RETRY_TIMEOUT):
             retry = []
             for password in pending:
                 await checkpoint()
+                if time.monotonic() >= deadline:
+                    break
                 validated_backend = seven_zip_executable or self.seven_zip
                 if task is not None:
                     task.update_progress(38, "验证密码内容（不写入解压文件）")
                 if password and not password.isascii() and self._is_zip_like_archive(archive_path):
                     while True:
-                        compatible = await self._verify_zip_password_content(
+                        compatible = await bounded_probe(
+                            self._verify_zip_password_content,
                             archive_path, password, timeout=timeout, task=task,
                         )
                         await checkpoint()
@@ -11072,7 +11190,8 @@ class ExtractService:
                         candidate_evidence(password, [], content="ok")
                         return [password], results
                 while True:
-                    result = await self._probe_by_full_test(
+                    result = await bounded_probe(
+                        self._probe_by_full_test,
                         archive_path, password, timeout=timeout, task=task,
                         seven_zip_executable=seven_zip_executable,
                     )
@@ -11080,10 +11199,14 @@ class ExtractService:
                     await checkpoint()
                     if not paused:
                         break
+                if result == "missing_volume":
+                    results[password] = result
+                    return missing_volume()
                 if result == "unsupported_method" and self.seven_zip_zstd and await self._ensure_7z_zstd_available():
                     validated_backend = self.seven_zip_zstd
                     while True:
-                        result = await self._probe_by_full_test(
+                        result = await bounded_probe(
+                            self._probe_by_full_test,
                             archive_path, password, timeout=timeout, task=task,
                             seven_zip_executable=self.seven_zip_zstd,
                         )
@@ -11091,6 +11214,9 @@ class ExtractService:
                         await checkpoint()
                         if not paused:
                             break
+                    if result == "missing_volume":
+                        results[password] = result
+                        return missing_volume()
                 encoding_timed_out = result == "timeout" or (
                     password and not password.isascii() and self._is_zip_like_archive(archive_path)
                     and compatible == "timeout"
@@ -11101,7 +11227,8 @@ class ExtractService:
                             continue
                         await checkpoint()
                         while True:
-                            result = await self._probe_by_full_test(
+                            result = await bounded_probe(
+                                self._probe_by_full_test,
                                 archive_path, password, timeout=timeout, task=task,
                                 seven_zip_executable=validated_backend,
                                 password_bytes=password_bytes,
@@ -11110,6 +11237,9 @@ class ExtractService:
                             await checkpoint()
                             if not paused:
                                 break
+                        if result == "missing_volume":
+                            results[password] = result
+                            return missing_volume()
                         if result == "ok":
                             cache_key = self._zip_password_encoding_cache_key(archive_path, password)
                             if cache_key:
@@ -11137,9 +11267,9 @@ class ExtractService:
                 task, password_candidate_total=len(passwords),
                 password_candidate_checked=len(results),
                 password_candidate_unresolved=sum(
-                    value not in {"ok", "wrong_password"} for value in results.values()),
+                    results.get(password) not in {"ok", "wrong_password"} for password in passwords),
                 password_probe_failure_reason=(
-                    "wrong_password" if results and all(
+                    "wrong_password" if results and len(results) == len(passwords) and all(
                         value == "wrong_password" for value in results.values())
                     else "password_probe_inconclusive"),
                 nested_password_candidate_limited=False,
@@ -11178,13 +11308,18 @@ class ExtractService:
             from subprocess import CREATE_NO_WINDOW as _CNW
             kwargs['creationflags'] = _CNW
 
-        async with self._acquire_probe_inspect_slot(
-            "extract.probe_full_test", archive_path, task,
-            wait_timeout=0 if timeout is None else None,
+        # 整包 t 与解压具有同等级别的 CPU/磁盘成本，不能占用轻量清单槽。
+        semaphore = self._get_7z_semaphore()
+        async with self._acquire_7z_resource_slot(
+            semaphore=semaphore, budget_resource="archive_cpu",
+            reason="extract.probe_full_test", archive_path=archive_path,
+            slot_label="密码完整验证槽位",
+            slot_limit=self.__class__._seven_zip_semaphore_limit or 1,
+            wait_timeout=self.PROBE_SLOT_WAIT_TIMEOUT, task=task, progress_floor=38,
         ) as acquired:
             if not acquired:
                 candidate_evidence(password, [], probe_reason='resource_timeout')
-                # 首轮未启动验证也必须保留候选；最终轮的资源故障仍返回未定。
+                # 尚未启动的候选仍未定，不能记成密码错误。
                 return 'timeout' if timeout is not None else 'unknown'
             logger.info("执行7z探测命令: %s", self._format_command_for_log(cmd))
             try:
@@ -11228,10 +11363,16 @@ class ExtractService:
                     task.unregister_process(process)
 
         stderr_text = (stderr_bytes or b'').decode('utf-8', errors='ignore')
+        stderr_text += "\n" + (stdout_bytes or b'').decode('utf-8', errors='ignore')
         stderr_lower = stderr_text.lower()
 
         if process.returncode == 0:
             return 'ok'
+
+        if any(marker in stderr_lower for marker in self._MISSING_VOLUME_MARKERS):
+            if task is not None:
+                self._set_extract_meta(task, extract_missing_volume_error=stderr_text[:1000])
+            return 'missing_volume'
 
         encryption_markers = (
             "wrong password",

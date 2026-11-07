@@ -208,6 +208,43 @@ def test_upsert_subtree_local_lets_find_by_rjcode_hit_immediately(isolated_index
     assert os.path.normcase(hits[0].absolute_path) == os.path.normcase(str(rj_dir))
 
 
+def test_empty_subtree_scan_refreshes_directory_indexed_at(isolated_index, monkeypatch):
+    """扫描结果为 0 条时也要推进目录 indexed_at，避免读修复死循环。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    library_root: Path = isolated_index["library_root"]
+    library_id = "lib_empty_subtree"
+    _mark_index_ready(store, library_id)
+    subtree = library_root / "empty"
+    subtree.mkdir()
+    store.bulk_upsert([_manual_entry("empty", library_id=library_id, rjcode=None)])
+
+    class EmptyScanner:
+        def scan_subtree(self, *_args):
+            if False:
+                yield None
+
+    monkeypatch.setattr(service, "_local_scanner_factory", lambda: EmptyScanner())
+    assert service.upsert_subtree_local(library_id, str(library_root), str(subtree)) == 0
+    row = store.get_entry(library_id, "empty")
+    assert row is not None
+    assert int(row.indexed_at or 0) > 1000
+
+
+def test_touch_directory_uses_active_generation(isolated_index):
+    store = isolated_index['store']
+    library_id = 'lib_generation'
+    _mark_index_ready(store, library_id)
+    with store._write_session() as db:
+        row = db.query(LibraryIndexStatus).filter_by(library_id=library_id).one()
+        row.active_generation = 7
+    entry = _manual_entry('empty', library_id=library_id, rjcode=None)
+    entry.generation = 7
+    store.bulk_upsert([entry])
+    assert store.touch_indexed_at(library_id, 'empty')
+    assert store.get_entry(library_id, 'empty').indexed_at > 1000
+
+
 # ---------- Case 2：rename 不再留旧 RJ 残影 ----------
 
 def test_rename_replaces_old_rj_with_new_rj_in_index(isolated_index):

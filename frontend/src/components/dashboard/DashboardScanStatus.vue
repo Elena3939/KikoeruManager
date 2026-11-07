@@ -25,10 +25,12 @@
           <LoaderCircle :size="16" class="scan-spinner" />正在加载扫描明细
         </div>
         <template v-else>
-          <div v-for="item in candidates" :key="item.id" class="scan-detail-row">
-            <span class="scan-file" :title="item.source_path">{{ item.source_path }}</span>
-            <span class="scan-detail-state" :class="candidateTone(item)">{{ describeCandidate(item) }}</span>
-          </div>
+          <TransitionGroup name="scan-row" tag="div" class="scan-row-list">
+            <div v-for="item in sortedCandidates" :key="item.id" class="scan-detail-row">
+              <span class="scan-file" :title="item.source_path">{{ item.source_path }}</span>
+              <span class="scan-detail-state" :class="candidateTone(item)">{{ describeCandidate(item) }}</span>
+            </div>
+          </TransitionGroup>
           <div v-if="!candidates.length && !error" class="scan-details-empty">暂无候选记录</div>
           <StatefulButton v-if="hasMore" unstyled :show-default-icons="false" class="scan-action scan-more" :disabled="loading" @click="loadMore">
             <LoaderCircle v-if="loading" :size="14" class="scan-spinner" />{{ loading ? '加载中' : '加载更多' }}
@@ -58,16 +60,69 @@ const loading = ref(false)
 const error = ref('')
 const hasMore = ref(false)
 let generation = 0
+let refreshPending = false
 onUnmounted(() => { generation += 1 })
 const skipSummary = computed(() => Object.entries(props.snapshot.skip_counts || {}).map(([key, count]) => ({
   key, count, label: skipReasonLabel(key),
 })))
 
 function candidateTone(item) {
-  if (item.state === 'submitted') return 'is-submitted'
-  if (['waiting_stable', 'ready', 'preflight', 'discovered'].includes(item.state)) return 'is-waiting'
-  if (item.state === 'failed') return 'is-failed'
+  if (item.state === 'failed' || (item.state === 'routed' && item.destination === 'problem') || (item.state === 'submitted' && item.task_status === 'failed') || (item.state === 'skipped' && (item.reason?.split(':')[0] === 'problem' || item.task_status === 'failed'))) return 'is-failed'
+  if (item.state === 'submitted' && (!item.task_status || item.task_status === 'completed')) return 'is-submitted'
+  if (item.state === 'routed' || (item.state === 'skipped' && item.task_status === 'completed')) return 'is-submitted'
+  if (['waiting_stable', 'ready', 'preflight', 'discovered'].includes(item.state) || (item.state === 'submitted' && ['pending', 'processing', 'waiting_retry', 'waiting_manual', 'paused'].includes(item.task_status))) return 'is-waiting'
   return ''
+}
+
+function candidateOrder(item) {
+  if (item.state === 'preflight' || (item.state === 'submitted' && item.task_status === 'processing')) return 0
+  if (['waiting_stable', 'ready', 'discovered'].includes(item.state) || (item.state === 'submitted' && ['pending', 'waiting_retry', 'waiting_manual', 'paused'].includes(item.task_status))) return 1
+  if (candidateTone(item) === 'is-failed') return 3
+  return 2
+}
+const sortedCandidates = computed(() => [...candidates.value].sort((a, b) => candidateOrder(a) - candidateOrder(b)))
+
+function mergeCandidates(rows) {
+  const currentById = new Map(candidates.value.map(item => [item.id, item]))
+  const merged = rows.map(row => {
+    const current = currentById.get(row.id)
+    if (current) {
+      Object.assign(current, row)
+      return current
+    }
+    return row
+  })
+  candidates.value.splice(0, candidates.value.length, ...merged)
+}
+
+async function refreshCandidates() {
+  refreshPending = true
+  if (loading.value) return
+  const current = generation
+  loading.value = true
+  try {
+    while (refreshPending && current === generation) {
+      refreshPending = false
+      const targetCount = Math.max(100, candidates.value.length)
+      const updated = []
+      let rows
+      do {
+        rows = await scanApi.candidates(props.snapshot.scan_id, updated.at(-1)?.id)
+        if (current !== generation) return
+        updated.push(...rows)
+      } while (rows.length === 100 && updated.length < targetCount)
+      mergeCandidates(updated)
+      hasMore.value = rows.length === 100
+      error.value = ''
+    }
+  } catch (cause) {
+    if (current === generation) error.value = cause.response?.data?.detail || '扫描明细加载失败'
+  } finally {
+    if (current === generation) {
+      loading.value = false
+      if (refreshPending) refreshCandidates()
+    }
+  }
 }
 
 async function loadMore() {
@@ -78,25 +133,33 @@ async function loadMore() {
   try {
     const rows = await scanApi.candidates(props.snapshot.scan_id, candidates.value.at(-1)?.id)
     if (current !== generation) return
-    candidates.value.push(...rows)
+    mergeCandidates([...candidates.value, ...rows])
     hasMore.value = rows.length === 100
   } catch (cause) {
     if (current === generation) error.value = cause.response?.data?.detail || '扫描明细加载失败'
   } finally {
-    if (current === generation) loading.value = false
+    if (current === generation) {
+      loading.value = false
+      if (refreshPending) refreshCandidates()
+    }
   }
 }
 function toggleDetails() {
   expanded.value = !expanded.value
   if (expanded.value && !candidates.value.length) loadMore()
+  else if (expanded.value) refreshCandidates()
 }
-watch(() => [props.snapshot.scan_id, props.snapshot.revision], () => {
+watch(() => props.snapshot.scan_id, () => {
   generation += 1
+  refreshPending = false
   candidates.value = []
   loading.value = false
   hasMore.value = false
   error.value = ''
   if (expanded.value) loadMore()
+})
+watch(() => props.snapshot.revision, () => {
+  if (expanded.value) refreshCandidates()
 })
 </script>
 
@@ -115,7 +178,12 @@ watch(() => [props.snapshot.scan_id, props.snapshot.revision], () => {
 .scan-details-collapse { position: absolute; top: calc(100% - 2px); left: 0; z-index: 30; width: min(720px, calc(100vw - 32px)); visibility: hidden; opacity: 0; pointer-events: none; transform: translateY(-6px) scale(.99); transform-origin: top left; transition: opacity .18s ease, transform .22s ease, visibility .22s; }
 .scan-details-collapse.is-open { visibility: visible; opacity: 1; pointer-events: auto; transform: translateY(0) scale(1); transition-delay: 0s; }
 .scan-details { max-height: min(320px, 55vh); overflow: auto; border: 1px solid rgba(203, 213, 225, .8); border-radius: 8px; background: rgba(255, 255, 255, .88); box-shadow: 0 12px 32px rgba(15, 23, 42, .16); backdrop-filter: blur(16px) saturate(1.25); -webkit-backdrop-filter: blur(16px) saturate(1.25); }
+.scan-row-list { position: relative; }
 .scan-detail-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 7px 4px; border-bottom: 1px solid #f1f5f9; }
+.scan-row-move { transition: transform .32s cubic-bezier(.34, 1.56, .64, 1); }
+.scan-row-enter-active, .scan-row-leave-active { transition: opacity .2s ease, transform .24s ease; }
+.scan-row-enter-from, .scan-row-leave-to { opacity: 0; transform: translateY(-6px); }
+.scan-row-leave-active { position: absolute; width: 100%; }
 .scan-file { min-width: 0; overflow-wrap: anywhere; color: #334155; }
 .scan-detail-state { flex-shrink: 0; max-width: 50%; overflow-wrap: anywhere; font-weight: 500; }
 .scan-detail-state.is-submitted { color: #15803d; }
@@ -137,6 +205,6 @@ watch(() => [props.snapshot.scan_id, props.snapshot.revision], () => {
 :global(html.kikoerumanager-dark .scan-detail-state.is-failed) { color: #fb7185; }
 :global(html.kikoerumanager-dark .scan-details) { border-color: rgba(255,255,255,.14); background: rgba(24, 24, 27, .88); box-shadow: 0 12px 32px rgba(0, 0, 0, .38); }
 :global(html.kikoerumanager-dark .scan-detail-row) { border-color: rgba(255,255,255,0.1); }
-@media (prefers-reduced-motion: reduce) { .scan-details-collapse { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .scan-details-collapse, .scan-row-move, .scan-row-enter-active, .scan-row-leave-active { transition: none; } }
 @media (max-width: 640px) { .scan-details-collapse { width: min(520px, calc(100vw - 24px)); } .scan-detail-row { flex-direction: column; gap: 3px; } .scan-detail-state { max-width: 100%; } .scan-status-line { gap: 6px 12px; } }
 </style>

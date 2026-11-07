@@ -1156,15 +1156,13 @@ class DLsiteBonusProbeService:
             acked = redis_service.ack_bonus_probe_cache_dirty_sync(message_ids)
             return {"read": len(messages), "written": len(rows), "acked": acked}
         except Exception as exc:
-            acked = redis_service.ack_bonus_probe_cache_dirty_sync(message_ids)
             logger.warning(
-                "[DLsite特典探测] Redis dirty buffer 回写失败，已 ACK 本批避免毒消息重放 read=%s rows=%s acked=%s error=%s",
+                "[DLsite特典探测] Redis dirty buffer 回写失败，保留 pending 等待重试 read=%s rows=%s error=%s",
                 len(messages),
                 len(rows),
-                acked,
                 exc.__class__.__name__,
             )
-            return {"read": len(messages), "written": 0, "acked": acked, "failed": len(rows)}
+            return {"read": len(messages), "written": 0, "acked": 0, "failed": len(rows)}
 
     async def _bonus_probe_cache_flush_loop(self) -> None:
         stop_event = getattr(self, "_cache_flush_stop_event", None)

@@ -9,6 +9,42 @@ from app.api import routes
 from app.config.settings import AppConfig, DatabaseConfig, ResourceBudgetConfig, RedisConfig, BonusProbeConfig
 
 
+@pytest.mark.parametrize("compact", [False, True])
+@pytest.mark.parametrize("upload_options", [{}, {"enabled": False, "mode": "disabled"}, {"enabled": True, "mode": "synology"}])
+def test_asmr_status_preserves_upload_options(monkeypatch, compact, upload_options):
+    metadata = {
+        "upload_options": upload_options,
+        "final_output_path": "/library/作品",
+        "download_root": "/temp/download",
+    }
+    monkeypatch.setattr(routes, "_task_metadata_with_redis_runtime", lambda _: metadata)
+    monkeypatch.setattr(routes, "_task_runtime_response_values", lambda _: ("completed", 100, "完成"))
+    task = SimpleNamespace(id="download", error_message="", output_path="/library/作品")
+
+    result = routes._serialize_asmr_sync_task_status(task, {}, compact=compact)
+
+    assert result["task_metadata"]["upload_options"] == upload_options
+
+
+@pytest.mark.parametrize("errors", [[], ["文件被占用"]])
+def test_batch_cancel_cleanup_reports_file_errors(monkeypatch, errors):
+    from unittest.mock import AsyncMock
+    from app.core.task_engine import TaskStatus, TaskType
+
+    task = SimpleNamespace(id="failed-download", status=TaskStatus.FAILED, type=TaskType.HTTP_DOWNLOAD)
+    monkeypatch.setattr(routes, "get_task_engine", lambda: SimpleNamespace(get_task=lambda _: task))
+    monkeypatch.setattr(
+        "app.core.task_cleanup_service.cleanup_task_download_artifacts",
+        lambda _: {"cleaned": 0, "errors": errors},
+    )
+    request = SimpleNamespace(json=AsyncMock(return_value={"task_ids": [task.id]}))
+
+    result = asyncio.run(routes.batch_cancel_cleanup(request))
+
+    assert result["errors"] == errors
+    assert result["cancelled"] == 0
+
+
 def test_notification_cleanup_config_reads_notification_center(monkeypatch):
     monkeypatch.setattr(
         routes,

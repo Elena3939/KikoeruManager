@@ -38,6 +38,42 @@ afterEach(() => {
 })
 
 describe('扫描状态接回', () => {
+  it('扫描结束 60 秒后隐藏，重复事件和重连不会让过期结果重新出现', async () => {
+    const finished = Date.now()
+    const completed = {
+      ...job(2), status: 'completed', execution_status: 'waiting',
+      display_expires_at: new Date(finished + 60000).toISOString(),
+    }
+    mocks.latest.mockResolvedValue(completed)
+    wrapper = mount(Panel)
+    await flushPromises()
+    expect(state.visibleSnapshot.value).toEqual(completed)
+    await vi.advanceTimersByTimeAsync(60000)
+    expect(state.visibleSnapshot.value).toBeNull()
+    const handler = mocks.subscribe.mock.calls[0][1]
+    handler({ payload: { ...completed, revision: 3, execution_status: 'success' } })
+    await state.reconnect()
+    expect(state.visibleSnapshot.value).toBeNull()
+    expect(state.snapshot.value.revision).toBe(3)
+    expect(mocks.status).not.toHaveBeenCalled()
+    expect(mocks.latest).toHaveBeenCalledTimes(2)
+  })
+
+  it('重新打开页面直接隐藏旧扫描，新扫描仍正常显示', async () => {
+    mocks.latest.mockResolvedValue({
+      ...job(1), status: 'cancelled', display_expires_at: new Date(Date.now() - 1).toISOString(),
+    })
+    wrapper = mount(Panel)
+    await flushPromises()
+    expect(state.visibleSnapshot.value).toBeNull()
+    const fresh = { ...job(1), scan_id: 'two', created_at: '2026-11-03T20:00:00' }
+    mocks.scan.mockResolvedValue(fresh)
+    await state.start()
+    await vi.advanceTimersByTimeAsync(60000)
+    expect(state.visibleSnapshot.value).toEqual(fresh)
+    expect(state.scanning.value).toBe(true)
+  })
+
   it('首次查询失败后轮询重新接回，旧事件不覆盖新状态', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     mocks.latest.mockRejectedValueOnce(new Error('断线'))

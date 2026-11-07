@@ -42,7 +42,7 @@ if ($LASTEXITCODE -ne 0 -or -not $sourceRevision) {
 }
 
 $sourceFiles = @(& git -C $repoRoot -c core.quotepath=false ls-files -co --exclude-standard | Where-Object {
-    $_ -notmatch '(^|/)(\.test-tmp[^/]*|\.pytest-tmp|\.codex[^/]*|\.codegraph|__pycache__)(/|$)'
+    $_ -notmatch '(^|/)(temp|\.test-tmp[^/]*|\.pytest-tmp|\.codex[^/]*|\.codegraph|__pycache__)(/|$)'
 })
 if ($LASTEXITCODE -ne 0 -or $sourceFiles.Count -eq 0) {
     throw '无法列出源码快照文件，拒绝发布。'

@@ -903,6 +903,84 @@ class SnapshotStore:
                  GROUP BY COALESCE(parent_path, '')
             """), params)
 
+    def _affected_rjcodes_in_session(self, db, library_id, generation, paths):
+        """收集与变更路径相交的库存作品编号。"""
+        active = db.execute(text("""
+            SELECT active_generation FROM library_index_status
+             WHERE library_id = :library_id
+        """), {"library_id": library_id}).scalar()
+        if int(active or 1) != generation:
+            return set()
+        params = {"library_id": library_id, "generation": generation}
+        if paths is None or "" in paths:
+            affected = """
+                SELECT r.rjcode FROM library_index_rj_entries r
+                 WHERE r.library_id = :library_id AND r.generation = :generation
+                   AND r.entry_type = 'dir'
+            """
+        else:
+            ancestors = set()
+            for path in paths:
+                parts = path.split("/")
+                ancestors.update("/".join(parts[:i]) for i in range(1, len(parts) + 1))
+            roots = []
+            for path in sorted(paths):
+                if not roots or not path.startswith(roots[-1] + "/"):
+                    roots.append(path)
+            params.update(paths=roots, ancestors=sorted(ancestors))
+            affected = """
+                SELECT r.rjcode FROM library_index_rj_entries r
+                 WHERE r.library_id = :library_id AND r.generation = :generation
+                   AND r.entry_type = 'dir'
+                   AND r.relative_path = ANY(CAST(:ancestors AS text[]))
+                UNION
+                SELECT r.rjcode
+                  FROM unnest(CAST(:paths AS text[])) AS p(path)
+                  JOIN library_index_rj_entries r
+                    ON r.library_id = :library_id AND r.generation = :generation
+                   AND r.entry_type = 'dir'
+                   AND r.relative_path >= p.path || '/'
+                   AND r.relative_path < p.path || '0'
+            """
+        rows = db.execute(text(f"SELECT DISTINCT rjcode FROM ({affected}) affected"), params)
+        return set(rows.scalars())
+
+    @staticmethod
+    def _invalidate_circle_completion_in_session(db, codes):
+        if not codes:
+            return
+        from ..circle_completion_changes import enqueue_in_session
+        rows = db.execute(text("""
+            SELECT circle_id, array_agg(DISTINCT rjcode) AS codes FROM (
+                SELECT w.circle_id, c.rjcode
+                  FROM unnest(CAST(:codes AS text[])) AS c(rjcode)
+                  JOIN circle_works w ON w.canonical_rjcode = c.rjcode
+                    OR w.display_rjcode = c.rjcode
+                    OR w.linked_rjcodes @> jsonb_build_array(c.rjcode)
+                UNION
+                SELECT a.circle_id, a.rjcode FROM circle_completion_work_aliases a
+                  JOIN circle_completion_heads h ON h.circle_id = a.circle_id
+                    AND h.active_generation = a.generation
+                 WHERE a.rjcode = ANY(CAST(:codes AS text[]))
+            ) affected GROUP BY circle_id ORDER BY circle_id
+        """), {"codes": sorted(codes)})
+        for circle_id, circle_codes in rows:
+            enqueue_in_session(db, [circle_id], circle_codes, reason="library_index")
+
+    @staticmethod
+    def _invalidate_subtitle_targets_in_session(db, codes):
+        if not codes:
+            return
+        db.execute(text("""
+            INSERT INTO circle_subtitle_target_snapshots
+                (rjcode, index_version, target_count, missing_count, complete, notified, updated_at)
+            SELECT changed.rjcode, '', 0, 0, false, false, CURRENT_TIMESTAMP
+              FROM unnest(CAST(:codes AS text[])) AS changed(rjcode)
+             ORDER BY changed.rjcode
+            ON CONFLICT (rjcode) DO UPDATE SET
+                index_version = '', notified = false, updated_at = CURRENT_TIMESTAMP
+        """), {"codes": sorted(codes)})
+
     def _sync_rj_entries_in_session(
         self,
         db: Session,
@@ -922,6 +1000,7 @@ class SnapshotStore:
         })
         if paths == []:
             return
+        affected_codes = self._affected_rjcodes_in_session(db, library_id, normalized_generation, paths)
         if paths is None:
             db.execute(text("""
                 DELETE FROM library_index_rj_entries
@@ -985,6 +1064,15 @@ class SnapshotStore:
                 materialized_seq = EXCLUDED.materialized_seq,
                 updated_at = EXCLUDED.updated_at
         """), params)
+        affected_codes.update(self._affected_rjcodes_in_session(
+            db, library_id, normalized_generation, paths))
+        if affected_codes:
+            subtitle_codes = set(db.execute(text("""
+                SELECT DISTINCT canonical_rjcode FROM circle_works
+                 WHERE is_bonus_work = false AND canonical_rjcode = ANY(CAST(:codes AS text[]))
+            """), {"codes": sorted(affected_codes)}).scalars())
+            self._invalidate_subtitle_targets_in_session(db, subtitle_codes)
+            self._invalidate_circle_completion_in_session(db, affected_codes)
 
     def _refresh_derived_paths_in_session(
         self,
@@ -1440,6 +1528,33 @@ class SnapshotStore:
                 materialized_seq_by_library=materialized_seq_by_library,
             )
         return written
+
+    def touch_indexed_at(
+        self,
+        library_id: str,
+        relative_path: str,
+        *,
+        generation: Optional[int] = None,
+    ) -> bool:
+        """刷新已存在目录行的 indexed_at，即使本次扫描没有产生可写条目。"""
+        normalized = self._normalize_relative_path(relative_path)
+        with self._write_session() as db:
+            if generation is None:
+                generation, _ = self._status_generation_seq(db, library_id)
+            row = (
+                db.query(LibraryIndexEntry)
+                .filter(
+                    LibraryIndexEntry.library_id == library_id,
+                    LibraryIndexEntry.generation == max(1, int(generation or 1)),
+                    LibraryIndexEntry.relative_path == normalized,
+                    LibraryIndexEntry.entry_type == "dir",
+                )
+                .first()
+            )
+            if row is None:
+                return False
+            row.indexed_at = _now_ms()
+            return True
 
     def _reconcile_entries_in_session(
         self,
@@ -3370,6 +3485,7 @@ class SnapshotStore:
             )
             repaired = 0
             affected_library_ids: set[str] = set()
+            repaired_paths = {}
             for row in rows:
                 haystack = " ".join([
                     str(row.name or ""),
@@ -3381,6 +3497,7 @@ class SnapshotStore:
                 row.rjcode = rjcode.upper()
                 repaired += 1
                 affected_library_ids.add(str(row.library_id or ""))
+                repaired_paths.setdefault((row.library_id, row.generation), set()).add(row.relative_path)
             if repaired:
                 for library_id in sorted(affected_library_ids):
                     status = db.query(LibraryIndexStatus).filter(
@@ -3397,6 +3514,8 @@ class SnapshotStore:
                         reason="library_index_rjcode_repaired",
                     )
                 db.flush()
+                for (library_id, generation), paths in sorted(repaired_paths.items()):
+                    self._sync_rj_entries_in_session(db, library_id, generation, paths)
         if repaired:
             logger.info("[索引] 修复缺失 RJ 字段 rjcode=%s rows=%s", rjcode.upper(), repaired)
         return repaired
@@ -3489,6 +3608,7 @@ class SnapshotStore:
             if self._rjcode_backfill_version(statuses) != version:
                 result["has_more"] = True
                 return result
+            repaired_paths = {}
             if candidates:
                 current_rows = self._active_view_query(
                     db, db.query(LibraryIndexEntry), library_ids=normalized_ids or None,
@@ -3504,6 +3624,10 @@ class SnapshotStore:
                     if detected:
                         row.rjcode = detected.upper()
                         repaired_by_library[row.library_id] = repaired_by_library.get(row.library_id, 0) + 1
+                        repaired_paths.setdefault((row.library_id, row.generation), set()).add(row.relative_path)
+            db.flush()
+            for (library_id, generation), paths in sorted(repaired_paths.items()):
+                self._sync_rj_entries_in_session(db, library_id, generation, paths)
             for status in statuses:
                 if status.library_id not in repaired_by_library:
                     continue

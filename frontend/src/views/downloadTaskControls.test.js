@@ -68,3 +68,34 @@ describe('YAAS 工作台任务控制', () => {
     })
   }
 })
+
+describe('单条下载任务关闭', () => {
+  for (const [source, name, idsKey, tasksKey, guardKey, clearKey] of [
+    [circleSource, 'dismissDownloadTask', 'trackedDownloadTaskIds', 'trackedDownloadTasks', 'downloadWorkbenchRequestGuard', 'clearDownloadWorkbenchState'],
+    [asmrSource, 'dismissEnhancedWorkbenchTask', 'enhancedDownloadWorkbenchTaskIds', 'enhancedDownloadWorkbenchTasks', 'enhancedDownloadWorkbenchRequestGuard', 'clearEnhancedDownloadWorkbenchState'],
+  ]) {
+    it(`${name} 清理完成前不移除，清理失败保留任务`, async () => {
+      let finish
+      const cleanupFailedDownloadTask = vi.fn(() => new Promise(resolve => { finish = resolve }))
+      const dismissWorkbenchTask = vi.fn()
+      const error = vi.fn()
+      const handler = load(source, name, {
+        cleanupFailedDownloadTask, dismissWorkbenchTask,
+        [idsKey]: { value: ['engine'] }, [tasksKey]: { value: [] },
+        [guardKey]: { invalidate: vi.fn() }, [clearKey]: vi.fn(),
+        ElMessage: { error },
+      })
+      const task = { id: 'engine', status: 'failed' }
+      const pending = handler(task)
+      expect(dismissWorkbenchTask).not.toHaveBeenCalled()
+      finish()
+      await pending
+      expect(dismissWorkbenchTask).toHaveBeenCalledOnce()
+      dismissWorkbenchTask.mockClear()
+      cleanupFailedDownloadTask.mockRejectedValue(new Error('清理失败'))
+      expect(await handler(task)).toBe(false)
+      expect(dismissWorkbenchTask).not.toHaveBeenCalled()
+      expect(error).toHaveBeenCalledWith('清理失败')
+    })
+  }
+})

@@ -1679,6 +1679,7 @@ class LibraryIndexService:
                 chunk_size=chunk_size,
                 maintain_parent_dir_stats=False,
             )
+        self._store.touch_indexed_at(library_id, relative_path)
         self._flush_subtree_parent_stats_delta(library_id, stats_delta)
         logger.info(
             "[索引] upsert 本地子树完成 library=%s subtree=%s entries=%s",
@@ -1743,6 +1744,7 @@ class LibraryIndexService:
                     chunk_size=chunk_size,
                     maintain_parent_dir_stats=False,
                 )
+        self._store.touch_indexed_at(library_id, relative_path)
         self._flush_subtree_parent_stats_delta(library_id, stats_delta)
         logger.info(
             "[索引] upsert 远程子树完成 library=%s subtree=%s entries=%s",
