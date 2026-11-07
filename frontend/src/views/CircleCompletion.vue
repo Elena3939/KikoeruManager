@@ -271,6 +271,7 @@
             <div class="toolbar-copy">
               <div class="toolbar-title">{{ detail.circle_name || '未选择社团' }}</div>
               <div v-if="detail.last_indexed_at" class="toolbar-subtitle">上次刷新 {{ formatDateTime(detail.last_indexed_at) }}</div>
+              <div v-if="detail.status && detail.status !== 'ready'" class="toolbar-subtitle">{{ detail.status === 'building' ? '正在准备作品列表' : detail.status === 'stale' ? '正在更新，显示上次结果' : '更新失败，正在重试' }}</div>
             </div>
             <div v-if="detail.total_works || circleWorksPage.total || detail.works?.length" class="toolbar-actions">
               <el-button
@@ -1113,6 +1114,7 @@
       @resume-task="handleResumeDownloadTask"
       @cancel-task="handleCancelDownloadTask"
       @dismiss-task="dismissDownloadTask"
+      :cleanup-failed-task="dismissDownloadTask"
       @load-files="loadFullDownloadTaskFiles"
     />
 
@@ -1278,6 +1280,7 @@
 <script setup>
 import { usePersistentTaskWorkbench, dismissPersistentTaskCard, dismissWorkbenchTask } from '../composables/usePersistentTaskCards'
 import { getAsmrDownloadSessionId, getDownloadEngineTaskId } from '../utils/downloadTaskIdentity.js'
+import { cleanupFailedDownloadTask } from '../utils/failedDownloadTaskCleanup.js'
 import { computed, markRaw, onActivated, onBeforeUnmount, onDeactivated, onMounted, provide, reactive, ref, shallowReactive, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useRoute, useRouter } from 'vue-router'
@@ -1301,6 +1304,8 @@ import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.vue'
+import { getTransferCardProgress } from '../utils/transferCardProgress.js'
+import { mergeTransferTaskSnapshot } from '../utils/transferTaskEvent.js'
 import CircleWorksViewport from '../components/circle/CircleWorksViewport.vue'
 import { normalizeTaskCenterRealtimePayloads } from '../composables/taskCenterEventUtils'
 import { showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
@@ -1423,6 +1428,8 @@ const circleDetailLoaded = ref(false)
 const circleList = ref([])
 const detail = reactive({
   circle_id: '',
+  status: '',
+  revision: 0,
   circle_name: '',
   source_mask: '',
   last_indexed_at: '',
@@ -1453,6 +1460,15 @@ const EXTERNAL_SEARCH_PENDING_CACHE_TTL = 15 * 1000
 const EXTERNAL_SEARCH_CACHE_VERSION = 'south-plus-browser-headers-v1'
 const circleDetailCache = new Map()
 const circleWorksPageCache = new Map()
+const circlePublishedRevisions = new Map()
+watch(() => realtimeEvents.connected.value, (connected, wasConnected) => {
+  if (!connected || wasConnected !== false || !activeCircleId.value) return
+  invalidateCircleDetailCache(activeCircleId.value)
+  dirtyCircleFacts.add(activeCircleId.value)
+  circleWorksRefreshRevision += 1
+  scheduleCircleWorksRefresh(100)
+  void (circleSearch.value.trim() ? searchCachedCircles() : loadRecentCircles({ selectDefault: false })).catch(() => {})
+})
 const externalSearchWorkCache = new Map()
 // 外搜运行态独立于作品实体，按键订阅，避免结果批次重建整页作品和虚拟分组。
 const externalSearchResults = shallowReactive(new Map())
@@ -1555,6 +1571,8 @@ function resetCircleDetail() {
   }
   Object.assign(detail, {
     circle_id: '',
+    status: '',
+    revision: 0,
     circle_name: '',
     source_mask: '',
     last_indexed_at: '',
@@ -1591,6 +1609,8 @@ function getCircleDetailCacheKey(circleId) {
 function cloneCircleDetailPayload(payload = {}) {
   return {
     circle_id: String(payload.circle_id || ''),
+    status: String(payload.status || ''),
+    revision: Number(payload.revision || 0),
     circle_name: String(payload.circle_name || ''),
     source_mask: String(payload.source_mask || ''),
     last_indexed_at: payload.last_indexed_at || '',
@@ -1636,14 +1656,12 @@ function buildCachedCircleDetailPayload(summary = {}, works = {}) {
   }
 }
 
-function getCachedCircleDetail(circleId) {
+function getCachedCircleDetail(circleId, options = {}) {
   const key = getCircleDetailCacheKey(circleId)
   const cached = circleDetailCache.get(key)
   if (!cached) return null
-  if (Date.now() - cached.cachedAt > CIRCLE_DETAIL_CACHE_TTL) {
-    circleDetailCache.delete(key)
-    return null
-  }
+  const isFresh = Date.now() - cached.cachedAt <= CIRCLE_DETAIL_CACHE_TTL
+  if (!isFresh && options.allowStale !== true) return null
   return cloneCircleDetailPayload(cached.payload)
 }
 
@@ -1651,9 +1669,7 @@ function hasFreshCircleDetailCache(circleId) {
   const key = getCircleDetailCacheKey(circleId)
   const cached = circleDetailCache.get(key)
   if (!cached) return false
-  if (Date.now() - cached.cachedAt <= CIRCLE_DETAIL_CACHE_TTL) return true
-  circleDetailCache.delete(key)
-  return false
+  return Date.now() - cached.cachedAt <= CIRCLE_DETAIL_CACHE_TTL
 }
 
 function setCachedCircleDetail(circleId, payload) {
@@ -1698,14 +1714,12 @@ function cloneCircleWorksPagePayload(payload = {}) {
   }
 }
 
-function getCachedCircleWorksPage(circleId, query = buildCircleWorksQuery()) {
+function getCachedCircleWorksPage(circleId, query = buildCircleWorksQuery(), options = {}) {
   const key = getCircleWorksPageCacheKey(circleId, query)
   const cached = circleWorksPageCache.get(key)
   if (!cached) return null
-  if (Date.now() - cached.cachedAt > CIRCLE_DETAIL_CACHE_TTL) {
-    circleWorksPageCache.delete(key)
-    return null
-  }
+  const isFresh = Date.now() - cached.cachedAt <= CIRCLE_DETAIL_CACHE_TTL
+  if (!isFresh && options.allowStale !== true) return null
   return cloneCircleWorksPagePayload(cached.payload)
 }
 
@@ -1757,6 +1771,9 @@ function applyCircleSummaryPlaceholder(circleId) {
   const circle = (circleList.value || []).find(item => String(item?.circle_id || '') === target)
   Object.assign(detail, {
     circle_id: target,
+    // 发布版本号按社团独立递增；切换社团必须清零，否则新社团较小的 revision 会被当成旧响应丢弃。
+    status: '',
+    revision: 0,
     circle_name: circle?.circle_name || target,
     source_mask: circle?.source_mask || '',
     last_indexed_at: circle?.last_indexed_at || '',
@@ -1943,6 +1960,11 @@ function buildCircleWorksQuery(options = {}) {
 }
 
 function applyCircleSummaryPayload(payload = {}) {
+  if (Number(payload.revision || 0) < Number(detail.revision || 0) && payload.circle_id === detail.circle_id) return
+  if (payload.status && !Number(payload.revision || 0) && detail.works.length && payload.circle_id === detail.circle_id) {
+    detail.status = payload.status
+    return
+  }
   const normalized = cloneCircleDetailPayload({ ...payload, works: detail.works || [] })
   Object.assign(detail, {
     ...normalized,
@@ -1952,6 +1974,8 @@ function applyCircleSummaryPayload(payload = {}) {
 }
 
 function applyCircleWorksPayload(payload = {}) {
+  if (Number(payload.revision || 0) < Number(detail.revision || 0) && payload.circle_id === detail.circle_id) return
+  if (!Number(payload.revision || 0) && detail.works.length && payload.circle_id === detail.circle_id) return
   detail.works = markRaw(Array.isArray(payload.items) ? payload.items : [])
   detail.filtered_count = Number(payload.total || payload.filtered_count || 0)
   Object.assign(circleWorksPage, {
@@ -1974,6 +1998,44 @@ function applyCircleWorksPayload(payload = {}) {
     }
   }
   void refreshExternalSearchForPage()
+}
+
+function applyCircleWorkEvent(payload = {}) {
+  const circleId = String(payload.circle_id || '')
+  if (!circleId || circleId !== activeCircleId.value) return false
+  const code = String(payload.canonical_rjcode || '').toUpperCase()
+  const work = payload.work
+  if (!code || !work) return false
+  let patched = false
+  detail.works = markRaw((detail.works || []).map(item => {
+    if (String(item?.canonical_rjcode || '').toUpperCase() === code) {
+      patched = true
+      return { ...item, ...work }
+    }
+    if (Array.isArray(item?.bonus_works)) {
+      let bonusPatched = false
+      const bonus = item.bonus_works.map(child => {
+        if (String(child?.canonical_rjcode || '').toUpperCase() !== code) return child
+        patched = true
+        bonusPatched = true
+        return { ...child, ...work }
+      })
+      return bonusPatched ? { ...item, bonus_works: bonus } : item
+    }
+    return item
+  }))
+  const summary = payload.summary?.all || payload.summary?.visible
+  if (summary) {
+    applyCircleSummaryPayload({
+      ...summary,
+      circle_id: circleId,
+      revision: detail.revision,
+      status: detail.status,
+      data_version: detail.data_version,
+    })
+  }
+  invalidateCircleDetailCache(circleId)
+  return patched
 }
 
 function mergeExternalSearchResults(items = {}) {
@@ -3044,8 +3106,7 @@ const downloadBackgroundCardProps = computed(() => ({
   subtitle: activeBackgroundDownloadTask.value
     ? `${activeBackgroundDownloadTask.value.rjcode || 'RJ'} · ${activeBackgroundDownloadTask.value.work_title || activeBackgroundDownloadTask.value.source_label || '-'}`
     : '保留当前下载队列与进度状态',
-  metaText: `预计剩余: ${formatDownloadTaskEta(activeBackgroundDownloadTask.value)}`,
-  percentage: backgroundDownloadPercent.value,
+  ...getTransferCardProgress(trackedDownloadTasks.value, 'download'),
   completed: downloadBackgroundCompleted.value,
   metrics: [
     { key: 'processing', label: '进行中', value: processingDownloadTasks.value.length, tone: 'info' },
@@ -3073,8 +3134,7 @@ const uploadBackgroundCardProps = computed(() => ({
   subtitle: activeBackgroundUploadTask.value
     ? `${activeBackgroundUploadTask.value.work_title || activeBackgroundUploadTask.value.source_label || '-'} · ${getUploadBackgroundTargetLabel(activeBackgroundUploadTask.value)}`
     : '保留当前上传队列与进度状态',
-  metaText: `预计剩余: ${formatTaskEta(activeBackgroundUploadTask.value)}`,
-  percentage: uploadBackgroundPercent.value,
+  ...getTransferCardProgress(trackedUploadTasks.value, 'upload'),
   completed: uploadBackgroundCompleted.value,
   metrics: [
     { key: 'processing', label: '进行中', value: processingUploadTasks.value.length, tone: 'info' },
@@ -4010,11 +4070,7 @@ function stopDownloadWorkbenchPolling() {
 }
 
 function startDownloadWorkbenchPolling() {
-  if (!trackedDownloadTaskIds.value.length) return
   stopDownloadWorkbenchPolling()
-  downloadWorkbenchTimer = window.setTimeout(() => {
-    refreshDownloadWorkbench()
-  }, 2000)
 }
 
 async function refreshDownloadWorkbench(options = {}) {
@@ -4037,6 +4093,7 @@ async function refreshDownloadWorkbench(options = {}) {
     const previousTaskMap = new Map(trackedDownloadTasks.value.map(task => [String(task?.id || ''), task]))
     trackedDownloadTasks.value = nextTrackedTasks.map(next => {
       const previous = previousTaskMap.get(String(next?.id || ''))
+      next = mergeTransferTaskSnapshot(previous, next)
       if (previous && previous.download_files_truncated === false && next?.download_files_truncated) {
         return {
           ...next,
@@ -4349,7 +4406,13 @@ function closeDownloadWorkbench() {
   clearDownloadWorkbenchState()
 }
 
-function dismissDownloadTask(task) {
+async function dismissDownloadTask(task) {
+  try {
+    await cleanupFailedDownloadTask(task)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '清理下载任务失败')
+    return false
+  }
   dismissWorkbenchTask(task, trackedDownloadTaskIds, trackedDownloadTasks, '/circle-completion:asmr:download', () => downloadWorkbenchRequestGuard.invalidate())
   if (!trackedDownloadTaskIds.value.length) clearDownloadWorkbenchState()
 }
@@ -4569,6 +4632,26 @@ function isTerminalTaskStatus(status) {
 
 function handleCircleTaskRealtimeEvent(event) {
   const detail = event?.detail || {}
+  if (detail.type === 'circle.completion.work.changed') {
+    const payload = detail.payload || {}
+    if (payload.circle_id === activeCircleId.value && !applyCircleWorkEvent(payload)) {
+      scheduleCircleWorksRefresh(100)
+    }
+  }
+  if (detail.type === 'circle.completion.changed') {
+    const circleId = String(detail.payload?.circle_id || '')
+    const revision = Number(detail.payload?.revision || 0)
+    if (circleId && revision > (circlePublishedRevisions.get(circleId) || 0)) {
+      circlePublishedRevisions.set(circleId, revision)
+      invalidateCircleDetailCache(circleId)
+      dirtyCircleFacts.add(circleId)
+      if (circleId === activeCircleId.value) {
+        circleWorksRefreshRevision += 1
+        scheduleCircleWorksRefresh(100)
+      }
+      void (circleSearch.value.trim() ? searchCachedCircles() : loadRecentCircles({ selectDefault: false })).catch(() => {})
+    }
+  }
   if (['circle.subtitle.synced', 'circle.owned.synced', 'circle.resource_source.changed'].includes(detail.type)) {
     const payload = detail.payload || {}
     const circles = payload.circle_ids || (payload.circle_id ? [payload.circle_id] : [])
@@ -5667,7 +5750,9 @@ async function selectCircle(circleId, options = {}) {
     return
   }
 
-  const cached = activeTab.value === 'missing' && !statusFilters.value.length ? getCachedCircleDetail(targetCircleId) : null
+  const cached = activeTab.value === 'missing' && !statusFilters.value.length
+    ? getCachedCircleDetail(targetCircleId, { allowStale: true })
+    : null
   if (cached) {
     applyCircleDetailPayload(cached)
     const cachedPage = cached.works_page || {}
@@ -5682,6 +5767,8 @@ async function selectCircle(circleId, options = {}) {
       loading: false
     })
     circleDetailLoading.value = false
+    if (hasFreshCircleDetailCache(targetCircleId)) return
+    void refreshActiveCircle({ preferCache: true })
     return
   }
 
@@ -5752,7 +5839,7 @@ async function refreshActiveCircle(options = {}) {
       || getCircleWorksPageCacheKey(requestCircleId, worksQuery) !== getCircleWorksPageCacheKey(activeCircleId.value, buildCircleWorksQuery())) return
     applyCircleSummaryPayload(works)
     applyCircleWorksPayload(works)
-    if (refreshRevision === circleWorksRefreshRevision) {
+    if (refreshRevision === circleWorksRefreshRevision && Number(works.revision || 0) > 0) {
       dirtyCircleFacts.delete(requestCircleId)
       setCachedCircleWorksPage(requestCircleId, worksQuery, works)
       if (activeTab.value === 'missing' && missingPage.value === 1 && !statusFilters.value.length) {
@@ -5801,7 +5888,7 @@ async function refreshActiveCircleWorks(options = {}) {
       || getCircleWorksPageCacheKey(circleId, worksQuery) !== getCircleWorksPageCacheKey(activeCircleId.value, buildCircleWorksQuery())) return
     applyCircleSummaryPayload(result)
     applyCircleWorksPayload(result)
-    if (refreshRevision === circleWorksRefreshRevision) {
+    if (refreshRevision === circleWorksRefreshRevision && Number(result.revision || 0) > 0) {
       dirtyCircleFacts.delete(circleId)
       setCachedCircleWorksPage(circleId, worksQuery, result)
     }
@@ -5944,7 +6031,7 @@ async function ensureWorkCover(item, options = {}) {
     try {
       const result = await circleCompletionApi.fetchCover({
         rjcode: code,
-        variant: 'card',
+        variant: viewMode.value === 'list' ? 'list' : 'card',
         force,
       })
       const resolvedCode = normalizeRjcode(result?.rjcode || code)
@@ -6069,6 +6156,10 @@ async function selectAllVisibleWorks() {
       ...buildCircleWorksQuery({ includePage: false }),
       selectionOnly: true,
     })
+    if (result.status && !Number(result.revision || 0)) {
+      ElMessage.warning('作品列表正在准备，请稍后重试')
+      return
+    }
     selectedCanonicals.value = new Set((result.canonical_rjcodes || []).filter(Boolean))
     selectedDownloadableCanonicals.value = new Set((result.downloadable_rjcodes || []).filter(Boolean))
     selectedRequestedRjcodes.value = {}
@@ -6348,11 +6439,7 @@ function stopUploadWorkbenchPolling() {
 }
 
 function startUploadWorkbenchPolling() {
-  if (!trackedUploadTaskIds.value.length) return
   stopUploadWorkbenchPolling()
-  uploadWorkbenchTimer = window.setTimeout(() => {
-    refreshUploadWorkbench({ silent: true })
-  }, 2000)
 }
 
 function rememberUploadTaskId(nextTaskId) {
@@ -6379,7 +6466,8 @@ async function refreshUploadWorkbench(options = {}) {
     const nextTrackedTasks = trackedUploadTaskIds.value
       .map(id => allTasks.find(task => String(task?.id || '') === String(id || '')))
       .filter(Boolean)
-    trackedUploadTasks.value = nextTrackedTasks
+    const previous = new Map(trackedUploadTasks.value.map(task => [String(task.id), task]))
+    trackedUploadTasks.value = nextTrackedTasks.map(task => mergeTransferTaskSnapshot(previous.get(String(task.id)), task))
     if (nextTrackedTasks.length) {
       trackedUploadTaskIds.value = nextTrackedTasks.map(task => task.id)
     }

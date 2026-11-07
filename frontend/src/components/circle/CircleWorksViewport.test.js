@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { reactive } from 'vue'
 import CircleWorksViewport from './CircleWorksViewport.vue'
+import WorkCard from './WorkCard.vue'
+import WorkListRow from './WorkListRow.vue'
 
 function mountViewport(options) {
   const items = options.props.items
@@ -180,6 +182,43 @@ describe('CircleWorksViewport', () => {
     expect(wrapper.get('.circle-bonus-detail-cover img').attributes('src')).toBe('/api/circle-completion/cover/RJ01678200.jpg')
     expect(wrapper.emitted('ensure-cover')).toBeUndefined()
 
+    wrapper.unmount()
+  })
+
+  it('图片 RJ 与作品展示 RJ 不同时仍应用已缓存的本地封面覆盖', async () => {
+    mockClientWidth = 600
+    mockClientHeight = 600
+    const wrapper = mountViewport({
+      props: {
+        imageField: 'thumb_image_url',
+        coverOverrides: {
+          RJ01201316: '/api/circle-completion/cover/RJ01201316.jpg?v=1',
+        },
+        items: [
+          {
+            canonical_rjcode: 'RJ01209999',
+            display_rjcode: 'RJ01209999',
+            title: '翻译版',
+            remote_image_url: 'https://img.dlsite.jp/resize/images2/work/doujin/RJ01202000/RJ01201316_img_main_240x240.jpg',
+            thumb_image_url: 'https://img.dlsite.jp/modpub/images2/work/doujin/RJ01202000/RJ01201316_img_sam.jpg',
+          },
+        ],
+      },
+      global: {
+        stubs: {
+          WorkCard: {
+            props: ['coverUrlOverride'],
+            template: '<div class="work-card-cover">{{ coverUrlOverride }}</div>',
+          },
+          WorkListRow: { template: '<div />' },
+          ElPagination: { template: '<div />' },
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.get('.work-card-cover').text()).toBe('/api/circle-completion/cover/RJ01201316.jpg?v=1')
     wrapper.unmount()
   })
 
@@ -443,6 +482,64 @@ describe('CircleWorksViewport', () => {
     expect(wrapper.get('.circle-bonus-gift').classes()).toContain('is-dimmed')
 
     wrapper.unmount()
+  })
+
+  it.each([
+    ['移动端卡片', 480, 'card', WorkCard],
+    ['桌面虚拟卡片', 1600, 'card', WorkCard],
+    ['移动端列表', 480, 'list', WorkListRow],
+    ['桌面虚拟列表', 1600, 'list', WorkListRow],
+  ])('%s 仅特典收录时不向本体传递已收录角标', async (_, width, mode, component) => {
+    mockClientWidth = width
+    mockClientHeight = 600
+    const item = reactive({
+      canonical_rjcode: 'RJ01401103',
+      title: '未收录的本体',
+      owned: false,
+      bonus_works: [{
+        canonical_rjcode: 'RJ01401104',
+        title: '已收录的特典',
+        is_bonus_work: true,
+        owned: true,
+        cover_available: true,
+      }],
+    })
+    const wrapper = mountViewport({
+      props: { items: [item], mode, cornerLabel: '已收录', serverPaging: true, totalItems: 1 },
+      global: { stubs: { ElPagination: true } },
+    })
+    try {
+      await flushPromises()
+      expect(wrapper.find('.circle-work-plain').exists()).toBe(width <= 640)
+      const original = wrapper.getComponent(component)
+      expect(original.props('cornerLabel')).toBe('')
+      expect(wrapper.find('.work-corner-flag').exists()).toBe(false)
+      if (mode === 'card') {
+        expect(wrapper.get('.circle-bonus-gift').classes()).not.toContain('is-dimmed')
+        await wrapper.get('.circle-bonus-gift').trigger('click')
+        expect(wrapper.get('.circle-bonus-detail-tag.is-primary').text()).toBe('已收录')
+      }
+
+      item.local_download_ready = true
+      await flushPromises()
+      if (mode === 'card') expect(wrapper.get('.work-corner-flag').text()).toBe('已下载')
+      expect(original.props('cornerLabel')).toBe('')
+
+      for (const field of ['owned', 'server_owned', 'completion_owned', 'local_owned']) {
+        item[field] = true
+        await flushPromises()
+        expect(original.props('cornerLabel')).toBe('已收录')
+        if (mode === 'card') expect(wrapper.get('.work-corner-flag').text()).toBe('已收录')
+        item[field] = false
+        await flushPromises()
+        expect(original.props('cornerLabel')).toBe('')
+      }
+
+      await wrapper.setProps({ cornerLabel: '自定义角标' })
+      expect(original.props('cornerLabel')).toBe('自定义角标')
+    } finally {
+      wrapper.unmount()
+    }
   })
 
   it('宽屏大页只挂载可见行和一行预渲染卡片', async () => {

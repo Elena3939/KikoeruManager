@@ -28,13 +28,14 @@ def _search_text(item):
     )).lower()
 
 
-def build_projection_rows(service, items):
+def build_projection_rows(service, items, *, lightweight=False):
     """卡片先按既有规则成组；列表保留成员，筛选后由 SQL 决定挂靠。"""
     variants = {"list": items}
     for tab in ("missing", "owned"):
         for include_dl_only in (False, True):
             variants[f"card:{tab}:{int(include_dl_only)}"] = service._filter_completion_items_for_card_tab(
-                deepcopy(items), tab=tab, include_dl_only=include_dl_only,
+                [{**item, "bonus_works": []} for item in items] if lightweight else deepcopy(items),
+                tab=tab, include_dl_only=include_dl_only,
             )
     for variant, values in variants.items():
         for position, item in enumerate(values):
@@ -61,7 +62,7 @@ def build_projection_rows(service, items):
                     code = service.normalize_rjcode(candidate)
                     if code and code not in own_codes and code not in parents:
                         parents.append(code)
-            payload = deepcopy(item)
+            payload = dict(item) if lightweight else deepcopy(item)
             compare = payload.pop("source_compare", None)
             yield dict(
                 variant=variant, position=position, tags=tags,
@@ -69,7 +70,7 @@ def build_projection_rows(service, items):
                 aliases=service._completion_item_codes(item), parent_codes=parents,
                 is_bonus=bool(item.get("is_bonus_work")),
                 release_timestamp=float(service._completion_release_timestamp(item)),
-                unreleased=bool(item.get("is_unreleased")) or is_unreleased(item.get("release_date")),
+                unreleased=bool(item["is_unreleased"]) if "is_unreleased" in item else is_unreleased(item.get("release_date")),
                 title=str(item.get("title") or ""), member_count=len(members),
                 payload=payload, compare_payload=compare,
             )
@@ -77,12 +78,16 @@ def build_projection_rows(service, items):
 
 def publish_projection(key, circle_id, data_version, rows, summary, is_current, *, session_factory):
     """同事务发布；跨进程互斥，构建中再失效则整体回滚。"""
+    from .request_performance import measure_stage, request_metrics
+    from time import perf_counter
+
     identity = projection_id(key)
     lock_id = int(hashlib.sha256(circle_id.encode()).hexdigest()[:16], 16)
     if lock_id >= 2**63:
         lock_id -= 2**64
     with session_factory() as db:
-        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_id})
+        with measure_stage("projection_advisory_lock_wait_ms"):
+            db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_id})
         if not is_current():
             return False
         if db.get(Projection, identity) is not None:
@@ -91,13 +96,30 @@ def publish_projection(key, circle_id, data_version, rows, summary, is_current, 
                           summary=summary, row_count=summary["total_works"]))
         db.flush()
         batch = []
-        for row in rows:
+        iterator = iter(rows)
+        build_seconds = 0.0
+        row_count = 0
+        while True:
+            started = perf_counter()
+            try:
+                row = next(iterator)
+            except StopIteration:
+                build_seconds += perf_counter() - started
+                break
+            build_seconds += perf_counter() - started
+            row_count += 1
             batch.append({"projection_id": identity, **row})
             if len(batch) >= 200:
-                db.execute(insert(ProjectionRow), batch)
+                with measure_stage("projection_batch_write_ms"):
+                    db.execute(insert(ProjectionRow), batch)
                 batch.clear()
+        metrics = request_metrics.get()
+        if metrics is not None:
+            metrics["projection_rows_build_ms"] = round(build_seconds * 1000, 2)
+            metrics["projection_row_count"] = row_count
         if batch:
-            db.execute(insert(ProjectionRow), batch)
+            with measure_stage("projection_batch_write_ms"):
+                db.execute(insert(ProjectionRow), batch)
         if not is_current():
             db.rollback()
             return False
@@ -106,7 +128,8 @@ def publish_projection(key, circle_id, data_version, rows, summary, is_current, 
             Projection.id != identity,
         ).order_by(Projection.updated_at.desc(), Projection.id.desc()).offset(2)
         db.execute(delete(Projection).where(Projection.id.in_(obsolete)))
-        db.commit()
+        with measure_stage("projection_commit_ms"):
+            db.commit()
         return True
 
 

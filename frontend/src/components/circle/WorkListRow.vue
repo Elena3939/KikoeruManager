@@ -64,6 +64,8 @@ const showOriginalSubtitleState = computed(() =>
   && (props.item?.owned_variant?.group_key || 'original') === 'original'
 )
 const originalSubtitleLabel = computed(() => {
+  if (props.item?.subtitle_target_status === 'pending') return '字幕状态更新中'
+  if (props.item?.subtitle_target_status === 'incomplete') return '字幕状态不完整'
   if (props.item?.subtitle_missing_target_count) return props.item?.subtitle_present ? '部分无字幕' : '无字幕'
   return props.item?.subtitle_present ? '有字幕' : '无字幕'
 })
@@ -117,67 +119,19 @@ const cvLabel = computed(() => {
   if (!Array.isArray(cvs) || cvs.length === 0) return ''
   return cvs.join(' / ')
 })
-/**
- * DLsite 列表小图：优先用 _img_sam.jpg（同目录小方块缩略图）
- * 来源：把已存储的 _img_main.jpg URL 替换后缀；若无存储则由 RJ 号推算
- * 错误回退顺序：_img_sam → _img_main → 隐藏
- */
-function dlsiteUrl(rjcode, suffix = '_img_sam.jpg') {
-  const normalized = String(rjcode || '').trim().toUpperCase()
-  const m = normalized.match(/^RJ(\d{6}|\d{8})$/)
-  if (!m) return null
-  const digits = m[1]
-  const num = Number(digits)
-  // DLsite 规则：folder = 下一个千位边界（floor(n/1000)+1）*1000，
-  // 保留原始位数（6 或 8）零填充，整千数也要进位。
-  const folderNum = (Math.floor(num / 1000) + 1) * 1000
-  const folder = `RJ${String(folderNum).padStart(digits.length, '0')}`
-  return `https://img.dlsite.jp/modpub/images2/work/doujin/${folder}/${normalized}${suffix}`
-}
-
 function imageRjcode(value) {
   const matches = String(value || '').match(/[RVB]J\d{6,8}/gi)
   return matches?.length ? matches[matches.length - 1].toUpperCase() : ''
 }
 
-function comparableUrl(value) {
-  const text = String(value || '').trim()
-  if (!text) return ''
-  try {
-    return new URL(text, globalThis.location?.origin || 'http://localhost').href
-  } catch {
-    return text
-  }
-}
-
-function uniqueImageUrls(values) {
-  const seen = new Set()
-  return values.filter(value => {
-    const normalized = comparableUrl(value)
-    if (!normalized || seen.has(normalized)) return false
-    seen.add(normalized)
-    return true
-  })
-}
-
-function toThumbnailUrl(value) {
-  const url = String(value || '').trim()
-  if (!url.includes('img.dlsite.jp')) return ''
-  if (url.includes('_img_sam.jpg')) return url
-  return url
-    .replace('img.dlsite.jp/resize/images2/', 'img.dlsite.jp/modpub/images2/')
-    .replace('_img_main_240x240.jpg', '_img_sam.jpg')
-    .replace('_img_main.jpg', '_img_sam.jpg')
-}
-
 const coverUrl = computed(() => {
   const stored = String(props.coverUrlOverride || props.item[props.imageField] || '').trim()
-  if (stored && (stored.startsWith('/api/') || stored.includes('/api/circle-completion/cover/'))) return stored
-  if (stored && stored.includes('img.dlsite.jp')) return toThumbnailUrl(stored)
-  if (remoteCoverUrl.value) return toThumbnailUrl(remoteCoverUrl.value)
-  if (stored) return stored
-  const code = imageRjcode(remoteCoverUrl.value) || props.item.display_rjcode || props.item.canonical_rjcode || props.item.rjcode || ''
-  return dlsiteUrl(code, '_img_sam.jpg') || null
+  const local = stored.match(/\/api\/circle-completion\/cover\/([RVB]J\d{6,8})(?:_sam)?\.jpg(\?[^#]*)?$/i)
+  if (local) return `/api/circle-completion/cover/${local[1]}_sam.jpg${local[2] || ''}`
+  // 旧缓存可能仍带 CDN 地址，只取真实图片 RJ，下载与持久化统一交给后端。
+  const code = imageRjcode(remoteCoverUrl.value) || imageRjcode(stored)
+    || imageRjcode(props.item.display_rjcode || props.item.canonical_rjcode || props.item.rjcode)
+  return code ? `/api/circle-completion/cover/${code}_sam.jpg` : null
 })
 const showCoverRetry = computed(() => props.imageActive && (imageFailed.value || !coverUrl.value))
 
@@ -185,26 +139,7 @@ watch(coverUrl, () => {
   imageFailed.value = false
 })
 
-function onImgError(event) {
-  const current = String(event?.currentTarget?.currentSrc || event?.currentTarget?.src || '')
-  if (!current.includes('/api/circle-completion/cover/')) {
-    const stored = String(props.item[props.imageField] || '').trim()
-    const rjcode = imageRjcode(remoteCoverUrl.value) || imageRjcode(stored) || props.item.display_rjcode || props.item.canonical_rjcode || props.item.rjcode || ''
-    const fallbacks = uniqueImageUrls([
-      toThumbnailUrl(remoteCoverUrl.value),
-      toThumbnailUrl(stored),
-      dlsiteUrl(rjcode, '_img_sam.jpg'),
-    ])
-    let index = Number(event.currentTarget.dataset.fallbackIndex || 0)
-    while (index < fallbacks.length) {
-      const fallback = fallbacks[index]
-      index += 1
-      if (comparableUrl(fallback) === comparableUrl(current)) continue
-      event.currentTarget.dataset.fallbackIndex = String(index)
-      event.currentTarget.src = fallback
-      return
-    }
-  }
+function onImgError() {
   imageFailed.value = true
   emit('image-failed', props.item)
   emit('image-settled', displayCode.value)
@@ -212,7 +147,6 @@ function onImgError(event) {
 
 function onImgLoad(event) {
   imageFailed.value = false
-  delete event.currentTarget.dataset.fallbackIndex
   emit('image-settled', { url: event.currentTarget.currentSrc || event.currentTarget.src })
 }
 </script>
@@ -302,7 +236,7 @@ function onImgLoad(event) {
         <span class="wlr-pill" :class="item.server_owned ? 'pill-owned' : 'pill-missing'">
           <component :is="item.server_owned ? Server : X" :size="10" />{{ item.server_owned ? '已收录' : '未收录' }}
         </span>
-        <span v-if="showOriginalSubtitleState" class="wlr-pill" :class="item.subtitle_present && !item.subtitle_missing_target_count ? 'pill-subtitle' : 'pill-subtitle-none'">
+        <span v-if="showOriginalSubtitleState" class="wlr-pill" :class="['pending', 'incomplete'].includes(item.subtitle_target_status) ? 'pill-none' : item.subtitle_present && !item.subtitle_missing_target_count ? 'pill-subtitle' : 'pill-subtitle-none'">
           <FileText :size="10" />{{ originalSubtitleLabel }}
         </span>
         <span v-if="item.subtitle_missing_target_count && !showOriginalSubtitleState" class="wlr-pill pill-subtitle-none"><FileText :size="10" />原作无字幕</span>

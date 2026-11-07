@@ -51,6 +51,7 @@ from .dlsite_service import DLsiteWorkSummary, get_dlsite_service, with_dlsite_a
 from .dlsite_bonus_probe_service import DLsiteBonusProbeService
 from .metadata_service import MetadataService
 from .release_dates import is_unreleased, release_date_end
+from .release_dates import is_unreleased as release_is_unreleased
 from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -427,7 +428,9 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             index_rows = db.query(LibraryIndexStatus.library_id, LibraryIndexStatus.status,
                 LibraryIndexStatus.active_generation, LibraryIndexStatus.materialized_seq,
                 LibraryIndexStatus.accepted_seq, LibraryIndexStatus.view_revision).order_by(LibraryIndexStatus.library_id).all()
-        index_tag = self._completion_hash_payload([list(row) for row in index_rows])
+            from .circle_subtitle_repair_service import get_circle_subtitle_repair_service
+            subtitle_version, _ = get_circle_subtitle_repair_service().target_index_version(db)
+        index_tag = self._completion_hash_payload([[list(row) for row in index_rows], subtitle_version])
         service, client = self._completion_redis_client()
         if service is not None and client is not None:
             try:
@@ -435,6 +438,13 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             except Exception:
                 logger.debug('读取资源覆盖层版本失败', exc_info=True)
         return str(self._completion_local_versions.get('resource:' + scope, 0)) + ':i' + index_tag
+
+    def _completion_version_tags(self, scope):
+        """一次线程派发读取基础版本和资源版本，保留两者独立语义。"""
+        return (
+            self._completion_version_tag(scope),
+            self._completion_resource_version_tag(scope),
+        )
 
     def invalidate_completion_resource_cache(self, circle_id):
         """来源变化不失效基础作品、元数据与特典关系。"""
@@ -466,9 +476,12 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 from .resource_source_service import get_resource_source_service
                 items = self._completion_copy_resource_rows(state['items'])
                 with SessionLocal() as db:
-                    get_resource_source_service().decorate_items(db, items)
+                    from .request_performance import measure_stage
+                    with measure_stage("resource_decorate_ms"):
+                        get_resource_source_service().decorate_items(db, items)
                     from .circle_subtitle_repair_service import get_circle_subtitle_repair_service
-                    get_circle_subtitle_repair_service().decorate_items(db, items)
+                    with measure_stage("subtitle_decorate_ms"):
+                        get_circle_subtitle_repair_service().decorate_items(db, items)
                 self._completion_l1_l2_set(self._completion_view_cache, 'resources', key, items,
                     ttl_seconds=self._COMPLETION_STATE_REDIS_TTL_SECONDS)
                 cached = items
@@ -1878,7 +1891,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
     async def _is_asmr_work_candidate(self, rjcode: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
         return (await self._classify_asmr_work_candidate(rjcode, metadata)) is True
 
-    def _load_cached_metadata_map(self, db, rjcodes: List[str]) -> Dict[str, Dict[str, Any]]:
+    def _load_cached_metadata_map(self, db, rjcodes: List[str], *, use_cache=True) -> Dict[str, Dict[str, Any]]:
         normalized_codes = []
         seen_codes = set()
         for code in rjcodes or []:
@@ -1891,7 +1904,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         cached_map = {
             code: self._metadata_cache[code]
             for code in normalized_codes
-            if code in self._metadata_cache
+            if use_cache and code in self._metadata_cache
         }
         missing_codes = [code for code in normalized_codes if code not in cached_map]
         if not missing_codes:
@@ -1902,7 +1915,8 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             for row in rows
             if str(row.rjcode or "").strip()
         }
-        self._metadata_cache.update(db_map)
+        if use_cache:
+            self._metadata_cache.update(db_map)
         cached_map.update(db_map)
         return cached_map
 
@@ -2015,7 +2029,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         return next((str(value or "").strip() for value in raw_values if str(value or "").strip()), "")
 
     def _completion_release_timestamp(self, item: Dict[str, Any]) -> int:
-        unreleased = item.get("is_unreleased") or is_unreleased(item.get("release_date"))
+        unreleased = bool(item["is_unreleased"]) if "is_unreleased" in item else is_unreleased(item.get("release_date"))
         raw = str(
             (item.get("release_date") if unreleased else item.get("original_release_date"))
             or item.get("original_release_date")
@@ -2710,8 +2724,10 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             "group_label": "原作优先",
             "group_short_label": "原作",
         }
-        is_unreleased = self._is_future_release_date(release_date)
         now_local = now_local_for_view or get_local_now()
+        is_unreleased = release_is_unreleased(
+            release_date, today=now_local.date(),
+        )
         row_tags = row.source_tags
         row_has_email_watcher = isinstance(row_tags, list) and "email_watcher" in row_tags
         row_anchor = row.email_watcher_first_seen_at or row.created_at
@@ -2946,17 +2962,24 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         self._completion_store_state_cache(state_key, state)
         return deepcopy(state)
 
-    def _build_completion_view_state_uncached(self, circle_id_or_query: str) -> Dict[str, Any]:
+    def _build_completion_view_state_uncached(self, circle_id_or_query: str, *, db=None, as_of=None,
+                                             source_codes=None, cover_facts=None) -> Dict[str, Any]:
         state_key = str(circle_id_or_query or "").strip()
-        db = SessionLocal()
+        owns_session = db is None
+        db = db if db is not None else SessionLocal()
         try:
             catalog = self._find_circle_catalog_for_view(db, circle_id_or_query)
-            works = (
+            work_query = (
                 db.query(CircleWork)
                 .filter(CircleWork.circle_id == catalog.circle_id)
-                .order_by(CircleWork.updated_at.desc())
-                .all()
             )
+            if source_codes is not None:
+                work_query = work_query.filter(CircleWork.canonical_rjcode.in_(source_codes))
+            works = work_query.order_by(CircleWork.updated_at.desc(), CircleWork.canonical_rjcode).all()
+            if not owns_session:
+                from types import SimpleNamespace
+                works = [SimpleNamespace(**{column.key: getattr(row, column.key)
+                                            for column in CircleWork.__table__.columns}) for row in works]
             work_canonical_rjcodes = [row.canonical_rjcode for row in works if str(row.canonical_rjcode or "").strip()]
             owned_rows = (
                 {
@@ -3016,13 +3039,14 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     if normalized_candidate and normalized_candidate not in metadata_lookup_seen:
                         metadata_lookup_seen.add(normalized_candidate)
                         metadata_lookup_rjcodes.append(normalized_candidate)
-            metadata_map_all = self._load_cached_metadata_map(db, metadata_lookup_rjcodes)
+            metadata_map_all = self._load_cached_metadata_map(db, metadata_lookup_rjcodes, use_cache=owns_session)
             local_download_session_map = self._build_local_download_session_map(db, works, link_map_by_canonical)
         finally:
-            db.close()
+            if owns_session:
+                db.close()
 
         image_cache_service = get_circle_image_cache_service()
-        now_local_for_view = get_local_now()
+        now_local_for_view = as_of or get_local_now()
         for row in works:
             if self.normalize_rjcode(row.canonical_rjcode) in confirmed_bonus_rjcodes:
                 row.is_bonus_work = True
@@ -3045,7 +3069,8 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         items = self._completion_apply_explicit_bonus_parent_codes(items, link_rows)
         items = self._completion_attach_bonus_parent_codes(items)
         bonus_codes = [item["display_rjcode"] for item in items if item.get("is_bonus_work")]
-        cover_facts = image_cache_service.cover_facts(bonus_codes, refresh=True) if bonus_codes else {}
+        if cover_facts is None:
+            cover_facts = image_cache_service.cover_facts(bonus_codes, refresh=True) if bonus_codes else {}
         for item in items:
             if not item.get("is_bonus_work"):
                 continue
@@ -3231,6 +3256,10 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
     async def build_circle_completion_summary(self, circle_id_or_query: str, *, include_dl_only: bool = True) -> Dict[str, Any]:
 
+        if not self._completion_state_builder_overridden():
+            scope = await self._resolve_completion_scope(circle_id_or_query)
+            return await asyncio.to_thread(self._read_published_completion, scope, "summary", include_dl_only=include_dl_only)
+
         from .request_performance import measure_stage
 
         cache_enabled = not self._completion_state_builder_overridden()
@@ -3293,27 +3322,46 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
     ) -> Dict[str, Any]:
         from .request_performance import measure_stage, run_sync_stage
 
+        if not self._completion_state_builder_overridden():
+            scope = await self._resolve_completion_scope(circle_id_or_query)
+            result = await run_sync_stage("circle_published_page", self._read_published_completion,
+                scope, "page", tab=tab, page=page, page_size=page_size, include_dl_only=include_dl_only,
+                status_filters=status_filters, owned_filter=owned_filter, compare_filter=compare_filter,
+                search=search, sort=sort, view_mode=view_mode)
+            self._schedule_page_cover_alias_restores(scope, result.get("items") or [])
+            return result
+
         cache_enabled = not self._completion_state_builder_overridden()
-        scope = await self._resolve_completion_scope(circle_id_or_query) if cache_enabled else circle_id_or_query
+        with measure_stage("circle_scope"):
+            scope = await self._resolve_completion_scope(circle_id_or_query) if cache_enabled else circle_id_or_query
         while True:
-            version = await run_sync_stage("circle_version", self._completion_version_tag, scope)
-            resource_version = await run_sync_stage("circle_resource_version", self._completion_resource_version_tag, scope)
+            version, resource_version = await run_sync_stage(
+                "circle_versions", self._completion_version_tags, scope
+            )
             query = dict(tab=tab, page=page, page_size=page_size, include_dl_only=include_dl_only,
                          status_filters=status_filters, owned_filter=owned_filter, compare_filter=compare_filter,
                          search=search, sort=sort, view_mode=view_mode, resource_version=resource_version)
             if cache_enabled:
                 cached = await run_sync_stage("circle_page_lookup", self._list_circle_completion_works_sync, scope, None, version, **query)
                 if cached is not None:
-                    if (version == await asyncio.to_thread(self._completion_version_tag, scope)
-                            and resource_version == await asyncio.to_thread(self._completion_resource_version_tag, scope)):
+                    current_version, current_resource_version = await run_sync_stage(
+                        "circle_versions_recheck", self._completion_version_tags, scope
+                    )
+                    if version == current_version and resource_version == current_resource_version:
                         self._schedule_page_cover_alias_restores(scope, cached.get("items") or [])
                         return cached
                     continue
             with measure_stage("circle_state_ms"):
                 state = await self._get_completion_view_state(scope, readonly=True)
             result = await run_sync_stage("circle_page_build", self._list_circle_completion_works_sync, scope, state, version, **query)
-            if not cache_enabled or (version == await asyncio.to_thread(self._completion_version_tag, scope)
-                                    and resource_version == await asyncio.to_thread(self._completion_resource_version_tag, scope)):
+            if cache_enabled:
+                current_version, current_resource_version = await run_sync_stage(
+                    "circle_versions_recheck", self._completion_version_tags, scope
+                )
+                versions_match = version == current_version and resource_version == current_resource_version
+            else:
+                versions_match = True
+            if versions_match:
                 self._schedule_page_cover_alias_restores(scope, result.get("items") or [])
                 return result
 
@@ -3335,6 +3383,8 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         view_mode: str = "list",
         resource_version: Optional[str] = None,
     ) -> Dict[str, Any]:
+        from .request_performance import measure_stage, request_metrics
+
         normalized_filters = self._completion_status_filters(status_filters)
         tab_key = str(tab or "missing").strip().lower()
         card_mode = str(view_mode or "").strip().lower() == "card"
@@ -3360,12 +3410,18 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         query_cache_key = f"{selection_key}|page:{safe_page_request}:{safe_page_size}"
         cache_enabled = not self._completion_state_builder_overridden()
         if cache_enabled:
-            cached = self._completion_l1_l2_get(self._completion_page_cache, "page", query_cache_key)
+            with measure_stage("page_cache_get"):
+                cached = self._completion_l1_l2_get(self._completion_page_cache, "page", query_cache_key)
+            metrics = request_metrics.get()
+            if metrics is not None:
+                metrics["page_cache_hit"] = isinstance(cached, dict)
             if isinstance(cached, dict):
                 return cached
 
         lock = self._completion_selection_locks[hash(selection_key) % len(self._completion_selection_locks)]
-        with lock:
+        with measure_stage("projection_selection_lock_wait_ms"):
+            lock.acquire()
+        try:
             selection = self._completion_selection_cache.get(selection_key) if cache_enabled else None
             projection_page = None
             if selection is None and cache_enabled and resource_version is not None:
@@ -3379,9 +3435,10 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     compare_filter=str(compare_filter or "all").strip().lower(), search=str(search or ""),
                     sort=str(sort or "updated_desc").strip().lower(), view_mode="card" if card_mode else "list",
                 )
-                projection_page = read_projection_page(
-                    projection_key, safe_page_request, safe_page_size, session_factory=SessionLocal, **projection_query,
-                )
+                with measure_stage("projection_read"):
+                    projection_page = read_projection_page(
+                        projection_key, safe_page_request, safe_page_size, session_factory=SessionLocal, **projection_query,
+                    )
                 # 卡片首屏优先返回；首次同步生成投影会为多种视图/筛选组合
                 # 全量分类并写入数据库，耗时与当前页大小无关。
                 if projection_page is None and state is not None and not card_mode:
@@ -3396,9 +3453,10 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     )
                     if not published:
                         return None
-                    projection_page = read_projection_page(
-                        projection_key, safe_page_request, safe_page_size, session_factory=SessionLocal, **projection_query,
-                    )
+                    with measure_stage("projection_read"):
+                        projection_page = read_projection_page(
+                            projection_key, safe_page_request, safe_page_size, session_factory=SessionLocal, **projection_query,
+                        )
             if selection is None:
                 if projection_page is not None:
                     selection = {"rows": projection_page["rows"], "summary": projection_page["summary"]}
@@ -3408,55 +3466,72 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 catalog = state["catalog"]
                 items = self._completion_items_with_resources(circle_id_or_query, state)
                 if card_mode and tab_key in {"missing", "owned"}:
-                    grouped_filtered = self._filter_completion_items_for_card_tab(
-                        items,
-                        tab=tab_key,
-                        include_dl_only=include_dl_only,
-                        status_filters=normalized_filters,
-                        owned_filter=owned_filter,
-                        search=search,
-                    )
-                    grouped_filtered = self._sort_completion_items(grouped_filtered, sort)
+                    with measure_stage("filter_ms"):
+                        grouped_filtered = self._filter_completion_items_for_card_tab(
+                            items,
+                            tab=tab_key,
+                            include_dl_only=include_dl_only,
+                            status_filters=normalized_filters,
+                            owned_filter=owned_filter,
+                            search=search,
+                        )
+                    with measure_stage("sort_ms"):
+                        grouped_filtered = self._sort_completion_items(grouped_filtered, sort)
                     filtered = [
                         member
                         for item in grouped_filtered
                         for member in self._completion_group_members(item)
                     ]
                 else:
-                    filtered = self._filter_completion_items_for_tab(
-                        items,
-                        tab=tab,
-                        include_dl_only=include_dl_only,
-                        status_filters=normalized_filters,
-                        owned_filter=owned_filter,
-                        compare_filter=compare_filter,
-                        search=search,
-                    )
-                    filtered = self._sort_completion_items(filtered, sort)
-                    grouped_filtered = (
-                        self._completion_group_bonus_items([dict(item) for item in filtered])
-                        if tab_key in {"missing", "owned"}
-                        else filtered
-                    )
+                    with measure_stage("filter_ms"):
+                        filtered = self._filter_completion_items_for_tab(
+                            items,
+                            tab=tab,
+                            include_dl_only=include_dl_only,
+                            status_filters=normalized_filters,
+                            owned_filter=owned_filter,
+                            compare_filter=compare_filter,
+                            search=search,
+                        )
+                    with measure_stage("sort_ms"):
+                        filtered = self._sort_completion_items(filtered, sort)
+                    with measure_stage("group_ms"):
+                        if tab_key in {"missing", "owned"}:
+                            with measure_stage("bonus_state_ms"):
+                                grouped_filtered = self._completion_group_bonus_items(
+                                    [dict(item) for item in filtered]
+                                )
+                        else:
+                            grouped_filtered = filtered
                 summary = self._completion_summary_from_items(catalog, items, visible_items=filtered)
                 if tab_key == "missing":
                     summary["missing_count"] = len(filtered)
                 selection = {"rows": grouped_filtered, "summary": summary}
                 if cache_enabled:
                     self._completion_selection_cache[selection_key] = selection
+        finally:
+            lock.release()
         grouped_filtered = selection["rows"]
         summary = selection["summary"]
         total = projection_page["total"] if projection_page is not None else len(grouped_filtered)
         page_count = max(1, (total + safe_page_size - 1) // safe_page_size)
         safe_page = max(1, min(page_count, safe_page_request))
         start = (safe_page - 1) * safe_page_size
-        page_items = deepcopy(grouped_filtered if projection_page is not None else grouped_filtered[start:start + safe_page_size])
+        from .request_performance import measure_stage
+        with measure_stage("copy_ms"):
+            page_items = deepcopy(
+                grouped_filtered if projection_page is not None
+                else grouped_filtered[start:start + safe_page_size]
+            )
         from .circle_completion_presentation import present_completion_rows
-        present_completion_rows(self, page_items)
+        with measure_stage("present"):
+            present_completion_rows(self, page_items)
         if tab_key == "compare":
-            payload_items = [self._build_completion_compare_item(item) for item in page_items]
+            with measure_stage("copy_ms"):
+                payload_items = [self._build_completion_compare_item(item) for item in page_items]
         else:
-            payload_items = [self._strip_completion_internal_fields(item) for item in page_items]
+            with measure_stage("copy_ms"):
+                payload_items = [self._strip_completion_internal_fields(item) for item in page_items]
         result = {
             **summary,
             "tab": tab_key,
@@ -3469,14 +3544,16 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             "data_version": f"{version}:r{resource_version or self._completion_resource_version_tag(circle_id_or_query)}",
         }
         if cache_enabled:
-            self._completion_l1_l2_set(
-                self._completion_page_cache,
-                "page",
-                query_cache_key,
-                result,
-                ttl_seconds=self._COMPLETION_PAGE_REDIS_TTL_SECONDS,
-            )
-        return deepcopy(result)
+            with measure_stage("page_cache_set"):
+                self._completion_l1_l2_set(
+                    self._completion_page_cache,
+                    "page",
+                    query_cache_key,
+                    result,
+                    ttl_seconds=self._COMPLETION_PAGE_REDIS_TTL_SECONDS,
+                )
+        with measure_stage("copy_ms"):
+            return deepcopy(result)
 
     async def list_circle_completion_work_codes(
         self,
@@ -3491,6 +3568,11 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         sort: str = "updated_desc",
         selection_only: bool = False,
     ) -> Dict[str, Any]:
+        if not self._completion_state_builder_overridden():
+            scope = await self._resolve_completion_scope(circle_id_or_query)
+            return await asyncio.to_thread(self._read_published_completion, scope, "codes", tab=tab,
+                include_dl_only=include_dl_only, status_filters=status_filters, owned_filter=owned_filter,
+                compare_filter=compare_filter, search=search, sort=sort, selection_only=selection_only)
         scope = await self._resolve_completion_scope(circle_id_or_query)
         state = await self._get_completion_view_state(scope, readonly=True)
         result = await asyncio.to_thread(
@@ -3518,6 +3600,10 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             await asyncio.to_thread(self._completion_l1_l2_set, self._completion_codes_cache,
                 'work-codes', cache_key, result, ttl_seconds=self._COMPLETION_CODES_REDIS_TTL_SECONDS)
         return result
+
+    def _read_published_completion(self, scope, operation, **query):
+        from .circle_completion_published import read_published
+        return read_published(self, SessionLocal, scope, operation, **query)
 
     def _completion_completed_probe_dates(self, circle_id, dates):
         if not dates:
@@ -3692,6 +3778,9 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         return result
 
     async def list_circle_completion_bonus_work_codes(self, circle_id_or_query: str) -> Dict[str, Any]:
+        if not self._completion_state_builder_overridden():
+            scope = await self._resolve_completion_scope(circle_id_or_query)
+            return await asyncio.to_thread(self._read_published_completion, scope, "bonus")
         state = await self._get_completion_view_state(circle_id_or_query, readonly=True)
         return await asyncio.to_thread(self._prepare_completion_bonus_work_codes, circle_id_or_query, state)
 
@@ -3770,6 +3859,11 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         search: str = "",
         sort: str = "updated_desc",
     ) -> Dict[str, Any]:
+        if not self._completion_state_builder_overridden():
+            scope = await self._resolve_completion_scope(circle_id_or_query)
+            return await asyncio.to_thread(self._read_published_completion, scope, "locate", rjcode=rjcode,
+                tab=tab, page_size=page_size, include_dl_only=include_dl_only, status_filters=status_filters,
+                owned_filter=owned_filter, compare_filter=compare_filter, search=search, sort=sort)
         state = await self._get_completion_view_state(circle_id_or_query)
         catalog = state["catalog"]
         items = state["items"]
@@ -7512,7 +7606,6 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
         async def _runner() -> None:
             previous_cover_state = await asyncio.to_thread(cover_state)
-            normal_cover_changed = False
             try:
                 # 隐藏特典没有可靠的图片 URL。复用按需下载的完整候选验证，
                 # 404 穷尽才标无图，网络异常仍保持未知；限制为四个后台 worker。
@@ -7528,31 +7621,18 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
                 if bonus_codes:
                     await asyncio.gather(*(cache_bonus_worker() for _ in range(min(4, len(bonus_codes)))))
-                    missing_codes = [
-                        code for code, fact in (await asyncio.to_thread(cover_state)).items()
-                        if fact is False
-                    ]
-                    if missing_codes:
-                        from .dlsite_bonus_probe_service import get_dlsite_bonus_probe_service
-
-                        await asyncio.to_thread(
-                            get_dlsite_bonus_probe_service().remove_coverless_bonus_works,
-                            missing_codes,
-                        )
                 if cover_pairs:
                     results = await image_cache_service.download_many(cover_pairs)
-                    normal_cover_changed = any(results.values())
                 if thumb_pairs:
                     results = await image_cache_service.download_many(thumb_pairs, variant="list")
-                    normal_cover_changed = normal_cover_changed or any(results.values())
             except Exception:
                 logger.warning("[社团补全] 后台封面缓存失败 circle_id=%s", circle_id, exc_info=True)
             finally:
                 # 任务结束后从字典清除，避免长期占用内存
                 self._cover_cache_tasks.pop(circle_id, None)
                 # 网络异常/短冷却没有新结论，不反复清空整社团的分页缓存。
-                if normal_cover_changed or await asyncio.to_thread(cover_state) != previous_cover_state:
-                    self.invalidate_completion_view_cache(circle_id)
+                if bonus_codes:
+                    await asyncio.to_thread(self._persist_bonus_cover_facts, bonus_codes, image_cache_service)
 
         try:
             task = asyncio.create_task(_runner(), name=f"circle-cover-cache:{circle_id}")
@@ -7564,17 +7644,30 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         self._cover_cache_tasks[circle_id] = task
         return task
 
-    def invalidate_completion_cover_cache(self, rjcode):
-        """封面结论变化只失效包含该作品的社团。"""
-        from sqlalchemy import or_
+    def _persist_bonus_cover_facts(self, codes, cache):
+        from sqlalchemy.dialects.postgresql import insert
+        from ..models.database import CircleCompletionCoverFact
+        with SessionLocal.begin() as db:
+            for code in sorted(set(codes)):
+                statuses = ["available" if cache.has_local(code, variant=variant) else
+                            "missing" if cache.has_known_missing(code, variant=variant) else "unknown"
+                            for variant in ("card", "list")]
+                conclusion = ("available" if "available" in statuses else
+                              "missing" if statuses == ["missing", "missing"] else "unknown")
+                values = dict(rjcode=code, card_status=statuses[0], list_status=statuses[1],
+                              conclusion=conclusion, pending=conclusion == "unknown", checked_at=get_local_now())
+                statement = insert(CircleCompletionCoverFact).values(**values)
+                db.execute(statement.on_conflict_do_update(index_elements=["rjcode"],
+                    set_={key: value for key, value in values.items() if key != "rjcode"}))
 
+    def invalidate_completion_cover_cache(self, rjcode):
+        """只有已登记特典的业务封面结论需要更新；普通图片不改变展示 revision。"""
+        from ..models.database import CircleCompletionCoverFact
         code = self.normalize_rjcode(rjcode)
         with SessionLocal() as db:
-            circles = db.query(CircleWork.circle_id).filter(or_(
-                CircleWork.canonical_rjcode == code, CircleWork.display_rjcode == code,
-            )).distinct().all()
-        for (circle_id,) in circles:
-            self.invalidate_completion_view_cache(circle_id)
+            tracked = db.get(CircleCompletionCoverFact, code)
+        if tracked:
+            self._persist_bonus_cover_facts([code], get_circle_image_cache_service())
 
     def _schedule_completion_bonus_covers(self, circle_id, state):
         """只在后台验证尚无结论的特典，列表读路径不访问单张图片。"""
@@ -8894,210 +8987,9 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         }
 
     async def search_circles(self, keyword: str = "", limit: int = 30) -> List[Dict[str, Any]]:
-        """
-        返回最近索引的社团目录卡片数据（左侧目录用）。
-
-        关键修复（vs. 旧版）：
-        - SQL 端 LIKE 过滤 + 排序 + LIMIT，不再 .all() 拉全表后再 Python 过滤；
-          社团数量大时显著降低延迟、降低数据库锁占用。
-        - server_owned / missing 与 build_circle_completion_view 对齐：
-          通过 LEFT JOIN LibraryOwnedWork 把"本地已有但服务器没有"的作品也算进
-          完整 owned，否则左侧"缺失 N 个"和右侧"缺失 M 个"长期对不上。
-        - 新作判定改为 48h 窗口；时间基准用 CircleWork.email_watcher_first_seen_at
-          （只在邮件首次发现时写入，不会被 onupdate 刷新），fallback 到 created_at。
-          避免老作品被全量索引刷新 updated_at 后被误判为"新作"的 BUG。
-        """
-        from sqlalchemy import text as sa_text
-
-        started_at = time.perf_counter()
-        stage_costs: Dict[str, int] = {}
-        last_stage_at = started_at
-
-        def mark_stage(name: str) -> None:
-            nonlocal last_stage_at
-            now = time.perf_counter()
-            stage_costs[name] = int((now - last_stage_at) * 1000)
-            last_stage_at = now
-
-        normalized = self.normalize_circle_name(keyword)
-        safe_limit = max(1, int(limit))
-
-        recent_cache_key = self._completion_recent_cache_key(keyword, safe_limit)
-        cached_recent = self._completion_l1_l2_get(self._completion_recent_cache, "recent", recent_cache_key)
-        if isinstance(cached_recent, list):
-            return cached_recent
-
-        db = SessionLocal()
-        try:
-            catalog_query = db.query(CircleCatalog).order_by(CircleCatalog.last_indexed_at.desc())
-            if normalized:
-                escaped = normalized.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-                pattern = f"%{escaped}%"
-                catalog_query = catalog_query.filter(
-                    sa_text(
-                        """
-                        (COALESCE(circle_name_normalized, '') || ' ' ||
-                         COALESCE(circle_name, '') || ' ' ||
-                         COALESCE(circle_id, '')) ILIKE :circle_catalog_search_pattern ESCAPE '!'
-                        """
-                    ).bindparams(circle_catalog_search_pattern=pattern)
-                )
-            # 留少量冗余给同名去重，避免去重后不足 safe_limit。
-            rows = catalog_query.limit(safe_limit * 2 + 16).all()
-
-            out: List[Dict[str, Any]] = []
-            seen_keys: Set[str] = set()
-            collected_ids: List[str] = []
-            for row in rows:
-                dedupe_key = str(row.circle_name_normalized or "").strip() or str(row.circle_id or "").strip()
-                if dedupe_key in seen_keys:
-                    continue
-                seen_keys.add(dedupe_key)
-                out.append(row.to_dict())
-                collected_ids.append(row.circle_id)
-                if len(out) >= safe_limit:
-                    break
-            mark_stage("catalog_query")
-
-            if collected_ids:
-                # === 完整 owned 计算（与右侧详情对齐）===
-                # LEFT JOIN LibraryOwnedWork：CircleWork × LibraryOwnedWork 是 1 对 1，
-                # 不会膨胀；在 Python 端做聚合，避免数据库 case-when 跨方言复杂度。
-                work_join_rows = (
-                    db.query(
-                        CircleWork.circle_id.label("circle_id"),
-                        CircleWork.has_asmr_one.label("has_asmr_one"),
-                        CircleWork.has_dlsite.label("has_dlsite"),
-                        LibraryOwnedWork.canonical_rjcode.label("local_canonical"),
-                    )
-                    .outerjoin(
-                        LibraryOwnedWork,
-                        LibraryOwnedWork.canonical_rjcode == CircleWork.canonical_rjcode,
-                    )
-                    .filter(CircleWork.circle_id.in_(collected_ids))
-                    .all()
-                )
-                stats_map: Dict[str, Dict[str, int]] = {}
-                for r in work_join_rows:
-                    s = stats_map.setdefault(r.circle_id, {
-                        "total_works": 0,
-                        "kikoeru_owned": 0,
-                        "asmr_available": 0,
-                        "dl_works": 0,
-                        "owned": 0,
-                        "local_owned": 0,
-                    })
-                    s["total_works"] += 1
-                    if r.has_asmr_one:
-                        s["asmr_available"] += 1
-                    if r.has_dlsite:
-                        s["dl_works"] += 1
-                    is_local_owned = r.local_canonical is not None
-                    if is_local_owned:
-                        s["local_owned"] += 1
-                        s["kikoeru_owned"] += 1
-                        s["owned"] += 1
-                mark_stage("stats_query")
-
-                for item in out:
-                    stats = stats_map.get(item["circle_id"], {})
-                    total = int(stats.get("total_works", 0))
-                    owned = int(stats.get("owned", 0))
-                    item["total_works"] = total
-                    item["dl_works"] = int(stats.get("dl_works", 0))
-                    item["asmr_available"] = int(stats.get("asmr_available", 0))
-                    # server_owned 在新口径下表示"完整已满足"，与右侧 owned_count 对齐；
-                    # 同时给前端将来需要分维度展示时用的纯 kikoeru / 本地两个独立字段。
-                    item["server_owned"] = owned
-                    item["server_owned_count"] = owned
-                    item["owned_count"] = owned
-                    item["kikoeru_owned_count"] = int(stats.get("kikoeru_owned", 0))
-                    item["local_owned_count"] = int(stats.get("local_owned", 0))
-                    item["missing"] = max(0, total - owned)
-
-                # === 新作判定：48h 窗口 + email_watcher_first_seen_at 时间锚 ===
-                tag_rows = (
-                    db.query(
-                        CircleWork.circle_id,
-                        CircleWork.source_tags,
-                        CircleWork.email_watcher_first_seen_at,
-                        CircleWork.created_at,
-                    )
-                    .filter(CircleWork.circle_id.in_(collected_ids))
-                    .all()
-                )
-                new_work_map: Dict[str, int] = {}
-                new_work_48h_map: Dict[str, int] = {}
-                now_local = get_local_now()
-                window_seconds = 48 * 60 * 60
-                for tr in tag_rows:
-                    tags = tr.source_tags
-                    if not (isinstance(tags, list) and "email_watcher" in tags):
-                        continue
-                    new_work_map[tr.circle_id] = new_work_map.get(tr.circle_id, 0) + 1
-                    # 优先 email_watcher_first_seen_at（专用稳定锚），fallback 到 created_at；
-                    # 不再使用 updated_at —— 它会被 onupdate 刷新，导致老作品被误判为新作。
-                    anchor = tr.email_watcher_first_seen_at or tr.created_at
-                    if anchor and hasattr(anchor, "timestamp"):
-                        age_seconds = now_local.timestamp() - anchor.timestamp()
-                        if 0 <= age_seconds <= window_seconds:
-                            new_work_48h_map[tr.circle_id] = new_work_48h_map.get(tr.circle_id, 0) + 1
-                mark_stage("new_work_query")
-
-                # 批量统计未发售：左侧目录只提示仍未满足的预售作品，口径和右侧
-                # 缺失作品区保持一致。已收录 / 本地已有的历史状态不再污染目录徽章。
-                unreleased_rows = (
-                    db.query(
-                        CircleWork.circle_id,
-                        WorkMetadata.release_date,
-                        LibraryOwnedWork.canonical_rjcode.label("local_canonical"),
-                    )
-                    .join(WorkMetadata, WorkMetadata.rjcode == CircleWork.canonical_rjcode)
-                    .outerjoin(
-                        LibraryOwnedWork,
-                        LibraryOwnedWork.canonical_rjcode == CircleWork.canonical_rjcode,
-                    )
-                    .filter(CircleWork.circle_id.in_(collected_ids))
-                    .all()
-                )
-                unreleased_map: Dict[str, int] = {}
-                for ur in unreleased_rows:
-                    if ur.local_canonical is not None:
-                        continue
-                    if self._is_future_release_date(ur.release_date):
-                        unreleased_map[ur.circle_id] = unreleased_map.get(ur.circle_id, 0) + 1
-
-                for item in out:
-                    cid = item["circle_id"]
-                    item["unreleased_count"] = unreleased_map.get(cid, 0)
-                    item["new_works_count"] = new_work_map.get(cid, 0)
-                    item["new_works_48h_count"] = new_work_48h_map.get(cid, 0)
-                    # 兼容字段：老前端 bundle 仍可能读 new_works_24h_count；
-                    # 新口径下让它指向 48h 数值，不会出现"显示 24h 但其实是 48h"
-                    # 之外的语义偏差，因为本来产品定义就是 48h 内为新作。
-                    item["new_works_24h_count"] = new_work_48h_map.get(cid, 0)
-                mark_stage("unreleased_query")
-
-            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-            if elapsed_ms >= 300:
-                logger.info(
-                    "[社团补全·目录耗时] keyword=%s limit=%s returned=%s elapsed=%sms stages=%s",
-                    keyword,
-                    safe_limit,
-                    len(out),
-                    elapsed_ms,
-                    stage_costs,
-                )
-            self._completion_l1_l2_set(
-                self._completion_recent_cache,
-                "recent",
-                recent_cache_key,
-                out,
-                ttl_seconds=self._COMPLETION_RECENT_REDIS_TTL_SECONDS,
-            )
-            return deepcopy(out)
-        finally:
-            db.close()
+        """目录和详情共享发布头，读请求不聚合来源作品。"""
+        from .circle_completion_read_model import read_recent
+        return await asyncio.to_thread(read_recent, SessionLocal, self.normalize_circle_name(keyword), limit)
 
     def _build_filter_skip_reasons(self, resources: List[Dict[str, Any]]) -> Dict[str, List[str]]:
         config = get_config()
@@ -9131,6 +9023,10 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         only_downloadable: bool = False,
         include_dl_only: bool = True,
     ) -> Dict[str, Any]:
+        if not self._completion_state_builder_overridden():
+            scope = await self._resolve_completion_scope(circle_id_or_query)
+            return await asyncio.to_thread(self._read_published_completion, scope, "detail",
+                only_missing=only_missing, only_downloadable=only_downloadable, include_dl_only=include_dl_only)
         circle_id_or_query = str(circle_id_or_query or "").strip()
         if not circle_id_or_query:
             raise ValueError("缺少社团标识")

@@ -471,6 +471,38 @@ class CircleImageCacheService:
             return None
         return self.get_local_path(rjcode, variant)
 
+    def restore_list_from_card(self, rjcode: str) -> Optional[Path]:
+        """从同作品主图原子生成列表缓存；已有有效小图保持不变。"""
+        target = self.get_local_path(rjcode, "list")
+        if target is None:
+            return None
+        if self.has_local(rjcode, "list"):
+            return target
+        if not self.has_local(rjcode):
+            return None
+        source = self.get_local_path(rjcode)
+        temporary = None
+        try:
+            with Image.open(source) as image:
+                image.thumbnail((240, 240), Image.Resampling.LANCZOS)
+                with tempfile.NamedTemporaryFile(
+                    prefix=f".{target.name}.", suffix=".tmp", dir=target.parent, delete=False,
+                ) as output:
+                    temporary = Path(output.name)
+                    image.convert("RGB").save(output, format="JPEG", quality=90)
+            os.replace(temporary, target)
+            temporary = None
+            self._remember_valid_image(target)
+            self._clear_known_missing(rjcode, "list")
+            self._clear_failure(rjcode, "list")
+            return target
+        except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
+            logger.warning("[社团补全/封面缓存] 生成列表缩略图失败 rjcode=%s", rjcode, exc_info=True)
+            return None
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
     @staticmethod
     def _dlsite_folder_for(rjcode: str) -> str:
         match = re.fullmatch(r"[RVB]J(\d{6}|\d{8})", str(rjcode or "").strip().upper())
@@ -528,7 +560,13 @@ class CircleImageCacheService:
         if target is None:
             return None
         if not force and self.has_local(rjcode, variant):
+            if variant == "card":
+                await asyncio.to_thread(self.restore_list_from_card, rjcode)
             return target
+        if not force and variant == "list":
+            restored = await asyncio.to_thread(self.restore_list_from_card, rjcode)
+            if restored is not None:
+                return restored
         if not force and self.has_known_missing(rjcode, variant):
             return None
         if not force and self._is_in_failure_cooldown(rjcode, variant):
@@ -775,7 +813,9 @@ class CircleImageCacheService:
         """后台补齐缺失封面；同一文件只保留一个在途任务。"""
 
         rjcode, variant = self._parse_filename(filename)
-        if not rjcode or self.has_local(rjcode, variant) or self.has_known_missing(rjcode, variant):
+        if not rjcode or self.has_local(rjcode, variant):
+            return None
+        if self.has_known_missing(rjcode, variant) and not (variant == "list" and self.has_local(rjcode)):
             return None
         task_key = self._filename_for(rjcode, variant)
         if not task_key:
@@ -899,6 +939,8 @@ class CircleImageCacheService:
             os.replace(tmp_path, target_path)
             tmp_path = None
             self._remember_valid_image(target_path)
+            if self._normalize_variant(variant) == "card":
+                await asyncio.to_thread(self.restore_list_from_card, normalized)
             return True, "", False
         except httpx.TransportError as exc:
             return False, f"{type(exc).__name__}:{phase}:{mode}", True
@@ -956,6 +998,8 @@ class CircleImageCacheService:
             return False
         async with lock:
             if not force and self.has_local(normalized, variant):
+                if self._normalize_variant(variant) == "card":
+                    await asyncio.to_thread(self.restore_list_from_card, normalized)
                 self._clear_failure(normalized, variant)
                 self._clear_known_missing(normalized, variant)
                 return True

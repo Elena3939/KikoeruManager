@@ -272,12 +272,19 @@ function bonusCodeList(item) {
 
 function workStateCodeList(item) {
   return bonusMembers(item)
-    .flatMap(member => [
-      member?.canonical_rjcode,
-      member?.display_rjcode,
-      member?.rjcode,
-      member?.source_compare?.work_rjcode,
-    ])
+    .flatMap(member => {
+      const codes = [
+        member?.canonical_rjcode,
+        member?.display_rjcode,
+        member?.rjcode,
+        member?.source_compare?.work_rjcode,
+      ]
+      for (const url of [member?.remote_image_url, member?.image_url, member?.thumb_image_url]) {
+        const matches = String(url || '').match(/[RVB]J\d{6,8}/gi)
+        if (matches?.length) codes.push(matches[matches.length - 1])
+      }
+      return codes
+    })
     .map(value => String(value || '').trim())
     .filter(Boolean)
     .filter((code, index, array) => array.indexOf(code) === index)
@@ -481,6 +488,7 @@ const itemViewModels = computed(() => pagedGroups.value.map((group, index) => {
     code,
     itemOwned,
     groupOwned,
+    cornerLabel: props.cornerLabel === '已收录' && !itemOwned ? '' : props.cornerLabel,
     completionDimmed,
     get selected() { return matchesWorkCodeSet(item, props.selectedCodes) },
     get flashed() { return matchesWorkCodeSet(item, props.flashedCodes) },
@@ -878,6 +886,33 @@ function scrollToTop(options = {}) {
   })
 }
 
+const locatedIndex = computed(() => {
+  if (!props.locatedCodes?.size) return -1
+  return pagedGroups.value.findIndex(group =>
+    matchesWorkCodeSet(group.item, props.locatedCodes)
+    || group.bonuses.some(bonus => matchesWorkCodeSet(bonus, props.locatedCodes)),
+  )
+})
+const locatedPosition = computed(() => {
+  if (locatedIndex.value < 0 || viewportWidth.value <= 0) return ''
+  return [normalizedPage.value, props.mode, usePlainRender.value, columnCount.value, locatedIndex.value, ...props.locatedCodes].join(':')
+})
+
+watch(locatedPosition, async (position) => {
+  if (!position) return
+  // 等待切页置顶和布局更新完成，再滚动；目标行可能尚未被虚拟器渲染。
+  await nextTick()
+  if (position !== locatedPosition.value) return
+  const index = locatedIndex.value
+  if (!usePlainRender.value) {
+    rowVirtualizer.value.scrollToIndex(Math.floor(index / columnCount.value), { align: 'center' })
+    await nextTick()
+    if (position !== locatedPosition.value) return
+  }
+  viewportRef.value?.querySelector(`[data-work-index="${index}"]`)
+    ?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' })
+}, { flush: 'post', immediate: true })
+
 watch(pageCount, (count) => {
   if (props.currentPage > count) emit('update:currentPage', count)
 })
@@ -958,6 +993,7 @@ onBeforeUnmount(() => {
           v-for="viewModel in itemViewModels"
           :ref="element => observePlainCell(element, viewModel.key)"
           :key="viewModel.key"
+          :data-work-index="viewModel.index"
           class="circle-work-plain-cell"
           :class="[`is-${mode}`, {
             'is-motion-active': motionActive,
@@ -982,7 +1018,7 @@ onBeforeUnmount(() => {
               :status-flash="viewModel.flashed"
               :locate-flash="viewModel.located"
               :completion-dimmed="shouldDimWorkCard(viewModel)"
-              :corner-label="cornerLabel"
+              :corner-label="viewModel.cornerLabel"
               :image-active="isImageActive(viewModel.key)"
               :resolved-cover-url="resolvedImageUrl(viewModel.key)"
               :cover-url-override="coverOverrideFor(viewModel.item)"
@@ -1089,7 +1125,7 @@ onBeforeUnmount(() => {
                 :status-flash="viewModel.flashed"
                 :locate-flash="viewModel.located"
                 :image-field="imageField"
-                :corner-label="cornerLabel"
+                :corner-label="viewModel.cornerLabel"
                 :image-active="isImageActive(viewModel.key)"
                 :resolved-cover-url="resolvedImageUrl(viewModel.key)"
                 :cover-url-override="coverOverrideFor(viewModel.item)"
@@ -1241,10 +1277,11 @@ onBeforeUnmount(() => {
             <div
               v-for="cell in getRowItems(virtualRow.index)"
               :key="cell.key"
+              :data-work-index="cell.index"
               v-memo="[cell.item, cell.index, cell.columnIndex, cell.selected, cell.flashed, cell.located,
                 cell.completionDimmed, cell.bonuses, mode, imageField, columnCount, motionActive,
                 bonusShelfStyle, activeBonusDetail, activeBonusDetailCover,
-                cornerLabel, isImageActive(cell.key), resolvedImageUrl(cell.key),
+                cell.cornerLabel, isImageActive(cell.key), resolvedImageUrl(cell.key),
                 coverOverrideFor(cell.item), isCoverFetching(cell.item), failedBonusImageKeys,
                 mode === 'list' ? selectedCodes : null, mode === 'list' ? flashedCodes : null,
                 mode === 'list' ? locatedCodes : null, mode === 'list' ? activeImageKeys : null,
@@ -1276,7 +1313,7 @@ onBeforeUnmount(() => {
                   :status-flash="cell.flashed"
                   :locate-flash="cell.located"
                   :completion-dimmed="shouldDimWorkCard(cell)"
-                  :corner-label="cornerLabel"
+                  :corner-label="cell.cornerLabel"
                   :image-active="isImageActive(cell.key)"
                   :resolved-cover-url="resolvedImageUrl(cell.key)"
                   :cover-url-override="coverOverrideFor(cell.item)"
@@ -1383,7 +1420,7 @@ onBeforeUnmount(() => {
                     :status-flash="cell.flashed"
                     :locate-flash="cell.located"
                     :image-field="imageField"
-                    :corner-label="cornerLabel"
+                    :corner-label="cell.cornerLabel"
                     :image-active="isImageActive(cell.key)"
                     :resolved-cover-url="resolvedImageUrl(cell.key)"
                     :cover-url-override="coverOverrideFor(cell.item)"

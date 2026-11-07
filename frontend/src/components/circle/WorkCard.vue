@@ -138,6 +138,8 @@ const showOriginalSubtitleState = computed(() =>
   && (props.item?.owned_variant?.group_key || 'original') === 'original'
 )
 const originalSubtitleLabel = computed(() => {
+  if (props.item?.subtitle_target_status === 'pending') return '字幕状态更新中'
+  if (props.item?.subtitle_target_status === 'incomplete') return '字幕状态不完整'
   if (props.item?.subtitle_missing_target_count) return props.item?.subtitle_present ? '部分无字幕' : '无字幕'
   return props.item?.subtitle_present ? '有字幕' : '无字幕'
 })
@@ -339,7 +341,7 @@ function preventNativeShiftSelection(event) {
           </span>
           <template v-else>
             <span class="tag-chip" :class="item.server_owned ? 'is-primary' : 'is-danger'">{{ item.server_owned ? '已收录' : '未收录' }}</span>
-            <span v-if="showOriginalSubtitleState" class="tag-chip" :class="item.subtitle_present && !item.subtitle_missing_target_count ? 'is-subtitle' : 'is-subtitle-none'">{{ originalSubtitleLabel }}</span>
+            <span v-if="showOriginalSubtitleState" class="tag-chip" :class="['pending', 'incomplete'].includes(item.subtitle_target_status) ? 'is-disabled' : item.subtitle_present && !item.subtitle_missing_target_count ? 'is-subtitle' : 'is-subtitle-none'">{{ originalSubtitleLabel }}</span>
             <span v-if="item.subtitle_missing_target_count && !showOriginalSubtitleState" class="tag-chip is-subtitle-none">原作无字幕</span>
             <span class="tag-chip" :class="(item.has_downloadable_source ?? item.has_asmr_one) ? 'is-success' : 'is-disabled'">{{ (item.has_downloadable_source ?? item.has_asmr_one) ? '可下载' : '无源' }}</span>
             <ExternalSearchSourceChips :item="externalSearchItem" @open="emit('external-search', $event)" />

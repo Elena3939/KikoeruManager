@@ -441,6 +441,31 @@ async def test_paged_works_cover_cache_url_uses_image_file_rjcode(service: Circl
     assert (tmp_path / "RJ01012345.jpg").read_bytes() == original
 
 
+def test_cover_cache_invalidation_finds_circle_by_image_file_rjcode(
+    service: CircleCompletionService,
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    circle_id = "circle_cover_invalidation"
+    db_session.add(CircleCatalog(
+        circle_id=circle_id,
+        circle_name="封面缓存失效社团",
+        circle_name_normalized="封面缓存失效社团",
+    ))
+    _add_work(db_session, circle_id=circle_id, canonical="RJ01012345", title="翻译作品", asmr=True)
+    row = db_session.query(CircleWork).filter(CircleWork.circle_id == circle_id).first()
+    row.display_rjcode = "RJ01099999"
+    row.image_url = "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01013000/RJ01012316_img_main.jpg"
+    db_session.flush()
+
+    invalidated = []
+    monkeypatch.setattr(service, "invalidate_completion_view_cache", lambda value: invalidated.append(value))
+
+    service.invalidate_completion_cover_cache("RJ01012316")
+
+    assert invalidated == [circle_id]
+
+
 @pytest.mark.asyncio
 async def test_summary_and_paged_works_match_legacy_counts(service: CircleCompletionService, db_session) -> None:
     circle_id = _seed_circle(db_session)
