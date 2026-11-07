@@ -7,6 +7,7 @@
     :title="cardTitle"
     :subtitle="cardSubtitle"
     :meta-text="cardMetaText"
+    :timing-text="workbench.summary?.timingText || ''"
     :detail-text="cardDetailText"
     :badge-text="cardBadgeText"
     :percentage="progressPercent"
@@ -79,6 +80,7 @@ const cardSubtitle = computed(() => (
 ))
 
 const cardMetaText = computed(() => {
+  if (props.workbench?.summary?.metaText) return props.workbench.summary.metaText
   const label = String(props.workbench?.status?.label || '').trim()
   return label ? `状态: ${label}` : ''
 })

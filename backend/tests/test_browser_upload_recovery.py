@@ -97,6 +97,7 @@ async def test_terminal_audit_is_atomic_idempotent_and_restart_silent(upload_ser
         raise AssertionError('历史终态不能重新创建引擎任务')
     monkeypatch.setattr(task_engine, 'get_task_engine', unexpected)
     await restarted.start()
+    await restarted.recovery_task
     try:
         restored = restarted.sessions[state['id']]
         assert restored['_restored_terminal']
@@ -167,6 +168,7 @@ async def test_legacy_terminal_recovery_does_not_replay(upload_service, monkeypa
     from app.core import task_engine
     monkeypatch.setattr(task_engine, 'get_task_engine', lambda: pytest.fail('历史任务重放'))
     await restarted.start()
+    await restarted.recovery_task
     try:
         await restarted.maintain_session(restarted.sessions[created['id']])
         with service.db() as db:

@@ -44,6 +44,75 @@ def test_no_space_preserves_checkpoint(tmp_path, monkeypatch):
     assert not part.exists()
 
 
+def test_receipts_append_and_repair_torn_tail(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, 'CHUNK_SIZE', 4)
+    part = tmp_path / 'file.part'
+    checkpoint = {'offset': 0, 'chunks': []}
+    sizes = []
+    for offset in range(0, 400, 4):
+        storage.receive_chunk(part, offset, b'abcd', sha(b'abcd'), 400, checkpoint=checkpoint)
+        sizes.append(part.with_suffix('.json').stat().st_size)
+    assert max(b - a for a, b in zip(sizes, sizes[1:])) < 150
+    with part.with_suffix('.json').open('ab') as output:
+        output.write(b'{"offset":400')
+    assert storage.read_checkpoint(part.with_suffix('.json')) == checkpoint
+    assert part.with_suffix('.json').stat().st_size == sizes[-1]
+
+
+def test_missing_part_resets_stale_receipt_before_restart(tmp_path):
+    part = tmp_path / 'file.part'
+    storage.receive_chunk(part, 0, b'old', sha(b'old'), 3)
+    part.unlink()
+    assert storage.recover_checkpoint(part, full=False)['offset'] == 0
+    storage.receive_chunk(part, 0, b'new', sha(b'new'), 3)
+    assert storage.verify_received_file(part, part.with_suffix('.json')) == sha(b'new')
+
+
+def test_complete_json_without_newline_is_not_confirmed(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, 'CHUNK_SIZE', 4)
+    part = tmp_path / 'file.part'
+    storage.receive_chunk(part, 0, b'abcd', sha(b'abcd'), 8)
+    receipt = part.with_suffix('.json')
+    with receipt.open('ab') as output:
+        output.write(json.dumps({'offset': 4, 'size': 4, 'sha256': sha(b'efgh')}).encode())
+    assert storage.read_checkpoint(receipt)['offset'] == 4
+    storage.receive_chunk(part, 4, b'efgh', sha(b'efgh'), 8)
+    assert storage.read_checkpoint(receipt)['offset'] == 8
+    assert storage.verify_received_file(part, receipt) == sha(b'abcdefgh')
+
+
+def test_fast_checkpoint_hashes_only_tail_and_keeps_full_validation_available(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, 'CHUNK_SIZE', 4)
+    part = tmp_path / 'file.part'
+    for offset in range(0, 20, 4):
+        storage.receive_chunk(part, offset, b'abcd', sha(b'abcd'), 24)
+    original = storage.hashlib.sha256
+    reads = []
+    def digest(data=b''):
+        reads.append(len(data))
+        return original(data)
+    monkeypatch.setattr(storage.hashlib, 'sha256', digest)
+    assert storage.recover_checkpoint(part, full=False)['offset'] == 20
+    assert reads == [4]
+    with part.open('r+b') as output:
+        output.write(b'FAIL')
+    assert storage.recover_checkpoint(part)['offset'] == 0
+
+
+def test_legacy_receipt_migrates_once_and_incremental_hash_ignores_duplicates(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, 'CHUNK_SIZE', 4)
+    part = tmp_path / 'file.part'
+    part.write_bytes(b'abcd')
+    storage.atomic_json(part.with_suffix('.json'), {'offset': 4, 'chunks': [
+        {'offset': 0, 'size': 4, 'sha256': sha(b'abcd')}]})
+    hasher = {'offset': 4, 'digest': hashlib.sha256(b'abcd')}
+    checkpoint = storage.receive_chunk(part, 4, b'efgh', sha(b'efgh'), 8, hasher=hasher)
+    storage.receive_chunk(part, 4, b'efgh', sha(b'efgh'), 8, checkpoint=checkpoint, hasher=hasher)
+    assert storage.read_checkpoint(part.with_suffix('.json')) == checkpoint
+    assert hasher['offset'] == 8
+    assert hasher['digest'].hexdigest() == sha(b'abcdefgh')
+
+
 @pytest.mark.parametrize('name', ['../escape', '/absolute', 'a/../b', 'a\\b', 'CON.txt', 'a:b', 'a//b'])
 def test_reject_path_escape(name):
     with pytest.raises(ValueError):

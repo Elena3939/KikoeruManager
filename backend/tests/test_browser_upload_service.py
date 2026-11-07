@@ -1,6 +1,8 @@
 """使用真实 PostgreSQL 验证会话恢复、提交和冲突，不触发扫描或普通任务执行器。"""
 import asyncio
 import hashlib
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,7 +41,7 @@ async def drain(service, state):
     worker = asyncio.create_task(service.worker())
     try:
         for _ in range(20):
-            ready = [f for f in state['files'].values() if f['status'] == 'ready']
+            ready = [f for f in state['files'].values() if f['status'] in {'ready', 'verifying'}]
             if not ready:
                 break
             for file in ready:
@@ -99,6 +101,7 @@ async def test_restart_finishes_received_file_without_browser_complete(setup_upl
     receive_chunk(part, 0, b'hello', hashlib.sha256(b'hello').hexdigest(), 5)
     restarted = factory()
     await restarted.start()
+    await restarted.recovery_task
     try:
         restored = restarted.sessions[state['id']]
         for _ in range(100):
@@ -132,6 +135,73 @@ async def test_single_retry_retains_completed_sibling(setup_upload):
 
 
 @pytest.mark.asyncio
+async def test_restart_restores_empty_file_without_browser_complete(setup_upload):
+    factory, root = setup_upload
+    service = factory()
+    state, file = await prepare(service, path='empty.bin', data=b'')
+    restarted = factory()
+    await restarted.start()
+    try:
+        await restarted.recovery_task
+        restored = restarted.sessions[state['id']]
+        for _ in range(100):
+            if restored['files'][file['id']]['status'] == 'completed':
+                break
+            await asyncio.sleep(.05)
+        assert restored['files'][file['id']]['status'] == 'completed'
+        assert (root / 'empty.bin').read_bytes() == b''
+    finally:
+        await restarted.stop()
+
+
+@pytest.mark.asyncio
+async def test_restart_preserves_received_part_before_atomic_commit(setup_upload):
+    from app.core.browser_upload_storage import atomic_json
+    factory, root = setup_upload
+    service = factory()
+    state, file = await prepare(service, path='file.bin')
+    await service.chunk(state, file, 0, b'hello', hashlib.sha256(b'hello').hexdigest())
+    file['status'] = 'writing'
+    await service.save(state, [file])
+    atomic_json(service.journal(state, file), {'target': str(root / 'file.bin')})
+    restarted = factory()
+    await restarted.start()
+    try:
+        await restarted.recovery_task
+        restored = restarted.sessions[state['id']]
+        for _ in range(100):
+            if restored['files'][file['id']]['status'] == 'completed':
+                break
+            await asyncio.sleep(.05)
+        assert restored['files'][file['id']]['status'] == 'completed'
+        assert (root / 'file.bin').read_bytes() == b'hello'
+    finally:
+        await restarted.stop()
+
+
+@pytest.mark.asyncio
+async def test_background_hash_is_durable_before_install(setup_upload, monkeypatch):
+    from app.models.database import BrowserUploadFile
+    from app.core import browser_upload_service as module
+    factory, _ = setup_upload
+    service = factory()
+    state, file = await prepare(service, path='file.bin')
+    await service.chunk(state, file, 0, b'hello', hashlib.sha256(b'hello').hexdigest())
+    install = module.install_local
+    checked = []
+    def verify(*args):
+        with service.db() as db:
+            row = db.get(BrowserUploadFile, (state['id'], file['id']))
+            assert row.state['sha256'] == hashlib.sha256(b'hello').hexdigest()
+            assert row.state['status'] == 'writing'
+            checked.append(True)
+        return install(*args)
+    monkeypatch.setattr(module, 'install_local', verify)
+    await drain(service, state)
+    assert checked == [True] and file['status'] == 'completed'
+
+
+@pytest.mark.asyncio
 async def test_cancel_retains_committed_and_stops_pending(setup_upload):
     factory, root = setup_upload
     service = factory()
@@ -146,6 +216,268 @@ async def test_cancel_retains_committed_and_stops_pending(setup_upload):
     assert second['status'] == 'cancelled'
     assert (root / 'one.bin').read_bytes() == b'hello'
     assert not (root / 'two.bin').exists()
+
+
+@pytest.mark.asyncio
+async def test_last_chunk_and_complete_never_read_whole_file(setup_upload, monkeypatch):
+    factory, _ = setup_upload
+    service = factory()
+    state, file = await prepare(service, path='file.bin')
+    from app.core import browser_upload_service as module
+    monkeypatch.setattr(module, 'digest_file', lambda *_: pytest.fail('请求内不应读取整文件'))
+    assert await asyncio.wait_for(service.chunk(state, file, 0, b'hello', hashlib.sha256(b'hello').hexdigest()), 1) == {'offset': 5}
+    assert file['status'] == 'verifying'
+    assert file['sha256'] == hashlib.sha256(b'hello').hexdigest()
+    assert (await service.complete_file(state, file))['status'] == 'verifying'
+    await service.action(state, 'receive_failed', file['id'], reason='最后一块响应丢失')
+    assert file['status'] == 'verifying'
+    response = await service.action(state, 'retry', file['id'])
+    assert response['changed_files'][0]['status'] == 'verifying'
+    await drain(service, state)
+    assert file['status'] == 'completed'
+
+
+@pytest.mark.asyncio
+async def test_slow_background_digest_does_not_hold_receive_slot_or_file_lock(setup_upload, monkeypatch):
+    factory, _ = setup_upload
+    service = factory()
+    state, file = await prepare(service, path='file.bin')
+    part = service.part(state['id'], file['id'])
+    part.write_bytes(b'hello')
+    file['received'] = 5
+    await service.complete_file(state, file)
+    entered, release = threading.Event(), threading.Event()
+    def slow_digest(_):
+        entered.set()
+        assert release.wait(5)
+        return hashlib.sha256(b'hello').hexdigest()
+    from app.core import browser_upload_service as module
+    monkeypatch.setattr(module, 'digest_file', slow_digest)
+    worker = asyncio.create_task(service.worker())
+    service.queued.add((state['id'], file['id']))
+    await service.queue.put((state['id'], file['id']))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        await asyncio.wait_for(service.action(state, 'receive_failed', file['id']), 1)
+        assert file['status'] == 'verifying'
+        assert not any(lock.locked() for lock in service.locks.values())
+        assert service.receive_slots._value == 3
+    finally:
+        release.set()
+        await service.queue.join()
+        await service.queue.put(None)
+        await worker
+    assert file['status'] == 'completed'
+
+
+@pytest.mark.asyncio
+async def test_retry_batch_persists_only_affected_rows(setup_upload, monkeypatch):
+    factory, _ = setup_upload
+    service = factory()
+    state, first = await prepare(service, path='one.bin', finished=False)
+    items = await service.manifest(state, [dict(relative_path=f'{i}.bin', size=1, last_modified=0, is_directory=False) for i in range(100)])
+    failed = [state['files'][f['id']] for f in items[:20]]
+    for file in failed:
+        file['status'] = 'failed'
+    await service.save(state, failed)
+    persisted = []
+    original = service._persist
+    def persist(snapshot, files):
+        persisted.append([file['id'] for file in files])
+        original(snapshot, files)
+    monkeypatch.setattr(service, '_persist', persist)
+    await service.action(state, 'retry', file_ids=[f['id'] for f in failed])
+    assert persisted == [[f['id'] for f in failed]]
+    await service.action(state, 'receive_failed', first['id'])
+    assert persisted[-1] == [first['id']]
+
+
+@pytest.mark.asyncio
+async def test_cancel_cleans_adjacent_part_and_expiry_removes_records_only(setup_upload):
+    from app.models.database import BrowserUploadSession, BrowserUploadFile, ActivityLog
+    from sqlalchemy import select
+    factory, root = setup_upload
+    service = factory()
+    state, file = await prepare(service, path='file.bin', data=b'x' * (CHUNK_SIZE + 1))
+    data = b'x' * CHUNK_SIZE
+    await service.chunk(state, file, 0, data, hashlib.sha256(data).hexdigest())
+    part = service.part(state['id'], file['id'])
+    assert part.parent == root and part.exists()
+    (root / 'keep.bin').write_bytes('保留'.encode())
+    await service.action(state, 'cancel')
+    state['_last_save'] = 0
+    await service.maintain_session(state)
+    assert not part.exists()
+    assert not (service.root / state['id']).exists()
+    state['last_activity'] = time.time() - 8 * 86400
+    await service.maintain_session(state)
+    assert state['id'] not in service.sessions
+    assert not service.locks and not service.checkpoints and not service.hashers
+    with service.db() as db:
+        assert db.get(BrowserUploadSession, state['id']) is None
+        assert not db.scalars(select(BrowserUploadFile)).all()
+        assert len(db.scalars(select(ActivityLog)).all()) == 1
+    assert (root / 'keep.bin').read_bytes() == '保留'.encode()
+
+
+@pytest.mark.asyncio
+async def test_start_returns_before_database_recovery_and_missing_session_is_temporary(setup_upload, monkeypatch):
+    from app.core.browser_upload_service import UploadRestoring
+    factory, _ = setup_upload
+    service = factory()
+    release = asyncio.Event()
+    async def restore():
+        await release.wait()
+    monkeypatch.setattr(service, '_restore', restore)
+    await asyncio.wait_for(service.start(), 1)
+    try:
+        assert service.recovering
+        with pytest.raises(UploadRestoring):
+            service.get('not-loaded', 'token')
+    finally:
+        release.set()
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_summary_and_maintenance_do_not_rescan_all_files(setup_upload):
+    factory, _ = setup_upload
+    service = factory()
+    state, file = await prepare(service, path='file.bin')
+    class NoScan(dict):
+        def values(self):
+            raise AssertionError('热路径不应重新扫描清单')
+    state['files'] = NoScan(state['files'])
+    assert service.summary(state)['total_files'] == 1
+    await service.maintain_session(state)
+
+
+@pytest.mark.asyncio
+async def test_failed_session_accepts_original_manifest_before_batch_retry(setup_upload):
+    factory, _ = setup_upload
+    service = factory()
+    state, file = await prepare(service, path='file.bin')
+    await service.action(state, 'receive_failed', file['id'])
+    assert state['status'] == 'failed'
+    entries = [dict(relative_path='file.bin', size=5, last_modified=42, is_directory=False)]
+    assert (await service.manifest(state, entries))[0]['id'] == file['id']
+    with pytest.raises(ValueError, match='不能添加新文件'):
+        await service.manifest(state, [{**entries[0], 'relative_path': 'other.bin'}])
+    await service.action(state, 'retry', file_ids=[file['id']])
+    assert state['status'] == file['status'] == 'receiving'
+
+
+@pytest.mark.asyncio
+async def test_bad_receipt_does_not_block_other_files_on_restart(setup_upload):
+    factory, _ = setup_upload
+    service = factory()
+    state, first = await prepare(service, path='one.bin', finished=False)
+    items = await service.manifest(state, [dict(relative_path='two.bin', size=5, last_modified=42, is_directory=False)], True)
+    service.part(state['id'], first['id']).write_bytes(b'hello')
+    service.receipt(state['id'], first['id']).write_text('broken', encoding='utf-8')
+    restored = factory()
+    await restored.start()
+    try:
+        await restored.recovery_task
+        files = restored.sessions[state['id']]['files']
+        assert files[first['id']]['status'] == 'failed'
+        assert files[items[0]['id']]['status'] == 'receiving'
+        assert not restored.sessions[state['id']]['_restoring']
+    finally:
+        await restored.stop()
+
+
+@pytest.mark.asyncio
+async def test_locks_survive_waiters_and_release_after_last_user(setup_upload):
+    factory, _ = setup_upload
+    service = factory()
+    key, order = ('session', 'file'), []
+    async with service.locked(service.locks, key):
+        original = service.locks[key]
+        async def waiter():
+            async with service.locked(service.locks, key):
+                assert service.locks[key] is original
+                order.append('waiting')
+        pending = asyncio.create_task(waiter())
+        await asyncio.sleep(0)
+        assert service.lock_users[original] == 2
+    assert service.locks[key] is original
+    await pending
+    assert order == ['waiting']
+    assert not service.locks and not service.lock_users
+
+
+@pytest.mark.asyncio
+async def test_cleanup_does_not_create_missing_target_directories(setup_upload):
+    factory, root = setup_upload
+    service = factory()
+    state, _ = await prepare(service)
+    service.cleanup_files(state)
+    assert not (root / 'source').exists()
+
+
+@pytest.mark.asyncio
+async def test_background_validation_rewinds_corrupt_prefix_before_retry(setup_upload, monkeypatch):
+    from app.core import browser_upload_storage as storage
+    monkeypatch.setattr(storage, 'CHUNK_SIZE', 4)
+    factory, root = setup_upload
+    service = factory()
+    state, file = await prepare(service, path='file.bin', data=b'abcdefgh')
+    part, receipt = service.part(state['id'], file['id']), service.receipt(state['id'], file['id'])
+    receive_chunk(part, 0, b'abcd', hashlib.sha256(b'abcd').hexdigest(), 8, receipt)
+    receive_chunk(part, 4, b'efgh', hashlib.sha256(b'efgh').hexdigest(), 8, receipt)
+    with part.open('r+b') as output:
+        output.write(b'FAIL')
+    file['received'] = 8
+    await service.complete_file(state, file)
+    await drain(service, state)
+    assert file['status'] == 'failed' and file['received'] == 0
+    assert not (root / 'file.bin').exists()
+    await service.action(state, 'retry', file['id'])
+    assert file['status'] == 'receiving'
+
+
+@pytest.mark.asyncio
+async def test_receipt_fsync_failure_reloads_checkpoint_before_chunk_retry(setup_upload, monkeypatch):
+    from app.core import browser_upload_storage as storage
+    monkeypatch.setattr(storage, 'CHUNK_SIZE', 4)
+    factory, root = setup_upload
+    service = factory()
+    state, file = await prepare(service, path='file.bin', data=b'abcdefgh')
+    receipt = service.receipt(state['id'], file['id'])
+    storage.write_checkpoint(receipt, {'offset': 0, 'chunks': []})
+    original = storage.os.fsync
+    calls = 0
+    def fsync(fd):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError('模拟回执 fsync 失败')
+        return original(fd)
+    monkeypatch.setattr(storage.os, 'fsync', fsync)
+    digest = hashlib.sha256(b'abcd').hexdigest()
+    with pytest.raises(OSError, match='fsync'):
+        await service.chunk(state, file, 0, b'abcd', digest)
+    assert not service.checkpoints and not service.hashers
+    assert await service.chunk(state, file, 0, b'abcd', digest) == {'offset': 4}
+    await service.chunk(state, file, 4, b'efgh', hashlib.sha256(b'efgh').hexdigest())
+    assert storage.read_checkpoint(receipt)['offset'] == 8
+    await drain(service, state)
+    assert (root / 'file.bin').read_bytes() == b'abcdefgh'
+
+
+@pytest.mark.asyncio
+async def test_expiry_rechecks_inflight_operations_after_waiting_for_save(setup_upload):
+    factory, _ = setup_upload
+    service = factory()
+    state, file = await prepare(service, path='file.bin')
+    async with state['_save_lock']:
+        expiry = asyncio.create_task(service.expire_session(state))
+        await asyncio.sleep(0)
+        state['_file_operations'] = 1
+    await expiry
+    assert state['id'] in service.sessions and not state.get('_expiring')
+    state['_file_operations'] = 0
 
 
 class RemoteFiles:

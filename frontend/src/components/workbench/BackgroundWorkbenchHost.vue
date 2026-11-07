@@ -20,15 +20,19 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onBeforeUnmount } from 'vue'
+import { computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import BackgroundFloatingCard from '../common/BackgroundFloatingCard.vue'
 import { persistentTaskCards, mountedTaskCards, openTaskWorkbenches, verifiedTaskCards, taskCardBelongsToPage, openPersistentTaskCard, refreshPersistentTaskCards, dismissPersistentTaskCard } from '../../composables/usePersistentTaskCards'
 import WorkbenchBackgroundCard from './WorkbenchBackgroundCard.vue'
 import { useBackgroundWorkbenchManager } from '../../composables/useBackgroundWorkbenchManager'
+import { applyPersistentTransferEvent } from '../../composables/usePersistentTaskCards'
+import { useRealtimeEvents } from '../../composables/useRealtimeEvents'
 
 const manager = useBackgroundWorkbenchManager()
 const route = useRoute()
+const realtime = useRealtimeEvents()
+const handleTransferEvent = event => applyPersistentTransferEvent(event.detail)
 
 const persistentCards = computed(() => Object.values(persistentTaskCards).filter(card => !card.dismissed && taskCardBelongsToPage(card, route.path) && verifiedTaskCards.has(card.id) && !mountedTaskCards.has(card.id) && !openTaskWorkbenches.has(`${card.route}:${card.props.taskSource}`)))
 function handlePersistentAction(id, action) {
@@ -37,13 +41,25 @@ function handlePersistentAction(id, action) {
 }
 let refreshTimer
 let refreshing = false
-async function refreshCards() {
-  if (refreshing) return
+let refreshQueued = false
+async function refreshCards(includeTransfers = true) {
+  if (refreshing) { refreshQueued ||= includeTransfers; return }
   refreshing = true
-  try { await refreshPersistentTaskCards() } finally { refreshing = false }
+  try { await refreshPersistentTaskCards({ includeTransfers }) } finally {
+    refreshing = false
+    if (refreshQueued) { refreshQueued = false; void refreshCards() }
+  }
 }
-onMounted(() => { refreshCards(); refreshTimer = setInterval(refreshCards, 5000) })
-onBeforeUnmount(() => clearInterval(refreshTimer))
+watch(realtime.connected, connected => { if (connected) void refreshCards() })
+onMounted(() => {
+  window.addEventListener('kikoerumanager:events:message', handleTransferEvent)
+  refreshCards()
+  refreshTimer = setInterval(() => refreshCards(false), 5000)
+})
+onBeforeUnmount(() => {
+  clearInterval(refreshTimer)
+  window.removeEventListener('kikoerumanager:events:message', handleTransferEvent)
+})
 const backgroundCards = computed(() => manager.backgroundCards.value.filter((workbench) => {
   if (workbench.id === 'subtitle-import-workbench') {
     return route.path === '/subtitle-import'

@@ -1,6 +1,10 @@
 import { reactive, watch, onBeforeUnmount, onActivated, onDeactivated } from 'vue'
 import { asmrSyncApi, httpDownloadApi, baiduNetdiskApi, localUploadApi, rjSubtitleApi } from '../api'
 import { getMatchingDownloadSummary, formatDownloadSummary, getDownloadBatchPercent } from '../utils/downloadProgress.js'
+import { getTransferCardProgress } from '../utils/transferCardProgress.js'
+import { patchTransferTaskEvent, mergeTransferTaskSnapshot } from '../utils/transferTaskEvent.js'
+import { normalizeTaskCenterRealtimePayloads } from './taskCenterEventUtils.js'
+import { useRealtimeEvents } from './useRealtimeEvents.js'
 
 const STORAGE = 'kikoerumanager.ui.persistentTaskCards'
 function read() {
@@ -11,6 +15,7 @@ export const mountedTaskCards = reactive(new Set())
 export const openTaskWorkbenches = reactive(new Set())
 export const verifiedTaskCards = reactive(new Set())
 const workbenchOpeners = new Map()
+const transferSnapshots = new Map()
 export const TASK_CARD_RETENTION_MS = 60_000
 const autoDismissStatuses = new Set(['completed', 'success', 'succeeded', 'cancelled', 'canceled', 'superseded'])
 const failedStatuses = new Set(['failed', 'partial_failed'])
@@ -24,6 +29,7 @@ export function dismissPersistentTaskCard(id) {
   const card = persistentTaskCards[id]
   if (!card) return
   card.dismissed = true
+  transferSnapshots.delete(id)
   verifiedTaskCards.delete(id)
   saveTaskCards()
 }
@@ -90,6 +96,29 @@ export function usePersistentTaskWorkbench(route, source, ids, visible, backgrou
     sync()
   }
   workbenchOpeners.set(owner, open)
+  if (['upload', 'asmr'].includes(source) && options.tasks) {
+    const handleTransfer = event => {
+      let terminalChanged = false
+      for (const payload of normalizeTaskCenterRealtimePayloads(event.detail || {})) {
+        if (payload.type !== 'task_center_changed') continue
+        let changed = false
+        const tasks = options.tasks.value.map(task => {
+          const next = patchTransferTaskEvent(task, payload)
+          if (next !== task) changed = true
+          if (next !== task && next.status !== task.status && ['completed', 'failed', 'cancelled'].includes(next.status)) terminalChanged = true
+          return next
+        })
+        if (changed) options.tasks.value = tasks
+      }
+      if (terminalChanged) void refresh({ silent: true })
+    }
+    if (options.consumeEvents !== false) window.addEventListener('kikoerumanager:events:message', handleTransfer)
+    const realtime = useRealtimeEvents()
+    watch(realtime.connected, connected => {
+      if (connected && ids.value.length) void refresh({ silent: true })
+    })
+    onBeforeUnmount(() => window.removeEventListener('kikoerumanager:events:message', handleTransfer))
+  }
   let active = true
   const sync = () => {
     if (active && visible.value) openTaskWorkbenches.add(owner)
@@ -100,10 +129,12 @@ export function usePersistentTaskWorkbench(route, source, ids, visible, backgrou
     const tasks = options.tasks.value || []
     const kind = source === 'upload' ? 'upload' : source === 'subtitle' ? 'subtitle' : source === 'asmr' && routePath === '/asmr-sync' ? 'asmr' : 'download'
     const id = options.id || `${routePath}:${source}:${kind}`
+    if (['upload', 'asmr'].includes(source)) transferSnapshots.set(id, tasks)
     // 页面初始化时任务 ID 尚未恢复，不能提前删除待校验的快照。
     if (!ids.value.length) return
     if (!tasks.length) return
-    rememberTaskCard(id, { kind, title: options.title || (kind === 'upload' ? '上传任务' : kind === 'subtitle' ? '字幕任务' : '下载任务'), percentage: tasks.reduce((n, task) => n + (Number(task.progress) || 0), 0) / tasks.length, ...options.cardProps?.value, taskSource: source, taskIds: ids.value.map(String), positionKey: id }, routePath)
+    const transfer = ['upload', 'asmr'].includes(source) ? getTransferCardProgress(tasks, source === 'upload' ? 'upload' : 'download') : {}
+    rememberTaskCard(id, { kind, title: options.title || (kind === 'upload' ? '上传任务' : kind === 'subtitle' ? '字幕任务' : '下载任务'), percentage: tasks.reduce((n, task) => n + (Number(task.progress) || 0), 0) / tasks.length, ...options.cardProps?.value, ...transfer, taskSource: source, taskIds: ids.value.map(String), positionKey: id }, routePath)
     updateTaskCardState(persistentTaskCards[id], tasks)
     expirePersistentTaskCards()
     saveTaskCards()
@@ -126,12 +157,13 @@ export function rememberTaskCard(id, props, route) {
   if (!persistentTaskCards[id].dismissed) verifiedTaskCards.add(id)
   saveTaskCards()
 }
-export async function refreshPersistentTaskCards() {
+export async function refreshPersistentTaskCards({ includeTransfers = true } = {}) {
   expirePersistentTaskCards()
   const groups = new Map()
   for (const card of Object.values(persistentTaskCards)) {
     if (mountedTaskCards.has(card.id)) continue
     const source = card.props.taskSource
+    if (!includeTransfers && ['upload', 'asmr'].includes(source)) continue
     // 下载统计按批次返回，多个小窗不能共用合并后的一份总计。
     const groupKey = ['http', 'baidu'].includes(source)
       ? JSON.stringify([source, [...card.props.taskIds].sort(), [...(card.props.batchTaskIds || card.props.taskIds.slice(0, 1))].sort(), card.props.batchStartedAt || ''])
@@ -159,7 +191,12 @@ export async function refreshPersistentTaskCards() {
         card.props.taskIds = [...summary.task_ids]
         card.props.batchStartedAt = result.batch_started_at
       }
-      const tasks = result.tasks.filter(task => card.props.taskIds.includes(String(task.id)))
+      let tasks = result.tasks.filter(task => card.props.taskIds.includes(String(task.id)))
+      if (['upload', 'asmr'].includes(source)) {
+        const previous = new Map((transferSnapshots.get(card.id) || []).map(task => [String(task.id), task]))
+        tasks = tasks.map(task => mergeTransferTaskSnapshot(previous.get(String(task.id)), task))
+      }
+      if (['upload', 'asmr'].includes(source)) transferSnapshots.set(card.id, tasks)
       const completeSnapshot = ['asmr', 'upload', 'subtitle'].includes(source) || Number(result.total_tasks) <= result.tasks.length
       if (!tasks.length) {
         if (completeSnapshot) { delete persistentTaskCards[card.id]; verifiedTaskCards.delete(card.id) }
@@ -176,10 +213,41 @@ export async function refreshPersistentTaskCards() {
       if (summary) {
         Object.assign(card.props, formatDownloadSummary(summary), { sampledAt: summary.sampled_at })
       }
+      if (['upload', 'asmr'].includes(source)) {
+        Object.assign(card.props, getTransferCardProgress(tasks, source === 'upload' ? 'upload' : 'download'))
+      }
       card.props.subtitle = active.work_title || active.folder_name || active.rjcode || card.props.subtitle
       card.props.detailText = active.failure_reason || active.error_message || active.current_step || active.status_label || ''
       card.props.metrics = ['processing', 'pending', 'paused', 'completed', 'failed', 'partial_failed', 'cancelled'].map(key => ({ key, label: { processing: '进行中', pending: '等待', paused: '暂停', completed: '完成', failed: '失败', partial_failed: '部分失败', cancelled: '已取消' }[key], tone: failedStatuses.has(key) ? 'danger' : key, value: tasks.filter(task => taskStatus(task) === key || (key === 'cancelled' && taskStatus(task) === 'canceled')).length }))
     }
     saveTaskCards()
   }))
+}
+
+export function applyPersistentTransferEvent(detail) {
+  const events = normalizeTaskCenterRealtimePayloads(detail).filter(event => event.type === 'task_center_changed')
+  if (!events.length) return
+  let changed = false
+  for (const card of Object.values(persistentTaskCards)) {
+    if (!['upload', 'asmr'].includes(card.props.taskSource) || mountedTaskCards.has(card.id)) continue
+    const previous = transferSnapshots.get(card.id)
+    if (!previous) continue
+    let tasks = previous
+    for (const event of events) tasks = tasks.map(task => patchTransferTaskEvent(task, event))
+    if (tasks.every((task, index) => task === previous[index])) continue
+    changed = true
+    transferSnapshots.set(card.id, tasks)
+    Object.assign(card.props, getTransferCardProgress(tasks, card.props.taskSource === 'upload' ? 'upload' : 'download'))
+    updateTaskCardState(card, tasks)
+    const active = tasks.find(task => failedStatuses.has(taskStatus(task))) || tasks.find(task => !autoDismissStatuses.has(taskStatus(task))) || tasks[0]
+    card.props.detailText = active.failure_reason || active.error_message || active.current_step || ''
+    card.props.metrics = ['processing', 'pending', 'paused', 'completed', 'failed', 'partial_failed', 'cancelled'].map(key => ({
+      key, label: { processing: '进行中', pending: '等待', paused: '暂停', completed: '完成', failed: '失败', partial_failed: '部分失败', cancelled: '已取消' }[key],
+      value: tasks.filter(task => taskStatus(task) === key).length
+    }))
+  }
+  if (changed) {
+    expirePersistentTaskCards()
+    saveTaskCards()
+  }
 }

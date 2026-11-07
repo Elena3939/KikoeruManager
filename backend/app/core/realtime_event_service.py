@@ -49,7 +49,7 @@ def sse_unsubscribe(sid: int) -> None:
         _subscribers.pop(sid, None)
 
 
-def broadcast_event(event: dict[str, Any]) -> None:
+def broadcast_event(event: dict[str, Any], *, require_persistence: bool = False) -> None:
     if not event:
         return
     try:
@@ -57,14 +57,30 @@ def broadcast_event(event: dict[str, Any]) -> None:
         if not payload["type"]:
             return
     except Exception:
+        if require_persistence:
+            raise
         logger.debug("实时事件标准化失败", exc_info=True)
         return
 
     try:
         from .redis_service import get_redis_service
 
-        get_redis_service().write_realtime_event_sync(payload)
+        redis = get_redis_service()
+        if require_persistence:
+            # outbox 只有真正写入 Redis Stream 才允许 ACK，不能落入进程内 buffer。
+            client = redis.client(required=True)
+            if client is None:
+                raise RuntimeError("实时事件持久化需要 Redis")
+            from .redis_service import _json_dumps
+            result = client.xadd(redis.stream_key("events:stream"), {"payload": _json_dumps(payload)},
+                                 maxlen=10000, approximate=True)
+            if not result:
+                raise RuntimeError("Redis 未确认实时事件写入")
+        else:
+            redis.write_realtime_event_sync(payload)
     except Exception:
+        if require_persistence:
+            raise
         logger.debug("[Redis] 写入统一实时事件流失败", exc_info=True)
 
     with _subscribers_lock:

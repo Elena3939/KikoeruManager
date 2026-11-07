@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
+import StatefulButton from '../ui/stateful-button.vue'
 import { ElMessage } from 'element-plus'
 import {
   AlertTriangle,
@@ -9,15 +10,19 @@ import {
   CirclePause,
   CirclePlay,
   Copy,
+  FileText,
+  Files,
   Info,
   RotateCcw,
   Terminal,
   Trash2,
   Wifi,
   WifiOff,
+  X,
 } from 'lucide-vue-next'
 
 const props = defineProps({
+  copyTask: { type: Function, default: null },
   title: { type: String, default: 'system.log' },
   subtitle: { type: String, default: 'kikoerumanager - system stream' },
   lines: { type: Array, default: () => [] },
@@ -30,19 +35,26 @@ const props = defineProps({
   autoScrollEnabled: { type: Boolean, default: null },
 })
 
-const emit = defineEmits(['clear', 'reconnect', 'update:autoScrollEnabled', 'follow-change'])
+const emit = defineEmits(['clear', 'reconnect', 'update:autoScrollEnabled', 'follow-change', 'load-before', 'copy-task', 'line-expand', 'noise-expand'])
 
 const scrollRef = ref(null)
 const localAutoScroll = ref(props.autoScrollDefault)
 const autoScroll = computed(() => props.autoScrollEnabled ?? localAutoScroll.value)
 const userPinnedHistory = ref(false)
-const expandedLineKey = ref(null)
+const expandedLineKeys = ref(new Set())
+const selectedKeys = ref(new Set())
+const timelines = ref(new Map())
+const measuredHeights = new Map()
+const highlightedKey = ref('')
+let selectionAnchor = null
+let highlightTimer = null
 
 let autoScrollRaf = 0
 let resizeObserver = null
 let lastScrollTop = 0
 let touchY = null
 let scrollbarDragging = false
+let historyLoadPending = false
 
 const safeLines = computed(() => Array.isArray(props.lines) ? props.lines : [])
 const lineCount = computed(() => safeLines.value.length)
@@ -69,17 +81,34 @@ const statusMeta = computed(() => {
   return { label: '未连接', className: 'is-idle', icon: WifiOff }
 })
 
-const rowVirtualizer = useVirtualizer(computed(() => ({
-  count: lineCount.value,
-  getItemKey: (index) => lineKey(safeLines.value[index], index),
-  getScrollElement: () => scrollRef.value,
-  estimateSize: estimateLineSize,
-  measureElement: (element) => element?.getBoundingClientRect().height || 32,
-  overscan: 12,
-})))
+const rowVirtualizer = useVirtualizer(computed(() => {
+  // 滑动窗口条数不变时，记录身份仍会变化，必须使虚拟列表刷新 key 缓存。
+  const lines = safeLines.value
+  const keys = lines.map(lineKey)
+  const expanded = expandedLineKeys.value
+  return {
+    count: lines.length,
+    getItemKey: (index) => keys[index],
+    getScrollElement: () => scrollRef.value,
+    // 批量估高时直接读当前快照，避免每行重复访问响应式数组和计算属性。
+    estimateSize: (index) => measuredHeights.get(keys[index])
+      ?? (expanded.has(keys[index]) ? estimateExpandedLineSize(lines[index]) : 32),
+    measureElement: (element, entry) => {
+      // 使用观察器已计算的尺寸，避免逐行 ref 回调交错读写触发同步布局。
+      const height = entry?.borderBoxSize?.[0]?.blockSize
+        || measuredHeights.get(element?.dataset.lineKey) || 32
+      if (element?.dataset.lineKey) measuredHeights.set(element.dataset.lineKey, height)
+      return height
+    },
+    overscan: 12,
+  }
+}))
 
-// 底部跟随统一由本组件调度，禁止测高补偿在暂停或阅读历史时改写滚动位置。
-rowVirtualizer.value.shouldAdjustScrollPositionOnItemSizeChange = () => false
+// 只补偿视口上方的行；下方测高不会抢走用户正在阅读的位置。
+rowVirtualizer.value.shouldAdjustScrollPositionOnItemSizeChange = (item) => {
+  const element = scrollRef.value
+  return Boolean(element && item?.start < element.scrollTop)
+}
 
 const virtualRows = computed(() => rowVirtualizer.value.getVirtualItems())
 const totalSize = computed(() => rowVirtualizer.value.getTotalSize())
@@ -109,6 +138,8 @@ function isTaskProgressLine(line) {
   return String(line?.kind || '') === 'task-progress' && hasProgress(line)
 }
 
+const timeFormatter = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+
 function formatTime(value) {
   if (!value) return '--:--:--'
   const date = new Date(value)
@@ -116,7 +147,7 @@ function formatTime(value) {
     const text = String(value)
     return text.length > 8 ? text.slice(11, 19) || text.slice(0, 8) : text
   }
-  return date.toLocaleTimeString('zh-CN', { hour12: false })
+  return timeFormatter.format(date)
 }
 
 function normalizeLevel(value) {
@@ -202,7 +233,7 @@ function lineKey(line, index) {
 }
 
 function isLineExpanded(line, index) {
-  return Boolean(expandedLineKey.value && expandedLineKey.value === lineKey(line, index))
+  return expandedLineKeys.value.has(lineKey(line, index))
 }
 
 function estimateExpandedLineSize(line) {
@@ -214,13 +245,6 @@ function estimateExpandedLineSize(line) {
     .split(/\r\n|\n|\r/)
     .reduce((sum, segment) => sum + Math.max(1, Math.ceil(segment.length / charsPerRow)), 0)
   return Math.max(54, 18 + visualLineCount * 18)
-}
-
-function estimateLineSize(index) {
-  const line = safeLines.value[index]
-  if (isTaskProgressLine(line)) return 62
-  if (isLineExpanded(line, index)) return estimateExpandedLineSize(line)
-  return 32
 }
 
 function lineText(line, preferFull = false) {
@@ -252,7 +276,7 @@ async function copyLogs() {
 }
 
 async function copyLine(line) {
-  const text = lineText(line, true)
+  const text = line.rawLine || lineText(line, true)
   if (!text) return
   try {
     await navigator.clipboard.writeText(text)
@@ -270,24 +294,55 @@ function handleLineCopy(event, line) {
 
 function toggleLineDetail(line, index, event) {
   if (!line) return
-  if (isLineTruncated(line)) {
-    void copyLine(line)
-    return
-  }
+  if (line.kind === 'noise-group') { emit('noise-expand', line); return }
   const key = lineKey(line, index)
-  if (expandedLineKey.value === key) {
-    expandedLineKey.value = null
-    nextTick(() => rowVirtualizer.value.measure())
-    return
-  }
-  const row = event?.currentTarget
-  if (!isLineTruncated(line) && !hasHiddenOriginalDetail(line) && !isTerminalRowClipped(row)) return
-  expandedLineKey.value = key
+  const selected = event?.ctrlKey || event?.metaKey || event?.shiftKey ? new Set(selectedKeys.value) : new Set()
+  if (event?.shiftKey && selectionAnchor !== null) {
+    const anchor = safeLines.value.findIndex((row, i) => lineKey(row, i) === selectionAnchor)
+    for (let i = anchor < 0 ? index : Math.min(anchor, index); i <= Math.max(anchor, index); i++) selected.add(lineKey(safeLines.value[i], i))
+  } else if (selected.has(key)) selected.delete(key)
+  else selected.add(key)
+  selectedKeys.value = selected
+  selectionAnchor = key
+  if (event?.shiftKey || event?.ctrlKey || event?.metaKey) return
+  const expanded = new Set(expandedLineKeys.value)
+  if (expanded.has(key)) expanded.delete(key)
+  else { expanded.add(key); emit('line-expand', line) }
+  measuredHeights.delete(key)
+  expandedLineKeys.value = expanded
+}
+
+function collapseAll() {
+  expandedLineKeys.value = new Set()
+  measuredHeights.clear()
+}
+
+async function copySelected(withTime = true) {
+  const rows = safeLines.value.filter((row, index) => selectedKeys.value.has(lineKey(row, index)))
+  try {
+    await navigator.clipboard.writeText(rows.map((row) => withTime ? (row.rawLine || lineText(row, true)) : plainLogMessage(row)).join('\n'))
+    ElMessage.success(`已复制 ${rows.length} 条日志`)
+  } catch { ElMessage.error('复制失败，浏览器未授权剪贴板') }
+}
+
+function plainLogMessage(row) {
+  if (!row.rawLine) return logMessage(row, true)
+  return row.rawLine.replace(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[,.]\d+)?\s+(?:\[\w+\]\s+\S+\s+-\s*|-\s+\S+\s+-\s+\w+\s+-\s*)/, '')
+}
+
+const selectedTaskId = computed(() => {
+  const row = safeLines.value.find((row, index) => selectedKeys.value.has(lineKey(row, index)))
+  return row?.taskId || row?.taskProgress?.taskId || ''
+})
+
+function setTimeline(key, text) {
+  timelines.value = new Map(timelines.value).set(key, text)
+  measuredHeights.delete(key)
   nextTick(() => rowVirtualizer.value.measure())
 }
 
 function visibleLineMessage(line, index) {
-  if (isLineExpanded(line, index)) return originalLogMessage(line)
+  if (isLineExpanded(line, index)) return timelines.value.get(lineKey(line, index)) || originalLogMessage(line)
   const message = logMessage(line)
   return message
 }
@@ -339,10 +394,56 @@ function handleScroll() {
   const movedUp = el.scrollTop < lastScrollTop
   lastScrollTop = el.scrollTop
   const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+  const followThreshold = 64 // 普通日志约 32px/行，底部两行以内才跟随
   if (movedUp || (!autoScrollRaf && !scrollbarDragging)) {
-    userPinnedHistory.value = distance > 2
+    userPinnedHistory.value = distance > followThreshold
+  }
+  if (el.scrollTop <= 200 && !historyLoadPending && lineCount.value) {
+    const first = safeLines.value[0]
+    historyLoadPending = true
+    emit('load-before', {
+      file: first?.file || 'app.log',
+      anchorOffset: Number(first?.offset || 0),
+      done: () => { historyLoadPending = false },
+    })
   }
 }
+
+function captureScrollState() {
+  const el = scrollRef.value
+  if (!el) return null
+  const item = rowVirtualizer.value.getVirtualItems().find((row) => row.end > el.scrollTop)
+  const end = rowVirtualizer.value.getVirtualItems().find((row) => row.end >= el.scrollTop + el.clientHeight)
+  return { key: item?.key, endKey: end?.key, offset: item ? el.scrollTop - item.start : 0, scrollTop: el.scrollTop }
+}
+
+function restoreScrollState(state) {
+  const el = scrollRef.value
+  if (!el || !state) return
+  const index = safeLines.value.findIndex((row, i) => lineKey(row, i) === state.key)
+  if (index >= 0) {
+    const position = rowVirtualizer.value.getOffsetForIndex(index, 'start')
+    el.scrollTop = Math.max(0, (position?.[0] || 0) + state.offset)
+  } else el.scrollTop = state.scrollTop
+  lastScrollTop = el.scrollTop
+  historyLoadPending = false
+}
+
+function followBottom() {
+  userPinnedHistory.value = false
+  scrollToBottom()
+}
+
+function jumpToKey(key) {
+  userPinnedHistory.value = true
+  const index = safeLines.value.findIndex((row, i) => lineKey(row, i) === key)
+  if (index >= 0) rowVirtualizer.value.scrollToIndex(index, { align: 'center' })
+  highlightedKey.value = key
+  clearTimeout(highlightTimer)
+  highlightTimer = setTimeout(() => { highlightedKey.value = '' }, 4000)
+}
+
+defineExpose({ captureScrollState, restoreScrollState, followBottom, jumpToKey, setTimeline })
 
 function pinHistory() {
   const el = scrollRef.value
@@ -420,15 +521,18 @@ watch(autoScroll, (enabled) => {
 }, { flush: 'sync' })
 
 watch(() => props.lines, () => {
-  if (expandedLineKey.value && !safeLines.value.some((line, index) => lineKey(line, index) === expandedLineKey.value)) {
-    expandedLineKey.value = null
-  }
+  const keys = new Set(safeLines.value.map((line, index) => lineKey(line, index)))
+  for (const key of measuredHeights.keys()) if (!keys.has(key)) measuredHeights.delete(key)
+  for (const key of timelines.value.keys()) if (!keys.has(key)) timelines.value.delete(key)
+  selectedKeys.value = new Set([...selectedKeys.value].filter((key) => keys.has(key)))
+  const expanded = [...expandedLineKeys.value].filter((key) => keys.has(key))
+  if (expanded.length !== expandedLineKeys.value.size) expandedLineKeys.value = new Set(expanded)
   scrollToBottom()
 }, { flush: 'post' })
 
 watch(totalSize, scrollToBottom, { flush: 'post' })
 
-watch(expandedLineKey, () => {
+watch(expandedLineKeys, () => {
   nextTick(() => {
     rowVirtualizer.value.measure()
   })
@@ -442,7 +546,7 @@ onMounted(() => {
   resizeObserver = new ResizeObserver(() => {
     nextTick(() => {
       rowVirtualizer.value.measure()
-      scrollToBottom()
+      if (!userPinnedHistory.value) scrollToBottom()
     })
   })
   resizeObserver.observe(scrollRef.value)
@@ -455,6 +559,7 @@ onBeforeUnmount(() => {
     window.cancelAnimationFrame(autoScrollRaf)
     autoScrollRaf = 0
   }
+  clearTimeout(highlightTimer)
   resizeObserver?.disconnect()
   resizeObserver = null
 })
@@ -475,6 +580,7 @@ onBeforeUnmount(() => {
           <span v-if="isFinished" class="terminal-finished">finished</span>
         </div>
         <div class="terminal-actions">
+          <button v-if="expandedLineKeys.size" class="terminal-icon-button" title="全部折叠" @click="collapseAll"><RotateCcw :size="14" /></button>
           <button
             type="button"
             class="terminal-icon-button"
@@ -483,9 +589,9 @@ onBeforeUnmount(() => {
           >
             <component :is="autoScroll ? CirclePause : CirclePlay" :size="14" :stroke-width="2.35" />
           </button>
-          <button type="button" class="terminal-icon-button" title="复制日志" @click="copyLogs">
+          <StatefulButton unstyled class="terminal-icon-button" title="复制日志" @click="copyLogs">
             <Copy :size="14" :stroke-width="2.35" />
-          </button>
+          </StatefulButton>
           <button type="button" class="terminal-icon-button" title="清空当前显示" @click="clearLogs">
             <Trash2 :size="14" :stroke-width="2.35" />
           </button>
@@ -503,6 +609,8 @@ onBeforeUnmount(() => {
         </span>
       </div>
 
+      <div class="terminal-body">
+      <slot name="body-overlay" />
       <div
         ref="scrollRef"
         class="terminal-scroll"
@@ -535,15 +643,18 @@ onBeforeUnmount(() => {
                 'has-inline-progress': hasProgress(safeLines[virtualRow.index]) && !isTaskProgressLine(safeLines[virtualRow.index]),
                 'is-task-progress': isTaskProgressLine(safeLines[virtualRow.index]),
                 'is-truncated': isLineTruncated(safeLines[virtualRow.index]),
-                'can-toggle-detail': !isTaskProgressLine(safeLines[virtualRow.index]),
+                'can-toggle-detail': true,
+                'is-selected': selectedKeys.has(String(virtualRow.key)),
+                'is-search-target': highlightedKey === String(virtualRow.key),
                 'is-expanded': isLineExpanded(safeLines[virtualRow.index], virtualRow.index),
               },
             ]"
             :style="{
-              minHeight: `${virtualRow.size}px`,
+              minHeight: '32px',
               transform: `translate3d(0, ${virtualRow.start}px, 0)`,
             }"
-            @click="!isTaskProgressLine(safeLines[virtualRow.index]) && toggleLineDetail(safeLines[virtualRow.index], virtualRow.index, $event)"
+            @contextmenu.prevent="safeLines[virtualRow.index]?.taskId && $emit('copy-task', safeLines[virtualRow.index].taskId)"
+            @click="toggleLineDetail(safeLines[virtualRow.index], virtualRow.index, $event)"
           >
             <span class="terminal-time">{{ formatTime(safeLines[virtualRow.index]?.time) }}</span>
             <span class="terminal-level">
@@ -553,35 +664,8 @@ onBeforeUnmount(() => {
             <span class="terminal-source">{{ safeLines[virtualRow.index]?.source || 'system' }}</span>
             <span v-if="hasProgress(safeLines[virtualRow.index]) && !isTaskProgressLine(safeLines[virtualRow.index])" class="terminal-progress">{{ safeLines[virtualRow.index]?.progress }}%</span>
             <span
-              v-if="isTaskProgressLine(safeLines[virtualRow.index])"
-              class="terminal-message terminal-inline-progress"
-              :title="logMessage(safeLines[virtualRow.index]) || '处理中'"
-            >
-              <span class="terminal-inline-progress-head">
-                <span class="terminal-inline-progress-title">
-                  <template v-for="(part, partIndex) in highlightedTextParts(safeLines[virtualRow.index]?.taskProgress?.title || '处理中')" :key="`progress-title-${virtualRow.key}-${partIndex}`">
-                    <mark v-if="part.highlighted" class="terminal-search-highlight">{{ part.value }}</mark>
-                    <template v-else>{{ part.value }}</template>
-                  </template>
-                </span>
-                <span class="terminal-inline-progress-state">
-                  {{ progressToneLabel(safeLines[virtualRow.index]?.taskProgress?.tone) }} · 持续 {{ safeLines[virtualRow.index]?.taskProgress?.durationLabel || '00:00:00' }} · {{ clampProgress(safeLines[virtualRow.index]?.progress) }}%
-                </span>
-              </span>
-              <span class="terminal-inline-progress-bar" :style="{ '--inline-progress': `${clampProgress(safeLines[virtualRow.index]?.progress)}%` }">
-                <span />
-              </span>
-              <span class="terminal-inline-progress-detail">
-                <template v-for="(part, partIndex) in highlightedTextParts(logMessage(safeLines[virtualRow.index]) || '处理中')" :key="`progress-detail-${virtualRow.key}-${partIndex}`">
-                  <mark v-if="part.highlighted" class="terminal-search-highlight">{{ part.value }}</mark>
-                  <template v-else>{{ part.value }}</template>
-                </template>
-              </span>
-            </span>
-            <span
-              v-else
               class="terminal-message"
-              :title="isLineTruncated(safeLines[virtualRow.index]) ? '点击复制完整日志' : isLineExpanded(safeLines[virtualRow.index], virtualRow.index) ? '点击收起原始日志' : '点击查看原始日志'"
+              :title="isLineTruncated(safeLines[virtualRow.index]) ? '点击展开完整日志' : isLineExpanded(safeLines[virtualRow.index], virtualRow.index) ? '点击收起原始日志' : '点击查看原始日志'"
               @copy="handleLineCopy($event, safeLines[virtualRow.index])"
             >
               <span class="terminal-message-text">
@@ -603,10 +687,18 @@ onBeforeUnmount(() => {
                 </template>
               </span>
             </span>
+            <StatefulButton unstyled class="terminal-row-copy terminal-icon-button" title="复制完整日志" @click.stop="() => copyLine(safeLines[virtualRow.index])"><Copy :size="13" /></StatefulButton>
           </div>
         </div>
       </div>
-
+      </div>
+      <div v-if="selectedKeys.size" class="terminal-selection-bar" role="toolbar" aria-label="日志选择操作">
+        <span class="terminal-selection-count">已选 {{ selectedKeys.size }} 条</span>
+        <StatefulButton unstyled class="terminal-selection-action" title="复制选中日志（带时间）" aria-label="复制选中日志（带时间）" @click="() => copySelected(true)"><Copy :size="13" />复制</StatefulButton>
+        <StatefulButton unstyled class="terminal-selection-action" title="复制选中日志为纯文本" aria-label="复制选中日志为纯文本" @click="() => copySelected(false)"><FileText :size="13" />纯文本</StatefulButton>
+        <StatefulButton unstyled v-if="selectedTaskId" class="terminal-selection-action is-icon" title="复制本任务全部日志" aria-label="复制本任务全部日志" @click="() => copyTask ? copyTask(selectedTaskId) : $emit('copy-task', selectedTaskId)"><Files :size="13" /></StatefulButton>
+        <button type="button" class="terminal-selection-action is-icon terminal-selection-clear" title="清除选择" aria-label="清除选择" @click="selectedKeys = new Set()"><X :size="14" /></button>
+      </div>
       <div class="terminal-footer">
         <span>{{ subtitle }}</span>
         <span v-if="errorMessage" class="terminal-error">{{ errorMessage }}</span>
@@ -622,6 +714,8 @@ onBeforeUnmount(() => {
   min-width: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
+
+.terminal-body { position: relative; min-width: 0; }
 
 .terminal-window {
   overflow: hidden;
@@ -936,126 +1030,6 @@ onBeforeUnmount(() => {
   grid-column: auto;
 }
 
-.terminal-line.is-task-progress {
-  min-height: 62px;
-  background: rgba(14, 20, 25, 0.72);
-}
-
-.terminal-line.is-task-progress:hover {
-  background: rgba(20, 29, 36, 0.82);
-}
-
-.terminal-inline-progress {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: stretch;
-  gap: 5px;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.terminal-inline-progress-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-width: 0;
-}
-
-.terminal-inline-progress-title,
-.terminal-inline-progress-state,
-.terminal-inline-progress-detail {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.terminal-inline-progress-title {
-  color: #e5e7eb;
-  font-size: 11.5px;
-  font-weight: 900;
-}
-
-.terminal-inline-progress-state {
-  color: #71717a;
-  font-size: 10.5px;
-  font-weight: 800;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.terminal-inline-progress-detail {
-  color: #a1a1aa;
-  font-size: 11px;
-  line-height: 1.25;
-}
-
-.terminal-inline-progress-bar {
-  position: relative;
-  overflow: hidden;
-  height: 7px;
-  border-radius: 999px;
-  background: rgba(63, 63, 70, 0.72);
-}
-
-.terminal-inline-progress-bar span {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: var(--inline-progress, 0%);
-  min-width: 8px;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #22d3ee, #34d399);
-  box-shadow: 0 0 16px rgba(34, 211, 238, 0.22);
-  transition: width 0.25s linear;
-}
-
-.terminal-line.is-progress-processing .terminal-inline-progress-bar span::after,
-.terminal-line.is-progress-waiting .terminal-inline-progress-bar span::after {
-  position: absolute;
-  inset: 0;
-  content: "";
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
-  animation: terminal-progress-sheen 1.1s linear infinite;
-}
-
-.terminal-line.is-progress-success .terminal-progress,
-.terminal-line.is-progress-success .terminal-inline-progress-title {
-  color: #86efac;
-}
-
-.terminal-line.is-progress-success .terminal-inline-progress-bar span {
-  background: linear-gradient(90deg, #22c55e, #86efac);
-}
-
-.terminal-line.is-progress-error .terminal-progress,
-.terminal-line.is-progress-error .terminal-inline-progress-title {
-  color: #fda4af;
-}
-
-.terminal-line.is-progress-error .terminal-inline-progress-bar span {
-  background: linear-gradient(90deg, #fb7185, #fda4af);
-}
-
-.terminal-line.is-progress-waiting .terminal-progress,
-.terminal-line.is-progress-waiting .terminal-inline-progress-title {
-  color: #fde68a;
-}
-
-.terminal-line.is-progress-waiting .terminal-inline-progress-bar span {
-  background: linear-gradient(90deg, #f59e0b, #fde68a);
-}
-
-.terminal-line.is-progress-paused .terminal-progress,
-.terminal-line.is-progress-paused .terminal-inline-progress-title {
-  color: #c4b5fd;
-}
-
-.terminal-line.is-progress-paused .terminal-inline-progress-bar span {
-  background: linear-gradient(90deg, #8b5cf6, #c4b5fd);
-}
-
 .terminal-line.is-info .terminal-level { color: #93c5fd; }
 .terminal-line.is-success .terminal-level { color: #86efac; }
 .terminal-line.is-warning {
@@ -1164,4 +1138,69 @@ onBeforeUnmount(() => {
     display: block;
   }
 }
+
+.terminal-window { position: relative; }
+.terminal-line { padding-right: 42px; }
+.terminal-line.is-task-progress { min-height: 32px; }
+.terminal-line.is-task-progress .terminal-message-text::first-letter { color: #38bdf8; }
+.terminal-line.is-progress-success .terminal-message-text::first-letter { color: #86efac; }
+.terminal-line.is-progress-error .terminal-message-text::first-letter { color: #fda4af; }
+.terminal-line.is-selected { background: rgba(56, 189, 248, 0.14); }
+.terminal-line.is-search-target { background: rgba(250, 204, 21, 0.2); box-shadow: inset 3px 0 #facc15; }
+.terminal-row-copy { position: absolute; right: 6px; top: 2px; opacity: 0; min-width: 28px; padding: 0; }
+.terminal-line:hover .terminal-row-copy, .terminal-row-copy:focus-visible { opacity: 1; }
+.terminal-selection-bar {
+  position: absolute;
+  z-index: 4;
+  bottom: 38px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: calc(100% - 24px);
+  padding: 2px 4px;
+  border: 1px solid rgba(82, 82, 91, 0.7);
+  border-radius: 6px;
+  background: #18181b;
+  color: #d4d4d8;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  box-shadow: 0 3px 12px #0004;
+}
+.terminal-selection-count { flex-shrink: 0; padding: 0 8px 0 5px; color: #a1a1aa; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.terminal-selection-action {
+  --stateful-button-icon-size: 13px;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.terminal-selection-action :deep(.stateful-button__content) { gap: 0; }
+.terminal-selection-action :deep(.stateful-button__label) { gap: 5px; }
+.terminal-selection-action :deep(.stateful-button__state:not(.is-idle)) { margin-right: 5px; }
+.terminal-selection-action.is-icon { width: 28px; padding: 0; }
+.terminal-selection-clear { color: #a1a1aa; }
+.terminal-selection-action:hover { transform: translateY(-2px) scale(1.02); background: #ffffff0a; color: #fff; }
+.terminal-selection-action:active { transform: scale(0.96); }
+.terminal-selection-action :deep(svg) { flex-shrink: 0; transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.terminal-selection-action:hover :deep(.stateful-button__label > svg), .terminal-selection-clear:hover > svg { transform: rotate(-8deg); }
+.terminal-selection-action:disabled { cursor: default; opacity: 0.65; }
+.terminal-selection-bar button:focus, .terminal-selection-bar button:focus-visible, .terminal-row-copy:focus { outline: none; box-shadow: none; }
+@media (max-width: 640px) {
+  .terminal-selection-bar { max-width: calc(100% - 16px); }
+  .terminal-row-copy { opacity: 1; }
+}
+
 </style>

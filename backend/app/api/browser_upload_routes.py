@@ -3,7 +3,7 @@ import asyncio
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import Literal
-from ..core.browser_upload_service import get_browser_upload_service, UploadStopped
+from ..core.browser_upload_service import get_browser_upload_service, UploadStopped, UploadRestoring
 from ..core.browser_upload_storage import CHUNK_SIZE
 
 router = APIRouter(prefix='/api/library/browser/uploads', tags=['库存浏览器上传'])
@@ -30,12 +30,15 @@ class Manifest(BaseModel):
 class Action(BaseModel):
     action: Literal['pause', 'resume', 'cancel', 'retry', 'conflict', 'receive_failed', 'enumeration_failed']
     file_id: str | None = None
+    file_ids: list[str] | None = Field(default=None, max_length=100)
     decision: Literal['skip', 'replace', 'keep_both'] | None = None
     apply_all: bool = False
     reason: str | None = Field(default=None, max_length=2000)
 
 
 def error(exc):
+    if isinstance(exc, UploadRestoring):
+        return HTTPException(503, detail=str(exc), headers={'Retry-After': '2'})
     code = 404 if isinstance(exc, KeyError) else 403 if isinstance(exc, PermissionError) else 409 if isinstance(exc, UploadStopped) else 507 if isinstance(exc, OSError) else 400
     return HTTPException(code, detail=str(exc))
 
@@ -44,7 +47,7 @@ def session(sid, token):
     try:
         service = get_browser_upload_service()
         return service, service.get(sid, token)
-    except (KeyError, PermissionError) as exc:
+    except (KeyError, PermissionError, UploadRestoring) as exc:
         raise error(exc) from exc
 
 
@@ -112,7 +115,8 @@ async def chunk(sid: str, fid: str, request: Request, offset: int,
                 data.extend(block)
             return await service.chunk(state, file, offset, data, x_chunk_sha256)
     except (ValueError, PermissionError, UploadStopped, OSError) as exc:
-        file.update(reason=str(exc), stage='上传接收', retryable=True)
+        if file['status'] == 'receiving':
+            file.update(reason=str(exc), stage='上传接收', retryable=True)
         raise error(exc) from exc
 
 

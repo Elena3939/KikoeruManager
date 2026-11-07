@@ -40,7 +40,7 @@ import traceback
 from types import SimpleNamespace
 import uuid
 import yaml
-from ..core.request_performance import request_metrics, run_sync_stage
+from ..core.request_performance import measure_stage, request_metrics, run_sync_stage, uncovered_ms
 from .browser_verification_routes import router as browser_verification_router
 
 # Create logger instance
@@ -201,7 +201,7 @@ def _get_log_search_executor() -> concurrent.futures.ThreadPoolExecutor:
     global _LOG_SEARCH_EXECUTOR
     with _LOG_IO_EXECUTOR_LOCK:
         if _LOG_SEARCH_EXECUTOR is None:
-            workers = int(os.environ.get("KIKOERUMANAGER_LOG_SEARCH_WORKERS", "1") or 1)
+            workers = int(os.environ.get("KIKOERUMANAGER_LOG_SEARCH_WORKERS", "2") or 2)
             _LOG_SEARCH_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
                 max_workers=max(1, min(workers, 4)),
                 thread_name_prefix="system-log-search",
@@ -241,9 +241,24 @@ def _is_media_response_for_gzip(headers: Headers, status_code: int) -> bool:
 
 class MediaAwareGZipResponder(GZipResponder):
     async def _apply_compression_compat(self, body: bytes, *, more_body: bool) -> bytes:
+        started = time.perf_counter()
         compressed = self.apply_compression(body, more_body=more_body)
         if inspect.isawaitable(compressed):
             compressed = await compressed
+        metrics = request_metrics.get()
+        if metrics is not None:
+            metrics["compression_ms"] = round(
+                metrics.get("compression_ms", 0.0) + (time.perf_counter() - started) * 1000,
+                2,
+            )
+            metrics["compressed_bytes"] = metrics.get("compressed_bytes", 0) + len(compressed or b"")
+            metrics["compression_input_bytes"] = (
+                metrics.get("compression_input_bytes", 0) + len(body or b"")
+            )
+            input_bytes = metrics.get("compression_input_bytes", 0)
+            output_bytes = metrics.get("compressed_bytes", 0)
+            if input_bytes:
+                metrics["compression_ratio"] = round(output_bytes / input_bytes, 4)
         return compressed
 
     async def send_with_compression(self, message):
@@ -275,6 +290,9 @@ class MediaAwareGZipResponder(GZipResponder):
                 headers.add_vary_header("Accept-Encoding")
                 if body != message["body"]:
                     headers["Content-Encoding"] = self.content_encoding
+                    metrics = request_metrics.get()
+                    if metrics is not None:
+                        metrics["content_encoding"] = self.content_encoding
                     headers["Content-Length"] = str(len(body))
                     message["body"] = body
 
@@ -287,6 +305,9 @@ class MediaAwareGZipResponder(GZipResponder):
                 headers.add_vary_header("Accept-Encoding")
                 if body != message["body"]:
                     headers["Content-Encoding"] = self.content_encoding
+                    metrics = request_metrics.get()
+                    if metrics is not None:
+                        metrics["content_encoding"] = self.content_encoding
                     del headers["Content-Length"]
                     message["body"] = body
 
@@ -480,6 +501,20 @@ app = FastAPI(
     description="DLsite作品整理工具API",
     version=get_app_version()
 )
+
+
+class CircleWorksJSONResponse(JSONResponse):
+    """仅记录社团作品响应的 JSON 字节编码耗时。"""
+
+    def render(self, content):
+        with measure_stage("response_encode"):
+            body = super().render(content)
+        metrics = request_metrics.get()
+        if metrics is not None:
+            metrics["response_bytes"] = len(body)
+        return body
+
+
 app.add_middleware(MediaAwareGZipMiddleware, minimum_size=1024)
 from .browser_upload_routes import router as browser_upload_router
 app.include_router(browser_upload_router)
@@ -1155,6 +1190,23 @@ def list_activity_logs(
         )
         if not show_subactions:
             from ..core.activity_log_batch_list import list_batch_lite
+            from sqlalchemy.orm import aliased
+
+            # 同一 ASMR 会话的业务终态已承载完成结果，生命周期收尾只留在明细中。
+            # 使用索引列配对并在计数、分页前过滤；没有业务终态的旧记录仍然保留。
+            asmr_terminal = aliased(ActivityLog)
+            has_asmr_terminal = db.query(asmr_terminal.id).filter(
+                asmr_terminal.category == "asmr_sync",
+                asmr_terminal.session_key == ActivityLog.session_key,
+                asmr_terminal.action.in_(("session_completed", "session_partial_failed")),
+            ).correlate(ActivityLog).exists()
+            query = query.filter(~(
+                (ActivityLog.category == "asmr_sync")
+                & ActivityLog.action.in_(("task_finished", "task_finished_incomplete"))
+                & ActivityLog.session_key.isnot(None)
+                & (ActivityLog.session_key != "")
+                & has_asmr_terminal
+            ))
 
             payload = list_batch_lite(db, query, page=page, limit=limit, status=status, searching=bool(search_text))
             _enrich_lite_items_with_recovery(payload["items"], db)
@@ -2305,11 +2357,21 @@ async def _call_next_with_perf_log(request: Request, call_next):
     state.request_id = request_id
     started = time.perf_counter()
     metrics = {"request_id": request_id}
+    is_circle_works = (
+        request.url.path.startswith("/api/circle-completion/circles/")
+        and request.url.path.endswith("/works")
+    )
+    if is_circle_works:
+        metrics["measurement_schema"] = "circle-works-v1"
     metrics_token = request_metrics.set(metrics)
     try:
         response = await call_next(request)
     except Exception:
         elapsed = time.perf_counter() - started
+        if is_circle_works:
+            metrics["measurement_schema"] = "circle-works-v1"
+            metrics["untracked_ms"] = uncovered_ms(started, time.perf_counter(), metrics)
+            metrics.pop("_span_ranges", None)
         if request.url.path.startswith("/api/"):
             logger.exception(
                 "[API请求] 请求失败 request_id=%s method=%s path=%s status=exception elapsed_ms=%.0f query=%s context=%s resource_budget=%s stages=%s",
@@ -2328,6 +2390,11 @@ async def _call_next_with_perf_log(request: Request, call_next):
     elapsed = time.perf_counter() - started
     path = request.url.path
     status_code = int(getattr(response, "status_code", 0) or 0)
+    if is_circle_works:
+        ended = time.perf_counter()
+        metrics["measurement_schema"] = "circle-works-v1"
+        metrics["untracked_ms"] = uncovered_ms(started, ended, metrics)
+        metrics.pop("_span_ranges", None)
     if path.startswith("/api/"):
         is_slow = _SLOW_API_LOG_THRESHOLD_SECONDS > 0 and elapsed >= _SLOW_API_LOG_THRESHOLD_SECONDS
         is_error = status_code >= 500
@@ -2349,6 +2416,17 @@ async def _call_next_with_perf_log(request: Request, call_next):
                 is_slow,
                 metrics,
                 max(0.0, time.monotonic() - _EVENT_LOOP_WATCHDOG_LAST_BEAT) * 1000,
+            )
+        elif is_circle_works:
+            logger.info(
+                "[社团作品测量] request_id=%s method=%s path=%s status=%s elapsed_ms=%.2f query=%s stages=%s",
+                request_id,
+                request.method,
+                path,
+                status_code,
+                elapsed * 1000,
+                _slow_api_query_snapshot(request),
+                metrics,
             )
     try:
         response.headers["X-Request-ID"] = request_id
@@ -2422,7 +2500,7 @@ async def security_gate_middleware(request: Request, call_next):
     next_path = quote(next_path_raw, safe="/")
     return RedirectResponse(url=f"/verify?next={next_path}", status_code=303)
 
-def _notification_cleanup_config() -> tuple[int, int]:
+def _notification_cleanup_config() -> tuple[int, int, int]:
     """读取通知清理策略，避免后台任务使用硬编码保留期。"""
     cfg = getattr(get_config(), "notification_center", None)
     retain_days = int(getattr(cfg, "retain_days", 30) or 30)
@@ -2619,6 +2697,11 @@ async def startup_event():
         from ..core.dlsite_bonus_probe_service import get_dlsite_bonus_probe_service
         get_dlsite_bonus_probe_service().start_cache_flush_worker()
 
+    from ..core.circle_completion_materializer import get_circle_completion_materializer
+    from ..core.circle_completion_cover_worker import get_circle_completion_cover_worker
+    get_circle_completion_materializer().start()
+    get_circle_completion_cover_worker().start()
+
     from ..core.circle_external_search_service import get_circle_external_search_service
     await get_circle_external_search_service().start()
 
@@ -2764,6 +2847,11 @@ async def shutdown_event():
     # 停止已处理压缩包智能清理服务
     archive_cleanup_service = get_processed_archive_cleanup_service()
     await archive_cleanup_service.stop()
+
+    from ..core.circle_completion_cover_worker import get_circle_completion_cover_worker
+    from ..core.circle_completion_materializer import get_circle_completion_materializer
+    await get_circle_completion_cover_worker().stop()
+    await asyncio.to_thread(get_circle_completion_materializer().stop)
 
     # Flush DLsite 特典探测 Redis dirty buffer，确保关停前尽量回写 PostgreSQL。
     try:
@@ -3595,6 +3683,7 @@ async def batch_cancel_cleanup(request: Request):
     engine = get_task_engine()
     cancelled = 0
     cleaned = 0
+    errors = []
     for tid in task_ids:
         task = engine.get_task(str(tid))
         if not task:
@@ -3616,8 +3705,9 @@ async def batch_cancel_cleanup(request: Request):
                 except Exception:
                     logger.debug("等待百度网盘下载取消失败: task_id=%s", tid, exc_info=True)
             cancelled += 1
-        cleanup_result = cleanup_task_download_artifacts(task)
+        cleanup_result = await asyncio.to_thread(cleanup_task_download_artifacts, task)
         cleaned += int(cleanup_result.get("cleaned") or 0)
+        errors.extend(cleanup_result.get("errors") or [])
         logger.info(
             "取消任务清理完成: task_id=%s mode=%s cleaned=%s skipped=%s errors=%s",
             getattr(task, "id", ""),
@@ -3626,7 +3716,7 @@ async def batch_cancel_cleanup(request: Request):
             len(cleanup_result.get("skipped_paths") or []),
             len(cleanup_result.get("errors") or []),
         )
-    return {"cancelled": cancelled, "cleaned": cleaned, "message": f"已取消 {cancelled} 个任务，清理 {cleaned} 个下载产物"}
+    return {"cancelled": cancelled, "cleaned": cleaned, "errors": errors, "message": f"已取消 {cancelled} 个任务，清理 {cleaned} 个下载产物"}
 
 def _mask_email_watcher_config(config) -> dict:
     """邮箱密码脱敏，代理地址按设置页要求明文展示。"""
@@ -5648,65 +5738,13 @@ def _iter_log_files_for_search() -> List[str]:
 
 
 def _tail_lines(path: str, n: int) -> List[str]:
-    """反向块读取文件末尾 n 行。避免大文件全文遍历。"""
-    if n <= 0:
-        return []
-    chunk_size = 64 * 1024
-    data = b''
-    with open(path, 'rb') as bf:
-        bf.seek(0, os.SEEK_END)
-        pos = bf.tell()
-        lines_found = 0
-        while pos > 0 and lines_found <= n * 2:
-            read_size = chunk_size if pos >= chunk_size else pos
-            pos -= read_size
-            bf.seek(pos)
-            block = bf.read(read_size)
-            data = block + data
-            lines_found = data.count(b'\n')
-            if lines_found >= n + 1:
-                break
-        # 尾窗可能完全落在 traceback 中间。仅在窗口里没有任何结构化日志头时，
-        # 再向前补有限上下文，让堆栈块继承真实时间而不是显示 --:--:--。
-        context_bytes = 0
-        max_context_bytes = 512 * 1024
-        window_lines = data.decode('utf-8', errors='ignore').splitlines()
-        has_log_boundary = any(_LOG_LINE_LEVEL_RE.match(line.strip()) for line in window_lines)
-        while pos > 0 and not has_log_boundary and context_bytes < max_context_bytes:
-            read_size = min(chunk_size, pos, max_context_bytes - context_bytes)
-            pos -= read_size
-            bf.seek(pos)
-            block = bf.read(read_size)
-            data = block + data
-            context_bytes += len(block)
-            block_lines = block.decode('utf-8', errors='ignore').splitlines()
-            has_log_boundary = any(_LOG_LINE_LEVEL_RE.match(line.strip()) for line in block_lines)
-    text = data.decode('utf-8', errors='ignore')
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return _compact_traceback_log_lines(lines)[-n:]
+    """按逻辑记录从尾部读取，traceback 的续行保持完整。"""
+    from ..core.log_file_reader import read_window
+    return [item["line"] for item in read_window(path, os.path.getsize(path), max(0, n), 0, "before")]
 
 
 def _read_log_payload(log_file: str, line_limit: int, since_offset: int = -1) -> Dict[str, Any]:
-    file_size = os.path.getsize(log_file)
-    if 0 <= since_offset <= file_size:
-        if since_offset == file_size:
-            return {"logs": [], "next_offset": file_size, "is_full": False}
-        # 增量窗口太大时直接回落到尾部 line_limit 行，避免暂停很久后一次性 read()
-        # 几十 MB 文本并把前端/后端都拖住。
-        max_incremental_bytes = 2 * 1024 * 1024
-        if file_size - since_offset > max_incremental_bytes:
-            result = _tail_lines(log_file, line_limit)
-            return {"logs": result, "next_offset": file_size, "is_full": True}
-        with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-            f.seek(since_offset)
-            new_lines = [l.strip() for l in f.read().splitlines() if l.strip()]
-        new_lines = _compact_traceback_log_lines(new_lines)
-        if len(new_lines) > line_limit:
-            new_lines = new_lines[-line_limit:]
-        return {"logs": new_lines, "next_offset": file_size, "is_full": False}
-
-    result = _tail_lines(log_file, line_limit)
-    return {"logs": result, "next_offset": file_size, "is_full": True}
+    return _read_log_stream_payload(log_file, line_limit, since_offset)
 
 
 def _runtime_log_stream_config() -> Dict[str, int]:
@@ -5718,22 +5756,9 @@ def _runtime_log_stream_config() -> Dict[str, int]:
 
 
 def _trim_log_stream_payload(payload: Dict[str, Any], batch_size: int) -> Dict[str, Any]:
-    next_payload = dict(payload or {})
-    logs = list(next_payload.get("logs") or [])
-    original_count = len(logs)
-    dropped_count = 0
-    if original_count > batch_size:
-        dropped_count = original_count - batch_size
-        logs = logs[-batch_size:]
-        next_payload["logs"] = logs
-        next_payload["is_truncated_batch"] = True
-        with _LOG_STREAM_STATUS_LOCK:
-            global _LOG_STREAM_DROPPED_COUNT
-            _LOG_STREAM_DROPPED_COUNT += dropped_count
-    next_payload["batch_size"] = len(logs)
-    next_payload["original_count"] = original_count
-    next_payload["dropped_count"] = dropped_count
-    return next_payload
+    # 有界读取在 reader 内完成；不能裁掉头部后把 offset 推到 EOF。
+    return {**payload, "batch_size": len(payload.get("logs") or []),
+            "original_count": len(payload.get("logs") or []), "dropped_count": 0}
 
 
 def _log_stream_status_payload() -> Dict[str, Any]:
@@ -5788,14 +5813,14 @@ def _sse_payload(event: str, payload: Dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-def _log_file_signature(log_file: str) -> tuple[int, int]:
+def _log_file_signature(log_file: str) -> tuple[int, int, int]:
     """日志流空闲轮询用的轻量文件签名。"""
     stat_result = os.stat(log_file)
-    return int(stat_result.st_size), int(getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000)))
+    return int(stat_result.st_size), int(stat_result.st_mtime_ns), int(stat_result.st_ino)
 
 
 @app.get("/api/logs")
-async def get_logs(lines: int = 100, since_offset: int = -1):
+async def get_logs(lines: int = 2000, since_offset: int = -1):
     """获取日志文件内容。
 
     - ``since_offset=-1``：全量模式，返回末尾 lines 条日志及当前文件字节偏移量。
@@ -5808,7 +5833,7 @@ async def get_logs(lines: int = 100, since_offset: int = -1):
         return {"logs": [], "next_offset": 0, "is_full": True}
 
     try:
-        line_limit = max(50, min(int(lines or 100), 5000))
+        line_limit = max(50, min(int(lines or 2000), 5000))
         _log_file = log_file
 
         def _read_log():
@@ -5819,23 +5844,101 @@ async def get_logs(lines: int = 100, since_offset: int = -1):
         raise HTTPException(status_code=500, detail=f"读取日志失败: {str(e)}")
 
 
+def _read_log_records_window(path: str, anchor_offset: int, before: int, after: int, mode: str) -> List[Dict[str, Any]]:
+    """读取带字节范围的逻辑日志记录，兼容旧格式并把 traceback 续行并入记录。"""
+    from ..core.log_file_reader import read_window
+    return read_window(path, anchor_offset, before, after, mode)
+
+
+def _log_stream_generation(path: str) -> str:
+    stat = os.stat(path)
+    # birthtime 在 Windows 区分文件重建；Linux inode 在追加时保持稳定。
+    return f"{stat.st_ino}:{getattr(stat, 'st_birthtime_ns', 0)}:{stat.st_size}"
+
+
+def _same_log_generation(previous: str, current: str) -> bool:
+    try:
+        old, new = previous.split(":"), current.split(":")
+        return len(old) == len(new) == 3 and old[:2] == new[:2] and int(new[2]) >= int(old[2])
+    except (ValueError, AttributeError):
+        return False
+
+
+def _read_log_stream_payload(path: str, line_limit: int, since_offset: int = -1, generation: str = "") -> Dict[str, Any]:
+    """读取 SSE 记录并保留稳定的 file:offset 定位信息。"""
+    current_generation = _log_stream_generation(path)
+    size = int(current_generation.rsplit(":", 1)[1])
+    if generation and not _same_log_generation(generation, current_generation):
+        since_offset = -1
+    incremental = 0 <= since_offset <= size
+    if incremental and since_offset == size:
+        rows = []
+    else:
+        rows = _read_log_records_window(path, since_offset if incremental else size,
+                                       0 if incremental else line_limit,
+                                       line_limit if incremental else 0,
+                                       "after" if incremental else "before")
+    if not _same_log_generation(current_generation, _log_stream_generation(path)):
+        from ..core.log_file_reader import LogCursorExpired
+        raise LogCursorExpired("日志在读取期间发生轮转或截断")
+    next_offset = rows[-1]["end_offset"] if rows else (since_offset if incremental else size)
+    # 最后一条可能继续追加 traceback；流内下次有新字节时重读它，按稳定 key 更新。
+    return {"logs": [row["line"] for row in rows], "records": rows,
+            "next_offset": next_offset, "is_full": not incremental,
+            "resume_offset": rows[-1]["offset"] if rows else None,
+            "has_more": next_offset < size, "generation": current_generation}
+
+
+@app.get("/api/logs/window")
+async def get_logs_window(
+    file: str = "",
+    anchor_offset: int = 0,
+    before: int = 100,
+    after: int = 100,
+    mode: str = "around",
+):
+    if mode not in {"around", "before", "after"}:
+        raise HTTPException(status_code=400, detail="mode 必须是 around、before 或 after")
+    from ..core.app_logging import list_log_files
+    candidates = {item.name: item.path for item in list_log_files()}
+    path = candidates.get(os.path.basename(file)) if file else _resolve_main_log_path()
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="日志文件不存在")
+    rows = await _run_log_io(_read_log_records_window, path, anchor_offset, min(int(before or 0), 1000), min(int(after or 0), 1000), mode)
+    if mode == "before" and len(rows) < min(max(0, before), 1000):
+        ordered = _iter_log_files_for_search()
+        if path in ordered:
+            for older in ordered[ordered.index(path) + 1:]:
+                needed = min(max(0, before), 1000) - len(rows)
+                if needed <= 0:
+                    break
+                try:
+                    earlier = await _run_log_io(_read_log_records_window, older, os.path.getsize(older), needed, 0, "before")
+                    rows = earlier + rows
+                except FileNotFoundError:
+                    continue
+    return {"file": os.path.basename(path), "records": rows, "logs": [item["line"] for item in rows]}
+
+
 @app.get("/api/logs/stream")
-async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1):
+async def stream_logs(request: Request, lines: int = 2000, since_offset: int = -1, generation: str = ""):
     """SSE 推送系统日志增量。
 
     连接建立后先补一段最近历史或 since_offset 之后的新内容；之后按运行态
     flush 间隔检查主日志文件偏移。心跳用于防止代理/浏览器静默断开。
     """
-    line_limit = max(50, min(int(lines or 300), 5000))
+    line_limit = max(50, min(int(lines or 2000), 5000))
     stream_config = _runtime_log_stream_config()
     batch_size = int(stream_config["batch_size"])
     poll_interval = max(0.1, int(stream_config["flush_ms"]) / 1000.0)
 
     async def generator():
-        current_offset = max(-1, int(since_offset or -1))
+        current_offset = max(-1, int(since_offset))
+        active_generation = generation
+        resume_offset = None
         last_heartbeat_at = time.monotonic()
         active_log_path = ""
-        active_log_signature: tuple[int, int] | None = None
+        active_log_signature: tuple[int, int, int] | None = None
         sent_missing_notice = False
         global _LOG_STREAM_ACTIVE_COUNT, _LOG_STREAM_TOTAL_CONNECTIONS
         with _LOG_STREAM_STATUS_LOCK:
@@ -5856,9 +5959,16 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
                     break
 
                 active_log_path = log_file
-                payload = await _run_log_io(_read_log_payload, log_file, line_limit, current_offset)
+                try:
+                    payload = await _run_log_io(_read_log_stream_payload, log_file, line_limit, current_offset, active_generation)
+                except OSError:
+                    current_offset = -1
+                    await asyncio.sleep(poll_interval)
+                    continue
+                active_generation = payload.get("generation", "")
                 payload = _trim_log_stream_payload(payload, batch_size)
                 current_offset = int(payload.get("next_offset") or 0)
+                resume_offset = payload.get("resume_offset")
                 try:
                     active_log_signature = await _run_log_io(_log_file_signature, log_file)
                 except OSError:
@@ -5907,7 +6017,7 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
                     await asyncio.sleep(poll_interval)
                     continue
 
-                if active_log_signature == current_signature:
+                if active_log_signature == current_signature and current_offset >= current_signature[0]:
                     now = time.monotonic()
                     if now - last_heartbeat_at >= 20:
                         last_heartbeat_at = now
@@ -5918,14 +6028,21 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
                     await asyncio.sleep(poll_interval)
                     continue
 
+                if active_log_signature and (current_signature[2] != active_log_signature[2] or current_signature[0] < active_log_signature[0]):
+                    current_offset = -1
+                    resume_offset = None
                 try:
-                    payload = await _run_log_io(_read_log_payload, log_file, line_limit, current_offset)
+                    read_offset = resume_offset if current_offset >= 0 and resume_offset is not None else current_offset
+                    payload = await _run_log_io(_read_log_stream_payload, log_file, line_limit if current_offset < 0 else batch_size + 1, read_offset, active_generation)
                     payload = _trim_log_stream_payload(payload, batch_size)
                 except OSError:
+                    current_offset, resume_offset, active_log_signature = -1, None, None
                     await asyncio.sleep(poll_interval)
                     continue
 
+                active_generation = payload.get("generation", "")
                 current_offset = int(payload.get("next_offset") or current_offset or 0)
+                resume_offset = payload.get("resume_offset")
                 active_log_signature = current_signature
                 log_lines = payload.get("logs") or []
                 if log_lines:
@@ -5970,11 +6087,12 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
 # 全文检索硬上限：保护后端在「用户搜了一个高频词」场景下不耗光内存 / CPU。
 _LOG_SEARCH_TOTAL_SCAN_MB_CAP = 96    # 跨所有文件总和 max 96MB
 _LOG_SEARCH_PER_FILE_SCAN_MB_CAP = 64  # 单文件 max 64MB
-_LOG_SEARCH_LIMIT_MAX = 1000           # 单页返回上限
+_LOG_SEARCH_LIMIT_MAX = 200           # 单页返回上限
 _LOG_SEARCH_KEYWORD_MAX_LEN = 200
 _LOG_LINE_LENGTH_CAP = 16 * 1024       # 单行字符上限：超长 traceback 截断，避免响应膨胀
 _LOG_SEARCH_RAW_FRAGMENT_BYTES = 64 * 1024
-_LOG_SEARCH_CURSOR_VERSION = 2
+_LOG_SEARCH_CURSOR_VERSION = 3
+_LOG_SEARCH_SESSIONS: dict[str, threading.Event] = {}
 
 
 def _encode_log_search_cursor(payload: Dict[str, Any]) -> str:
@@ -5991,7 +6109,19 @@ def _decode_log_search_cursor(value: str) -> Optional[Dict[str, Any]]:
         payload = json.loads(base64.urlsafe_b64decode(token + padding).decode("utf-8"))
     except (ValueError, TypeError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict) or int(payload.get("v") or 0) != _LOG_SEARCH_CURSOR_VERSION:
+    if not isinstance(payload, dict) or payload.get("v") != _LOG_SEARCH_CURSOR_VERSION:
+        return None
+    # 游标来自客户端，结构错误按过期处理，不能由 int()/索引异常变成 500。
+    files = payload.get("files")
+    if not isinstance(files, list) or not files or len(files) > 100:
+        return None
+    if any(not isinstance(item, dict) or not isinstance(item.get("name"), str)
+           or any(type(item.get(key)) is not int or item[key] < 0 for key in ("size", "inode"))
+           for item in files):
+        return None
+    if any(type(payload.get(key)) is not int or payload[key] < 0 for key in ("file", "offset", "matched")):
+        return None
+    if payload["file"] >= len(files) or payload["offset"] > files[payload["file"]]["size"]:
         return None
     return payload
 
@@ -6001,6 +6131,10 @@ def _log_search_query_signature(
     levels: set[str],
     per_file_scan_bytes: int,
     include_backups: bool,
+    module: str = "",
+    task_id: str = "",
+    since: str = "",
+    until: str = "",
 ) -> str:
     source = json.dumps(
         {
@@ -6008,6 +6142,7 @@ def _log_search_query_signature(
             "levels": sorted(levels),
             "scan": per_file_scan_bytes,
             "backups": include_backups,
+            "module": module, "task_id": task_id, "since": since, "until": until,
         },
         ensure_ascii=True,
         separators=(",", ":"),
@@ -6035,23 +6170,27 @@ def _build_log_search_snapshots(
                 name = str(raw.get("name") or "")
                 path = current_by_name.get(name)
                 expected_size = int(raw.get("size") or 0)
+                expected_inode = int(raw.get("inode") or 0)
                 if not path or expected_size < 0:
                     snapshots = []
                     break
                 try:
-                    current_size = os.path.getsize(path)
+                    current_stat = os.stat(path)
+                    current_size = current_stat.st_size
                 except OSError:
                     snapshots = []
                     break
                 # 主日志允许继续增长；缩小代表轮转/截断，旧游标必须失效。
-                if current_size < expected_size:
+                current_inode = int(current_stat.st_ino)
+                if current_size < expected_size or (name != "app.log" and current_size != expected_size) or (expected_inode and current_inode != expected_inode):
                     snapshots = []
                     break
                 snapshots.append({
                     "name": name,
                     "path": path,
                     "size": expected_size,
-                    "start": max(0, expected_size - per_file_scan_bytes),
+                    "inode": current_inode,
+                    "start": 0,
                 })
         if not snapshots:
             cursor_reset = True
@@ -6061,20 +6200,22 @@ def _build_log_search_snapshots(
     if not snapshots:
         for path in candidates:
             try:
-                file_size = os.path.getsize(path)
+                current_stat = os.stat(path)
+                file_size = current_stat.st_size
             except OSError:
                 continue
             snapshots.append({
                 "name": os.path.basename(path),
                 "path": path,
                 "size": file_size,
-                "start": max(0, file_size - per_file_scan_bytes),
+                "inode": int(current_stat.st_ino),
+                "start": 0,
             })
-        return snapshots, 0, snapshots[0]["start"] if snapshots else 0, 0, cursor_reset
+        return snapshots, 0, snapshots[0]["size"] if snapshots else 0, 0, cursor_reset
 
     file_index = max(0, min(int(cursor_payload.get("file") or 0), len(snapshots) - 1))
     snapshot = snapshots[file_index]
-    offset = max(snapshot["start"], min(int(cursor_payload.get("offset") or snapshot["start"]), snapshot["size"]))
+    offset = max(snapshot["start"], min(int(cursor_payload.get("offset", snapshot["size"])), snapshot["size"]))
     matched = max(0, int(cursor_payload.get("matched") or 0))
     return snapshots, file_index, offset, matched, cursor_reset
 
@@ -6092,7 +6233,7 @@ def _log_search_cursor_payload(
         "file": file_index,
         "offset": offset,
         "matched": matched,
-        "files": [{"name": item["name"], "size": item["size"]} for item in snapshots],
+        "files": [{"name": item["name"], "size": item["size"], "inode": item.get("inode", 0)} for item in snapshots],
     })
 
 
@@ -6109,191 +6250,20 @@ def _search_log_snapshots(
     matched_before: int,
     cancel_event: threading.Event,
     cursor_reset: bool,
+    module: str = "",
+    task_id: str = "",
+    since: str = "",
+    until: str = "",
 ) -> Dict[str, Any]:
-    results: List[str] = []
-    full_results: List[str] = []
-    total_scan_bytes = 0
-    scanned_files: List[Dict[str, Any]] = []
-    next_file_index = start_file_index
-    next_offset = start_offset
-    has_more = False
-    stopped_early = False
-    cancelled = False
-
-    for file_index in range(start_file_index, len(snapshots)):
-        snapshot = snapshots[file_index]
-        file_start = int(snapshot["start"])
-        file_end = int(snapshot["size"])
-        offset = start_offset if file_index == start_file_index else file_start
-        offset = max(file_start, min(offset, file_end))
-        file_scan_bytes = 0
-        budget_exhausted = False
-        extra_match_offset: Optional[int] = None
-
-        try:
-            with open(snapshot["path"], "rb") as handle:
-                handle.seek(offset)
-                if offset == file_start and file_start > 0:
-                    # 初始窗口可能落在一条超长日志中间，分块丢弃残片，避免 readline()
-                    # 因无换行一次分配整段文本。
-                    while handle.tell() < file_end:
-                        if cancel_event.is_set():
-                            cancelled = True
-                            break
-                        remaining = min(_LOG_SEARCH_RAW_FRAGMENT_BYTES, file_end - handle.tell())
-                        fragment = handle.readline(remaining)
-                        if not fragment:
-                            break
-                        consumed = len(fragment)
-                        file_scan_bytes += consumed
-                        total_scan_bytes += consumed
-                        if fragment.endswith((b"\n", b"\r")):
-                            break
-                        if total_scan_bytes >= total_scan_budget:
-                            budget_exhausted = True
-                            break
-                if cancelled:
-                    break
-                if budget_exhausted:
-                    next_file_index = file_index
-                    next_offset = handle.tell()
-                    has_more = True
-                    stopped_early = True
-                    break
-
-                logical_start = handle.tell()
-                logical_level = "INFO"
-                logical_match = False
-                logical_display = ""
-                logical_fragments: List[str] = []
-                overlap = ""
-                first_fragment = True
-
-                while handle.tell() < file_end:
-                    if cancel_event.is_set():
-                        cancelled = True
-                        break
-                    if total_scan_bytes >= total_scan_budget:
-                        budget_exhausted = True
-                        next_file_index = file_index
-                        next_offset = logical_start
-                        break
-
-                    remaining = min(
-                        _LOG_SEARCH_RAW_FRAGMENT_BYTES,
-                        file_end - handle.tell(),
-                        total_scan_budget - total_scan_bytes,
-                    )
-                    if remaining <= 0:
-                        budget_exhausted = True
-                        next_file_index = file_index
-                        next_offset = logical_start
-                        break
-                    raw_bytes = handle.readline(remaining)
-                    if not raw_bytes:
-                        break
-                    consumed = len(raw_bytes)
-                    file_scan_bytes += consumed
-                    total_scan_bytes += consumed
-                    line_complete = raw_bytes.endswith((b"\n", b"\r")) or handle.tell() >= file_end
-                    text = raw_bytes.decode("utf-8", errors="ignore").rstrip("\r\n")
-                    logical_fragments.append(text)
-
-                    if first_fragment:
-                        match = _LOG_LINE_LEVEL_RE.match(text)
-                        logical_level = (match.group(2) or match.group(4) or "INFO").upper() if match else "INFO"
-                        first_fragment = False
-
-                    if not levels or logical_level in levels:
-                        lowered = text.lower()
-                        search_text = overlap + lowered
-                        if not keyword or keyword in search_text:
-                            logical_match = True
-                            if not logical_display:
-                                display = (overlap + text).strip()
-                                logical_display = display[:_LOG_LINE_LENGTH_CAP]
-                                if len(display) > _LOG_LINE_LENGTH_CAP or not line_complete:
-                                    logical_display += "…"
-                        overlap = lowered[-max(0, len(keyword) - 1):] if keyword else ""
-
-                    if not line_complete:
-                        continue
-
-                    if logical_match:
-                        full_line = "".join(logical_fragments).strip()
-                        if not logical_display:
-                            logical_display = full_line[:_LOG_LINE_LENGTH_CAP]
-                            if len(full_line) > _LOG_LINE_LENGTH_CAP:
-                                logical_display += "…"
-                        if len(results) < limit:
-                            results.append(logical_display)
-                            full_results.append(full_line)
-                        else:
-                            extra_match_offset = logical_start
-                            has_more = True
-                            break
-
-                    logical_start = handle.tell()
-                    logical_level = "INFO"
-                    logical_match = False
-                    logical_display = ""
-                    logical_fragments = []
-                    overlap = ""
-                    first_fragment = True
-
-                if cancelled:
-                    break
-                if extra_match_offset is not None:
-                    next_file_index = file_index
-                    next_offset = extra_match_offset
-                    break
-                if budget_exhausted:
-                    has_more = True
-                    stopped_early = True
-                    break
-                next_file_index = file_index + 1
-                next_offset = snapshots[file_index + 1]["start"] if file_index + 1 < len(snapshots) else file_end
-        except OSError:
-            next_file_index = file_index + 1
-            continue
-        finally:
-            scanned_files.append({
-                "name": snapshot["name"],
-                "bytes": file_scan_bytes,
-                "total_bytes": file_end,
-            })
-
-        if has_more or stopped_early:
-            break
-
-    if not cancelled and not has_more and next_file_index < len(snapshots):
-        has_more = True
-    matched_after = matched_before + len(results)
-    next_cursor = ""
-    if has_more and snapshots:
-        safe_file_index = min(next_file_index, len(snapshots) - 1)
-        next_cursor = _log_search_cursor_payload(
-            snapshots,
-            query_signature,
-            safe_file_index,
-            next_offset,
-            matched_after,
-        )
-    return {
-        "logs": results,
-        "full_logs": full_results,
-        "total_matched": matched_after + (1 if has_more else 0),
-        "matched_before": matched_before,
-        "matched_after": matched_after,
-        "next_cursor": next_cursor,
-        "has_more": has_more,
-        "total_is_estimate": has_more,
-        "scan_bytes": total_scan_bytes,
-        "scanned_files": scanned_files,
-        "stopped_early": stopped_early,
-        "cursor_reset": cursor_reset,
-        "cancelled": cancelled,
-    }
+    from ..core.log_file_reader import search_snapshots
+    return search_snapshots(
+        snapshots, keyword=keyword, levels=levels, limit=limit,
+        query_signature=query_signature, start_file_index=start_file_index,
+        start_offset=start_offset, matched_before=matched_before,
+        cancel_event=cancel_event, cursor_reset=cursor_reset,
+        encode_cursor=_log_search_cursor_payload,
+        module=module, task_id=task_id, since=since, until=until,
+    )
 
 
 @app.get("/api/logs/search")
@@ -6301,38 +6271,26 @@ async def search_logs(
     request: Request,
     q: str = '',
     levels: str = '',
-    limit: int = 500,
+    limit: int = 200,
     cursor: str = '',
     max_scan_mb: int = 16,
     include_backups: bool = True,
+    module: str = "",
+    task_id: str = "",
+    since: str = "",
+    until: str = "",
+    session: str = "",
 ):
-    """全文检索，跨主日志 + 所有轮转备份。
+    """全历史按记录倒序搜索；默认每页 200 条、250ms 扫描预算。
 
-    - ``q``：关键词（大小写不敏感，空则不过滤）
-    - ``levels``：逗号分隔的级别列表，如 ``INFO,ERROR``（空则不过滤）
-    - ``limit``：单页返回条数（默认 500，上限 1000）
-    - ``cursor``：不透明续扫游标（翻页时原样传回上一次的 next_cursor）
-    - ``max_scan_mb``：单文件扫描窗口上限（默认 16MB，硬上限 64MB）
-    - ``include_backups``：是否搜索轮转备份（关闭时只扫主日志）
-
-    大文本搜索保护：
-    - **streaming 逐行扫描**：不再一次性 ``decode + splitlines`` 整段（16MB 文本
-      会膨胀成 30~60MB Python str + list of str，跨 6 个文件就上百 MB），
-      改成 ``for raw_bytes in f`` 逐行迭代，每行独立 decode，Python 内存占用
-      恒定在几 KB（单行 buffer + results list）。
-    - **总扫描预算**：跨所有文件 max 96MB，触顶立即停。
-    - **单行截断**：超过 16KB 的行（典型 traceback dump）截到 16KB + ``…``，
-      避免少数长行把单页响应撑到几十 MB。
-    - **续扫游标**：下一页从上次文件字节位置继续，不重复扫描和跳过旧命中。
-    - **协作取消**：浏览器 abort 后通知搜索线程尽快退出，不继续占用唯一 worker。
-    - **有界行读取**：无换行大文本按 64KB 片段匹配，不一次分配整条超长行。
-
-    响应：``{ logs, total_matched, next_cursor, has_more, scan_bytes, scanned_files }``
+    保留 max_scan_mb 参数兼容旧调用，不再按字节数限制历史覆盖范围。
+    cursor 为 v3 文件快照游标；轮转或截断后返回 cursor_expired。
+    支持 module、task_id、since、until 服务端过滤及协作取消。
     """
     kw_raw = (q or '').strip()
     if kw_raw and len(kw_raw) > _LOG_SEARCH_KEYWORD_MAX_LEN:
         raise HTTPException(status_code=400, detail=f"关键词最多 {_LOG_SEARCH_KEYWORD_MAX_LEN} 字符")
-    if not kw_raw and not levels:
+    if not any((kw_raw, levels, module, task_id, since, until)):
         raise HTTPException(status_code=400, detail="请提供关键词或日志级别筛选条件")
 
     candidates = _iter_log_files_for_search() if include_backups else []
@@ -6350,15 +6308,15 @@ async def search_logs(
         }
 
     try:
-        max_limit = max(50, min(int(limit or 500), _LOG_SEARCH_LIMIT_MAX))
-        kw = kw_raw.lower()
+        max_limit = max(50, min(int(limit or 200), _LOG_SEARCH_LIMIT_MAX))
+        kw = kw_raw
         lvl_set = {v.strip().upper() for v in levels.split(',') if v.strip()} if levels else set()
         per_file_scan_bytes = max(
             1 * 1024 * 1024,
             min(int(max_scan_mb or 16), _LOG_SEARCH_PER_FILE_SCAN_MB_CAP) * 1024 * 1024,
         )
         total_scan_budget = _LOG_SEARCH_TOTAL_SCAN_MB_CAP * 1024 * 1024
-        query_signature = _log_search_query_signature(kw, lvl_set, per_file_scan_bytes, include_backups)
+        query_signature = _log_search_query_signature(kw, lvl_set, per_file_scan_bytes, include_backups, module.strip(), task_id.strip(), since.strip(), until.strip())
         cursor_payload = _decode_log_search_cursor(cursor)
         snapshots, file_index, start_offset, matched_before, cursor_reset = _build_log_search_snapshots(
             candidates,
@@ -6366,7 +6324,17 @@ async def search_logs(
             cursor_payload,
             query_signature,
         )
+        cursor_reset = cursor_reset or bool(cursor and not cursor_payload)
         cancel_event = threading.Event()
+        # 会话由页面生成；不同标签页互不取消，断连也会触发协作取消。
+        session_key = session[:128]
+        if session_key:
+            previous = _LOG_SEARCH_SESSIONS.pop(session_key, None)
+            if previous:
+                previous.set()
+            _LOG_SEARCH_SESSIONS[session_key] = cancel_event
+            while len(_LOG_SEARCH_SESSIONS) > 128:
+                _LOG_SEARCH_SESSIONS.pop(next(iter(_LOG_SEARCH_SESSIONS))).set()
 
         def _search():
             return _search_log_snapshots(
@@ -6381,6 +6349,7 @@ async def search_logs(
                 matched_before=matched_before,
                 cancel_event=cancel_event,
                 cursor_reset=cursor_reset,
+                module=module.strip(), task_id=task_id.strip(), since=since.strip(), until=until.strip(),
             )
 
         search_task = asyncio.create_task(_run_log_search_io(_search))
@@ -6395,6 +6364,8 @@ async def search_logs(
         finally:
             if not search_task.done():
                 cancel_event.set()
+            if session_key and _LOG_SEARCH_SESSIONS.get(session_key) is cancel_event:
+                _LOG_SEARCH_SESSIONS.pop(session_key, None)
     except HTTPException:
         raise
     except Exception as e:
@@ -14650,7 +14621,7 @@ def _build_existing_folder_info(candidate: dict) -> dict:
     return folder_info
 
 
-def _collect_existing_folder_stats(folder_path: str) -> tuple[int, int]:
+def _collect_existing_folder_stats(folder_path: str) -> tuple[int, int, int]:
     folder_size = 0
     file_count = 0
     try:
@@ -18348,6 +18319,7 @@ def _serialize_asmr_sync_task_status(task, session_map: Dict[str, dict], *, comp
             "selected_resources": metadata.get("selected_resources", []),
             "verify_summary": metadata.get("verify_summary", {}),
             "upload_summary": metadata.get("upload_summary", {}),
+            "upload_options": metadata.get("upload_options") or {},
             "retry_summary": metadata.get("retry_summary", {}),
             "retry_available": bool(metadata.get("retry_available")),
             "retry_reason": metadata.get("retry_reason", ""),
@@ -20911,7 +20883,10 @@ async def circle_completion_summary(
         raise HTTPException(status_code=500, detail=f"查询社团补全摘要失败: {str(exc)}")
 
 
-@app.get("/api/circle-completion/circles/{circle_id}/works")
+@app.get(
+    "/api/circle-completion/circles/{circle_id}/works",
+    response_class=CircleWorksJSONResponse,
+)
 async def circle_completion_works(
     http_request: Request,
     circle_id: str,

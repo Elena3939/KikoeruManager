@@ -91,20 +91,51 @@ def build_task_center_event(task, reason: str = "progress") -> dict[str, Any]:
         "current_step": str(getattr(task, "current_step", "") or ""),
         "updated_at": now,
     }
+    # 与 Redis task:runtime 使用同一份任务运行态，只发送固定字段摘要。
+    runtime = {}
+    for key in ("runtime", "download_runtime", "upload_runtime"):
+        value = metadata.get(key)
+        if isinstance(value, dict):
+            runtime.update(value)
+    event["runtime"] = {key: runtime[key] for key in (
+        "phase", "stage", "speed_bytes_per_sec", "downloaded_bytes", "transferred_bytes",
+        "completed_bytes", "total_bytes", "file_index", "current_file_index",
+        "completed_files", "file_count", "total_files", "retry_count",
+        "elapsed_seconds", "eta_seconds", "failure_reason",
+    ) if key in runtime}
+    event["task_type"] = str(getattr(getattr(task, "type", None), "value", getattr(task, "type", "")) or "")
+    # 使用提交时已归一化的平台摘要，不在高频进度事件中遍历完整文件列表。
+    event["source_modes"] = [
+        mode for mode in dict.fromkeys(
+            value for value in (metadata.get("source_modes") or []) if isinstance(value, str)
+        )
+        if mode in {"http", "imoutoheaven", "pikpak", "gofile", "google_drive", "onedrive", "transferit"}
+    ]
+    event["rjcode"] = str(getattr(task, "rjcode", "") or metadata.get("rjcode") or "")
+    event["source_label"] = str(metadata.get("source_label") or getattr(task, "source_path", "") or "")
+    for key in ("started_at", "completed_at"):
+        value = getattr(task, key, None)
+        event[key] = value.isoformat() if value else None
+    event["failure_reason"] = str(getattr(task, "error_message", "") or runtime.get("failure_reason") or "")
+    event["display_status"] = "partial_failed" if event["status"] == "completed" and (
+        metadata.get("failed_files") or metadata.get("verification_failures") or metadata.get("failure_reason")
+    ) else event["status"]
     if str(getattr(getattr(task, "type", None), "value", getattr(task, "type", "")) or "") == "rj_subtitle_fetch":
         event["rjcode"] = str(metadata.get("rjcode") or "")
         event["circle_id"] = str(metadata.get("circle_id") or "")
         event["circle_canonical_rjcode"] = str(metadata.get("circle_canonical_rjcode") or "")
-    if event["domain"] == "upload":
-        runtime = metadata.get("upload_runtime")
+    for runtime_key in ("upload_runtime", "download_runtime"):
+        runtime = metadata.get(runtime_key)
         if isinstance(runtime, dict):
             # 上传小窗只需要运行态摘要；完整文件明细仍通过状态接口按需读取。
-            event["upload_runtime"] = {
+            event[runtime_key] = {
                 key: runtime.get(key, 0 if key.endswith("bytes") or key.endswith("seconds") else "")
                 for key in (
                     "backend_speed_bytes_per_sec",
                     "speed_bytes_per_sec",
                     "phase",
+                    "stage",
+                    "updated_at",
                     "snapshot_at_ms",
                     "current_source_dir",
                     "completed_files",
@@ -116,6 +147,7 @@ def build_task_center_event(task, reason: str = "progress") -> dict[str, Any]:
                     "current_relative_path",
                     "current_file_total_bytes",
                     "current_file_uploaded_bytes",
+                    "current_file_downloaded_bytes",
                     "eta_seconds",
                 )
                 if key in runtime

@@ -58,12 +58,69 @@ def atomic_json(path, value):
     os.replace(pending, path)
 
 
-def receive_chunk(path, offset, data, digest, expected_size, receipt_path=None):
+def read_checkpoint(receipt):
+    if not receipt.exists():
+        return {'offset': 0, 'chunks': []}
+    with receipt.open('rb') as source:
+        first = json.loads(source.readline())
+        if first.get('version') != 2:
+            return first
+        saved = {'offset': 0, 'chunks': []}
+        valid_end = source.tell()
+        for line in source:
+            if not line.endswith(b'\n'):
+                break
+            try:
+                chunk = json.loads(line)
+            except (ValueError, UnicodeDecodeError):
+                break
+            if chunk.get('offset') != saved['offset'] or not 0 < chunk.get('size', 0) <= CHUNK_SIZE:
+                break
+            saved['chunks'].append(chunk)
+            saved['offset'] += chunk['size']
+            valid_end += len(line)
+    # 进程在追加回执时中断，只丢弃未确认的尾记录。
+    if receipt.stat().st_size != valid_end:
+        with receipt.open('r+b') as output:
+            output.truncate(valid_end)
+            output.flush()
+            os.fsync(output.fileno())
+    return saved
+
+
+def write_checkpoint(receipt, checkpoint):
+    pending = receipt.with_suffix('.new')
+    with pending.open('w', encoding='utf-8', newline='\n') as output:
+        output.write('{"version":2}\n')
+        for chunk in checkpoint['chunks']:
+            output.write(json.dumps(chunk, separators=(',', ':')) + '\n')
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(pending, receipt)
+    from .file_move_protocol import fsync_directory
+    fsync_directory(receipt.parent)
+
+
+def verify_received_file(path, receipt):
+    saved = read_checkpoint(receipt)
+    digest = hashlib.sha256()
+    with path.open('rb') as source:
+        for chunk in saved['chunks']:
+            data = source.read(chunk['size'])
+            if len(data) != chunk['size'] or hashlib.sha256(data).hexdigest() != chunk['sha256']:
+                raise ValueError('已确认分块校验失败，请重新选择来源恢复上传')
+            digest.update(data)
+        if source.tell() != saved['offset'] or source.read(1):
+            raise ValueError('上传文件长度与确认回执不一致')
+    return digest.hexdigest()
+
+
+def receive_chunk(path, offset, data, digest, expected_size, receipt_path=None, checkpoint=None, hasher=None):
     actual_digest = hashlib.sha256(data).hexdigest()
     if actual_digest != digest:
         raise ValueError('分块 SHA-256 校验失败，未接收该块')
     receipt = Path(receipt_path) if receipt_path else path.with_suffix('.json')
-    checkpoint = json.loads(receipt.read_text('utf-8')) if receipt.exists() else {'offset': 0, 'chunks': []}
+    checkpoint = checkpoint if checkpoint is not None else read_checkpoint(receipt)
     confirmed = checkpoint['offset']
     if offset < confirmed:
         match = next((c for c in checkpoint['chunks'] if c['offset'] == offset), None)
@@ -82,28 +139,54 @@ def receive_chunk(path, offset, data, digest, expected_size, receipt_path=None):
         output.write(data)
         output.flush()
         os.fsync(output.fileno())
-    checkpoint['chunks'].append({'offset': offset, 'size': len(data), 'sha256': digest})
+    chunk = {'offset': offset, 'size': len(data), 'sha256': digest}
+    modern = False
+    if receipt.exists():
+        with receipt.open('rb') as source:
+            modern = source.readline().startswith(b'{"version":2}')
+    if not modern:
+        write_checkpoint(receipt, checkpoint)
+    with receipt.open('ab') as output:
+        output.write((json.dumps(chunk, separators=(',', ':')) + '\n').encode('utf-8'))
+        output.flush()
+        os.fsync(output.fileno())
+    checkpoint['chunks'].append(chunk)
     checkpoint['offset'] += len(data)
-    atomic_json(receipt, checkpoint)
+    if hasher is not None and hasher['offset'] == offset:
+        hasher['digest'].update(data)
+        hasher['offset'] += len(data)
     return checkpoint
 
 
-def recover_checkpoint(path, receipt_path=None):
+def recover_checkpoint(path, receipt_path=None, full=True):
     receipt = Path(receipt_path) if receipt_path else path.with_suffix('.json')
     if not path.exists() or not receipt.exists():
-        return {'offset': 0, 'chunks': []}
-    saved = json.loads(receipt.read_text('utf-8'))
-    verified = {'offset': 0, 'chunks': []}
+        empty = {'offset': 0, 'chunks': []}
+        if receipt.exists():
+            write_checkpoint(receipt, empty)
+        return empty
+    saved = read_checkpoint(receipt)
+    verified = {'offset': 0, 'chunks': []} if full else {'offset': saved['offset'], 'chunks': list(saved['chunks'])}
     with path.open('rb') as source:
-        for chunk in saved['chunks']:
+        chunks = saved['chunks'] if full else list(reversed(saved['chunks']))
+        for chunk in chunks:
+            source.seek(chunk['offset'])
             data = source.read(chunk['size'])
-            if chunk['offset'] != verified['offset'] or hashlib.sha256(data).hexdigest() != chunk['sha256']:
+            valid = len(data) == chunk['size'] and hashlib.sha256(data).hexdigest() == chunk['sha256']
+            if not full:
+                if valid:
+                    break
+                verified['chunks'].pop()
+                verified['offset'] = chunk['offset']
+                continue
+            if chunk['offset'] != verified['offset'] or not valid:
                 break
             verified['chunks'].append(chunk)
             verified['offset'] += len(data)
     with path.open('r+b') as output:
         output.truncate(verified['offset'])
-    atomic_json(receipt, verified)
+    if verified != saved:
+        write_checkpoint(receipt, verified)
     return verified
 
 

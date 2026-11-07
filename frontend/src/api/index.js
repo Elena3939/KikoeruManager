@@ -619,31 +619,36 @@ export const passwordApi = {
 }
 
 export const logApi = {
-  get: async (lines = 100, sinceOffset = -1) => {
+  get: async (lines = 2000, sinceOffset = -1) => {
     const params = { lines }
     if (sinceOffset >= 0) params.since_offset = sinceOffset
     const response = await apiClient.get('/logs', { params })
     return response.data
   },
-  streamUrl: ({ lines = 300, sinceOffset = -1 } = {}) => {
+  streamUrl: ({ lines = 2000, sinceOffset = -1, generation = '' } = {}) => {
     const query = new URLSearchParams()
     query.set('lines', String(lines))
     if (sinceOffset >= 0) query.set('since_offset', String(sinceOffset))
+    if (generation) query.set('generation', generation)
     const suffix = query.toString()
     return apiUrl(`/logs/stream${suffix ? `?${suffix}` : ''}`)
   },
-  search: async (q = '', levels = [], limit = 500, cursor = '', options = {}) => {
+  search: async (q = '', levels = [], limit = 200, cursor = '', options = {}) => {
     const params = { limit, cursor }
     if (q) params.q = q
     if (levels.length) params.levels = levels.join(',')
     if (options.maxScanMb) params.max_scan_mb = options.maxScanMb
     if (options.includeBackups === false) params.include_backups = false
+    for (const key of ['module', 'task_id', 'since', 'until', 'session']) {
+      if (options[key]) params[key] = options[key]
+    }
     const response = await apiClient.get('/logs/search', {
       params,
       signal: options.signal,
     })
     return response.data
   },
+  window: async (params = {}) => (await apiClient.get('/logs/window', { params })).data,
   info: async () => {
     const response = await apiClient.get('/logs/info')
     return response.data

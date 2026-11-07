@@ -1,4 +1,6 @@
-import { shallowRef, markRaw } from 'vue'
+import { shallowRef, shallowReactive, markRaw, watch } from 'vue'
+import { useRealtimeEvents } from './useRealtimeEvents'
+import { getTransferCardProgress } from '../utils/transferCardProgress'
 import { apiUrl, redirectIfSecurityGateExpired } from '../api'
 import { enumerateUploadEntries, yieldUploadThread } from '../utils/browserUploadEntries'
 import { useBackgroundWorkbenchManager } from './useBackgroundWorkbenchManager'
@@ -12,8 +14,8 @@ export const browserUploads = shallowRef([])
 const queue = []
 let activeFiles = 0
 let initialized = false
-let worker, hashId = 0
-const hashes = new Map()
+const hashWorkers = []
+let nextHashWorker = 0, hashId = 0
 const manager = useBackgroundWorkbenchManager()
 const stopped = new Set(['completed', 'failed', 'cancelled'])
 export const UPLOAD_RETENTION_MS = 60_000
@@ -29,12 +31,19 @@ function syncWorkbenchSummary() {
   const key = active.length ? (paused ? 'paused' : 'processing') : failed ? 'failed' : cancelled ? 'cancelled' : 'completed'
   const label = { processing: '上传中', paused: '已暂停', failed: '需要处理', cancelled: '已取消', completed: '已完成' }[key]
   const total = sessions.reduce((sum, session) => sum + Number(session.total_bytes || 0), 0)
-  const written = sessions.reduce((sum, session) => sum + Number(session.written_bytes || 0), 0)
-  const percentage = key === 'completed' ? 100 : Math.min(99, Math.max(0, Math.floor(written * 100 / Math.max(1, total))))
+  const written = sessions.reduce((sum, session) => sum + Number(session.liveWritten || 0), 0)
+  const transfer = getTransferCardProgress(sessions.map(session => ({
+    status: session.status === 'receiving' ? 'processing' : session.status,
+    upload_runtime: { total_bytes: session.total_bytes,
+      transferred_bytes: session.liveReceived, speed_bytes_per_sec: session.speed },
+  })), 'upload')
+  const percentage = transfer.percentage
   const patch = {
     status: { key, label, tone: key === 'completed' ? 'success' : failed ? 'danger' : paused || cancelled ? 'warning' : 'primary' },
     progress: { percentage, label, status: key === 'completed' ? 'success' : failed ? 'exception' : '' },
-    summary: { subtitle: `${sessions.length} 个上传批次`, text: active.length ? `${active.length} 个${paused ? '已暂停' : '处理中'}` : label },
+    summary: { subtitle: `${sessions.length} 个上传批次`, text: active.length ? `${active.length} 个${paused ? '已暂停' : '处理中'}` : label,
+      metaText: `${transfer.metaText} · 已写入 ${formatUploadBytes(written)} / ${formatUploadBytes(total)}`,
+      timingText: sessions.some(session => !session.enumerated && !stopped.has(session.status)) ? '正在读取目录，完成后估算时间' : transfer.timingText },
     metrics: [{ key: 'speed', label: '上传速度', value: formatUploadBytes(sessions.reduce((sum, session) => sum + (session.status === 'receiving' ? session.speed || 0 : 0), 0)) + '/s' }],
   }
   // 视图每 250ms 刷新，仅在展示数据变化时写入工作台及持久化状态。
@@ -74,8 +83,11 @@ export function closeBrowserUploadWorkbench() {
 }
 
 function hash(buffer) {
-  if (!worker) {
-    worker = new Worker(new URL('../workers/browserUploadHash.worker.js', import.meta.url), { type: 'module' })
+  const index = nextHashWorker++ % 3
+  if (!hashWorkers[index]) {
+    const worker = new Worker(new URL('../workers/browserUploadHash.worker.js', import.meta.url), { type: 'module' })
+    const hashes = new Map()
+    hashWorkers[index] = { worker, hashes }
     worker.onmessage = ({ data }) => {
       const pending = hashes.get(data.id)
       hashes.delete(data.id)
@@ -85,14 +97,35 @@ function hash(buffer) {
       for (const pending of hashes.values()) pending.reject(new Error('摘要计算线程异常'))
       hashes.clear()
       worker.terminate()
-      worker = null
+      hashWorkers[index] = null
     }
   }
   return new Promise((resolve, reject) => {
     const id = ++hashId
+    const { worker, hashes } = hashWorkers[index]
     hashes.set(id, { resolve, reject })
     worker.postMessage({ id, buffer }, [buffer])
   })
+}
+
+function updateFile(session, incoming) {
+  const file = session.files.get(incoming.id) || shallowReactive({})
+  session.localReceived += (incoming.received ?? file.received ?? 0) - (file.received || 0)
+  session.localWritten += (incoming.written ?? file.written ?? 0) - (file.written || 0)
+  Object.assign(file, incoming)
+  session.files.set(file.id, file)
+  if (['completed', 'skipped', 'cancelled'].includes(file.status)) session.sources.delete(file.id)
+  return file
+}
+
+function applyAction(session, response) {
+  const { changed_files = [], ...summary } = response
+  Object.assign(session, summary)
+  for (const incoming of changed_files) {
+    const file = updateFile(session, incoming)
+    file.clientFailed = false
+    session.failedReports.delete(file.id)
+  }
 }
 
 async function request(session, suffix = '', options = {}) {
@@ -129,20 +162,23 @@ function pump() {
     if (index < 0) break
     const item = queue.splice(index, 1)[0]
     activeFiles++
+    item.session.activeTransfers.add(item.file)
     transfer(item).catch(async error => {
       if (error.name !== 'AbortError') {
         item.file.status = 'failed'
         item.file.reason = error.message
         item.file.stage = '上传接收'
         item.file.clientFailed = true
+        item.session.failedReports.add(item.file.id)
         try {
-          await request(item.session, '/actions', { method: 'POST', body: JSON.stringify({ action: 'receive_failed', file_id: item.file.id, reason: error.message.slice(0, 2000) }) })
+          applyAction(item.session, await request(item.session, '/actions', { method: 'POST', body: JSON.stringify({ action: 'receive_failed', file_id: item.file.id, reason: error.message.slice(0, 2000) }) }))
         } catch (_) { /* 断网时保留本地失败，连接恢复后补报 */ }
       }
     }).finally(() => {
       item.file.busy = false
       item.file.speed = 0
       item.file.liveBytes = 0
+      item.session.activeTransfers.delete(item.file)
       activeFiles--
       pump()
     })
@@ -185,14 +221,14 @@ async function transfer({ session, file, source }) {
   await gate(session)
   if (!source || source.size !== file.size || source.lastModified !== file.last_modified) throw new Error('来源文件信息已改变，请重新选择原来源')
   const checkpoint = await request(session, `/files/${file.id}/checkpoint`)
-  // 浏览器重选来源时核验所有已确认分块，避免同名同大小的新内容接到旧文件上。
+  // 重选来源核对服务端返回的首、中、尾采样块，成本不随确认前缀增长。
   for (const chunk of checkpoint.chunks) {
     await gate(session)
     const result = await hash(await source.slice(chunk.offset, chunk.offset + chunk.size).arrayBuffer())
     if (result.digest !== chunk.sha256) throw new Error(`来源分块摘要不匹配：${file.relative_path} @ ${chunk.offset}`)
   }
   let offset = checkpoint.offset
-  file.received = offset
+  updateFile(session, { id: file.id, received: offset })
   while (offset < source.size) {
     await gate(session)
     const { digest, buffer } = await hash(await source.slice(offset, offset + CHUNK).arrayBuffer())
@@ -202,12 +238,11 @@ async function transfer({ session, file, source }) {
       await gate(session)
       const controller = new AbortController()
       file.controller = controller
-      const timeout = setTimeout(() => controller.abort(), 120000)
       try {
         file.stage = '上传至服务'
         const result = await sendChunk(session, file, offset, buffer, digest, controller.signal)
         offset = result.offset
-        file.received = offset
+        updateFile(session, { id: file.id, received: offset })
         file.reason = ''
         file.status = 'receiving'
         done = true
@@ -222,14 +257,13 @@ async function transfer({ session, file, source }) {
           await new Promise(resolve => setTimeout(resolve, 500 * 2 ** attempt))
         }
       } finally {
-        clearTimeout(timeout)
         file.controller = null
       }
     }
   }
   await gate(session)
   const completed = await request(session, `/files/${file.id}/complete`, { method: 'POST' })
-  Object.assign(file, completed)
+  updateFile(session, completed)
 }
 
 async function discover(session, sources, restore = false) {
@@ -242,15 +276,15 @@ async function discover(session, sources, restore = false) {
     const current = batch
     batch = []
     const result = await request(session, '/manifest', { method: 'POST', body: JSON.stringify({ entries: current.map(({ file, ...entry }) => entry) }) })
+    const retryIds = restore ? result.files.filter(file => file.status === 'failed').map(file => file.id) : []
+    for (const incoming of result.files) updateFile(session, incoming)
+    if (retryIds.length) {
+      applyAction(session, await request(session, '/actions', { method: 'POST', body: JSON.stringify({ action: 'retry', file_ids: retryIds }) }))
+    }
     for (let i = 0; i < current.length; i++) {
-      const file = session.files.get(result.files[i].id) || result.files[i]
-      Object.assign(file, result.files[i])
-      session.files.set(file.id, file)
+      const file = session.files.get(result.files[i].id)
       if (current[i].file) {
         session.sources.set(file.id, current[i].file)
-        if (restore && file.status === 'failed') {
-          await controlBrowserUpload(session.id, 'retry', file.id)
-        }
         schedule(session, file, current[i].file)
       }
     }
@@ -284,11 +318,13 @@ async function discover(session, sources, restore = false) {
     }
   } finally {
     session.reading = false
+    void poll(session)
   }
 }
 
 function makeSession(data) {
-  return markRaw({ ...data, files: new Map(), sources: new Map(), cursor: 0,
+  return markRaw({ ...data, files: shallowReactive(new Map()), sources: new Map(), cursor: 0,
+    localReceived: 0, localWritten: 0, activeTransfers: new Set(), failedReports: new Set(),
     discoveredFiles: 0, discoveredBytes: 0, speed: 0, backendSpeed: 0, sample: null, notified: '', needsSource: false })
 }
 
@@ -330,17 +366,16 @@ export async function controlBrowserUpload(id, action, fileId, decision, applyAl
   const file = session.files.get(fileId)
   try {
     if (action === 'retry' && file?.clientFailed) {
-      await request(session, '/actions', { method: 'POST', body: JSON.stringify({ action: 'receive_failed', file_id: fileId, reason: file.reason }) })
+      applyAction(session, await request(session, '/actions', { method: 'POST', body: JSON.stringify({ action: 'receive_failed', file_id: fileId, reason: file.reason }) }))
     }
     const response = await request(session, '/actions', { method: 'POST', body: JSON.stringify({ action, file_id: fileId, decision, apply_all: applyAll }) })
-    Object.assign(session, response)
+    applyAction(session, response)
   } catch (error) {
     session.connectionError = `${action === 'cancel' ? '取消' : '操作'}尚未获服务端确认：${error.message}`
     session.snapshotNeeded = true
     throw error
   }
   if (action === 'retry' && file) {
-    file.status = file.sha256 ? 'ready' : 'receiving'
     file.clientFailed = false
     file.reason = ''
     schedule(session, file, session.sources.get(fileId))
@@ -351,7 +386,8 @@ export async function controlBrowserUpload(id, action, fileId, decision, applyAl
 }
 
 async function poll(session) {
-  if (session.polling || (stopped.has(session.status) && session.notified === session.status && !session.snapshotNeeded)) return
+  if (session.polling) { session.eventPending = true; return }
+  if (stopped.has(session.status) && session.notified === session.status && !session.snapshotNeeded) return
   session.polling = true
   try {
     if (session.snapshotNeeded) {
@@ -369,17 +405,17 @@ async function poll(session) {
         }
         if (revision === undefined) revision = currentRevision
         if (!files.length && offset < result.total_entries) throw new Error('上传清单分页未前进，请重新刷新')
-        for (const incoming of result.files) session.files.set(incoming.id, { ...session.files.get(incoming.id), ...incoming })
+        for (const incoming of result.files) updateFile(session, incoming)
         offset += result.files.length
         if (offset >= result.total_entries) break
       } while (true)
       session.cursor = revision || 0
       session.snapshotNeeded = false
     }
-    for (const file of session.files.values()) {
+    for (const fid of session.failedReports) {
+      const file = session.files.get(fid)
       if (file.clientFailed && file.status === 'failed') {
-        await request(session, '/actions', { method: 'POST', body: JSON.stringify({ action: 'receive_failed', file_id: file.id, reason: file.reason.slice(0, 2000) }) })
-        file.clientFailed = false
+        applyAction(session, await request(session, '/actions', { method: 'POST', body: JSON.stringify({ action: 'receive_failed', file_id: file.id, reason: file.reason.slice(0, 2000) }) }))
       }
     }
     let more = true
@@ -392,12 +428,17 @@ async function poll(session) {
         const existing = session.files.get(incoming.id)
         if (existing) {
           const localFailed = existing.clientFailed
-          if (!existing.busy && !localFailed) Object.assign(existing, incoming)
-          else if (incoming.status === 'completed') Object.assign(existing, incoming)
-        } else session.files.set(incoming.id, incoming)
+          if (!existing.busy && !localFailed) updateFile(session, incoming)
+          else if (['verifying', 'ready', 'writing', 'completed', 'conflict'].includes(incoming.status)) {
+            updateFile(session, incoming)
+            existing.clientFailed = false
+            session.failedReports.delete(existing.id)
+          }
+        } else updateFile(session, incoming)
       }
       more = has_more
     }
+    if (more) session.eventPending = true
     session.connectionError = ''
     // 首次恢复只建立服务端状态基线；历史终态不再作为新完成事件重放。
     if (!more && session.restoring) {
@@ -422,11 +463,39 @@ async function poll(session) {
     }
     session.connectionError = error.message
     if (error.status === 409) {
+      if (!session.snapshotNeeded) session.eventPending = true
       session.snapshotNeeded = true
     }
   } finally {
     session.polling = false
+    refreshView()
+    if (session.eventPending && runtime.get(session.id) === session) {
+      session.eventPending = false
+      void poll(session)
+    }
   }
+}
+
+function applyUploadEvent(event) {
+  const data = event.payload || {}
+  const session = runtime.get(data.id)
+  if (!session) return
+  if (session.polling || session.snapshotNeeded || data.from_cursor !== session.cursor) {
+    void poll(session)
+    return
+  }
+  const { files = [], from_cursor, cursor, has_more, ...summary } = data
+  Object.assign(session, summary, { cursor })
+  for (const incoming of files) {
+    const file = session.files.get(incoming.id)
+    if (file?.busy && incoming.received < file.received) incoming.received = file.received
+    if (!file?.clientFailed || ['verifying', 'ready', 'writing', 'completed', 'conflict'].includes(incoming.status)) {
+      updateFile(session, incoming)
+      if (file) { file.clientFailed = false; session.failedReports.delete(file.id) }
+    }
+  }
+  refreshView()
+  if (has_more || session.failedReports.size || (stopped.has(session.status) && !session.index_pending)) void poll(session)
 }
 
 function refreshView() {
@@ -444,12 +513,13 @@ function refreshView() {
       delete session.terminalAt
       remember()
     }
-    let received = 0, written = 0, activeFileCount = 0
-    for (const file of session.files.values()) {
+    let received = Math.max(session.localReceived, session.received_bytes || 0)
+    const written = Math.max(session.localWritten, session.written_bytes || 0)
+    let activeFileCount = 0
+    for (const file of session.activeTransfers) {
       if (file.busy && session.status === 'receiving') activeFileCount++
       const live = Math.min(file.size, (file.received || 0) + (file.liveBytes || 0))
-      received += live
-      written += file.written || 0
+      received += live - (file.received || 0)
       if (file.sample) {
         const elapsed = (now - file.sample.time) / 1000
         const rate = Math.max(0, live - file.sample.bytes) / Math.max(.001, elapsed)
@@ -510,13 +580,15 @@ export function initializeBrowserUploads() {
   }
   remember()
   if (!runtime.size) manager.patchWorkbenchState(UPLOAD_WORKBENCH, { cardVisible: false, backgroundActive: false })
-  let polling = false
-  setInterval(async () => {
-    if (polling) return
-    polling = true
-    try { await Promise.all(Array.from(runtime.values(), session => poll(session))) } finally { polling = false }
-    refreshView()
-  }, 1500)
+  const realtime = useRealtimeEvents()
+  realtime.subscribe('library.browser-upload.changed', applyUploadEvent)
+  watch(realtime.connected, connected => {
+    if (!connected) return
+    for (const session of runtime.values()) {
+      session.snapshotNeeded = true
+      void poll(session)
+    }
+  })
   setInterval(refreshView, 250)
 }
 

@@ -3,10 +3,58 @@ import { mount } from '@vue/test-utils'
 import { reactive, ref, nextTick } from 'vue'
 
 vi.mock('../api', () => ({ asmrSyncApi: { status: vi.fn() }, httpDownloadApi: { status: vi.fn() }, baiduNetdiskApi: { status: vi.fn() }, localUploadApi: { status: vi.fn() }, rjSubtitleApi: { status: vi.fn() } }))
+vi.mock('./useRealtimeEvents', () => ({ useRealtimeEvents: () => ({ connected: ref(false) }) }))
 
 beforeEach(() => { localStorage.clear(); vi.resetModules() })
 afterEach(() => { vi.useRealTimers() })
 describe('任务小窗持久恢复', () => {
+  it('后台 SSE 直接更新进度，定时刷新不请求上传和 ASMR', async () => {
+    const cards = await import('./usePersistentTaskCards')
+    const { localUploadApi, asmrSyncApi } = await import('../api')
+    cards.rememberTaskCard('upload', { taskSource: 'upload', taskIds: ['one'], title: '上传正在后台运行' }, '/library')
+    localUploadApi.status.mockResolvedValue({ tasks: [{ id: 'one', status: 'processing', upload_runtime: { total_bytes: 1000, transferred_bytes: 100 } }] })
+    await cards.refreshPersistentTaskCards()
+    localUploadApi.status.mockClear()
+    asmrSyncApi.status.mockClear()
+    cards.applyPersistentTransferEvent({ type: 'task_center_changed_batch', events: [
+      { type: 'task_center_changed', engine_task_id: 'one', status: 'processing', upload_runtime: { total_bytes: 1000, transferred_bytes: 360, speed_bytes_per_sec: 10 } }
+    ] })
+    expect(cards.persistentTaskCards.upload.props.percentage).toBe(36)
+    expect(cards.persistentTaskCards.upload.props.metaText).toContain('10.00 B/s')
+    await cards.refreshPersistentTaskCards({ includeTransfers: false })
+    expect(localUploadApi.status).not.toHaveBeenCalled()
+    expect(asmrSyncApi.status).not.toHaveBeenCalled()
+  })
+  it('页面直接消费 SSE，进度事件不拉快照，结束时补一次明细', async () => {
+    const { usePersistentTaskWorkbench } = await import('./usePersistentTaskCards')
+    const tasks = ref([{ id: 'one', status: 'processing', download_runtime: { total_bytes: 1000 } }])
+    const refresh = vi.fn().mockResolvedValue(undefined)
+    const wrapper = mount({ setup() {
+      usePersistentTaskWorkbench(reactive({ path: '/asmr-sync' }), 'asmr', ref(['one']), ref(true), ref(false), refresh, { tasks })
+      return () => null
+    } })
+    const emit = payload => window.dispatchEvent(new CustomEvent('kikoerumanager:events:message', { detail: { type: 'task.center.changed', payload } }))
+    emit({ type: 'task_center_changed', engine_task_id: 'one', status: 'processing', download_runtime: { transferred_bytes: 360, speed_bytes_per_sec: 10 } })
+    expect(tasks.value[0].download_runtime.transferred_bytes).toBe(360)
+    expect(refresh).not.toHaveBeenCalled()
+    emit({ type: 'task_center_changed', engine_task_id: 'one', status: 'completed' })
+    expect(refresh).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+  it.each([['upload', 'localUploadApi'], ['asmr', 'asmrSyncApi']])('%s 恢复轮询保留字节进度、速度和预计完成时间', async (source, apiName) => {
+    const cards = await import('./usePersistentTaskCards')
+    const api = (await import('../api'))[apiName]
+    const mode = source === 'upload' ? 'upload' : 'download'
+    cards.rememberTaskCard('transfer', { taskSource: source, taskIds: ['one'], title: '任务正在后台运行' }, '/library')
+    api.status.mockResolvedValue({ tasks: [{ id: 'one', status: 'processing', progress: 11,
+      [`${mode}_runtime`]: { total_bytes: 1000, transferred_bytes: 360, speed_bytes_per_sec: 10 } }] })
+    await cards.refreshPersistentTaskCards()
+    const props = cards.persistentTaskCards.transfer.props
+    expect(props.percentage).toBe(36)
+    expect(props.metaText).toContain('10.00 B/s')
+    expect(props.timingText).toContain('预计完成')
+    expect(props.timingText).toContain('1 分 4 秒')
+  })
   it.each([
     ['http', 'httpDownloadApi'],
     ['baidu', 'baiduNetdiskApi'],

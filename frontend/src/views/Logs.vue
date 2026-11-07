@@ -22,25 +22,25 @@
           {{ isPaused ? '恢复刷新' : '暂停刷新' }}
         </button>
 
-        <button type="button" class="logs-toolbar-btn is-default" :disabled="!isFullSearch && !canRefreshLive" @click="refreshCurrentLogs">
+        <StatefulButton unstyled type="button" class="logs-toolbar-btn is-default" :disabled="!isFullSearch && !canRefreshLive" @click="refreshCurrentLogs">
           <RefreshCw :size="13" />
           刷新
-        </button>
+        </StatefulButton>
 
         <button type="button" class="logs-toolbar-btn is-default" @click="exportFilteredLogs">
           <Download :size="13" />
           导出筛选结果
         </button>
 
-        <button type="button" class="logs-toolbar-btn is-default" @click="copyVisibleLogs">
+        <StatefulButton unstyled type="button" class="logs-toolbar-btn is-default" @click="copyVisibleLogs">
           <Copy :size="13" />
           复制可见窗口
-        </button>
+        </StatefulButton>
 
-        <button type="button" class="logs-toolbar-btn is-default" @click="openLogManager">
+        <StatefulButton unstyled type="button" class="logs-toolbar-btn is-default" @click="openLogManager">
           <Settings2 :size="13" />
           日志管理
-        </button>
+        </StatefulButton>
 
         <button type="button" class="logs-toolbar-btn is-danger" @click="clearLogs">
           <AppLottieIcon :src="deleteIconAnimation" :size="26" tone="danger" />
@@ -99,12 +99,12 @@
           class="logs-search-clear"
           @click="clearSearchKeyword"
         >清空</button>
-        <button
+        <StatefulButton unstyled
           v-if="isFullSearch"
           type="button"
           class="logs-search-submit"
           @click="doFullSearch(true)"
-        >检索</button>
+        >检索</StatefulButton>
       </div>
 
       <div class="logs-toolbar-actions">
@@ -120,7 +120,7 @@
           />
         </div>
 
-        <button
+        <StatefulButton unstyled
           type="button"
           class="logs-toggle-btn"
           :class="{ 'is-active': isFullSearch }"
@@ -129,7 +129,7 @@
           <FileSearch :size="12" />
           {{ isSearchLoading ? '检索中…' : isFullSearch ? '全历史模式' : '搜索全历史' }}
           <span v-if="fullSearchTotal > 0" class="text-[10px] text-indigo-400">{{ fullSearchTotal }}</span>
-        </button>
+        </StatefulButton>
 
         <button
           type="button"
@@ -154,8 +154,8 @@
         <span
           v-if="lastSearchStoppedEarly"
           class="logs-status-chip is-warning"
-          title="本次搜索触顶（5 万匹配 / 96MB 扫描预算 / 单页 1000 条），未扫到全部历史"
-        >已截断</span>
+          title="本页扫描达到 800ms 预算或 200 条结果，可继续加载后续历史"
+        >仍有历史</span>
         <span
           v-if="streamDroppedCount > 0"
           class="logs-status-chip is-warning"
@@ -165,42 +165,91 @@
       </div>
     </div>
 
-    <div class="system-log-shell" :class="{ 'is-search-mode': isFullSearch }">
-      <SystemLogTerminal
-        title="system.log"
-        :subtitle="terminalSubtitle"
-        :lines="terminalLines"
-        :highlight-terms="searchTerms"
-        :status="terminalStatus"
-        :error-message="terminalErrorMessage"
-        :max-height="terminalMaxHeight"
-        :auto-scroll-enabled="!isPaused && !isFullSearch"
-        @update:auto-scroll-enabled="setAutoRefreshEnabled"
-        @follow-change="onTerminalFollowChange"
-        @clear="clearLogs"
-        @reconnect="reconnectLogStream"
-      />
+    <div class="system-log-shell" :class="{ 'is-search-mode': isFullSearch }" :style="{ '--logs-terminal-limit': `${terminalMaxHeight + 120}px` }">
+      <div class="logs-terminal-layout">
+        <section
+          v-for="lane in visibleTaskLanes"
+          :key="lane.key"
+          class="logs-active-tasks"
+          :class="`is-${lane.key}`"
+          :aria-label="lane.title"
+        >
+          <div class="logs-active-heading">
+            <span><component :is="lane.icon" :size="13" />{{ lane.title }} <small>{{ lane.tasks.length }}</small></span>
+            <button class="logs-active-toggle" :aria-expanded="showAllActive" @click="showAllActive = !showAllActive">
+              {{ showAllActive ? '收起' : '展开' }}<ChevronDown :size="13" :class="{ 'is-open': showAllActive }" />
+            </button>
+          </div>
+          <div v-show="showAllActive" class="logs-active-list" tabindex="0" :aria-label="`${lane.title}列表`">
+            <TransitionGroup name="active-task">
+              <div v-for="task in lane.tasks" :key="task.id" :data-task-id="task.id" class="logs-active-task" :class="{ 'is-finished': task.finished, 'is-failed': task.failed }">
+                <div class="logs-active-title">
+                  <img v-if="task.sourceIcon" :src="task.sourceIcon" :alt="task.sourceName" class="logs-active-source-icon" />
+                  <component v-else :is="task.icon" :size="17" />
+                  <span class="logs-active-label" :title="task.label">{{ task.label }}</span>
+                  <span class="logs-active-phase">{{ task.finished ? (task.failed ? '失败' : task.cancelled ? '已取消' : '已完成') : task.phase }}</span>
+                  <strong>{{ task.progress }}<small>%</small></strong>
+                </div>
+                <div class="logs-active-track" :class="{ 'is-running': !task.finished }" role="progressbar" :aria-label="`${task.label}进度`" :aria-valuenow="task.progress" aria-valuemin="0" aria-valuemax="100">
+                  <div class="logs-active-fill" :style="{ width: `${task.progress}%` }" />
+                  <div v-if="!task.finished && !task.progress" class="logs-active-indeterminate" />
+                </div>
+                <div class="logs-active-details">
+                  <span class="logs-active-speed">{{ formatLogBytes(task.speed) }}/s</span>
+                  <span>{{ formatLogBytes(task.bytes) }} / {{ task.total ? formatLogBytes(task.total) : '统计中' }}</span>
+                  <span v-if="task.fileCount">文件 {{ task.fileIndex }}/{{ task.fileCount }}</span>
+                </div>
+                <div class="logs-active-timing">
+                  <span>已用 {{ formatProgressDuration(Math.max(0, (task.endedMs || progressTicker) - task.startedMs)) }}</span>
+                  <span>{{ task.finished ? (task.failed ? '任务失败' : task.cancelled ? '任务已取消' : '传输完成') : `剩余 ${task.eta === null ? '计算中…' : formatProgressDuration(task.eta * 1000)}` }}</span>
+                </div>
+              </div>
+            </TransitionGroup>
+            <div v-if="!lane.tasks.length" class="logs-active-empty">暂无{{ lane.title }}</div>
+          </div>
+        </section>
 
-      <div v-if="isFullSearch" class="border-t border-white/10 px-4 py-2 bg-black/20 flex items-center gap-2">
-        <button
-          type="button"
-          class="px-3 py-1.5 rounded border border-slate-400/40 bg-slate-500/10 text-slate-200 text-xs font-semibold hover:bg-slate-500/20 transition disabled:opacity-40 disabled:cursor-not-allowed"
-          :disabled="isSearchLoading || fullSearchPageStart <= 0"
-          @click="loadPrevFullSearchPage"
-        >上一页</button>
-        <button
-          type="button"
-          class="px-3 py-1.5 rounded border border-indigo-400/50 bg-indigo-400/10 text-indigo-200 text-xs font-semibold hover:bg-indigo-400/20 transition disabled:opacity-40 disabled:cursor-not-allowed"
-          :disabled="isSearchLoading || !fullSearchHasMore"
-          @click="loadNextFullSearchPage"
-        >下一页</button>
-        <span class="text-[11px] text-slate-400 ml-1">页起点 {{ fullSearchPageStart }} / 总匹配 {{ fullSearchTotal }}</span>
+        <SystemLogTerminal
+          ref="terminalRef"
+          title="system.log"
+          :subtitle="terminalSubtitle"
+          :lines="terminalLines"
+          :highlight-terms="searchTerms"
+          :copy-task="copyTaskLogs"
+          :status="terminalStatus"
+          :error-message="terminalErrorMessage"
+          :max-height="terminalMaxHeight"
+          :auto-scroll-enabled="!isPaused"
+          @update:auto-scroll-enabled="setAutoRefreshEnabled"
+          @follow-change="onTerminalFollowChange"
+          @clear="clearLogs"
+          @reconnect="reconnectLogStream"
+          @load-before="loadEarlierLogs"
+          @copy-task="copyTaskLogs"
+          @line-expand="loadTaskTimeline"
+          @noise-expand="toggleNoiseGroup"
+        />
       </div>
+
+      <StatefulButton unstyled v-if="newLogCount || tailGap" class="logs-new-bar" @click="returnToBottom">
+        {{ newLogCount }} 条新日志 · 回到底部
+      </StatefulButton>
+      <aside v-if="isFullSearch" class="logs-search-panel" @scroll.passive="onSearchPanelScroll">
+        <div class="logs-search-panel-head"><strong>全历史搜索 · {{ searchResults.length }} 条</strong><StatefulButton unstyled class="logs-toolbar-btn" @click="toggleFullSearch"><X :size="14" /></StatefulButton></div>
+        <input v-model="searchTaskId" class="logs-search-input" placeholder="任务 ID" @input="onSearchInput" />
+        <input v-model="searchSince" class="logs-search-input" type="datetime-local" aria-label="开始时间" @input="onSearchInput" />
+        <input v-model="searchUntil" class="logs-search-input" type="datetime-local" aria-label="结束时间" @input="onSearchInput" />
+        <StatefulButton unstyled v-for="item in searchResults" :key="`${item.file}:${item.offset}`" class="logs-search-result" @click="() => jumpToSearchResult(item)">
+          <small>{{ item.file }} · {{ item.offset }}</small><span><template v-for="(part, index) in searchResultParts(item)" :key="index"><mark v-if="part.highlighted">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></span>
+        </StatefulButton>
+        <StatefulButton unstyled v-if="fullSearchHasMore" class="logs-toolbar-btn" :disabled="isSearchLoading" @click="loadNextFullSearchPage">加载更多</StatefulButton>
+        <span v-if="isSearchLoading">检索中…</span>
+      </aside>
     </div>
 
     <el-dialog
       v-model="logManagerVisible"
-      class="log-manager-dialog"
+      class="log-manager-dialog mobile-full-dialog"
       modal-class="log-manager-overlay"
       width="680px"
       :close-on-click-modal="false"
@@ -277,15 +326,15 @@
           </div>
 
           <div class="flex flex-wrap gap-2">
-            <button
+            <StatefulButton unstyled
               type="button"
               class="log-manager-action-btn is-default"
               :disabled="cleanupLoading"
               @click="loadLogInfo"
             >
               <RefreshCw :size="13" />刷新
-            </button>
-            <button
+            </StatefulButton>
+            <StatefulButton unstyled
               type="button"
               class="log-manager-action-btn is-success"
               :disabled="cleanupLoading"
@@ -293,8 +342,8 @@
               title="把当前 app.log 滚到 .1，新日志写入空文件；不删除任何内容"
             >
               <RefreshCw :size="13" />立即轮转
-            </button>
-            <button
+            </StatefulButton>
+            <StatefulButton unstyled
               type="button"
               class="log-manager-action-btn is-warning"
               :disabled="cleanupLoading"
@@ -302,8 +351,8 @@
               title="删除所有 app.log.N 备份文件"
             >
               <Trash2 :size="13" />清理所有备份
-            </button>
-            <button
+            </StatefulButton>
+            <StatefulButton unstyled
               type="button"
               class="log-manager-action-btn is-warning"
               :disabled="cleanupLoading"
@@ -311,8 +360,8 @@
               title="把主日志保留最近 2MB，丢弃前面所有内容（应急救急）"
             >
               <Trash2 :size="13" />截断主日志到 2MB
-            </button>
-            <button
+            </StatefulButton>
+            <StatefulButton unstyled
               type="button"
               class="log-manager-action-btn is-danger"
               :disabled="cleanupLoading"
@@ -320,7 +369,7 @@
               title="先轮转再清理全部备份；当前 app.log 会被清空，旧日志将无法恢复"
             >
               <Trash2 :size="13" />一键瘦身
-            </button>
+            </StatefulButton>
           </div>
         </div>
 
@@ -337,11 +386,16 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { nextTick, computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import {
   Terminal,
+  ChevronDown,
   Copy,
   Download,
+  Upload,
+  ScanSearch,
+  PackageOpen,
+  Workflow,
   FileSearch,
   HardDrive,
   PauseCircle,
@@ -355,32 +409,50 @@ import {
 } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
-import { logApi, redirectIfSecurityGateExpired } from '../api'
+import { logApi, taskCenterApi, redirectIfSecurityGateExpired } from '../api'
 import AppLottieIcon from '../components/common/AppLottieIcon.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import SystemLogTerminal from '../components/common/SystemLogTerminal.vue'
-import { buildTaskProgress, parseTaskProgressPayload } from '../utils/logProgress'
+import { buildTaskProgress, parseTaskProgressPayload, resolveLogTaskPhase } from '../utils/logProgress'
+import { mergeLogWindow, createLogFilter } from '../utils/logWindow'
+import { useRealtimeEvents } from '../composables/useRealtimeEvents'
+import StatefulButton from '../components/ui/stateful-button.vue'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
+import baiduIcon from '../assets/platforms/baidu-netdisk.ico'
+import pikpakIcon from '../assets/platforms/pikpak.png'
+import gofileIcon from '../assets/platforms/gofile.png'
+import googleDriveIcon from '../assets/platforms/google-drive.ico'
+import onedriveIcon from '../assets/platforms/onedrive.ico'
+import transferitIcon from '../assets/platforms/transferit.ico'
 
-const LOG_FLUSH_INTERVAL = 160
 const LOG_STREAM_RECONNECT_MS = 2500
 const MIN_LIVE_HISTORY_BACKFILL_LINES = 50
 const COMPACT_PROCESS_LOGS_KEY = 'kikoerumanager.logs.compact_process_noise'
 const LOG_BLOCK_PREFIX = '__KIKOERUMANAGER_LOG_BLOCK__'
 
 const logs = shallowRef([])
+const terminalRef = ref(null)
 const isPaused = ref(false)
 const terminalFollowing = ref(true)
-const canRefreshLive = computed(() => !isPaused.value && !isFullSearch.value)
-const logLimit = ref(300)
+const canRefreshLive = computed(() => !isPaused.value)
+const logLimit = ref(2000)
+const newLogCount = ref(0)
+const tailGap = ref(false)
+let logFileGeneration = ''
+let holdLiveWindow = false
+const receivedOffsets = new Map()
+const searchResults = shallowRef([])
+const searchTaskId = ref('')
+const searchSince = ref('')
+const searchUntil = ref('')
+const searchSession = `logs-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
-// 「条数」下拉选项。1000 条对实际排查日志足够，需要更多请用"搜索全历史"或"导出筛选结果"。
+// 日志窗口按逻辑记录计数。
 const logLimitOptions = [
-  { value: 100, label: '100 条' },
-  { value: 300, label: '300 条' },
-  { value: 500, label: '500 条' },
   { value: 1000, label: '1000 条' },
+  { value: 2000, label: '2000 条' },
+  { value: 5000, label: '5000 条' },
 ]
 const selectedLevels = ref(['INFO', 'WARNING', 'ERROR'])
 const selectedModules = ref([])
@@ -398,6 +470,7 @@ let logEventSource = null
 let reconnectTimer = null
 let streamFlushTimer = null
 let pendingStreamLines = []
+let pendingStreamRecords = []
 let liveBackfillInFlight = false
 let lastSparseBackfillAt = 0
 let progressTickerTimer = null
@@ -415,8 +488,8 @@ const fullSearchTotal = ref(0)
 const fullSearchCursor = ref('')
 const fullSearchHasMore = ref(false)
 const fullSearchPageStart = ref(0)
-const FULL_SEARCH_PAGE_SIZE = 500
-const MIN_FULL_SEARCH_KEYWORD_LENGTH = 2
+const FULL_SEARCH_PAGE_SIZE = 200
+const MIN_FULL_SEARCH_KEYWORD_LENGTH = 1
 const isSearchLoading = ref(false)
 let fullSearchRequestSeq = 0
 let fullSearchCurrentCursor = ''
@@ -436,96 +509,52 @@ const availableModules = computed(() => {
   return Array.from(modules).sort()
 })
 
+const filterRows = createLogFilter()
+const expandedNoise = ref(new Set())
+const noiseGroupCache = new Map()
 const filteredLogs = computed(() => {
-  const terms = searchTerms.value
-  const lvlSet = new Set(selectedLevels.value)
-  const moduleSet = selectedModules.value.length
-    ? new Set(selectedModules.value)
-    : null
-  const termCount = terms.length
-  // 全历史搜索模式下，logs.value 已经是后端按整行匹配过滤过的结果。
-  // 前端如果再用 messageLower / moduleLower 过滤，会把后端命中但解析后
-  // message 部分不含关键字的行（例如关键字命中在时间戳 / 路径 / access log）
-  // 重新过滤掉，导致出现"X 总计 0 匹配"。这里在全历史模式下放行 keyword，
-  // 仅保留级别 / 模块过滤，避免二次过滤造成搜索失效。
-  const skipKeywordFilter = isFullSearch.value
-  const nowMs = progressTicker.value
-  const candidates = []
-  const latestProgressByTask = new Map()
-  const firstProgressMsByTask = new Map()
-
-  logs.value.forEach((log, index) => {
-    if (!lvlSet.has(log.level)) return false
-    if (moduleSet && !moduleSet.has(log.module)) return false
-    const taskProgress = parseTaskProgressLog(log, index)
-    if (taskProgress) {
-      if (taskProgress.timestampMs && !firstProgressMsByTask.has(taskProgress.taskId)) {
-        firstProgressMsByTask.set(taskProgress.taskId, taskProgress.timestampMs)
-      }
-      latestProgressByTask.set(taskProgress.taskId, taskProgress)
-      candidates.push({ type: 'task-progress', log, taskProgress })
-      return false
-    }
-    if (compactProcessLogs.value && isProcessNoiseLog(log)) return false
-    if (!termCount || skipKeywordFilter) {
-      candidates.push({ type: 'log', log })
-      return true
-    }
-    // 消费解析阶段预先缓存的 lower-case（messageLower / moduleLower / rawLineLower），
-    // 这里不再 toLowerCase，单次过滤开销从 O(n·m) 降到 O(n·k)。
-    if (!matchesSearchTerms(log, terms)) {
-      return false
-    }
-    candidates.push({ type: 'log', log })
-    return true
+  const rows = filterRows(logs.value, {
+    levels: selectedLevels.value, modules: selectedModules.value,
+    terms: isFullSearch.value ? [] : searchTerms.value,
   })
-
-  for (const progress of latestProgressByTask.values()) {
-    const startedMs = parseLogTimeMs(progress.startedAt) || firstProgressMsByTask.get(progress.taskId) || progress.timestampMs || 0
-    const endedMs = progress.active ? Math.max(nowMs, progress.timestampMs || startedMs) : (parseLogTimeMs(progress.completedAt) || progress.timestampMs || startedMs)
-    progress.startedMs = startedMs
-    progress.durationMs = Math.max(0, endedMs - startedMs)
-    progress.durationLabel = formatProgressDuration(progress.durationMs)
+  if (!compactProcessLogs.value) return rows
+  const result = []
+  const retained = new Set()
+  let group = null
+  for (const row of rows) {
+    if (!row.isNoise) { group = null; result.push(row); continue }
+    if (!group) {
+      const key = `noise:${row.key}`
+      group = noiseGroupCache.get(key) || { ...row, key, id: key, kind: 'noise-group', source: row.module }
+      group.count = 0
+      group.members = []
+      noiseGroupCache.set(key, group)
+      retained.add(key)
+      result.push(group)
+    }
+    group.count++
+    group.members.push(row)
+    group.message = `已隐藏 ${group.count} 条进度/噪音 · 展开`
+    if (expandedNoise.value.has(group.key)) result.push(row)
   }
-
-  return candidates.flatMap((entry) => {
-    if (entry.type !== 'task-progress') return [entry.log]
-
-    const latest = latestProgressByTask.get(entry.taskProgress.taskId)
-    if (!latest || latest.order !== entry.taskProgress.order) return []
-    return [buildTaskProgressTerminalLog(entry.log, entry.taskProgress)]
-  })
+  for (const key of noiseGroupCache.keys()) if (!retained.has(key)) noiseGroupCache.delete(key)
+  return result
 })
-
-const hiddenProcessNoiseCount = computed(() => {
-  if (!compactProcessLogs.value) return 0
-  const lvlSet = new Set(selectedLevels.value)
-  const moduleSet = selectedModules.value.length
-    ? new Set(selectedModules.value)
-    : null
-  let count = 0
-  for (const log of logs.value) {
-    if (!lvlSet.has(log.level)) continue
-    if (moduleSet && !moduleSet.has(log.module)) continue
-    if (parseTaskProgressLog(log)) continue
-    if (isProcessNoiseLog(log)) count += 1
+const hiddenProcessNoiseCount = computed(() => compactProcessLogs.value ? logs.value.reduce((n, row) => n + Number(row.isNoise), 0) : 0)
+const terminalRowCache = new WeakMap()
+const terminalLines = computed(() => filteredLogs.value.map((log) => {
+  if (log.kind === 'noise-group') return log
+  if (terminalRowCache.has(log)) return terminalRowCache.get(log)
+  const progress = parseTaskProgressLog(log)
+  const row = {
+    ...log, id: log.key, source: log.module || inferSourceFromLevel(log.level),
+    kind: progress ? 'task-progress' : 'log', progress: progress?.progress ?? null,
+    taskProgress: progress,
+    message: progress ? `● ${progress.title || progress.phase} · ${progress.progress}%${progress.fileCount ? ` · ${progress.fileIndex}/${progress.fileCount}` : ''}${progress.speedBytesPerSec ? ` · ${formatLogBytes(progress.speedBytesPerSec)}/s` : ''} · ${progress.detail}` : log.message,
   }
-  return count
-})
-
-const terminalLines = computed(() => filteredLogs.value.map((log) => ({
-  id: log.key,
-  time: log.time,
-  level: log.level,
-  source: log.module || inferSourceFromLevel(log.level),
-  kind: log.kind || 'log',
-  progress: log.progress ?? null,
-  taskProgress: log.taskProgress || null,
-  message: log.displayMessage || log.message,
-  fullMessage: log.fullMessage || log.message,
-  rawLine: log.rawLine,
-  isTruncated: Boolean(log.isTruncated),
-})))
+  terminalRowCache.set(log, row)
+  return row
+}))
 
 const terminalSubtitle = computed(() => {
   if (isFullSearch.value) {
@@ -659,7 +688,10 @@ function isProcessNoiseLog(log) {
     return false
   }
 
-  return [
+  return PROCESS_NOISE_PATTERN.test(text)
+}
+
+const PROCESS_NOISE_PATTERN = new RegExp([
     /执行7z命令/,
     /解压中\s*\d+%/,
     /准备解压|开始解压|解压子进程已启动|验证解压完整性|解压完整性验证完成/,
@@ -681,15 +713,14 @@ function isProcessNoiseLog(log) {
     /\[SynologyUpload\].*(命中已缓存成功变体|尝试变体|变体失败|检测到可恢复网络中断)/,
     /\[\/api\/conflicts\].*(解析参数完成|数据查询完成|详情组装完成|请求完成|db_query|phase1|phase2|items)/,
     /\[字幕补配\].*(目标目录候选收敛到最里层 RJ 目录|目标目录搜索库存列表|开始搜索目标目录|目标目录搜索结果|目标目录搜索完成|远程目标目录未命中，等待后重试|命中目录规则直查:.*path=)/,
-  ].some((pattern) => pattern.test(text))
-}
+  ].map((pattern) => pattern.source).join('|'))
 
 function onSearchInput() {
   if (!isFullSearch.value) return
   if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
   searchDebounceTimer = setTimeout(() => {
     doFullSearch()
-  }, 500)
+  }, 300)
 }
 
 function clearSearchKeyword() {
@@ -754,7 +785,7 @@ function parseLogLine(line) {
     if (taskProgressPayload) message = taskProgressPayload.step || ''
     const rawSource = extra.rawLine ?? line
     const fullSource = extra.fullMessage ?? ''
-    const mod = taskProgressPayload?.phase || parseModule(message, String(rawSource || line || ''))
+    const mod = extra.module || String(rawSource).match(/(?:\]\s+| - )([^\s]+)\s+-\s+/)?.[1] || parseModule(message, String(rawSource || line || ''))
     const levelUpper = (level || 'INFO').toUpperCase()
     const safeRaw = typeof rawSource === 'string' ? rawSource : String(rawSource || '')
     const rawLower = safeRaw.length && safeRaw.length <= RAW_LOWER_LIMIT ? safeRaw.toLowerCase() : ''
@@ -771,6 +802,9 @@ function parseLogLine(line) {
       moduleLower: (mod || '').toLowerCase(),
       ...buildDisplayMessage(message),
     }
+    parsed.taskId = taskProgressPayload?.task_id || safeRaw.match(/\[task=([^\]]+)\]/)?.[1] || ''
+    parsed.searchText = safeRaw.toLowerCase()
+    parsed.isNoise = !taskProgressPayload && isProcessNoiseLog(parsed)
     parseCache.set(line, parsed)
     return parsed
   }
@@ -792,10 +826,10 @@ function parseLogLine(line) {
     }
   }
 
-  let match = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\[(\w+)\]\s+\S+\s+-\s+(.+)$/)
+  let match = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:[,.]\d+)?)\s+\[(\w+)\]\s+\S+\s+-\s+([\s\S]*)$/)
   if (match) return buildParsed(match[1], match[2], match[3])
 
-  match = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+-\s+\S+\s+-\s+(\w+)\s+-\s+(.+)$/)
+  match = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:[,.]\d+)?)\s+-\s+\S+\s+-\s+(\w+)\s+-\s+([\s\S]*)$/)
   if (match) return buildParsed(match[1], match[2], match[3])
 
   return buildParsed('', 'INFO', line)
@@ -862,12 +896,67 @@ function setAutoRefreshEnabled(enabled) {
 
 function onTerminalFollowChange(following) {
   terminalFollowing.value = following
+  if (following) newLogCount.value = 0
+}
+
+async function returnToBottom() {
+  if (tailGap.value) {
+    closeLogStream({ discardPending: true })
+    try {
+      const data = await logApi.get(logLimit.value, -1)
+      if (Array.isArray(data.records)) appendParsedRecords(data.records, 'return-', { reset: true })
+      else appendParsedLogs(data.logs || [], 'return-', { reset: true })
+      if (typeof data.next_offset === 'number') nextOffset = data.next_offset
+      logFileGeneration = data.generation || ''
+      holdLiveWindow = false
+      tailGap.value = false
+      newLogCount.value = 0
+      terminalFollowing.value = true
+    } finally { if (!isPaused.value) connectLogStream() }
+  }
+  tailGap.value = false
+  newLogCount.value = 0
+  terminalFollowing.value = true
+  await nextTick()
+  terminalRef.value?.followBottom?.()
+}
+
+async function loadEarlierLogs({ file = 'app.log', anchorOffset = 0, done } = {}) {
+  try {
+    const first = logs.value[0]
+    const anchor = Number(first?.offset ?? anchorOffset ?? 0)
+    const state = terminalRef.value?.captureScrollState?.()
+    const data = await logApi.window({ file: first?.file || file, anchor_offset: anchor, before: Math.min(500, logLimit.value), after: 0, mode: 'before' })
+    const records = Array.isArray(data?.records) ? data.records : []
+    if (!records.length) return
+    const existing = new Set(logs.value.map((item) => item.key))
+    const parsed = records
+      .filter((item) => item && item.line && !existing.has(`${item.file}:${item.offset}`))
+      .map((item) => {
+        const row = parseLogLines([String(item.line)], `history-${item.file}:${item.offset}:`)[0]
+        row.file = String(item.file || file)
+        row.offset = Number(item.offset || 0)
+        row.endOffset = Number(item.end_offset || row.offset)
+        row.key = `${row.file}:${row.offset}`
+        return row
+      })
+    if (parsed.length) {
+      const merged = mergeLogWindow(logs.value, parsed, { limit: logLimit.value, following: false, prepend: true, anchorKey: state?.key, endKey: state?.endKey })
+      logs.value = merged.rows
+      tailGap.value ||= merged.tailGap
+      await nextTick()
+      terminalRef.value?.restoreScrollState?.(state)
+    }
+  } catch (error) {
+    console.warn('加载更早日志失败', error)
+  } finally {
+    done?.()
+  }
 }
 
 function refreshCurrentLogs() {
   if (isFullSearch.value) {
-    doFullSearch(true)
-    return
+    return doFullSearch(true)
   }
   if (!canRefreshLive.value) return
   connectLogStream({ reset: true })
@@ -885,23 +974,13 @@ async function refreshLogs(force = false) {
     const data = await logApi.get(logLimit.value, useIncremental ? nextOffset : -1)
     if (generation !== streamGeneration || !canRefreshLive.value || nextOffset !== requestOffset || pendingStreamLines.length) return
     const logLines = Array.isArray(data.logs) ? data.logs : []
+    logFileGeneration = data.generation || logFileGeneration
 
     if (typeof data.next_offset === 'number') nextOffset = data.next_offset
 
-    if (!data.is_full && !force) {
-      if (logLines.length === 0) return
-      const parsed = parseLogLines(logLines, `delta-${nextOffset}-`)
-      incrementalCount.value += parsed.length
-      const combined = [...logs.value, ...parsed]
-      logs.value = combined.length > logLimit.value ? combined.slice(combined.length - logLimit.value) : combined
-    } else {
-      const lastLine = logLines[logLines.length - 1] || ''
-      const signature = `${logLines.length}::${lastLine}`
-      if (!force && signature === lastLogSignature) return
-      lastLogSignature = signature
-      incrementalCount.value = 0
-      logs.value = parseLogLines(logLines.slice(-logLimit.value), 'full-')
-    }
+    const reset = Boolean(data.is_full || force)
+    if (Array.isArray(data.records)) appendParsedRecords(data.records, 'http-', { reset })
+    else appendParsedLogs(logLines, 'http-', { reset })
 
     // OOM 修复：每次刷新后兜底瘦身，一次清 1/2 而不是 1/6，避免每 4 秒触发的
     // 刷新回调让 map 长期贴顶。
@@ -920,13 +999,17 @@ function resetLiveLogState() {
   logIdCounter = 0
   lastLogSignature = ''
   nextOffset = -1
+  logFileGeneration = ''
+  holdLiveWindow = false
+  receivedOffsets.clear()
   incrementalCount.value = 0
   streamDroppedCount.value = 0
   parseCache.clear()
   pendingStreamLines = []
+  pendingStreamRecords = []
   pendingStreamOffset = null
   if (streamFlushTimer) {
-    clearTimeout(streamFlushTimer)
+    cancelAnimationFrame(streamFlushTimer)
     streamFlushTimer = null
   }
 }
@@ -938,9 +1021,7 @@ function appendParsedLogs(lines, keyPrefix = 'stream-', { reset = false } = {}) 
     incrementalCount.value = 0
   } else if (logLines.length) {
     const parsed = parseLogLines(logLines, keyPrefix)
-    incrementalCount.value += parsed.length
-    const combined = [...logs.value, ...parsed]
-    logs.value = combined.length > logLimit.value ? combined.slice(combined.length - logLimit.value) : combined
+    mergeIncomingLogs(parsed)
   }
   trimMapByOldest(parseCache, parseCacheMax.value, Math.max(200, Math.floor(parseCacheMax.value / 2)))
   if (!reset) {
@@ -948,8 +1029,54 @@ function appendParsedLogs(lines, keyPrefix = 'stream-', { reset = false } = {}) 
   }
 }
 
+function appendParsedRecords(records, keyPrefix = 'stream-', { reset = false } = {}) {
+  const safeRecords = Array.isArray(records) ? records.filter((item) => item && item.line) : []
+  if (!safeRecords.length) { if (reset) logs.value = []; return }
+  const parsed = safeRecords.map((item, index) => {
+    const rows = parseLogLines([String(item.line)], `${keyPrefix}${item.file || 'app.log'}:${item.offset ?? index}:`)
+    const row = rows[0]
+    row.file = String(item.file || 'app.log')
+    row.offset = Number(item.offset ?? 0)
+    row.endOffset = Number(item.end_offset ?? row.offset)
+    row.key = `${row.file}:${row.offset}`
+    return row
+  })
+  if (reset) {
+    receivedOffsets.clear()
+    for (const row of parsed) receivedOffsets.set(row.file, row.offset)
+    logs.value = parsed.slice(-logLimit.value)
+    incrementalCount.value = 0
+  } else {
+    mergeIncomingLogs(parsed)
+  }
+  trimMapByOldest(parseCache, parseCacheMax.value, Math.max(200, Math.floor(parseCacheMax.value / 2)))
+}
+
+function mergeIncomingLogs(parsed) {
+  const following = terminalFollowing.value && !tailGap.value
+  const state = !following ? terminalRef.value?.captureScrollState?.() : null
+  let added = 0
+  for (const row of parsed) {
+    if (row.offset === undefined) added += 1
+    else {
+      const previous = receivedOffsets.get(row.file) ?? -1
+      if (row.offset > previous) added += 1
+      receivedOffsets.set(row.file, Math.max(previous, row.offset))
+    }
+  }
+  incrementalCount.value += added
+  if (!following) newLogCount.value += added
+  if (holdLiveWindow) return
+  const merged = mergeLogWindow(logs.value, parsed, {
+    limit: logLimit.value, following, anchorKey: state?.key, endKey: state?.endKey,
+  })
+  logs.value = merged.rows
+  tailGap.value ||= merged.tailGap
+  if (state) void nextTick(() => terminalRef.value?.restoreScrollState?.(state))
+}
+
 async function backfillLiveHistoryIfSparse() {
-  if (!canRefreshLive.value || liveBackfillInFlight || logs.value.length >= MIN_LIVE_HISTORY_BACKFILL_LINES) return
+  if (!canRefreshLive.value || !terminalFollowing.value || tailGap.value || liveBackfillInFlight || logs.value.length >= MIN_LIVE_HISTORY_BACKFILL_LINES) return
   const now = Date.now()
   if (now - lastSparseBackfillAt < 10_000) return
   liveBackfillInFlight = true
@@ -966,21 +1093,30 @@ async function backfillLiveHistoryIfSparse() {
 function flushPendingStreamLines() {
   streamFlushTimer = null
   if (!pendingStreamLines.length || !canRefreshLive.value) return
-  const lines = pendingStreamLines
-  pendingStreamLines = []
-  if (pendingStreamOffset !== null) nextOffset = pendingStreamOffset
-  pendingStreamOffset = null
-  appendParsedLogs(lines, `stream-${nextOffset}-`)
+  // 为 Vue 更新与虚拟行测量留出帧预算；积压继续在后续帧处理。
+  const lines = pendingStreamLines.splice(0, 100)
+  const records = pendingStreamRecords.splice(0, 100)
+  if (records.length === lines.length && records.length) nextOffset = records[records.length - 1].end_offset
+  if (!pendingStreamLines.length) {
+    if (pendingStreamOffset !== null) nextOffset = pendingStreamOffset
+    pendingStreamOffset = null
+  }
+  if (records.length === lines.length) appendParsedRecords(records, `stream-${nextOffset}-`)
+  else {
+    pendingStreamRecords = []
+    appendParsedLogs(lines, `stream-${nextOffset}-`)
+  }
+  if (pendingStreamLines.length || pendingStreamRecords.length) {
+    streamFlushTimer = requestAnimationFrame(flushPendingStreamLines)
+  }
 }
 
-function queueStreamLines(lines) {
+function queueStreamLines(lines, records = []) {
   if (!Array.isArray(lines) || !lines.length) return
   pendingStreamLines.push(...lines)
-  if (pendingStreamLines.length > logLimit.value) {
-    pendingStreamLines = pendingStreamLines.slice(-logLimit.value)
-  }
+  if (Array.isArray(records) && records.length) pendingStreamRecords.push(...records)
   if (streamFlushTimer) return
-  streamFlushTimer = setTimeout(flushPendingStreamLines, LOG_FLUSH_INTERVAL)
+  streamFlushTimer = requestAnimationFrame(flushPendingStreamLines)
 }
 
 function closeLogStream({ keepStatus = false, discardPending = false } = {}) {
@@ -991,18 +1127,22 @@ function closeLogStream({ keepStatus = false, discardPending = false } = {}) {
     reconnectTimer = null
   }
   if (streamFlushTimer) {
-    clearTimeout(streamFlushTimer)
+    cancelAnimationFrame(streamFlushTimer)
     streamFlushTimer = null
   }
   if (discardPending) {
     pendingStreamLines = []
+    pendingStreamRecords = []
     pendingStreamOffset = null
   } else if (pendingStreamLines.length && canRefreshLive.value) {
     const lines = pendingStreamLines
+    const records = pendingStreamRecords
     pendingStreamLines = []
+    pendingStreamRecords = []
     if (pendingStreamOffset !== null) nextOffset = pendingStreamOffset
     pendingStreamOffset = null
-    appendParsedLogs(lines, `stream-${nextOffset}-`)
+    if (records.length) appendParsedRecords(records, `stream-${nextOffset}-`)
+    else appendParsedLogs(lines, `stream-${nextOffset}-`)
   }
   if (logEventSource) {
     try { logEventSource.close() } catch {}
@@ -1030,6 +1170,13 @@ function handleStreamPayload(event, { reset = false } = {}) {
     payload = {}
   }
   if (typeof payload.next_offset === 'number') pendingStreamOffset = payload.next_offset
+  const previousGeneration = logFileGeneration
+  if (payload.generation) logFileGeneration = payload.generation
+  const rotated = previousGeneration && payload.generation && (
+    previousGeneration.split(':').slice(0, 2).join(':') !== payload.generation.split(':').slice(0, 2).join(':') ||
+    Number(payload.generation.split(':')[2]) < Number(previousGeneration.split(':')[2])
+  )
+  if (rotated) receivedOffsets.clear()
   const dropped = Number(payload.dropped_count || 0)
   if (Number.isFinite(dropped) && dropped > 0) {
     streamDroppedCount.value += dropped
@@ -1042,18 +1189,25 @@ function handleStreamPayload(event, { reset = false } = {}) {
   terminalStatus.value = 'connected'
   if (reset || payload.is_full) {
     pendingStreamLines = []
-    if (streamFlushTimer) clearTimeout(streamFlushTimer)
+    pendingStreamRecords = []
+    if (streamFlushTimer) cancelAnimationFrame(streamFlushTimer)
     streamFlushTimer = null
     if (pendingStreamOffset !== null) nextOffset = pendingStreamOffset
     pendingStreamOffset = null
     lastLogSignature = signature
-    appendParsedLogs(lines, 'sse-full-', { reset: true })
+    const preserveHistory = !terminalFollowing.value && logs.value.length > 0
+    if (preserveHistory && rotated) {
+      holdLiveWindow = true
+      tailGap.value = true
+    }
+    if (Array.isArray(payload.records) && payload.records.length) appendParsedRecords(payload.records, 'sse-full-', { reset: !preserveHistory })
+    else appendParsedLogs(lines, 'sse-full-', { reset: !preserveHistory })
     return
   }
   void backfillLiveHistoryIfSparse()
   if (lines.length) {
     lastLogSignature = signature
-    queueStreamLines(lines)
+    queueStreamLines(lines, payload.records)
   } else if (!pendingStreamLines.length && pendingStreamOffset !== null) {
     nextOffset = pendingStreamOffset
     pendingStreamOffset = null
@@ -1073,7 +1227,7 @@ function connectLogStream({ reset = false } = {}) {
 
   terminalStatus.value = 'connecting'
   terminalErrorMessage.value = ''
-  const url = logApi.streamUrl({ lines: logLimit.value, sinceOffset: reset ? -1 : nextOffset })
+  const url = logApi.streamUrl({ lines: logLimit.value, sinceOffset: reset ? -1 : nextOffset, generation: logFileGeneration })
   const resetOnConnected = reset || nextOffset < 0
   logEventSource = new EventSource(url, { withCredentials: true })
   const generation = streamGeneration
@@ -1147,7 +1301,7 @@ async function clearLogs() {
     lastSearchScanMb.value = 0
     lastSearchStoppedEarly.value = false
     isSearchLoading.value = false
-    if (!isPaused.value && !isFullSearch.value) {
+    if (!isPaused.value) {
       connectLogStream({ reset: false })
     }
     ElMessage.success('日志视图已清空')
@@ -1227,7 +1381,7 @@ function onWindowKeydown(e) {
 async function doFullSearch(reset = true) {
   const keyword = searchKeyword.value.trim()
   const broadLevelFilter = selectedLevels.value.length > 2
-  if (!keyword && broadLevelFilter) {
+  if (!keyword && broadLevelFilter && !selectedModules.value.length && !searchTaskId.value && !searchSince.value && !searchUntil.value) {
     ElMessage.info('请输入关键词，或只选择 1-2 个日志级别后再检索')
     return
   }
@@ -1245,7 +1399,7 @@ let fullSearchAbortController = null
 async function gotoFullSearchPage(cursor = '', { resetHistory = false } = {}) {
   const keyword = searchKeyword.value.trim()
   const broadLevelFilter = selectedLevels.value.length > 2
-  if (!keyword && broadLevelFilter) return
+  if (!keyword && broadLevelFilter && !selectedModules.value.length && !searchTaskId.value && !searchSince.value && !searchUntil.value) return
   if (keyword && keyword.length < MIN_FULL_SEARCH_KEYWORD_LENGTH) return
 
   // 取消上一次未完请求
@@ -1264,11 +1418,12 @@ async function gotoFullSearchPage(cursor = '', { resetHistory = false } = {}) {
       selectedLevels.value,
       FULL_SEARCH_PAGE_SIZE,
       cursor,
-      { maxScanMb: 32, signal: controller ? controller.signal : undefined },
+      { module: selectedModules.value.join(','), task_id: searchTaskId.value, since: searchSince.value.replace('T', ' '), until: searchUntil.value.replace('T', ' '), session: searchSession, signal: controller?.signal },
     )
     if (requestSeq !== fullSearchRequestSeq) return
     if (data?.cancelled) return false
-    const lines = Array.isArray(data.logs) ? data.logs : []
+    const results = Array.isArray(data.results) ? data.results : []
+    const lines = results.length ? results.map((item) => item.line) : (Array.isArray(data.logs) ? data.logs : [])
     const fullLines = Array.isArray(data.full_logs) ? data.full_logs : []
     fullSearchTotal.value = data.total_matched ?? lines.length
     fullSearchCursor.value = String(data.next_cursor || '')
@@ -1280,8 +1435,8 @@ async function gotoFullSearchPage(cursor = '', { resetHistory = false } = {}) {
     const scanBytes = Number(data?.scan_bytes || 0)
     lastSearchScanMb.value = scanBytes > 0 ? Number((scanBytes / 1024 / 1024).toFixed(1)) : 0
     lastSearchStoppedEarly.value = !!data?.stopped_early
-    logIdCounter = 0
-    logs.value = parseLogLines(lines, `search-${cursor}-`, fullLines)
+    const rows = results.length ? results : lines.map((line, index) => ({ line, offset: index, file: 'app.log' }))
+    searchResults.value = cursor && !data.cursor_reset ? [...searchResults.value, ...rows] : rows
     lastFetchMs.value = Math.round(performance.now() - t0)
     return true
   } catch (err) {
@@ -1336,13 +1491,191 @@ async function toggleFullSearch() {
     lastSearchScanMb.value = 0
     lastSearchStoppedEarly.value = false
     isSearchLoading.value = false
-    nextOffset = -1
-    connectLogStream({ reset: true })
+    searchResults.value = []
   } else {
-    closeLogStream()
     isFullSearch.value = true
     await doFullSearch(true)
   }
+}
+
+const realtime = useRealtimeEvents()
+const activeTasks = shallowRef([])
+const showAllActive = ref(true)
+const finishedTaskTimers = new Map()
+let unsubscribeTasks = null
+let unsubscribeTaskBatch = null
+
+const taskLanes = computed(() => {
+  const transferPattern = /(upload|download|上传|下载|baidu_netdisk|pikpak|gofile|google_drive|onedrive|transferit|http_download|asmr)/i
+  const transferTasks = activeTasks.value.filter(task => transferPattern.test(`${task.taskType || ''} ${task.phase || ''} ${task.sourceKey || ''}`))
+  const systemTasks = activeTasks.value.filter(task => !transferTasks.includes(task))
+  return [
+    { key: 'transfer', title: '上传 / 下载', icon: Workflow, tasks: transferTasks },
+    { key: 'system', title: '系统任务', icon: PackageOpen, tasks: systemTasks },
+  ]
+})
+const visibleTaskLanes = computed(() => taskLanes.value.filter(lane => lane.tasks.length > 0))
+
+const taskSources = {
+  baidu_netdisk: { icon: baiduIcon, name: '百度网盘' },
+  pikpak: { icon: pikpakIcon, name: 'PikPak' },
+  gofile: { icon: gofileIcon, name: 'Gofile' },
+  google_drive: { icon: googleDriveIcon, name: 'Google Drive' },
+  onedrive: { icon: onedriveIcon, name: 'OneDrive' },
+  transferit: { icon: transferitIcon, name: 'Transfer.it' },
+}
+
+function updateActiveTask(event) {
+  const id = String(event.engine_task_id || event.entity_id || event.id || event.item_id || '').replace(/^engine:/, '')
+  if (!id) return
+  const old = activeTasks.value.find((task) => task.id === id)
+  const metadata = event.details?.metadata || event.metadata || {}
+  const runtimeUpdate = { ...metadata.runtime, ...metadata.download_runtime, ...metadata.upload_runtime, ...event.download_runtime, ...event.upload_runtime, ...event.runtime }
+  const runtime = { ...old?.runtime, ...runtimeUpdate }
+  const status = event.status || old?.status
+  const finished = ['completed', 'failed', 'cancelled', 'partial_failed'].includes(status)
+  if (finished && !old) return
+  if (!finished && !['processing', 'running', 'downloading', 'uploading', 'receiving'].includes(status)) {
+    activeTasks.value = activeTasks.value.filter((task) => task.id !== id)
+    return
+  }
+  const taskType = event.task_type || old?.taskType || event.domain
+  const phase = resolveLogTaskPhase(runtime.phase || runtime.stage || event.kind_label, taskType)
+  const modes = event.source_modes || metadata.source_modes || metadata.platforms
+  const sourceKey = /baidu_netdisk/.test(taskType) || event.domain === 'baidu_netdisk'
+    ? 'baidu_netdisk' : Array.isArray(modes) && modes.length ? (modes.length === 1 ? modes[0] : 'http') : old?.sourceKey
+  const source = taskSources[sourceKey]
+  const number = value => Math.max(0, Number(value) || 0)
+  const speed = finished ? 0 : number(runtime.speed_bytes_per_sec)
+  const bytes = number(runtime.downloaded_bytes ?? runtime.transferred_bytes ?? runtime.completed_bytes)
+  const total = number(runtime.total_bytes)
+  // 后端 ETA 优先；缺失时只按真实传输数据估算，不把未知值显示成零。
+  const eta = speed > 0 ? (number(runtimeUpdate.eta_seconds) || (total > bytes ? Math.ceil((total - bytes) / speed) : number(runtime.eta_seconds) || null)) : null
+  const now = Date.now()
+  const task = {
+    id, runtime, taskType, status, sourceKey, sourceIcon: source?.icon, sourceName: source?.name,
+    icon: /upload|上传/.test(phase) ? Upload : /download|下载/.test(phase) ? Download : /probe|探测/.test(phase) ? ScanSearch : /extract|解压/.test(phase) ? PackageOpen : Workflow, phase,
+    label: event.rjcode || event.title || event.source_label || old?.label || id.slice(0, 8),
+    progress: Math.min(100, number(event.progress ?? old?.progress)), finished,
+    failed: ['failed', 'partial_failed'].includes(status), cancelled: status === 'cancelled',
+    speed, bytes, total, eta, fileIndex: runtime.file_index ?? runtime.current_file_index ?? runtime.completed_files ?? 0,
+    fileCount: runtime.file_count ?? runtime.total_files ?? 0,
+    startedMs: parseLogTimeMs(event.started_at) || old?.startedMs || now - number(runtime.elapsed_seconds) * 1000,
+    endedMs: finished ? (parseLogTimeMs(event.completed_at) || old?.endedMs || now) : null,
+  }
+  const index = activeTasks.value.findIndex((item) => item.id === id)
+  const tasks = activeTasks.value.slice()
+  if (index < 0) tasks.push(task)
+  else tasks[index] = task
+  activeTasks.value = tasks
+  if (finished && !finishedTaskTimers.has(id)) {
+    finishedTaskTimers.set(id, setTimeout(() => {
+      activeTasks.value = activeTasks.value.filter((item) => item.id !== id)
+      finishedTaskTimers.delete(id)
+    }, 5000))
+  } else if (!finished && finishedTaskTimers.has(id)) {
+    clearTimeout(finishedTaskTimers.get(id))
+    finishedTaskTimers.delete(id)
+  }
+}
+
+function searchResultParts(item) {
+  const parts = []
+  let position = 0
+  for (const [start, end] of item.highlight_ranges || []) {
+    if (start > position) parts.push({ text: item.line.slice(position, start), highlighted: false })
+    parts.push({ text: item.line.slice(start, end), highlighted: true })
+    position = end
+  }
+  if (position < item.line.length) parts.push({ text: item.line.slice(position), highlighted: false })
+  return parts
+}
+
+function syncProgressTicker() {
+  if (progressTickerTimer) clearInterval(progressTickerTimer)
+  const active = activeTasks.value.length > 0 && document.visibilityState !== 'hidden'
+  progressTickerTimer = active ? setInterval(() => { progressTicker.value = Date.now() }, 1000) : null
+}
+watch(() => activeTasks.value.length > 0, syncProgressTicker)
+watch(selectedModules, onSearchInput)
+
+async function loadActiveTasks() {
+  try {
+    const data = await taskCenterApi.overview()
+    for (const item of data.active_items || []) updateActiveTask(item)
+  } catch (error) { console.warn('获取活动任务失败', error) }
+}
+
+function toggleNoiseGroup(row) {
+  const keys = new Set(expandedNoise.value)
+  if (keys.has(row.key)) keys.delete(row.key)
+  else keys.add(row.key)
+  expandedNoise.value = keys
+}
+
+function onSearchPanelScroll(event) {
+  const el = event.target
+  if (el.scrollHeight - el.scrollTop - el.clientHeight < 160 && !isSearchLoading.value) void loadNextFullSearchPage()
+}
+
+async function jumpToSearchResult(item) {
+  const data = await logApi.window({ file: item.file, anchor_offset: item.offset, before: 100, after: 100, mode: 'around' })
+  terminalFollowing.value = false
+  tailGap.value = true
+  holdLiveWindow = true
+  appendParsedRecords(data.records || [], 'context-', { reset: true })
+  await nextTick()
+  terminalRef.value?.jumpToKey?.(`${item.file}:${item.offset}`)
+}
+
+async function fetchTaskLogs(taskId) {
+  const result = []
+  let cursor = ''
+  do {
+    const data = await logApi.search('', [], 200, cursor, { task_id: taskId })
+    if (data.cursor_expired) throw new Error('日志轮转，任务日志游标已过期，请重新复制')
+    result.push(...(data.results || []))
+    cursor = data.has_more ? data.next_cursor : ''
+  } while (cursor)
+  return result.reverse()
+}
+
+async function copyTaskLogs(taskId) {
+  try {
+    const rows = await fetchTaskLogs(taskId)
+    await navigator.clipboard.writeText(rows.map((row) => row.line).join('\n'))
+    ElMessage.success(`已复制本任务 ${rows.length} 条日志`)
+  } catch (error) { ElMessage.error(error.message || '复制任务日志失败') }
+}
+
+const taskTimelines = new Map()
+
+async function loadTaskTimeline(row) {
+  if (!row.taskId || !row.taskProgress) return
+  try {
+    const signature = `${row.taskId}:${row.taskProgress.status}:${row.taskProgress.progress}`
+    let pending = taskTimelines.get(signature)
+    if (!pending) {
+      pending = Promise.allSettled([
+      fetchTaskLogs(row.taskId), taskCenterApi.getItem({ item_id: `engine:${row.taskId}` }),
+      ])
+      taskTimelines.set(signature, pending)
+      if (taskTimelines.size > 100) taskTimelines.delete(taskTimelines.keys().next().value)
+    }
+    const [recordResult, detailResult] = await pending
+    if (recordResult.status === 'rejected' || detailResult.status === 'rejected') taskTimelines.delete(signature)
+    const records = recordResult.status === 'fulfilled' ? recordResult.value : logs.value.filter((item) => item.taskId === row.taskId).map((item) => ({ line: item.rawLine }))
+    const detail = detailResult.status === 'fulfilled' ? detailResult.value : null
+    const milestones = records.map((record) => parseLogLine(record.line)).filter((item) => item.taskProgressPayload)
+      .map((item) => `${item.rawLine.match(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/)?.[0] || item.time} · ${item.taskProgressPayload.progress}% · ${item.taskProgressPayload.step}`)
+    const metadata = detail?.item?.details?.metadata || detail?.details?.metadata || {}
+    const progressLog = metadata.progress_log || []
+    const timeline = [...new Set([...milestones, ...progressLog.map((item) => typeof item === 'string' ? item : `${item.time || item.timestamp || ''} · ${item.message || item.step || ''}`)].filter(Boolean))]
+    const timeOf = (line) => (line.match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/)?.[0] || line.match(/\d{2}:\d{2}:\d{2}/)?.[0] || '').replace('T', ' ')
+    timeline.sort((left, right) => timeOf(left).localeCompare(timeOf(right)))
+    const text = [...timeline, row.taskProgress.failureReason].filter(Boolean).join('\n')
+    terminalRef.value?.setTimeline?.(row.key, text)
+  } catch (error) { ElMessage.warning(error.message || '加载任务时间线失败') }
 }
 
 // ========== 日志管理（/api/logs/info、/api/logs/cleanup） ==========
@@ -1448,13 +1781,21 @@ async function runLogCleanup(action) {
 
 onMounted(() => {
   connectLogStream({ reset: true })
-  progressTickerTimer = window.setInterval(() => {
-    if (canRefreshLive.value && document.visibilityState !== 'hidden') progressTicker.value = Date.now()
-  }, 1000)
+  realtime.start()
+  unsubscribeTasks = realtime.subscribe('task.center.changed', (event) => updateActiveTask(event.payload || event))
+  unsubscribeTaskBatch = realtime.subscribe('task.center.changed.batch', (event) => {
+    for (const item of event.payload?.events || []) updateActiveTask(item)
+  })
+  void loadActiveTasks()
   window.addEventListener('keydown', onWindowKeydown)
+  document.addEventListener('visibilitychange', syncProgressTicker)
 })
 
 onUnmounted(() => {
+  unsubscribeTasks?.()
+  unsubscribeTaskBatch?.()
+  realtime.stop()
+  for (const timer of finishedTaskTimers.values()) clearTimeout(timer)
   closeLogStream({ discardPending: true })
   if (progressTickerTimer) {
     clearInterval(progressTickerTimer)
@@ -1468,6 +1809,8 @@ onUnmounted(() => {
   }
   // 离开页面时主动释放缓存，回到列表 / 库存等其他页面后内存能立即降下来
   parseCache.clear()
+  noiseGroupCache.clear()
+  document.removeEventListener('visibilitychange', syncProgressTicker)
   window.removeEventListener('keydown', onWindowKeydown)
 })
 </script>
@@ -2343,4 +2686,121 @@ onUnmounted(() => {
 .log-level-pill.is-info.is-active   { border-color: #bfdbfe; background: #eff6ff; color: #1d4ed8; }
 .log-level-pill.is-warning.is-active{ border-color: #fcd34d; background: #fffbeb; color: #b45309; }
 .log-level-pill.is-error.is-active  { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
+
+.system-log-shell { position: relative; min-width: 0; overflow: visible; }
+.logs-page {
+  --logs-center-width: min(1700px, calc(100vw - 120px));
+  width: var(--logs-center-width);
+  max-width: none;
+}
+.system-log-shell.is-search-mode { padding-right: min(40%, 440px); }
+.logs-terminal-layout {
+  position: relative;
+  min-width: 0;
+}
+.logs-terminal-layout > :deep(.system-log-terminal) { min-width: 0; }
+.active-task-leave-active { transition: opacity 0.3s ease; }
+.active-task-leave-to { opacity: 0; }
+.logs-active-tasks {
+  position: absolute;
+  top: 64px;
+  z-index: 6;
+  display: flex; flex-direction: column; align-self: start; min-width: 0;
+  width: min(300px, calc(50% - 20px));
+  max-height: calc(var(--logs-terminal-limit, 758px) - 76px); overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.28); border-radius: 10px;
+  background: rgba(248, 250, 252, 0.76); color: #334155;
+  box-shadow: 0 10px 32px rgba(2, 6, 23, 0.2);
+  -webkit-backdrop-filter: blur(14px) saturate(135%);
+  backdrop-filter: blur(14px) saturate(135%);
+  font-family: var(--el-font-family); font-size: 12px;
+}
+.logs-active-tasks.is-transfer { left: 12px; }
+.logs-active-tasks.is-system { right: 12px; }
+.logs-active-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; }
+.logs-active-heading > span { display: flex; align-items: center; gap: 7px; font-weight: 600; }
+.logs-active-heading small { color: #64748b; font-variant-numeric: tabular-nums; }
+.logs-active-toggle { display: inline-flex; align-items: center; gap: 4px; border: 0; border-radius: 5px; padding: 3px 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.logs-active-toggle:hover { background: #94a3b81a; transform: translateY(-2px) scale(1.02); }
+.logs-active-toggle:active { transform: scale(0.96); }
+.logs-active-toggle svg { transition: transform 0.3s ease; }
+.logs-active-toggle:hover svg { transform: rotate(12deg); }
+.logs-active-toggle svg.is-open { transform: rotate(180deg); }
+.logs-active-list { min-height: 0; max-height: min(720px, 70vh, calc(var(--logs-terminal-limit, 758px) - 124px)); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
+.logs-active-list::-webkit-scrollbar { display: none; }
+.logs-active-list:focus, .logs-active-toggle:focus-visible { outline: none; box-shadow: none; }
+.logs-active-empty { padding: 18px 12px; color: #94a3b8; text-align: center; }
+.logs-active-task { padding: 10px 14px 11px; border-top: 1px solid #e2e8f0; }
+.logs-active-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.logs-active-title > svg { flex-shrink: 0; color: #0284c7; }
+.logs-active-source-icon { width: 19px; height: 19px; object-fit: contain; flex-shrink: 0; }
+.logs-active-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: #1e293b; }
+.logs-active-phase { color: #64748b; white-space: nowrap; }
+.logs-active-title strong { min-width: 38px; text-align: right; color: #0284c7; font-size: 14px; font-variant-numeric: tabular-nums; }
+.logs-active-title strong small { font-size: 10px; margin-left: 1px; }
+.logs-active-track { position: relative; height: 5px; margin: 9px 0; overflow: hidden; border-radius: 4px; background: #e2e8f0; }
+.logs-active-fill { position: relative; height: 100%; overflow: hidden; border-radius: inherit; background: #0ea5e9; transition: width 0.5s ease; }
+.logs-active-track.is-running .logs-active-fill::after { content: ''; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 15%, #ffffff60 50%, transparent 85%); animation: logs-transfer-shine 2s linear infinite; }
+.logs-active-indeterminate { position: absolute; inset: 0; width: 35%; background: #38bdf8; animation: logs-transfer-shine 1.5s ease-in-out infinite; }
+.logs-active-details, .logs-active-timing { display: flex; align-items: center; gap: 10px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.logs-active-details { flex-wrap: wrap; row-gap: 3px; }
+.logs-active-speed { color: #0284c7; font-weight: 600; }
+.logs-active-timing { justify-content: space-between; margin-top: 5px; color: #64748b; }
+.logs-active-task.is-finished { opacity: 0.65; transition: opacity 1s; }
+.logs-active-task.is-failed .logs-active-fill { background: #ef4444; }
+@keyframes logs-transfer-shine { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+@media (prefers-reduced-motion: reduce) {
+  .logs-active-track.is-running .logs-active-fill::after, .logs-active-indeterminate { animation: none; }
+  .logs-active-fill { transition: none; }
+}
+.logs-search-panel { position: absolute; right: 0; top: 0; bottom: 0; width: min(39%, 428px); padding: 12px; overflow-y: auto; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; display: flex; flex-direction: column; gap: 8px; }
+.logs-search-panel-head { display: flex; align-items: center; justify-content: space-between; position: sticky; top: -12px; padding: 8px 0; z-index: 2; background: inherit; }
+.logs-search-panel .logs-search-input { width: 100%; flex: none; }
+.logs-search-result { display: block; flex-shrink: 0; width: 100%; padding: 10px; text-align: left; background: #fff; border: 1px solid #e2e8f0; border-radius: 6px; white-space: normal; overflow-wrap: anywhere; font-size: 12px; }
+.logs-search-result span { display: block; max-height: 100px; overflow: hidden; }
+.logs-search-result small { color: #64748b; }
+.logs-new-bar { position: absolute; z-index: 5; bottom: 42px; left: 50%; transform: translateX(-50%); border-radius: 20px; padding: 7px 16px; background: #0369a1; color: white; box-shadow: 0 4px 16px #0004; white-space: nowrap; }
+.logs-search-panel button, .logs-new-bar { transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.logs-search-result:hover { transform: translateY(-2px) scale(1.02); }
+.logs-search-result:active { transform: scale(0.96); }
+.logs-search-panel :is(button,input):focus { outline: none; box-shadow: none; }
+@media (max-width: 640px) {
+  .logs-page { width: 100%; }
+  .system-log-shell.is-search-mode { padding-right: 0; }
+  .logs-active-tasks { top: 54px; width: min(280px, calc(100% - 24px)); max-height: min(240px, calc(var(--logs-terminal-limit, 758px) - 64px)); }
+  .logs-search-panel { position: fixed; inset: 0; width: 100%; height: 100dvh; border-radius: 0; z-index: 2100; padding: max(12px, env(safe-area-inset-top)) 12px; }
+  .logs-active-list { max-height: min(220px, 35vh); }
+  .logs-active-task { padding: 9px 11px; }
+  .logs-active-details { gap: 7px; }
+}
+
+@media (min-width: 2300px) {
+  .logs-terminal-layout {
+    display: grid;
+    --logs-side-width: clamp(220px, calc((100vw - var(--logs-center-width, 1700px) - 160px) / 2), 300px);
+    grid-template-columns: var(--logs-side-width) minmax(0, var(--logs-center-width, 1700px)) var(--logs-side-width);
+    width: calc(var(--logs-center-width, 1700px) + (var(--logs-side-width) * 2) + 48px);
+    margin-left: calc(-1 * (var(--logs-side-width) + 24px));
+    gap: 24px;
+    align-items: start;
+  }
+  .logs-terminal-layout > :deep(.system-log-terminal) {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .logs-active-tasks {
+    position: static;
+    width: var(--logs-side-width);
+    max-height: var(--logs-terminal-limit, 758px);
+  }
+  .logs-active-tasks.is-transfer {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .logs-active-tasks.is-system {
+    grid-column: 3;
+    grid-row: 1;
+  }
+}
+
 </style>

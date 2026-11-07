@@ -76,7 +76,8 @@ import { controlBrowserUpload, restoreBrowserUploadSource, formatUploadBytes as 
 
 const props = defineProps({ session: { type: Object, required: true } })
 const onlyProblems = ref(false), applyAll = ref(false)
-const allFiles = computed(() => Array.from(props.session.files.values()))
+const fileMap = computed(() => props.session.files)
+const allFiles = computed(() => Array.from(fileMap.value.values()))
 const hasProblems = computed(() => allFiles.value.some(file => ['failed', 'conflict'].includes(file.status)))
 watch(hasProblems, value => { if (!value) onlyProblems.value = false })
 const files = computed(() => allFiles.value.filter(f => !onlyProblems.value || ['failed', 'conflict'].includes(f.status)))
@@ -121,7 +122,7 @@ const eta = computed(() => {
   const seconds = Math.ceil(remaining / s.speed)
   return seconds < 60 ? `${seconds} 秒（接收阶段）` : `${Math.ceil(seconds / 60)} 分钟（接收阶段）`
 })
-const fileStage = f => ({ completed: '完成', failed: '失败', conflict: '等待冲突', skipped: '已跳过', cancelled: '已取消', writing: f.stage, ready: '等待写入', receiving: '上传接收' }[f.status] || f.status)
+const fileStage = f => ({ completed: '完成', failed: '失败', conflict: '等待冲突', skipped: '已跳过', cancelled: '已取消', verifying: f.stage || '校验完整文件', writing: f.stage, ready: '等待写入', receiving: '上传接收' }[f.status] || f.status)
 const fileBytes = f => f.status === 'completed' ? f.size : f.status === 'writing' ? f.written || 0 : Math.min(f.size, (f.received || 0) + (f.liveBytes || 0))
 const filePercent = f => f.status === 'completed' ? 100 : Math.min(99, Math.floor(fileBytes(f) / Math.max(1, f.size) * 100))
 async function control(action, fileId, decision) {

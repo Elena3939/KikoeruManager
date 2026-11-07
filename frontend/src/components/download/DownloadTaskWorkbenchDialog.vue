@@ -118,19 +118,29 @@
                         <button
                           type="button"
                           class="v1-inline-action danger retry"
-                          :disabled="isTaskRetrying(task)"
+                          :disabled="isTaskRetrying(task) || isTaskClosing(task)"
                           @click.stop="emit('retry-task', task)"
                         >
                           <RefreshCw :size="13" :class="{ spinning: isTaskRetrying(task) }" />
                           {{ isTaskRetrying(task) ? '重试中' : '重试失败项' }}
                         </button>
                       </template>
+                      <StatefulButton
+                        v-if="enableTaskDismiss && cleanupFailedTask && ['failed', 'partial_failed'].includes(String(task?.display_status || task?.status || ''))"
+                        unstyled
+                        class="v1-inline-action"
+                        aria-label="关闭任务"
+                        title="关闭任务并删除下载缓存"
+                        :disabled="isTaskRetrying(task) || isTaskClosing(task)"
+                        @click="() => closeFailedTask(task)"
+                      ><X :size="13" />关闭</StatefulButton>
                       <button
-                        v-if="enableTaskDismiss && ['completed', 'cancelled', 'failed', 'partial_failed'].includes(String(task?.display_status || task?.status || ''))"
+                        v-else-if="enableTaskDismiss && ['completed', 'cancelled', 'failed', 'partial_failed'].includes(String(task?.display_status || task?.status || ''))"
                         type="button"
                         class="v1-inline-action"
                         aria-label="关闭任务"
                         title="从当前工作台关闭，保留任务与文件"
+                        :disabled="isTaskClosing(task)"
                         @click="emit('dismiss-task', task)"
                       ><X :size="13" />关闭</button>
                       <button
@@ -260,7 +270,7 @@
                                   v-if="entry.file.retryable"
                                   type="button"
                                   class="v1-file-retry"
-                                  :disabled="isFileRetrying(task, entry.file)"
+                                  :disabled="isFileRetrying(task, entry.file) || isTaskClosing(task)"
                                   @click.stop="emit('retry-file', { task, file: entry.file })"
                                 >
                                   <RefreshCw :size="11" :class="{ spinning: isFileRetrying(task, entry.file) }" />
@@ -359,9 +369,11 @@ import uploadToCloudAnimation from '../../assets/anime/Uploading to cloud.lottie
 import successConfettiAnimation from '../../assets/anime/success confetti.lottie'
 import AppLottieProgressBar from '../common/AppLottieProgressBar.vue'
 import AppEmptyState from '../common/AppEmptyState.vue'
+import StatefulButton from '../ui/stateful-button.vue'
 import { getDownloadBatchPercent, getMatchingDownloadSummary, formatDownloadEta, formatDownloadCompletion } from '../../utils/downloadProgress.js'
 
 const props = defineProps({
+  cleanupFailedTask: { type: Function, default: null },
   enableTaskDismiss: { type: Boolean, default: true },
   visible: { type: Boolean, default: false },
   tasks: { type: Array, default: () => [] },
@@ -538,6 +550,23 @@ function isTaskRetrying(task) {
     || [...retryingSet.value].some(key => key.startsWith(`${taskId}:`))
 }
 
+const closingTaskIds = ref(new Set())
+
+function isTaskClosing(task) {
+  return closingTaskIds.value.has(String(task?.id || task?.active_task_id || ''))
+}
+
+async function closeFailedTask(task) {
+  if (isTaskClosing(task) || isTaskRetrying(task)) return false
+  const taskId = String(task?.id || task?.active_task_id || '')
+  closingTaskIds.value.add(taskId)
+  try {
+    return await props.cleanupFailedTask(task)
+  } finally {
+    closingTaskIds.value.delete(taskId)
+  }
+}
+
 function isFileRetrying(task, file) {
   return retryingSessionSet.value.has(getTaskSessionId(task))
     || retryingSet.value.has(getFileRetryKey(task, file))
@@ -556,14 +585,7 @@ const estimatedDownloadCompletion = computed(() => {
 })
 const shouldShowUploadMetrics = computed(() => {
   if (isUploadMode.value || props.showUploadEta) return true
-  return mergedTasks.value.some((task) => {
-    return (
-      isUploadEnabled(task) ||
-      hasActiveUploadRuntime(task) ||
-      (Array.isArray(task?.upload_files) && task.upload_files.length > 0) ||
-      (Array.isArray(task?.uploaded_files) && task.uploaded_files.length > 0)
-    )
-  })
+  return mergedTasks.value.some(task => isUploadEnabled(task))
 })
 const totalDownloadSpeed = computed(() => {
   const speed = backendDownloadSummary.value?.speed_bytes_per_sec
@@ -960,7 +982,7 @@ function hasActiveDownloadRuntime(task) {
 }
 
 function hasActiveUploadRuntime(task) {
-  return Number(getUploadRuntime(task)?.active_file_count || 0) > 0
+  return isUploadEnabled(task) && Number(getUploadRuntime(task)?.active_file_count || 0) > 0
 }
 
 function hasAnyActiveRuntime(task) {
@@ -1111,26 +1133,15 @@ function isDownloadOnlyTask(task) {
 function isUploadEnabled(task) {
   if (isUploadMode.value) return true
   if (isDownloadOnlyTask(task)) return false
-  const hasUploadRows = (Array.isArray(task?.upload_files) && task.upload_files.length > 0) || (Array.isArray(task?.uploaded_files) && task.uploaded_files.length > 0)
-  if (hasUploadRows) return true
   const uploadOptions = task?.task_metadata?.upload_options || task?.upload_options
+  const uploadMode = String(uploadOptions?.mode || task?.task_metadata?.upload_mode || task?.upload_mode || '').trim()
+  if (uploadMode === 'disabled') return false
   if (typeof uploadOptions?.enabled === 'boolean') return uploadOptions.enabled
-  if (String(task?.task_metadata?.upload_mode || task?.upload_mode || '').trim() === 'disabled') return false
-  const explicitUpload = Boolean(
-    task?.task_metadata?.upload_options?.enabled ||
-    task?.upload_options?.enabled ||
-    ['local', 'synology'].includes(String(task?.task_metadata?.upload_mode || task?.upload_mode || '').trim())
-  )
-  if (explicitUpload) return true
-
-  const finalPath = String(getFinalOutputPath(task) || '').trim()
-  const downloadRoot = String(getDownloadRoot(task) || '').trim()
-  if (finalPath && finalPath !== '处理中' && downloadRoot && finalPath !== downloadRoot) return true
-
-  const progressLogs = Array.isArray(task?.progress_log) ? task.progress_log : []
-  if (progressLogs.some(entry => /已入库|上传完成|上传成功|入库完成/.test(String(entry?.message || '')))) return true
-
-  return false
+  if (['local', 'synology'].includes(uploadMode)) return true
+  // 旧任务可能没有上传开关；只采用实际上传记录，不把本地整理入库当成上传。
+  const hasUploadRows = (Array.isArray(task?.upload_files) && task.upload_files.length > 0) || (Array.isArray(task?.uploaded_files) && task.uploaded_files.length > 0)
+  const runtime = getUploadRuntime(task)
+  return hasUploadRows || Number(runtime.active_file_count || 0) > 0 || Number(runtime.transferred_bytes || 0) > 0
 }
 
 function getVisibleDownloadSpeed(task) {
@@ -1213,12 +1224,16 @@ function getTaskTransferBytes(task) {
 }
 
 function getTaskDownloadedBytes(task) {
+  const runtime = getDownloadRuntime(task)
+  if (runtime.transferred_bytes !== undefined && runtime.transferred_bytes !== null) return Number(runtime.transferred_bytes) || 0
   const rowDownloaded = getUnifiedFileRows(task).reduce((sum, row) => sum + Number(row.downloadedBytes || 0), 0)
   if (rowDownloaded > 0) return rowDownloaded
   return Number(getDownloadRuntime(task)?.transferred_bytes || 0)
 }
 
 function getTaskUploadedBytes(task) {
+  const runtime = getUploadRuntime(task)
+  if (runtime.transferred_bytes !== undefined && runtime.transferred_bytes !== null) return Number(runtime.transferred_bytes) || 0
   const rowUploaded = getUnifiedFileRows(task).reduce((sum, row) => sum + Number(row.uploadedBytes || 0), 0)
   if (rowUploaded > 0) return rowUploaded
   return Number(getUploadRuntime(task)?.transferred_bytes || 0)
@@ -1303,9 +1318,9 @@ function getTaskStageLabel(task) {
   if (status === 'completed') return isUploadEnabled(task) ? '已上传 / 已入库' : '已完成'
   const uploadRuntime = getUploadRuntime(task)
   const downloadRuntime = getDownloadRuntime(task)
-  if (Number(uploadRuntime?.active_file_count || 0) > 0) return '上传 / 入库中'
+  if (hasActiveUploadRuntime(task)) return '上传 / 入库中'
   if (Number(downloadRuntime?.active_file_count || 0) > 0) return '下载中'
-  if (Number(uploadRuntime?.is_waiting_turn || 0) > 0 && String(uploadRuntime?.current_relative_path || '').trim()) return '上传准备中'
+  if (isUploadEnabled(task) && Number(uploadRuntime?.is_waiting_turn || 0) > 0 && String(uploadRuntime?.current_relative_path || '').trim()) return '上传准备中'
   if (isUploadEnabled(task) && getUploadCompletedCount(task) > 0 && getDownloadCompletedCount(task) > getUploadCompletedCount(task)) return '上传准备中'
   return '处理中'
 }
@@ -1452,6 +1467,7 @@ function getUnifiedFileRows(task) {
   const uploadRuntime = getUploadRuntime(task)
   const signature = [
     isUploadMode.value ? 'upload' : 'download',
+    isUploadEnabled(task),
     task?.status,
     task?.display_status,
     task?.progress,
@@ -1483,7 +1499,7 @@ function buildUnifiedFileRows(task) {
   const uploadEnabled = isUploadEnabled(task)
   const selectedResources = Array.isArray(task?.task_metadata?.selected_resources) ? task.task_metadata.selected_resources : []
   const downloadFiles = Array.isArray(task?.download_files) ? task.download_files : []
-  const uploadFiles = Array.isArray(task?.upload_files) ? task.upload_files : []
+  const uploadFiles = uploadEnabled && Array.isArray(task?.upload_files) ? task.upload_files : []
   const uploadedFiles = Array.isArray(task?.uploaded_files) ? task.uploaded_files : []
   const failedFiles = Array.isArray(task?.failed_files) ? task.failed_files : []
   const rows = new Map()
@@ -1578,7 +1594,7 @@ function buildUnifiedFileRows(task) {
     if (!row) return
     const sizeBytes = Math.max(Number(file.size_bytes || 0), Number(row.total || 0))
     row.downloadedBytes = sizeBytes
-    row.uploadedBytes = sizeBytes
+    row.uploadedBytes = uploadEnabled ? sizeBytes : 0
     row.sourceTaskStatus = String(file.__task_status || '')
     row.progress = 100
     row.downloadSpeedVisible = false

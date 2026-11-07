@@ -1,6 +1,8 @@
 """解压历史的任务身份、批次统计和耗时口径回归。"""
 from datetime import datetime
 
+import pytest
+
 from app.api import routes
 from app.core.activity_log_aggregator import merge_activity_rows_from_dicts
 from app.core.activity_log_lite import build_lite_item
@@ -392,6 +394,82 @@ def test_lite_route_aggregates_imports_without_changing_other_categories(db_sess
     result = routes.list_activity_logs(lite=True, db=db_session)
     assert result["total"] == 2
     assert {row["id"] for row in result["items"]} == {"parent", "download"}
+
+
+def _asmr_row(log_id, session_id, *, action="task_finished", status="success", **detail):
+    row = _row(log_id, session_id or log_id, action=action, status=status, **detail)
+    row.update(category="asmr_sync", batch_id=None, session_key=session_id)
+    row["detail"].update(batch_id=None, session_id=session_id)
+    return row
+
+
+@pytest.mark.parametrize("mode", ["download", "upload"])
+@pytest.mark.parametrize("action,status", [
+    ("session_completed", "success"), ("session_partial_failed", "partial_success"),
+])
+@pytest.mark.parametrize("lifecycle", ["task_finished", "task_finished_incomplete"])
+def test_asmr_lite_hides_paired_finish_before_count_and_paging(
+    db_session, mode, action, status, lifecycle,
+):
+    from app.core.activity_log_writer import get_activity_log_query_cache
+
+    terminal = _asmr_row("terminal", "asmr-session", action=action, status=status,
+                         success_count=2, failed_count=int(status == "partial_success"),
+                         upload_mode=mode, uploaded_count=2 if mode == "upload" else 0)
+    terminal["created_at"] = "2026-10-19T11:00:00"
+    _save(db_session, [terminal, _asmr_row("finish", "asmr-session", action=lifecycle, status=status),
+                       _asmr_row("standalone", "another-session")])
+    get_activity_log_query_cache().invalidate()
+    first = routes.list_activity_logs(lite=True, limit=1, page=1, db=db_session)
+    second = routes.list_activity_logs(lite=True, limit=1, page=2, db=db_session)
+    assert first["total"] == second["total"] == 2
+    assert [item["id"] for item in first["items"]] == ["terminal"]
+    assert [item["id"] for item in second["items"]] == ["standalone"]
+    filtered = routes.list_activity_logs(lite=True, status=status, session_key="asmr-session", db=db_session)
+    assert filtered["total"] == 1
+    assert [item["id"] for item in filtered["items"]] == ["terminal"]
+    events = routes.list_activity_logs(lite=True, show_subactions=True, session_key="asmr-session", db=db_session)
+    assert events["total"] == 2
+    assert {item["id"] for item in events["items"]} == {"terminal", "finish"}
+    assert db_session.query(ActivityLog).count() == 3
+
+
+@pytest.mark.parametrize("session_id", [None, "", "unpaired-session"])
+def test_asmr_lite_keeps_finish_without_matching_terminal(db_session, session_id):
+    from app.core.activity_log_writer import get_activity_log_query_cache
+
+    _save(db_session, [_asmr_row("finish", session_id, status="failed"),
+                       _asmr_row("terminal", "another-session", action="session_completed")])
+    get_activity_log_query_cache().invalidate()
+    result = routes.list_activity_logs(lite=True, db=db_session)
+    assert result["total"] == 2
+    assert {item["id"] for item in result["items"]} == {"finish", "terminal"}
+
+
+def test_asmr_lite_search_counts_only_visible_results(db_session, monkeypatch):
+    from app.core.activity_log_writer import get_activity_log_query_cache
+
+    _save(db_session, [_asmr_row("finish", "same-session"),
+                       _asmr_row("terminal", "same-session", action="session_completed")])
+    monkeypatch.setattr(routes, "_run_activity_log_id_search",
+                        lambda *_args: (["finish", "terminal"], "postgresql_pg_trgm"))
+    get_activity_log_query_cache().invalidate()
+    result = routes.list_activity_logs(lite=True, q="完成", limit=1, db=db_session)
+    assert result["total"] == 1
+    assert [item["id"] for item in result["items"]] == ["terminal"]
+    assert routes.list_activity_logs(lite=True, q="完成", limit=1, page=2, db=db_session)["items"] == []
+
+
+def test_asmr_lite_does_not_match_terminal_from_another_category(db_session):
+    from app.core.activity_log_writer import get_activity_log_query_cache
+
+    terminal = _asmr_row("terminal", "same-session", action="session_completed")
+    terminal["category"] = "http_download"
+    _save(db_session, [terminal, _asmr_row("finish", "same-session")])
+    get_activity_log_query_cache().invalidate()
+    result = routes.list_activity_logs(lite=True, db=db_session)
+    assert result["total"] == 2
+    assert {item["id"] for item in result["items"]} == {"finish", "terminal"}
 
 
 def test_multi_rj_directories_are_not_another_archive_batch_in_lite_list(db_session):

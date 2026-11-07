@@ -58,7 +58,7 @@
                 {{ metric.label }} <b>{{ metric.value }}</b>
               </span>
             </div>
-            <span v-if="metaText" class="task-toast-context task-toast-meta">{{ metaText }}</span>
+            <span v-if="metaText" class="task-toast-context task-toast-meta" :style="{ whiteSpace: 'normal', overflowWrap: 'anywhere' }">{{ metaText }}</span>
             <span v-else-if="!visibleMetrics.length" class="task-toast-context">{{ detailText || badgeText }}</span>
             <span v-if="timingText" class="task-toast-timing">{{ timingText }}</span>
           </div>

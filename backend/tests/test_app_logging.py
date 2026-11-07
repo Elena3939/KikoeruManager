@@ -111,3 +111,72 @@ print(json.dumps({"rotate": rotate, "status": status}))
     assert payload["status"]["listener_alive"] is True
     assert "before-rotate" in (tmp_path / "app.log.1").read_text(encoding="utf-8")
     assert "after-rotate" in (tmp_path / "app.log").read_text(encoding="utf-8")
+
+
+def test_info_merge_distinguishes_parameters_and_task_context(monkeypatch):
+    from app.core.app_logging import _LogNoiseFilter, _TaskContextFilter, current_task_id
+    clock = [100.0]
+    monkeypatch.setattr("app.core.app_logging.time.monotonic", lambda: clock[0])
+    noise = _LogNoiseFilter()
+    monkeypatch.setattr(noise, "_schedule_locked", lambda delay: None)
+    summaries = []
+    monkeypatch.setattr(noise, "_emit_summary", lambda record, message: summaries.append(message))
+
+    def send(value, task="abcdefgh-1"):
+        token = current_task_id.set(task)
+        try:
+            entry = _record("文件 %s")
+            entry.args = (value,)
+            _TaskContextFilter().filter(entry)
+            return noise.filter(entry)
+        finally:
+            current_task_id.reset(token)
+
+    assert send(1) is True
+    assert send(1) is False
+    assert send(2) is True
+    assert send(1, "ijklmnop-2") is True
+    clock[0] += 10
+    noise.flush_expired()
+    assert summaries == ["[task=abcdefgh] 文件 1 (×2)"]
+    assert current_task_id.get() == ""
+    noise.flush_expired(force=True)
+
+
+def test_traceback_is_written_once_and_summary_has_no_stack(monkeypatch):
+    from app.core.app_logging import _LogNoiseFilter
+    noise = _LogNoiseFilter()
+    monkeypatch.setattr(noise, "_schedule_locked", lambda delay: None)
+    summaries = []
+    monkeypatch.setattr(noise, "_emit_summary", lambda record, message: summaries.append((record, message)))
+    accepted = []
+    for index in range(100):
+        try:
+            raise ValueError(str(index))
+        except ValueError:
+            entry = _record("请求失败 %s")
+            entry.args = (index,)
+            entry.levelno = logging.ERROR
+            entry.exc_info = sys.exc_info()
+            accepted.append(noise.filter(entry))
+    assert sum(accepted) == 1
+    noise.flush_expired(force=True)
+    assert len(summaries) == 1
+    assert "60s 内出现 100 次（首次 " in summaries[0][1]
+    assert summaries[0][0].exc_info is None
+    assert not noise._entries
+
+
+def test_fingerprint_lru_is_bounded_and_flushes_evicted_repeats(monkeypatch):
+    from app.core.app_logging import _LogNoiseFilter
+    noise = _LogNoiseFilter()
+    monkeypatch.setattr(noise, "_schedule_locked", lambda delay: None)
+    summaries = []
+    monkeypatch.setattr(noise, "_emit_summary", lambda record, message: summaries.append(message))
+    for i in [0, 0, *range(1, 2001)]:
+        entry = _record("编号 %s")
+        entry.args = (i,)
+        noise.filter(entry)
+    assert len(noise._entries) == 2000
+    assert summaries == ["编号 0 (×2)"]
+    noise.flush_expired(force=True)

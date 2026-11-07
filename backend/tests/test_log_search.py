@@ -51,9 +51,9 @@ def test_log_search_cursor_continues_without_rescanning_matches(tmp_path):
     assert first["matched_before"] == 0
     assert second["matched_before"] == 5
     assert third["matched_before"] == 10
-    assert "needle-4" in first["logs"][-1]
-    assert "needle-5" in second["logs"][0]
-    assert "needle-12" in third["logs"][-1]
+    assert "needle-8" in first["logs"][-1]
+    assert "needle-7" in second["logs"][0]
+    assert "needle-0" in third["logs"][-1]
     assert third["has_more"] is False
 
 
@@ -89,7 +89,7 @@ def test_log_search_stops_when_cancelled(tmp_path):
 
 def test_log_search_resets_cursor_after_file_truncate(tmp_path):
     log_file = tmp_path / "app.log"
-    log_file.write_text("needle\n" * 20, encoding="utf-8")
+    log_file.write_text("".join(f"2026-07-12 10:00:{i:02d} [INFO] test - needle\n" for i in range(20)), encoding="utf-8")
     first = _search(log_file)
     log_file.write_text("needle-new\n", encoding="utf-8")
 

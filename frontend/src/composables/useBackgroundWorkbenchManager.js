@@ -81,7 +81,9 @@ function mergeRuntime(target, patch = {}) {
     const next = patch.summary && typeof patch.summary === 'object' ? patch.summary : {}
     target.summary = {
       subtitle: String(next.subtitle || ''),
-      text: String(next.text || '')
+      text: String(next.text || ''),
+      metaText: String(next.metaText || ''),
+      timingText: String(next.timingText || '')
     }
   }
   if (Object.prototype.hasOwnProperty.call(patch, 'metrics')) {

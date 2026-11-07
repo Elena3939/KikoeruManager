@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildTaskProgress, parseTaskProgressPayload, TASK_PROGRESS_PREFIX } from './logProgress.js'
+import { buildTaskProgress, parseTaskProgressPayload, resolveLogTaskPhase, TASK_PROGRESS_PREFIX } from './logProgress.js'
 
 function parseProgress(status, step, progress = 100) {
   const taskProgressPayload = parseTaskProgressPayload(TASK_PROGRESS_PREFIX + JSON.stringify({
@@ -9,6 +9,18 @@ function parseProgress(status, step, progress = 100) {
 }
 
 describe('日志使用后端任务状态和进度', () => {
+  it.each([
+    ['download', '', '下载'],
+    ['', 'circle_completion_bonus_probe', '特典探测'],
+    ['', 'browser_upload', '上传'],
+    ['写入库存', 'browser_upload', '写入库存'],
+    ['', 'custom_task_type', 'custom task type'],
+  ])('运行态和里程碑共用可读阶段名称：%s %s', (phase, taskType, expected) => {
+    expect(resolveLogTaskPhase(phase, taskType)).toBe(expected)
+    expect(buildTaskProgress({ taskProgressPayload: {
+      task_id: 'task-phase', status: 'processing', progress: 10, phase, task_type: taskType,
+    } }).phase).toBe(expected)
+  })
   it('成功状态不受失败、异常等文案影响', () => {
     const result = parseProgress('completed', '下载完成，成功 1 个，失败 0 个；此前发生异常')
     expect(result.tone).toBe('success')

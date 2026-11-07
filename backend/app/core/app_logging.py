@@ -25,9 +25,12 @@ import logging
 import logging.handlers
 import os
 import queue
+import re
 import sys
 import threading
 import time
+from collections import OrderedDict
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -42,6 +45,7 @@ __all__ = [
     "force_rotate_main_log",
     "get_app_logging_status",
     "shutdown_app_logging",
+    "current_task_id",
 ]
 
 logger = logging.getLogger(__name__)
@@ -57,6 +61,153 @@ _console_handler: Optional[logging.Handler] = None
 _queue_handler: Optional[logging.handlers.QueueHandler] = None
 _queue_listener: Optional[logging.handlers.QueueListener] = None
 _log_queue: Optional[queue.Queue] = None
+_noise_filter: Optional['_LogNoiseFilter'] = None
+current_task_id: ContextVar[str] = ContextVar("current_task_id", default="")
+
+
+class _TaskContextFilter(logging.Filter):
+    """把当前任务上下文注入 LogRecord；没有上下文时完全保持旧格式。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if getattr(record, "_task_context_applied", False):
+            return True
+        task_id = str(current_task_id.get() or "").strip()
+        if task_id:
+            record._original_template = record.msg
+            record._original_args = record.args
+            record.msg = f"[task={task_id[:8]}] {record.getMessage()}"
+            record.args = ()
+            record._task_context_applied = True
+        return True
+
+
+class _LogNoiseFilter(logging.Filter):
+    """在调用线程合并重复 INFO，并节流重复 traceback。"""
+
+    _TRACEBACK_WINDOW = 60.0
+    _INFO_WINDOW = 10.0
+    _MAX_FINGERPRINTS = 2000
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self._entries = OrderedDict()
+        self._timer = None
+        self._closed = False
+
+    @staticmethod
+    def _fingerprint(record):
+        template = str(getattr(record, "_original_template", record.msg))
+        if record.exc_info and record.exc_info[0] is not None:
+            exc_type, _, tb = record.exc_info
+            frames = []
+            while tb is not None:
+                frames.append((tb.tb_frame.f_code.co_filename, tb.tb_lineno))
+                tb = tb.tb_next
+            return ("trace", record.name, exc_type, tuple(frames[-3:]), template), 60.0
+        if record.levelno == logging.INFO:
+            # 不跨任务合并，保留按 task_id 检索的完整归属。
+            task = re.match(r"^\[task=([^\]]+)\]", str(record.msg))
+            return ("info", record.name, template,
+                    repr(getattr(record, "_original_args", record.args)),
+                    task.group(1) if task else ""), 10.0
+        return None, 0
+
+    @staticmethod
+    def _emit_summary(record, message):
+        summary = logging.makeLogRecord(dict(record.__dict__))
+        prefix = re.match(r"^\[task=[^\]]+\]\s*", str(record.msg))
+        summary.msg = (prefix.group(0) if prefix and not message.startswith(prefix.group(0)) else "") + message
+        summary.args = ()
+        summary.created = time.time()
+        summary.msecs = (summary.created - int(summary.created)) * 1000
+        summary.relativeCreated = (summary.created - logging._startTime) * 1000
+        summary.exc_info = summary.exc_text = None
+        summary._log_noise_internal = True
+        summary._task_context_applied = True
+        logging.getLogger(record.name).handle(summary)
+
+    @staticmethod
+    def _summary(key, entry):
+        started, count, created, record, window = entry
+        if count <= 1:
+            return None
+        first = time.strftime("%H:%M:%S", time.localtime(created))
+        message = (f"[重复] 同类异常 60s 内出现 {count} 次（首次 {first}）"
+                   if key[0] == "trace" else f"{record.getMessage()} (×{count})")
+        return record, message
+
+    def _schedule_locked(self, delay):
+        if self._timer is None and not self._closed:
+            self._timer = threading.Timer(max(0.01, delay), self.flush_expired)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def flush_expired(self, force=False):
+        summaries = []
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+            if force:
+                self._closed = True
+            now = time.monotonic()
+            next_delay = None
+            for key, entry in list(self._entries.items()):
+                remaining = entry[4] - (now - entry[0])
+                if force or remaining <= 0:
+                    self._entries.pop(key, None)
+                    summary = self._summary(key, entry)
+                    if summary:
+                        summaries.append(summary)
+                elif entry[1] > 1:
+                    next_delay = remaining if next_delay is None else min(next_delay, remaining)
+            if next_delay is not None:
+                self._schedule_locked(next_delay)
+        for record, message in summaries:
+            self._emit_summary(record, message)
+
+    def filter(self, record):
+        if getattr(record, "_log_noise_internal", False):
+            return True
+        decision = getattr(record, "_log_noise_decision", None)
+        if decision is not None:
+            return decision
+        key, window = self._fingerprint(record)
+        if key is None:
+            record._log_noise_decision = True
+            return True
+        summaries = []
+        now = time.monotonic()
+        with self._lock:
+            previous = self._entries.get(key)
+            decision = True
+            if previous and now - previous[0] < window:
+                started, count, created, saved, _ = previous
+                self._entries[key] = (started, count + 1, created, saved, window)
+                self._entries.move_to_end(key)
+                self._schedule_locked(window - (now - started))
+                decision = False
+            else:
+                if previous:
+                    summary = self._summary(key, previous)
+                    if summary:
+                        summaries.append(summary)
+                saved = logging.makeLogRecord(dict(record.__dict__))
+                # 指纹表不持有 traceback，避免保留整个调用栈和任务对象。
+                saved.exc_info = saved.exc_text = None
+                self._entries[key] = (now, 1, record.created, saved, window)
+                self._entries.move_to_end(key)
+                if len(self._entries) > self._MAX_FINGERPRINTS:
+                    old_key, old_entry = self._entries.popitem(last=False)
+                    summary = self._summary(old_key, old_entry)
+                    if summary:
+                        summaries.append(summary)
+            record._log_noise_decision = decision
+        # 输出会重新进入 handler，必须在锁外执行。
+        for saved, message in summaries:
+            self._emit_summary(saved, message)
+        return decision
 
 
 class _BoundedRotatingFileHandler(logging.handlers.RotatingFileHandler):
@@ -64,6 +215,12 @@ class _BoundedRotatingFileHandler(logging.handlers.RotatingFileHandler):
 
     def doRollover(self) -> None:
         if self.backupCount > 0:
+            # 编号在轮转时改变；旧 sidecar 不再对应同一个文件。
+            for index in range(1, self.backupCount + 1):
+                try:
+                    os.unlink(f"{self.baseFilename}.{index}.idx")
+                except OSError:
+                    pass
             super().doRollover()
             return
         if self.stream is not None:
@@ -169,12 +326,16 @@ def _start_queue_listener_locked() -> None:
 
 def shutdown_app_logging() -> None:
     """排空并关闭异步日志 listener，供重复初始化和进程退出使用。"""
-    global _rotating_handler, _console_handler, _queue_handler, _log_queue
+    global _rotating_handler, _console_handler, _queue_handler, _log_queue, _noise_filter
     with _config_lock:
+        if _noise_filter is not None:
+            _noise_filter.flush_expired(force=True)
+        _noise_filter = None
         _stop_queue_listener_locked()
         for handler in (_rotating_handler, _console_handler, _queue_handler):
             if handler is None:
                 continue
+            logging.getLogger().removeHandler(handler)
             try:
                 handler.flush()
             except Exception:
@@ -226,7 +387,7 @@ def configure_app_logging(
       撑爆。
     """
     global _configured_log_path, _rotating_handler, _console_handler
-    global _queue_handler, _queue_listener, _log_queue
+    global _queue_handler, _queue_listener, _log_queue, _noise_filter
 
     resolved_dir = _resolve_log_dir(log_dir)
     log_path = os.path.join(resolved_dir, _MAIN_LOG_NAME)
@@ -242,9 +403,12 @@ def configure_app_logging(
     )
 
     formatter = logging.Formatter(fmt, datefmt=datefmt)
+    noise_filter = _LogNoiseFilter()
 
     with _config_lock:
         root = logging.getLogger()
+        if _noise_filter is not None:
+            _noise_filter.flush_expired(force=True)
         _stop_queue_listener_locked()
         for output_handler in (_rotating_handler, _console_handler):
             if output_handler is None:
@@ -292,10 +456,14 @@ def configure_app_logging(
         if use_console and getattr(sys, "stdout", None) is not None:
             console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setFormatter(formatter)
+            console_handler.addFilter(_TaskContextFilter())
+            console_handler.addFilter(noise_filter)
             root.addHandler(console_handler)
 
         log_queue: queue.Queue = queue.Queue(maxsize=queue_size)
         queue_handler = _RecentFirstQueueHandler(log_queue)
+        queue_handler.addFilter(_TaskContextFilter())
+        queue_handler.addFilter(noise_filter)
         root.addHandler(queue_handler)
 
         root.setLevel(level)
@@ -312,6 +480,7 @@ def configure_app_logging(
         _console_handler = console_handler
         _queue_handler = queue_handler
         _log_queue = log_queue
+        _noise_filter = noise_filter
         _start_queue_listener_locked()
 
     return log_path
@@ -351,7 +520,7 @@ def list_log_files(log_dir: Optional[str] = None) -> List[LogFileInfo]:
                 continue
             name = entry.name
             lowered = name.lower()
-            if lowered == "app.log" or lowered.startswith("app.log."):
+            if lowered == "app.log" or re.fullmatch(r'app\.log\.\d+', lowered):
                 try:
                     stat = entry.stat()
                 except OSError:
@@ -428,6 +597,10 @@ def cleanup_log_files(
                         continue
                     try:
                         os.remove(info.path)
+                        try:
+                            os.unlink(info.path + ".idx")
+                        except FileNotFoundError:
+                            pass
                         summary["purged_files"].append(info.name)
                         summary["purged_bytes"] += int(info.size_bytes or 0)
                     except Exception as exc:

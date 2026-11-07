@@ -22,6 +22,7 @@ from .archive_volume_utils import get_archive_total_size, get_archive_volume_pat
 from .failure_reason_formatter import format_problem_failure_message
 
 logger = logging.getLogger(__name__)
+from .app_logging import current_task_id
 
 class TaskStatus(str, Enum):
     PENDING = "pending"
@@ -67,6 +68,10 @@ class Task:
 
     def __setattr__(self, name, value):
         old_value = getattr(self, name, None) if hasattr(self, name) else None
+        if (name == "progress" and old_value is not None
+                and getattr(self, "_events_initialized", False)
+                and getattr(self, "status", None) == TaskStatus.PROCESSING):
+            value = max(old_value, value)
         object.__setattr__(self, name, value)
         if name not in self._EVENT_FIELDS:
             return
@@ -166,27 +171,61 @@ class Task:
         """将真实任务状态和进度写入日志，供历史读取和 SSE 使用同一份数据。"""
         status = self.status.value if hasattr(self.status, "value") else str(self.status)
         metadata = self.task_metadata or {}
+        if status == TaskStatus.PROCESSING.value and not self.started_at:
+            # 避免 started_at 的自动事件重入本次快照，重复写第一条里程碑。
+            object.__setattr__(self, "started_at", datetime.now())
+            metadata.setdefault("processing_started_at", self.started_at.isoformat())
         if status == "failed" and metadata.get("partial_success"):
             status = "partial_failed"
-        snapshot = (status, self.progress, self.current_step)
-        if snapshot == getattr(self, "_last_log_progress_snapshot", None):
-            return
+        progress = int(getattr(self, "progress", 0) or 0)
+        if status == TaskStatus.PROCESSING.value:
+            progress = max(progress, int(getattr(self, "_last_logged_progress", 0) or 0))
+        now_mono = time.monotonic()
+        last_at = float(getattr(self, "_last_log_progress_at", 0.0) or 0.0)
+        last_snapshot = getattr(self, "_last_log_progress_snapshot", None)
         task_type = self.type.value if hasattr(self.type, "value") else str(self.type)
         phase = {
             "extract": "解压", "filter": "过滤", "metadata": "元数据", "rename": "重命名",
             "asmr_sync_download": "下载", "http_download": "下载", "baidu_netdisk_download": "下载",
             "baidu_netdisk_upload": "上传", "local_library_upload": "上传",
             "rj_subtitle_fetch": "字幕", "auto_process": "处理", "process_existing_folder": "处理",
-        }.get(task_type, "任务")
+            "browser_upload": "上传", "library_folder_completion_preview": "库存补全",
+            "circle_completion_index": "社团补全", "circle_completion_refresh_selected": "社团补全",
+            "circle_completion_download_batch": "下载", "circle_completion_bonus_probe": "特典探测",
+            "rj_subtitle_extract": "字幕",
+        }.get(task_type, task_type.replace("_", " ").strip() or "任务")
+        runtime = {}
+        for key in ("runtime", "download_runtime", "upload_runtime"):
+            value = metadata.get(key)
+            if isinstance(value, dict):
+                runtime.update(value)
+        phase = str(runtime.get("phase") or runtime.get("stage") or phase)
+        retry_count = runtime.get("retry_count", metadata.get("retry_count", 0))
+        snapshot = (status, progress, phase, retry_count)
+        status_changed = not last_snapshot or status != last_snapshot[0]
+        milestone = (not last_snapshot or progress // 10 > last_snapshot[1] // 10
+                     or phase != last_snapshot[2] or retry_count != last_snapshot[3])
+        if not status_changed and (not milestone or now_mono - last_at < 15):
+            return
         payload = {
-            "version": 1, "task_id": self.id, "task_type": task_type,
-            "status": status, "progress": self.progress, "step": self.current_step,
+            "version": 2, "task_id": self.id, "task_type": task_type,
+            "status": status, "progress": progress, "step": self.current_step,
             "phase": phase, "source_label": self._progress_source_label(), "rjcode": self.rjcode or "",
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "speed_bytes_per_sec": runtime.get("speed_bytes_per_sec", 0),
+            "downloaded_bytes": runtime.get("downloaded_bytes", runtime.get("transferred_bytes", runtime.get("completed_bytes", 0))),
+            "total_bytes": runtime.get("total_bytes", 0),
+            "file_index": runtime.get("file_index", runtime.get("current_file_index", runtime.get("completed_files", 0))),
+            "file_count": runtime.get("file_count", runtime.get("total_files", 0)),
+            "retry_count": retry_count,
+            "failure_reason": getattr(self, "error_message", None) or runtime.get("failure_reason") or "",
+            "elapsed_seconds": runtime.get("elapsed_seconds", 0),
         }
         logger.info("__KIKOERUMANAGER_TASK_PROGRESS__%s", json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
         self._last_log_progress_snapshot = snapshot
+        self._last_logged_progress = progress
+        self._last_log_progress_at = now_mono
 
     def touch_metadata(self, reason: str = "metadata"):
         self._metadata_version = int(getattr(self, "_metadata_version", 0) or 0) + 1
@@ -211,7 +250,8 @@ class Task:
         """开始任务"""
         with self._set_state_silent():
             self.status = TaskStatus.PROCESSING
-            self.started_at = datetime.now()
+            if not self.started_at:
+                self.started_at = datetime.now()
             self.current_step = "处理中"
         self.mark_changed("started")
     
@@ -387,6 +427,8 @@ class Task:
         同一句紧邻重复（常见于多次刷新进度）直接跳过，避免大量"解压中"刷屏。
         """
         normalized_progress = min(100, max(0, int(progress or 0)))
+        if getattr(self.status, "value", self.status) == TaskStatus.PROCESSING.value:
+            normalized_progress = max(normalized_progress, int(getattr(self, "progress", 0) or 0))
         with self._set_state_silent():
             self.progress = normalized_progress
             self.current_step = step
@@ -3449,6 +3491,13 @@ class TaskEngine:
 
     async def _process_task(self, task: Task):
         """处理单个任务"""
+        task_context_token = current_task_id.set(str(getattr(task, "id", "") or ""))
+        try:
+            return await self._process_task_with_context(task)
+        finally:
+            current_task_id.reset(task_context_token)
+
+    async def _process_task_with_context(self, task: Task):
         from .extract_service import ExtractService
         from .filter_service import FilterService
         from .metadata_service import MetadataService

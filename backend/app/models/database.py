@@ -129,6 +129,131 @@ class CircleCompletionProjectionRow(Base):
     )
 
 
+class CircleCompletionHead(Base):
+    """已发布快照；调度变动不会改变展示版本。"""
+    __tablename__ = "circle_completion_heads"
+    circle_id = Column(String(120), primary_key=True)
+    active_generation = Column(String(36), nullable=False)
+    revision = Column(BigInteger, nullable=False)
+    applied_seq = Column(BigInteger, nullable=False)
+    summary = Column(JSON, nullable=False)
+    as_of = Column(DateTime, nullable=False)
+    next_transition_at = Column(DateTime, index=True)
+
+
+class CircleCompletionControl(Base):
+    __tablename__ = "circle_completion_controls"
+    circle_id = Column(String(120), primary_key=True)
+    requested_seq = Column(BigInteger, nullable=False, server_default="0")
+    last_transaction_id = Column(BigInteger, nullable=False, server_default="0")
+    full_requested_seq = Column(BigInteger, nullable=False, server_default="0")
+    lease_token = Column(BigInteger, nullable=False, server_default="0")
+    lease_until = Column(DateTime)
+    attempts = Column(Integer, nullable=False, server_default="0")
+    next_retry_at = Column(DateTime)
+    last_error = Column(Text, nullable=False, server_default="")
+
+
+class CircleCompletionDirty(Base):
+    __tablename__ = "circle_completion_dirty"
+    circle_id = Column(String(120), primary_key=True)
+    source_rjcode = Column(String(20), primary_key=True)
+    last_seq = Column(BigInteger, nullable=False)
+    reasons = Column(ARRAY(Text), nullable=False)
+    first_seen_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False)
+
+
+class CircleCompletionWorkState(Base):
+    __tablename__ = "circle_completion_work_states"
+    circle_id = Column(String(120), primary_key=True)
+    generation = Column(String(36), primary_key=True)
+    canonical_rjcode = Column(String(20), primary_key=True)
+    payload = Column(JSON, nullable=False)
+    compare_payload = Column(JSON)
+    fingerprint = Column(String(64), nullable=False)
+
+
+class CircleCompletionWorkAlias(Base):
+    __tablename__ = "circle_completion_work_aliases"
+    circle_id = Column(String(120), primary_key=True)
+    generation = Column(String(36), primary_key=True)
+    canonical_rjcode = Column(String(20), primary_key=True)
+    rjcode = Column(String(20), primary_key=True, index=True)
+
+
+class CircleCompletionGroup(Base):
+    """只存筛选、排序与成员关系，作品 JSON 在实体表中只有一份。"""
+    __tablename__ = "circle_completion_groups"
+    circle_id = Column(String(120), primary_key=True)
+    generation = Column(String(36), primary_key=True)
+    variant = Column(String(32), primary_key=True)
+    group_key = Column(String(20), primary_key=True)
+    position = Column(Integer, nullable=False)
+    sort_key = Column(String(64), nullable=False, server_default="")
+    tags = Column(ARRAY(Text), nullable=False)
+    search_text = Column(Text, nullable=False)
+    aliases = Column(ARRAY(Text), nullable=False)
+    parent_codes = Column(ARRAY(Text), nullable=False)
+    is_bonus = Column(Boolean, nullable=False)
+    release_timestamp = Column(Float, nullable=False)
+    unreleased = Column(Boolean, nullable=False)
+    title = Column(Text, nullable=False)
+    member_count = Column(Integer, nullable=False)
+    fingerprint = Column(String(64), nullable=False)
+    __table_args__ = (
+        Index("ix_circle_completion_group_tags", "tags", postgresql_using="gin"),
+        Index("ix_circle_completion_group_search", "search_text", postgresql_using="gin", postgresql_ops={"search_text": "gin_trgm_ops"}),
+    )
+
+
+class CircleCompletionGroupMember(Base):
+    __tablename__ = "circle_completion_group_members"
+    circle_id = Column(String(120), primary_key=True)
+    generation = Column(String(36), primary_key=True)
+    variant = Column(String(32), primary_key=True)
+    group_key = Column(String(20), primary_key=True)
+    canonical_rjcode = Column(String(20), primary_key=True)
+    member_order = Column(Integer, nullable=False)
+    # 仅展示组专有字段（如卡片明暗），禁止重复保存作品字段。
+    presentation = Column(JSON, nullable=False)
+
+
+class CircleCompletionCoverFact(Base):
+    __tablename__ = "circle_completion_cover_facts"
+    rjcode = Column(String(20), primary_key=True)
+    card_status = Column(String(12), nullable=False, server_default="unknown")
+    list_status = Column(String(12), nullable=False, server_default="unknown")
+    conclusion = Column(String(12), nullable=False, server_default="unknown")
+    pending = Column(Boolean, nullable=False, server_default="true")
+    checked_at = Column(DateTime)
+
+
+class CircleCompletionPublishOutbox(Base):
+    __tablename__ = "circle_completion_publish_outbox"
+    circle_id = Column(String(120), primary_key=True)
+    revision = Column(BigInteger, primary_key=True)
+    payload = Column(JSON, nullable=False)
+    created_at = Column(DateTime, nullable=False)
+    sent_at = Column(DateTime)
+    attempts = Column(Integer, nullable=False, server_default="0")
+    next_retry_at = Column(DateTime)
+
+
+class CircleCompletionWorkEvent(Base):
+    """增量作品变更事件；不提升社团级 revision。"""
+    __tablename__ = "circle_completion_work_events"
+    event_id = Column(String(36), primary_key=True)
+    circle_id = Column(String(120), nullable=False, index=True)
+    canonical_rjcode = Column(String(20), nullable=False, index=True)
+    work_version = Column(BigInteger, nullable=False)
+    payload = Column(JSON, nullable=False)
+    created_at = Column(DateTime, nullable=False)
+    sent_at = Column(DateTime)
+    attempts = Column(Integer, nullable=False, server_default="0")
+    next_retry_at = Column(DateTime)
+
+
 class BrowserUploadSession(Base):
     """浏览器上传会话；源文件留在浏览器，不进入普通任务执行队列。"""
     __tablename__ = 'browser_upload_sessions'
@@ -471,6 +596,19 @@ class ResourceSourceProbe(Base):
     error = Column(Text, nullable=False, default='')
     checked_at = Column(DateTime)
     expires_at = Column(DateTime, index=True)
+
+
+class CircleSubtitleTargetSnapshot(Base):
+    """按原作保存库存字幕目录摘要，索引版本变化后由后台重建。"""
+    __tablename__ = 'circle_subtitle_target_snapshots'
+
+    rjcode = Column(String(20), primary_key=True)
+    index_version = Column(String(64), nullable=False, index=True)
+    target_count = Column(Integer, nullable=False)
+    missing_count = Column(Integer, nullable=False)
+    complete = Column(Boolean, nullable=False)
+    notified = Column(Boolean, nullable=False, default=False, index=True)
+    updated_at = Column(DateTime, nullable=False, default=get_local_now)
 
 
 class CircleCatalog(Base):
@@ -1927,6 +2065,11 @@ class LibraryIndexRJEntry(Base):
             'idx_library_index_rj_entries_prefix',
             'library_id', 'generation', 'rjcode',
         ),
+        Index(
+            'idx_library_index_rj_entries_path',
+            'library_id', 'generation', 'relative_path',
+            postgresql_where=text("entry_type = 'dir'"),
+        ),
     )
 
 
@@ -2816,6 +2959,10 @@ _POSTGRES_LIBRARY_OBSOLETE_INDEX_NAMES = (
 
 
 _POSTGRES_TRIGRAM_INDEX_SPECS = (
+    {
+        "name": "ix_circle_completion_group_search",
+        "sql": "CREATE INDEX IF NOT EXISTS ix_circle_completion_group_search ON circle_completion_groups USING gin (search_text gin_trgm_ops)",
+    },
     {
         "name": "idx_task_center_searchable_text_trgm",
         "sql": "CREATE INDEX IF NOT EXISTS idx_task_center_searchable_text_trgm ON task_center_items USING gin (searchable_text gin_trgm_ops)",
@@ -4424,6 +4571,8 @@ def _migrate_library_index_consistency_tables(conn) -> None:
 
 
 def _migrate_compat_schema(conn) -> None:
+    from ..core.circle_completion_changes import install_change_capture
+    install_change_capture(conn)
     # ``Base.metadata.create_all`` 只覆盖新部署。这里同时照顾没有先跑 Alembic
     # 的既有 PostgreSQL 部署，避免延后归档队列在重启后丢失恢复能力。
     conn.execute(text("""

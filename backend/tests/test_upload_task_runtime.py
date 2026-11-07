@@ -38,6 +38,22 @@ def test_sse_preserves_the_same_runtime_as_status_response():
         assert event["upload_runtime"][field] == runtime[field]
 
 
+def test_sse_download_and_upload_runtime_are_independent():
+    task = Task(TaskType.ASMR_SYNC_DOWNLOAD, "source")
+    task.task_metadata.update({
+        "download_runtime": {"stage": "downloading", "transferred_bytes": 360, "total_bytes": 1000, "speed_bytes_per_sec": 10, "eta_seconds": 64},
+        "upload_runtime": {"phase": "uploading", "transferred_bytes": 100, "total_bytes": 2000, "speed_bytes_per_sec": 20},
+    })
+    event = build_task_center_event(task)
+    assert event["download_runtime"]["transferred_bytes"] == 360
+    assert event["download_runtime"]["eta_seconds"] == 64
+    assert event["upload_runtime"]["transferred_bytes"] == 100
+    assert event["upload_runtime"]["speed_bytes_per_sec"] == 20
+    task.status = TaskStatus.COMPLETED
+    task.task_metadata["failed_files"] = ["bad.wav"]
+    assert build_task_center_event(task)["display_status"] == "partial_failed"
+
+
 def test_runtime_event_writes_redis_and_sse_without_database_snapshot(monkeypatch):
     from app.core import task_center_event_service
 

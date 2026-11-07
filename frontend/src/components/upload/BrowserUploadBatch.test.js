@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { shallowMount } from '@vue/test-utils'
+import { shallowReactive } from 'vue'
 import BrowserUploadBatch from './BrowserUploadBatch.vue'
 
 vi.mock('../common/AppLottieProgressBar.vue', () => ({ default: { name: 'AppLottieProgressBar', template: '<div />' } }))
@@ -23,6 +24,18 @@ function mountBatch(status, fields = {}) {
 }
 
 describe('浏览器上传详情', () => {
+  it('进度刷新不重建全部文件树，新增文件仍更新树', async () => {
+    const files = shallowReactive(new Map([['f1', shallowReactive({ id: 'f1', relative_path: 'one.bin', size: 1, status: 'receiving' })]]))
+    const wrapper = mountBatch('receiving', { files })
+    const values = vi.spyOn(files, 'values')
+    await wrapper.setProps({ session: { ...wrapper.props('session'), liveReceived: 1 } })
+    expect(values).not.toHaveBeenCalled()
+    files.set('f2', shallowReactive({ id: 'f2', relative_path: 'two.bin', size: 1, status: 'failed' }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.getComponent({ name: 'DownloadResourceTree' }).props('plan').flatRows).toHaveLength(2)
+    expect(wrapper.find('el-checkbox-stub').exists()).toBe(true)
+    wrapper.unmount()
+  })
   it.each(['completed', 'cancelled'])('%s 不要求重选来源且不再显示传输进度条', status => {
     const wrapper = mountBatch(status)
     expect(wrapper.find('file-uploader-stub').exists()).toBe(false)

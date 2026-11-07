@@ -1,7 +1,7 @@
 <template>
   <UploadTaskWorkbenchDialog
     dismissible
-    :visible="Boolean(workbench.visible)" :tasks="tasks" :show-upload-eta="false"
+    :visible="Boolean(workbench.visible)" :tasks="tasks" :show-upload-eta="true"
     @pause-task="task => controlBrowserUpload(task.id, 'pause')"
     @resume-task="task => controlBrowserUpload(task.id, 'resume')"
     @cancel-task="task => controlBrowserUpload(task.id, 'cancel')"
@@ -36,7 +36,9 @@ const tasks = computed(() => browserUploads.value.map(s => ({
     source_label: s.source_label, target_path: s.target_path,
     file_progress_label: `完成 ${s.counts?.completed || 0} · 失败 ${s.counts?.failed || 0} · 跳过 ${s.counts?.skipped || 0} · 共 ${s.total_files || 0} 个文件`,
   },
-  upload_runtime: { total_bytes: s.total_bytes, transferred_bytes: s.liveReceived, frontend_speed_bytes_per_sec: s.speed, speed_bytes_per_sec: s.speed, active_file_count: s.activeFileCount },
+  upload_runtime: { phase: 'uploading', total_bytes: s.total_bytes, transferred_bytes: s.liveReceived,
+    eta_seconds: s.enumerated && s.speed > 0 ? Math.ceil(Math.max(0, s.total_bytes - s.liveReceived) / s.speed) : null,
+    frontend_speed_bytes_per_sec: s.speed, speed_bytes_per_sec: s.speed, active_file_count: s.activeFileCount },
 })))
 </script>
 
