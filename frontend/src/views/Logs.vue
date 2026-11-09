@@ -414,17 +414,12 @@ import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import SystemLogTerminal from '../components/common/SystemLogTerminal.vue'
 import { getTaskDomainMeta, getTaskSubtypeMeta } from '../components/common/taskDomainMeta'
+import { getHttpDownloadDisplayMeta } from '../components/common/httpDownloadPlatformMeta'
 import { buildTaskProgress, parseTaskProgressPayload, resolveLogTaskPhase } from '../utils/logProgress'
 import { mergeLogWindow, createLogFilter } from '../utils/logWindow'
 import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 import StatefulButton from '../components/ui/stateful-button.vue'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
-import baiduIcon from '../assets/platforms/baidu-netdisk.ico'
-import pikpakIcon from '../assets/platforms/pikpak.png'
-import gofileIcon from '../assets/platforms/gofile.png'
-import googleDriveIcon from '../assets/platforms/google-drive.ico'
-import onedriveIcon from '../assets/platforms/onedrive.ico'
-import transferitIcon from '../assets/platforms/transferit.ico'
 
 const LOG_STREAM_RECONNECT_MS = 2500
 const MIN_LIVE_HISTORY_BACKFILL_LINES = 50
@@ -1517,15 +1512,6 @@ const taskLanes = computed(() => {
 })
 const visibleTaskLanes = computed(() => taskLanes.value.filter(lane => lane.tasks.length > 0))
 
-const taskSources = {
-  baidu_netdisk: { icon: baiduIcon, name: '百度网盘' },
-  pikpak: { icon: pikpakIcon, name: 'PikPak' },
-  gofile: { icon: gofileIcon, name: 'Gofile' },
-  google_drive: { icon: googleDriveIcon, name: 'Google Drive' },
-  onedrive: { icon: onedriveIcon, name: 'OneDrive' },
-  transferit: { icon: transferitIcon, name: 'Transfer.it' },
-}
-
 function updateActiveTask(event) {
   const id = String(event.engine_task_id || event.entity_id || event.id || event.item_id || '').replace(/^engine:/, '')
   if (!id) return
@@ -1599,9 +1585,14 @@ function updateActiveTask(event) {
   })[taskType] || 'system'
   const subtype = event.subtype || old?.subtype
   const modes = event.source_modes || metadata.source_modes || metadata.platforms
-  const sourceKey = /baidu_netdisk/.test(taskType) || event.domain === 'baidu_netdisk'
-    ? 'baidu_netdisk' : Array.isArray(modes) && modes.length ? (modes.length === 1 ? modes[0] : 'http') : old?.sourceKey
-  const source = taskSources[sourceKey]
+  const isDownloadProvider = ['http_download', 'baidu_netdisk'].includes(domain) || /download/.test(`${taskType} ${kind}`)
+  const source = getHttpDownloadDisplayMeta(isDownloadProvider ? {
+    ...event,
+    task_metadata: metadata,
+    source_modes: modes || old?.sourcePlatforms,
+    download_mode: domain === 'baidu_netdisk' ? 'baidu_netdisk' : event.download_mode,
+  } : {})
+  const sourceKey = source.key
   const number = value => Math.max(0, Number(value) || 0)
   const speedLabel = ioActive ? (runtime.speed_kind === 'read' ? '解压' : '移动')
     : /上传/.test(phase) ? '上传' : /下载|接收/.test(phase) ? '下载' : ''
@@ -1618,7 +1609,8 @@ function updateActiveTask(event) {
     : (backendEta || (speed > 0 && total > bytes ? Math.ceil((total - bytes) / speed) : null))
   const now = Date.now()
   const task = {
-    id, runtime, transferRuntime, ioRuntime, taskType, kind, status, domain, subtype, currentStep, retryCount, sourceKey, sourceIcon: source?.icon, sourceName: source?.name,
+    id, runtime, transferRuntime, ioRuntime, taskType, kind, status, domain, subtype, currentStep, retryCount, sourceKey,
+    sourcePlatforms: source.platforms, sourceIcon: source.iconSrc, sourceName: source.iconLabel,
     icon: getTaskSubtypeMeta({ domain, subtype })?.icon || getTaskDomainMeta(domain).icon, phase,
     retrying: !!(event.retry_from_conflicts || metadata.retry_from_conflicts || metadata.linked_conflict_retrying
       || event.details?.retrying || metadata.retry_conflict_id || retryCount > 0 || old?.retrying),

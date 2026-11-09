@@ -3,6 +3,7 @@ import sys
 import types
 
 import pytest
+import httpx
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -627,10 +628,202 @@ async def test_preview_urls_keeps_mega_public_link_in_http_download_flow(monkeyp
         target_subdir="mega",
     )
     assert preview["success"] is True
+    assert len(preview["items"]) == 1
     assert preview["items"][0]["source"] == "mega"
     assert preview["items"][0]["filename"] == "example.zip"
     assert preview["items"][0]["size_bytes"] == 123
     assert "MEGAcmd" in preview["items"][0]["warning"]
+
+
+@pytest.mark.asyncio
+async def test_mega_command_captures_output_without_a_pipe(monkeypatch):
+    service = HttpDownloadService()
+    monkeypatch.setattr(
+        service, "_mega_command",
+        lambda command: [sys.executable, "-c", "print('mega command completed')"],
+    )
+
+    assert "mega command completed" in await service._run_mega_command("proxy", task_id="task-1")
+
+
+@pytest.mark.asyncio
+async def test_mega_command_timeout_stops_child_and_reports_stage(monkeypatch, caplog):
+    service = HttpDownloadService()
+    monkeypatch.setattr(
+        service, "_mega_command",
+        lambda command: [sys.executable, "-c", "import time; time.sleep(10)"],
+    )
+    monkeypatch.setattr("app.core.http_download_service._MEGA_COMMAND_TIMEOUT_SECONDS", 0.2)
+
+    with caplog.at_level("WARNING", logger="app.core.http_download_service"):
+        with pytest.raises(HttpDownloadError, match="MEGAcmd proxy 命令超时"):
+            await service._run_mega_command("proxy", task_id="task-1")
+    assert "task=task-1 command=proxy" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_mega_download_retries_only_server_startup_failure(monkeypatch, tmp_path, caplog):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    calls = []
+    secret = "private-share-key"
+
+    async def run(command, *args, task_id=""):
+        calls.append(command)
+        if command == "proxy" and calls.count("proxy") == 1:
+            raise HttpDownloadError("Unable to connect to service")
+        if command == "get":
+            raise HttpDownloadError("submission failed")
+        return ""
+
+    async def no_delay(_seconds):
+        pass
+
+    monkeypatch.setattr(service, "_run_mega_command", run)
+    monkeypatch.setattr("app.core.http_download_service.asyncio.sleep", no_delay)
+    item = {
+        "url": f"https://mega.nz/file/test#{secret}",
+        "final_path": str(tmp_path / "sample.zip"),
+        "gid": "item-1",
+    }
+    with caplog.at_level("INFO", logger="app.core.http_download_service"):
+        with pytest.raises(HttpDownloadError, match="submission failed"):
+            await service._download_mega_item(item)
+    assert calls[:3] == ["proxy", "proxy", "get"]
+    assert "服务启动中" in caplog.text
+    assert secret not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_mega_idle_cleanup_waits_and_skips_active_transfers(monkeypatch):
+    service = HttpDownloadService()
+    commands = []
+    sleeps = 0
+
+    async def sleep(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+
+    async def run(command, *args, task_id=""):
+        commands.append(command)
+        if command == "transfers" and commands.count("transfers") == 1:
+            return "active transfer"
+        return ""
+
+    monkeypatch.setattr("app.core.http_download_service.asyncio.sleep", sleep)
+    monkeypatch.setattr(service, "_run_mega_command", run)
+    await service._stop_idle_mega_server()
+    assert sleeps == 2
+    assert commands == ["transfers", "transfers", "exit"]
+
+
+@pytest.mark.asyncio
+async def test_mega_idle_timer_is_replaced_by_new_task(monkeypatch):
+    import app.core.http_download_service as module
+
+    service = HttpDownloadService()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def download(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return {}
+
+    async def idle():
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(service, "_download_mega_item_impl", download)
+    monkeypatch.setattr(service, "_stop_idle_mega_server", idle)
+    monkeypatch.setattr(module, "_MEGA_SERVER_USED", True)
+    old_timer = asyncio.create_task(idle())
+    monkeypatch.setattr(module, "_MEGA_IDLE_TASK", old_timer)
+    current = asyncio.create_task(service._download_mega_item({}))
+    await entered.wait()
+    assert old_timer.cancelling()
+    assert module._MEGA_ACTIVE_TASKS == 1
+    release.set()
+    await current
+    new_timer = module._MEGA_IDLE_TASK
+    assert new_timer is not None and new_timer is not old_timer
+    new_timer.cancel()
+    await asyncio.gather(old_timer, new_timer, return_exceptions=True)
+    module._MEGA_IDLE_TASK = None
+
+
+@pytest.mark.asyncio
+async def test_mega_metadata_timeout_returns_actionable_error_and_safe_diagnostics(monkeypatch, tmp_path, caplog):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    secret_key = "H9dSNe-pqa3x39vyuU0wfLuASJB_4f7aVe4A6iim0YI"
+    url = f"https://mega.nz/file/McEhTIgI#{secret_key}"
+
+    class TimeoutClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            raise httpx.ReadTimeout("")
+
+    monkeypatch.setattr("app.core.http_download_service.httpx.AsyncClient", TimeoutClient)
+
+    with caplog.at_level("WARNING", logger="app.core.http_download_service"):
+        with pytest.raises(HttpDownloadError) as captured:
+            await service._mega_metadata(url)
+
+    assert "连接 MEGA 接口超时" in str(captured.value)
+    assert "[MEGA预览] 解析失败" in caplog.text
+    assert "stage=file_metadata_request" in caplog.text
+    assert "timeout_seconds=30.0" in caplog.text
+    assert "exception_type=ReadTimeout" in caplog.text
+    assert "handle=McEhTIgI" in caplog.text
+    assert secret_key not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_mega_metadata_http_error_includes_status_and_logs_stage(monkeypatch, tmp_path, caplog):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    class ErrorResponse:
+        status_code = 509
+
+        def __init__(self):
+            self.request = httpx.Request("POST", "https://g.api.mega.co.nz/cs")
+
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError("bad status", request=self.request, response=self)
+
+    class ErrorClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            return ErrorResponse()
+
+    monkeypatch.setattr("app.core.http_download_service.httpx.AsyncClient", ErrorClient)
+
+    with caplog.at_level("WARNING", logger="app.core.http_download_service"):
+        with pytest.raises(HttpDownloadError) as captured:
+            await service._mega_metadata(
+                "https://mega.nz/file/McEhTIgI#H9dSNe-pqa3x39vyuU0wfLuASJB_4f7aVe4A6iim0YI"
+            )
+
+    assert "MEGA 接口返回 HTTP 509" in str(captured.value)
+    assert "stage=file_metadata_request" in caplog.text
+    assert "exception_type=HTTPStatusError" in caplog.text
 
 
 @pytest.mark.asyncio

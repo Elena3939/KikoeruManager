@@ -56,4 +56,21 @@ describe('HTTP 代理范围保存', () => {
     await flushPromises()
     expect(store.saveConfig.mock.calls[0][0].http_downloader.proxy_platforms).toEqual([])
   })
+
+  it('仅修改 Mega 时标记已改并保留 Mega 代理来源', async () => {
+    let persisted = { http_downloader: { proxy_platforms: [] } }
+    store.fetchConfig.mockImplementation(async () => copy(persisted))
+    store.saveConfig.mockImplementation(async payload => {
+      persisted = copy(payload)
+      return { success: true }
+    })
+    setup()
+    await draft.loadConfig()
+    draft.config.value.http_downloader.proxy_platforms.push('mega')
+    await vi.waitFor(() => expect(draft.hasChanges.value).toBe(true))
+    expect(draft.dirtyMap.value.httpDownload).toBe(true)
+    await draft.saveConfig()
+    expect(store.saveConfig.mock.calls[0][0].http_downloader.proxy_platforms).toEqual(['mega'])
+    expect(draft.hasChanges.value).toBe(false)
+  })
 })

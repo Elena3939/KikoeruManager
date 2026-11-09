@@ -245,7 +245,7 @@ export const defaultConfig = {
     mega_get_path: 'mega-get',
     mega_enabled: true,
     proxy_url: '',
-    proxy_platforms: ['http', 'gofile', 'transferit', 'onedrive', 'google_drive', 'pikpak', 'imoutoheaven'],
+    proxy_platforms: ['http', 'gofile', 'transferit', 'onedrive', 'google_drive', 'pikpak', 'mega', 'imoutoheaven'],
     max_concurrent_downloads: 3,
     split: 8,
     max_connection_per_server: 8,

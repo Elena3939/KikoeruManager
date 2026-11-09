@@ -4,6 +4,7 @@ import { nextTick } from 'vue'
 import Logs from './Logs.vue'
 import { TASK_PROGRESS_PREFIX } from '../utils/logProgress'
 import { getTaskDomainMeta } from '../components/common/taskDomainMeta'
+import { getHttpDownloadDisplayMeta, HTTP_DOWNLOAD_PLATFORM_META } from '../components/common/httpDownloadPlatformMeta'
 
 vi.mock('../api', () => ({
   logApi: { streamUrl: vi.fn(() => '/api/logs/stream'), get: vi.fn() },
@@ -90,6 +91,60 @@ describe('日志 SSE 到进度卡片的完整解析链路', () => {
     expect(state.activeTasks[0].finished).toBe(true)
     state.updateActiveTask({ id: 'retry', status: 'processing', started_at: '2026-11-09T10:01:00', retry_count: 1 })
     expect(state.activeTasks[0]).toMatchObject({ finished: false, retrying: true })
+  })
+
+  it('所有下载平台复用任务中心图标，进度增量保留来源', async () => {
+    vi.stubGlobal('EventSource', class { addEventListener() {} close() {} })
+    wrapper = shallowMount(Logs, { global: { stubs: { ElSelect: true, ElOption: true, ElDialog: true } } })
+    const state = wrapper.vm.$.setupState
+    for (const platform of Object.values(HTTP_DOWNLOAD_PLATFORM_META)) {
+      const event = {
+        id: platform.key, domain: 'http_download', task_type: 'http_download',
+        status: 'processing', source_modes: [platform.key],
+      }
+      state.updateActiveTask(event)
+      state.updateActiveTask({ id: platform.key, progress: 30 })
+      const task = state.activeTasks.find(item => item.id === platform.key)
+      const shared = getHttpDownloadDisplayMeta(event)
+      expect(task).toMatchObject({
+        sourceKey: shared.key, sourceIcon: shared.iconSrc, sourceName: shared.iconLabel,
+      })
+      expect(task.icon).toBe(getTaskDomainMeta('http_download').icon)
+    }
+    await nextTick()
+    const megaIcon = wrapper.find('[data-task-id="mega"] .logs-active-source-icon')
+    expect(megaIcon.attributes('src')).toContain('mega.ico')
+    expect(megaIcon.attributes('alt')).toBe('Mega')
+    expect(wrapper.find('[data-task-id="http"] .logs-active-source-icon').exists()).toBe(false)
+    state.updateActiveTask({
+      id: 'extract-platform-name', domain: 'import', task_type: 'auto_process',
+      status: 'processing', title: 'Mega 下载文件.zip',
+    })
+    expect(state.activeTasks.find(task => task.id === 'extract-platform-name').sourceIcon).toBe('')
+  })
+
+  it('任务详情中的下载模式及混合平台使用公共解析结果', () => {
+    vi.stubGlobal('EventSource', class { addEventListener() {} close() {} })
+    wrapper = shallowMount(Logs, { global: { stubs: { ElSelect: true, ElOption: true, ElDialog: true } } })
+    const state = wrapper.vm.$.setupState
+    const events = [
+      {
+        id: 'metadata-platform', domain: 'http_download', status: 'processing',
+        details: { metadata: { download_mode: 'mega.nz' } },
+      },
+      {
+        id: 'mixed-platform', domain: 'http_download', status: 'processing',
+        source_modes: ['gofile', 'mega'],
+      },
+    ]
+    for (const event of events) {
+      state.updateActiveTask(event)
+      state.updateActiveTask({ id: event.id, progress: 50 })
+      const shared = getHttpDownloadDisplayMeta(event)
+      expect(state.activeTasks.find(task => task.id === event.id)).toMatchObject({
+        sourceIcon: shared.iconSrc, sourceName: shared.iconLabel, sourcePlatforms: shared.platforms,
+      })
+    }
   })
 
   it('首次历史和增量事件均使用后端状态，100% 处理态不会提前完成', async () => {

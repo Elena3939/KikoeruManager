@@ -42,6 +42,9 @@ from .resource_budget_service import get_resource_budget_service
 
 logger = logging.getLogger(__name__)
 _MEGA_TRANSFER_LOCK = asyncio.Lock()
+_MEGA_IDLE_TASK = None
+_MEGA_ACTIVE_TASKS = 0
+_MEGA_SERVER_USED = False
 
 _BLOCKED_HOST_HINTS = {"tranfile.com", "transfernow.net"}
 _PIKPAK_HOST_HINTS = {"mypikpak.com", "www.mypikpak.com", "drive.mypikpak.com"}
@@ -50,6 +53,10 @@ _TRANSFERIT_HOST_HINTS = {"transfer.it", "www.transfer.it"}
 _ONEDRIVE_HOST_HINTS = {"1drv.ms", "onedrive.live.com", "onedrive.com"}
 _GOOGLE_DRIVE_HOST_HINTS = {"drive.google.com", "docs.google.com", "drive.usercontent.google.com"}
 _MEGA_HOST_HINTS = {"mega.nz", "www.mega.nz", "mega.io", "www.mega.io"}
+_MEGA_METADATA_TIMEOUT_SECONDS = 30.0
+_MEGA_COMMAND_TIMEOUT_SECONDS = 45.0
+_MEGA_STARTUP_ATTEMPTS = 4
+_MEGA_IDLE_TIMEOUT_SECONDS = 3600
 _PIKPAK_MAX_SHARE_FILES = 100
 _PIKPAK_STATUS_CACHE_TTL_SECONDS = 6 * 60 * 60
 _PIKPAK_STATUS_LIVE_TIMEOUT_SECONDS = 15.0
@@ -1832,9 +1839,86 @@ class HttpDownloadService:
         executable = self._mega_get_path()
         if os.path.basename(executable).lower() == "megaclient.exe":
             return [executable, command]
+        if command == "exit":
+            return [os.path.join(os.path.dirname(executable), "mega-exec"), "exit"]
         if command == "get":
             return [executable]
         return [os.path.join(os.path.dirname(executable), f"mega-{command}")]
+
+    async def _run_mega_command(self, command: str, *args: str, task_id: str = "") -> str:
+        started = time.monotonic()
+        process = None
+        try:
+            # MEGAcmd 首次启动的守护进程会继承输出描述符，管道可能永远等不到 EOF。
+            with tempfile.TemporaryFile() as output_file:
+                process = await asyncio.create_subprocess_exec(
+                    *self._mega_command(command), *args,
+                    stdin=subprocess.DEVNULL, stdout=output_file,
+                    stderr=subprocess.STDOUT,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+                )
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=_MEGA_COMMAND_TIMEOUT_SECONDS)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    if process.returncode is None:
+                        with contextlib.suppress(ProcessLookupError):
+                            process.kill()
+                    await process.wait()
+                    raise
+                output_file.seek(0)
+                text = output_file.read().decode("utf-8", errors="replace")
+        except FileNotFoundError as exc:
+            raise HttpDownloadError(f"找不到 MEGAcmd：{self._mega_get_path()}") from exc
+        except asyncio.TimeoutError as exc:
+            logger.warning(
+                "[MEGA下载] 命令超时 task=%s command=%s pid=%s timeout=%.1f",
+                task_id, command, getattr(process, "pid", None), _MEGA_COMMAND_TIMEOUT_SECONDS,
+            )
+            raise HttpDownloadError(f"MEGAcmd {command} 命令超时") from exc
+        elapsed = time.monotonic() - started
+        if process.returncode:
+            safe_text = text
+            for value in args:
+                if "://" in value:
+                    safe_text = safe_text.replace(value, "[已隐藏]")
+            safe_text = self._sanitize_error(safe_text.strip())
+            logger.warning(
+                "[MEGA下载] 命令失败 task=%s command=%s exit=%s elapsed=%.2f reason=%s",
+                task_id, command, process.returncode, elapsed, safe_text,
+            )
+            raise HttpDownloadError(f"MEGAcmd {command} 失败：{safe_text}")
+        if command != "transfers" or elapsed >= 5:
+            logger.info(
+                "[MEGA下载] 命令完成 task=%s command=%s elapsed=%.2f",
+                task_id, command, elapsed,
+            )
+        return text
+
+    async def _stop_idle_mega_server(self) -> None:
+        global _MEGA_IDLE_TASK, _MEGA_SERVER_USED
+        try:
+            while True:
+                await asyncio.sleep(_MEGA_IDLE_TIMEOUT_SECONDS)
+                async with _MEGA_TRANSFER_LOCK:
+                    if _MEGA_ACTIVE_TASKS:
+                        continue
+                    try:
+                        listing = await self._run_mega_command("transfers", task_id="idle-cleanup")
+                        if listing.strip():
+                            logger.info("[MEGA下载] 存在其他传输，延后关闭空闲服务")
+                            continue
+                        await self._run_mega_command("exit", task_id="idle-cleanup")
+                        _MEGA_SERVER_USED = False
+                        logger.info("[MEGA下载] 空闲一小时，MEGAcmd 服务已关闭")
+                        return
+                    except HttpDownloadError as exc:
+                        logger.warning("[MEGA下载] 空闲服务清理失败：%s", self._sanitize_error(exc))
+                        return
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if _MEGA_IDLE_TASK is asyncio.current_task():
+                _MEGA_IDLE_TASK = None
 
     async def _mega_folder_nodes(self, raw_url: str) -> Dict[str, Any]:
         try:
@@ -2066,56 +2150,98 @@ class HttpDownloadService:
         }
 
     async def _mega_metadata(self, raw_url: str) -> Dict[str, Any]:
-        parsed = urlparse(raw_url)
-        file_match = re.fullmatch(r"/file/([A-Za-z0-9_-]+)", parsed.path)
-        folder_match = re.fullmatch(r"/folder/([A-Za-z0-9_-]+)", parsed.path)
-        if not (file_match or folder_match) or not parsed.fragment:
-            raise HttpDownloadError("Mega 公开链接必须包含解密密钥")
-        if folder_match:
-            folder = await self._mega_folder_nodes(raw_url)
-            nodes = list(folder.get("nodes") or [])
-            root = next(
-                (node for node in nodes if node.get("handle") == folder.get("handle")),
-                None,
-            )
-            return {
-                "kind": "folder",
-                "filename": self._sanitize_filename(
-                    (root or {}).get("name") or f"mega-folder-{folder_match.group(1)}"
-                ),
-                "size_bytes": sum(
-                    int(node.get("size") or 0)
-                    for node in nodes
-                    if int(node.get("kind") or 0) == 0
-                ),
-            }
-        if not file_match:
-            raise HttpDownloadError("仅支持 Mega 公开文件或文件夹链接")
+        handle = "unknown"
+        stage = "validate_link"
+        started = time.monotonic()
+        proxy_enabled = False
         try:
+            parsed = urlparse(str(raw_url or ""))
+            file_match = re.fullmatch(r"/file/([A-Za-z0-9_-]+)", parsed.path)
+            folder_match = re.fullmatch(r"/folder/([A-Za-z0-9_-]+)", parsed.path)
+            handle = (file_match or folder_match).group(1) if (file_match or folder_match) else "unknown"
+            proxy_enabled = bool(self._proxy_url("mega"))
+            if not (file_match or folder_match) or not parsed.fragment:
+                raise HttpDownloadError("Mega 公开链接格式无效或缺少解密密钥")
+            if folder_match:
+                stage = "folder_metadata"
+                folder = await self._mega_folder_nodes(raw_url)
+                nodes = list(folder.get("nodes") or [])
+                root = next(
+                    (node for node in nodes if node.get("handle") == folder.get("handle")),
+                    None,
+                )
+                return {
+                    "kind": "folder",
+                    "filename": self._sanitize_filename(
+                        (root or {}).get("name") or f"mega-folder-{folder_match.group(1)}"
+                    ),
+                    "size_bytes": sum(
+                        int(node.get("size") or 0)
+                        for node in nodes
+                        if int(node.get("kind") or 0) == 0
+                    ),
+                }
+            if not file_match:
+                raise HttpDownloadError("仅支持 Mega 公开文件或文件夹链接")
             key = base64.urlsafe_b64decode(parsed.fragment + "=" * (-len(parsed.fragment) % 4))
             if len(key) != 32:
-                raise ValueError("密钥长度错误")
+                raise HttpDownloadError("Mega 分享密钥格式无效")
             proxy = self._proxy_url("mega") or None
-            async with httpx.AsyncClient(proxy=proxy, timeout=30, trust_env=False) as client:
+            stage = "file_metadata_request"
+            async with httpx.AsyncClient(
+                proxy=proxy,
+                timeout=_MEGA_METADATA_TIMEOUT_SECONDS,
+                trust_env=False,
+            ) as client:
                 response = await client.post(
                     "https://g.api.mega.co.nz/cs",
                     params={"id": secrets.randbelow(2**31)},
                     json=[{"a": "g", "p": file_match.group(1)}],
                 )
                 response.raise_for_status()
+                stage = "file_metadata_response"
                 result = response.json()[0]
             if not isinstance(result, dict):
-                raise ValueError(f"MEGA 接口错误 {result}")
+                raise HttpDownloadError(f"MEGA 接口返回错误码 {result}")
+            if "at" not in result or "s" not in result:
+                raise HttpDownloadError("MEGA 接口响应缺少文件属性或大小")
+            stage = "decrypt_attributes"
             attributes = str(result["at"])
             encrypted = base64.urlsafe_b64decode(attributes + "=" * (-len(attributes) % 4))
             aes_key = bytes(a ^ b for a, b in zip(key[:16], key[16:]))
             decrypted = AES.new(aes_key, AES.MODE_CBC, bytes(16)).decrypt(encrypted).rstrip(b"\0")
             if not decrypted.startswith(b"MEGA"):
-                raise ValueError("解密密钥不正确")
+                raise HttpDownloadError("Mega 分享密钥不正确或文件属性已损坏")
+            stage = "decode_attributes"
             name = json.loads(decrypted[4:].decode("utf-8"))["n"]
             return {"filename": self._sanitize_filename(name), "size_bytes": int(result["s"])}
         except Exception as exc:
-            raise HttpDownloadError(f"Mega 文件信息解析失败：{self._sanitize_error(exc)}") from exc
+            elapsed_ms = (time.monotonic() - started) * 1000
+            if isinstance(exc, httpx.TimeoutException):
+                reason = "连接 MEGA 接口超时，请检查服务器到 MEGA 的网络或代理"
+            elif isinstance(exc, httpx.HTTPStatusError):
+                status_code = exc.response.status_code if exc.response is not None else "未知"
+                reason = f"MEGA 接口返回 HTTP {status_code}"
+            elif isinstance(exc, httpx.RequestError):
+                reason = f"连接 MEGA 接口失败（{type(exc).__name__}）"
+            elif isinstance(exc, HttpDownloadError):
+                reason = self._sanitize_error(exc) or "MEGA 文件信息解析失败，请查看服务端日志"
+            else:
+                detail = self._sanitize_error(exc)
+                reason = detail or f"MEGA 文件信息解析失败（{type(exc).__name__}）"
+            logger.warning(
+                "[MEGA预览] 解析失败 handle=%s stage=%s elapsed_ms=%.0f "
+                "timeout_seconds=%.1f exception_type=%s proxy_enabled=%s reason=%s",
+                handle,
+                stage,
+                elapsed_ms,
+                _MEGA_METADATA_TIMEOUT_SECONDS,
+                type(exc).__name__,
+                proxy_enabled,
+                reason,
+                exc_info=True,
+            )
+            raise HttpDownloadError(f"Mega 文件信息解析失败：{reason}") from exc
 
     def _mega_filename_from_url(self, raw_url: str) -> str:
         parsed = urlparse(str(raw_url or "").strip())
@@ -2124,6 +2250,20 @@ class HttpDownloadService:
         return self._sanitize_filename(f"mega-{token}.bin" if token else "mega-download.bin")
 
     async def _download_mega_item(self, item: Dict[str, Any], task=None, progress_callback=None) -> Dict[str, Any]:
+        global _MEGA_ACTIVE_TASKS, _MEGA_IDLE_TASK
+        _MEGA_ACTIVE_TASKS += 1
+        if _MEGA_IDLE_TASK is not None:
+            _MEGA_IDLE_TASK.cancel()
+            _MEGA_IDLE_TASK = None
+        try:
+            return await self._download_mega_item_impl(item, task=task, progress_callback=progress_callback)
+        finally:
+            _MEGA_ACTIVE_TASKS -= 1
+            if not _MEGA_ACTIVE_TASKS and _MEGA_SERVER_USED:
+                _MEGA_IDLE_TASK = asyncio.create_task(self._stop_idle_mega_server())
+
+    async def _download_mega_item_impl(self, item: Dict[str, Any], task=None, progress_callback=None) -> Dict[str, Any]:
+        global _MEGA_SERVER_USED
         if not self._mega_enabled():
             raise HttpDownloadError("Mega 下载未启用")
         url = str(item.get("original_url") or item.get("url") or "").strip()
@@ -2142,24 +2282,14 @@ class HttpDownloadService:
             raise HttpDownloadError("Mega 目标文件已存在，请选择重命名冲突策略")
         target_dir = os.path.dirname(final_path)
         os.makedirs(target_dir, exist_ok=True)
-        async def run(command: str, *args: str) -> str:
-            try:
-                process = await asyncio.create_subprocess_exec(
-                    *self._mega_command(command), *args,
-                    stdin=subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
-                )
-                output, _ = await process.communicate()
-            except FileNotFoundError as exc:
-                raise HttpDownloadError(f"找不到 MEGAcmd：{self._mega_get_path()}") from exc
-            text = output.decode("utf-8", errors="replace")
-            if process.returncode:
-                raise HttpDownloadError(f"MEGAcmd {command} 失败：{self._sanitize_error(text.strip())}")
-            return text
+        task_key = str(getattr(task, "id", "") or item.get("gid") or "standalone")
 
+        async def run(command: str, *args: str) -> str:
+            return await self._run_mega_command(command, *args, task_id=task_key)
+
+        logger.info("[MEGA下载] 等待传输锁 task=%s", task_key)
         async with _MEGA_TRANSFER_LOCK:
-            task_key = str(getattr(task, "id", "") or item.get("gid") or "standalone")
+            logger.info("[MEGA下载] 开始准备 task=%s", task_key)
             staging_root = os.path.join(target_dir, ".mega-staging", self._sanitize_filename(task_key))
             staging_dir = os.path.join(staging_root, self._sanitize_filename(item.get("gid") or item.get("filename") or "item"))
             os.makedirs(staging_dir, exist_ok=True)
@@ -2176,11 +2306,26 @@ class HttpDownloadService:
                 return None
             try:
                 proxy = self._proxy_url("mega")
-                await run("proxy", proxy if proxy else "--none")
+                logger.info("[MEGA下载] 设置代理 task=%s proxy_enabled=%s", task_key, bool(proxy))
+                _MEGA_SERVER_USED = True
+                for attempt in range(1, _MEGA_STARTUP_ATTEMPTS + 1):
+                    try:
+                        await run("proxy", proxy if proxy else "--none")
+                        break
+                    except HttpDownloadError as exc:
+                        reason = str(exc).lower()
+                        if attempt == _MEGA_STARTUP_ATTEMPTS or not (
+                            "unable to connect to service" in reason
+                            or "please ensure mega-cmd-server is running" in reason
+                        ):
+                            raise
+                        logger.warning("[MEGA下载] 服务启动中 task=%s attempt=%s", task_key, attempt)
+                        await asyncio.sleep(2)
                 submitted = True
                 get_args = ["-q"]
                 if is_folder:
                     get_args.insert(0, "-m")
+                logger.info("[MEGA下载] 提交传输 task=%s", task_key)
                 submission = asyncio.create_task(run("get", *get_args, url, staging_dir))
                 try:
                     await asyncio.shield(submission)
@@ -2191,6 +2336,9 @@ class HttpDownloadService:
                 last_bytes, last_at = 0, time.monotonic()
                 paused = False
                 missing_since = time.monotonic()
+                last_change_at = last_at
+                last_stall_log = last_at
+                last_state = ""
                 while True:
                     transfer = await find_transfer()
                     if transfer is not None:
@@ -2198,6 +2346,9 @@ class HttpDownloadService:
                         state = transfer[5].strip().upper()
                         percent_match = re.search(r"([\d.]+)%", transfer[4])
                         percent = float(percent_match.group(1)) if percent_match else 0
+                        if state != last_state:
+                            logger.info("[MEGA下载] 传输状态 task=%s state=%s", task_key, state)
+                            last_state = state
                         if state == "COMPLETED":
                             finished = True
                             break
@@ -2218,6 +2369,14 @@ class HttpDownloadService:
                     downloaded = int(total * percent / 100)
                     now = time.monotonic()
                     speed = int(max(0, downloaded - last_bytes) / max(now - last_at, 0.001))
+                    if downloaded != last_bytes:
+                        last_change_at = now
+                    elif not paused and now - last_change_at >= 60 and now - last_stall_log >= 60:
+                        logger.warning(
+                            "[MEGA下载] 传输无进展 task=%s state=%s downloaded=%s total=%s idle_seconds=%.0f",
+                            task_key, last_state, downloaded, total, now - last_change_at,
+                        )
+                        last_stall_log = now
                     last_bytes, last_at = downloaded, now
                     if progress_callback is not None:
                         progress_callback({
@@ -4876,7 +5035,20 @@ class HttpDownloadService:
             try:
                 mega_metadata = await self._mega_metadata(raw_url)
             except Exception as exc:
-                failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": self._sanitize_error(exc), "source": "mega"})
+                reason = self._sanitize_error(exc) or f"MEGA 解析失败（{type(exc).__name__}）"
+                logger.warning(
+                    "[MEGA预览] 来源解析失败 url=%s exception_type=%s reason=%s",
+                    self._mask_url(raw_url),
+                    type(exc).__name__,
+                    reason,
+                )
+                failed.append({
+                    "ok": False,
+                    "url": raw_url,
+                    "masked_url": self._mask_url(raw_url),
+                    "reason": reason,
+                    "source": "mega",
+                })
                 continue
             resolved.append(raw_url)
             filename = mega_metadata["filename"]
@@ -5262,6 +5434,8 @@ class HttpDownloadService:
                 raise
             source = await self.resolve_source_urls(urls, materialize=materialize_sources)
         items = []
+        # Mega 同时出现在 resolved urls 和 preview_only source_items，避免补充循环再次追加。
+        consumed_preview_only_items = set()
         source_by_url = {}
         for source_item in source.get("source_items") or []:
             if not isinstance(source_item, dict):
@@ -5485,12 +5659,15 @@ class HttpDownloadService:
                     item["aria2_header"] = list(source_item.get("aria2_header") or [])
                 if source_item.get("headers"):
                     item["headers"] = dict(source_item.get("headers") or {})
+                if source_item.get("preview_only"):
+                    consumed_preview_only_items.add(id(source_item))
             items.append(item)
         for source_item in source.get("source_items") or []:
             if (
                 not isinstance(source_item, dict)
                 or source_item.get("source") not in _SHARE_PREVIEW_ONLY_SOURCES
                 or not source_item.get("preview_only")
+                or id(source_item) in consumed_preview_only_items
             ):
                 continue
             source_name = str(source_item.get("source") or "http")

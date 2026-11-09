@@ -974,6 +974,12 @@ async function preview(options = {}) {
         selectAllPreviewTreeFiles()
         const okCount = nextItems.filter(item => item.ok).length
         addPreviewLog(`[${index + 1}/${urls.length}] ${okCount ? `解析出 ${okCount} 项` : '没有可下载项'}`, okCount ? 'success' : 'warning')
+        nextItems
+          .filter(item => !item.ok)
+          .slice(0, 3)
+          .forEach(item => {
+            addPreviewLog(`[${index + 1}/${urls.length}] ${previewItemReason(item)}`, 'error')
+          })
       } catch (error) {
         const reason = error.response?.data?.detail || error.message || '预览失败'
         previewItems.value = [
