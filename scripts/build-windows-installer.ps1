@@ -24,7 +24,28 @@ if ($LASTEXITCODE) { throw '安装器图标生成失败' }
 New-Item -ItemType Directory -Force $cache,$stage | Out-Null
 function Download-Package($Name, $Url, $Sha256) {
     $path = Join-Path $cache $Name
-    if (!(Test-Path $path)) { Invoke-WebRequest $Url -OutFile $path -TimeoutSec 600 }
+    if (Test-Path $path) {
+        if ((Get-FileHash $path -Algorithm SHA256).Hash -eq $Sha256) {
+            return $path
+        }
+        Remove-Item -LiteralPath $path -Force
+    }
+    $maxAttempts = 4
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            Write-Host "下载 $Name（第 $attempt/$maxAttempts 次）"
+            Invoke-WebRequest $Url -OutFile $path -TimeoutSec 180
+            break
+        } catch {
+            if (Test-Path $path) { Remove-Item -LiteralPath $path -Force }
+            if ($attempt -eq $maxAttempts) {
+                throw "下载依赖失败：$Name；已重试 $maxAttempts 次。$($_.Exception.Message)"
+            }
+            $delay = [Math]::Min(30, 5 * [Math]::Pow(2, $attempt - 1))
+            Write-Warning "下载 $Name 失败：$($_.Exception.Message)，${delay} 秒后重试。"
+            Start-Sleep -Seconds $delay
+        }
+    }
     if ((Get-FileHash $path -Algorithm SHA256).Hash -ne $Sha256) { throw "依赖校验失败：$Name" }
     return $path
 }
