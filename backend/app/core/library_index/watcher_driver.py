@@ -12,6 +12,15 @@ from dataclasses import dataclass
 from typing import Optional
 
 from watchdog.events import FileSystemEventHandler
+from watchdog.events import (
+    DirCreatedEvent,
+    DirDeletedEvent,
+    DirMovedEvent,
+    FileClosedEvent,
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileMovedEvent,
+)
 from watchdog.observers import Observer
 
 from ..redis_service import get_redis_service
@@ -28,6 +37,15 @@ SCRUB_MAX_DIRECTORIES = 200
 SCRUB_MAX_SECONDS = 2.0
 GENERATION_RECOVERY_DEBOUNCE_SECONDS = 5.0
 MAX_WATCH_DEPTH = 2
+_WATCHER_EVENT_FILTER = [
+    DirCreatedEvent,
+    DirDeletedEvent,
+    DirMovedEvent,
+    FileClosedEvent,
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileMovedEvent,
+]
 _INOTIFY_LIMIT_PATHS = {
     "max_user_watches": "/proc/sys/fs/inotify/max_user_watches",
     "max_user_instances": "/proc/sys/fs/inotify/max_user_instances",
@@ -91,7 +109,7 @@ class _InventoryEventHandler(FileSystemEventHandler):
         self.root_path = root_path
 
     def on_any_event(self, event) -> None:
-        if getattr(event, "event_type", "") in {"opened", "closed", "closed_no_write"}:
+        if getattr(event, "event_type", "") in {"opened", "closed_no_write"}:
             return
         # watchdog 为目录创建/移动合成后代事件；父目录事件已覆盖整棵子树。
         if getattr(event, "is_synthetic", False) and getattr(event, "event_type", "") in {
@@ -227,7 +245,12 @@ class LibraryIndexWatcherDriver:
                 # 一个库存只创建一个 inotify emitter；逐目录 schedule 会为每个目录
                 # 创建独立 inotify 实例，目录多时会直接撞上 max_user_instances。
                 observers.append(observer)
-                observer.schedule(handler, root_path, recursive=True)
+                observer.schedule(
+                    handler,
+                    root_path,
+                    recursive=True,
+                    event_filter=_WATCHER_EVENT_FILTER,
+                )
                 observer.start()
         except Exception as exc:
             self._stop_observers(observers)

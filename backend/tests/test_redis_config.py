@@ -960,8 +960,8 @@ def test_library_index_watcher_uses_one_recursive_observer_per_library(monkeypat
             return []
 
     class FakeObserver:
-        def schedule(self, _handler, path, recursive):
-            schedules.append((path, recursive))
+        def schedule(self, _handler, path, recursive, event_filter=None):
+            schedules.append((path, recursive, event_filter))
 
         def start(self):
             return None
@@ -979,7 +979,16 @@ def test_library_index_watcher_uses_one_recursive_observer_per_library(monkeypat
     driver = LibraryIndexWatcherDriver()
     try:
         driver.start()
-        assert schedules == [(str(root), True)]
+        assert schedules == [(str(root), True, watcher_module._WATCHER_EVENT_FILTER)]
+        assert watcher_module._WATCHER_EVENT_FILTER == [
+            watcher_module.DirCreatedEvent,
+            watcher_module.DirDeletedEvent,
+            watcher_module.DirMovedEvent,
+            watcher_module.FileClosedEvent,
+            watcher_module.FileCreatedEvent,
+            watcher_module.FileDeletedEvent,
+            watcher_module.FileMovedEvent,
+        ]
     finally:
         driver.stop(timeout=0.5)
 
