@@ -1,7 +1,7 @@
 export const TASK_PROGRESS_PREFIX = '__KIKOERUMANAGER_TASK_PROGRESS__'
 
 const phaseLabels = {
-  extract: '解压', filter: '过滤', metadata: '元数据', rename: '重命名',
+  extract: '解压', move: '移动', filter: '过滤', metadata: '元数据', rename: '重命名',
   asmr_sync_download: '下载', http_download: '下载', baidu_netdisk_download: '下载',
   baidu_netdisk_upload: '上传', local_library_upload: '上传', browser_upload: '上传',
   rj_subtitle_fetch: '字幕', rj_subtitle_extract: '字幕', auto_process: '处理',

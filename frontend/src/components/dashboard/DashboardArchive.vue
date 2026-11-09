@@ -1,6 +1,5 @@
 <template>
   <section
-    ref="panelRef"
     class="dashboard-archive flex min-h-0 flex-1 flex-col rounded-[14px] border border-slate-200/80 bg-white p-3.5 shadow-[0_2px_8px_-6px_rgba(15,23,42,0.08)] transition-shadow duration-500 hover:shadow-[0_6px_16px_-10px_rgba(15,23,42,0.14)]"
     data-section="dashboard-archive"
   >
@@ -107,18 +106,18 @@
       </div>
     </div>
 
-    <!-- 归档列表（前端分页切片，pageSize 按容器高度动态计算） -->
+    <!-- 列表高度由布局确定，只渲染当前页，不产生内部滚动。 -->
     <div
       v-if="filteredArchives.length"
       v-show="listType === 'history'"
       ref="listRef"
-      class="mt-2 flex min-h-0 flex-1 flex-col gap-2 overflow-auto"
+      class="dash-archive-list mt-2 min-h-0 gap-2"
+      :style="{ gridTemplateRows: `repeat(${pageSize}, minmax(0, 1fr))` }"
     >
       <article
-        v-for="(archive, index) in pagedArchives"
+        v-for="archive in pagedArchives"
         :key="archive.id"
-        class="dash-archive-row dash-fade-up group grid grid-cols-[22px_minmax(0,1fr)_auto] items-start gap-2.5 rounded-[10px] border border-slate-100 bg-white p-2.5 transition-colors duration-300 hover:border-slate-200 hover:bg-slate-50/50"
-        :style="{ animationDelay: `${index * 35}ms` }"
+        class="dash-archive-row group grid grid-cols-[22px_minmax(0,1fr)_auto] items-start gap-2.5 rounded-[10px] border border-slate-100 bg-white p-2.5 transition-colors duration-300 hover:border-slate-200 hover:bg-slate-50/50"
       >
         <component
           :is="getMeta(archive).icon"
@@ -129,14 +128,10 @@
         />
 
         <div class="min-w-0">
-          <!-- 标题行：文件名 + (解压入库 RJ 号紧邻) + 日期右对齐 -->
-          <div class="flex items-start gap-2">
-            <div class="flex min-w-0 flex-1 items-center gap-1.5">
-              <h3 class="m-0 min-w-0 truncate text-[13px] font-semibold leading-tight text-slate-900">{{ archive.filename }}</h3>
-              <span
-                v-if="archive.rjcode && getMeta(archive).key === 'import'"
-                class="inline-flex flex-shrink-0 items-center rounded-[5px] bg-slate-100 px-1.5 py-0.5 text-[11px] font-bold tabular-nums text-slate-600"
-              >{{ archive.rjcode }}</span>
+          <!-- 解压入库只显示压缩包名，其它类型保留右侧 RJ 信息。 -->
+          <div class="flex min-w-0 items-start gap-2">
+            <div class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+              <h3 :title="archive.filename" class="m-0 min-w-0 truncate text-[13px] font-semibold leading-tight text-slate-900">{{ archive.filename }}</h3>
             </div>
             <div class="flex flex-shrink-0 flex-col items-end gap-0.5">
               <span
@@ -189,42 +184,18 @@
       <AppEmptyState description="暂无归档记录" size="default" />
     </div>
 
-    <div
-      v-if="listType === 'history' && showPager"
-      class="dash-archive-pager mt-2.5 flex flex-shrink-0 items-center justify-between gap-2 border-t border-slate-100 pt-2.5"
-    >
-      <span class="text-[11px] font-medium tracking-wide text-slate-400">
-        共 <b class="text-slate-700 tabular-nums">{{ filteredArchives.length }}</b> 条
-      </span>
-
+    <footer v-if="listType === 'history' && filteredArchives.length" class="dash-archive-pager">
+      <span>共 {{ filteredArchives.length }} 条</span>
       <div class="flex items-center gap-1">
-        <button
-          type="button"
-          class="dash-archive-pager-btn group"
-          :disabled="internalPage <= 1"
-          aria-label="上一页"
-          @click="goPrevPage"
-        >
-          <ChevronLeft :size="12" :stroke-width="2.4" class="transition-transform duration-300 group-hover:-translate-x-0.5" />
+        <button type="button" class="dash-archive-page-btn" aria-label="上一页" :disabled="currentPage <= 1" @click="currentPage--">
+          <ChevronLeft :size="12" />
         </button>
-
-        <div class="dash-archive-pager-indicator">
-          <span class="dash-archive-pager-current">{{ internalPage }}</span>
-          <span class="dash-archive-pager-divider">/</span>
-          <span class="dash-archive-pager-total">{{ totalPages }}</span>
-        </div>
-
-        <button
-          type="button"
-          class="dash-archive-pager-btn group"
-          :disabled="internalPage >= totalPages"
-          aria-label="下一页"
-          @click="goNextPage"
-        >
-          <ChevronRight :size="12" :stroke-width="2.4" class="transition-transform duration-300 group-hover:translate-x-0.5" />
+        <span class="dash-archive-page-number">{{ currentPage }} / {{ totalPages }}</span>
+        <button type="button" class="dash-archive-page-btn" aria-label="下一页" :disabled="currentPage >= totalPages" @click="currentPage++">
+          <ChevronRight :size="12" />
         </button>
       </div>
-    </div>
+    </footer>
   </section>
 </template>
 
@@ -246,7 +217,7 @@ import {
   Sparkles,
   XCircle,
 } from 'lucide-vue-next'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onUpdated, ref, watch } from 'vue'
 import AppDropdown from '../common/AppDropdown.vue'
 import AppEmptyState from '../common/AppEmptyState.vue'
 import StatefulButton from '../ui/stateful-button.vue'
@@ -260,9 +231,6 @@ const props = defineProps({
   searchQuery: { type: String, default: '' },
   archivesLoading: { type: Boolean, default: false },
   reprocessingId: { type: [String, Number, null], default: null },
-  total: { type: Number, default: 0 },
-  page: { type: Number, default: 1 },
-  pageSize: { type: Number, default: 6 },
   getMeta: { type: Function, required: true },
   getStatusMeta: { type: Function, required: true },
   formatDate: { type: Function, required: true },
@@ -270,10 +238,43 @@ const props = defineProps({
   refreshArchives: { type: Function, required: true },
 })
 
-defineEmits(['reprocess', 'change-page', 'update:searchQuery', 'update:domainFilter'])
+defineEmits(['reprocess', 'update:searchQuery', 'update:domainFilter'])
 
 const listType = ref('queue')
 const queueRef = ref(null)
+const listRef = ref(null)
+const currentPage = ref(1)
+const pageSize = ref(10)
+const totalPages = computed(() => Math.max(1, Math.ceil(props.filteredArchives.length / pageSize.value)))
+const pagedArchives = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return props.filteredArchives.slice(start, start + pageSize.value)
+})
+
+// 80px 卡片和 8px 间距是布局约定。仅读取固定列表区高度，
+// 在浏览器绘制前确定页容量，不遍历卡片、不读取行高、不延时补行。
+function updatePageSize() {
+  if (listType.value !== 'history') return
+  const height = listRef.value?.clientHeight || 0
+  const size = window.innerWidth <= 1024 || !height ? 10 : Math.max(1, Math.floor((height + 8) / 88))
+  if (pageSize.value !== size) {
+    pageSize.value = size
+    currentPage.value = Math.min(currentPage.value, totalPages.value)
+  }
+}
+let listObserver
+watch(listRef, (list) => {
+  listObserver?.disconnect()
+  if (list) {
+    listObserver = new ResizeObserver(updatePageSize)
+    listObserver.observe(list)
+    updatePageSize()
+  }
+}, { flush: 'post' })
+onUpdated(updatePageSize)
+watch(() => `${props.searchQuery}|${props.domainFilter}`, () => { currentPage.value = 1 })
+watch(totalPages, (count) => { currentPage.value = Math.min(currentPage.value, count) })
+onBeforeUnmount(() => listObserver?.disconnect())
 const listTypes = [
   { key: 'queue', label: '压缩包队列', icon: FileArchive },
   { key: 'history', label: '任务归档', icon: Archive },
@@ -287,10 +288,6 @@ const currentLoading = computed(() => listType.value === 'queue' ? queueRef.valu
 function refreshCurrentList() {
   return listType.value === 'queue' ? queueRef.value?.refresh() : props.refreshArchives()
 }
-
-const DEFAULT_PAGE_SIZE = 6
-const MIN_PAGE_SIZE = 3
-const ROW_FIT_SAFETY_PX = 6
 
 const domainDropdownOptions = computed(() =>
   props.tabs.map((tab) => ({
@@ -309,116 +306,6 @@ function archiveVolumeCount(archive) {
   if (volumes.length > 1) return volumes.length
 
   return 1
-}
-
-const panelRef = ref(null)
-const listRef = ref(null)
-const listViewportHeight = ref(0)
-const archiveRowHeight = ref(0)
-const archiveRowGap = ref(8)
-let resizeObserver = null
-let measureRaf = null
-
-function measurePanel() {
-  const listEl = listRef.value
-  if (!listEl) return
-
-  listViewportHeight.value = listEl.clientHeight || 0
-
-  const styles = window.getComputedStyle(listEl)
-  const measuredGap = Number.parseFloat(styles.rowGap || styles.gap || '')
-  archiveRowGap.value = Number.isFinite(measuredGap) ? measuredGap : 8
-
-  const rowEls = Array.from(listEl.querySelectorAll('.dash-archive-row'))
-  if (rowEls.length) {
-    archiveRowHeight.value = rowEls.reduce(
-      (maxHeight, rowEl) => Math.max(maxHeight, rowEl.getBoundingClientRect().height || 0),
-      0,
-    )
-  }
-}
-
-function scheduleMeasurePanel() {
-  if (measureRaf) cancelAnimationFrame(measureRaf)
-  measureRaf = requestAnimationFrame(() => {
-    measureRaf = null
-    measurePanel()
-  })
-}
-
-onMounted(() => {
-  nextTick(scheduleMeasurePanel)
-  if (typeof ResizeObserver !== 'undefined' && panelRef.value) {
-    resizeObserver = new ResizeObserver(scheduleMeasurePanel)
-    resizeObserver.observe(panelRef.value)
-  }
-})
-
-onBeforeUnmount(() => {
-  if (measureRaf) {
-    cancelAnimationFrame(measureRaf)
-    measureRaf = null
-  }
-  if (resizeObserver) {
-    try { resizeObserver.disconnect() } catch (_) {}
-    resizeObserver = null
-  }
-})
-
-// 内部维护当前页，避免被父组件的轮询/反应式更新反复重置回 1
-const internalPage = ref(1)
-
-// 数据 / 过滤 / 当前页变化后重新测行高，避免不同标题换行导致页容量偏差。
-watch(
-  () => [props.filteredArchives.length, internalPage.value, listType.value],
-  () => nextTick(scheduleMeasurePanel),
-  { flush: 'post' },
-)
-
-// 按列表实际可用高度算当前页容量，避免桌面侧栏只显示 6 条后底部大片空白。
-const effectivePageSize = computed(() => {
-  const requestedSize = Math.max(MIN_PAGE_SIZE, Number(props.pageSize) || DEFAULT_PAGE_SIZE)
-  const rowHeight = archiveRowHeight.value
-  const viewportHeight = listViewportHeight.value
-  const rowGap = archiveRowGap.value
-  if (!rowHeight || !viewportHeight) return Math.min(DEFAULT_PAGE_SIZE, requestedSize)
-
-  const fitCount = Math.floor((viewportHeight - ROW_FIT_SAFETY_PX + rowGap) / (rowHeight + rowGap))
-  return Math.min(requestedSize, Math.max(MIN_PAGE_SIZE, fitCount))
-})
-
-const totalPages = computed(() => {
-  const list = props.filteredArchives.length || 0
-  return Math.max(1, Math.ceil(list / effectivePageSize.value))
-})
-
-// 当前页切片显示
-const pagedArchives = computed(() => {
-  const list = Array.isArray(props.filteredArchives) ? props.filteredArchives : []
-  const size = effectivePageSize.value
-  const safePage = Math.min(Math.max(1, internalPage.value), totalPages.value)
-  const start = (safePage - 1) * size
-  return list.slice(start, start + size)
-})
-
-const showPager = computed(() => props.filteredArchives.length > effectivePageSize.value)
-
-// 总页数缩水（搜索、切 tab、resize 后）时，把当前页夹到合法范围
-watch(totalPages, (max) => {
-  if (internalPage.value > max) internalPage.value = max
-  if (internalPage.value < 1) internalPage.value = 1
-})
-
-// 搜索词或域过滤变化时，回到第 1 页
-watch(() => `${props.searchQuery}|${props.domainFilter}`, () => {
-  internalPage.value = 1
-})
-
-function goPrevPage() {
-  if (internalPage.value > 1) internalPage.value -= 1
-}
-function goNextPage() {
-  if (internalPage.value < totalPages.value) internalPage.value += 1
 }
 
 const STATUS_ICON = {
@@ -448,6 +335,46 @@ function statusIconColor(key) {
 </script>
 
 <style scoped>
+.dash-archive-pager {
+  display: flex;
+  flex: 0 0 36px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+  border-top: 1px solid var(--km-dark-border, #e2e8f0);
+  font-size: 11px;
+}
+.dash-archive-page-btn {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--km-dark-border, #e2e8f0);
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.dash-archive-page-btn:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+}
+.dash-archive-page-btn:hover svg {
+  transform: rotate(-6deg);
+}
+.dash-archive-page-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+.dash-archive-page-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.dash-archive-page-number {
+  min-width: 48px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
 .dash-archive-list-types {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -506,12 +433,43 @@ function statusIconColor(key) {
 .dash-archive-list-type:hover svg {
   transform: rotate(-6deg);
 }
-.dash-fade-up {
-  animation: dash-fade-up 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+.dash-archive-list {
+  display: grid;
+  flex: 1 1 0%;
+  overflow: hidden;
 }
-@keyframes dash-fade-up {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
+.dash-archive-row {
+  min-width: 0;
+  min-height: 0;
+  align-content: center;
+}
+@media (max-width: 1024px) {
+  .dash-archive-list {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+  }
+  .dash-archive-row {
+    min-height: 80px;
+  }
+}
+.dash-archive-row h3 {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-archive-row > div {
+  min-width: 0;
+}
+.dash-archive-meta-rj,
+.dash-archive-meta-time {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 刷新按钮 */
@@ -852,54 +810,6 @@ function statusIconColor(key) {
   color: rgb(71 85 105);
 }
 
-/* 分页 */
-.dash-archive-pager-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 1px solid rgb(226 232 240);
-  border-radius: 7px;
-  background: #fff;
-  color: rgb(71 85 105);
-  cursor: pointer;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-.dash-archive-pager-btn:hover {
-  transform: translateY(-2px) scale(1.02);
-  border-color: rgb(15 23 42);
-  background: rgb(15 23 42);
-  color: #fff;
-  box-shadow: 0 4px 10px -4px rgba(15, 23, 42, 0.4);
-}
-.dash-archive-pager-btn:active:not(:disabled) {
-  transform: scale(0.96);
-}
-.dash-archive-pager-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-  pointer-events: none;
-}
-
-/* 页码指示器 */
-.dash-archive-pager-indicator {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  min-width: 52px;
-  height: 24px;
-  padding: 0 8px;
-  border-radius: 7px;
-  background: rgb(248 250 252);
-  border: 1px solid rgb(241 245 249);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0;
-}
-
 .dash-archive-meta-rj {
   color: rgb(71 85 105);
   font-size: 11px;
@@ -920,24 +830,6 @@ function statusIconColor(key) {
 .dash-archive-meta-size {
   flex-shrink: 0;
 }
-.dash-archive-pager-current {
-  font-size: 12px;
-  font-weight: 700;
-  color: rgb(15 23 42);
-  line-height: 24px;
-}
-.dash-archive-pager-divider {
-  font-size: 12px;
-  font-weight: 600;
-  color: rgb(203 213 225);
-  line-height: 24px;
-}
-.dash-archive-pager-total {
-  font-size: 12px;
-  font-weight: 700;
-  color: rgb(100 116 139);
-  line-height: 24px;
-}
 
 .dash-archive-platform-icon {
   width: 18px;
@@ -946,16 +838,14 @@ function statusIconColor(key) {
   border-radius: 3px;
 }
 
-html.kikoerumanager-dark .dashboard-archive .dash-archive-refresh-btn,
-html.kikoerumanager-dark .dashboard-archive .dash-archive-pager-btn {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-refresh-btn {
   background: var(--km-dark-surface-soft) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text-strong) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
-html.kikoerumanager-dark .dashboard-archive .dash-archive-refresh-btn:hover,
-html.kikoerumanager-dark .dashboard-archive .dash-archive-pager-btn:hover {
+html.kikoerumanager-dark .dashboard-archive .dash-archive-refresh-btn:hover {
   background: var(--km-dark-surface-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
   color: #ffffff !important;
@@ -1141,22 +1031,4 @@ html.kikoerumanager-dark .dashboard-archive .dash-archive-meta-size {
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.22);
 }
 
-html.kikoerumanager-dark .dashboard-archive .dash-archive-pager {
-  border-color: var(--km-dark-border) !important;
-}
-
-html.kikoerumanager-dark .dashboard-archive .dash-archive-pager-indicator {
-  background: var(--km-dark-surface-soft) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .dashboard-archive .dash-archive-pager-current,
-html.kikoerumanager-dark .dashboard-archive .dash-archive-pager-total {
-  color: #ffffff !important;
-}
-
-html.kikoerumanager-dark .dashboard-archive .dash-archive-pager-divider {
-  color: rgba(255, 255, 255, 0.48) !important;
-}
 </style>

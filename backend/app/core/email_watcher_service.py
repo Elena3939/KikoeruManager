@@ -487,7 +487,7 @@ class EmailWatcherService:
     # ------------------------------------------------------------------
 
     async def start(self):
-        """启动后台 IDLE 监听任务。"""
+        """启动后台邮件监听任务。"""
         from ..config.settings import get_config
         config = get_config()
         if not config.email_watcher.enabled:
@@ -508,7 +508,7 @@ class EmailWatcherService:
 
         self._loop = asyncio.get_event_loop()
         self._stop_event.clear()
-        self._task = asyncio.create_task(self._idle_loop(), name="email_watcher_idle_loop")
+        self._task = asyncio.create_task(self._schedule_loop(), name="email_watcher_schedule_loop")
         logger.info("[邮件监听] 服务启动，IMAP: %s:%s", config.email_watcher.imap_host, config.email_watcher.imap_port)
 
     def _warmup_dedup_from_activity_log(self) -> None:
@@ -1191,6 +1191,93 @@ class EmailWatcherService:
                     await asyncio.sleep(config.email_watcher.fallback_poll_interval_seconds)
                 else:
                     await asyncio.sleep(30)
+
+    async def _schedule_loop(self):
+        """按配置选择持续 IDLE、固定间隔、每日一次或手动模式。"""
+        from ..config.settings import get_config
+
+        mode = str(get_config().email_watcher.schedule_mode or "continuous").strip().lower()
+        if mode == "manual":
+            self._mode = "manual"
+            while not self._stop_event.is_set():
+                await asyncio.sleep(60)
+            return
+        if mode == "interval":
+            await self._interval_loop()
+            return
+        if mode == "daily":
+            await self._daily_loop()
+            return
+        await self._idle_loop()
+
+    async def _interval_loop(self):
+        from ..config.settings import get_config
+
+        while not self._stop_event.is_set():
+            config = get_config()
+            if not config.email_watcher.enabled:
+                self._mode = "stopped"
+                return
+            self._mode = "scheduled_interval"
+            try:
+                await asyncio.to_thread(self._run_single_fetch, config)
+                self._last_error = ""
+                self._fail_count = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._mode = "error"
+                self._fail_count += 1
+                logger.warning("[邮件监听] 定时轮询失败: %s", exc)
+            await self._wait_or_stop(max(60, int(config.email_watcher.poll_interval_seconds or 300)))
+
+    async def _daily_loop(self):
+        from ..config.settings import get_config
+
+        while not self._stop_event.is_set():
+            config = get_config()
+            if not config.email_watcher.enabled:
+                self._mode = "stopped"
+                return
+            delay = self._seconds_until_daily_run(config.email_watcher.daily_run_time)
+            self._mode = "scheduled_daily"
+            await self._wait_or_stop(delay)
+            if self._stop_event.is_set():
+                return
+            config = get_config()
+            self._mode = "scheduled_daily_running"
+            try:
+                await asyncio.to_thread(self._run_single_fetch, config)
+                self._last_error = ""
+                self._fail_count = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._mode = "error"
+                self._fail_count += 1
+                logger.warning("[邮件监听] 每日检查失败: %s", exc)
+
+    async def _wait_or_stop(self, seconds: float):
+        try:
+            await asyncio.wait_for(self._stop_event.wait(), timeout=max(1.0, seconds))
+        except asyncio.TimeoutError:
+            return
+
+    @staticmethod
+    def _seconds_until_daily_run(value: str) -> float:
+        now = datetime.now()
+        try:
+            hour, minute = (int(item) for item in str(value or "03:00").split(":", 1))
+            hour = min(23, max(0, hour))
+            minute = min(59, max(0, minute))
+        except (TypeError, ValueError):
+            hour, minute = 3, 0
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        return max(1.0, (target - now).total_seconds())
 
     def _run_idle_session(self, config):
         """

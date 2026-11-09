@@ -16,7 +16,7 @@
         :title="`${title} · ${progressPercentText}，点击展开`"
         @click="collapsed = false"
       >
-        <span class="task-toast-mini-logo" aria-hidden="true">
+        <span class="task-toast-mini-logo" :class="taskIconKindClass" aria-hidden="true">
           <DotLottieVue v-if="completed" :src="successAnimation || defaultSuccessAnimation" :autoplay="true" :loop="false" />
           <component :is="resolvedHeroIcon" v-else :size="16" :stroke-width="2" />
         </span>
@@ -31,7 +31,7 @@
     </div>
     <template v-else>
       <header class="task-toast-head" title="拖动以移动小窗" @pointerdown="startDrag">
-        <div class="task-toast-icon" :class="{ 'is-success': completed }">
+        <div class="task-toast-icon" :class="[taskIconKindClass, { 'is-success': completed }]">
           <DotLottieVue v-if="completed" class="task-toast-success-animation" :src="successAnimation || defaultSuccessAnimation" :autoplay="true" :loop="false" />
           <component :is="resolvedHeroIcon" v-else :size="18" :stroke-width="2.1" />
         </div>
@@ -58,15 +58,15 @@
                 {{ metric.label }} <b>{{ metric.value }}</b>
               </span>
             </div>
-            <span v-if="metaText" class="task-toast-context task-toast-meta" :style="{ whiteSpace: 'normal', overflowWrap: 'anywhere' }">{{ metaText }}</span>
+            <span v-if="metaText" class="task-toast-context task-toast-meta">{{ metaText }}</span>
             <span v-else-if="!visibleMetrics.length" class="task-toast-context">{{ detailText || badgeText }}</span>
             <span v-if="timingText" class="task-toast-timing">{{ timingText }}</span>
           </div>
-          <div v-if="bodyActions.length" class="task-toast-actions">
-            <button v-for="action in bodyActions" :key="action.key" type="button" :class="['task-toast-action', { 'is-primary': action.key === 'resume' }]" :title="action.label" @click="emit('action', action.key)">
-              <component v-if="action.icon" :is="action.icon" :size="12" />{{ action.key === 'resume' && action.label === '恢复工作台' ? '打开' : action.label }}
-            </button>
-          </div>
+        </div>
+        <div v-if="bodyActions.length" class="task-toast-actions">
+          <button v-for="action in bodyActions" :key="action.key" type="button" :class="['task-toast-action', { 'is-primary': action.key === 'resume' }]" :title="action.label" @click="emit('action', action.key)">
+            <component v-if="action.icon" :is="action.icon" :size="12" />{{ action.key === 'resume' && action.label === '恢复工作台' ? '打开' : action.label }}
+          </button>
         </div>
       </div>
     </template>
@@ -139,6 +139,7 @@ onActivated(() => { if (!props.persistentReplica && props.taskSource) mountedTas
 onDeactivated(() => { if (!props.persistentReplica) mountedTaskCards.delete(persistentId.value) })
 
 const toneClass = computed(() => `floating-card-tone-${normalizeTone(props.tone)}`)
+const taskIconKindClass = computed(() => ['upload', 'download'].includes(resolvedKind.value) ? `is-${resolvedKind.value}` : '')
 
 const cardStyle = computed(() => {
   const index = Math.max(0, Number(props.stackIndex || 0))

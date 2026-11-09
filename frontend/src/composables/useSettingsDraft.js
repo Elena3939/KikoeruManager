@@ -242,6 +242,8 @@ export const defaultConfig = {
     engine: 'aria2',
     download_root: '',
     aria2_path: 'aria2c',
+    mega_get_path: 'mega-get',
+    mega_enabled: true,
     proxy_url: '',
     proxy_platforms: ['http', 'gofile', 'transferit', 'onedrive', 'google_drive', 'pikpak', 'imoutoheaven'],
     max_concurrent_downloads: 3,
@@ -376,6 +378,9 @@ export const defaultConfig = {
   },
   email_watcher: {
     enabled: false,
+    schedule_mode: 'continuous',
+    poll_interval_seconds: 300,
+    daily_run_time: '03:00',
     imap_host: 'imap.gmail.com',
     imap_port: 993,
     imap_ssl: true,

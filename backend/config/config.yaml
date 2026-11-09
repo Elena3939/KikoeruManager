@@ -284,4 +284,7 @@ backup_zip:
 
 # DLsite 邮件监听：代理由应用所在主机 / 容器访问，留空直连。
 email_watcher:
+  schedule_mode: continuous
+  poll_interval_seconds: 300
+  daily_run_time: "03:00"
   proxy_url: ""  # 例如 socks5h://192.168.1.10:7890 或 http://192.168.1.10:7890

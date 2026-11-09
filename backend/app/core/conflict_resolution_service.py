@@ -7,7 +7,7 @@ from .fs_utils import move_path_efficient, move_path_sync, copy_path_exclusive_s
 import tempfile
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Any, List, Optional, Tuple
@@ -42,6 +42,12 @@ class ConflictMergeSession:
     compare_items: list[dict[str, Any]]
     created_at: float
     source_is_staged: bool = False  # True=已复制到 workspace；False=使用原始源路径
+    cleanup_sources: dict = field(default_factory=dict)
+    preview_revision: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+    def to_record(self):
+        return {item.name: list(self.compare_items) if item.name == "compare_items"
+                else getattr(self, item.name) for item in fields(self)}
 
 
 @dataclass
@@ -925,6 +931,7 @@ class ConflictResolutionService:
                 )
             if not source_path or not os.path.exists(source_path):
                 raise self._new_source_missing_error(conflict)
+            cleanup_sources = await asyncio.to_thread(self._freeze_merge_cleanup_sources, source_path)
 
             if os.path.isfile(source_path):
                 staged_root = await self._stage_new_source(conflict, workspace)
@@ -959,6 +966,7 @@ class ConflictResolutionService:
                 compare_items=compare_items,
                 created_at=time.time(),
                 source_is_staged=source_is_staged,
+                cleanup_sources=cleanup_sources,
             )
             self._merge_sessions[session_id] = session
             session_registered = True
@@ -1087,12 +1095,25 @@ class ConflictResolutionService:
         try:
             session = self._merge_sessions[job.result["session_id"]]
             compare = get_folder_compare_service()
+            from .staged_file_move import snapshot
+            cleanup_sources = getattr(session, "cleanup_sources", {})
+            if getattr(session, "source_is_staged", False):
+                for path, expected in cleanup_sources.items():
+                    if await asyncio.to_thread(snapshot, path) != expected:
+                        raise RuntimeError("压缩包来源已变化，请重新创建合并预览，不能复用旧解压结果")
+            elif cleanup_sources:
+                cleanup_sources = await asyncio.to_thread(self._freeze_merge_cleanup_sources, session.staged_root)
             listing = await self._load_existing_remote_items(existing)
             if listing is None:
                 items = await asyncio.to_thread(compare.build_compare_items, session.staged_root, session.existing_path)
             else:
                 items = await asyncio.to_thread(compare.build_compare_items_from_listing, session.staged_root, listing, session.existing_path)
+            for path, expected in cleanup_sources.items():
+                if await asyncio.to_thread(snapshot, path) != expected:
+                    raise RuntimeError("刷新期间合并来源已变化，请重新刷新差异")
+            session.cleanup_sources = cleanup_sources
             session.compare_items = items
+            session.preview_revision = uuid.uuid4().hex
             preview = {**job.result, "items": items, "default_decisions": compare.build_default_decisions(items), "summary": compare.build_summary(items)}
             self._update_merge_preview_job(job, status="completed", stage="done", stage_label="完成", percent=100,
                                            message=f"已刷新 {len(items)} 项差异，沿用已解压文件", result=preview)
@@ -1195,6 +1216,7 @@ class ConflictResolutionService:
                 )
             if not source_path or not os.path.exists(source_path):
                 raise self._new_source_missing_error(conflict)
+            cleanup_sources = await asyncio.to_thread(self._freeze_merge_cleanup_sources, source_path)
 
             if os.path.isfile(source_path):
                 # 压缩包：copy_archive → extract（含嵌套 + monitor）→ filter
@@ -1244,6 +1266,7 @@ class ConflictResolutionService:
                 compare_items=compare_items,
                 created_at=time.time(),
                 source_is_staged=source_is_staged,
+                cleanup_sources=cleanup_sources,
             )
             self._merge_sessions[session_id] = session
             session_registered = True
@@ -1787,12 +1810,21 @@ class ConflictResolutionService:
         progress = merge_progress.get()
         if progress:
             progress("准备合并来源", 1)
+        from .merge_journal import MergeJournal
+        journal = await asyncio.to_thread(MergeJournal, conflict.id)
         session = self._merge_sessions.get(str(session_id or "").strip())
+        if journal.record and journal.record.get("session") and (
+                not session or journal.record["state"] not in {"preparing", "staged"}):
+            session = ConflictMergeSession(**journal.record["session"])
         if not session or session.conflict_id != str(conflict.id):
+            if session:
+                raise ValueError("合并预览不属于当前问题作品")
             preview = await self.create_merge_preview(conflict)
             session = self._merge_sessions.get(preview["session_id"])
         if not session:
             raise RuntimeError("Merge preview session not found")
+        if session.existing_library_type != "synology_filestation":
+            return await self._resolve_local_merge(conflict, session, decisions or {}, journal)
 
         # 懒惰暂存：预览时目录来源跳过了 copytree，真正合并前在此补做
         if not session.source_is_staged:
@@ -1854,11 +1886,197 @@ class ConflictResolutionService:
             "final_path": final_path,
         }
 
+    @staticmethod
+    def has_merge_recovery(conflict_id):
+        from .merge_journal import MergeJournal
+        return bool(MergeJournal(conflict_id).record)
+
+    def _freeze_merge_cleanup_sources(self, source):
+        from .staged_file_move import snapshot
+        sources = self._collect_local_split_archive_siblings(source) if os.path.isfile(source) else [source]
+        return {path: snapshot(path) for path in sources}
+
+    async def _resolve_local_merge(self, conflict, session, decisions, journal):
+        from .merge_plan import MergePlan, build_plan, populate_plan
+        from .merge_execution_service import merge_progress
+        from .staged_file_move import (snapshot, _clean_source, _matches_published, identity,
+                                       move_path_replacing_sync, _journal_root)
+        import hashlib
+        progress = merge_progress.get()
+        target = os.path.abspath(session.existing_path)
+        # 文件锁跨进程生效；锁冲突立即报错，不阻塞事件循环。
+        with journal.lock(target):
+            await asyncio.to_thread(journal.reload)
+            if journal.record and journal.record.get("target") != target:
+                raise RuntimeError("合并执行目标与恢复记录不一致")
+            if (journal.record and journal.record["state"] in {"preparing", "staged"} and
+                    journal.record["session"].get("preview_revision") != session.preview_revision):
+                # 刷新预览明确废弃发布前计划；不猜测崩溃现场归属，不删除来源。
+                for operation in journal.record.get("host_operations", []):
+                    from .host_file_move_client import HostMoveClient
+                    from .staged_file_move import move_config
+                    config = move_config()
+                    await run_file_operation_async(HostMoveClient(config.socket_path, config.request_timeout_seconds).request,
+                                                   "cancel", operation_id=operation)
+                await asyncio.to_thread(journal.abandon)
+            if journal.record is None:
+                items = session.compare_items
+                source_manifest = getattr(items, "source_manifest", None)
+                existing_manifest = getattr(items, "existing_manifest", None)
+                if source_manifest is None or existing_manifest is None:
+                    raise ValueError("合并预览缺少身份快照，请刷新差异后重新提交")
+                compare = get_folder_compare_service()
+                normalized = compare.normalize_decisions(items, decisions)
+                plan = await asyncio.to_thread(build_plan, session.staged_root, target, items, normalized,
+                                               source_manifest, existing_manifest)
+                await asyncio.to_thread(plan.validate)
+                cleanup = session.cleanup_sources or await asyncio.to_thread(self._freeze_merge_cleanup_sources,
+                    self._resolve_conflict_new_path(conflict))
+                for path in cleanup:
+                    left, right = os.path.abspath(path), target
+                    try:
+                        overlap = os.path.commonpath([left, right]) in {left, right}
+                    except ValueError:
+                        overlap = False
+                    if overlap:
+                        raise ValueError("合并来源和库存路径不能互相包含")
+                await asyncio.to_thread(journal.phase, "preparing", target=target, session=session.to_record(),
+                    plan=asdict(plan), cleanup_sources=cleanup, started_at=time.time(), host_operations=[],
+                    workspace_identity=identity(session.workspace) if os.path.lexists(session.workspace) else None,
+                    outcome="unchanged" if plan.unchanged else "merged")
+            else:
+                plan = MergePlan(**journal.record["plan"])
+                session = ConflictMergeSession(**journal.record["session"])
+            record = journal.record
+            if record["state"] == "completed":
+                return record["result"]
+            if record["state"] == "preparing":
+                await asyncio.to_thread(plan.validate)
+                preparation_metrics = dict(record.get("preparation_metrics", {}))
+                if plan.uses_new and not session.source_is_staged:
+                    source_started = time.perf_counter()
+                    source_path = session.staged_root
+                    staged_dir = os.path.join(session.workspace, "merge_source_" + uuid.uuid4().hex)
+                    await asyncio.to_thread(journal.save, source_stage=staged_dir)
+                    await self._copy_to_stage_with_budget(source_path, staged_dir, is_dir=True, reason="conflict.merge_stage_dir")
+                    preparation_metrics["source_stage_seconds"] = time.perf_counter() - source_started
+                    await asyncio.to_thread(plan.validate)
+                    before_filter = await asyncio.to_thread(snapshot, staged_dir)
+                    filter_started = time.perf_counter()
+                    await FilterService().filter(staged_dir, Task(task_type=TaskType.FILTER, source_path=staged_dir,
+                                                                 auto_classify=False, skip_archive=True))
+                    await asyncio.to_thread(plan.rebind_new, staged_dir, before_filter)
+                    preparation_metrics["filter_seconds"] = time.perf_counter() - filter_started
+                    session.staged_root = staged_dir
+                    session.source_is_staged = True
+                    await asyncio.to_thread(journal.save, plan=asdict(plan), session=session.to_record(), preparation_metrics=preparation_metrics)
+                if plan.unchanged:
+                    await asyncio.to_thread(journal.phase, "published", target_manifest=plan.manifests["old"])
+                else:
+                    # 记录目录归属后才写成员；中断后只能清理本次独占暂存。
+                    stage = record.get("stage")
+                    if stage and os.path.lexists(stage):
+                        for operation in record.get("host_operations", []):
+                            from .host_file_move_client import HostMoveClient
+                            from .staged_file_move import move_config
+                            config = move_config()
+                            await run_file_operation_async(HostMoveClient(config.socket_path, config.request_timeout_seconds).request,
+                                                           "cancel", operation_id=operation)
+                        actual = identity(stage)
+                        if any(actual[key] != record["stage_identity"][key] for key in ("device", "inode", "mode")):
+                            raise RuntimeError("中断合并暂存归属已变化，保留现场")
+                        frozen = record.get("partial_manifest")
+                        if frozen is not None:
+                            await run_file_operation_async(_clean_source, stage, frozen)
+                        else:
+                            await asyncio.to_thread(journal.save, isolated_stages=record.get("isolated_stages", []) + [stage])
+                    stage = os.path.join(os.path.dirname(target), ".kikoerumanager-merge-" + uuid.uuid4().hex)
+                    await asyncio.to_thread(os.mkdir, stage)
+                    await asyncio.to_thread(journal.save, stage=stage, stage_identity=identity(stage), host_operations=[], partial_manifest=None)
+                    def register(operation):
+                        journal.save(host_operations=journal.record["host_operations"] + [operation])
+                    def report(done, total, size, byte_total, name):
+                        if progress:
+                            progress(f"生成合并目录：{done}/{total} · {size}/{byte_total} 字节 · {name}",
+                                     10 + int(75 * size / max(1, byte_total)),
+                                     completed_files=done, total_files=total, processed_bytes=size, total_bytes=byte_total)
+                    queue_started = time.perf_counter()
+                    async with get_resource_budget_service().acquire("disk_io_local", reason="conflict.merge_build"):
+                        preparation_metrics["build_queue_seconds"] = time.perf_counter() - queue_started
+                        try:
+                            metrics = await run_file_operation_async(populate_plan, plan, stage, report, register)
+                        except BaseException:
+                            # 线程退出或宿主确认取消之后才记录现场；无法确认时不清理。
+                            await asyncio.to_thread(journal.save, partial_manifest=await asyncio.to_thread(snapshot, stage))
+                            raise
+                    await asyncio.to_thread(journal.phase, "staged", stage_manifest=await asyncio.to_thread(snapshot, stage), metrics={**preparation_metrics, **metrics})
+            if journal.record["state"] == "staged":
+                await asyncio.to_thread(plan.validate)
+                for source, expected in journal.record["cleanup_sources"].items():
+                    if await asyncio.to_thread(snapshot, source) != expected:
+                        raise RuntimeError("合并来源在发布前已变化，请刷新差异")
+                await asyncio.to_thread(journal.phase, "publishing")
+            if journal.record["state"] == "publishing":
+                stage = journal.record["stage"]
+                key = hashlib.sha256(os.fsencode(os.path.normcase(stage))).hexdigest()
+                replacement = _journal_root() / (key + ".replacement.json")
+                if os.path.lexists(stage) or replacement.exists():
+                    if not replacement.exists():
+                        await asyncio.to_thread(plan.validate)
+                        if await asyncio.to_thread(snapshot, stage) != journal.record["stage_manifest"]:
+                            raise RuntimeError("合并暂存已变化，拒绝发布")
+                    await run_file_operation_async(move_path_replacing_sync, stage, target,
+                        expected_destination_manifest=plan.manifests["old"])
+                elif not await asyncio.to_thread(_matches_published, target, journal.record["stage_manifest"], renamed=True):
+                    raise RuntimeError("无法确认中断合并的发布结果，保留来源")
+                await asyncio.to_thread(journal.phase, "published", target_manifest=await asyncio.to_thread(snapshot, target))
+            if journal.record["state"] == "published":
+                await asyncio.to_thread(journal.verify_target)
+                if not plan.unchanged:
+                    await asyncio.to_thread(self._notify_index_after_conflict_resolution, session.existing_library_id, target, target, strict=True)
+                await asyncio.to_thread(journal.phase, "indexed")
+            if journal.record["state"] == "indexed":
+                await asyncio.to_thread(journal.verify_target)
+                for source, expected in journal.record["cleanup_sources"].items():
+                    if await asyncio.to_thread(snapshot, source) != expected:
+                        raise RuntimeError("待清理来源已变化，拒绝删除")
+                workspace_manifest = None
+                if os.path.lexists(session.workspace):
+                    expected_workspace = journal.record.get("workspace_identity")
+                    actual_workspace = identity(session.workspace)
+                    if not expected_workspace or any(actual_workspace[key] != expected_workspace[key]
+                            for key in ("device", "inode", "mode")):
+                        raise RuntimeError("合并工作目录身份已变化，拒绝清理")
+                    workspace_manifest = await asyncio.to_thread(snapshot, session.workspace)
+                await asyncio.to_thread(journal.phase, "cleaning", workspace_manifest=workspace_manifest)
+            if journal.record["state"] == "cleaning":
+                await asyncio.to_thread(journal.verify_target)
+                for source, expected in journal.record["cleanup_sources"].items():
+                    await run_file_operation_async(_clean_source, source, expected)
+                workspace_manifest = journal.record.get("workspace_manifest")
+                if workspace_manifest is not None:
+                    await run_file_operation_async(_clean_source, session.workspace, workspace_manifest)
+                await self.cleanup_conflict_sessions(conflict.id, allow_execution=True, cleaned_workspace=session.workspace)
+                result = {"message": "库存内容未变化，已完成来源清理" if plan.unchanged else "合并结果已生成并写入目标目录",
+                          "final_path": target, "outcome": journal.record["outcome"],
+                          "total_files": len(plan.files), "total_bytes": plan.total_bytes,
+                          "completed_files": 0 if plan.unchanged else len(plan.files),
+                          "processed_bytes": 0 if plan.unchanged else plan.total_bytes,
+                          "phase_seconds": journal.record["phase_seconds"], **journal.record.get("metrics", {})}
+                await asyncio.to_thread(journal.phase, "completed", result=result)
+                result["phase_seconds"] = journal.record["phase_seconds"]
+                result["elapsed_seconds"] = time.time() - journal.record["started_at"]
+                await asyncio.to_thread(journal.save, result=result)
+                return result
+            raise RuntimeError("未知合并恢复阶段")
+
     def _notify_index_after_conflict_resolution(
         self,
         library_id: Optional[str],
         existing_path: Optional[str],
         final_path: Optional[str],
+        *,
+        strict: bool = False,
     ) -> None:
         """KEEP_NEW / MERGE 落地后通知索引：先 delete 旧子树，再 upsert 新子树。
 
@@ -1871,6 +2089,8 @@ class ConflictResolutionService:
             try:
                 library = manager.get_library_definition(library_id)
             except Exception:
+                if strict:
+                    raise
                 logger.debug(
                     "[索引] 冲突解决：解析库存定义失败 library_id=%s",
                     library_id, exc_info=True,
@@ -1883,12 +2103,19 @@ class ConflictResolutionService:
                 manager._enqueue_index_delete_many(library, [existing_path])
             manager._enqueue_index_upsert_subtree_many(library, [final_path])
         except Exception:
+            if strict:
+                raise
             logger.debug(
                 "[索引] 冲突解决后通知索引失败 library_id=%s final=%s",
                 library_id, final_path, exc_info=True,
             )
 
-    async def cleanup_conflict_sessions(self, conflict_id: str) -> None:
+    async def cleanup_conflict_sessions(self, conflict_id: str, *, allow_execution=False, cleaned_workspace=None) -> None:
+        if not allow_execution:
+            from .merge_journal import MergeJournal
+            pending = await asyncio.to_thread(MergeJournal, conflict_id)
+            if pending.record and pending.record["state"] != "completed":
+                return
         target_conflict_id = str(conflict_id or "")
         stale_ids = [
             session_id
@@ -1897,7 +2124,7 @@ class ConflictResolutionService:
         ]
         for session_id in stale_ids:
             session = self._merge_sessions.pop(session_id, None)
-            if session and os.path.exists(session.workspace):
+            if session and session.workspace != cleaned_workspace and os.path.exists(session.workspace):
                 await asyncio.to_thread(shutil.rmtree, session.workspace, True)
         for job_id, job in list(self._merge_preview_jobs.items()):
             if job.status != "running" and (job.result or {}).get("session_id") in stale_ids:

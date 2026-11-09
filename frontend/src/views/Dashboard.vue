@@ -36,9 +36,6 @@
         :search-query="archiveSearchQuery"
         :archives-loading="archivesLoading"
         :reprocessing-id="reprocessingId"
-        :total="filteredArchives.length"
-        :page="archivePage"
-        :page-size="archivePageSize"
         :get-meta="getArchiveTaskMeta"
         :get-status-meta="getArchiveStatusMeta"
         :format-date="formatDate"
@@ -46,7 +43,6 @@
         :refresh-archives="refreshArchivePanel"
         class="min-h-0"
         @reprocess="reprocessArchive"
-        @change-page="handleArchivePageChange"
         @update:search-query="onArchiveSearchInput"
         @update:domain-filter="(v) => (archiveDomainFilter = v)"
       />
@@ -104,8 +100,6 @@ const archives = ref([])
 const archiveTotal = ref(0)
 const archivesLoading = ref(false)
 const reprocessingId = ref(null)
-const archivePage = ref(1)
-const archivePageSize = ref(10)
 const archiveSearchQuery = ref('')
 const archiveSortBy = ref('processed_at')
 const archiveSortOrder = ref('desc')
@@ -777,14 +771,8 @@ function onArchiveSearchInput(value) {
   archiveSearchQuery.value = String(value || '')
   if (archiveSearchTimeout) clearTimeout(archiveSearchTimeout)
   archiveSearchTimeout = setTimeout(() => {
-    archivePage.value = 1
     fetchProcessedArchives({ silent: true })
   }, 400)
-}
-
-function handleArchivePageChange(page) {
-  const totalPages = Math.max(1, Math.ceil((displayedArchives.value?.length || 0) / archivePageSize.value))
-  archivePage.value = Math.min(Math.max(1, page), totalPages)
 }
 
 async function reprocessArchive(archiveId) {

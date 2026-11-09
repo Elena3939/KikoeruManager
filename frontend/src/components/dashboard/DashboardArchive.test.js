@@ -50,6 +50,10 @@ describe('首页归档中心', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.resetAllMocks()
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      disconnect() {}
+    })
     mocks.subscribe.mockReturnValue(vi.fn())
     mocks.list.mockResolvedValue({
       items: [],
@@ -60,6 +64,8 @@ describe('首页归档中心', () => {
   })
   afterEach(() => {
     wrapper?.unmount()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
     vi.useRealTimers()
   })
 
@@ -108,5 +114,43 @@ describe('首页归档中心', () => {
     expect(mocks.list).toHaveBeenCalledTimes(2)
     await wrapper.get('input[type="search"]').setValue('RJ123456')
     expect(wrapper.emitted('update:searchQuery')[0]).toEqual(['RJ123456'])
+  })
+
+  it('解压入库只显示压缩包名，其它类型保留 RJ 信息', async () => {
+    await open()
+    await wrapper.setProps({
+      filteredArchives: [{ id: 1, filename: '原始压缩包名称.part01.rar', rjcode: 'RJ01721903' }],
+    })
+    await selectType(1)
+    const row = wrapper.get('.dash-archive-row')
+    expect(row.get('h3').text()).toBe('原始压缩包名称.part01.rar')
+    expect(row.get('h3').attributes('title')).toBe('原始压缩包名称.part01.rar')
+    expect(row.text()).not.toContain('RJ01721903')
+
+    await wrapper.setProps({
+      getMeta: () => ({ key: 'circle_completion', label: '社团补全', icon: Archive }),
+    })
+    expect(row.get('.dash-archive-meta-rj').text()).toBe('RJ01721903')
+  })
+
+  it('归档按列表区高度分页，切换时即确定容量，翻页保留剩余记录', async () => {
+    vi.stubGlobal('innerWidth', 1440)
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(872)
+    await open()
+    const measure = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+    await wrapper.setProps({
+      filteredArchives: Array.from({ length: 14 }, (_, index) => ({ id: index, filename: `archive-${index}.zip` })),
+    })
+    await selectType(1)
+    expect(wrapper.findAll('.dash-archive-row')).toHaveLength(10)
+    expect(wrapper.get('.dash-archive-page-number').text()).toBe('1 / 2')
+    await wrapper.get('.dash-archive-pager button[aria-label="下一页"]').trigger('click')
+    expect(wrapper.findAll('.dash-archive-row')).toHaveLength(4)
+    expect(wrapper.findAll('.dash-archive-row')[3].text()).toContain('archive-13.zip')
+
+    await wrapper.setProps({ searchQuery: 'archive' })
+    expect(wrapper.get('.dash-archive-page-number').text()).toBe('1 / 2')
+    expect(wrapper.findAll('.dash-archive-row')).toHaveLength(10)
+    expect(measure).not.toHaveBeenCalled()
   })
 })

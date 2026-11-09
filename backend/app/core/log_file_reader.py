@@ -87,16 +87,19 @@ def read_window(path: str, anchor_offset: int, before: int, after: int, mode: st
     anchor = max(0, min(int(anchor_offset), os.path.getsize(path)))
     before, after = max(0, before), max(0, after)
     size = os.path.getsize(path)
+    # 首屏尾部读取本来就是 anchor=size，此时无需先反向扫描一次定位
+    # 最近记录；直接进入 before 分支，避免对同一段日志做重复读取。
     start = 0
-    for row in reverse_records(path, min(size, anchor + 256), 64 * 1024):
-        if row[0] <= anchor:
-            start = row[0]
-            break
+    if not (mode == "before" and anchor == size):
+        for row in reverse_records(path, min(size, anchor + 256), BLOCK_BYTES):
+            if row[0] <= anchor:
+                start = row[0]
+                break
     if mode == "before":
         boundary = anchor if anchor == size else start
         rows = []
         if before:
-            for row in reverse_records(path, boundary, 64 * 1024):
+            for row in reverse_records(path, boundary, BLOCK_BYTES):
                 rows.append(record_dict(path, row))
                 if len(rows) >= before:
                     break

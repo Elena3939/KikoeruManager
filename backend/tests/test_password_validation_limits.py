@@ -201,7 +201,7 @@ async def test_total_budget_stops_remaining_candidates_without_wrong_password(tm
     monkeypatch.setattr(service, "_probe_password", AsyncMock(return_value="unknown"))
 
     async def full(*args, **kwargs):
-        assert kwargs["timeout"] == 5
+        assert kwargs["timeout"] == service.PROBE_FULL_TEST_TIMEOUT
         clock[0] += 6
         return "wrong_password"
 
@@ -212,40 +212,41 @@ async def test_total_budget_stops_remaining_candidates_without_wrong_password(tm
     )
     assert ready == []
     probe.assert_awaited_once()
+    assert probe.await_args.kwargs["timeout"] == service.PROBE_FULL_TEST_TIMEOUT
     assert task.task_metadata["password_candidate_unresolved"] == 2
     assert task.task_metadata["password_probe_failure_reason"] == "password_probe_inconclusive"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("slot_busy", [False, True])
-async def test_total_deadline_cancels_process_or_slot_wait(tmp_path, monkeypatch, slot_busy):
+async def test_resource_wait_does_not_consume_password_validation_budget(tmp_path, monkeypatch):
     service = ExtractService()
     task = make_task(tmp_path, "archive.zip")
     heavy, inspect = isolate_resources(service, monkeypatch)
     monkeypatch.setattr(service, "PASSWORD_VALIDATION_TIMEOUT", 0.1)
     monkeypatch.setattr(service, "_probe_password", AsyncMock(return_value="unknown"))
-    process = FakeProcess(gate=asyncio.Event())
+    process = FakeProcess(stderr=b"Wrong password")
     create = AsyncMock(return_value=process)
     monkeypatch.setattr(module.asyncio, "create_subprocess_exec", create)
-    if slot_busy:
-        await heavy.acquire()
+    await heavy.acquire()
+    pending = asyncio.create_task(service._prepare_password_attempts(
+        task.source_path, ["first"], [], task=task,
+    ))
     try:
-        ready, _ = await asyncio.wait_for(service._prepare_password_attempts(
-            task.source_path, ["first", "second"], [], task=task,
-        ), timeout=2)
-        assert ready == []
-        assert heavy.active == int(slot_busy)
-        assert inspect.active == 0
-        assert not heavy.waiters
-        assert task.task_metadata["password_probe_failure_reason"] == "password_probe_inconclusive"
-        if slot_busy:
-            create.assert_not_awaited()
-        else:
-            create.assert_awaited_once()
-            assert process.returncode == -9
+        await asyncio.sleep(0.05)
+        create.assert_not_awaited()
+        heavy.release()
+        ready, _ = await asyncio.wait_for(pending, timeout=2)
     finally:
-        if slot_busy:
+        if not pending.done():
+            pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending
+        if heavy.active:
             heavy.release()
+    assert ready == []
+    create.assert_awaited_once()
+    assert process.returncode == 2
+    assert task.task_metadata["password_probe_failure_reason"] == "wrong_password"
 
 
 @pytest.mark.asyncio

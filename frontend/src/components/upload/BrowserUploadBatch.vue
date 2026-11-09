@@ -47,9 +47,9 @@
             <template v-if="row.file">
             <span class="upload-status-chip" :class="`is-${row.file.status}`">{{ fileStage(row.file) }}</span>
             <template v-if="row.file.status === 'conflict'">
-              <StatefulButton size="sm" @click="() => decide(row.file, 'skip')">跳过</StatefulButton>
-              <StatefulButton v-if="!row.file.type_conflict" size="sm" @click="() => decide(row.file, 'replace')">替换</StatefulButton>
-              <StatefulButton size="sm" @click="() => decide(row.file, 'keep_both')">保留两份</StatefulButton>
+              <StatefulButton unstyled class="upload-conflict-action is-skip" @click="() => decide(row.file, 'skip')">跳过</StatefulButton>
+              <StatefulButton v-if="!row.file.type_conflict" unstyled class="upload-conflict-action is-replace" @click="() => decide(row.file, 'replace')">替换</StatefulButton>
+              <StatefulButton unstyled class="upload-conflict-action is-keep-both" @click="() => decide(row.file, 'keep_both')">保留两份</StatefulButton>
             </template>
             <StatefulButton v-if="row.file.status === 'failed' && row.file.retryable" size="sm" @click="() => control('retry', row.file.id)">重试该文件</StatefulButton>
             </template>
@@ -135,8 +135,37 @@ async function restoreSources(sources) {
 </script>
 
 <style scoped>
-.browser-upload-batch { --upload-text: #27272a; --upload-muted: #71717a; --upload-panel: rgba(255,255,255,.76); --upload-border: rgba(148,163,184,.2); padding-top: 12px; color: var(--upload-text); font-size: 12px; }
-:global(html.kikoerumanager-dark .browser-upload-batch) { --upload-text: var(--km-dark-text); --upload-muted: var(--km-dark-text-muted); --upload-panel: var(--km-dark-elevated); --upload-border: var(--km-dark-border-soft); }
+.browser-upload-batch {
+  --upload-text: #27272a;
+  --upload-muted: #71717a;
+  --upload-panel: rgba(255,255,255,.76);
+  --upload-border: rgba(148,163,184,.2);
+  --upload-conflict-bg: rgba(255,255,255,.88);
+  --upload-conflict-text: #3f3f46;
+  --upload-replace-bg: rgba(254,242,242,.92);
+  --upload-replace-text: #b91c1c;
+  --upload-keep-bg: rgba(255,247,237,.92);
+  --upload-keep-text: #a16207;
+  --upload-conflict-hover-bg: rgba(248,250,252,.98);
+  --upload-conflict-hover-text: #18181b;
+  padding-top: 12px;
+  color: var(--upload-text);
+  font-size: 12px;
+}
+:global(html.kikoerumanager-dark .browser-upload-batch) {
+  --upload-text: var(--km-dark-text);
+  --upload-muted: var(--km-dark-text-muted);
+  --upload-panel: var(--km-dark-elevated);
+  --upload-border: var(--km-dark-border-soft);
+  --upload-conflict-bg: rgba(39,39,42,.72);
+  --upload-conflict-text: #d4d4d8;
+  --upload-replace-bg: rgba(127,29,29,.22);
+  --upload-replace-text: #fca5a5;
+  --upload-keep-bg: rgba(120,53,15,.22);
+  --upload-keep-text: #fcd34d;
+  --upload-conflict-hover-bg: rgba(63,63,70,.94);
+  --upload-conflict-hover-text: #fff;
+}
 .upload-path-grid { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(0, 2fr); gap: 10px; }
 .upload-path-card { min-width: 0; }
 .upload-path-card > span { display: block; color: var(--upload-muted); font-size: 10px; font-weight: 700; }
@@ -179,5 +208,38 @@ async function restoreSources(sources) {
 .upload-file-tree.is-virtual :deep(.resource-file-row:has(.is-conflict)) { height: 112px; }
 .upload-file-tree.is-virtual :deep(.resource-file-row:has(.tree-expander)) { height: 32px; }
 @media(max-width:640px) { .upload-path-grid { grid-template-columns: minmax(0,1fr); } .upload-phase { align-items: flex-start; flex-direction: column; gap: 4px; } }
-.upload-row-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; max-width: 45%; }
+.upload-row-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; max-width: 100%; }
+.upload-row-actions :deep(.upload-conflict-action) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 26px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--upload-border);
+  border-radius: 7px;
+  background: var(--upload-conflict-bg);
+  color: var(--upload-conflict-text);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: none;
+}
+.upload-row-actions :deep(.upload-conflict-action.is-skip) { color: var(--upload-muted); }
+.upload-row-actions :deep(.upload-conflict-action.is-replace) { border-color: rgba(248, 113, 113, .32); background: var(--upload-replace-bg); color: var(--upload-replace-text); }
+.upload-row-actions :deep(.upload-conflict-action.is-keep-both) {
+  border-color: rgba(245, 158, 11, .32);
+  background: var(--upload-keep-bg);
+  color: var(--upload-keep-text);
+}
+.upload-row-actions :deep(.upload-conflict-action:hover) {
+  transform: translateY(-1px) scale(1.02);
+  border-color: rgba(100, 116, 139, .32);
+  background: var(--upload-conflict-hover-bg);
+  color: var(--upload-conflict-hover-text);
+}
+.upload-row-actions :deep(.upload-conflict-action:active) { transform: scale(.96); }
+.upload-row-actions :deep(.upload-conflict-action:disabled) { opacity: .55; cursor: not-allowed; transform: none; }
 </style>

@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 _TASK_RUNTIME_METADATA_KEYS = (
+    'io_runtime',
     'download_files',
     'download_runtime',
     'failed_files',

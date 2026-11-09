@@ -36,6 +36,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         bash \
         xz-utils \
     && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64|arm64) MEGA_ARCH="${TARGETARCH:-amd64}" ;; \
+        *) echo "MEGAcmd 不支持 TARGETARCH=${TARGETARCH:-amd64}"; exit 1 ;; \
+    esac; \
+    . /etc/os-release; \
+    case "$VERSION_ID" in 12|13) ;; *) echo "MEGAcmd 不支持 Debian $VERSION_ID"; exit 1 ;; esac; \
+    wget --retry-connrefused --waitretry=5 --tries=3 -O /tmp/megacmd.deb \
+        "https://mega.nz/linux/repo/Debian_${VERSION_ID}/${MEGA_ARCH}/megacmd-Debian_${VERSION_ID}_${MEGA_ARCH}.deb"; \
+    apt-get update; apt-get install -y --no-install-recommends /tmp/megacmd.deb; \
+    rm -f /tmp/megacmd.deb; rm -rf /var/lib/apt/lists/*
 RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources && \
     install -d /usr/share/postgresql-common/pgdg && \
     wget --retry-connrefused --waitretry=5 --tries=3 -O /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
@@ -111,6 +122,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmwa
     && BAIDUPCS_GO_CONFIG_DIR=/tmp/baidupcs-go-config /usr/local/bin/BaiduPCS-Go -v | head -5 \
     && echo "===== BaiduPCS-Go installed OK =====" \
     && aria2c --version | head -1 \
+    && command -v mega-get \
     && which unar && unar --version 2>&1 | head -1 \
     && which lsar && echo "===== unar + lsar installed OK ====="
 

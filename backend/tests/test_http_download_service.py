@@ -187,6 +187,8 @@ class DummyHttpDownloader:
     engine = "aria2"
     download_root = ""
     aria2_path = "aria2c"
+    mega_get_path = "mega-get"
+    mega_enabled = True
     proxy_url = ""
     proxy_platforms = ["http", "gofile", "transferit", "onedrive", "google_drive", "pikpak"]
     max_concurrent_downloads = 3
@@ -609,6 +611,45 @@ def test_share_provider_url_detection(monkeypatch, tmp_path):
     assert service._provider_source("https://drive.google.com/file/d/file-id/view?usp=sharing") == "google_drive"
     assert service._provider_source("https://drive.usercontent.google.com/download?id=file-id&export=download") == "google_drive"
     assert service._provider_source("https://example.com/file.zip") == "http"
+    assert service._provider_source("https://mega.nz/file/McEhTIgI#secret") == "mega"
+    assert service._mega_filename_from_url("https://mega.nz/file/McEhTIgI#secret") == "mega-McEhTIgI.bin"
+
+
+@pytest.mark.asyncio
+async def test_preview_urls_keeps_mega_public_link_in_http_download_flow(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    async def fake_metadata(_url):
+        return {"filename": "example.zip", "size_bytes": 123}
+    monkeypatch.setattr(service, "_mega_metadata", fake_metadata)
+    preview = await service.preview_urls(
+        ["https://mega.nz/file/McEhTIgI#H9dSNe-pqa3x39vyuU0wfLuASJB_4f7aVe4A6iim0YI"],
+        target_subdir="mega",
+    )
+    assert preview["success"] is True
+    assert preview["items"][0]["source"] == "mega"
+    assert preview["items"][0]["filename"] == "example.zip"
+    assert preview["items"][0]["size_bytes"] == 123
+    assert "MEGAcmd" in preview["items"][0]["warning"]
+
+
+@pytest.mark.asyncio
+async def test_preview_urls_accepts_mega_folder_link(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    async def fake_metadata(_url):
+        return {"kind": "folder", "filename": "sample-folder", "size_bytes": 0}
+
+    monkeypatch.setattr(service, "_mega_metadata", fake_metadata)
+    preview = await service.preview_urls(
+        ["https://mega.nz/folder/AbCdEf12#folder-key"],
+        target_subdir="mega",
+    )
+
+    assert preview["items"][0]["source"] == "mega"
+    assert preview["items"][0]["is_directory"] is True
+    assert preview["items"][0]["relative_path"].endswith("mega/sample-folder")
 
 
 def test_google_drive_direct_url_from_share_link(monkeypatch, tmp_path):
@@ -3045,6 +3086,39 @@ async def test_pikpak_download_link_keeps_transient_error_after_bounded_retries(
 
 
 @pytest.mark.asyncio
+async def test_pikpak_download_link_waits_on_same_restored_file_beyond_legacy_budget(monkeypatch):
+    import app.core.http_download_service as http_download_service_module
+
+    service = HttpDownloadService()
+    calls = {"count": 0, "file_ids": [], "sleeps": []}
+
+    class Client:
+        captcha_token = "stale-token"
+
+        async def get_download_url(self, file_id):
+            calls["count"] += 1
+            calls["file_ids"].append(file_id)
+            if calls["count"] < 9:
+                raise ValueError("proto: (line 1:271): invalid value for string type: null")
+            return {
+                "name": "RJ01755762.7z",
+                "web_content_link": "https://cdn.example/restored-file",
+            }
+
+    async def fake_sleep(delay):
+        calls["sleeps"].append(delay)
+
+    monkeypatch.setattr(http_download_service_module.asyncio, "sleep", fake_sleep)
+
+    result = await service._pikpak_download_link(Client(), "same-restored-id")
+
+    assert result["_download_url"] == "https://cdn.example/restored-file"
+    assert calls["count"] == 9
+    assert calls["file_ids"] == ["same-restored-id"] * 9
+    assert calls["sleeps"] == [2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 15.0]
+
+
+@pytest.mark.asyncio
 async def test_resolve_pikpak_materialize_filters_selected_failed_item(monkeypatch, tmp_path):
     bind_config(
         monkeypatch,
@@ -3688,6 +3762,51 @@ async def test_start_download_task_uses_stream_for_google_drive(monkeypatch, tmp
 
     assert calls == {"aria2": 0, "google": 1}
     assert result["downloaded_files"][0]["source"] == "google_drive"
+    assert task.task_metadata["download_runtime"]["completed_files"] == 1
+
+
+@pytest.mark.asyncio
+async def test_start_download_task_routes_mega_to_megacmd(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    url = "https://mega.nz/file/test#secret"
+    calls = []
+
+    async def fake_preview(*_args, **_kwargs):
+        return {
+            "items": [{
+                "ok": True, "source": "mega", "url": url, "original_url": url,
+                "masked_url": "https://mega.nz/file/test#***", "host": "mega.nz",
+                "filename": "voice.zip", "relative_path": "voice.zip",
+                "final_path": str(tmp_path / "downloads" / "voice.zip"),
+                "target_dir": str(tmp_path / "downloads"), "size_bytes": 6,
+            }],
+            "resolved_urls": [], "source_items": [], "failed_items": [], "source_modes": ["mega"],
+        }
+
+    async def fake_rpc(*_args, **_kwargs):
+        raise AssertionError("Mega 不应提交到 aria2")
+
+    async def fake_mega(item, task=None, progress_callback=None):
+        calls.append(item["original_url"])
+        row = {
+            "gid": item["gid"], "name": item["filename"], "relative_path": item["relative_path"],
+            "local_path": item["final_path"], "url": item["masked_url"], "source": "mega",
+            "status": "completed", "progress": 100, "downloaded": 6, "total": 6,
+            "size": 6, "speed_bytes_per_sec": 0,
+        }
+        progress_callback(row)
+        return row
+
+    monkeypatch.setattr(service, "preview_urls", fake_preview)
+    monkeypatch.setattr(service, "_rpc_call", fake_rpc)
+    monkeypatch.setattr(service, "_download_mega_item", fake_mega)
+    task = Task(task_type=TaskType.HTTP_DOWNLOAD, source_path="mega.nz", metadata={"urls": [url]})
+
+    result = await service.start_download_task(task)
+
+    assert calls == [url]
+    assert result["downloaded_files"][0]["source"] == "mega"
     assert task.task_metadata["download_runtime"]["completed_files"] == 1
 
 

@@ -326,6 +326,8 @@ class HttpDownloaderConfig(BaseModel):
     engine: str = "aria2"
     download_root: str = ""
     aria2_path: str = "aria2c"
+    mega_get_path: str = "mega-get"
+    mega_enabled: bool = True
     proxy_url: str = ""
     proxy_platforms: List[str] = Field(default_factory=lambda: ["http", "gofile", "transferit", "onedrive", "google_drive", "pikpak", "imoutoheaven"])
     max_concurrent_downloads: int = 3
@@ -503,8 +505,11 @@ class BackupZipConfig(BaseModel):
     baidu_upload_cleanup_local_archive: bool = False
 
 class EmailWatcherConfig(BaseModel):
-    """DLsite 邮件监听配置（IMAP IDLE + fallback 轮询）"""
+    """DLsite 邮件监听配置（持续 IDLE、定时轮询或手动检查）。"""
     enabled: bool = False
+    schedule_mode: str = "continuous"  # continuous / interval / daily / manual
+    poll_interval_seconds: int = 300    # interval 模式的检查周期
+    daily_run_time: str = "03:00"       # daily 模式的本地时间 HH:MM
     imap_host: str = "imap.gmail.com"
     imap_port: int = 993
     imap_ssl: bool = True

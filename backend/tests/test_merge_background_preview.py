@@ -65,6 +65,38 @@ async def test_refresh_only_compares_retained_extraction(tmp_path):
     assert job.result["summary"]["new_only"] == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("staged", [False, True])
+async def test_refresh_checks_original_source_identity(tmp_path, staged):
+    from app.core.staged_file_move import snapshot
+    service = ConflictResolutionService()
+    job, session, existing = make_job(service, tmp_path)
+    session.source_is_staged = staged
+    session.cleanup_sources = {session.staged_root: snapshot(session.staged_root)}
+    (tmp_path / "new" / "added.txt").write_text("added")
+    with patch.object(service, "_load_existing_remote_items", new=AsyncMock(return_value=None)), patch.object(
+        service, "_broadcast_merge_preview_job",
+    ):
+        await service._refresh_merge_preview_worker(job, existing)
+    if staged:
+        assert job.status == "failed"
+        assert "来源已变化" in job.message
+    else:
+        assert job.status == "completed"
+        assert session.cleanup_sources[session.staged_root] == snapshot(session.staged_root)
+        assert job.result["summary"]["new_only"] == 2
+
+
+@pytest.mark.asyncio
+async def test_cleaned_workspace_is_not_deleted_again(tmp_path):
+    service = ConflictResolutionService()
+    job, session, _ = make_job(service, tmp_path)
+    with patch("app.core.conflict_resolution_service.shutil.rmtree") as remove:
+        await service.cleanup_conflict_sessions(job.conflict_id, allow_execution=True, cleaned_workspace=session.workspace)
+    remove.assert_not_called()
+    assert session.id not in service._merge_sessions
+
+
 def test_normal_archive_reads_original_path_without_copy(tmp_path):
     original = tmp_path / "source.zip"
     original.write_bytes(b"original")

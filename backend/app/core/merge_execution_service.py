@@ -24,13 +24,21 @@ class MergeExecutionService:
         return dict(job)
 
     async def _run(self, conflict_id, job, operation):
-        def progress(message, percent):
-            job.update(message=message, percent=percent)
+        last_emitted = [0.0]
+        def progress(message, percent, **fields):
+            now = time.monotonic()
+            if fields and now - last_emitted[0] < 0.5:
+                return
+            last_emitted[0] = now
+            job.update(message=message, percent=percent, **fields)
 
         token = merge_progress.set(progress)
         try:
             logger.info("后台合并开始 conflict_id=%s", conflict_id)
             job["result"] = await operation()
+            job.update({key: value for key, value in job["result"].items()
+                        if key in {"outcome", "phase_seconds", "elapsed_seconds", "completed_files", "processed_bytes",
+                                   "total_files", "total_bytes"}})
             job.update(status="completed", message="合并完成", percent=100)
             logger.info("后台合并完成 conflict_id=%s", conflict_id)
         except Exception as exc:

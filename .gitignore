@@ -130,6 +130,7 @@ tools/xiaobu-multiframe.ps1
 .runtime/
 output/
 tools/baidupcs-go/
+tools/megacmd/
 tools/unar/
 tools/7zz-*/
 .tmp-baidupcs-*/

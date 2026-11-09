@@ -103,6 +103,14 @@ def build_task_center_event(task, reason: str = "progress") -> dict[str, Any]:
         "completed_files", "file_count", "total_files", "retry_count",
         "elapsed_seconds", "eta_seconds", "failure_reason",
     ) if key in runtime}
+    if isinstance(metadata.get("io_runtime"), dict):
+        event["io_runtime"] = dict(metadata["io_runtime"])
+    event["retry_from_conflicts"] = bool(
+        metadata.get("retry_from_conflicts") or metadata.get("retry_conflict_id")
+        or str(metadata.get("conflict_resolution_action") or "").upper() == "RETRY"
+    )
+    event["retry_count"] = int(metadata.get("retry_count") or 0)
+    event["subtype"] = circle_task_classification(getattr(task, "type", ""), metadata)[0]
     event["task_type"] = str(getattr(getattr(task, "type", None), "value", getattr(task, "type", "")) or "")
     # 使用提交时已归一化的平台摘要，不在高频进度事件中遍历完整文件列表。
     event["source_modes"] = [

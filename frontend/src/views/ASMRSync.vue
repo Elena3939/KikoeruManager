@@ -313,24 +313,31 @@
 
     <!-- 下载任务 -->
     <Transition name="asmr-section">
-    <section v-if="activeTasks.length > 0" class="asmr-card">
+    <section v-if="activeTasks.length + historyTasks.length > 0" class="asmr-card">
       <header class="asmr-card-head">
         <div class="asmr-card-head-title">
           <ListChecks :size="14" :stroke-width="2.2" class="asmr-card-head-icon" />
           <div>
             <h2>下载任务</h2>
-            <p class="asmr-card-head-subtitle">{{ activeTasks.length }} 个进行中 / 历史任务</p>
+            <p class="asmr-card-head-subtitle">{{ activeTasks.length }} 个未结束 · {{ historyTasks.length }} 个已结束</p>
           </div>
         </div>
+        <el-radio-group v-model="downloadTaskView" size="small" aria-label="下载任务范围">
+          <el-radio-button label="active">当前任务</el-radio-button>
+          <el-radio-button label="history">历史任务</el-radio-button>
+        </el-radio-group>
       </header>
+      <p v-if="visibleDownloadTasks.length === 0" class="asmr-card-body asmr-muted-text text-sm">
+        {{ downloadTaskView === 'history' ? '暂无历史任务' : '暂无未结束的下载任务' }}
+      </p>
       <TransitionGroup tag="div" name="asmr-list" class="asmr-card-body asmr-list">
         <div
-          v-for="task in activeTasks"
+          v-for="task in visibleDownloadTasks"
           :key="task.id"
           class="asmr-task"
           :class="{
-            'is-completed': task.status === 'completed',
-            'is-failed': task.status === 'failed',
+            'is-completed': (task.display_status || task.status) === 'completed',
+            'is-failed': ['failed', 'partial_failed'].includes(task.display_status || task.status),
             'is-paused': task.status === 'paused',
             'is-processing': task.status === 'processing',
           }"
@@ -344,12 +351,20 @@
             </div>
             <div class="asmr-task-head-actions">
               <span class="lib-chip" :class="{
-                'lib-chip-success': task.status === 'completed',
-                'lib-chip-danger': task.status === 'failed',
+                'lib-chip-success': (task.display_status || task.status) === 'completed',
+                'lib-chip-danger': ['failed', 'partial_failed'].includes(task.display_status || task.status),
                 'lib-chip-slate': task.status === 'paused' || task.status === 'pending',
-                'lib-chip-warning': task.status === 'waiting_retry',
+                'lib-chip-warning': ['waiting_retry', 'waiting_manual'].includes(task.status),
                 'lib-chip-info': task.status === 'processing',
-              }">{{ getStatusText(task.status) }}</span>
+              }">{{ getStatusText(task.display_status || task.status) }}</span>
+              <StatefulButton
+                class="asmr-mini-btn xs asmr-task-remove-btn"
+                unstyled
+                :show-default-icons="false"
+                :title="downloadTaskView === 'history' ? '删除任务' : '取消任务'"
+                :aria-label="downloadTaskView === 'history' ? '删除任务' : '取消任务'"
+                @click="removeListedDownloadTask(task)"
+              ><Trash2 :size="15" /></StatefulButton>
               <button v-if="task.status === 'processing'" class="asmr-mini-btn xs" type="button" @click="pauseTask(task.id)">暂停</button>
               <button v-if="task.status === 'paused'" class="asmr-mini-btn xs is-primary" type="button" @click="resumeTask(task.id)">继续</button>
               <button v-if="task.status === 'waiting_retry'" class="asmr-mini-btn xs is-primary" type="button" @click="retryWaitingTask(task.id)">立即重试</button>
@@ -581,6 +596,7 @@ import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, onUnm
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
+  Trash2,
   Search,
   Download as DownloadIcon,
   Folder as FolderIcon,
@@ -607,6 +623,7 @@ import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
+import StatefulButton from '../components/ui/stateful-button.vue'
 import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
 import AsmrEnhancedDownloadPanel from '../components/asmr/AsmrEnhancedDownloadPanel.vue'
@@ -822,9 +839,15 @@ const waitingRetryTasks = computed(() => {
   return tasks.value.filter(t => t.status === 'waiting_retry')
 })
 
-const activeTasks = computed(() => {
-  return tasks.value.filter(t => t.status !== 'waiting_retry')
-})
+const downloadTaskView = ref('active')
+const endedDownloadStatuses = new Set(['completed', 'failed', 'partial_failed', 'cancelled', 'canceled', 'superseded'])
+const activeTasks = computed(() => tasks.value.filter(task =>
+  task.status !== 'waiting_retry' && !endedDownloadStatuses.has(task.display_status || task.status),
+))
+const historyTasks = computed(() => tasks.value.filter(task =>
+  endedDownloadStatuses.has(task.display_status || task.status),
+))
+const visibleDownloadTasks = computed(() => downloadTaskView.value === 'history' ? historyTasks.value : activeTasks.value)
 
 const enhancedMetricCards = computed(() => {
   const dashboard = enhancedDashboard.value || {}
@@ -1099,7 +1122,7 @@ const getLangName = (lang) => {
 }
 
 const getStatusText = (status) => {
-  const map = { 'pending': '等待中', 'processing': '处理中', 'completed': '已完成', 'failed': '失败', 'paused': '已暂停', 'waiting_retry': '等待重试' }
+  const map = { 'pending': '等待中', 'processing': '处理中', 'completed': '已完成', 'failed': '失败', 'partial_failed': '部分失败', 'paused': '已暂停', 'waiting_retry': '等待重试', 'waiting_manual': '等待处理', 'cancelled': '已取消', 'canceled': '已取消', 'superseded': '已替代' }
   return map[status] || status
 }
 
@@ -2099,6 +2122,23 @@ async function retryEnhancedDownloadFile(payload) {
     ElMessage.error(error.response?.data?.detail || error.message || '提交单文件重试失败')
   } finally {
     releaseEnhancedRetryScope(scopeKey)
+  }
+}
+
+async function removeListedDownloadTask(task) {
+  const isHistory = historyTasks.value.some(item => item.id === task.id)
+  try {
+    await taskCenterApi.action(`engine:${task.id}`, isHistory ? 'delete' : 'cancel')
+    if (isHistory) {
+      tasks.value = tasks.value.filter(item => item.id !== task.id)
+      dismissWorkbenchTask(task, enhancedDownloadWorkbenchTaskIds, enhancedDownloadWorkbenchTasks, '/asmr-sync:asmr:asmr', () => enhancedDownloadWorkbenchRequestGuard.invalidate())
+      if (!enhancedDownloadWorkbenchTaskIds.value.length) clearEnhancedDownloadWorkbenchState()
+    }
+    await refreshStatus()
+    ElMessage.success(isHistory ? '任务已删除' : '任务已取消')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || (isHistory ? '删除失败' : '取消失败'))
+    throw error
   }
 }
 
@@ -3463,6 +3503,25 @@ button:disabled { cursor: not-allowed; }
   transform: translateY(-1px);
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
 }
+.asmr-task-head-actions > .asmr-task-remove-btn {
+  flex: 0 0 28px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  justify-content: center;
+  box-shadow: none;
+  outline: none;
+}
+.asmr-task-remove-btn:hover {
+  color: var(--asmr-danger-text);
+  border-color: var(--asmr-danger-border);
+  transform: translateY(-2px) scale(1.02);
+}
+.asmr-task-remove-btn :deep(svg) {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.asmr-task-remove-btn:hover :deep(svg) { transform: rotate(-6deg); }
 .asmr-task.is-completed {
   border-color: var(--asmr-success-border);
   background: var(--asmr-surface);
@@ -3829,6 +3888,12 @@ button:disabled { cursor: not-allowed; }
     flex: 1 1 calc(50% - 3px);
     justify-content: center;
     min-width: 0;
+  }
+  .asmr-task-head-actions > .asmr-task-remove-btn {
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    margin-left: auto;
   }
   .asmr-task-mapping {
     padding: 8px;

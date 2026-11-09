@@ -4876,9 +4876,12 @@ async def update_configuration(request: Request):
         else:
             logger.debug("配置已保存: keys=%s classification=%s", config_keys, len(config_data.get('classification', [])))
 
-        if 'email_watcher' in config_data and result.email_watcher.enabled:
+        if 'email_watcher' in config_data:
             from ..core.email_watcher_service import get_email_watcher_service
-            await get_email_watcher_service().start()
+            email_watcher = get_email_watcher_service()
+            await email_watcher.stop()
+            if result.email_watcher.enabled:
+                await email_watcher.start()
 
         if 'kikoeru_server' in config_data:
             try:
@@ -7039,6 +7042,10 @@ async def _retry_extract_failed_conflict(
             "error_message",
             "failed_step",
             "failed_progress",
+            "runtime",
+            "io_runtime",
+            "download_runtime",
+            "upload_runtime",
             "resolution_error",
             "resolution_task_state",
             "resolution_task_id",
@@ -7582,7 +7589,8 @@ async def resolve_conflict(conflict_id: str, action: dict):
     if current and current["status"] == "completed":
         return {"success": True, "async": True, **current}
     session = service._merge_sessions.get(str(action.get("merge_session_id") or ""))
-    if not session or session.conflict_id != conflict_id:
+    recovery = await asyncio.to_thread(getattr(service, "has_merge_recovery", lambda _: False), conflict_id)
+    if (not session or session.conflict_id != conflict_id) and not recovery:
         raise HTTPException(status_code=409, detail="合并预览已失效，请重新生成预览后提交")
     snapshot = merge_execution_service.submit(
         conflict_id, lambda: _resolve_conflict_inline(conflict_id, action),
@@ -7624,7 +7632,9 @@ async def _resolve_conflict_inline(conflict_id: str, action: dict):
 
         service = get_conflict_resolution_service()
         action_type = service.normalize_action(action.get("action"))
-        if action_type not in await asyncio.to_thread(service.get_available_actions, conflict):
+        merge_recovery = action_type == "MERGE" and await asyncio.to_thread(
+            getattr(service, "has_merge_recovery", lambda _: False), conflict_id)
+        if not merge_recovery and action_type not in await asyncio.to_thread(service.get_available_actions, conflict):
             raise HTTPException(status_code=400, detail="当前问题项不支持该操作")
         confirmed = bool(action.get("confirmed"))
         skip_activity_snapshot = bool(action.get("skip_activity_snapshot"))
@@ -7891,6 +7901,8 @@ async def _resolve_conflict_inline(conflict_id: str, action: dict):
                     action.get("merge_session_id"),
                     action.get("merge_decisions") or {},
                 )
+                if result.get("outcome") == "unchanged":
+                    resolution_diff_items = []
                 conflict.status = action_type
                 if conflict_task:
                     conflict_task.update_progress(100, "合并完成")
@@ -7966,7 +7978,9 @@ async def _resolve_conflict_inline(conflict_id: str, action: dict):
                 final_path=str((result or {}).get("final_path") or conflict.existing_path or ""),
                 diff_items=resolution_diff_items,
                 extra_detail={"source_missing": True, "source_missing_reason": "源文件已不存在，无需删除"}
-                if (result or {}).get("source_missing") else None,
+                if (result or {}).get("source_missing") else {
+                    key: result[key] for key in ("outcome", "phase_seconds", "elapsed_seconds") if key in result
+                } or None,
             )
         return {
             "success": True,
@@ -17895,6 +17909,7 @@ class BaiduNetdiskRetryFileRequest(BaseModel):
 
 class BaiduNetdiskPreviewRequest(BaseModel):
     urls: List[str]
+    force_refresh: bool = False
     target_subdir: str = ""
     output_folder_name: str = ""
     batch_name: str = ""
@@ -19173,6 +19188,7 @@ async def baidu_netdisk_preview(request: BaiduNetdiskPreviewRequest):
     try:
         preview = await get_baidu_netdisk_service().preview_urls(
             urls,
+            force_refresh=request.force_refresh,
             target_subdir=request.target_subdir,
             conflict_policy=request.conflict_policy,
             output_folder_name=request.output_folder_name,

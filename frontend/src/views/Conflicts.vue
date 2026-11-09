@@ -299,19 +299,26 @@
                   <FileEdit v-else class="w-4 h-4" />
                   手动重命名分卷
                 </button>
-                <StatefulButton
+                <button
                   v-if="canUseAction(activeConflict, 'RETRY')"
-                  unstyled
                   type="button"
                   class="conflicts-action-btn"
                   :class="isApiRenameConflict(activeConflict) ? 'is-primary' : 'is-emerald'"
                   :disabled="batchRunning || isConflictBusy(activeConflict.id)"
                   @click="handleRetryDispatch(activeConflict)"
                 >
-                  <FileEdit v-if="isApiRenameConflict(activeConflict)" class="w-4 h-4" />
-                  <RotateCcw v-else class="w-4 h-4" />
+                  <FileEdit
+                    v-if="isApiRenameConflict(activeConflict)"
+                    class="w-4 h-4"
+                    :class="{ 'conflicts-retry-icon-spin': isActionLoading(activeConflict.id, 'RETRY') }"
+                  />
+                  <RotateCcw
+                    v-else
+                    class="w-4 h-4"
+                    :class="{ 'conflicts-retry-icon-spin': isActionLoading(activeConflict.id, 'RETRY') }"
+                  />
                   {{ retryDispatchLabel(activeConflict) }}
-                </StatefulButton>
+                </button>
                 <button
                   v-if="canUseAction(activeConflict, 'SKIP')"
                   type="button"
@@ -4033,6 +4040,10 @@ button:disabled {
   flex-shrink: 0;
   animation: conflicts-action-spin 0.85s linear infinite;
   filter: none;
+}
+
+.conflicts-retry-icon-spin {
+  animation: conflicts-action-spin 0.85s linear infinite;
 }
 
 @keyframes conflicts-action-spin {

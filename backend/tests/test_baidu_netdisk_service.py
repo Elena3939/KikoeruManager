@@ -175,7 +175,7 @@ async def test_baidu_share_list_retries_with_init_referer_after_redirect_loop(mo
         assert use_requests is True
         referers.append(referer)
         if referer.endswith("/s/13EU1GlLvUULM43mkqhoZxA"):
-            raise RuntimeError("HTTP Error 302: The HTTP server returned a redirect error that would lead to an infinite loop")
+            raise requests.TooManyRedirects("redirect loop")
         return {
             "errno": 0,
             "list": [
@@ -214,6 +214,12 @@ async def test_baidu_share_page_tokens_prefer_locals_mset_without_tplconfig(monk
             return None
 
     class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
         def get(self, url, headers=None, timeout=20, allow_redirects=True):
             responses.append(url)
             return FakeResponse(
@@ -257,6 +263,12 @@ async def test_baidu_share_page_tokens_retry_init_after_redirect_loop(monkeypatc
             return None
 
     class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
         def get(self, url, headers=None, timeout=20, allow_redirects=True):
             responses.append(url)
             if url.endswith("share/init?surl=79-Q_PpccuyitQ2b_boyDw"):
@@ -280,12 +292,13 @@ async def test_baidu_share_list_uses_page_payload_when_all_referers_fail(monkeyp
     service = BaiduNetdiskService()
     monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: DummyConfig())
 
-    async def fake_json(_url, _cookie, timeout=20, referer=""):
-        raise RuntimeError("HTTP Error 302: The HTTP server returned a redirect error that would lead to an infinite loop")
+    async def fake_json(_url, _cookie, timeout=20, referer="", use_requests=False):
+        raise requests.TooManyRedirects("redirect loop")
 
     monkeypatch.setattr(service, "_fetch_json", fake_json)
 
-    result = await service._fetch_share_list_payload(
+    with pytest.raises(BaiduNetdiskError, match="分享文件列表读取失败"):
+        await service._fetch_share_list_payload(
         {
             "bdstoken": "bd-token",
             "shareid": "60130084160",
@@ -304,11 +317,6 @@ async def test_baidu_share_list_uses_page_payload_when_all_referers_fail(monkeyp
         "179-Q_PpccuyitQ2b_boyDw",
     )
 
-    assert result["errno"] == 0
-    assert result["_source"] == "share_page_payload"
-    assert result["list"] == [
-        {"server_filename": "voice01.wav", "path": "/voice01.wav", "isdir": 0, "size": 2048, "fs_id": 1001},
-    ]
 
 
 def test_baidu_separator_rule_keeps_existing_pass_code_rules(monkeypatch):
@@ -1199,7 +1207,9 @@ async def test_baidu_download_uses_web_transfer_before_pcsgo_download(monkeypatc
         })
         return {"errno": 0}
 
-    async def fake_run_pcsgo(args, *, env, log_path, task, cancel_event, ignore_task_cancel=False, on_output=None, abort_check=None, heartbeat_message="", max_runtime_seconds=0):
+    async def fake_run_pcsgo(args, *, env, log_path, task, cancel_event, ignore_task_cancel=False, on_output=None, abort_check=None, heartbeat_message="", max_runtime_seconds=0, on_started=None):
+        if on_started:
+            on_started()
         pcsgo_commands.append(tuple(args[1:]))
         if len(args) > 1 and args[1] == "download":
             savedir = args[args.index("--saveto") + 1]
@@ -1305,7 +1315,10 @@ async def test_baidu_low_speed_refresh_reuses_existing_pcsgo_checkpoint(monkeypa
         abort_check=None,
         heartbeat_message="",
         max_runtime_seconds=0,
+        on_started=None,
     ):
+        if on_started:
+            on_started()
         if args[1] != "download":
             return
         savedir = args[args.index("--saveto") + 1]
@@ -1986,6 +1999,7 @@ async def test_baidu_start_download_uses_pcsgo_temporary_transfer_and_cleans_rem
     async def fake_run_baidu_pcs_go_command(
         args,
         *,
+        on_started=None,
         env,
         log_path,
         task,
@@ -1996,6 +2010,8 @@ async def test_baidu_start_download_uses_pcsgo_temporary_transfer_and_cleans_rem
         heartbeat_message="",
         max_runtime_seconds=0,
     ):
+        if on_started:
+            on_started()
         command_log.append({
             "args": tuple(args[1:]),
             "ignore_task_cancel": ignore_task_cancel,
@@ -2018,8 +2034,9 @@ async def test_baidu_start_download_uses_pcsgo_temporary_transfer_and_cleans_rem
 
     original_write_config = service._write_baidu_pcsgo_cookie_config
 
-    def capture_write_config(config_dir, cookie, *, workdir="/"):
-        config_path = original_write_config(config_dir, cookie, workdir=workdir)
+    def capture_write_config(config_dir, cookie, *, workdir="/", savedir=None):
+        state["savedir"] = savedir
+        config_path = original_write_config(config_dir, cookie, workdir=workdir, savedir=savedir)
         written_config.update(json.loads(Path(config_path).read_text(encoding="utf-8")))
         return config_path
 
@@ -2065,14 +2082,7 @@ async def test_baidu_start_download_uses_pcsgo_temporary_transfer_and_cleans_rem
     assert task.task_metadata["staging_cleanup"]["cleaned"] is True
     savedir = state["savedir"]
     assert [item["args"] for item in command_log] == [
-        ("config", "set", "-savedir", savedir),
-        ("config", "set", "-max_parallel", "20"),
-        ("config", "set", "-max_download_load", "3"),
-        ("config", "set", "-max_download_rate", "0"),
-        ("config", "set", "-cache_size", "256KB"),
-        ("cd", "/"),
         ("mkdir", remote_tmp_dir),
-        ("cd", remote_tmp_dir),
         ("download", remote_tmp_dir, "--saveto", savedir, "--mode", "locate", "-p", "20", "-l", "3", "--retry", "5"),
         ("cd", "/"),
         ("rm", remote_tmp_dir),
@@ -2497,6 +2507,7 @@ async def test_baidu_start_download_cancels_and_retries_remote_cleanup(monkeypat
     async def fake_run_baidu_pcs_go_command(
         args,
         *,
+        on_started=None,
         env,
         log_path,
         task,
@@ -2627,6 +2638,7 @@ async def test_baidu_start_download_prefers_raw_selected_items_without_preview(m
     async def fake_run_baidu_pcs_go_command(
         args,
         *,
+        on_started=None,
         env,
         log_path,
         task,
@@ -2659,8 +2671,9 @@ async def test_baidu_start_download_prefers_raw_selected_items_without_preview(m
 
     original_write_config = service._write_baidu_pcsgo_cookie_config
 
-    def capture_write_config(config_dir, cookie, *, workdir="/"):
-        config_path = original_write_config(config_dir, cookie, workdir=workdir)
+    def capture_write_config(config_dir, cookie, *, workdir="/", savedir=None):
+        state["savedir"] = savedir
+        config_path = original_write_config(config_dir, cookie, workdir=workdir, savedir=savedir)
         written_config.update(json.loads(Path(config_path).read_text(encoding="utf-8")))
         return config_path
 
@@ -2700,7 +2713,7 @@ async def test_baidu_start_download_prefers_raw_selected_items_without_preview(m
     batch_folder = task.task_metadata["download_batch_folder_name"]
     assert re.fullmatch(r"百度网盘_\d{8}_\d{6}", batch_folder)
     assert (tmp_path / "downloads" / batch_folder / "狩龙人拉格纳121.mp4").read_bytes() == b"abcdef"
-    assert [item["args"] for item in command_log][0] == ("config", "set", "-savedir", state["savedir"])
+    assert [item["args"] for item in command_log][0] == ("mkdir", "/km_20260605_153012_a1b2c3")
     config_user = written_config["baidu_user_list"][0]
     assert config_user["bduss"] == "test"
     assert config_user["stoken"] == "test"

@@ -144,6 +144,9 @@ class TaskCenterService:
         "output_finalize_status",
         "svip_speed",
         # Redis runtime overlay: summary 模式也要保留工作台需要的活跃运行态
+        "io_runtime",
+        "retry_from_conflicts",
+        "retry_count",
         "download_runtime",
         "upload_runtime",
         "bonus_probe_meta",
@@ -157,6 +160,7 @@ class TaskCenterService:
     )
 
     REDIS_RUNTIME_METADATA_KEYS: tuple = (
+        "io_runtime",
         "download_runtime",
         "upload_runtime",
         "bonus_probe_meta",

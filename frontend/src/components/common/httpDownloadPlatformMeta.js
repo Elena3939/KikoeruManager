@@ -6,6 +6,7 @@ import onedriveIconUrl from '../../assets/platforms/onedrive.ico'
 import pikpakIconUrl from '../../assets/platforms/pikpak.png'
 import transferitIconUrl from '../../assets/platforms/transferit.ico'
 import cloudflareIconUrl from '../../assets/platforms/cloudflare.png'
+import megaIconUrl from '../../assets/platforms/mega.ico'
 
 const PLATFORM_ICON_URLS = {
   baidu_netdisk: baiduNetdiskIconUrl,
@@ -14,6 +15,7 @@ const PLATFORM_ICON_URLS = {
   onedrive: onedriveIconUrl,
   google_drive: googleDriveIconUrl,
   pikpak: pikpakIconUrl,
+  mega: megaIconUrl,
 }
 
 function createPlatformIconComponent(src, label) {
@@ -35,6 +37,7 @@ const GOOGLE_DRIVE_ICON = createPlatformIconComponent(PLATFORM_ICON_URLS.google_
 const ONEDRIVE_ICON = createPlatformIconComponent(PLATFORM_ICON_URLS.onedrive, 'OneDrive')
 const PIKPAK_ICON = createPlatformIconComponent(PLATFORM_ICON_URLS.pikpak, 'PikPak')
 const TRANSFERIT_ICON = createPlatformIconComponent(PLATFORM_ICON_URLS.transferit, 'Transfer.it')
+const MEGA_ICON = createPlatformIconComponent(PLATFORM_ICON_URLS.mega, 'Mega')
 const BAIDU_NETDISK_ICON = createPlatformIconComponent(PLATFORM_ICON_URLS.baidu_netdisk, '百度网盘')
 export const CLOUDFLARE_ICON = createPlatformIconComponent(cloudflareIconUrl, 'Cloudflare')
 
@@ -87,6 +90,14 @@ export const HTTP_DOWNLOAD_PLATFORM_META = {
     iconSrc: PLATFORM_ICON_URLS.pikpak,
     aliases: ['pikpak', 'mypikpak.com', 'drive.mypikpak.com']
   },
+  mega: {
+    key: 'mega',
+    label: 'Mega',
+    title: 'Mega 下载',
+    icon: MEGA_ICON,
+    iconSrc: PLATFORM_ICON_URLS.mega,
+    aliases: ['mega', 'mega.nz', 'mega.io']
+  },
   baidu_netdisk: {
     key: 'baidu_netdisk',
     label: '百度网盘',
@@ -126,6 +137,7 @@ export function getHttpDownloadPlatformKey(value) {
   if (raw.includes('1drv.ms') || raw.includes('onedrive')) return 'onedrive'
   if (raw.includes('drive.google.com') || raw.includes('docs.google.com') || raw.includes('drive.usercontent.google.com') || raw.includes('google drive')) return 'google_drive'
   if (raw.includes('mypikpak.com') || raw.includes('drive.mypikpak.com') || raw.includes('pikpak')) return 'pikpak'
+  if (raw.includes('mega.nz') || raw.includes('mega.io')) return 'mega'
   if (raw.includes('pan.baidu.com') || raw.includes('yun.baidu.com') || raw.includes('百度网盘') || raw.includes('baidu_netdisk') || raw.includes('baidu-netdisk')) return 'baidu_netdisk'
   return HTTP_DOWNLOAD_PLATFORM_META[normalized] ? normalized : 'http'
 }

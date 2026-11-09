@@ -3,6 +3,8 @@ import { flushPromises, shallowMount } from '@vue/test-utils'
 import { reactive } from 'vue'
 import ServicesSettingsPanel from './ServicesSettingsPanel.vue'
 import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
+import AppDropdown from '../common/AppDropdown.vue'
+import SettingsNumberStepper from './SettingsNumberStepper.vue'
 import { configApi } from '../../api'
 
 vi.mock('../../assets/anime/Visibility.lottie', () => ({ default: '' }))
@@ -70,5 +72,37 @@ describe('邮件监听凭据展示', () => {
     resolve({ value: 'old-account-code' })
     await flushPromises()
     expect(input.get('input').element.value).toBe('********')
+  })
+})
+
+describe('邮件监听计划设置', () => {
+  it('切换间隔单位保留实际秒数，并按所选单位保存', async () => {
+    const { config } = setup()
+    config.email_watcher.schedule_mode = 'interval'
+    config.email_watcher.poll_interval_seconds = 300
+    await wrapper.vm.$nextTick()
+    const unit = wrapper.findAllComponents(AppDropdown).find((item) => item.classes().includes('email-schedule-unit'))
+    const stepper = wrapper.findAllComponents(SettingsNumberStepper).find((item) => item.props('max') === 86400)
+    await unit.vm.$emit('update:modelValue', 'hours')
+    expect(config.email_watcher.poll_interval_seconds).toBe(300)
+    expect(stepper.props('modelValue')).toBeCloseTo(1 / 12)
+    await stepper.vm.$emit('update:modelValue', 2)
+    expect(config.email_watcher.poll_interval_seconds).toBe(7200)
+    await unit.vm.$emit('update:modelValue', 'minutes')
+    await stepper.vm.$emit('update:modelValue', 15)
+    expect(config.email_watcher.poll_interval_seconds).toBe(900)
+    expect(wrapper.text()).not.toContain('后台会按这个周期执行一次完整 IMAP 检查')
+  })
+
+  it('分别修改每日检查的小时和分钟', async () => {
+    const { config } = setup()
+    config.email_watcher.schedule_mode = 'daily'
+    config.email_watcher.daily_run_time = '03:15'
+    await wrapper.vm.$nextTick()
+    const controls = wrapper.findAllComponents(AppDropdown).filter((item) => item.classes().includes('email-schedule-time'))
+    expect(controls.map((item) => item.props('modelValue'))).toEqual(['03', '15'])
+    await controls[0].vm.$emit('update:modelValue', '21')
+    await controls[1].vm.$emit('update:modelValue', '45')
+    expect(config.email_watcher.daily_run_time).toBe('21:45')
   })
 })

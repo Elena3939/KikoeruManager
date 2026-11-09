@@ -753,7 +753,7 @@ class TaskEngine:
                 versions[task.type] = versions.get(task.type, 0) + 1
             self._write_task_runtime_to_redis(task, reason=reason)
             # 高频传输摘要只进 Redis / SSE；状态变化仍走任务中心持久化。
-            if reason != "upload_runtime":
+            if reason not in {"upload_runtime", "io_runtime"}:
                 self.enqueue_task_center_item_snapshot(task)
             broadcast_task_center_changed(task, reason=reason)
         except Exception:
@@ -3491,10 +3491,13 @@ class TaskEngine:
 
     async def _process_task(self, task: Task):
         """处理单个任务"""
+        from .task_io_runtime import current_io_task
         task_context_token = current_task_id.set(str(getattr(task, "id", "") or ""))
+        io_context_token = current_io_task.set((task, asyncio.get_running_loop()))
         try:
             return await self._process_task_with_context(task)
         finally:
+            current_io_task.reset(io_context_token)
             current_task_id.reset(task_context_token)
 
     async def _process_task_with_context(self, task: Task):

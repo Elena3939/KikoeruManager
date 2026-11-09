@@ -16,10 +16,14 @@
             <SettingsFieldCard label="aria2 路径" hint="Docker 内默认 aria2c；Windows 可填 aria2c.exe 绝对路径。">
               <input v-model="config.http_downloader.aria2_path" class="field-input" type="text" placeholder="aria2c">
             </SettingsFieldCard>
+            <SettingsFieldCard label="MEGAcmd 路径" hint="公开 Mega 链接由 mega-get 匿名下载，不需要登录。">
+              <input v-model="config.http_downloader.mega_get_path" class="field-input" type="text" placeholder="mega-get">
+            </SettingsFieldCard>
             <SettingsFieldCard label="HTTP 代理" hint="代理地址本身，和 asmr.one 代理分离。">
               <input v-model="config.http_downloader.proxy_url" class="field-input" type="text" placeholder="http://127.0.0.1:7890">
             </SettingsFieldCard>
           </div>
+          <SettingsToggleRow v-model="config.http_downloader.mega_enabled" title="启用 Mega 公开链接下载" subtitle="Mega 链接由 MEGAcmd 获取并解密，不会伪装成 aria2 直链。" />
 
           <SettingsFieldCard label="代理适用范围" hint="只让选中的 HTTP 下载来源走上面的代理；不选则全部直连。">
             <AppDropdown
@@ -450,6 +454,7 @@ const httpProxyPlatformOptions = [
   { value: 'onedrive', label: 'OneDrive', description: 'OneDrive 分享直链解析。' },
   { value: 'google_drive', label: 'Google Drive', description: 'Drive OAuth、API、确认页和文件下载。' },
   { value: 'pikpak', label: 'PikPak', description: 'PikPak 登录、转存、解析和文件下载。' },
+  { value: 'mega', label: 'Mega', description: 'Mega 公开链接解析和下载。' },
   { value: 'imoutoheaven', label: 'Cloudflare Turnstile', description: 'YAAS 来源的服务端请求使用代理；浏览器验证与下载使用浏览器自身网络设置。', icon: CLOUDFLARE_ICON }
 ].map(option => ({
   ...option,

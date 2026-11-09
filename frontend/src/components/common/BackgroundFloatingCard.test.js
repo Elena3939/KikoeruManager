@@ -22,6 +22,19 @@ describe('后台任务小窗', () => {
     expect(wrapper.emitted('action')).toEqual([['close'], ['resume']])
   })
 
+  it('上传和下载图标使用不同颜色标记，折叠后仍保留类型颜色', async () => {
+    wrapper = mount(BackgroundFloatingCard, { props: { kind: 'upload' } })
+    expect(wrapper.get('.task-toast-icon').classes()).toContain('is-upload')
+    await wrapper.get('.task-toast-collapse').trigger('click')
+    expect(wrapper.get('.task-toast-mini-logo').classes()).toContain('is-upload')
+    await wrapper.get('.task-toast-mini-expand').trigger('click')
+
+    await wrapper.setProps({ kind: 'download' })
+    expect(wrapper.get('.task-toast-icon').classes()).toContain('is-download')
+    await wrapper.get('.task-toast-collapse').trigger('click')
+    expect(wrapper.get('.task-toast-mini-logo').classes()).toContain('is-download')
+  })
+
   it('折叠后只留进度条，持续更新且展开不会关闭任务', async () => {
     wrapper = mount(BackgroundFloatingCard, { props: { percentage: 39, title: '下载任务', metrics: [{ key: 'failed', label: '失败', value: 0 }], actions: [{ key: 'resume', label: '恢复工作台' }] } })
     expect(wrapper.find('.task-toast-metrics').exists()).toBe(false)

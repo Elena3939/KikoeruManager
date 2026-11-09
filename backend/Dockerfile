@@ -17,7 +17,16 @@ RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmwa
         unar \
         libpq5 \
         postgresql-client \
-    && apt-get purge -y --auto-remove p7zip-full p7zip p7zip-rar 2>/dev/null || true \
+    && (apt-get purge -y --auto-remove p7zip-full p7zip p7zip-rar 2>/dev/null || true) \
+    && case "${TARGETARCH:-amd64}" in \
+        amd64|arm64) \
+            . /etc/os-release \
+            && case "$VERSION_ID" in 12|13) true ;; *) echo "MEGAcmd 不支持 Debian $VERSION_ID"; exit 1 ;; esac \
+            && wget --retry-connrefused --waitretry=5 --tries=3 -O /tmp/megacmd.deb "https://mega.nz/linux/repo/Debian_${VERSION_ID}/${TARGETARCH:-amd64}/megacmd-Debian_${VERSION_ID}_${TARGETARCH:-amd64}.deb" \
+            && apt-get install -y --no-install-recommends /tmp/megacmd.deb \
+            && rm -f /tmp/megacmd.deb ;; \
+        *) echo "MEGAcmd 不支持 TARGETARCH=${TARGETARCH:-amd64}"; exit 1 ;; \
+       esac \
     && case "${TARGETARCH:-amd64}" in \
         amd64|x86_64) SEVENZIP_PKG=7z2408-linux-x64.tar.xz ;; \
         arm64|aarch64) SEVENZIP_PKG=7z2408-linux-arm64.tar.xz ;; \
@@ -71,6 +80,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmwa
     && mkdir -p /tmp/baidupcs-go-config \
     && BAIDUPCS_GO_CONFIG_DIR=/tmp/baidupcs-go-config /usr/local/bin/BaiduPCS-Go -v | head -5 \
     && aria2c --version | head -1 \
+    && command -v mega-get \
     && which unar && unar --version 2>&1 | head -1 \
     && which lsar && echo "===== unar + lsar installed OK ====="
 

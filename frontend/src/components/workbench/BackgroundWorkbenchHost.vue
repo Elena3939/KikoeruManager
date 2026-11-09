@@ -20,8 +20,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import BackgroundFloatingCard from '../common/BackgroundFloatingCard.vue'
 import { persistentTaskCards, mountedTaskCards, openTaskWorkbenches, verifiedTaskCards, taskCardBelongsToPage, openPersistentTaskCard, refreshPersistentTaskCards, dismissPersistentTaskCard } from '../../composables/usePersistentTaskCards'
 import WorkbenchBackgroundCard from './WorkbenchBackgroundCard.vue'
@@ -31,13 +31,22 @@ import { useRealtimeEvents } from '../../composables/useRealtimeEvents'
 
 const manager = useBackgroundWorkbenchManager()
 const route = useRoute()
+const router = useRouter()
 const realtime = useRealtimeEvents()
 const handleTransferEvent = event => applyPersistentTransferEvent(event.detail)
 
 const persistentCards = computed(() => Object.values(persistentTaskCards).filter(card => !card.dismissed && taskCardBelongsToPage(card, route.path) && verifiedTaskCards.has(card.id) && !mountedTaskCards.has(card.id) && !openTaskWorkbenches.has(`${card.route}:${card.props.taskSource}`)))
-function handlePersistentAction(id, action) {
+async function handlePersistentAction(id, action) {
   if (['close', 'dismiss'].includes(action)) dismissPersistentTaskCard(id)
-  else openPersistentTaskCard(id)
+  else {
+    const card = persistentTaskCards[id]
+    if (!card) return
+    if (card.route && card.route !== route.path) {
+      await router.push(card.route)
+      await nextTick()
+    }
+    await openPersistentTaskCard(id)
+  }
 }
 let refreshTimer
 let refreshing = false

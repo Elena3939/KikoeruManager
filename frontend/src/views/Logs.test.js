@@ -3,6 +3,7 @@ import { shallowMount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import Logs from './Logs.vue'
 import { TASK_PROGRESS_PREFIX } from '../utils/logProgress'
+import { getTaskDomainMeta } from '../components/common/taskDomainMeta'
 
 vi.mock('../api', () => ({
   logApi: { streamUrl: vi.fn(() => '/api/logs/stream'), get: vi.fn() },
@@ -19,6 +20,76 @@ describe('日志 SSE 到进度卡片的完整解析链路', () => {
     wrapper?.unmount()
     vi.useRealTimers()
     vi.unstubAllGlobals()
+  })
+
+  it('重试显示本轮阶段和公共图标，按动作展示 MB/s，两个分栏独立收起', async () => {
+    vi.stubGlobal('EventSource', class {
+      addEventListener() {}
+      close() {}
+    })
+    wrapper = shallowMount(Logs, {
+      global: { stubs: { ElSelect: true, ElOption: true, ElDialog: true } },
+    })
+    const state = wrapper.vm.$.setupState
+    state.updateActiveTask({
+      engine_task_id: 'extract', domain: 'import', task_type: 'auto_process',
+      status: 'processing', kind_label: '解压失败', current_step: '准备解压',
+      retry_from_conflicts: true,
+    })
+    expect(state.activeTasks[0]).toMatchObject({ phase: '准备', retrying: true, hasSpeed: false, hasBytes: false })
+    expect(state.activeTasks[0].icon).toBe(getTaskDomainMeta('import').icon)
+    await nextTick()
+    expect(wrapper.find('[data-task-id="extract"] .logs-active-details').exists()).toBe(false)
+    expect(wrapper.find('[data-task-id="extract"]').text()).not.toContain('解压失败')
+    expect(wrapper.find('.logs-active-retry').text()).toBe('重试')
+    state.updateActiveTask({
+      engine_task_id: 'extract', current_step: '解压中',
+      io_runtime: { phase: 'extract', speed_kind: 'read', io_active: true, speed_bytes_per_sec: 2 * 1024 ** 2, completed_bytes: 8 * 1024 ** 2 },
+    })
+    state.updateActiveTask({
+      engine_task_id: 'download', task_type: 'http_download', status: 'processing',
+      runtime: { speed_bytes_per_sec: 1024 ** 2, transferred_bytes: 1024 ** 3, total_bytes: 2 * 1024 ** 3 },
+    })
+    await nextTick()
+    expect(wrapper.find('[data-task-id="extract"] .logs-active-speed').text()).toBe('解压 2.00 MB/s')
+    expect(wrapper.find('[data-task-id="download"]').text()).toContain('1.00 GB')
+    await wrapper.find('.is-transfer .logs-active-toggle').trigger('click')
+    expect(wrapper.find('.is-transfer .logs-active-list').isVisible()).toBe(false)
+    expect(wrapper.find('.is-system .logs-active-list').isVisible()).toBe(true)
+    state.updateActiveTask({
+      engine_task_id: 'extract', current_step: '读取元数据',
+      io_runtime: { io_active: false, speed_bytes_per_sec: null },
+    })
+    await nextTick()
+    expect(wrapper.find('[data-task-id="extract"] .logs-active-details').exists()).toBe(false)
+    state.updateActiveTask({
+      engine_task_id: 'extract', current_step: '移动文件',
+      io_runtime: { phase: 'move', speed_kind: 'move', io_active: true, speed_bytes_per_sec: 3 * 1024 ** 2 },
+    })
+    await nextTick()
+    expect(wrapper.find('[data-task-id="extract"] .logs-active-speed').text()).toBe('移动 3.00 MB/s')
+    state.updateActiveTask({
+      engine_task_id: 'extract', current_step: '上传文件',
+      io_runtime: { io_active: false, speed_bytes_per_sec: null },
+      upload_runtime: { speed_bytes_per_sec: 4 * 1024 ** 2, eta_seconds: 12 },
+    })
+    await nextTick()
+    expect(wrapper.find('[data-task-id="extract"] .logs-active-speed').text()).toBe('上传 4.00 MB/s')
+    state.updateActiveTask({ engine_task_id: 'extract', current_step: '校验文件', runtime: { eta_seconds: 12 } })
+    expect(state.activeTasks.find(task => task.id === 'extract').eta).toBeNull()
+    expect(state.activeTasks.find(task => task.id === 'extract').hasSpeed).toBe(false)
+  })
+
+  it('明确的新一轮开始时间允许同 ID 重试，迟到的旧快照仍被阻止', async () => {
+    vi.stubGlobal('EventSource', class { addEventListener() {} close() {} })
+    wrapper = shallowMount(Logs, { global: { stubs: { ElSelect: true, ElOption: true, ElDialog: true } } })
+    const state = wrapper.vm.$.setupState
+    state.updateActiveTask({ id: 'retry', status: 'processing', started_at: '2026-11-09T10:00:00' })
+    state.updateActiveTask({ id: 'retry', status: 'failed' })
+    state.updateActiveTask({ id: 'retry', status: 'processing', started_at: '2026-11-09T10:00:00' })
+    expect(state.activeTasks[0].finished).toBe(true)
+    state.updateActiveTask({ id: 'retry', status: 'processing', started_at: '2026-11-09T10:01:00', retry_count: 1 })
+    expect(state.activeTasks[0]).toMatchObject({ finished: false, retrying: true })
   })
 
   it('首次历史和增量事件均使用后端状态，100% 处理态不会提前完成', async () => {
@@ -93,6 +164,39 @@ describe('日志 SSE 到进度卡片的完整解析链路', () => {
     expect(state.activeTasks[1].eta).toBe(10)
   })
 
+  it('从上传元信息显示 ETA，并阻止完成任务被迟到的活动快照复活', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('EventSource', class {
+      addEventListener() {}
+      close() {}
+    })
+    wrapper = shallowMount(Logs, {
+      global: { stubs: { ElSelect: true, ElOption: true, ElDialog: true } },
+    })
+    const state = wrapper.vm.$.setupState
+    state.updateActiveTask({
+      engine_task_id: 'upload-metadata', task_type: 'browser_upload', status: 'processing',
+      details: { metadata: { upload_runtime: { eta_seconds: 42 } } },
+    })
+    expect(state.activeTasks[0].eta).toBe(42)
+    state.updateActiveTask({
+      engine_task_id: 'upload-performance', task_type: 'browser_upload', status: 'processing',
+      performance_metrics: { upload_runtime: { eta_seconds: 24 } },
+    })
+    expect(state.activeTasks[1].eta).toBe(24)
+
+    state.updateActiveTask({ engine_task_id: 'upload-metadata', status: 'completed', progress: 100 })
+    expect(state.activeTasks[0]).toMatchObject({ finished: true, eta: null })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(state.activeTasks.map(task => task.id)).not.toContain('upload-metadata')
+
+    state.updateActiveTask({
+      engine_task_id: 'upload-metadata', status: 'processing', progress: 12,
+      runtime: { speed_bytes_per_sec: 100, eta_seconds: 90 },
+    })
+    expect(state.activeTasks.map(task => task.id)).not.toContain('upload-metadata')
+  })
+
   it('失败不会显示完成，重复结束事件不延长五秒保留期', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('EventSource', class {
@@ -125,7 +229,11 @@ describe('日志 SSE 到进度卡片的完整解析链路', () => {
     state.updateActiveTask({ engine_task_id: 'upload', task_type: 'browser_upload', status: 'processing', progress: 30 })
     state.updateActiveTask({ engine_task_id: 'extract', task_type: 'extract', status: 'processing', progress: 40 })
     state.updateActiveTask({ engine_task_id: 'move', task_type: 'library_move_archive', status: 'processing', progress: 50 })
-    expect(state.taskLanes[0].tasks.map(task => task.id)).toEqual(['download', 'upload'])
+    state.updateActiveTask({
+      engine_task_id: 'circle-download', domain: 'circle_completion', kind: 'asmr_sync_download',
+      status: 'processing', progress: 60,
+    })
+    expect(state.taskLanes[0].tasks.map(task => task.id)).toEqual(['download', 'upload', 'circle-download'])
     expect(state.taskLanes[1].tasks.map(task => task.id)).toEqual(['extract', 'move'])
   })
 })

@@ -66,7 +66,11 @@ function updateTaskCardState(card, tasks, complete = true) {
   if (card.props.title) card.props.title = card.props.title.replace(/(?:正在后台运行|已完成|已取消|已暂停|需要处理|等待处理)$/, '') + stateLabel
   if (failed) card.props.tone = 'rose'
 }
-export function taskCardBelongsToPage(card, path) { return card.route === path }
+export function taskCardBelongsToPage(card, path) {
+  // 上传任务由全局宿主托管，离开创建页后仍需持续显示；恢复时再跳回所属页面。
+  if (card?.props?.taskSource === 'upload') return true
+  return card.route === path
+}
 export async function openPersistentTaskCard(id) {
   const card = persistentTaskCards[id]
   if (!card) return

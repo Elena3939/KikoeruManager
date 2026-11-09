@@ -356,7 +356,27 @@
           <span v-else class="email-watcher-badge is-disabled">未启用</span>
         </div>
         <div class="field-stack">
-          <SettingsToggleRow v-model="config.email_watcher.enabled" title="启用邮件监听" subtitle="IMAP IDLE 长连接实时监听 DLsite 新作通知，自动触发社团索引。" />
+          <SettingsToggleRow v-model="config.email_watcher.enabled" title="启用邮件监听" subtitle="按下方策略检查 DLsite 新作通知，自动触发社团索引。" />
+          <SettingsFieldCard label="监听策略" hint="持久监听适合实时到达；固定间隔和每日一次会主动建立连接检查；仅手动不会后台连接邮箱。">
+            <AppDropdown
+              v-model="config.email_watcher.schedule_mode"
+              :options="emailScheduleOptions"
+              class="settings-field-dd"
+            />
+          </SettingsFieldCard>
+          <SettingsFieldCard v-if="config.email_watcher.schedule_mode === 'interval'" label="固定检查间隔" hint="每次检查结束后等待，最短 60 秒。">
+            <div class="email-schedule-controls">
+              <SettingsNumberStepper v-model="emailIntervalValue" :min="60 / emailIntervalFactor" :max="86400 / emailIntervalFactor" :step="1" />
+              <AppDropdown v-model="emailIntervalUnit" :options="emailIntervalUnitOptions" class="settings-field-dd email-schedule-unit" />
+            </div>
+          </SettingsFieldCard>
+          <SettingsFieldCard v-if="config.email_watcher.schedule_mode === 'daily'" label="每日检查时间" hint="使用应用所在主机的本地时间。">
+            <div class="email-schedule-controls email-schedule-time-controls">
+              <AppDropdown v-model="emailDailyHour" :options="emailHourOptions" class="settings-field-dd email-schedule-time" />
+              <span class="email-schedule-separator">:</span>
+              <AppDropdown v-model="emailDailyMinute" :options="emailMinuteOptions" class="settings-field-dd email-schedule-time" />
+            </div>
+          </SettingsFieldCard>
           <div class="mini-grid two">
             <SettingsFieldCard label="快速预设">
               <AppDropdown
@@ -412,7 +432,7 @@
             <SettingsToggleRow v-model="config.email_watcher.mark_as_read" title="处理后标记已读" />
             <SettingsToggleRow v-model="config.email_watcher.auto_index_new_circles" title="新社团自动全量索引" subtitle="首次出现的社团建立索引。" />
           </div>
-          <div class="mini-grid two">
+          <div v-if="config.email_watcher.schedule_mode === 'continuous'" class="mini-grid two">
             <SettingsFieldCard label="IDLE 超时（分钟）">
               <SettingsNumberStepper v-model="config.email_watcher.idle_timeout_minutes" :min="5" :max="28" />
             </SettingsFieldCard>
@@ -438,7 +458,7 @@
           <transition name="fade-up">
             <div v-if="emailWatcherStatus" class="service-result-card">
               <div class="service-result-grid">
-                <div><span class="service-result-key">运行模式</span><strong>{{ emailWatcherStatus.mode }}</strong></div>
+                <div><span class="service-result-key">运行模式</span><strong>{{ emailWatcherModeLabel }}</strong></div>
                 <div><span class="service-result-key">上次检查</span><strong>{{ emailWatcherStatus.last_check_at || '—' }}</strong></div>
                 <div><span class="service-result-key">处理邮件数</span><strong>{{ emailWatcherStatus.total_mails_processed ?? '—' }}</strong></div>
                 <div><span class="service-result-key">触发索引数</span><strong>{{ emailWatcherStatus.total_rjcodes_triggered ?? '—' }}</strong></div>
@@ -535,6 +555,19 @@ const emailImapPresetOptions = [
   { value: 'outlook', label: 'Outlook' },
   { value: 'custom', label: '自定义' }
 ]
+const emailScheduleOptions = [
+  { value: 'continuous', label: '持久监听（IMAP IDLE）' },
+  { value: 'interval', label: '固定间隔检查' },
+  { value: 'daily', label: '每天指定时间检查' },
+  { value: 'manual', label: '仅手动检查' }
+]
+const emailIntervalUnitOptions = [
+  { value: 'seconds', label: '秒' },
+  { value: 'minutes', label: '分钟' },
+  { value: 'hours', label: '小时' }
+]
+const emailHourOptions = Array.from({ length: 24 }, (_, value) => ({ value: String(value).padStart(2, '0'), label: `${String(value).padStart(2, '0')} 时` }))
+const emailMinuteOptions = Array.from({ length: 60 }, (_, value) => ({ value: String(value).padStart(2, '0'), label: `${String(value).padStart(2, '0')} 分` }))
 
 // RJ 字幕开关项
 const subtitleItems = [
@@ -976,6 +1009,44 @@ async function handleEmailWatcherPasswordVisibility(visible) {
 const emailWatcherBusy = ref(false)
 const emailWatcherMessage = ref('')
 const emailWatcherStatus = ref(null)
+const emailIntervalUnit = ref('seconds')
+watch(() => props.config.email_watcher, (settings) => {
+  const seconds = Number(settings?.poll_interval_seconds)
+  emailIntervalUnit.value = seconds > 0 && seconds % 3600 === 0
+    ? 'hours'
+    : seconds > 0 && seconds % 60 === 0 ? 'minutes' : 'seconds'
+}, { immediate: true })
+const emailIntervalFactor = computed(() => ({ seconds: 1, minutes: 60, hours: 3600 })[emailIntervalUnit.value])
+const emailIntervalValue = computed({
+  get: () => Number((Number(props.config.email_watcher.poll_interval_seconds || 60) / emailIntervalFactor.value).toFixed(6)),
+  set: (value) => { props.config.email_watcher.poll_interval_seconds = Math.round(Number(value) * emailIntervalFactor.value) }
+})
+const emailDailyParts = computed(() => {
+  const value = props.config.email_watcher.daily_run_time
+  return /^\d{2}:\d{2}$/.test(value || '') ? value.split(':') : ['03', '00']
+})
+const emailDailyHour = computed({
+  get: () => emailDailyParts.value[0],
+  set: (value) => { props.config.email_watcher.daily_run_time = `${value}:${emailDailyParts.value[1]}` }
+})
+const emailDailyMinute = computed({
+  get: () => emailDailyParts.value[1],
+  set: (value) => { props.config.email_watcher.daily_run_time = `${emailDailyParts.value[0]}:${value}` }
+})
+const emailWatcherModeLabel = computed(() => {
+  const labels = {
+    idle: '持久监听',
+    polling: '降级轮询',
+    scheduled_interval: '固定间隔',
+    scheduled_daily: '每日等待',
+    scheduled_daily_running: '每日检查中',
+    manual: '仅手动',
+    error: '错误',
+    stopped: '已停止',
+    disabled: '未启用'
+  }
+  return labels[emailWatcherStatus.value?.mode] || emailWatcherStatus.value?.mode || '—'
+})
 const emailImapPreset = ref('custom')
 const emailImapPasswordHint = computed(() => {
   if (emailImapPreset.value === 'gmail') return '⚠ Gmail 需填「应用专用密码」（非登录密码）：Google账号 → 安全 → 应用专用密码 → 生成'
@@ -1624,6 +1695,46 @@ async function pollEmailWatcherNow() {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.7),
     0 1px 2px rgba(245, 158, 11, 0.1);
+}
+
+.email-schedule-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: 100%;
+}
+
+.email-schedule-unit {
+  flex: 0 1 112px;
+  min-width: 90px;
+}
+
+.email-schedule-time {
+  width: 92px !important;
+  flex: 0 0 92px;
+}
+
+.email-schedule-time :deep(.app-dd-root),
+.email-schedule-time :deep(.app-dd-trigger-anchor) {
+  width: 100%;
+}
+
+.email-schedule-time :deep(.app-dd-trigger) {
+  padding: 0 9px;
+  font-size: 13px;
+}
+
+.email-schedule-time-controls {
+  gap: 6px;
+}
+
+.email-schedule-separator {
+  flex: 0 0 auto;
+  color: var(--set-text-muted);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 /* 过渡 */

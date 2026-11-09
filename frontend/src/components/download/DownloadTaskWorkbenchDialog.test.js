@@ -8,6 +8,40 @@ vi.mock('../common/AppLottieProgressBar.vue', () => ({ default: { template: '<di
 vi.mock('../common/AppEmptyState.vue', () => ({ default: { template: '<div />' } }))
 
 describe('下载与上传状态区分', () => {
+  it.each([
+    ['waiting_download_slot', '等待下载槽'],
+    ['prepare_directory', '准备目录'],
+    ['mkdir', '创建临时目录'],
+    ['waiting_transfer_slot', '等待转存槽'],
+    ['transferring', '转存中'],
+    ['transfer_retry_wait', '等待转存重试'],
+    ['waiting_network_budget', '等待网络预算'],
+    ['starting_download', '启动下载'],
+    ['transmitting', '实际传输'],
+  ])('百度阶段 %s 使用真实运行态', (startup_phase, label) => {
+    const wrapper = shallowMount(DownloadTaskWorkbenchDialog, {
+      props: { visible: true, mergeTasks: false, tasks: [{
+        id: 'baidu', status: 'processing', task_domain: 'baidu_netdisk_download',
+        task_metadata: { download_runtime: { startup_phase } },
+      }] },
+      global: { stubs: { Teleport: true, DotLottieVue: true } },
+    })
+    expect(wrapper.get('.v1-status-line').text()).toBe(label)
+    wrapper.unmount()
+  })
+
+  it.each(['http_download', 'baidu_netdisk_upload'])('其它业务 %s 不采用百度启动阶段', task_domain => {
+    const wrapper = shallowMount(DownloadTaskWorkbenchDialog, {
+      props: { visible: true, mergeTasks: false, tasks: [{
+        id: 'other', status: 'processing', task_domain,
+        task_metadata: { download_runtime: { startup_phase: 'transferring' } },
+      }] },
+      global: { stubs: { Teleport: true, DotLottieVue: true } },
+    })
+    expect(wrapper.get('.v1-status-line').text()).not.toBe('转存中')
+    wrapper.unmount()
+  })
+
   it('上传主窗口以实时字节为准，不采用缓存文件行的旧进度', async () => {
     const wrapper = shallowMount(DownloadTaskWorkbenchDialog, {
       props: { visible: true, transferMode: 'upload', mergeTasks: false, tasks: [{

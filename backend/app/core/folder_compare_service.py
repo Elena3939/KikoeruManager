@@ -1,5 +1,4 @@
 import errno
-import filecmp
 import logging
 import os
 import shutil
@@ -12,6 +11,8 @@ from ..config.settings import get_config
 from .fs_utils import (
     MoveCleanupPending, copy_file_publish_sync, move_path_sync, move_path_replacing_sync,
 )
+from .merge_plan import ComparedItems, build_plan, populate_plan
+from .staged_file_move import snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +20,23 @@ logger = logging.getLogger(__name__)
 class FolderCompareService:
     """本地文件夹对比与合并服务"""
 
+    @staticmethod
+    def _same_content(left, right):
+        # 每次预览重新比较，不复用按 stat 缓存的跨会话结论。
+        if left["size"] != right["size"]:
+            return False
+        with open(left["path"], "rb") as first, open(right["path"], "rb") as second:
+            while True:
+                chunk = first.read(1024 * 1024)
+                if chunk != second.read(1024 * 1024):
+                    return False
+                if not chunk:
+                    return True
+
     def build_compare_items(self, new_root: str, existing_root: str) -> List[dict[str, Any]]:
         new_root_path = Path(new_root)
         existing_root_path = Path(existing_root)
+        source_manifest, existing_manifest = snapshot(new_root), snapshot(existing_root)
 
         new_map = self._collect_entries(new_root_path)
         existing_map = self._collect_entries(existing_root_path)
@@ -34,7 +49,9 @@ class FolderCompareService:
             existing_entry = existing_map.get(relative_path)
             compare_items.append(self._build_compare_item(relative_path, new_entry, existing_entry))
 
-        return compare_items
+        if snapshot(new_root) != source_manifest or snapshot(existing_root) != existing_manifest:
+            raise ValueError("比较期间目录已变化，请刷新差异")
+        return ComparedItems(compare_items, source_manifest, existing_manifest)
 
     def build_compare_items_from_listing(
         self,
@@ -121,12 +138,19 @@ class FolderCompareService:
         existing_root: str,
         decisions: Dict[str, str],
         target_path: str,
+        plan=None,
     ) -> str:
         from .merge_execution_service import merge_progress
         progress = merge_progress.get()
         if progress:
             progress("重新核对源目录与库存目录", 5)
-        compare_items = self.build_compare_items(new_root, existing_root)
+        compare_items = self.build_compare_items(new_root, existing_root) if plan is None else []
+        if plan is None:
+            plan = build_plan(new_root, existing_root, compare_items, self.normalize_decisions(compare_items, decisions),
+                              compare_items.source_manifest, compare_items.existing_manifest)
+        plan.validate()
+        if plan.unchanged:
+            return target_path
         summary = self.build_summary(compare_items)
         decision_counts: Dict[str, int] = {}
         for value in decisions.values():
@@ -141,7 +165,10 @@ class FolderCompareService:
             summary,
             decision_counts,
         )
-        merged_dir = self._build_merged_directory(new_root, existing_root, compare_items, decisions)
+        merged_dir = tempfile.mkdtemp(prefix=".kikoerumanager-merge-", dir=os.path.dirname(os.path.abspath(target_path)))
+        populate_plan(plan, merged_dir, lambda done, total, size, byte_total, name: progress(
+            f"生成合并目录：{done}/{total} · {size}/{byte_total} 字节 · {name}",
+            10 + int(75 * done / max(1, total))) if progress else None)
         try:
             if progress:
                 progress("替换目标目录并清理旧目录备份", 90)
@@ -335,7 +362,7 @@ class FolderCompareService:
                 exact_match = True
             else:
                 if allow_exact_compare and new_entry.get("path") and existing_entry.get("path"):
-                    exact_match = filecmp.cmp(str(new_entry["path"]), str(existing_entry["path"]), shallow=False)
+                    exact_match = self._same_content(new_entry, existing_entry)
                 else:
                     exact_match = (
                         int(new_entry.get("size") or 0) == int(existing_entry.get("size") or 0)

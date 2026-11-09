@@ -2065,6 +2065,7 @@ export const baiduNetdiskApi = {
 
   preview: async (payload = {}) => {
     const response = await apiClient.post('/baidu-netdisk/preview', {
+      force_refresh: Boolean(payload.forceRefresh ?? payload.force_refresh),
       urls: payload.urls || [],
       target_subdir: payload.targetSubdir || payload.target_subdir || '',
       output_folder_name: payload.outputFolderName || payload.output_folder_name || '',

@@ -8581,6 +8581,10 @@ class ExtractService:
                 self._record_extract_process_started(task)
                 if task is not None:
                     task.register_process(process)
+                io_monitor = None
+                if task is not None and getattr(process, "pid", None):
+                    from .task_io_runtime import monitor_extract_reads
+                    io_monitor = asyncio.create_task(monitor_extract_reads(process, task))
 
                 stderr_data = bytearray()
 
@@ -8624,6 +8628,10 @@ class ExtractService:
                         stderr_task.cancel()
                         with contextlib.suppress(BaseException):
                             await stderr_task
+                    if io_monitor is not None:
+                        io_monitor.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await io_monitor
                     if task is not None:
                         task.unregister_process(process)
 
@@ -9615,26 +9623,18 @@ class ExtractService:
                         speed_str = ""
                         eta_str = ""
 
-                        # 提取已处理字节数以计算速度
-                        # 7z 的进度行通常包含多个 x/y 部分，通常最后一个是字节
-                        matches = re.findall(r"(\d+)/\d+", line)
-                        if matches and elapsed > 0:
-                            current_bytes = int(matches[-1])
-                            speed = current_bytes / elapsed
-                            if speed > 1024 * 1024:
-                                speed_str = f"{speed / (1024 * 1024):.2f} MB/s"
-                            elif speed > 1024:
-                                speed_str = f"{speed / 1024:.2f} KB/s"
-                            else:
-                                speed_str = f"{speed:.0f} B/s"
+                        io_runtime = task.task_metadata.get("io_runtime") or {}
+                        speed = io_runtime.get("speed_bytes_per_sec")
+                        if io_runtime.get("io_active") and speed is not None:
+                            speed_str = f"{speed / (1024 * 1024):.2f} MB/s"
 
-                            if raw_percent > 0:
-                                total_seconds = elapsed * 100 / raw_percent
-                                remaining = total_seconds - elapsed
-                                if remaining > 0:
-                                    m, s = divmod(int(remaining), 60)
-                                    h, m = divmod(m, 60)
-                                    eta_str = f"{h:d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
+                        if raw_percent > 0:
+                            total_seconds = elapsed * 100 / raw_percent
+                            remaining = total_seconds - elapsed
+                            if remaining > 0:
+                                m, s = divmod(int(remaining), 60)
+                                h, m = divmod(m, 60)
+                                eta_str = f"{h:d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
 
                         entry_name = self._extract_7z_progress_entry_name(line)
                         if entry_name:
@@ -10378,6 +10378,10 @@ class ExtractService:
 
                 stdout_data = bytearray()
                 stderr_data = bytearray()
+                io_monitor = None
+                if task is not None and is_extract_command and getattr(process, "pid", None):
+                    from .task_io_runtime import monitor_extract_reads
+                    io_monitor = asyncio.create_task(monitor_extract_reads(process, task))
                 progress_encoding = next(
                     (f"cp{arg.split('=', 1)[1]}" for arg in cmd if re.fullmatch(r"-mcp=\d+", str(arg))),
                     None,
@@ -10471,6 +10475,10 @@ class ExtractService:
                     await terminate_process()
                     raise
                 finally:
+                    if io_monitor is not None:
+                        io_monitor.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await io_monitor
                     if task is not None:
                         task.unregister_process(process)
 
@@ -11083,11 +11091,15 @@ class ExtractService:
         fingerprint = self._archive_fingerprint(archive_path)
         deadline = time.monotonic() + self.PASSWORD_VALIDATION_TIMEOUT
 
-        async def bounded_probe(method, *args, timeout, **kwargs):
+        async def bounded_probe(method, *args, timeout, exclude_resource_wait=False, **kwargs):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return "timeout"
             try:
+                if exclude_resource_wait:
+                    # 资源槽位等待不计入密码验证时限；只有 7z 进程启动后的
+                    # 内容校验才使用 method 自身的 timeout。
+                    return await method(*args, timeout=timeout, **kwargs)
                 return await asyncio.wait_for(
                     method(*args, timeout=min(timeout, remaining), **kwargs),
                     timeout=remaining,
@@ -11194,6 +11206,8 @@ class ExtractService:
                         self._probe_by_full_test,
                         archive_path, password, timeout=timeout, task=task,
                         seven_zip_executable=seven_zip_executable,
+                        resource_wait_timeout=0,
+                        exclude_resource_wait=True,
                     )
                     paused = task is not None and task.consume_stop_reason() == "pause"
                     await checkpoint()
@@ -11209,6 +11223,8 @@ class ExtractService:
                             self._probe_by_full_test,
                             archive_path, password, timeout=timeout, task=task,
                             seven_zip_executable=self.seven_zip_zstd,
+                            resource_wait_timeout=0,
+                            exclude_resource_wait=True,
                         )
                         paused = task is not None and task.consume_stop_reason() == "pause"
                         await checkpoint()
@@ -11232,6 +11248,8 @@ class ExtractService:
                                 archive_path, password, timeout=timeout, task=task,
                                 seven_zip_executable=validated_backend,
                                 password_bytes=password_bytes,
+                                resource_wait_timeout=0,
+                                exclude_resource_wait=True,
                             )
                             paused = task is not None and task.consume_stop_reason() == "pause"
                             await checkpoint()
@@ -11284,6 +11302,7 @@ class ExtractService:
         task: Optional[Task] = None,
         seven_zip_executable: Optional[str] = None,
         password_bytes: Optional[bytes] = None,
+        resource_wait_timeout: Optional[float] = None,
     ) -> str:
         executable = seven_zip_executable or self.seven_zip
         cmd = [
@@ -11315,7 +11334,12 @@ class ExtractService:
             reason="extract.probe_full_test", archive_path=archive_path,
             slot_label="密码完整验证槽位",
             slot_limit=self.__class__._seven_zip_semaphore_limit or 1,
-            wait_timeout=self.PROBE_SLOT_WAIT_TIMEOUT, task=task, progress_floor=38,
+            wait_timeout=(
+                self.PROBE_SLOT_WAIT_TIMEOUT
+                if resource_wait_timeout is None
+                else resource_wait_timeout
+            ),
+            task=task, progress_floor=38,
         ) as acquired:
             if not acquired:
                 candidate_evidence(password, [], probe_reason='resource_timeout')

@@ -159,6 +159,8 @@ describe('任务小窗持久恢复', () => {
     rememberTaskCard('old', { taskSource: 'asmr', taskIds: ['one'] }, '/circle-completion')
     expect(taskCardBelongsToPage(persistentTaskCards.old, '/')).toBe(false)
     expect(taskCardBelongsToPage(persistentTaskCards.old, '/circle-completion')).toBe(true)
+    rememberTaskCard('upload-global', { taskSource: 'upload', taskIds: ['upload-one'] }, '/library')
+    expect(taskCardBelongsToPage(persistentTaskCards['upload-global'], '/')).toBe(true)
     asmrSyncApi.status.mockResolvedValue({ tasks: [{ id: 'one', status: 'failed', progress: 0 }] })
     await refreshPersistentTaskCards()
     expect(persistentTaskCards.old).toBeDefined()

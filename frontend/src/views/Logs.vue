@@ -176,17 +176,18 @@
         >
           <div class="logs-active-heading">
             <span><component :is="lane.icon" :size="13" />{{ lane.title }} <small>{{ lane.tasks.length }}</small></span>
-            <button class="logs-active-toggle" :aria-expanded="showAllActive" @click="showAllActive = !showAllActive">
-              {{ showAllActive ? '收起' : '展开' }}<ChevronDown :size="13" :class="{ 'is-open': showAllActive }" />
+            <button class="logs-active-toggle" :aria-expanded="expandedTaskLanes[lane.key]" @click="expandedTaskLanes[lane.key] = !expandedTaskLanes[lane.key]">
+              {{ expandedTaskLanes[lane.key] ? '收起' : '展开' }}<ChevronDown :size="13" :class="{ 'is-open': expandedTaskLanes[lane.key] }" />
             </button>
           </div>
-          <div v-show="showAllActive" class="logs-active-list" tabindex="0" :aria-label="`${lane.title}列表`">
+          <div v-show="expandedTaskLanes[lane.key]" class="logs-active-list" tabindex="0" :aria-label="`${lane.title}列表`">
             <TransitionGroup name="active-task">
               <div v-for="task in lane.tasks" :key="task.id" :data-task-id="task.id" class="logs-active-task" :class="{ 'is-finished': task.finished, 'is-failed': task.failed }">
                 <div class="logs-active-title">
                   <img v-if="task.sourceIcon" :src="task.sourceIcon" :alt="task.sourceName" class="logs-active-source-icon" />
                   <component v-else :is="task.icon" :size="17" />
                   <span class="logs-active-label" :title="task.label">{{ task.label }}</span>
+                  <span v-if="task.retrying" class="logs-active-retry" title="本轮为重试任务"><RefreshCw :size="10" />重试</span>
                   <span class="logs-active-phase">{{ task.finished ? (task.failed ? '失败' : task.cancelled ? '已取消' : '已完成') : task.phase }}</span>
                   <strong>{{ task.progress }}<small>%</small></strong>
                 </div>
@@ -194,14 +195,14 @@
                   <div class="logs-active-fill" :style="{ width: `${task.progress}%` }" />
                   <div v-if="!task.finished && !task.progress" class="logs-active-indeterminate" />
                 </div>
-                <div class="logs-active-details">
-                  <span class="logs-active-speed">{{ formatLogBytes(task.speed) }}/s</span>
-                  <span>{{ formatLogBytes(task.bytes) }} / {{ task.total ? formatLogBytes(task.total) : '统计中' }}</span>
+                <div v-if="task.hasSpeed || task.hasBytes || task.fileCount" class="logs-active-details">
+                  <span v-if="task.hasSpeed" class="logs-active-speed">{{ task.speedLabel }} {{ (task.speed / 1024 / 1024).toFixed(2) }} MB/s</span>
+                  <span v-if="task.hasBytes">{{ formatLogBytes(task.bytes) }}<template v-if="task.total"> / {{ formatLogBytes(task.total) }}</template></span>
                   <span v-if="task.fileCount">文件 {{ task.fileIndex }}/{{ task.fileCount }}</span>
                 </div>
                 <div class="logs-active-timing">
                   <span>已用 {{ formatProgressDuration(Math.max(0, (task.endedMs || progressTicker) - task.startedMs)) }}</span>
-                  <span>{{ task.finished ? (task.failed ? '任务失败' : task.cancelled ? '任务已取消' : '传输完成') : `剩余 ${task.eta === null ? '计算中…' : formatProgressDuration(task.eta * 1000)}` }}</span>
+                  <span v-if="task.finished || task.eta !== null">{{ task.finished ? (task.failed ? '任务失败' : task.cancelled ? '任务已取消' : '任务完成') : `剩余 ${formatProgressDuration(task.eta * 1000)}` }}</span>
                 </div>
               </div>
             </TransitionGroup>
@@ -392,8 +393,6 @@ import {
   ChevronDown,
   Copy,
   Download,
-  Upload,
-  ScanSearch,
   PackageOpen,
   Workflow,
   FileSearch,
@@ -414,6 +413,7 @@ import AppLottieIcon from '../components/common/AppLottieIcon.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import SystemLogTerminal from '../components/common/SystemLogTerminal.vue'
+import { getTaskDomainMeta, getTaskSubtypeMeta } from '../components/common/taskDomainMeta'
 import { buildTaskProgress, parseTaskProgressPayload, resolveLogTaskPhase } from '../utils/logProgress'
 import { mergeLogWindow, createLogFilter } from '../utils/logWindow'
 import { useRealtimeEvents } from '../composables/useRealtimeEvents'
@@ -1500,14 +1500,15 @@ async function toggleFullSearch() {
 
 const realtime = useRealtimeEvents()
 const activeTasks = shallowRef([])
-const showAllActive = ref(true)
+const expandedTaskLanes = ref({ transfer: true, system: true })
 const finishedTaskTimers = new Map()
+const terminalTaskIds = new Map()
 let unsubscribeTasks = null
 let unsubscribeTaskBatch = null
 
 const taskLanes = computed(() => {
   const transferPattern = /(upload|download|上传|下载|baidu_netdisk|pikpak|gofile|google_drive|onedrive|transferit|http_download|asmr)/i
-  const transferTasks = activeTasks.value.filter(task => transferPattern.test(`${task.taskType || ''} ${task.phase || ''} ${task.sourceKey || ''}`))
+  const transferTasks = activeTasks.value.filter(task => transferPattern.test(`${task.taskType || ''} ${task.kind || ''} ${task.phase || ''} ${task.sourceKey || ''}`))
   const systemTasks = activeTasks.value.filter(task => !transferTasks.includes(task))
   return [
     { key: 'transfer', title: '上传 / 下载', icon: Workflow, tasks: transferTasks },
@@ -1529,38 +1530,104 @@ function updateActiveTask(event) {
   const id = String(event.engine_task_id || event.entity_id || event.id || event.item_id || '').replace(/^engine:/, '')
   if (!id) return
   const old = activeTasks.value.find((task) => task.id === id)
-  const metadata = event.details?.metadata || event.metadata || {}
-  const runtimeUpdate = { ...metadata.runtime, ...metadata.download_runtime, ...metadata.upload_runtime, ...event.download_runtime, ...event.upload_runtime, ...event.runtime }
-  const runtime = { ...old?.runtime, ...runtimeUpdate }
   const status = event.status || old?.status
   const finished = ['completed', 'failed', 'cancelled', 'partial_failed'].includes(status)
+  const metadata = event.details?.metadata || event.metadata || event.task_metadata || {}
+  const startedMs = parseLogTimeMs(event.started_at)
+  const retryCount = Number(event.retry_count ?? metadata.retry_count ?? old?.retryCount ?? 0)
+  const terminal = terminalTaskIds.get(id)
+  const newAttempt = !finished && (
+    (startedMs && startedMs > (old?.startedMs || terminal?.startedMs || Infinity))
+    || retryCount > (old?.retryCount ?? terminal?.retryCount ?? Infinity)
+  )
+  if (newAttempt) {
+    terminalTaskIds.delete(id)
+    clearTimeout(finishedTaskTimers.get(id))
+    finishedTaskTimers.delete(id)
+  }
+  const terminalUntil = terminalTaskIds.get(id)?.until || 0
+  if (terminalUntil <= Date.now()) terminalTaskIds.delete(id)
+  // Overview 请求可能晚于终态 SSE 返回；同一任务不接受迟到的运行态快照回退。
+  if (!newAttempt && (old?.finished || terminalTaskIds.has(id)) && !finished) return
+  if (finished) {
+    terminalTaskIds.set(id, { until: Date.now() + 10 * 60 * 1000, startedMs: startedMs || old?.startedMs, retryCount })
+    if (terminalTaskIds.size > 2048) terminalTaskIds.delete(terminalTaskIds.keys().next().value)
+  }
+  const performanceMetrics = event.performance_metrics || metadata.performance_metrics || metadata.task_metadata?.performance_metrics || {}
+  const nestedPerformanceMetrics = metadata.task_metadata?.performance_metrics || {}
+  const uploadRuntime = {
+    ...nestedPerformanceMetrics.upload_runtime,
+    ...performanceMetrics.upload_runtime,
+    ...metadata.upload_runtime,
+    ...event.upload_runtime,
+  }
+  const runtimeUpdate = {
+    ...metadata.runtime,
+    ...metadata.download_runtime,
+    ...nestedPerformanceMetrics.download_runtime,
+    ...performanceMetrics.download_runtime,
+    ...uploadRuntime,
+    ...event.download_runtime,
+    ...event.runtime,
+  }
+  const transferRuntime = { ...(!newAttempt && old?.transferRuntime), ...runtimeUpdate }
+  const ioRuntime = event.io_runtime || metadata.io_runtime || (!newAttempt && old?.ioRuntime) || {}
+  const runtime = ioRuntime.io_active ? { ...transferRuntime, ...ioRuntime } : transferRuntime
   if (finished && !old) return
   if (!finished && !['processing', 'running', 'downloading', 'uploading', 'receiving'].includes(status)) {
     activeTasks.value = activeTasks.value.filter((task) => task.id !== id)
     return
   }
   const taskType = event.task_type || old?.taskType || event.domain
-  const phase = resolveLogTaskPhase(runtime.phase || runtime.stage || event.kind_label, taskType)
+  const kind = event.kind || metadata.kind || old?.kind || ''
+  const currentStep = event.current_step ?? old?.currentStep ?? ''
+  const ioActive = ioRuntime.io_active === true
+  const stepPhase = [
+    [/等待.*槽位|等待.*资源|排队/, '排队'], [/准备|预检|初始化/, '准备'],
+    [/解压/, '解压'], [/移动|搬运|归档/, '移动'], [/上传/, '上传'],
+    [/下载/, '下载'], [/校验|验证/, '校验'], [/元数据|作品信息/, '元数据'],
+    [/过滤/, '过滤'], [/重命名/, '重命名'],
+  ].find(([pattern]) => pattern.test(currentStep))?.[1]
+  const phase = ioActive ? resolveLogTaskPhase(runtime.phase)
+    : stepPhase || resolveLogTaskPhase(runtime.phase || runtime.stage, taskType)
+  const domain = event.domain || old?.domain || ({
+    auto_process: 'import', process_existing_folder: 'existing_folder',
+    rj_subtitle_fetch: 'rj_subtitle', rj_subtitle_extract: 'rj_subtitle',
+    asmr_sync_download: 'asmr_sync', http_download: 'http_download',
+    baidu_netdisk_download: 'baidu_netdisk', baidu_netdisk_upload: 'baidu_netdisk',
+    local_library_upload: 'upload', browser_upload: 'upload',
+  })[taskType] || 'system'
+  const subtype = event.subtype || old?.subtype
   const modes = event.source_modes || metadata.source_modes || metadata.platforms
   const sourceKey = /baidu_netdisk/.test(taskType) || event.domain === 'baidu_netdisk'
     ? 'baidu_netdisk' : Array.isArray(modes) && modes.length ? (modes.length === 1 ? modes[0] : 'http') : old?.sourceKey
   const source = taskSources[sourceKey]
   const number = value => Math.max(0, Number(value) || 0)
-  const speed = finished ? 0 : number(runtime.speed_bytes_per_sec)
-  const bytes = number(runtime.downloaded_bytes ?? runtime.transferred_bytes ?? runtime.completed_bytes)
+  const speedLabel = ioActive ? (runtime.speed_kind === 'read' ? '解压' : '移动')
+    : /上传/.test(phase) ? '上传' : /下载|接收/.test(phase) ? '下载' : ''
+  const hasSpeed = !finished && !!speedLabel && runtime.speed_bytes_per_sec != null
+    && Number.isFinite(Number(runtime.speed_bytes_per_sec))
+  const speed = hasSpeed ? number(runtime.speed_bytes_per_sec) : 0
+  const bytes = number(ioActive ? runtime.completed_bytes : runtime.downloaded_bytes ?? runtime.transferred_bytes ?? runtime.completed_bytes)
   const total = number(runtime.total_bytes)
+  const hasBytes = (ioActive || !!speedLabel) && (bytes > 0 || total > 0)
   // 后端 ETA 优先；缺失时只按真实传输数据估算，不把未知值显示成零。
-  const eta = speed > 0 ? (number(runtimeUpdate.eta_seconds) || (total > bytes ? Math.ceil((total - bytes) / speed) : number(runtime.eta_seconds) || null)) : null
+  const backendEta = ioActive ? null : number(uploadRuntime.eta_seconds) || number(event.download_runtime?.eta_seconds)
+    || number(event.runtime?.eta_seconds) || number(runtimeUpdate.eta_seconds) || null
+  const eta = finished || (!ioActive && !speedLabel) ? null
+    : (backendEta || (speed > 0 && total > bytes ? Math.ceil((total - bytes) / speed) : null))
   const now = Date.now()
   const task = {
-    id, runtime, taskType, status, sourceKey, sourceIcon: source?.icon, sourceName: source?.name,
-    icon: /upload|上传/.test(phase) ? Upload : /download|下载/.test(phase) ? Download : /probe|探测/.test(phase) ? ScanSearch : /extract|解压/.test(phase) ? PackageOpen : Workflow, phase,
+    id, runtime, transferRuntime, ioRuntime, taskType, kind, status, domain, subtype, currentStep, retryCount, sourceKey, sourceIcon: source?.icon, sourceName: source?.name,
+    icon: getTaskSubtypeMeta({ domain, subtype })?.icon || getTaskDomainMeta(domain).icon, phase,
+    retrying: !!(event.retry_from_conflicts || metadata.retry_from_conflicts || metadata.linked_conflict_retrying
+      || event.details?.retrying || metadata.retry_conflict_id || retryCount > 0 || old?.retrying),
     label: event.rjcode || event.title || event.source_label || old?.label || id.slice(0, 8),
     progress: Math.min(100, number(event.progress ?? old?.progress)), finished,
     failed: ['failed', 'partial_failed'].includes(status), cancelled: status === 'cancelled',
-    speed, bytes, total, eta, fileIndex: runtime.file_index ?? runtime.current_file_index ?? runtime.completed_files ?? 0,
+    speed, speedLabel, hasSpeed, hasBytes, bytes, total, eta, fileIndex: runtime.file_index ?? runtime.current_file_index ?? runtime.completed_files ?? 0,
     fileCount: runtime.file_count ?? runtime.total_files ?? 0,
-    startedMs: parseLogTimeMs(event.started_at) || old?.startedMs || now - number(runtime.elapsed_seconds) * 1000,
+    startedMs: startedMs || old?.startedMs || now - number(runtime.elapsed_seconds) * 1000,
     endedMs: finished ? (parseLogTimeMs(event.completed_at) || old?.endedMs || now) : null,
   }
   const index = activeTasks.value.findIndex((item) => item.id === id)
@@ -2736,6 +2803,7 @@ onUnmounted(() => {
 .logs-active-source-icon { width: 19px; height: 19px; object-fit: contain; flex-shrink: 0; }
 .logs-active-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: #1e293b; }
 .logs-active-phase { color: #64748b; white-space: nowrap; }
+.logs-active-retry { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; color: #0284c7; font-size: 10px; white-space: nowrap; }
 .logs-active-title strong { min-width: 38px; text-align: right; color: #0284c7; font-size: 14px; font-variant-numeric: tabular-nums; }
 .logs-active-title strong small { font-size: 10px; margin-left: 1px; }
 .logs-active-track { position: relative; height: 5px; margin: 9px 0; overflow: hidden; border-radius: 4px; background: #e2e8f0; }

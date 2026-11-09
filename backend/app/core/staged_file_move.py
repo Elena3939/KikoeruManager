@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .file_move_protocol import atomic_json, fsync_directory, identity
 from .host_file_move_client import HostMoveClient, HostMoveError
+from .task_io_runtime import current_move_meter, measured_move
 
 logger = logging.getLogger(__name__)
 BUFFER_SIZE = 8 * 1024 * 1024
@@ -82,6 +83,7 @@ def copy_file_publish_sync(source, destination, *, overwrite=False, checkpoint=N
                 os.unlink(stage)
 
 
+@measured_move
 def move_path_replacing_sync(source, destination, **kwargs):
     """覆盖事务：先准备新内容，再备份旧目标；所有提交窗口均可恢复。"""
     source, destination = os.path.abspath(source), os.path.abspath(destination)
@@ -108,6 +110,9 @@ def move_path_replacing_sync(source, destination, **kwargs):
                 "old_manifest": snapshot(destination) if os.path.lexists(destination) else None,
                 "state": "preparing",
             }
+            expected_old = kwargs.get("expected_destination_manifest")
+            if expected_old is not None and record["old_manifest"] != expected_old:
+                raise RuntimeError("合并预览后库存已变化，拒绝替换")
             atomic_json(path, record)
         _replace_locked(record, path, kwargs)
 
@@ -316,7 +321,12 @@ def _copy_path_exclusive_sync(source, destination, *, progress_cb, checkpoint,
             client = None
     _phase("快速克隆" if client else "流式复制", source, destination, phase_cb)
     total = sum(row["size"] for row in frozen.values() if stat.S_ISREG(row["mode"]))
-    completed, emitted = 0, 0
+    completed, emitted, copied_bytes = 0, 0, 0
+    copy_sizes = {
+        (row["device"], row["inode"]): row["size"]
+        for row in frozen.values() if stat.S_ISREG(row["mode"])
+    }
+    copy_total = sum(copy_sizes.values())
     hardlinks = {}
     directory_operation = None
     clone_seconds = sync_seconds = 0.0
@@ -333,6 +343,9 @@ def _copy_path_exclusive_sync(source, destination, *, progress_cb, checkpoint,
 
     def emit(force=False):
         nonlocal emitted
+        meter = current_move_meter.get()
+        if meter and not client:
+            meter.sample(copied_bytes, copy_total)
         if progress_cb and (force or completed - emitted >= progress_throttle_bytes):
             try:
                 progress_cb(completed, total)
@@ -384,6 +397,7 @@ def _copy_path_exclusive_sync(source, destination, *, progress_cb, checkpoint,
                             break
                         writer.write(chunk)
                         completed += len(chunk)
+                        copied_bytes += len(chunk)
                         emit()
                     writer.flush()
                     os.fsync(writer.fileno())
@@ -405,6 +419,9 @@ def _copy_path_exclusive_sync(source, destination, *, progress_cb, checkpoint,
                 fsync_directory(dst)
     check()
     _phase("校验", source, destination, phase_cb)
+    meter = current_move_meter.get()
+    if meter:
+        meter.finish()
     # 仅显式开启时重读内容；来源身份、目录成员和目标大小始终校验。
     if verify_hashes:
         for relative, value in frozen.items():
@@ -550,6 +567,7 @@ def _validate_destination(source, destination):
         raise ValueError("移动来源和目标不能互为祖先目录")
 
 
+@measured_move
 def move_path_sync(source, destination, *, overwrite=False, progress_cb=None, cancel_check=None,
                    buffer_size=BUFFER_SIZE, progress_throttle_bytes=4 * 1024 * 1024, phase_cb=None,
                    verify_hashes=False):

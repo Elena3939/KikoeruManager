@@ -1088,7 +1088,7 @@ function isSuccessfulFileTone(tone) {
 }
 
 function getDownloadRuntime(task) {
-  const runtime = task?.download_runtime || task?.performance_metrics?.download_runtime || task?.task_metadata?.performance_metrics?.download_runtime || {}
+  const runtime = task?.download_runtime || task?.task_metadata?.download_runtime || task?.performance_metrics?.download_runtime || task?.task_metadata?.performance_metrics?.download_runtime || {}
   return runtime && typeof runtime === 'object' ? runtime : {}
 }
 
@@ -1268,6 +1268,9 @@ function getDownloadTaskStatusLabel(task) {
   const status = String(task?.display_status || task?.status || '')
   const map = { pending: '等待中', processing: '处理中', completed: '已完成', cancelled: '已取消', partial_failed: '部分失败', failed: '失败', paused: '已暂停', waiting_retry: '等待重试' }
   if (status === 'completed' && isUploadEnabled(task)) return '已上传 / 已入库'
+  if (status === 'processing' && !isUploadMode.value && ['baidu_netdisk', 'baidu_netdisk_download'].includes(getDownloadTaskDomain(task))) {
+    return getTaskStageLabel(task)
+  }
   return map[status] || (status || '未知')
 }
 
@@ -1318,6 +1321,20 @@ function getTaskStageLabel(task) {
   if (status === 'completed') return isUploadEnabled(task) ? '已上传 / 已入库' : '已完成'
   const uploadRuntime = getUploadRuntime(task)
   const downloadRuntime = getDownloadRuntime(task)
+  if (!isUploadMode.value && ['baidu_netdisk', 'baidu_netdisk_download'].includes(getDownloadTaskDomain(task))) {
+    const labels = {
+      waiting_download_slot: '等待下载槽',
+      prepare_directory: '准备目录',
+      mkdir: '创建临时目录',
+      waiting_transfer_slot: '等待转存槽',
+      transferring: '转存中',
+      transfer_retry_wait: '等待转存重试',
+      waiting_network_budget: '等待网络预算',
+      starting_download: '启动下载',
+      transmitting: '实际传输',
+    }
+    if (labels[downloadRuntime.startup_phase]) return labels[downloadRuntime.startup_phase]
+  }
   if (hasActiveUploadRuntime(task)) return '上传 / 入库中'
   if (Number(downloadRuntime?.active_file_count || 0) > 0) return '下载中'
   if (isUploadEnabled(task) && Number(uploadRuntime?.is_waiting_turn || 0) > 0 && String(uploadRuntime?.current_relative_path || '').trim()) return '上传准备中'

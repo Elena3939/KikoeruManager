@@ -77,7 +77,7 @@ class Executor:
             mappings.append(item)
         return {"protocol_version": VERSION, "mapping_version": self.mapping_version,
                 "container_id": self.config["container_id"], "started_at": self.started_at,
-                "capabilities": ["directory_transaction_v1"],
+                "capabilities": ["directory_transaction_v1", "multi_source_directory_v1"],
                 "max_connections": 32, "max_executions": 4, "mappings": mappings}
 
     def _lock(self, operation_id):
@@ -139,7 +139,96 @@ class Executor:
                 left, right = filesystem_id(source), filesystem_id(parent)
         return {"same_filesystem": left == right, "source_filesystem": left,
                 "target_filesystem": right, "mapping_version": self.mapping_version,
-                "capabilities": ["directory_transaction_v1"]}
+                "capabilities": ["directory_transaction_v1", "multi_source_directory_v1"]}
+
+    def multi_directory_transaction(self, request):
+        """多来源合并目录；每个成员只克隆，持久化仅发生在阶段边界。"""
+        operation_id = token(request["operation_id"])
+        with self._lock(operation_id):
+            record = self._read(operation_id)
+            action = request["action"]
+            if action == "begin_multi_directory":
+                if record:
+                    raise RuntimeError("多来源目录事务已存在或已终止")
+                if request["mapping_version"] != self.mapping_version:
+                    raise RuntimeError("宿主路径映射已变化")
+                destination = request["destination"]
+                roots = request["roots"]
+                if not roots or set(roots) - {"new", "old"}:
+                    raise ValueError("合并来源根无效")
+                with self.open_path(destination) as (target, _):
+                    if not stat.S_ISDIR(os.fstat(target).st_mode) or os.listdir(target):
+                        raise ValueError("合并暂存目录必须为空")
+                    target_identity = identity_stat(os.fstat(target))
+                    if target_identity != request["destination_identity"]:
+                        raise RuntimeError("合并暂存根在启动事务前已变化")
+                    target_fs = filesystem_id(target)
+                identities = {}
+                for key, value in roots.items():
+                    source_path, target_path = PurePosixPath(value), PurePosixPath(destination)
+                    if source_path == target_path or source_path in target_path.parents or target_path in source_path.parents:
+                        raise ValueError("合并来源和暂存目录不能相互包含")
+                    with self.open_path(value) as (source, _):
+                        if not stat.S_ISDIR(os.fstat(source).st_mode) or filesystem_id(source) != target_fs:
+                            raise ValueError("合并克隆来源必须是同文件系统目录")
+                        identities[key] = identity_stat(os.fstat(source))
+                        if identities[key] != request["root_identities"].get(key):
+                            raise RuntimeError("合并来源根在启动事务前已变化")
+                record = {"operation_id": operation_id, "kind": "directory", "multi_source": True,
+                          "state": "preparing", "roots": roots, "root_identities": identities,
+                          "parameters": {"destination": destination, "mapping_version": self.mapping_version},
+                          "destination_identity": target_identity}
+                self._save(record)
+                return record
+            if not record or not record.get("multi_source") or record["state"] != "preparing":
+                raise RuntimeError("多来源目录事务不存在或已终止")
+            if record["parameters"]["mapping_version"] != self.mapping_version:
+                raise RuntimeError("宿主路径映射已变化")
+
+            def validate_roots():
+                paths = [(record["parameters"]["destination"], record["destination_identity"])]
+                paths.extend((value, record["root_identities"][key]) for key, value in record["roots"].items())
+                for value, expected in paths:
+                    with self.open_path(value) as (descriptor, _):
+                        actual = identity_stat(os.fstat(descriptor))
+                        if (any(actual[field] != expected[field] for field in ("device", "inode")) or
+                                stat.S_IFMT(actual["mode"]) != stat.S_IFMT(expected["mode"])):
+                            raise RuntimeError("多来源目录事务根身份发生变化")
+            validate_roots()
+            if action == "finish_multi_directory":
+                record["state"] = "ready"
+                self._save(record)
+                return record
+            if action != "prepare_multi_member" or request["root_id"] not in record["roots"]:
+                raise ValueError("多来源目录事务成员无效")
+            relative_paths = []
+            for field in ("source_relative", "target_relative"):
+                value = request[field]
+                path = PurePosixPath(value)
+                if not value or str(path) != value or path.is_absolute() or ".." in path.parts or "\\" in value:
+                    raise PermissionError("合并成员路径越界")
+                relative_paths.append(path)
+            source_path = str(PurePosixPath(record["roots"][request["root_id"]]) / relative_paths[0])
+            target_path = str(PurePosixPath(record["parameters"]["destination"]) / relative_paths[1])
+            started = time.monotonic()
+            with self.open_path(source_path) as (source, _):
+                check_regular(os.fstat(source))
+                if identity_stat(os.fstat(source)) != request["source_identity"]:
+                    raise RuntimeError("合并成员来源已变化")
+                with self.open_path(target_path, parent=True) as (parent, name):
+                    # 文件系统能力在事务开始时按根确认；open_path 拒绝未声明的嵌套挂载。
+                    descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+                    try:
+                        fcntl.ioctl(descriptor, FICLONE, source)
+                        if identity_stat(os.fstat(source)) != request["source_identity"]:
+                            raise RuntimeError("克隆期间合并来源已变化")
+                        os.fchown(descriptor, self.config["allowed_uid"], self.config["allowed_gid"])
+                        os.fchmod(descriptor, stat.S_IMODE(os.fstat(source).st_mode))
+                        result = identity_stat(os.fstat(descriptor))
+                    finally:
+                        os.close(descriptor)
+            validate_roots()
+            return {"destination_identity": result, "clone_seconds": time.monotonic() - started}
 
     def directory_transaction(self, request):
         """目录暂存由应用持有；宿主只克隆成员，不发布、不删除整棵目录。"""
@@ -347,6 +436,8 @@ class Executor:
             return self.probe(request)
         if action == "prepare":
             return self.prepare(request)
+        if action in ("begin_multi_directory", "prepare_multi_member", "finish_multi_directory"):
+            return self.multi_directory_transaction(request)
         if action in ("begin_directory", "prepare_member", "finish_directory"):
             return self.directory_transaction(request)
         if action in ("status", "cancel", "release"):

@@ -1,4 +1,5 @@
 import asyncio
+import base64
 from .fs_utils import copy_file_publish_sync
 
 import contextlib
@@ -28,6 +29,7 @@ from urllib.request import Request, urlopen
 
 import aiohttp
 import httpx
+from Crypto.Cipher import AES
 
 from ..config.settings import get_config, save_config
 from .google_drive_oauth import (
@@ -39,6 +41,7 @@ from .log_sanitizer import sanitize_text_for_log
 from .resource_budget_service import get_resource_budget_service
 
 logger = logging.getLogger(__name__)
+_MEGA_TRANSFER_LOCK = asyncio.Lock()
 
 _BLOCKED_HOST_HINTS = {"tranfile.com", "transfernow.net"}
 _PIKPAK_HOST_HINTS = {"mypikpak.com", "www.mypikpak.com", "drive.mypikpak.com"}
@@ -46,6 +49,7 @@ _GOFILE_HOST_HINTS = {"gofile.io", "www.gofile.io"}
 _TRANSFERIT_HOST_HINTS = {"transfer.it", "www.transfer.it"}
 _ONEDRIVE_HOST_HINTS = {"1drv.ms", "onedrive.live.com", "onedrive.com"}
 _GOOGLE_DRIVE_HOST_HINTS = {"drive.google.com", "docs.google.com", "drive.usercontent.google.com"}
+_MEGA_HOST_HINTS = {"mega.nz", "www.mega.nz", "mega.io", "www.mega.io"}
 _PIKPAK_MAX_SHARE_FILES = 100
 _PIKPAK_STATUS_CACHE_TTL_SECONDS = 6 * 60 * 60
 _PIKPAK_STATUS_LIVE_TIMEOUT_SECONDS = 15.0
@@ -53,8 +57,12 @@ _PIKPAK_STATUS_ACCOUNT_CONCURRENCY = 5
 _PIKPAK_CLEAR_ACCOUNT_CONCURRENCY = 3
 _PIKPAK_TRANSFER_CONCURRENCY = 4
 _PIKPAK_LINK_CONCURRENCY = 8
+# 转存接口返回 RESTORE_START 后，文件详情可能要几分钟才生成直链。
+# 直链解析必须在同一个转存文件 ID 上等待，不能靠任务重试重新转存。
+_PIKPAK_DOWNLOAD_LINK_MAX_ATTEMPTS = 24
+_PIKPAK_DOWNLOAD_LINK_MAX_BACKOFF_SECONDS = 15.0
 _PIKPAK_SHARE_CONCURRENCY = 3
-_SHARE_PREVIEW_ONLY_SOURCES = {"pikpak", "transferit"}
+_SHARE_PREVIEW_ONLY_SOURCES = {"pikpak", "transferit", "mega"}
 _FILE_LEVEL_SELECTION_SOURCES = _SHARE_PREVIEW_ONLY_SOURCES | {"gofile", "google_drive"}
 _GOFILE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 _GOFILE_LANGUAGE = "en-US"
@@ -77,6 +85,7 @@ HTTP_DOWNLOAD_PLATFORM_LABELS = {
     "onedrive": "OneDrive",
     "google_drive": "Google Drive",
     "pikpak": "PikPak",
+    "mega": "Mega",
 }
 HTTP_DOWNLOAD_PROXY_PLATFORMS = tuple(HTTP_DOWNLOAD_PLATFORM_LABELS.keys())
 
@@ -100,6 +109,8 @@ def normalize_http_download_platform(value: Any) -> str:
         return "google_drive"
     if normalized in {"pikpak", "mypikpak.com", "drive.mypikpak.com"} or "pikpak" in text or "mypikpak.com" in text:
         return "pikpak"
+    if normalized in {"mega", "mega.nz", "mega.io"} or "mega.nz" in text or "mega.io" in text:
+        return "mega"
     return normalized if normalized in HTTP_DOWNLOAD_PLATFORM_LABELS else "http"
 
 
@@ -828,6 +839,9 @@ class HttpDownloadService:
     def _is_google_drive_url(self, raw_url: str) -> bool:
         return self._host_matches(raw_url, _GOOGLE_DRIVE_HOST_HINTS)
 
+    def _is_mega_url(self, raw_url: str) -> bool:
+        return self._host_matches(raw_url, _MEGA_HOST_HINTS)
+
     def _provider_source(self, raw_url: str) -> str:
         if self._is_pikpak_url(raw_url):
             return "pikpak"
@@ -839,6 +853,8 @@ class HttpDownloadService:
             return "onedrive"
         if self._is_google_drive_url(raw_url):
             return "google_drive"
+        if self._is_mega_url(raw_url):
+            return "mega"
         return "http"
 
     def _gofile_cdn_preview_failure_reason(self, item: Dict[str, Any], source_item: Dict[str, Any]) -> str:
@@ -1793,9 +1809,481 @@ class HttpDownloadService:
         if item.get("preview_only"):
             return False
         source = str(item.get("source") or "http")
-        if source == "transferit":
+        if source in {"transferit", "mega"}:
             return False
         return bool(str(item.get("url") or "").strip())
+
+    def _mega_enabled(self) -> bool:
+        return bool(getattr(self._config(), "mega_enabled", True))
+
+    def _mega_get_path(self) -> str:
+        configured = str(getattr(self._config(), "mega_get_path", "") or "").strip()
+        if configured and configured != "mega-get":
+            if os.name == "nt" and configured.lower().endswith(".bat"):
+                return str(Path(configured).with_name("MEGAclient.exe"))
+            return configured
+        if os.name == "nt":
+            bundled = Path(__file__).resolve().parents[3] / "tools" / "megacmd" / "MEGAclient.exe"
+            if bundled.is_file():
+                return str(bundled)
+        return "mega-get"
+
+    def _mega_command(self, command: str) -> List[str]:
+        executable = self._mega_get_path()
+        if os.path.basename(executable).lower() == "megaclient.exe":
+            return [executable, command]
+        if command == "get":
+            return [executable]
+        return [os.path.join(os.path.dirname(executable), f"mega-{command}")]
+
+    async def _mega_folder_nodes(self, raw_url: str) -> Dict[str, Any]:
+        try:
+            from mega_client import AsyncMegaClient
+            from mega_client.crypto import (
+                decrypt_attributes,
+                decrypt_key,
+                decode_node_key,
+            )
+            from mega_client.parser import parse_mega_url
+        except ImportError as exc:
+            raise HttpDownloadError(
+                "后端缺少 mega-public-client 依赖，请重新安装 backend/requirements.txt"
+            ) from exc
+
+        link = parse_mega_url(raw_url)
+        proxy = self._proxy_url("mega") or None
+        async with httpx.AsyncClient(
+            proxy=proxy,
+            timeout=60,
+            trust_env=False,
+        ) as http_client:
+            async with AsyncMegaClient(http_client=http_client) as client:
+                response = (await client._api(
+                    [{"a": "f", "c": 1, "r": 1, "ca": 1}],
+                    folder_handle=link.handle,
+                ))[0]
+
+        if not isinstance(response, dict) or not isinstance(response.get("f"), list):
+            raise HttpDownloadError("Mega 文件夹 API 返回数据异常")
+
+        master_key = decode_node_key(link.key)
+        nodes = []
+        root_handle = next(
+            (
+                str(raw_node.get("h") or "")
+                for raw_node in response["f"]
+                if isinstance(raw_node, dict)
+                and int(raw_node.get("t") or 0) == 1
+            ),
+            "",
+        )
+        for raw_node in response["f"]:
+            if not isinstance(raw_node, dict):
+                continue
+            raw_key = str(raw_node.get("k") or "")
+            key_candidates = [part for part in raw_key.split("/") if ":" in part]
+            selected_key = ""
+            for candidate in key_candidates:
+                owner, _, value = candidate.partition(":")
+                if owner in {
+                    str(raw_node.get("h") or ""),
+                    root_handle,
+                    str(link.handle),
+                } and value:
+                    selected_key = value
+                    break
+            if not selected_key and len(key_candidates) == 1:
+                selected_key = key_candidates[0].split(":", 1)[1]
+            if not selected_key:
+                continue
+            try:
+                node_key = decrypt_key(selected_key, master_key)
+                attrs = decrypt_attributes(str(raw_node.get("a") or ""), node_key.aes_key)
+            except Exception as exc:
+                logger.warning(
+                    "[MEGA文件夹] 跳过无法解密的节点 handle=%s reason=%s",
+                    raw_node.get("h"),
+                    self._sanitize_error(exc),
+                )
+                continue
+            nodes.append({
+                "handle": str(raw_node.get("h") or ""),
+                "parent": str(raw_node.get("p") or ""),
+                "kind": int(raw_node.get("t") or 0),
+                "name": self._sanitize_filename(attrs.get("n") or raw_node.get("h") or "mega-item"),
+                "size": int(raw_node.get("s") or 0),
+                "key": node_key,
+                "attributes": attrs,
+            })
+        return {
+            "handle": str(link.handle),
+            "key": master_key,
+            "nodes": nodes,
+        }
+
+    async def _download_mega_folder_item(
+        self,
+        item: Dict[str, Any],
+        *,
+        task=None,
+        progress_callback=None,
+    ) -> Dict[str, Any]:
+        raw_url = str(item.get("original_url") or item.get("url") or "").strip()
+        final_root = Path(os.path.abspath(str(item.get("final_path") or "")))
+        if not raw_url or not str(final_root):
+            raise HttpDownloadError("Mega 文件夹下载缺少链接或目标目录")
+        folder = await self._mega_folder_nodes(raw_url)
+        nodes = list(folder.get("nodes") or [])
+        files = [node for node in nodes if node.get("kind") == 0 and node.get("size") is not None]
+        if not files:
+            raise HttpDownloadError("Mega 文件夹中没有可下载文件")
+        by_handle = {str(node.get("handle")): node for node in nodes}
+        proxy = self._proxy_url("mega") or None
+        try:
+            from mega_client import AsyncMegaClient
+            from mega_client.downloader import AsyncDownloader
+            from mega_client.models import FileInfo
+            from mega_client.retry import RetryConfig
+        except ImportError as exc:
+            raise HttpDownloadError(
+                "后端缺少 mega-public-client 依赖，请重新安装 backend/requirements.txt"
+            ) from exc
+
+        total_bytes = sum(int(node.get("size") or 0) for node in files)
+        completed_bytes = 0
+        last_at = time.monotonic()
+        last_done = 0
+        async with httpx.AsyncClient(
+            proxy=proxy,
+            timeout=90,
+            trust_env=False,
+        ) as http_client:
+            async with AsyncMegaClient(http_client=http_client) as client:
+                downloader = AsyncDownloader(
+                    http_client,
+                    RetryConfig(attempts=5),
+                    chunk_size=16 * 1024 * 1024,
+                    parallelism=4,
+                )
+                for node in files:
+                    if task is not None:
+                        await task.wait_if_paused()
+                        if task.is_cancelled():
+                            raise asyncio.CancelledError()
+                    path_parts = [str(node.get("name") or "mega-file")]
+                    parent = str(node.get("parent") or "")
+                    seen = set()
+                    while parent and parent in by_handle and parent not in seen:
+                        seen.add(parent)
+                        parent_node = by_handle[parent]
+                        if int(parent_node.get("kind") or 0) == 1:
+                            path_parts.insert(0, str(parent_node.get("name") or "mega-folder"))
+                        parent = str(parent_node.get("parent") or "")
+                    destination = final_root.joinpath(*path_parts)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    expected_size = int(node["size"])
+                    if destination.is_file() and destination.stat().st_size == expected_size:
+                        stale_part = destination.with_suffix(destination.suffix + ".part")
+                        if stale_part.exists():
+                            stale_part.unlink()
+                        completed_bytes += expected_size
+                        last_done = completed_bytes
+                        last_at = time.monotonic()
+                        if progress_callback is not None:
+                            progress_callback({
+                                "gid": str(item.get("gid") or ""),
+                                "name": node["name"],
+                                "relative_path": str(destination.relative_to(final_root)).replace("\\", "/"),
+                                "local_path": str(destination),
+                                "url": item.get("masked_url") or self._mask_url(raw_url),
+                                "source": "mega",
+                                "status": "completed",
+                                "downloaded": completed_bytes,
+                                "total": total_bytes,
+                                "size": expected_size,
+                                "progress": min(99, int(completed_bytes / max(1, total_bytes) * 100)),
+                                "speed_bytes_per_sec": 0,
+                            })
+                        continue
+                    download_response = (await client._api(
+                        [{"a": "g", "g": 1, "n": str(node["handle"])}],
+                        folder_handle=str(folder["handle"]),
+                    ))[0]
+                    download_url = str(download_response.get("g") or "")
+                    if not download_url:
+                        raise HttpDownloadError(f"Mega 文件缺少下载地址：{node.get('name')}")
+                    file_info = FileInfo(
+                        name=str(node["name"]),
+                        size=expected_size,
+                        download_url=download_url,
+                        key=node["key"],
+                        handle=str(node["handle"]),
+                        attributes=dict(node.get("attributes") or {}),
+                    )
+
+                    async def on_progress(done: int, size: int, *, node=node):
+                        nonlocal completed_bytes, last_at, last_done
+                        current_total = completed_bytes + int(done)
+                        now = time.monotonic()
+                        speed = int(max(0, current_total - last_done) / max(0.001, now - last_at))
+                        last_done, last_at = current_total, now
+                        if progress_callback is not None:
+                            progress_callback({
+                                "gid": str(item.get("gid") or ""),
+                                "name": node["name"],
+                                "relative_path": str(destination.relative_to(final_root)).replace("\\", "/"),
+                                "local_path": str(destination),
+                                "url": item.get("masked_url") or self._mask_url(raw_url),
+                                "source": "mega",
+                                "status": "downloading",
+                                "downloaded": current_total,
+                                "total": total_bytes,
+                                "size": int(node["size"]),
+                                "progress": min(99, int(current_total / max(1, total_bytes) * 100)),
+                                "speed_bytes_per_sec": speed,
+                            })
+
+                    await downloader.download(
+                        file_info,
+                        destination,
+                        progress=on_progress,
+                        resume=True,
+                    )
+                    completed_bytes += expected_size
+        return {
+            "gid": str(item.get("gid") or ""),
+            "name": item.get("filename") or final_root.name,
+            "relative_path": item.get("relative_path") or final_root.name,
+            "local_path": str(final_root),
+            "url": item.get("masked_url") or self._mask_url(raw_url),
+            "source": "mega",
+            "status": "completed",
+            "progress": 100,
+            "downloaded": completed_bytes,
+            "total": total_bytes,
+            "size": total_bytes,
+            "speed_bytes_per_sec": 0,
+        }
+
+    async def _mega_metadata(self, raw_url: str) -> Dict[str, Any]:
+        parsed = urlparse(raw_url)
+        file_match = re.fullmatch(r"/file/([A-Za-z0-9_-]+)", parsed.path)
+        folder_match = re.fullmatch(r"/folder/([A-Za-z0-9_-]+)", parsed.path)
+        if not (file_match or folder_match) or not parsed.fragment:
+            raise HttpDownloadError("Mega 公开链接必须包含解密密钥")
+        if folder_match:
+            folder = await self._mega_folder_nodes(raw_url)
+            nodes = list(folder.get("nodes") or [])
+            root = next(
+                (node for node in nodes if node.get("handle") == folder.get("handle")),
+                None,
+            )
+            return {
+                "kind": "folder",
+                "filename": self._sanitize_filename(
+                    (root or {}).get("name") or f"mega-folder-{folder_match.group(1)}"
+                ),
+                "size_bytes": sum(
+                    int(node.get("size") or 0)
+                    for node in nodes
+                    if int(node.get("kind") or 0) == 0
+                ),
+            }
+        if not file_match:
+            raise HttpDownloadError("仅支持 Mega 公开文件或文件夹链接")
+        try:
+            key = base64.urlsafe_b64decode(parsed.fragment + "=" * (-len(parsed.fragment) % 4))
+            if len(key) != 32:
+                raise ValueError("密钥长度错误")
+            proxy = self._proxy_url("mega") or None
+            async with httpx.AsyncClient(proxy=proxy, timeout=30, trust_env=False) as client:
+                response = await client.post(
+                    "https://g.api.mega.co.nz/cs",
+                    params={"id": secrets.randbelow(2**31)},
+                    json=[{"a": "g", "p": file_match.group(1)}],
+                )
+                response.raise_for_status()
+                result = response.json()[0]
+            if not isinstance(result, dict):
+                raise ValueError(f"MEGA 接口错误 {result}")
+            attributes = str(result["at"])
+            encrypted = base64.urlsafe_b64decode(attributes + "=" * (-len(attributes) % 4))
+            aes_key = bytes(a ^ b for a, b in zip(key[:16], key[16:]))
+            decrypted = AES.new(aes_key, AES.MODE_CBC, bytes(16)).decrypt(encrypted).rstrip(b"\0")
+            if not decrypted.startswith(b"MEGA"):
+                raise ValueError("解密密钥不正确")
+            name = json.loads(decrypted[4:].decode("utf-8"))["n"]
+            return {"filename": self._sanitize_filename(name), "size_bytes": int(result["s"])}
+        except Exception as exc:
+            raise HttpDownloadError(f"Mega 文件信息解析失败：{self._sanitize_error(exc)}") from exc
+
+    def _mega_filename_from_url(self, raw_url: str) -> str:
+        parsed = urlparse(str(raw_url or "").strip())
+        match = re.search(r"/file/([^/#?]+)", parsed.path or "", re.IGNORECASE)
+        token = match.group(1) if match else ""
+        return self._sanitize_filename(f"mega-{token}.bin" if token else "mega-download.bin")
+
+    async def _download_mega_item(self, item: Dict[str, Any], task=None, progress_callback=None) -> Dict[str, Any]:
+        if not self._mega_enabled():
+            raise HttpDownloadError("Mega 下载未启用")
+        url = str(item.get("original_url") or item.get("url") or "").strip()
+        target_path = str(item.get("final_path") or "")
+        if not url or not target_path:
+            raise HttpDownloadError("Mega 下载项缺少链接或目标路径")
+        final_path = os.path.abspath(target_path)
+        is_folder = bool(item.get("is_directory") or item.get("kind") == "folder")
+        if is_folder:
+            return await self._download_mega_folder_item(
+                item,
+                task=task,
+                progress_callback=progress_callback,
+            )
+        if os.path.exists(final_path) and not (is_folder and os.path.isdir(final_path)):
+            raise HttpDownloadError("Mega 目标文件已存在，请选择重命名冲突策略")
+        target_dir = os.path.dirname(final_path)
+        os.makedirs(target_dir, exist_ok=True)
+        async def run(command: str, *args: str) -> str:
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *self._mega_command(command), *args,
+                    stdin=subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+                )
+                output, _ = await process.communicate()
+            except FileNotFoundError as exc:
+                raise HttpDownloadError(f"找不到 MEGAcmd：{self._mega_get_path()}") from exc
+            text = output.decode("utf-8", errors="replace")
+            if process.returncode:
+                raise HttpDownloadError(f"MEGAcmd {command} 失败：{self._sanitize_error(text.strip())}")
+            return text
+
+        async with _MEGA_TRANSFER_LOCK:
+            task_key = str(getattr(task, "id", "") or item.get("gid") or "standalone")
+            staging_root = os.path.join(target_dir, ".mega-staging", self._sanitize_filename(task_key))
+            staging_dir = os.path.join(staging_root, self._sanitize_filename(item.get("gid") or item.get("filename") or "item"))
+            os.makedirs(staging_dir, exist_ok=True)
+            tag = ""
+            finished = False
+            submitted = False
+            expected = int(item.get("size_bytes") or 0)
+            async def find_transfer():
+                listing = await run("transfers", "--show-completed", "--limit=10000", "--col-separator=|", "--path-display-size=4096")
+                for line in listing.splitlines()[1:]:
+                    columns = line.split("|")
+                    if len(columns) >= 6 and os.path.normcase(os.path.dirname(columns[3].strip())) == os.path.normcase(staging_dir):
+                        return columns
+                return None
+            try:
+                proxy = self._proxy_url("mega")
+                await run("proxy", proxy if proxy else "--none")
+                submitted = True
+                get_args = ["-q"]
+                if is_folder:
+                    get_args.insert(0, "-m")
+                submission = asyncio.create_task(run("get", *get_args, url, staging_dir))
+                try:
+                    await asyncio.shield(submission)
+                except asyncio.CancelledError:
+                    with contextlib.suppress(Exception):
+                        await submission
+                    raise
+                last_bytes, last_at = 0, time.monotonic()
+                paused = False
+                missing_since = time.monotonic()
+                while True:
+                    transfer = await find_transfer()
+                    if transfer is not None:
+                        tag = transfer[1].strip()
+                        state = transfer[5].strip().upper()
+                        percent_match = re.search(r"([\d.]+)%", transfer[4])
+                        percent = float(percent_match.group(1)) if percent_match else 0
+                        if state == "COMPLETED":
+                            finished = True
+                            break
+                        if state in {"FAILED", "CANCELLED"}:
+                            raise HttpDownloadError(f"Mega 传输失败：{state}")
+                    elif time.monotonic() - missing_since > 10:
+                        raise HttpDownloadError("MEGAcmd 未返回当前文件的传输记录")
+                    else:
+                        await asyncio.sleep(0.5)
+                        continue
+                    if task is not None and task.is_cancelled():
+                        raise asyncio.CancelledError()
+                    should_pause = task is not None and not task._pause_event.is_set()
+                    if should_pause != paused:
+                        await run("transfers", "-p" if should_pause else "-r", tag)
+                        paused = should_pause
+                    total = int(item.get("size_bytes") or 0)
+                    downloaded = int(total * percent / 100)
+                    now = time.monotonic()
+                    speed = int(max(0, downloaded - last_bytes) / max(now - last_at, 0.001))
+                    last_bytes, last_at = downloaded, now
+                    if progress_callback is not None:
+                        progress_callback({
+                            "gid": str(item.get("gid") or ""), "name": item.get("filename"),
+                            "relative_path": item.get("relative_path") or "", "local_path": final_path,
+                            "url": item.get("masked_url") or self._mask_url(url), "source": "mega",
+                            "status": "paused" if paused else "downloading", "downloaded": downloaded,
+                            "total": total, "size": total, "progress": min(99, int(percent)),
+                            "speed_bytes_per_sec": speed,
+                        })
+                    await asyncio.sleep(1)
+                if is_folder:
+                    candidates = [entry for entry in Path(staging_dir).iterdir() if entry.is_dir()]
+                    if len(candidates) != 1:
+                        raise HttpDownloadError("Mega 文件夹下载结果不是单个目录")
+                    if os.path.isdir(final_path):
+                        shutil.copytree(str(candidates[0]), final_path, dirs_exist_ok=True)
+                        shutil.rmtree(str(candidates[0]), ignore_errors=True)
+                    else:
+                        os.replace(str(candidates[0]), final_path)
+                else:
+                    candidates = [entry for entry in Path(staging_dir).iterdir() if entry.is_file()]
+                    if len(candidates) != 1:
+                        raise HttpDownloadError("Mega 下载结果不是单个文件")
+                    if expected != candidates[0].stat().st_size:
+                        raise HttpDownloadError("Mega 下载文件大小校验失败")
+                    try:
+                        os.link(str(candidates[0]), final_path)
+                    except FileExistsError as exc:
+                        raise HttpDownloadError("Mega 目标文件已存在，请选择重命名冲突策略") from exc
+                    os.unlink(str(candidates[0]))
+                finished = True
+            finally:
+                if submitted and not tag and not finished:
+                    for _ in range(20):
+                        with contextlib.suppress(Exception):
+                            transfer = await asyncio.shield(find_transfer())
+                            if transfer:
+                                tag = transfer[1].strip()
+                                break
+                        await asyncio.sleep(0.5)
+                if tag and not finished and task is not None and task.is_cancelled():
+                    with contextlib.suppress(Exception):
+                        await asyncio.shield(run("transfers", "-c", tag))
+                if finished:
+                    shutil.rmtree(staging_root, ignore_errors=True)
+        if is_folder and os.path.isdir(final_path):
+            downloaded = sum(path.stat().st_size for path in Path(final_path).rglob("*") if path.is_file())
+        else:
+            downloaded = os.path.getsize(final_path) if os.path.isfile(final_path) else 0
+        if expected > 0 and downloaded != expected:
+            raise HttpDownloadError(f"Mega 下载文件大小校验失败：实际 {downloaded} bytes，预期 {expected} bytes")
+        return {
+            "gid": str(item.get("gid") or ""),
+            "name": item.get("filename") or os.path.basename(final_path),
+            "relative_path": item.get("relative_path") or "",
+            "local_path": final_path,
+            "url": item.get("masked_url") or self._mask_url(url),
+            "source": "mega",
+            "status": "completed",
+            "progress": 100,
+            "downloaded": downloaded,
+            "total": expected or downloaded,
+            "size": expected or downloaded,
+            "speed_bytes_per_sec": 0,
+        }
 
     def _transferit_api_client(self):
         try:
@@ -3906,7 +4394,14 @@ class HttpDownloadService:
             return f"{int(size)} {units[index]}"
         return f"{size:.1f} {units[index]}"
 
-    async def _pikpak_download_link(self, client, file_id: str, *, allow_missing: bool = False, max_attempts: int = 8) -> Dict[str, Any]:
+    async def _pikpak_download_link(
+        self,
+        client,
+        file_id: str,
+        *,
+        allow_missing: bool = False,
+        max_attempts: int = _PIKPAK_DOWNLOAD_LINK_MAX_ATTEMPTS,
+    ) -> Dict[str, Any]:
         # captcha/init 对副账号偶发 400，单次失败极易丢分卷。下载阶段多次重试(失败则重新登录刷新匹配 token + 退避)，
         # 预览阶段(allow_missing)只试一次保持响应速度。
         attempts = 1 if allow_missing else max(1, max_attempts)
@@ -3945,6 +4440,14 @@ class HttpDownloadService:
                     or "not ready" in error_text
                     or "processing" in error_text
                 )
+                if transient_file_state:
+                    logger.info(
+                        "[PikPak] 转存文件尚未就绪，继续等待直链 file_id=%s attempt=%s/%s error=%s",
+                        file_id,
+                        attempt,
+                        attempts,
+                        self._sanitize_error(last_error),
+                    )
                 if (
                     not transient_file_state
                     and account
@@ -3954,9 +4457,9 @@ class HttpDownloadService:
                 ):
                     with contextlib.suppress(Exception):
                         await self._refresh_pikpak_login_with_password(client, account, stage="解析下载直链")
-                # 转存接口返回 RESTORE_START 后，文件详情通常需要数秒才能生成直链。
-                # 退避上限 8 秒，避免 20+ 分卷并发时把账号 API 打爆。
-                await asyncio.sleep(min(2.0 * attempt, 8.0))
+                # 转存接口返回 RESTORE_START 后，文件详情可能需要几分钟才能生成直链。
+                # 逐步退避并限制单次间隔，避免多分卷并发时把账号 API 打爆。
+                await asyncio.sleep(min(2.0 * attempt, _PIKPAK_DOWNLOAD_LINK_MAX_BACKOFF_SECONDS))
         if allow_missing:
             return {}
         if isinstance(last_error, HttpDownloadError):
@@ -4359,6 +4862,39 @@ class HttpDownloadService:
             except Exception as exc:
                 failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": self._sanitize_error(exc), "source": "transferit"})
 
+        mega_links = [url for url in urls if self._is_mega_url(url)]
+        for raw_url in mega_links:
+            if not self._mega_enabled():
+                failed.append({
+                    "ok": False,
+                    "url": raw_url,
+                    "masked_url": self._mask_url(raw_url),
+                    "reason": "Mega 下载未启用",
+                    "source": "mega",
+                })
+                continue
+            try:
+                mega_metadata = await self._mega_metadata(raw_url)
+            except Exception as exc:
+                failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": self._sanitize_error(exc), "source": "mega"})
+                continue
+            resolved.append(raw_url)
+            filename = mega_metadata["filename"]
+            source_items.append({
+                "source": "mega",
+                "share_url": self._mask_url(raw_url),
+                "original_url": raw_url,
+                "url": raw_url,
+                "masked_url": self._mask_url(raw_url),
+                "filename": filename,
+                "name": filename,
+                "size_bytes": mega_metadata["size_bytes"],
+                "kind": mega_metadata.get("kind", "file"),
+                "is_directory": mega_metadata.get("kind") == "folder",
+                "warning": "Mega 公开链接不能交给 aria2，开始下载时由 MEGAcmd mega-get 匿名获取并解密。",
+                "preview_only": True,
+            })
+
         pikpak_links = [url for url in urls if self._is_pikpak_url(url)]
         if pikpak_links:
             collector_account = self._select_pikpak_account()
@@ -4731,7 +5267,7 @@ class HttpDownloadService:
             if not isinstance(source_item, dict):
                 continue
             raw = str(source_item.get("original_url") or source_item.get("url") or "").strip()
-            if raw and not source_item.get("preview_only"):
+            if raw and (not source_item.get("preview_only") or source_item.get("source") == "mega"):
                 source_by_url.setdefault(raw, source_item)
         for raw_url in source.get("urls") or []:
             source_item = source_by_url.get(str(raw_url or "").strip())
@@ -4822,6 +5358,28 @@ class HttpDownloadService:
                         "size_bytes": int(source_item.get("size_bytes") or 0),
                         "content_id": source_item.get("content_id"),
                     }
+            elif isinstance(source_item, dict) and source_item.get("source") == "mega":
+                filename = self._sanitize_filename(source_item.get("filename") or source_item.get("name") or "mega-download")
+                subdir = "/".join([part for part in (target_subdir, source_item.get("relative_dir")) if str(part or "").strip()])
+                target = self._resolve_target(filename, subdir, conflict_policy)
+                item = {
+                    "ok": True,
+                    "url": str(source_item.get("url") or raw_url),
+                    "original_url": str(source_item.get("original_url") or raw_url),
+                    "masked_url": source_item.get("masked_url") or self._mask_url(str(source_item.get("url") or raw_url)),
+                    "host": "mega.nz",
+                    "source": "mega",
+                    "kind": source_item.get("kind", "file"),
+                    "is_directory": bool(source_item.get("is_directory")),
+                    "share_url": source_item.get("share_url"),
+                    "filename": target["filename"],
+                    "relative_path": target["relative_path"],
+                    "final_path": target["final_path"],
+                    "target_dir": target["target_dir"],
+                    "size_bytes": int(source_item.get("size_bytes") or 0),
+                    "resumable": True,
+                    "warning": "Mega 公开链接将在开始下载时由 MEGAcmd 匿名获取；中断后重试会复用任务 staging 目录。",
+                }
             else:
                 item = await self.preview_url(
                     preview_url,
@@ -4936,9 +5494,9 @@ class HttpDownloadService:
             ):
                 continue
             source_name = str(source_item.get("source") or "http")
-            if materialize_sources and source_name != "transferit":
+            if materialize_sources and source_name not in {"transferit", "mega"}:
                 continue
-            if not materialize_sources or source_name == "transferit":
+            if not materialize_sources or source_name in {"transferit", "mega"}:
                 filename = self._sanitize_filename(source_item.get("filename") or source_item.get("name") or f"{source_name}-file")
                 subdir = "/".join([part for part in (target_subdir, source_item.get("relative_dir")) if str(part or "").strip()])
                 try:
@@ -4948,7 +5506,7 @@ class HttpDownloadService:
                         "url": source_item.get("url") or source_item.get("share_url") or "",
                         "masked_url": source_item.get("share_url") or "",
                         "original_url": source_item.get("original_url") or source_item.get("url") or source_item.get("share_url") or "",
-                        "host": "transfer.it" if source_name == "transferit" else "mypikpak.com",
+                        "host": "transfer.it" if source_name == "transferit" else ("mega.nz" if source_name == "mega" else "mypikpak.com"),
                         "source": source_name,
                         "share_url": source_item.get("share_url"),
                         "file_id": source_item.get("file_id"),
@@ -4970,6 +5528,8 @@ class HttpDownloadService:
                         "warning": (
                             "Transfer.it 分享将在开始下载时用专用下载器拉取。"
                             if source_name == "transferit"
+                            else "Mega 公开链接将在开始下载时由 MEGAcmd 匿名获取并解密。"
+                            if source_name == "mega"
                             else "PikPak 分享将在开始下载时转存并解析直链。"
                         ),
                     })
@@ -6235,9 +6795,10 @@ class HttpDownloadService:
         source_modes = list(preview.get("source_modes") or [])
         google_drive_items = [item for item in items if str(item.get("source") or "") == "google_drive"]
         transferit_items = [item for item in items if str(item.get("source") or "") == "transferit"]
+        mega_items = [item for item in items if str(item.get("source") or "") == "mega"]
         aria2_items = [
             item for item in items
-            if str(item.get("source") or "") not in {"google_drive", "transferit"}
+            if str(item.get("source") or "") not in {"google_drive", "transferit", "mega"}
             and self._is_direct_download_item(item)
         ]
         gofile_retry_attempt = max(0, int(metadata.get("auto_retry_attempts") or 0))
@@ -6354,6 +6915,26 @@ class HttpDownloadService:
                 "share_id": item.get("share_id", ""),
                 "transferit_node_handle": item.get("transferit_node_handle", ""),
             })
+        for item in mega_items:
+            gid = f"mega:{item.get('filename') or item.get('url')}"
+            item["gid"] = gid
+            total_bytes += int(item.get("size_bytes") or 0)
+            download_files.append({
+                "gid": gid,
+                "name": item["filename"],
+                "relative_path": item["relative_path"],
+                "local_path": item["final_path"],
+                "url": item.get("masked_url") or self._mask_url(str(item.get("url") or "")),
+                "original_url": item.get("original_url") or item.get("url"),
+                "source": "mega",
+                "status": "pending",
+                "progress": 0,
+                "downloaded": 0,
+                "total": int(item.get("size_bytes") or 0),
+                "size": int(item.get("size_bytes") or 0),
+                "kind": item.get("kind", "file"),
+                "is_directory": bool(item.get("is_directory")),
+            })
 
         self._task_gids[task.id] = gids
         task.task_metadata.update({
@@ -6394,6 +6975,8 @@ class HttpDownloadService:
             submit_parts.append(f"{existing_aria2_count} 个已存在完整文件")
         if transferit_items:
             submit_parts.append(f"{len(transferit_items)} 个专用下载")
+        if mega_items:
+            submit_parts.append(f"{len(mega_items)} 个 Mega 下载")
         initial_bytes = sum(int(row.get("downloaded") or 0) for row in download_files)
         task.task_metadata["download_runtime"]["transferred_bytes"] = initial_bytes
         initial_progress = max(1, min(99, int(initial_bytes / max(1, total_bytes) * 100)))
@@ -6404,6 +6987,8 @@ class HttpDownloadService:
         google_failed_rows = []
         transfer_success_files = []
         transfer_failed_rows = []
+        mega_success_files = []
+        mega_failed_rows = []
 
         def merge_download_row(row: Dict[str, Any]) -> None:
             row_gid = str(row.get("gid") or "")
@@ -6555,6 +7140,47 @@ class HttpDownloadService:
                     merge_download_row(failed_row)
                 refresh_download_runtime()
 
+        if mega_items:
+            for index, item in enumerate(mega_items, start=1):
+                await task.wait_if_paused()
+                if task.is_cancelled():
+                    await self.cancel_task(task.id)
+                    raise asyncio.CancelledError()
+                task.current_step = f"下载 Mega {index}/{len(mega_items)}"
+                task.update_progress(max(task.progress, 3), task.current_step)
+                try:
+                    row = await self._download_mega_item(item, task=task, progress_callback=handle_transfer_progress)
+                    mega_success_files.append(row)
+                    merge_download_row(row)
+                except asyncio.CancelledError:
+                    await self.cancel_task(task.id)
+                    raise
+                except Exception as exc:
+                    partial_downloaded = 0
+                    partial_path = str(item.get("final_path") or "")
+                    if partial_path:
+                        with contextlib.suppress(OSError):
+                            partial_downloaded = os.path.getsize(partial_path)
+                    expected_size = int(item.get("size_bytes") or 0)
+                    failed_row = {
+                        "gid": str(item.get("gid") or f"mega:{item.get('filename') or item.get('url')}"),
+                        "name": item.get("filename") or "mega-download",
+                        "relative_path": item.get("relative_path") or "",
+                        "local_path": partial_path,
+                        "url": item.get("masked_url") or self._mask_url(str(item.get("url") or "")),
+                        "source": "mega",
+                        "status": "failed",
+                        "failure_reason": self._sanitize_error(exc),
+                        "progress": min(99, int(partial_downloaded / expected_size * 100)) if expected_size else 0,
+                        "downloaded": partial_downloaded,
+                        "total": expected_size,
+                        "size": expected_size,
+                        "speed_bytes_per_sec": 0,
+                    }
+                    mega_failed_rows.append(failed_row)
+                    merge_download_row(failed_row)
+                refresh_download_runtime()
+
         last_log_at = 0.0
         if gids:
             while True:
@@ -6576,14 +7202,17 @@ class HttpDownloadService:
                 google_failed = len(google_failed_rows)
                 transfer_done = len(transfer_success_files)
                 transfer_failed = len(transfer_failed_rows)
+                mega_done = len(mega_success_files)
+                mega_failed = len(mega_failed_rows)
                 runtime.update({
                     "total_files": len(download_files),
-                    "completed_files": int(runtime.get("completed_files") or 0) + google_done + transfer_done,
-                    "failed_files": int(runtime.get("failed_files") or 0) + google_failed + transfer_failed,
+                    "completed_files": int(runtime.get("completed_files") or 0) + google_done + transfer_done + mega_done,
+                    "failed_files": int(runtime.get("failed_files") or 0) + google_failed + transfer_failed + mega_failed,
                     "transferred_bytes": (
                         int(runtime.get("transferred_bytes") or 0)
                         + sum(int(row.get("downloaded") or 0) for row in google_success_files)
                         + sum(int(row.get("downloaded") or 0) for row in transfer_success_files)
+                        + sum(int(row.get("downloaded") or 0) for row in mega_success_files)
                     ),
                     "total_bytes": total_bytes,
                 })

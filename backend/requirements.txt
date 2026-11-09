@@ -15,6 +15,8 @@ requests>=2.31.0
 # httpx 当作原始字节，response.text 就是乱码，社团补全 / 关键字搜索全线挂掉。
 brotlicffi>=1.1.0
 httpx>=0.25.0
+pycryptodome>=3.20.0
+mega-public-client>=0.1.1
 socksio>=1.0.0
 litellm>=1.60.0
 pikpakapi==0.1.11

@@ -2005,6 +2005,8 @@ button:hover .page-head-btn-icon-slot:not(.animate-spin) {
 .task-toast-head { display: flex; align-items: flex-start; gap: 8px; cursor: grab; touch-action: none; user-select: none; }
 .is-dragging .task-toast-head, .task-toast.is-dragging .task-toast-head { cursor: grabbing; }
 .task-toast-icon { display: grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; background: var(--toast-track); color: var(--toast-accent); }
+.task-toast-icon.is-upload, .task-toast-mini-logo.is-upload { color: #168c5a; }
+.task-toast-icon.is-download, .task-toast-mini-logo.is-download { color: #2478f5; }
 .task-toast-icon.is-success { background: var(--toast-accent); color: #fff; }
 .task-toast-heading { flex: 1; min-width: 0; padding-top: 2px; }
 .task-toast-heading h3 { margin: 0; color: var(--toast-text); font-size: 12px; font-weight: 650; line-height: 1.5; letter-spacing: -.025em; }
@@ -2050,14 +2052,14 @@ button:hover .page-head-btn-icon-slot:not(.animate-spin) {
 .task-toast-progress-row { display: flex; align-items: center; gap: 8px; }
 .task-toast-progress-row .task-toast-progress { flex: 1; }
 .task-toast-progress-row strong { min-width: 30px; text-align: right; font-size: 10px; line-height: 12px; font-variant-numeric: tabular-nums; }
-.task-toast-footer { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
-.task-toast-info { flex: 1; min-width: 0; overflow: hidden; }
-.task-toast-metrics { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.task-toast-footer { display: block; margin-top: 5px; }
+.task-toast-info { min-width: 0; overflow: hidden; }
+.task-toast-metrics { flex-wrap: wrap; gap: 4px 10px; overflow: hidden; }
 .task-toast-metrics::-webkit-scrollbar { display: none; }
 .task-toast-metrics > span { flex-shrink: 0; white-space: nowrap; font-size: 10px; }
-.task-toast-actions { flex-wrap: nowrap; flex-shrink: 0; }
+.task-toast-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .task-toast-action { white-space: nowrap; font-size: 10px; }
-.task-toast-context { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--toast-muted); font-size: 10px; }
+.task-toast-context { display: -webkit-box; overflow: hidden; color: var(--toast-muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .floating-card.task-toast.is-collapsed { padding: 0 10px; border-radius: 10px; }
 .task-toast-mini { display: flex; align-items: center; gap: 8px; height: 24px; cursor: grab; touch-action: none; }
 .is-dragging .task-toast-mini { cursor: grabbing; }

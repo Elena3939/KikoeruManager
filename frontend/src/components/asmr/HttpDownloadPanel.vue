@@ -927,6 +927,7 @@ async function preview(options = {}) {
     if (isBaidu.value) {
       const result = await baiduNetdiskApi.preview({
         urls,
+        forceRefresh,
         targetSubdir: targetSubdir.value,
         outputFolderName: outputFolderName.value,
         conflictPolicy: conflictPolicy.value,
