@@ -521,6 +521,8 @@ app.include_router(browser_upload_router)
 app.include_router(browser_verification_router)
 from .file_move_routes import router as file_move_router
 app.include_router(file_move_router)
+from .link_sheet_routes import router as link_sheet_router
+app.include_router(link_sheet_router)
 
 # ========== 工具函数 ==========
 def _mask_url_credentials(value: str) -> str:
@@ -1694,6 +1696,16 @@ def get_activity_log_detail(
     if parent is None:
         raise HTTPException(status_code=404, detail="未找到对应操作记录")
 
+    if parent.category == "circle_completion" and parent.action == "index_completed":
+        # 每个社团的完成记录已包含完整快照；批次其它社团不是它的子项。
+        # 避免按任务/批次拉取最多数百条大快照，再进行无关聚合。
+        item = parent.to_dict()
+        from ..core.resource_source_service import get_resource_source_service
+        observation = get_resource_source_service().observe_index_sources(db, item.get('detail') or {})
+        if observation:
+            item['detail'] = {**item['detail'], 'source_probe_observation': observation}
+        return {"row": project_related_events(item)}
+
     if parent.category == "pipeline_delete" and parent.action == "batch_api_delete":
         from ..core.activity_delete_history import delete_tree_sections
 
@@ -2791,11 +2803,15 @@ async def startup_event():
     asyncio.create_task(_periodic_library_index_maintenance())
     global _EVENT_LOOP_WATCHDOG_PHASE
     _EVENT_LOOP_WATCHDOG_PHASE = "runtime"
+    from ..core.link_sheet_service import get_link_sheet_service
+    await get_link_sheet_service().start()
 
 # 关闭事件
 @app.on_event("shutdown")
 async def shutdown_event():
     """应用关闭时执行"""
+    from ..core.link_sheet_service import get_link_sheet_service
+    await get_link_sheet_service().stop()
     from ..core.input_scan_service import get_input_scan_service
     await get_input_scan_service().stop()
     from ..core.resource_source_service import get_resource_source_service
@@ -3406,12 +3422,13 @@ async def get_task_center_list(
     mode: str = "detail",
     offset: int = 0,
     limit: int = 200,
+    sort: str = "updated_desc",
 ):
     """获取任务中心统一任务列表。"""
     from ..core.task_center_service import get_task_center_service
 
     service = get_task_center_service()
-    return await service.list_items(domain=domain, subtype=subtype, status=status, search=search, mode=mode, offset=offset, limit=limit)
+    return await service.list_items(domain=domain, subtype=subtype, status=status, search=search, mode=mode, offset=offset, limit=limit, sort=sort)
 
 
 @app.get("/api/task-center/item", response_model=Optional[TaskCenterItemResponse])
@@ -6982,6 +6999,7 @@ async def _retry_extract_failed_conflict(
             existing_task.task_metadata["retry_from_conflicts"] = True
             existing_task.task_metadata["conflict_resolution_conflict_id"] = conflict.id
             existing_task.task_metadata["conflict_resolution_action"] = "RETRY"
+            existing_task.task_metadata["retry_failure_stage"] = failure_stage
             if conflict.conflict_type == "EXTRACT_FAILED":
                 existing_task.task_metadata["skip_retry_precheck"] = True
                 existing_task.task_metadata["retry_linked_subtitle_import"] = bool(conflict_metadata.get("retry_linked_subtitle_import"))
@@ -7076,6 +7094,7 @@ async def _retry_extract_failed_conflict(
         task.task_metadata["retry_conflict_source_path"] = source_path
         task.task_metadata["retry_conflict_type"] = conflict.conflict_type
         task.task_metadata["retry_from_conflicts"] = True
+        task.task_metadata["retry_failure_stage"] = failure_stage
         if conflict.conflict_type == "EXTRACT_FAILED":
             task.task_metadata["skip_retry_precheck"] = True
             task.task_metadata["retry_linked_subtitle_import"] = bool(conflict_metadata.get("retry_linked_subtitle_import"))
@@ -11507,6 +11526,7 @@ async def batch_rename_library_browser_items(request: Request):
 
         if not skip_activity_log:
             for item in results:
+                item["library_id"] = str(library_id or "") or None
                 await asyncio.to_thread(
                     log_api_rename_action,
                     action="batch_rename_item",
@@ -12644,7 +12664,11 @@ def _build_library_text_preview_response(
     media_type: str,
     headers: dict[str, str],
     encoding: Optional[str] = None,
+    raw: bool = False,
 ) -> Response:
+    # 前端编码检测必须读取原始字节，不能对已经转成 UTF-8 的结果再次猜编码。
+    if raw:
+        return Response(content=raw_bytes, media_type="application/octet-stream", headers=dict(headers))
     requested_encoding = _normalize_library_preview_encoding(encoding)
     if requested_encoding:
         text_value = raw_bytes.decode(requested_encoding, errors="replace")
@@ -12716,7 +12740,7 @@ def _prepare_local_library_preview(
 
 
 @app.get("/api/library/browser/preview")
-async def preview_library_browser_file(library_id: str, path: str, encoding: Optional[str] = None):
+async def preview_library_browser_file(library_id: str, path: str, encoding: Optional[str] = None, raw: bool = False):
     """在浏览器内预览库存里的安全媒体 / 文本文件。"""
     try:
         if not library_id:
@@ -12747,7 +12771,7 @@ async def preview_library_browser_file(library_id: str, path: str, encoding: Opt
             }
             if _is_library_text_preview_type(media_type):
                 raw_bytes = await _collect_library_preview_stream_bytes(client.stream_download(target_path))
-                return _build_library_text_preview_response(raw_bytes, media_type, headers, encoding=encoding)
+                return _build_library_text_preview_response(raw_bytes, media_type, headers, encoding=encoding, raw=raw)
             return StreamingResponse(
                 client.stream_download(target_path),
                 media_type=media_type,
@@ -12765,7 +12789,7 @@ async def preview_library_browser_file(library_id: str, path: str, encoding: Opt
         headers = dict(local_preview["headers"])
         text_bytes = local_preview.get("text_bytes")
         if text_bytes is not None:
-            return _build_library_text_preview_response(text_bytes, media_type, headers, encoding=encoding)
+            return _build_library_text_preview_response(text_bytes, media_type, headers, encoding=encoding, raw=raw)
         return FileResponse(str(local_preview["target_path"]), media_type=media_type, headers=headers)
     except HTTPException:
         raise
@@ -14215,12 +14239,18 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
             # 保存结果（可选：保存到文件或数据库）
             logger.info(f"批量 API重命名完成：batch_id={batch_id}, success={sum(1 for r in results if r['success'])}/{len(results)}")
             try:
+                audit_results = []
+                for item in results:
+                    item_library = _plan_library(str(item.get("path") or ""))
+                    audit_results.append({
+                        **item, "library_id": item_library.id if item_library is not None else None,
+                    })
                 log_batch_api_rename_result(
                     batch_id=batch_id,
                     total_count=len(paths),
                     success_count=sum(1 for r in results if r.get('success')),
                     failed_count=sum(1 for r in results if not r.get('success')),
-                    results=results,
+                    results=audit_results,
                     source_path=str(paths[0] or "").strip() if paths else "",
                 )
             except Exception:
@@ -19989,6 +20019,16 @@ async def asmr_sync_enhanced_plan(request: ASMRSyncEnhancedPlanRequest):
         "subtitle_languages": request.subtitle_languages,
         "include_existing": request.include_existing,
     }
+    sheet_plans = None
+    if request.include_resource_sources:
+        from ..core.link_sheet_service import get_link_sheet_service
+        normalized_codes = [
+            get_asmr_resource_service().normalize_rjcode(raw)
+            for raw in request.rjcodes
+        ]
+        normalized_codes = list(dict.fromkeys(code for code in normalized_codes if code))
+        # 一次读取本次输入涉及的 Excel 修订，避免每个 RJ 单独查当前指针。
+        sheet_plans = await asyncio.to_thread(get_link_sheet_service().plans, normalized_codes)
 
     for raw_rjcode in request.rjcodes:
         normalized_rjcode = service.normalize_rjcode(raw_rjcode)
@@ -20005,7 +20045,8 @@ async def asmr_sync_enhanced_plan(request: ASMRSyncEnhancedPlanRequest):
             if request.include_resource_sources:
                 from ..core.resource_source_service import get_resource_source_service
                 plan = await get_resource_source_service().combine_plan(
-                    normalized_rjcode, asmr_builder, refresh=request.refresh)
+                    normalized_rjcode, asmr_builder, refresh=request.refresh,
+                    sheet_plans=sheet_plans)
             else:
                 plan = await asmr_builder()
             plans.append(plan)
@@ -20044,7 +20085,7 @@ async def asmr_sync_enhanced_start(request: ASMRSyncEnhancedStartRequest):
     service = get_asmr_resource_service()
     created_tasks = []
     for index, item in enumerate(request.items):
-        if item.get("source_provider") == "imoutoheaven":
+        if item.get("source_provider") in {"imoutoheaven", "link_sheet"}:
             from ..core.resource_source_service import get_resource_source_service
             try:
                 created_tasks.extend(await get_resource_source_service().submit(
@@ -21215,7 +21256,11 @@ async def circle_completion_cover(filename: str):
         # 前端会显示占位并可稍后重试，避免每张图占用 12 秒事件循环预算。
         image_cache_service.schedule_ensure_for_filename(filename)
     if not cached:
-        raise HTTPException(status_code=404, detail="封面未缓存")
+        raise HTTPException(
+            status_code=404,
+            detail="封面未缓存",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
     return FileResponse(
         str(cache_path),
         media_type="image/jpeg",
@@ -21556,7 +21601,7 @@ async def circle_completion_download_start(request: CircleCompletionDownloadStar
 
     for index, item in enumerate(request.items):
         provider = str(item.get('source_provider') or 'asmr.one')
-        if provider == 'imoutoheaven':
+        if provider in {'imoutoheaven', 'link_sheet'}:
             from ..core.resource_source_service import get_resource_source_service
             try:
                 created_tasks.extend(await get_resource_source_service().submit(item, 'circle-completion', {
@@ -21854,7 +21899,7 @@ async def asmr_sync_status(task_ids: str = "", compact: bool = False):
 
         # 过滤出 ASMR 同步任务
         asmr_tasks = [t for t in all_tasks if t.type == TaskType.ASMR_SYNC_DOWNLOAD or (
-            t.type == TaskType.HTTP_DOWNLOAD and t.task_metadata.get('resource_source') == 'imoutoheaven')]
+            t.type == TaskType.HTTP_DOWNLOAD and t.task_metadata.get('resource_source') in {'imoutoheaven', 'link_sheet'})]
         if requested_ids:
             task_map = {str(task.id): task for task in asmr_tasks}
             asmr_tasks = [task_map[task_id] for task_id in requested_ids if task_id in task_map]
@@ -22306,6 +22351,7 @@ async def delete_notification_template(template_id: str):
 class TemplatePreviewRequest(BaseModel):
     template_id: Optional[str] = None
     payload: Optional[dict] = None
+    template: Optional[dict] = None
 
 
 @app.post("/api/notifications/templates/preview")
@@ -22319,7 +22365,7 @@ async def preview_notification_template(body: TemplatePreviewRequest):
         'summary': '解压入库任务完成',
         'rjcode': 'RJ123456',
     }
-    return preview_template(body.template_id, sample_payload)
+    return preview_template(body.template_id, sample_payload, body.template)
 
 
 # ---- Block 编辑器 API ----

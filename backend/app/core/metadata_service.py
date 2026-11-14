@@ -1155,22 +1155,13 @@ class MetadataService:
     
     async def _fetch_translated_title(self, rjcode: str, lang: str, validate_chinese: bool = True) -> Optional[str]:
         """获取指定语言的翻译标题。"""
-        await asyncio.sleep(self.config.metadata.sleep_interval)
-        
-        url = f"https://www.dlsite.com/maniax/api/=/product.json?workno={rjcode}&locale={lang}"
-        logger.info(f"[{rjcode}] 调用翻译标题 API: {url}")
-        
         try:
-            response = await asyncio.to_thread(
-                self.session.get,
-                url,
-                timeout=(self.config.metadata.connect_timeout, self.config.metadata.read_timeout),
-            )
-            await asyncio.to_thread(response.raise_for_status)
-
-            data = await asyncio.to_thread(response.json)
-            if data and len(data) > 0:
-                title = data[0].get('work_name')
+            # 与关联链及元数据共用连接、限流、并发去重和本次索引快照。
+            # 只取同一 locale 的原始 product.json，不增加页面或特典探测。
+            service = get_dlsite_service()
+            data = await service._fetch_product_payload(rjcode, locale=lang)
+            if data:
+                title = data.get('work_name')
                 if title:
                     logger.info(f"[{rjcode}] API 返回标题: {title}")
                     if validate_chinese and self._contains_japanese_kana(title):

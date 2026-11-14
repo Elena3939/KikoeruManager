@@ -12,7 +12,7 @@
             <div class="min-w-0 flex-1">
               <h1 class="vrd-title text-2xl font-bold tracking-tight">手动重命名分卷</h1>
               <p class="vrd-subtitle text-sm m-0 mt-1.5">
-                系统识别到伪装分卷，共 {{ rows.length }} 个文件。逐行确认目标名后提交，将原子重命名并自动重试解压。
+                系统列出当前目录识别到的全部分卷，共 {{ rows.length }} 个文件。逐行确认目标名后提交，将原子重命名并自动重试解压。
               </p>
             </div>
             <button

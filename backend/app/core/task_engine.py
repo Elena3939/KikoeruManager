@@ -199,6 +199,9 @@ class Task:
             value = metadata.get(key)
             if isinstance(value, dict):
                 runtime.update(value)
+        if task_type == "asmr_sync_download" and metadata.get("download_runtime"):
+            # 下载和入库同时进行时，入库只覆盖了部分文件，不能覆盖整批下载字节。
+            runtime = dict(metadata["download_runtime"])
         phase = str(runtime.get("phase") or runtime.get("stage") or phase)
         retry_count = runtime.get("retry_count", metadata.get("retry_count", 0))
         snapshot = (status, progress, phase, retry_count)
@@ -658,7 +661,8 @@ class TaskEngine:
         self._input_metadata_slots: set[str] = set()
         self._input_metadata_window: dict[str, Task] = {}
         self._last_lane_admission_preflight = False
-        self._processing_rjcodes: set[str] = set()  # 正在处理的RJ号集合，防止并发重复处理
+        self._processing_rjcodes: dict[str, str] = {}  # RJ -> 实际持有处理权的任务 ID
+        self._rjcode_changed = asyncio.Event()
         self._shutdown = False
         self._worker_task: Optional[asyncio.Task] = None
         self._progress_callbacks: list[Callable] = []
@@ -979,50 +983,89 @@ class TaskEngine:
         )
         return precheck_task
 
-    def is_rjcode_processing(self, rjcode: str) -> bool:
-        """检查RJ号是否正在被处理"""
-        return rjcode in self._processing_rjcodes
-    
-    def mark_rjcode_processing(self, rjcode: str):
-        """标记RJ号正在处理"""
-        self._processing_rjcodes.add(rjcode)
-        logger.info(f"标记RJ号正在处理: {rjcode}")
-    
-    def unmark_rjcode_processing(self, rjcode: str):
-        """取消标记RJ号，同步清理该RJ号因并发等待创建的临时冲突记录"""
-        if rjcode in self._processing_rjcodes:
-            self._processing_rjcodes.discard(rjcode)
-            logger.info(f"取消标记RJ号: {rjcode}")
-        # 无论是否在集合中，都尝试清理该RJ号的"正在处理中"临时冲突（兼容重复调用）
+    def is_rjcode_processing(self, rjcode: str, task_id: str = "") -> bool:
+        """检查是否由别的任务持有；同一任务重复预检可以重入。"""
+        owner = self._processing_rjcodes.get(rjcode)
+        return owner is not None and owner != task_id
+
+    def mark_rjcode_processing(self, rjcode: str, task_id: str) -> bool:
+        """事件循环内原子取得处理权，不能覆盖其他任务。"""
+        if self.is_rjcode_processing(rjcode, task_id):
+            return False
+        if self._processing_rjcodes.get(rjcode) != task_id:
+            self._processing_rjcodes[rjcode] = task_id
+            logger.info("取得RJ处理权: rj=%s owner=%s", rjcode, task_id)
+        return True
+
+    def _notify_rjcode_changed(self):
+        self._rjcode_changed.set()
+        self._rjcode_changed = asyncio.Event()
+
+    def unmark_rjcode_processing(self, rjcode: str, task_id: str) -> bool:
+        """只有持有者能释放，不改写或删除历史问题记录。"""
+        if self._processing_rjcodes.get(rjcode) != task_id:
+            return False
+        del self._processing_rjcodes[rjcode]
+        self._notify_rjcode_changed()
+        logger.info("释放RJ处理权: rj=%s owner=%s", rjcode, task_id)
+        return True
+
+    def _release_task_rjcodes(self, task_id: str):
+        for code, owner in list(self._processing_rjcodes.items()):
+            if owner == task_id:
+                self.unmark_rjcode_processing(code, task_id)
+
+    def _transfer_rjcode_processing(self, rjcode: str, parent_id: str, child_id: str) -> bool:
+        """派发前把父任务的处理权原子交给对应子任务，不放开竞争窗口。"""
+        if self._processing_rjcodes.get(rjcode) != parent_id:
+            return False
+        self._processing_rjcodes[rjcode] = child_id
+        self._notify_rjcode_changed()
+        logger.info("交接RJ处理权: rj=%s parent=%s child=%s", rjcode, parent_id, child_id)
+        return True
+
+    async def acquire_rjcode_processing(self, rjcode: str, task: Task):
+        """真实竞争只等待；让出业务名额，取得处理权和名额后从当前预检继续。"""
+        if task.is_cancelled():
+            raise asyncio.CancelledError
+        if self.mark_rjcode_processing(rjcode, task.id):
+            task.task_metadata.pop("rjcode_wait", None)
+            return
+        previous_step = task.current_step
+        had_slot = task.id in self.processing
+        self.processing.discard(task.id)
+        # 身份重识别后等待另一个 RJ 时，旧身份不能形成相互等待。
+        self._release_task_rjcodes(task.id)
+        task.task_metadata["rjcode_wait"] = {
+            "rjcode": rjcode, "owner_task_id": self._processing_rjcodes.get(rjcode),
+        }
+        task.status = TaskStatus.PENDING
+        task.current_step = "等待同 RJ 任务完成"
         try:
-            from ..models.database import ConflictWork, Task as DatabaseTask, get_db
-            db = next(get_db())
-            try:
-                candidates = (
-                    db.query(ConflictWork)
-                    .filter(
-                        ConflictWork.rjcode == rjcode,
-                        ConflictWork.existing_path == "正在处理中",
-                        ConflictWork.status.in_(["PENDING", "PROCESSING"]),
-                    )
-                    .all()
-                )
-                deleted_count = 0
-                for conflict in candidates:
-                    task = db.query(DatabaseTask).filter(DatabaseTask.id == conflict.task_id).first()
-                    if (
-                        task and str(task.status or "").lower() == TaskStatus.WAITING_MANUAL.value
-                    ) or os.path.exists(str(conflict.new_path or "")):
-                        continue
-                    db.delete(conflict)
-                    deleted_count += 1
-                if deleted_count:
-                    db.commit()
-                    logger.info(f"清理 {rjcode} 的临时'正在处理中'冲突记录 {deleted_count} 条")
-            finally:
-                db.close()
-        except Exception as e:
-            logger.warning(f"清理'正在处理中'冲突记录时出错: {e}")
+            await self._notify_progress(task)
+            while True:
+                await task.wait_if_paused()
+                if task.is_cancelled():
+                    raise asyncio.CancelledError
+                changed = self._rjcode_changed
+                if not self.is_rjcode_processing(rjcode, task.id):
+                    if not had_slot or self._task_lane_has_capacity(task):
+                        # 此处不 await：处理权与业务名额在同一事件循环中一起取得。
+                        self.mark_rjcode_processing(rjcode, task.id)
+                        if had_slot:
+                            self.processing.add(task.id)
+                        task.status = TaskStatus.PROCESSING
+                        task.current_step = previous_step
+                        break
+                    await asyncio.sleep(0.05)
+                    continue
+                try:
+                    await asyncio.wait_for(changed.wait(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    pass
+        finally:
+            task.task_metadata.pop("rjcode_wait", None)
+        await self._notify_progress(task)
 
     def _release_non_running_slots(self):
         """释放等待人工/已结束任务误占的并发槽。"""
@@ -1038,8 +1081,8 @@ class TaskEngine:
             task = self.tasks.get(task_id)
             if task is None or task.status in releasable_statuses:
                 self.processing.discard(task_id)
-                if task and task.rjcode:
-                    self.unmark_rjcode_processing(task.rjcode)
+                if task_id not in self._running_task_ids:
+                    self._release_task_rjcodes(task_id)
                 logger.info(
                     "释放非运行任务占用的并发槽: task_id=%s status=%s",
                     task_id,
@@ -1114,6 +1157,9 @@ class TaskEngine:
             if task._input_persisted_status != task.status or task._input_lifecycle_pending:
                 await asyncio.to_thread(self.persist_task_snapshot, task)
         elif (task.task_metadata or {}).get("retry_from_conflicts"):
+            if task._input_persisted_status != task.status:
+                await asyncio.to_thread(self.persist_task_snapshot, task)
+        elif (task.task_metadata or {}).get("resource_source") == "link_sheet":
             if task._input_persisted_status != task.status:
                 await asyncio.to_thread(self.persist_task_snapshot, task)
         if (task.task_metadata or {}).get("conflict_resolution_conflict_id"):
@@ -1478,6 +1524,8 @@ class TaskEngine:
         from ..models.database import SessionLocal
 
         self._ensure_task_context(task)
+        if self._should_persist_terminal_detail(task):
+            self._prepare_terminal_detail_metadata(task)
         if (task.task_metadata or {}).get("scan_id"):
             from .input_scan_repository import InputScanRepository
             try:
@@ -1511,6 +1559,38 @@ class TaskEngine:
         finally:
             db.close()
         self.persist_task_center_item_snapshot(task)
+
+    @staticmethod
+    def _should_persist_terminal_detail(task: Task) -> bool:
+        return (
+            task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+            and task.type in {
+                TaskType.AUTO_PROCESS,
+                TaskType.EXTRACT,
+                TaskType.PROCESS_EXISTING_FOLDER,
+                TaskType.RJ_SUBTITLE_EXTRACT,
+            }
+        )
+
+    def _prepare_terminal_detail_metadata(self, task: Task) -> None:
+        """终态只做一次受控文件树快照，详情回读无需再次扫描磁盘。"""
+        if (task.task_metadata or {}).get("terminal_file_tree_snapshot_status") == task.status.value:
+            return
+        try:
+            from .task_center_service import get_task_center_service
+
+            service = get_task_center_service()
+            metadata = service._ensure_file_tree_metadata(
+                dict(task.task_metadata or {}),
+                str(task.output_path or ""),
+                str(task.source_path or ""),
+                service._execution_domain(task, service._infer_domain(task)),
+                task.status.value,
+            )
+            metadata["terminal_file_tree_snapshot_status"] = task.status.value
+            task.task_metadata = metadata
+        except Exception:
+            logger.warning("[任务持久化] 终态文件树快照生成失败: task_id=%s", task.id, exc_info=True)
 
     def persist_task_center_item_snapshot(self, task: Task) -> None:
         """旁路写入任务中心物化快照，供后续 SQL 分页读路径切换前对照。"""
@@ -1785,6 +1865,57 @@ class TaskEngine:
         finally:
             db.close()
 
+    def load_persisted_link_sheet_tasks(self) -> int:
+        """恢复链接库任务，保证重启后继续使用提交时固定的清单。"""
+        from ..models.database import SessionLocal, Task as TaskRecord
+
+        restored = []
+        with SessionLocal() as db:
+            rows = db.query(TaskRecord).filter(
+                TaskRecord.type == TaskType.HTTP_DOWNLOAD.value,
+                TaskRecord.task_metadata["resource_source"].as_string() == "link_sheet",
+                TaskRecord.status.in_([
+                    TaskStatus.PENDING.value, TaskStatus.PROCESSING.value,
+                    TaskStatus.PAUSED.value, TaskStatus.FAILED.value,
+                ]),
+            ).all()
+            for row in rows:
+                if row.id in self.tasks:
+                    continue
+                metadata = dict(row.task_metadata or {})
+                status = self._coerce_task_status(row.status)
+                if status == TaskStatus.PROCESSING:
+                    status = TaskStatus.PENDING
+                    row.status = status.value
+                    row.current_step = "上次进程中断，等待恢复下载"
+                    row.started_at = None
+                if status == TaskStatus.PAUSED:
+                    metadata["pause_origin_status"] = TaskStatus.PENDING.value
+                    row.task_metadata = metadata
+                task = Task(TaskType.HTTP_DOWNLOAD, row.source_path or "", row.output_path,
+                            metadata=metadata, task_id=row.id, status=status,
+                            rjcode=metadata.get("rjcode") or "")
+                with task._set_state_silent():
+                    task.created_at = row.created_at or task.created_at
+                    task.started_at = row.started_at
+                    task.completed_at = row.completed_at
+                    task.progress = int(row.progress or 0)
+                    task.current_step = row.current_step or ""
+                    task.error_message = row.error_message
+                    if status == TaskStatus.PAUSED:
+                        task._pause_event.clear()
+                self._ensure_task_context(task)
+                self.tasks[task.id] = task
+                task._input_persisted_status = status
+                if status == TaskStatus.PENDING:
+                    self.queue.put_nowait(task)
+                    self._queued_task_ids.add(task.id)
+                restored.append(task)
+            db.commit()
+        for task in restored:
+            self.persist_task_center_item_snapshot(task)
+        return len(restored)
+
     def recover_stale_processing_tasks(self) -> int:
         """把上次进程中断留下的 processing 快照恢复为等待重试。
 
@@ -1974,6 +2105,25 @@ class TaskEngine:
         if action == "RETRY":
             return True
         return False
+
+    @staticmethod
+    def _should_force_refresh_retry_metadata(task: Task) -> bool:
+        """仅在元数据本身失败时刷新；解压失败重试优先复用已验证缓存。"""
+        metadata = dict(task.task_metadata or {})
+        if not metadata.get("retry_from_conflicts"):
+            return False
+        failure_stage = str(
+            metadata.get("retry_failure_stage")
+            or (
+                "extract"
+                if metadata.get("retry_conflict_type") == "EXTRACT_FAILED"
+                else ""
+            )
+        ).strip().lower()
+        if not failure_stage:
+            # 兼容旧任务：无法确认失败阶段时，PROCESS_FAILED 继续沿用旧刷新语义。
+            return metadata.get("retry_conflict_type") == "PROCESS_FAILED"
+        return failure_stage in {"metadata", "linkage"}
 
     def _infer_failure_stage(self, task: Task, reason: str) -> str:
         metadata = dict(task.task_metadata or {})
@@ -2360,7 +2510,11 @@ class TaskEngine:
         if not conflict_id or not action:
             return
 
-        from ..models.database import ConflictWork, ProcessedArchive, get_db
+        from ..models.database import (
+            ConflictWork,
+            ProcessedArchive,
+            get_db,
+        )
 
         db = next(get_db())
         try:
@@ -2476,6 +2630,12 @@ class TaskEngine:
                 return
 
             if task.status == TaskStatus.COMPLETED:
+                if action == "KEEP_NEW":
+                    self._close_superseded_scan_task(
+                        db,
+                        old_task_id=str(metadata.get("parent_conflict_task_id") or "").strip(),
+                        replacement_task=task,
+                    )
                 conflict.status = action
                 next_metadata["resolution_task_state"] = "completed"
                 next_metadata["resolution_progress"] = 100
@@ -2538,6 +2698,11 @@ class TaskEngine:
 
             conflict.new_metadata = next_metadata
             db.commit()
+            if task.status == TaskStatus.COMPLETED and action == "KEEP_NEW":
+                old_task_id = str(metadata.get("parent_conflict_task_id") or "").strip()
+                old_task = self.get_task(old_task_id) if old_task_id else None
+                if old_task and old_task.id != task.id:
+                    self.persist_task_center_item_snapshot(old_task)
             if task.status == TaskStatus.COMPLETED and archive_record:
                 try:
                     from .task_center_event_service import broadcast_processed_archive_changed
@@ -2549,6 +2714,74 @@ class TaskEngine:
             db.rollback()
         finally:
             db.close()
+
+    def _close_superseded_scan_task(self, db, *, old_task_id: str, replacement_task: Task) -> None:
+        """KEEP_NEW 成功后收口旧扫描任务及其源占用，避免旧 waiting_manual 卡住输入扫描。"""
+        if not old_task_id or old_task_id == replacement_task.id:
+            return
+
+        from ..models.database import InputScanCandidate, InputSourceClaim, Task as TaskRecord, TaskCenterItem
+
+        old_task = self.get_task(old_task_id)
+        if old_task is not None:
+            self._mark_task_superseded(old_task, replacement_task.id, replacement_task.output_path)
+            self.write_task_snapshot(db, old_task)
+            superseded_metadata = dict(old_task.task_metadata or {})
+            superseded_step = old_task.current_step
+            superseded_at = old_task.completed_at or datetime.now()
+        else:
+            record = db.get(TaskRecord, old_task_id)
+            if record is None:
+                return
+            superseded_metadata = dict(record.task_metadata or {})
+            superseded_metadata.update({
+                "superseded_by_task_id": replacement_task.id,
+                "superseded_at": datetime.now().isoformat(),
+                "superseded_reason": "later_completed",
+                "hidden_in_task_lists": True,
+            })
+            if replacement_task.output_path:
+                superseded_metadata["superseded_output_path"] = replacement_task.output_path
+            record.status = TaskStatus.COMPLETED.value
+            record.error_message = None
+            record.current_step = f"已由后续成功任务覆盖: {replacement_task.id}"
+            record.completed_at = record.completed_at or datetime.now()
+            record.task_metadata = superseded_metadata
+            superseded_step = record.current_step
+            superseded_at = record.completed_at
+
+        db.query(InputSourceClaim).filter(
+            InputSourceClaim.owner_type == "task",
+            InputSourceClaim.owner_id == old_task_id,
+        ).delete(synchronize_session=False)
+        candidate_update = {InputScanCandidate.reason: f"task:{replacement_task.id}"}
+        if db.get(TaskRecord, replacement_task.id) is not None:
+            candidate_update[InputScanCandidate.task_id] = replacement_task.id
+        db.query(InputScanCandidate).filter(
+            InputScanCandidate.reason == f"task:{old_task_id}",
+            InputScanCandidate.state == "skipped",
+        ).update(candidate_update, synchronize_session=False)
+
+        item = db.query(TaskCenterItem).filter(TaskCenterItem.engine_task_id == old_task_id).first()
+        if item is not None:
+            from .task_center_list_projection import build_list_projection
+
+            payload = dict(item.payload_json or {})
+            payload.update({
+                "status": TaskStatus.COMPLETED.value,
+                "status_label": "已完成",
+                "current_step": superseded_step,
+                "completed_at": superseded_at.isoformat() if superseded_at else None,
+            })
+            details = dict(payload.get("details") or {})
+            details_metadata = dict(details.get("metadata") or {})
+            details_metadata.update(superseded_metadata)
+            details["metadata"] = details_metadata
+            payload["details"] = details
+            item.status = TaskStatus.COMPLETED.value
+            item.payload_json = payload
+            item.list_projection = build_list_projection(payload)
+            item.updated_at = datetime.now()
 
     def _is_hidden_task(self, task: Task) -> bool:
         metadata = dict(task.task_metadata or {})
@@ -3313,7 +3546,29 @@ class TaskEngine:
                         logger.error(f"[{rjcode}] 字幕补配预检已确认解压失败，任务终止: {fatal_extract_error}")
                         await self._abort_precheck(precheck_task)
                         return rjcode, False
-                    if preview.get("kikoeru_target_is_empty_shell"):
+                    if (
+                        preview.get("kikoeru_target_is_empty_shell")
+                        and preview.get("candidates")
+                        and preview.get("inventory_empty_shell_status") != "empty"
+                    ):
+                        # 解压前按已有作品处理，禁止把带压缩包的目录送进空壳删除流程。
+                        candidate = preview["candidates"][0]
+                        classifier._add_to_conflict_works(
+                            task.id, rjcode, "DUPLICATE",
+                            str(candidate.get("folder_path") or ""), task.source_path,
+                            {**(task.task_metadata or {}), "linked_subtitle_preview": preview,
+                             "source": "inventory_empty_shell_precheck",
+                             "matched_rjcode": preview.get("target_rjcode"),
+                             "existing_library_id": candidate.get("library_id")},
+                            related_rjcodes=[rjcode, preview.get("target_rjcode")],
+                        )
+                        task.task_metadata = {**(task.task_metadata or {}), "linked_subtitle_preview": preview}
+                        task.status = TaskStatus.WAITING_MANUAL
+                        task.update_progress(100, "原作零音轨但库存目录未确认为空，已加入问题作品列表")
+                        task.completed_at = datetime.now()
+                        await self._abort_precheck(precheck_task)
+                        return rjcode, False
+                    if preview.get("inventory_empty_shell_status") == "empty":
                         empty_shell_rjcode = self._extract_rjcode(
                             str(preview.get("target_rjcode") or "")
                         ) or rjcode
@@ -3411,7 +3666,7 @@ class TaskEngine:
                             _kikoeru_needs_subtitle = bool(
                                 preview.get("target_needs_subtitle", preview.get("kikoeru_needs_subtitle"))
                             )
-                            _kikoeru_empty_shell = bool(preview.get("kikoeru_target_is_empty_shell"))
+                            _kikoeru_empty_shell = preview.get("inventory_empty_shell_status") == "empty"
                             _kikoeru_confident = bool(
                                 preview.get("target_route_confident", preview.get("kikoeru_route_confident"))
                             )
@@ -3547,6 +3802,8 @@ class TaskEngine:
                 )
                 if not proceed:
                     return
+                if task.auto_classify and rjcode and rjcode != "未知":
+                    await self.acquire_rjcode_processing(rjcode, task)
                 if (
                     not (task.task_metadata or {}).get("aggregate_archive")
                     and not (task.task_metadata or {}).get("retry_from_conflicts")
@@ -3819,11 +4076,17 @@ class TaskEngine:
                             return
 
                 # 步骤2: 获取元数据
+                if task.auto_classify and rjcode and rjcode != "未知":
+                    await self.acquire_rjcode_processing(rjcode, task)
                 logger.debug(f"[{rjcode}] 步骤2: 获取元数据")
                 if config.auto_process.fetch_metadata:
                     task.update_progress(40, "获取元数据")
                     try:
-                        metadata = await metadata_service.fetch(extracted_path, task, force_refresh=bool((task.task_metadata or {}).get("retry_from_conflicts")))
+                        metadata = await metadata_service.fetch(
+                            extracted_path,
+                            task,
+                            force_refresh=self._should_force_refresh_retry_metadata(task),
+                        )
                         from .import_validation import require_import_metadata
                         require_import_metadata(metadata)
                     except Exception:
@@ -4059,6 +4322,8 @@ class TaskEngine:
                     source=(task.task_metadata or {}).get("rjcode_source") or "existing_folder_scan",
                 ) or effective_existing_rjcode or "未知"
                 logger.debug(f"[{rjcode}] 已有文件夹任务RJ号: {rjcode}")
+                if task.auto_classify and rjcode and rjcode != "未知":
+                    await self.acquire_rjcode_processing(rjcode, task)
                 resolution_mode = str((task.task_metadata or {}).get('existing_folder_resolution') or '').strip().upper()
                 skip_conflict_retry_precheck = self._should_skip_conflict_retry_precheck(task)
                 skip_duplicate_precheck = bool((task.task_metadata or {}).get("skip_duplicate_precheck"))
@@ -4075,6 +4340,7 @@ class TaskEngine:
                     # 步骤0: 预检重复
                     logger.debug(f"[{rjcode}] 步骤0: 预检重复")
                     task.update_progress(5, "预检中")
+                    # 取得处理权后重新检查直接/关联库存，不能复用等待前的结论。
                     from .duplicate_service import get_duplicate_service
                     duplicate_service = get_duplicate_service()
 
@@ -4118,17 +4384,17 @@ class TaskEngine:
                         task.completed_at = datetime.now()
                         return
 
-                    is_processing = await classifier.check_duplicate_before_extract(rjcode, task, self)
-                    if is_processing:
+                    is_duplicate = await classifier.check_duplicate_before_extract(rjcode, task, self)
+                    if is_duplicate:
                         stable_source_path = await self._stabilize_extract_subtask_conflict_source(
                             task,
                             existing_folder_path,
                             classifier,
                         )
                         self._rewrite_active_conflict_new_path(task.id, existing_folder_path, stable_source_path)
-                        logger.info(f"[{rjcode}] 正在处理中，已添加到问题作品列表")
+                        logger.info(f"[{rjcode}] 库存发现重复，已添加到问题作品列表")
                         task.status = TaskStatus.WAITING_MANUAL
-                        task.update_progress(100, "正在处理中，请在问题作品页面查看")
+                        task.update_progress(100, "重复作品，请在问题作品页面处理")
                         task.completed_at = datetime.now()
                         return
                 else:
@@ -4502,8 +4768,7 @@ class TaskEngine:
                 del task._metadata_prefetch
             if source_waiting:
                 self.processing.discard(task.id)
-                if task.rjcode:
-                    self.unmark_rjcode_processing(task.rjcode)
+                self._release_task_rjcodes(task.id)
                 await self._notify_progress(task)
                 await asyncio.to_thread(self.persist_task_snapshot, task)
                 return
@@ -4547,18 +4812,25 @@ class TaskEngine:
             try:
                 self.processing.discard(task.id)
                 # 清除RJ号处理标记
-                if task.rjcode:
-                    self.unmark_rjcode_processing(task.rjcode)
+                self._release_task_rjcodes(task.id)
             except Exception:
                 logger.warning("[任务清理] 清理运行中标记失败: task_id=%s", task.id, exc_info=True)
             try:
                 await self._notify_progress(task)
             except Exception:
                 logger.warning("[任务清理] 发送最终进度失败: task_id=%s", task.id, exc_info=True)
+            terminal_detail_persisted = False
             try:
-                await asyncio.to_thread(self.persist_task_center_item_snapshot, task)
+                terminal_detail_persisted = self._should_persist_terminal_detail(task)
+                if terminal_detail_persisted:
+                    await asyncio.to_thread(self.persist_task_snapshot, task)
             except Exception:
-                logger.warning("[任务中心物化] 写入最终任务快照失败: task_id=%s", task.id, exc_info=True)
+                logger.warning("[任务持久化] 终态详情快照写入失败: task_id=%s", task.id, exc_info=True)
+            if not terminal_detail_persisted:
+                try:
+                    await asyncio.to_thread(self.persist_task_center_item_snapshot, task)
+                except Exception:
+                    logger.warning("[任务中心物化] 写入最终任务快照失败: task_id=%s", task.id, exc_info=True)
     
     async def _input_source_ready(self, task):
         """稳定观察发生在执行许可之外，一次采样后交还调度器。"""
@@ -4688,6 +4960,7 @@ class TaskEngine:
         # 加载等待重试的任务
         self.load_persisted_linked_subtitle_tasks()
         self.load_persisted_conflict_tasks()
+        self.load_persisted_link_sheet_tasks()
         self.recover_stale_processing_tasks()
         self.load_waiting_retry_tasks()
 
@@ -5027,8 +5300,7 @@ class TaskEngine:
         metadata['browser_verification_url'] = ''
         task.task_metadata = metadata
         self.processing.discard(task.id)
-        if task.rjcode:
-            self.unmark_rjcode_processing(task.rjcode)
+        self._release_task_rjcodes(task.id)
         task.reset_for_rerun("等待重新抓取字幕")
         self._ensure_task_context(task)
         await self.queue.put(task)
@@ -5110,6 +5382,8 @@ class TaskEngine:
             task = self.tasks[task_id]
             should_log_immediately = task.status == TaskStatus.PENDING and task_id not in self.processing
             task.cancel()
+            if task_id not in self._running_task_ids:
+                self._release_task_rjcodes(task.id)
             metadata = task.task_metadata or {}
             if (
                 metadata.get("retry_from_conflicts") and not metadata.get("scan_id")
@@ -5180,8 +5454,7 @@ class TaskEngine:
 
         self.tasks.pop(task_id, None)
         self.processing.discard(task_id)
-        if task.rjcode:
-            self._processing_rjcodes.discard(task.rjcode)
+        self._release_task_rjcodes(task.id)
         if task.type == TaskType.HTTP_DOWNLOAD:
             try:
                 from .http_download_service import get_http_download_service
@@ -5218,8 +5491,8 @@ class TaskEngine:
                     TaskStatus.PAUSED,
                 }:
                     self.processing.discard(task.id)
-                    if task.rjcode:
-                        self.unmark_rjcode_processing(task.rjcode)
+                    if task.id not in self._running_task_ids:
+                        self._release_task_rjcodes(task.id)
             logger.info(f"任务 {task_id} 状态更新为: {status.value}")
             reason = {
                 TaskStatus.COMPLETED: "completed",
@@ -5645,6 +5918,13 @@ class TaskEngine:
             return []
 
         parent_metadata = dict(parent_task.task_metadata or {})
+        codes = list(dict.fromkeys(str(entry.get("rjcode") or "").upper() for entry in multi_rj_dirs))
+        if len(codes) >= 2:
+            # 嵌套解压后才发现合集时，父任务也必须切换为整包身份。
+            parent_metadata.update(aggregate_archive=True, aggregate_rjcodes=codes, aggregate_rj_count=len(codes))
+            parent_task.rjcode = None
+            for key in ("rjcode", "inferred_rjcode", "rjcode_source", "inferred_rjcode_source"):
+                parent_metadata.pop(key, None)
         target_library_id = parent_metadata.get("target_library_id")
         # 父任务的来源标签，给子任务通知用
         parent_source_label = parent_metadata.get("source_label") or os.path.basename(
@@ -5742,9 +6022,12 @@ class TaskEngine:
                 metadata=child_metadata,
                 rjcode=sub_rj,
             )
+            transferred = self._transfer_rjcode_processing(sub_rj, parent_task.id, child_task.id)
             try:
                 child_task_id = await self.submit(child_task)
             except Exception as exc:
+                if transferred and child_task.id not in self.tasks:
+                    self.unmark_rjcode_processing(sub_rj, child_task.id)
                 logger.error(
                     "[多作品拆分] 子任务入队失败: parent=%s rj=%s err=%s",
                     parent_task.id, sub_rj, exc,
@@ -5756,6 +6039,10 @@ class TaskEngine:
                 })
                 # 目录已从父包移出；保留失败载荷，持久派发记录也可能已提交。
                 continue
+            except asyncio.CancelledError:
+                if transferred and child_task.id not in self.tasks:
+                    self.unmark_rjcode_processing(sub_rj, child_task.id)
+                raise
 
             subtask_ids.append(child_task_id)
             dispatched_records.append({

@@ -557,6 +557,15 @@ class FileProcessor:
                 # .part1 首卷，通过魔数检测确定是否是压缩包
                 return self._detect_archive_by_magic(file_path)
 
+        # ZIP 分卷被截断/改名的尾卷（例如 .zi-p）仍需作为首卷入口，
+        # 后续由 ExtractService 用 EOCD/ZIP64 证据确认完整性。
+        zip_tail_match = re.fullmatch(r'(?P<base>.+)\.zi-p', filename, re.IGNORECASE)
+        if zip_tail_match:
+            return self._build_zip_volume_set(
+                os.path.dirname(file_path),
+                zip_tail_match.group('base'),
+            ) is not None
+
         # 常见压缩格式
         archive_extensions = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.exe'}
 
@@ -603,14 +612,54 @@ class FileProcessor:
                 return VolumeSet(group.base_name, group.volumes, "part_password", entry_path=group.main_path)
             return None
 
+        shared_group = detect_archive_volume_group(
+            file_path,
+            sibling_names=self._list_directory(directory),
+        )
+        if shared_group and shared_group.volume_type == "7z_main_with_ext":
+            return VolumeSet(
+                shared_group.base_name,
+                shared_group.volumes,
+                "7z_main_with_ext",
+                entry_path=shared_group.main_path,
+            )
+
         zip_main_match = re.search(r'^(?P<base>.+)\.zip$', filename, re.IGNORECASE)
+        zip_truncated_tail_match = re.search(r'^(?P<base>.+)\.zi-p$', filename, re.IGNORECASE)
         zip_part_match = re.search(r'^(?P<base>.+)\.z\d{2}$', filename, re.IGNORECASE)
-        if zip_main_match or zip_part_match:
-            base_name = (zip_main_match or zip_part_match).group('base')
+        if zip_main_match or zip_truncated_tail_match or zip_part_match:
+            base_name = (zip_main_match or zip_truncated_tail_match or zip_part_match).group('base')
             volume_set = self._build_zip_volume_set(directory, base_name)
             if volume_set:
                 logger.info(f"[FileProcessor] 检测到 ZIP 分卷组: {base_name}")
                 return volume_set
+
+        # 兼容被错误命名为 .7z 的真实首卷：后续卷通常仍是 .7z.002、
+        # .7z.003。这里必须在普通 .7z 归档判定前建立分卷组，后续由
+        # ExtractService 统一校验首卷是否缺失。
+        seven_zip_main_match = re.search(r'^(?P<base>.+)\.7z$', filename, re.IGNORECASE)
+        if seven_zip_main_match:
+            base_name = seven_zip_main_match.group('base')
+            volume_set = self._find_all_volumes(
+                directory,
+                base_name,
+                rf'\.7z(?:\.\d{{3}})?$',
+            )
+            volume_set = [
+                path for path in volume_set
+                if re.search(rf'{re.escape(base_name)}\.7z(?:\.\d{{3}})?$', os.path.basename(path), re.IGNORECASE)
+            ]
+            if len(volume_set) > 1:
+                ordered = sorted(
+                    volume_set,
+                    key=lambda path: (0 if os.path.basename(path).lower().endswith('.7z') else 1, self._volume_sort_key(path)),
+                )
+                logger.info(
+                    "[FileProcessor] 检测到非法 7z 首卷命名: %s, volumes=%s",
+                    filename,
+                    [os.path.basename(path) for path in ordered],
+                )
+                return VolumeSet(base_name, ordered, "7z_main_with_ext", entry_path=ordered[0])
 
         rar_main_match = re.search(r'^(?P<base>.+)\.rar$', filename, re.IGNORECASE)
         rar_part_match = re.search(r'^(?P<base>.+)\.r\d{2}$', filename, re.IGNORECASE)
@@ -890,8 +939,14 @@ class FileProcessor:
 
     def _build_zip_volume_set(self, directory: str, base_name: str) -> Optional[VolumeSet]:
         zip_path = os.path.join(directory, f"{base_name}.zip")
+        truncated_tail = False
         if not os.path.exists(zip_path):
-            return None
+            zip_path = os.path.join(directory, f"{base_name}.zi-p")
+            if not os.path.exists(zip_path):
+                zip_path = os.path.join(directory, f"{base_name}.zi")
+            if not os.path.exists(zip_path):
+                return None
+            truncated_tail = True
 
         # 1. 标准 WinRAR ZIP 分卷 (.zXX)：X.zip + X.z01 + X.z02 + ...
         z_volumes: List[str] = []
@@ -906,7 +961,12 @@ class FileProcessor:
         if z_volumes:
             z_volumes.append(zip_path)
             ordered = sorted(z_volumes, key=self._volume_sort_key)
-            return VolumeSet(base_name, ordered, 'zip_volume_main', entry_path=zip_path)
+            return VolumeSet(
+                base_name,
+                ordered,
+                'zip_truncated_tail' if truncated_tail else 'zip_volume_main',
+                entry_path=zip_path,
+            )
 
         # 2. 非标准 .zip 主卷 + .NNN 纯数字分卷：X.zip + X.002 + X.003 + ...
         #    7-Zip / 国内分卷工具创建多卷时首卷 .001 被改名为 .zip 留下的格式。

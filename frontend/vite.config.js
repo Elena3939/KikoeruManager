@@ -82,7 +82,11 @@ export default defineConfig({
         chunkFileNames: `assets/${buildAssetPrefix}[name]-[hash].js`,
         assetFileNames: `assets/${buildAssetPrefix}[name]-[hash][extname]`,
         manualChunks(id) {
+          // 共享预加载函数不能落入 PDF 分包，否则首页会提前下载整个阅读器。
+          if (id.includes('vite/preload-helper')) return 'vendor'
           if (!id.includes('node_modules')) return undefined
+          if (id.includes('/@embedpdf/') || id.includes('/preact/')) return 'vendor-pdf'
+          if (id.includes('/jschardet/')) return 'vendor-text-encoding'
           if (
             id.includes('/vue/')
             || id.includes('/vue-router/')

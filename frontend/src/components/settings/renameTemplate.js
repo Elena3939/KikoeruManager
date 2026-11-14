@@ -119,7 +119,7 @@ export function serializeRenameTemplate(blocks, options = {}) {
       if (block?.type === 'variable') {
         const variable = getRenameTemplateVariable(block.value)
         if (!variable) return ''
-        if (!wrapper.enabled) return variable.token
+        if (!wrapper.enabled || variable.value === 'cvs') return variable.token
         return `${wrapper.left}${variable.token}${wrapper.right}`
       }
       return String(block?.value ?? '')

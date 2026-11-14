@@ -320,7 +320,8 @@ class RenameService:
         use_japanese = self.config.rename.use_japanese_metadata and japanese_metadata
 
         # 替换变量
-        name = template
+        # CV 已由 cv_list_left / cv_list_right 包裹，旧模板也不再额外套方括号。
+        name = template.replace('[{cvs}]', '{cvs}')
 
         # rjcode 和 work_name 始终使用当前语言版本
         rjcode = metadata.get('rjcode', '')

@@ -8,8 +8,7 @@ E1 最小闭环：header_status / summary_card / rich_text / divider / spacer
 移动端兼容性约定（QQ 邮箱 / 网易邮箱 / Outlook Mobile）：
   - 不使用 overflow-y:auto + max-height（移动端会折叠容器并隐藏内容）
   - 不使用 linear-gradient 容器背景（部分老版客户端会连同元素一起丢弃）
-  - 使用内联 Lucide <svg>：QQ 邮箱网页版 / 网易邮箱 / Gmail / Apple Mail 均可
-    正常渲染；少数老版移动客户端会显示为 broken image，属可接受损失。
+  - 文件清单和作品统计使用文本/emoji 图标，避免邮箱截断或移除 SVG 路径。
   - 使用 <details>/<summary>：现代 webview / Chromium 内核邮箱支持展开折叠；
     老客户端会把 <details> 当普通 <div> 处理，children 仍会原样展示不丢失。
     所以"最坏情况下等价于全部展开"，不会丢内容。
@@ -388,8 +387,8 @@ def render_file_tree(props: dict, payload: dict) -> str:
         dirs.sort(key=lambda n: str(n.get("name") or "").lower())
         files.sort(key=lambda n: str(n.get("path") or n.get("name") or "").lower())
 
-        # 每多一级深度往右缩 18px，搭配 details 的灰色 dashed 左边框形成层级视觉线。
-        indent_px = max(0, depth) * 18 + 6
+        # 层级由外层 children 容器负责，行内不再重复累加深度。
+        indent_px = 6
         for node in dirs:
             label = str(node.get("name") or node.get("path") or "")
             dir_status = str(node.get("status") or "kept")
@@ -401,11 +400,11 @@ def render_file_tree(props: dict, payload: dict) -> str:
                 if is_muted else "color:#1e293b;"
             )
             folder_color = "#94a3b8" if is_muted else "#f59e0b"
-            # 文件夹图标用 Lucide folder-open SVG；展开标记用 ▸ 文本三角
+            # 邮件客户端对内联 SVG 支持不一致，文件树统一使用文本/emoji 图标。
             folder_icon = (
                 f'<span style="display:inline-block;width:18px;text-align:center;'
                 f'line-height:1;vertical-align:middle;margin-right:4px;">'
-                f'{_lucide_icon("folder-open", folder_color, 15)}</span>'
+                f'{_emoji_icon("folder-open", folder_color, 15)}</span>'
             )
             chevron_icon = (
                 f'<span class="tree-chevron" style="display:inline-block;width:12px;color:#94a3b8;'
@@ -464,7 +463,7 @@ def render_file_tree(props: dict, payload: dict) -> str:
             icon_html = (
                 f'<span style="display:inline-block;width:18px;text-align:center;'
                 f'line-height:1;vertical-align:middle;margin-right:4px;">'
-                f'{_lucide_icon(_file_tree_icon_name(label), icon_color, 14)}</span>'
+                f'{_emoji_icon(_file_tree_icon_name(label), icon_color, 14)}</span>'
             )
             size_text = str(node.get("size_text") or "")
             size_html = (
@@ -475,13 +474,12 @@ def render_file_tree(props: dict, payload: dict) -> str:
             badge_html = _render_badges(node.get("badges") or [])
             out.append(
                 f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" '
-                f'style="border-collapse:collapse;{row_base_style}color:{row_color};">'
+                f'style="table-layout:fixed;border-collapse:collapse;{row_base_style}color:{row_color};">'
                 f'<tr>'
                 f'<td style="width:{indent_px}px;"></td>'
-                f'<td style="vertical-align:middle;min-width:0;white-space:nowrap;'
-                f'overflow:hidden;text-overflow:ellipsis;">'
+                f'<td style="vertical-align:middle;min-width:0;overflow-wrap:anywhere;word-break:break-word;">'
                 f'{icon_html}'
-                f'<span style="{tree_name_base}{label_extra}">{_esc(label)}</span>'
+                f'<span style="vertical-align:middle;white-space:normal;{label_extra}">{_esc(label)}</span>'
                 f'{badge_html}'
                 f'</td>'
                 f'{size_html}'
@@ -620,7 +618,7 @@ def _render_download_work_cards(title: str, items: list, max_items: int) -> str:
                     icon_html = (
                         f'<span style="display:inline-block;width:18px;line-height:1;'
                         f'vertical-align:middle;margin-right:6px;">'
-                        f'{_lucide_icon(icon_name, icon_color, 14)}</span>'
+                        f'{_emoji_icon(icon_name, icon_color, 14)}</span>'
                     )
                 else:
                     icon_html = ""
@@ -648,7 +646,7 @@ def _render_download_work_cards(title: str, items: list, max_items: int) -> str:
             image_filter = ''
         image_html = (
             f'<img src="{cover_url}" alt="{work_title}" width="180" height="180" '
-            f'style="display:block;width:180px;height:180px;object-fit:contain;background:#fff;border:0;{image_filter}">'
+            f'style="display:block;width:100%;max-width:180px;height:auto;object-fit:contain;background:#fff;border:0;{image_filter}">'
             if cover_url else
             f'<div style="width:180px;height:180px;background:#f5f5f7;color:#8e8e93;'
             f'font-size:12px;line-height:180px;text-align:center;{image_filter}">无封面</div>'
@@ -705,8 +703,8 @@ def _render_download_work_cards(title: str, items: list, max_items: int) -> str:
             f'<table width="100%" cellpadding="0" cellspacing="0" border="0" '
             f'style="{card_wrapper_style}">'
             f'<tr>'
-            f'<td width="180" valign="top" style="padding:10px 16px 10px 10px;">'
-            f'<table width="180" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">'
+            f'<td width="34%" valign="top" style="width:34%;padding:10px 12px 10px 10px;">'
+            f'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">'
             f'<tr><td>{image_html}</td></tr>'
             f'{rj_bar}'
             f'</table>'

@@ -1111,7 +1111,8 @@ class ASMRDownloadService:
                                 if pause_wait:
                                     await pause_wait()
 
-                            f.write(chunk)
+                            # 群晖挂载卷写入可能等待磁盘，不能阻塞 HTTP / 任务主循环。
+                            await asyncio.to_thread(f.write, chunk)
                             downloaded += len(chunk)
                             if progress_callback and total_size > 0:
                                 now_monotonic = time.monotonic()
@@ -1124,6 +1125,7 @@ class ASMRDownloadService:
                                     progress_callback(downloaded, total_size)
                                     last_progress_reported = downloaded
                                     last_progress_reported_at = now_monotonic
+                        await asyncio.to_thread(f.flush)
 
                     # 下载完成，重命名临时文件
                     if os.path.exists(temp_path):
@@ -1222,9 +1224,6 @@ class ASMRDownloadService:
             logger.debug("[筛选] 没有筛选规则，保留所有文件")
             return files
 
-        # 音频扩展名集合
-        audio_extensions = {'.wav', '.mp3', '.flac', '.m4a', '.ogg', '.wma', '.aac'}
-
         # 先打印所有筛选规则的状态
         logger.debug(f"[筛选] 共有 {len(filter_rules)} 条筛选规则:")
         for i, rule in enumerate(filter_rules):
@@ -1253,14 +1252,6 @@ class ASMRDownloadService:
         for file_info in files:
             file_name = file_info.get('title', '')
             file_path = file_info.get('path', file_name)  # 完整路径，包含文件夹名
-            ext = os.path.splitext(file_name)[1].lower()
-
-            # 只处理音频文件
-            if ext not in audio_extensions:
-                # 非音频文件（如图片、文本等）直接保留
-                filtered_files.append(file_info)
-                continue
-
             # 应用筛选规则
             should_exclude = False
             for rule in filter_rules:
@@ -1282,8 +1273,8 @@ class ASMRDownloadService:
                 try:
                     # 根据target决定检查什么内容
                     if target == 'folder':
-                        # 文件夹规则：检查完整路径（包含文件夹名）
-                        check_content = file_path
+                        # 文件夹规则作用于目录及所有子文件，不能被字幕 / 图片扩展名绕过。
+                        check_content = file_path.replace('\\', '/').rsplit('/', 1)[0] if '/' in file_path.replace('\\', '/') else ''
                     elif target == 'all':
                         # 全部规则：检查路径和文件名
                         check_content = file_path

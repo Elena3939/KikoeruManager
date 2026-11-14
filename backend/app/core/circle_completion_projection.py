@@ -14,7 +14,7 @@ from .release_dates import is_unreleased
 
 STATUS_KEYS = ("repairable", "downloadable", "missing", "no_source", "has_early_bonus", "no_early_bonus")
 OWNED_KEYS = ("original", "simplified", "traditional", "subtitle", "bonus")
-COMPARE_KEYS = ("kikoeru", "dlsite", "asmr_one", "yaas", "missing")
+COMPARE_KEYS = ("kikoeru", "dlsite", "asmr_one", "yaas", "link_sheet", "missing")
 
 
 def projection_id(key):
@@ -234,12 +234,12 @@ def read_projection_page(key, page, page_size, *, session_factory, **query):
             item = by_position[window["root"]]
             if not card and query.get("tab") != "compare" and len(window["members"]) > 1:
                 bonuses = item.setdefault("bonus_works", [])
-                seen = {str(bonus.get("display_rjcode") or bonus.get("canonical_rjcode") or "").upper() for bonus in bonuses}
+                seen = {str(bonus.get("canonical_rjcode") or "").upper() for bonus in bonuses}
                 for position in window["members"]:
                     if position == window["root"]:
                         continue
                     bonus = by_position[position]
-                    code = str(bonus.get("display_rjcode") or bonus.get("canonical_rjcode") or "").upper()
+                    code = str(bonus.get("canonical_rjcode") or "").upper()
                     if code not in seen:
                         bonuses.append(bonus)
                         seen.add(code)

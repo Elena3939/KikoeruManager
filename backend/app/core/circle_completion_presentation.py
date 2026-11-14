@@ -1,6 +1,20 @@
 """社团分页共享的展示模型；标题比较仅在服务端选择缓存未命中时执行。"""
 import re
 from functools import lru_cache
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+
+def present_local_cover_urls(item):
+    """固定版本隔离历史缺图响应，不随刷新失效，也不访问图片磁盘。"""
+    for field in ('image_url', 'thumb_image_url'):
+        value = str(item.get(field) or '').strip()
+        if not value.startswith('/api/circle-completion/cover/'):
+            continue
+        parts = urlsplit(value)
+        query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
+                 if key != 'cover_cache']
+        query.append(('cover_cache', '2'))
+        item[field] = urlunsplit(parts._replace(query=urlencode(query)))
 
 
 def bonus_title(item):
@@ -55,7 +69,20 @@ def present_bonus_works(service, bonuses):
     return result
 
 
+def present_release_date(item):
+    """社团作品统一展示原作日期，保留展示版本日期供版本详情使用。"""
+    original = str(item.get('original_release_date') or '').strip()
+    if original:
+        item.setdefault('edition_release_date', item.get('release_date') or '')
+        item['release_date'] = original
+
+
 def present_completion_rows(service, rows):
     for row in rows:
+        present_release_date(row)
+        present_local_cover_urls(row)
+        for bonus in row.get('bonus_works') or []:
+            present_release_date(bonus)
+            present_local_cover_urls(bonus)
         row['bonus_display_works'] = present_bonus_works(service, row.get('bonus_works') or [])
     return rows

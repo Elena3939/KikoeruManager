@@ -591,6 +591,7 @@ import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 import { normalizeTaskCenterRealtimePayloads } from '../composables/taskCenterEventUtils'
 import { patchTransferTaskEvent } from '../utils/transferTaskEvent'
 import { getAsmrDownloadSessionId, getDownloadEngineTaskId } from '../utils/downloadTaskIdentity.js'
+import { isHttpDownloadTask } from '../components/circle/downloadSources.js'
 import { cleanupFailedDownloadTask } from '../utils/failedDownloadTaskCleanup.js'
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -1375,6 +1376,16 @@ function stopEnhancedDownloadWorkbenchPolling() {
   }
 }
 
+function scheduleEnhancedDownloadWorkbenchRefresh() {
+  if (enhancedDownloadWorkbenchTimer || !enhancedDownloadWorkbenchTaskIds.value.length) return
+  enhancedDownloadWorkbenchTimer = window.setTimeout(() => {
+    enhancedDownloadWorkbenchTimer = null
+    refreshEnhancedDownloadWorkbench({ silent: true }).catch(error => {
+      console.error('实时刷新增强下载文件明细失败:', error)
+    })
+  }, 350)
+}
+
 function startEnhancedDownloadWorkbenchPolling() {
   stopEnhancedDownloadWorkbenchPolling()
 }
@@ -2078,7 +2089,7 @@ async function retryEnhancedDownloadTask(task) {
         ElMessage.success('已提交重试')
       }
     } else if (taskId) {
-      await (task?.task_metadata?.resource_source === 'imoutoheaven' ? httpDownloadApi : asmrSyncApi).retry(taskId)
+      await (isHttpDownloadTask(task) ? httpDownloadApi : asmrSyncApi).retry(taskId)
       ElMessage.success('已提交重试')
     }
     await refreshEnhancedDownloadWorkbench({ silent: true })
@@ -2090,7 +2101,7 @@ async function retryEnhancedDownloadTask(task) {
 }
 
 async function retryEnhancedDownloadFile(payload) {
-  if (payload?.task?.task_metadata?.resource_source === 'imoutoheaven') {
+  if (isHttpDownloadTask(payload?.task)) {
     try {
       await httpDownloadApi.retry(getDownloadEngineTaskId(payload?.task))
       await refreshEnhancedDownloadWorkbench({ silent: true })
@@ -2162,7 +2173,7 @@ async function handlePauseEnhancedDownloadTask(task) {
     if (sessionId) {
       await asmrSyncApi.pauseSession(sessionId)
     } else if (taskId) {
-      await (task?.task_metadata?.resource_source === 'imoutoheaven' ? httpDownloadApi : taskApi).pause(taskId)
+      await (isHttpDownloadTask(task) ? httpDownloadApi : taskApi).pause(taskId)
     } else {
       return ElMessage.warning('无法识别任务，缺少会话或任务 ID')
     }
@@ -2181,7 +2192,7 @@ async function handleResumeEnhancedDownloadTask(task) {
     if (sessionId) {
       await asmrSyncApi.resumeSession(sessionId)
     } else if (taskId) {
-      await (task?.task_metadata?.resource_source === 'imoutoheaven' ? httpDownloadApi : taskApi).resume(taskId)
+      await (isHttpDownloadTask(task) ? httpDownloadApi : taskApi).resume(taskId)
     } else {
       return ElMessage.warning('无法识别任务，缺少会话或任务 ID')
     }
@@ -2335,7 +2346,7 @@ const retryFailed = async (taskId) => {
       )
       await refreshEnhancedDownloadWorkbench({ silent: true })
     } else {
-      const result = await (task?.task_metadata?.resource_source === 'imoutoheaven' ? httpDownloadApi : asmrSyncApi).retry(taskId)
+      const result = await (isHttpDownloadTask(task) ? httpDownloadApi : asmrSyncApi).retry(taskId)
       ElMessage.success(result.message)
     }
     await refreshStatus()
@@ -2563,6 +2574,12 @@ function startStatusPolling () {
       const existing = tasks.value.some(task => String(task.id) === String(payload.engine_task_id))
       if (!existing) { if (!refreshing.value) void refreshStatus(); continue }
       tasks.value = tasks.value.map(task => patchTransferTaskEvent(task, payload))
+      if (
+        payload.task_type === 'asmr_sync_download'
+        && enhancedDownloadWorkbenchTaskIds.value.some(id => String(id) === String(payload.engine_task_id))
+      ) {
+        scheduleEnhancedDownloadWorkbenchRefresh()
+      }
       const item = scanResults.value.find(row => row.rjcode === payload.rjcode)
       if (item) item.status = payload.status === 'processing' ? 'downloading' : payload.status
     }

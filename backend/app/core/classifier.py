@@ -1,7 +1,7 @@
 import os
 import re
 import shutil
-from .fs_utils import move_path_sync, run_file_operation_async
+from .fs_utils import directory_has_files, move_path_sync, run_file_operation_async
 import asyncio
 import uuid
 from pathlib import Path
@@ -44,31 +44,16 @@ class SmartClassifier:
         """
         logger.info(f"[预检] 开始检查RJ号 {rjcode} 是否已存在或正在处理")
         
-        # 1. 检查是否已有其他任务正在处理这个RJ号
-        if engine and engine.is_rjcode_processing(rjcode):
-            logger.warning(f"[预检] RJ号 {rjcode} 正在被其他任务处理中，当前任务将等待")
-            # 添加到问题作品表，标记为等待状态
-            self._add_to_conflict_works(
-                task.id, 
-                rjcode, 
-                'DUPLICATE', 
-                "正在处理中", 
-                task.source_path,
-                {},
-                status='PENDING'
-            )
-            return True
+        # 1. 先取得有归属的处理权，再查库存，避免两个预检跨 await 同时通过。
+        # 扫描准备阶段只读库存，不占运行权；真正执行时才等待竞争任务。
+        if engine and self.prepared_conflicts is None:
+            await engine.acquire_rjcode_processing(rjcode, task)
         
         # 2. 只走 ready 库存索引。Kikoeru 只是播放这份库存的服务，不再作为拥有态
         # 查重源；索引未 ready / 未命中时直接继续，不主动扫盘、不请求群晖。
         local_result = await self._check_library_index_before_extract(rjcode, task)
         if local_result:
             return True
-        
-        # 3. 标记RJ号正在处理（防止其他任务同时处理）
-        if engine and self.prepared_conflicts is None:
-            engine.mark_rjcode_processing(rjcode)
-            task.rjcode = rjcode  # 保存RJ号到任务，用于后续清理
         
         logger.info(f"[预检] 完成: RJ号 {rjcode} 未在 ready 库存索引发现重复，继续解压")
         return False
@@ -350,10 +335,7 @@ class SmartClassifier:
 
     @staticmethod
     def _directory_has_files(path: str) -> bool:
-        for _root, _dirs, files in os.walk(path):
-            if files:
-                return True
-        return False
+        return directory_has_files(path)
 
     @staticmethod
     def _path_is_within(root_path: str, candidate_path: str) -> bool:

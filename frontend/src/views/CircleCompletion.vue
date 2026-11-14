@@ -868,6 +868,13 @@
                     </div>
                   </div>
                   <div class="compare-stat-item">
+                    <div class="compare-stat-icon"><FileArchive :size="14" stroke-width="2.5" /></div>
+                    <div class="flex flex-col">
+                      <span class="compare-stat-label">妙蛙种子</span>
+                      <span class="compare-stat-value">{{ compareWorksStats.link_sheet }}</span>
+                    </div>
+                  </div>
+                  <div class="compare-stat-item">
                     <div class="compare-stat-icon is-missing">
                       <XCircle :size="14" stroke-width="2.5" />
                     </div>
@@ -886,6 +893,7 @@
                   <button type="button" class="compare-filter-chip is-kikoeru" :class="{ 'is-active': compareSourceFilter === 'kikoeru' }" @click="compareSourceFilter = 'kikoeru'; comparePage = 1">库存已收录</button>
                   <button type="button" class="compare-filter-chip is-asmr" :class="{ 'is-active': compareSourceFilter === 'asmr_one' }" @click="compareSourceFilter = 'asmr_one'; comparePage = 1">可下载(ASMR.ONE)</button>
                   <button type="button" class="compare-filter-chip is-yaas" :class="{ 'is-active': compareSourceFilter === 'yaas' }" @click="compareSourceFilter = 'yaas'; comparePage = 1">可下载(YAAS)</button>
+                  <button type="button" class="compare-filter-chip" :class="{ 'is-active': compareSourceFilter === 'link_sheet' }" @click="compareSourceFilter = 'link_sheet'; comparePage = 1">可下载(Excel)</button>
                 </div>
 
                 <div class="flex items-center gap-3">
@@ -938,6 +946,8 @@
                   <div class="compare-source-col">ASMR.ONE</div>
                   <div class="compare-source-divider is-transparent"></div>
                   <div class="compare-source-col">YAAS</div>
+                  <div class="compare-source-divider is-transparent"></div>
+                  <div class="compare-source-col">Excel</div>
                 </div>
               </div>
 
@@ -1017,6 +1027,11 @@
                       <div class="flex flex-col items-center gap-1 w-20">
                         <span v-for="code in item.sourceCompare.yaas?.all_rjcodes || []" :key="`y-${item.workRjcode}-${code}`" class="compare-source-code">{{ code }}</span>
                         <span v-if="!item.sourceCompare.yaas?.all_rjcodes?.length" class="compare-source-empty">{{ item.sourceCompare.yaas?.status === 'error' ? '探测失败' : item.sourceCompare.yaas?.status === 'missing' ? '—' : '待探测' }}</span>
+                      </div>
+                      <div class="compare-source-divider"></div>
+                      <div class="flex flex-col items-center gap-1 w-20">
+                        <span v-for="code in item.sourceCompare.link_sheet?.all_rjcodes || []" :key="`sheet-${item.workRjcode}-${code}`" class="compare-source-code">{{ code }}</span>
+                        <span v-if="!item.sourceCompare.link_sheet?.all_rjcodes?.length" class="compare-source-empty">—</span>
                       </div>
 
                     </div>
@@ -1295,6 +1310,7 @@ import { FileArchive, Check, CheckCircle2, ChevronDown, Tags, MessageSquareText,
 import { ElMessage } from 'element-plus'
 import api, { asmrSyncApi, httpDownloadApi, circleCompletionApi, emailWatcherApi, libraryApi, localUploadApi, taskApi, taskCenterApi } from '../api'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
+import { isHttpDownloadTask } from '../components/circle/downloadSources'
 import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
 import ServerUploadPreviewDialog from '../components/common/ServerUploadPreviewDialog.vue'
 import UploadTaskWorkbenchDialog from '../components/upload/UploadTaskWorkbenchDialog.vue'
@@ -2557,10 +2573,40 @@ const circleListVirtualizer = useVirtualizer(computed(() => ({
   overscan: 4,
 })))
 const visibleCircleRows = computed(() => circleListVirtualizer.value.getVirtualItems())
-watch([activeCircleId, displayCircleList], ([circleId]) => {
-  const index = displayCircleList.value.findIndex(circle => circle.circle_id === circleId)
-  if (index >= 0) circleListVirtualizer.value.scrollToIndex(index, { align: 'auto' })
-}, { flush: 'post' })
+const circleListVirtualizerKey = computed(() =>
+  displayCircleList.value.map(circle => [
+    circle.circle_id,
+    circle.unreleased_count || 0,
+    circle.new_works_48h_count || 0,
+    circle.last_indexed_at || '',
+  ].join('\u001e')).join('\u001f'),
+)
+let circleListSyncFrame = null
+
+function scheduleCircleListVirtualizerSync() {
+  if (circleListSyncFrame !== null) return
+  circleListSyncFrame = requestAnimationFrame(() => {
+    circleListSyncFrame = null
+    const virtualizer = circleListVirtualizer.value
+    const scrollElement = circleListScrollRef.value
+    if (!scrollElement || !displayCircleList.value.length) return
+
+    // 先清掉旧列表的高度缓存，再定位新列表中的选中项，避免旧 start
+    // 在滚动位置已被浏览器校正后继续渲染成顶部空洞。
+    virtualizer.measure()
+    const index = displayCircleList.value.findIndex(circle => circle.circle_id === activeCircleId.value)
+    if (index >= 0) {
+      virtualizer.scrollToIndex(index, { align: 'auto' })
+      return
+    }
+
+    if (scrollElement.scrollTop > 0) {
+      virtualizer.scrollToOffset(0)
+    }
+  })
+}
+
+watch([activeCircleId, circleListVirtualizerKey], scheduleCircleListVirtualizerSync, { flush: 'post' })
 const showMissingWorksCompleteState = computed(() =>
   Boolean(activeCircleId.value)
   && circleDetailLoaded.value
@@ -2957,6 +3003,7 @@ const compareWorksStats = computed(() => {
     dlsite: Number(detail.compare_stats?.dlsite || 0),
     asmr_one: Number(detail.compare_stats?.asmr_one || 0),
     yaas: Number(detail.compare_stats?.yaas || 0),
+    link_sheet: Number(detail.compare_stats?.link_sheet || 0),
     missing: Number(detail.compare_stats?.missing || 0)
   }
 })
@@ -3253,6 +3300,10 @@ onDeactivated(() => {
 
 onBeforeUnmount(() => {
   circlePageDisposed = true
+  if (circleListSyncFrame !== null) {
+    cancelAnimationFrame(circleListSyncFrame)
+    circleListSyncFrame = null
+  }
   if (externalSearchRealtimeRefreshTimer) {
     clearTimeout(externalSearchRealtimeRefreshTimer)
     externalSearchRealtimeRefreshTimer = null
@@ -4193,7 +4244,7 @@ async function retryDownloadTask(task) {
       nextTaskId = String(response?.session?.task_id || '').trim()
       replaceTrackedDownloadTaskForSession(sessionId, nextTaskId)
     }
-    else if (taskId) await (task?.task_metadata?.resource_source === 'imoutoheaven' ? httpDownloadApi : asmrSyncApi).retry(taskId)
+    else if (taskId) await (isHttpDownloadTask(task) ? httpDownloadApi : asmrSyncApi).retry(taskId)
     else throw new Error('缺少任务标识')
     ElMessage.success('已提交重试')
     await refreshDownloadWorkbench({ silent: true })
@@ -4233,7 +4284,7 @@ async function retryWaitingDownloadTask(task) {
 }
 
 async function retrySingleFailedFile(task, file) {
-  if (task?.task_metadata?.resource_source === 'imoutoheaven') {
+  if (isHttpDownloadTask(task)) {
     try {
       await httpDownloadApi.retry(getDownloadEngineTaskId(task))
       await refreshDownloadWorkbench({ silent: true })
@@ -4273,7 +4324,7 @@ async function handlePauseDownloadTask(task) {
       await asmrSyncApi.pauseSession(sessionId)
     } else {
       const taskId = String(task?.active_task_id || task?.id || '').trim()
-      if (taskId) await (task?.task_metadata?.resource_source === 'imoutoheaven' ? httpDownloadApi : taskApi).pause(taskId)
+      if (taskId) await (isHttpDownloadTask(task) ? httpDownloadApi : taskApi).pause(taskId)
     }
     ElMessage.success('已暂停')
     await refreshDownloadWorkbench({ silent: true })
@@ -4289,7 +4340,7 @@ async function handleResumeDownloadTask(task) {
       await asmrSyncApi.resumeSession(sessionId)
     } else {
       const taskId = String(task?.active_task_id || task?.id || '').trim()
-      if (taskId) await (task?.task_metadata?.resource_source === 'imoutoheaven' ? httpDownloadApi : taskApi).resume(taskId)
+      if (taskId) await (isHttpDownloadTask(task) ? httpDownloadApi : taskApi).resume(taskId)
     }
     ElMessage.success('已恢复')
     await refreshDownloadWorkbench({ silent: true })
@@ -5032,6 +5083,17 @@ function scheduleHeroWorkSearch() {
   }
   const keyword = String(heroWorkSearchQuery.value || '').trim()
   if (!keyword) {
+    if (heroWorkSearchAbortController) {
+      heroWorkSearchAbortController.abort()
+      heroWorkSearchAbortController = null
+    }
+    heroWorkSearchResults.value = []
+    heroWorkSearchLoading.value = false
+    heroWorkSearchSearched.value = false
+    return
+  }
+  // RJ 输入过程不要为每个半成品号码发请求；完整 RJ 再走后端等值快速路径。
+  if (/^[RVB]J\d*$/i.test(keyword) && !/^[RVB]J\d{6,8}$/i.test(keyword)) {
     if (heroWorkSearchAbortController) {
       heroWorkSearchAbortController.abort()
       heroWorkSearchAbortController = null
@@ -9790,7 +9852,7 @@ body.kikoerumanager-dark .circle-works-loading-state :deep(.app-loading-animatio
     max-width: 100%;
     min-width: 0;
     display: grid !important;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
     gap: 6px !important;
     overflow: hidden;
   }

@@ -562,13 +562,13 @@ function normalizeRealtimeDashboardEvent(detail = {}) {
   return detail
 }
 
-function scheduleDashboardStreamRefresh() {
+function scheduleDashboardStreamRefresh(force = false) {
   if (!dashboardViewActive) return
   if (streamRefreshTimer) clearTimeout(streamRefreshTimer)
   streamRefreshTimer = setTimeout(() => {
     streamRefreshTimer = null
     const now = Date.now()
-    if (now - lastTaskCenterFullRefreshAt < STREAM_FULL_REFRESH_MIN_INTERVAL_MS) return
+    if (!force && now - lastTaskCenterFullRefreshAt < STREAM_FULL_REFRESH_MIN_INTERVAL_MS) return
     refreshData({ silent: true })
   }, STREAM_REFRESH_DEBOUNCE_MS)
 }
@@ -610,7 +610,10 @@ function handleTaskCenterStreamEvent(event) {
     .filter((item) => item?.type === 'task_center_changed')
   if (!payloads.length) return
   patchDashboardTaskOverview(payloads)
-  scheduleDashboardStreamRefresh()
+  const requiresImmediateStructureRefresh = payloads.some((item) => (
+    ['submitted', 'created', 'deleted', 'removed', 'cleanup'].includes(String(item.reason || '').trim().toLowerCase())
+  ))
+  scheduleDashboardStreamRefresh(requiresImmediateStructureRefresh)
 }
 
 async function initializeDashboardPage() {

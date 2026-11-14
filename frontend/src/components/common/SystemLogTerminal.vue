@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import StatefulButton from '../ui/stateful-button.vue'
 import { ElMessage } from 'element-plus'
+import { copyText } from '../../utils/clipboard'
 import {
   AlertTriangle,
   Bug,
@@ -268,8 +269,8 @@ async function copyLogs() {
     return
   }
   try {
-    await navigator.clipboard.writeText(text)
-    ElMessage.success(`已复制 ${safeLines.value.length} 行日志`)
+    if (await copyText(text)) ElMessage.success(`已复制 ${safeLines.value.length} 行日志`)
+    else throw new Error('clipboard unavailable')
   } catch {
     ElMessage.error('复制失败，浏览器未授权剪贴板')
   }
@@ -279,8 +280,8 @@ async function copyLine(line) {
   const text = line.rawLine || lineText(line, true)
   if (!text) return
   try {
-    await navigator.clipboard.writeText(text)
-    ElMessage.success('已复制完整日志')
+    if (await copyText(text)) ElMessage.success('已复制完整日志')
+    else throw new Error('clipboard unavailable')
   } catch {
     ElMessage.error('复制失败，浏览器未授权剪贴板')
   }
@@ -320,7 +321,8 @@ function collapseAll() {
 async function copySelected(withTime = true) {
   const rows = safeLines.value.filter((row, index) => selectedKeys.value.has(lineKey(row, index)))
   try {
-    await navigator.clipboard.writeText(rows.map((row) => withTime ? (row.rawLine || lineText(row, true)) : plainLogMessage(row)).join('\n'))
+    const copied = await copyText(rows.map((row) => withTime ? (row.rawLine || lineText(row, true)) : plainLogMessage(row)).join('\n'))
+    if (!copied) throw new Error('clipboard unavailable')
     ElMessage.success(`已复制 ${rows.length} 条日志`)
   } catch { ElMessage.error('复制失败，浏览器未授权剪贴板') }
 }
@@ -1177,6 +1179,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   height: 28px;
+  box-sizing: border-box;
   padding: 0 6px;
   border: 0;
   border-radius: 4px;
@@ -1188,6 +1191,12 @@ onBeforeUnmount(() => {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .terminal-selection-action :deep(.stateful-button__content) { gap: 0; }
+.terminal-selection-action :deep(.stateful-button__content),
+.terminal-selection-action :deep(.stateful-button__label),
+.terminal-selection-action :deep(.stateful-button__state) {
+  height: 100%;
+  line-height: 1;
+}
 .terminal-selection-action :deep(.stateful-button__label) { gap: 5px; }
 .terminal-selection-action :deep(.stateful-button__state:not(.is-idle)) { margin-right: 5px; }
 .terminal-selection-action.is-icon { width: 28px; padding: 0; }

@@ -243,6 +243,11 @@
             <p class="source-preview-description break-all">保存到：{{ settings.yaasDownloadBasePath?.trim() || yaasDownloadRoots[0] || 'HTTP 下载默认目录' }}</p>
             <p class="source-preview-description">保留原压缩包，密码按系统模板写入文件名。下载完成后不自动解压。</p>
           </section>
+          <section v-show="settingsSite === 'link_sheet'" class="circle-preview-settings-card source-settings-body p-5 space-y-4">
+            <div class="section-head"><h2>妙蛙种子</h2></div>
+            <p class="source-preview-description">下载到服务器目录即完成，不自动入库</p>
+            <p class="source-preview-description break-all">服务器下载目录：{{ sheetDownloadRoot || 'HTTP 下载默认目录' }}/RJ/修订/资源组</p>
+          </section>
         </aside>
 
         <section class="glass-panel glass-card tree-panel flex-1 rounded-2xl flex flex-col overflow-hidden">
@@ -318,6 +323,7 @@
 
 <script setup>
 import { computed, ref, watch, onMounted, onBeforeUnmount, toRaw } from 'vue'
+import { downloadSources } from './downloadSources'
 import {
   Check,
   ChevronDown,
@@ -360,7 +366,7 @@ const settingsSite = ref('asmr.one')
 const availableSettingsSites = computed(() => {
   const providers = new Set(activePlans.value.flatMap(plan =>
     (plan.source_options?.length ? plan.source_options : [plan]).map(option => option.source_provider || 'asmr.one')))
-  return [{ id: 'asmr.one', label: 'asmr.one 路径' }, { id: 'imoutoheaven', label: 'YAAS 路径' }]
+  return downloadSources
     .filter(site => providers.has(site.id))
 })
 watch(availableSettingsSites, sites => {
@@ -369,9 +375,7 @@ watch(availableSettingsSites, sites => {
 const sourceComparisonMode = computed(() => activePlans.value.length > 0)
 const fileTreePlans = computed(() => planStates.value.filter(plan =>
   !plan.source_selection_required && !plan.discovery_only && !plan.preview_error && plan.selectable_resources?.length))
-const selectedSiteGroups = computed(() => [
-  { id: 'asmr.one', label: 'asmr.one' }, { id: 'imoutoheaven', label: 'YAAS' },
-].map(site => ({ ...site, plans: fileTreePlans.value.filter(plan =>
+const selectedSiteGroups = computed(() => downloadSources.map(site => ({ ...site, plans: fileTreePlans.value.filter(plan =>
   (plan.source_provider || 'asmr.one') === site.id) })).filter(site => site.plans.length))
 const previewLoading = computed(() => props.loading || (
   activePlans.value.some(plan => plan.version_loading)
@@ -496,12 +500,13 @@ function toggleNamingMode() {
 }
 
 const isDirectMode = computed(() => props.enableDirectMode && props.settings?.mode === 'direct')
-const hasAsmrPlans = computed(() => selectedDownloadPlans.value.some(plan => plan.source_provider !== 'imoutoheaven'))
+const hasAsmrPlans = computed(() => selectedDownloadPlans.value.some(plan => (plan.source_provider || 'asmr.one') === 'asmr.one'))
+const sheetDownloadRoot = computed(() => activePlans.value.flatMap(plan => plan.source_options?.length ? plan.source_options : [plan]).find(plan => plan.source_provider === 'link_sheet')?.download_root)
 const hasYaasPlans = computed(() => selectedDownloadPlans.value.some(plan => plan.source_provider === 'imoutoheaven'))
 const yaasDownloadRoots = computed(() => [...new Set(activePlans.value.flatMap(plan => plan.source_options?.length ? plan.source_options : [plan]).filter(plan => plan.source_provider === 'imoutoheaven').map(plan => plan.download_root).filter(Boolean))])
 const pendingSourcePlans = computed(() => activePlans.value.filter(plan => plan.source_selection_required))
 const requiresTargetLibrary = computed(() => activePlans.value.some(plan =>
-  plan.source_provider !== 'imoutoheaven' && !plan.source_selection_required && plan.selected_resource_count > 0) && !isDirectMode.value)
+  (plan.source_provider || 'asmr.one') === 'asmr.one' && !plan.source_selection_required && plan.selected_resource_count > 0) && !isDirectMode.value)
 const primaryActionLabel = computed(() => {
   if (!activePlans.value.length) return '请选择下载版本'
   if (!selectedDownloadPlans.value.length) return '请选择下载内容'
@@ -787,6 +792,13 @@ function emitSubmit() {
 }
 
 function buildSubmitItem(plan, isDirectMode) {
+  if (plan.source_provider === 'link_sheet') {
+    return { source_provider: 'link_sheet', rjcode: plan.rjcode, revision_id: plan.revision_id,
+      canonical_rjcode: plan.canonical_rjcode,
+      selected_resources: plan.selectable_resources.filter(item => item.selected).map(item => ({
+        id: item.id, candidate_ids: item.files.map(file => file.selected_candidate_id || file.candidate_ids[0]),
+      })) }
+  }
   if (plan.source_provider === 'imoutoheaven') {
     return { source_provider: plan.source_provider, rjcode: plan.rjcode,
       download_base_path: String(props.settings.yaasDownloadBasePath || '').trim(),
@@ -948,6 +960,11 @@ function chooseSource(plan, option, resource = null) {
     const selected = resource || plan.selectable_resources.find(item => item.selected && item.complete)
       || plan.selectable_resources.find(item => item.complete)
     plan.selectable_resources.forEach(item => { item.selected = Boolean(selected && item.id === selected.id && item.complete) })
+  } else if (plan.source_provider === 'link_sheet') {
+    if (resource) {
+      const selected = plan.selectable_resources.find(item => item.id === resource.id)
+      if (selected) selected.selected = true
+    }
   } else if (!plan.selectable_resources.some(item => item.selected)) {
     plan.selectable_resources.forEach(item => { item.selected = item.complete !== false })
   }

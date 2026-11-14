@@ -6,12 +6,12 @@
   - circle_completion: 单条平均 41KB，最大 485KB；
   - pipeline_filter:   单条平均 146KB，最大 660KB；
   - auto_import:       单条平均 7KB（带 file_tree_items / filtered_items）。
-- 用户要求"保留所有操作记录可以回顾"，但**不需要**保留旧记录里的全量子数据（比如 200 条 file_tree、240 条 filtered_items），
-  那些只在执行后第 1~7 天复盘有意义，过了就是死重量。
+- 原始清单仍须完整可回顾，热表中的大详情先无损归档再裁剪。
 
 策略
 ====
-- 不删除任何 ``activity_logs`` 行；只裁剪 ``detail`` 字段中体积大的列表 / 内嵌对象。
+- 不删除任何 ``activity_logs`` 行；原详情压缩保存在 ``activity_log_detail_archives``，
+  与热表裁剪在同一事务提交。详情和重建路径按需恢复，列表不解压归档。
 - 保留摘要类字段（``*_count`` / ``*_bytes`` / ``duration_ms`` / ``summary`` / 状态）；裁剪：
   - ``file_tree_items`` / ``filtered_items`` / ``items`` / ``succeeded_items`` / ``failed_items``
   - ``created_tasks`` / ``skipped_items`` / ``scan_targets`` / ``source_directories``
@@ -234,6 +234,9 @@ def compact_old_activity_logs(
                         continue
                     after = _detail_size_bytes(new_detail)
                     saved_bytes += max(0, before - after)
+                    from .activity_detail_archive import archive_detail
+                    archive_detail(db, row)
+                    new_detail["__archive_version"] = 1
                     row.detail = new_detail
                     flag_modified(row, "detail")
                     updated += 1

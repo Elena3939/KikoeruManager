@@ -109,7 +109,30 @@ def sync_retry_parent(db, payloads):
         ).with_for_update().first()
         if parent is None:
             continue
+        old_parent_status = parent.status
+        parent_created_at = parent.created_at
         db.flush()
+        if db.info.get("_activity_operation_ready") is True:
+            from .activity_operation_normalizer import digest
+            from ..models.database import ActivityLogOperation, ActivityLogProjectionState
+            state = db.get(ActivityLogProjectionState, 1)
+            operation = db.get(ActivityLogOperation, (
+                state.active_generation, digest(category, "batch", batch_id)))
+            if operation is None:
+                raise RuntimeError("原批次操作投影缺失")
+            parent.status = "success" if operation.status == "repaired" else operation.status
+            detail = dict(parent.detail or {})
+            detail.setdefault("original_execution_status", detail.get("execution_status") or old_parent_status)
+            detail.update({"retry_result_status": operation.status,
+                           "retry_updated_at": operation.latest_activity_at.isoformat()})
+            parent.detail = detail
+            from .activity_log_writer import ActivityLogWriter
+            ActivityLogWriter._adjust_daily_stats(
+                db, created_at=parent_created_at, category=category,
+                old_status=old_parent_status, new_status=parent.status, strict=True)
+            db.info["_activity_log_parent_changed"] = True
+            db.info.setdefault("_activity_log_changed_parent_ids", set()).add(parent.id)
+            continue
         rows = compact_import_rows(db, (ActivityLog.category == category) & (import_batch_key() == batch_id))
         if not any((row.get("detail") or {}).get("retry_projection") for row in rows):
             continue
@@ -136,5 +159,15 @@ def sync_retry_parent(db, payloads):
             }.get(root["status"], "running")
         parent.status = root["status"]
         parent.detail = detail
+        from .activity_log_writer import ActivityLogWriter
+        ActivityLogWriter._adjust_daily_stats(
+            db,
+            created_at=parent_created_at,
+            category=category,
+            old_status=old_parent_status,
+            new_status=parent.status,
+            strict=True,
+        )
         # 提交后再失效，避免并发读把事务提交前的旧父行重新放回缓存。
         db.info["_activity_log_parent_changed"] = True
+        db.info.setdefault("_activity_log_changed_parent_ids", set()).add(parent.id)

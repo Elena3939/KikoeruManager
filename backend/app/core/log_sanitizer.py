@@ -86,7 +86,10 @@ def _mask_url(value: str) -> str:
     for key, val in parse_qsl(parts.query, keep_blank_values=True):
         query_pairs.append((key, REDACTED if is_sensitive_log_key(key) and val else val))
     query = urlencode(query_pairs, doseq=True)
-    return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
+    fragment = parts.fragment
+    if (parts.hostname or "").lower() in {"mega.nz", "mega.io", "www.mega.nz", "www.mega.io"} and fragment:
+        fragment = REDACTED
+    return urlunsplit((parts.scheme, netloc, parts.path, query, fragment))
 
 
 def mask_url_for_log(value: str) -> str:
@@ -97,6 +100,27 @@ def mask_url_for_log(value: str) -> str:
     if _URL_RE.fullmatch(text):
         return _mask_url(text)
     return _URL_RE.sub(lambda match: _mask_url(match.group("url")), text)
+
+
+def mask_urls_in_data(value: Any) -> Any:
+    """脱敏公开数据中的 MEGA 密钥，同时保留原有链接格式。"""
+    if isinstance(value, str):
+        def mask_mega(match):
+            url = match.group("url")
+            try:
+                parts = urlsplit(url)
+            except ValueError:
+                return url
+            if ((parts.hostname or "").lower() in {"mega.nz", "mega.io", "www.mega.nz", "www.mega.io"}
+                    and parts.fragment and parts.fragment.strip("*")):
+                return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, REDACTED))
+            return url
+        return _URL_RE.sub(mask_mega, value)
+    if isinstance(value, dict):
+        return {key: mask_urls_in_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [mask_urls_in_data(item) for item in value]
+    return value
 
 
 def sanitize_text_for_log(value: Any, *, max_length: int = 1000) -> str:

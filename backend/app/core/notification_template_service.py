@@ -207,19 +207,7 @@ def ensure_default_email_templates() -> None:
                 description='一个模板覆盖所有任务，业务组件由任务详情自动渲染。',
             )
             db.add(item)
-        else:
-            item.channel = 'email'
-            item.event_types = ['completed', 'failed', 'waiting_manual']
-            item.task_domains = []
-            item.editor_mode = 'blocks'
-            item.blocks = blocks
-            item.subject_template = item.subject_template or _DEFAULT_USER_SUBJECT
-            item.text_template = item.text_template or '{事件名称}\n{任务标题}\n{摘要}'
-            item.enabled = True
-            item.is_default = True
-            item.sort_order = 0
-            item.description = item.description or '一个模板覆盖所有任务，业务组件由任务详情自动渲染。'
-            item.html_template = html_template
+        # 已存在的模板属于用户配置，启动时不能覆盖积木、模式或开关。
         db.commit()
     except Exception:
         db.rollback()
@@ -802,15 +790,35 @@ def delete_template(template_id: str) -> bool:
         db.close()
 
 
-def preview_template(template_id: Optional[str], payload: dict) -> dict:
+def preview_template(template_id: Optional[str], payload: dict, template: Optional[dict] = None) -> dict:
     """预览模板渲染结果"""
+    if template is not None:
+        from types import SimpleNamespace
+        draft = SimpleNamespace(**{
+            'name': '未保存模板', 'editor_mode': 'html', 'blocks': [],
+            'subject_template': '', 'html_template': '', 'text_template': '',
+            **template,
+        })
+        if draft.editor_mode == 'blocks' and draft.blocks:
+            subject, html_body, text_body = render_blocks_email(
+                draft.blocks, {**payload, '_subject_template': draft.subject_template},
+            )
+        else:
+            subject, html_body, text_body = _render_user_template(draft, payload)
+        return {'subject': subject, 'html': html_body, 'text': text_body}
     if template_id:
         from ..models.database import SessionLocal, NotificationTemplate
         db = SessionLocal()
         try:
             tpl = db.query(NotificationTemplate).filter(NotificationTemplate.id == template_id).first()
             if tpl:
-                subject, html_body, text_body = _render_user_template(tpl, payload)
+                if tpl.editor_mode == 'blocks' and tpl.blocks:
+                    payload_with_subject = dict(payload or {})
+                    if tpl.subject_template:
+                        payload_with_subject['_subject_template'] = tpl.subject_template
+                    subject, html_body, text_body = render_blocks_email(tpl.blocks, payload_with_subject)
+                else:
+                    subject, html_body, text_body = _render_user_template(tpl, payload)
                 return {'subject': subject, 'html': html_body, 'text': text_body}
         finally:
             db.close()

@@ -78,7 +78,7 @@
           size="small"
           style="min-width: 150px; max-width: 220px"
         >
-          <el-option v-for="mod in availableModules" :key="mod" :label="mod" :value="mod" />
+          <el-option v-for="mod in availableModules" :key="mod" :label="getLogModuleLabel(mod)" :value="mod" :title="mod" />
         </el-select>
       </div>
 
@@ -417,6 +417,8 @@ import { getTaskDomainMeta, getTaskSubtypeMeta } from '../components/common/task
 import { getHttpDownloadDisplayMeta } from '../components/common/httpDownloadPlatformMeta'
 import { buildTaskProgress, parseTaskProgressPayload, resolveLogTaskPhase } from '../utils/logProgress'
 import { mergeLogWindow, createLogFilter } from '../utils/logWindow'
+import { getLogModuleLabel } from '../utils/logModuleLabels'
+import { copyText } from '../utils/clipboard'
 import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 import StatefulButton from '../components/ui/stateful-button.vue'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
@@ -1349,8 +1351,8 @@ async function copyVisibleLogs() {
     [log.time || '--', log.level, log.module || '-', getLogCopyMessage(log)].join(' | ')
   )
   try {
-    await navigator.clipboard.writeText(lines.join('\n'))
-    ElMessage.success(`已复制 ${filteredLogs.value.length} 条日志`)
+    if (await copyText(lines.join('\n'))) ElMessage.success(`已复制 ${filteredLogs.value.length} 条日志`)
+    else throw new Error('clipboard unavailable')
   } catch {
     ElMessage.warning('复制失败，请手动选中')
   }
@@ -1547,6 +1549,23 @@ function updateActiveTask(event) {
     ...metadata.upload_runtime,
     ...event.upload_runtime,
   }
+  if (!newAttempt && old?.domain === 'upload') {
+    // 任务中心允许 Redis/SSE 和 overview 交错到达；迟到快照不能把上传字节和文件计数回退。
+    for (const key of [
+      'transferred_bytes',
+      'total_bytes',
+      'completed_files',
+      'total_files',
+      'current_file_total_bytes',
+      'current_file_uploaded_bytes',
+    ]) {
+      const previous = Number(old.transferRuntime?.[key])
+      const incoming = Number(uploadRuntime[key])
+      if (Number.isFinite(previous) && previous > 0 && (!Number.isFinite(incoming) || incoming < previous)) {
+        uploadRuntime[key] = previous
+      }
+    }
+  }
   const runtimeUpdate = {
     ...metadata.runtime,
     ...metadata.download_runtime,
@@ -1569,8 +1588,8 @@ function updateActiveTask(event) {
   const currentStep = event.current_step ?? old?.currentStep ?? ''
   const ioActive = ioRuntime.io_active === true
   const stepPhase = [
-    [/等待.*槽位|等待.*资源|排队/, '排队'], [/准备|预检|初始化/, '准备'],
-    [/解压/, '解压'], [/移动|搬运|归档/, '移动'], [/上传/, '上传'],
+    [/等待入库/, '等待入库'], [/等待.*槽位|等待.*资源|排队/, '排队'], [/准备|预检|初始化/, '准备'],
+    [/解压/, '解压'], [/移动|搬运|归档/, '移动'], [/入库/, '入库'], [/上传/, '上传'],
     [/下载/, '下载'], [/校验|验证/, '校验'], [/元数据|作品信息/, '元数据'],
     [/过滤/, '过滤'], [/重命名/, '重命名'],
   ].find(([pattern]) => pattern.test(currentStep))?.[1]
@@ -1595,7 +1614,7 @@ function updateActiveTask(event) {
   const sourceKey = source.key
   const number = value => Math.max(0, Number(value) || 0)
   const speedLabel = ioActive ? (runtime.speed_kind === 'read' ? '解压' : '移动')
-    : /上传/.test(phase) ? '上传' : /下载|接收/.test(phase) ? '下载' : ''
+    : phase === '入库' ? '入库' : /上传/.test(phase) ? '上传' : /下载|接收/.test(phase) ? '下载' : ''
   const hasSpeed = !finished && !!speedLabel && runtime.speed_bytes_per_sec != null
     && Number.isFinite(Number(runtime.speed_bytes_per_sec))
   const speed = hasSpeed ? number(runtime.speed_bytes_per_sec) : 0
@@ -1608,6 +1627,10 @@ function updateActiveTask(event) {
   const eta = finished || (!ioActive && !speedLabel) ? null
     : (backendEta || (speed > 0 && total > bytes ? Math.ceil((total - bytes) / speed) : null))
   const now = Date.now()
+  const incomingProgress = Number(event.progress)
+  const progress = !newAttempt && old?.domain === 'upload' && Number.isFinite(incomingProgress)
+    ? Math.max(Number(old.progress || 0), incomingProgress)
+    : Math.min(100, number(event.progress ?? old?.progress))
   const task = {
     id, runtime, transferRuntime, ioRuntime, taskType, kind, status, domain, subtype, currentStep, retryCount, sourceKey,
     sourcePlatforms: source.platforms, sourceIcon: source.iconSrc, sourceName: source.iconLabel,
@@ -1615,7 +1638,7 @@ function updateActiveTask(event) {
     retrying: !!(event.retry_from_conflicts || metadata.retry_from_conflicts || metadata.linked_conflict_retrying
       || event.details?.retrying || metadata.retry_conflict_id || retryCount > 0 || old?.retrying),
     label: event.rjcode || event.title || event.source_label || old?.label || id.slice(0, 8),
-    progress: Math.min(100, number(event.progress ?? old?.progress)), finished,
+    progress, finished,
     failed: ['failed', 'partial_failed'].includes(status), cancelled: status === 'cancelled',
     speed, speedLabel, hasSpeed, hasBytes, bytes, total, eta, fileIndex: runtime.file_index ?? runtime.current_file_index ?? runtime.completed_files ?? 0,
     fileCount: runtime.file_count ?? runtime.total_files ?? 0,

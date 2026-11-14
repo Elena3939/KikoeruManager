@@ -766,16 +766,16 @@ async function runPreview() {
   previewing.value = true
   errorMsg.value = ''
   try {
-    // 后端预览需要落库的模板才能精确定位，但若是新建则只能用 payload 直接渲染。
-    // 为了让"未保存就能预览"，我们组装一份本地变量做客户端简单 format。
+    // 直接渲染当前草稿，预览不保存模板，与实际发信使用相同渲染器。
     const event_type = form.event_types[0] || 'completed'
     const samplePayload = buildSamplePayload(event_type)
-    let result
-    if (props.template?.id) {
-      result = await notificationApi.previewTemplate(props.template.id, samplePayload)
-    } else {
-      result = renderLocalPreview(samplePayload)
-    }
+    const result = await notificationApi.previewTemplate(props.template?.id, samplePayload, {
+      editor_mode: form.editor_mode,
+      blocks: blockEditorRef.value?.getBlocks() ?? form.blocks,
+      subject_template: form.subject_template,
+      html_template: form.html_template,
+      text_template: form.text_template,
+    })
     preview.subject = result.subject || ''
     preview.html = result.html || ''
     preview.text = result.text || ''

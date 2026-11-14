@@ -144,7 +144,7 @@
 
         <div
           v-if="getGarbledDiagnostic(item)"
-          class="filename-diagnostic mt-3 rounded-[8px] border border-slate-200 bg-white p-3"
+          class="filename-diagnostic mt-3 border-l-2 border-amber-400/80 bg-slate-50/60 px-3 py-2.5"
         >
           <div class="flex items-start gap-2">
             <AlertTriangle :size="15" :stroke-width="2.4" class="mt-0.5 flex-shrink-0 text-amber-600" />
@@ -153,33 +153,33 @@
               <p class="mt-1 text-[11.5px] leading-relaxed text-slate-600">
                 {{ buildGarbledSummary(getGarbledDiagnostic(item)) }}
               </p>
-              <div class="mt-2 grid grid-cols-2 gap-2 text-[11px]">
-                <div class="rounded-[8px] border border-slate-100 bg-slate-50 px-2.5 py-2">
+              <div class="filename-diagnostic-metrics mt-2 grid grid-cols-2 gap-x-5 gap-y-1.5 text-[11px]">
+                <div class="min-w-0 py-1">
                   <span class="block text-slate-400">样本</span>
                   <b class="mt-0.5 block break-all text-slate-800">{{ getGarbledDiagnostic(item).sample || '—' }}</b>
                 </div>
-                <div class="rounded-[8px] border border-slate-100 bg-slate-50 px-2.5 py-2">
+                <div class="min-w-0 py-1">
                   <span class="block text-slate-400">评分</span>
                   <b class="mt-0.5 block text-slate-800">
                     {{ getGarbledDiagnostic(item).scoreBefore }} → {{ getGarbledDiagnostic(item).scoreAfter }}
                   </b>
                 </div>
-                <div class="rounded-[8px] border border-slate-100 bg-slate-50 px-2.5 py-2">
+                <div class="min-w-0 py-1">
                   <span class="block text-slate-400">修复 / 编码尝试</span>
                   <b class="mt-0.5 block text-slate-800">
                     {{ getGarbledDiagnostic(item).repairedCount }} / {{ getGarbledDiagnostic(item).codecPairsTried }}
                   </b>
                 </div>
-                <div class="rounded-[8px] border border-slate-100 bg-slate-50 px-2.5 py-2">
+                <div class="min-w-0 py-1">
                   <span class="block text-slate-400">触发位置</span>
                   <b class="mt-0.5 block text-slate-800">{{ getGarbledDiagnostic(item).origin || '—' }}</b>
                 </div>
               </div>
-              <div v-if="getGarbledDiagnostic(item).topSamples.length" class="filename-diagnostic-samples mt-2 max-h-[142px] overflow-y-auto rounded-[8px] border border-slate-100">
+              <div v-if="getGarbledDiagnostic(item).topSamples.length" class="filename-diagnostic-samples mt-2">
                 <div
                   v-for="entry in getGarbledDiagnostic(item).topSamples"
                   :key="`${entry.name}-${entry.score}`"
-                  class="grid grid-cols-[1fr_48px] gap-2 border-b border-slate-100 px-2.5 py-2 text-[11px] last:border-b-0"
+                  class="filename-diagnostic-row grid grid-cols-[1fr_48px] gap-2 border-t border-slate-200/80 px-0 py-1.5 text-[11px] first:border-t-0"
                 >
                   <div class="min-w-0">
                     <div class="break-all font-semibold text-slate-700">{{ entry.name }}</div>
@@ -197,6 +197,34 @@
             </div>
           </div>
         </div>
+
+        <section
+          v-if="volumePreview"
+          class="mt-3 overflow-hidden rounded-[10px] border border-amber-200 bg-amber-50/60"
+        >
+          <div class="flex items-start gap-2 border-b border-amber-200/80 px-3 py-2.5">
+            <FolderOpen :size="15" :stroke-width="2.3" class="mt-0.5 flex-shrink-0 text-amber-700" />
+            <div class="min-w-0">
+              <div class="text-[12px] font-bold text-amber-950">分卷文件预览</div>
+              <p class="mt-0.5 text-[11.5px] leading-relaxed text-amber-900/80">
+                {{ volumePreviewSummary }}
+              </p>
+            </div>
+          </div>
+          <div class="max-h-[240px] overflow-y-auto px-2.5 py-2 detail-scroll">
+            <div
+              v-for="entry in volumePreview.files"
+              :key="entry.path || entry.name"
+              class="grid grid-cols-[34px_minmax(0,1fr)_72px] items-center gap-2 border-b border-amber-200/60 py-1.5 text-[11px] last:border-b-0"
+            >
+              <span class="text-center font-bold tabular-nums text-amber-800">
+                {{ entry.index ? `#${entry.index}` : '—' }}
+              </span>
+              <span class="min-w-0 break-all font-mono text-amber-950">{{ entry.name || entry.path || '未知文件' }}</span>
+              <span class="text-right tabular-nums text-amber-800">{{ formatVolumeSize(entry.size) }}</span>
+            </div>
+          </div>
+        </section>
       </section>
 
       <!-- 进度元信息：定义列表 2 列，无独立边框 -->
@@ -476,6 +504,42 @@ const extractTiming = computed(() => {
   return metadata.extract_timing?.version === 1 ? metadata.extract_timing : null
 })
 const timingSeconds = value => `${(Number(value || 0) / 1000).toFixed(1)} 秒`
+const volumePreview = computed(() => {
+  const metadata = props.item?.details?.metadata || props.item?.metadata || {}
+  const payload = metadata.disguised_volume_set
+  const files = Array.isArray(payload?.suspect_files)
+    ? payload.suspect_files
+      .map((entry, index) => ({
+        ...entry,
+        index: Number(entry?.index || 0) || index + 1,
+        name: String(entry?.name || entry?.path || '').split(/[\\/]/).pop(),
+      }))
+      .filter(entry => entry.name || entry.path)
+    : []
+  if (!files.length) return null
+  return {
+    kind: String(payload?.detected_kind || '').toLowerCase(),
+    files,
+    reason: String(payload?.reason || metadata.extract_missing_volume_error || '').trim(),
+  }
+})
+const volumePreviewSummary = computed(() => {
+  if (!volumePreview.value) return ''
+  const kind = volumePreview.value.kind === '7z' ? '7z' : volumePreview.value.kind.toUpperCase() || '压缩包'
+  const reason = volumePreview.value.reason
+  if (reason.includes('首卷') || reason.includes('.7z.001')) {
+    return `${kind} 分卷共 ${volumePreview.value.files.length} 个；当前首个文件疑似由 .7z.001 被改名为 .7z。`
+  }
+  return `${kind} 分卷共 ${volumePreview.value.files.length} 个，以下为任务失败时保留的原始文件清单。`
+})
+function formatVolumeSize(bytes) {
+  const value = Number(bytes || 0)
+  if (!value) return '0 B'
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`
+  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
 
 const restoreMenu = ref(null)
 const treeScrollRef = ref(null)
@@ -1245,15 +1309,18 @@ function actionToneClass(action) {
 }
 
 .filename-diagnostic-samples {
-  background: #f8fafc;
-  scrollbar-color: #94a3b8 transparent;
+  background: transparent;
 }
 
-:global(html.kikoerumanager-dark body #app .tasks-page .filename-diagnostic),
-:global(html.kikoerumanager-dark body #app .tasks-page .filename-diagnostic-samples) {
-  background: var(--tasks-panel) !important;
-  border-color: var(--tasks-border) !important;
-  box-shadow: none !important;
+.filename-diagnostic-metrics {
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+@media (max-width: 640px) {
+  .filename-diagnostic-metrics {
+    grid-template-columns: 1fr;
+  }
 }
 
 .detail-scroll::-webkit-scrollbar {

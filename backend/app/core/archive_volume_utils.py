@@ -62,6 +62,9 @@ def sort_archive_volumes(paths: Iterable[str]) -> List[str]:
         if match:
             return (2, int(match.group(1)), name)
 
+        if name.endswith(".7z"):
+            return (2, 0, name)
+
         if name.endswith(".exe"):
             return (3, 0, name)
 
@@ -145,8 +148,32 @@ def detect_archive_volume_group(
     if match:
         base = match.group("base")
         volumes = collect(rf"{re.escape(base)}\.7z\.\d{{3}}")
+        renamed_main = existing(f"{base}.7z")
+        if os.path.isfile(renamed_main):
+            volumes.append(renamed_main)
         if len(volumes) > 1:
-            return ArchiveVolumeGroup(base, sort_archive_volumes(volumes), "7z")
+            volume_type = (
+                "7z_main_with_ext"
+                if os.path.isfile(renamed_main)
+                and not any(
+                    os.path.basename(path).lower().endswith(".7z.001")
+                    for path in volumes
+                )
+                else "7z"
+            )
+            return ArchiveVolumeGroup(base, sort_archive_volumes(volumes), volume_type)
+
+    # 某些下载器把真正的 .7z.001 首卷错误改名为 .7z，但后续卷仍保留
+    # .7z.002、.7z.003。必须先把它们归为一组，交给解压层报告“缺少
+    # 标准首卷”，不能让 .7z 被当成普通单体压缩包。
+    match = re.fullmatch(r"(?P<base>.+)\.7z", filename, re.IGNORECASE)
+    if match:
+        base = match.group("base")
+        main = existing(filename)
+        volumes = [main] if os.path.isfile(main) else []
+        volumes.extend(collect(rf"{re.escape(base)}\.7z\.\d{{3}}"))
+        if len(volumes) > 1:
+            return ArchiveVolumeGroup(base, sort_archive_volumes(volumes), "7z_main_with_ext")
 
     match = re.fullmatch(r"(?P<base>.+)\.zip\.\d{3}", filename, re.IGNORECASE)
     if match:

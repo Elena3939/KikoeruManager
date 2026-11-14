@@ -1395,8 +1395,14 @@
 
 
     <Teleport to="body">
+      <LibraryPdfReader
+        v-if="mediaPreviewDialog.visible && mediaPreviewDialog.kind === 'pdf'"
+        :src="mediaPreviewDialog.url"
+        :title="mediaPreviewDialog.title"
+        @close="closeMediaPreviewDialog"
+      />
       <section
-        v-if="mediaPreviewDialog.visible"
+        v-else-if="mediaPreviewDialog.visible"
         class="pointer-events-none fixed inset-0 z-[2450] flex items-center justify-center p-6 max-[900px]:p-3"
       >
         <div
@@ -1404,8 +1410,7 @@
           :style="mediaPreviewDialogStyle"
         >
           <header
-            class="relative z-30 flex h-12 min-h-12 min-w-0 cursor-grab touch-none select-none items-center justify-between gap-3 overflow-visible bg-transparent px-4 active:cursor-grabbing"
-            :class="mediaPreviewDialog.kind === 'pdf' ? 'border-b-0 shadow-[inset_0_-1px_0_rgba(255,255,255,0.42)]' : 'border-b border-white/55'"
+            class="relative z-30 flex h-12 min-h-12 min-w-0 cursor-grab touch-none select-none items-center justify-between gap-3 overflow-visible border-b border-white/55 bg-transparent px-4 active:cursor-grabbing"
             @pointerdown="handleMediaPreviewDragStart"
           >
             <div class="min-w-0 flex-1 truncate text-[13px] font-semibold text-slate-900">
@@ -1475,16 +1480,6 @@
                   </button>
                 </div>
               </template>
-              <AppDropdown
-                v-if="mediaPreviewDialog.kind === 'text'"
-                v-model="mediaPreviewTextEncoding"
-                :options="mediaPreviewTextEncodingOptions"
-                :width="150"
-                :menu-min-width="220"
-                label="编码"
-                :show-trigger-badge="false"
-                @change="handleMediaPreviewTextEncodingChange"
-              />
               <button
                 type="button"
                 class="group inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[10px] border border-white/50 bg-white/30 text-slate-500 shadow-sm transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94]"
@@ -1567,16 +1562,18 @@
               playsinline
             ></video>
 
-            <iframe
-              v-else
-              ref="mediaPreviewFrameRef"
-              class="h-[min(760px,calc(100vh-96px))] w-[min(1100px,calc(100vw-48px))] border-0 bg-white max-[900px]:h-[calc(100vh-72px)] max-[900px]:w-[calc(100vw-24px)]"
-              :src="mediaPreviewDialog.url"
-              :title="mediaPreviewDialog.title"
-            ></iframe>
+            <div
+              v-else-if="mediaPreviewDialog.kind === 'text'"
+              class="h-[min(760px,calc(100vh-96px))] w-[min(1100px,calc(100vw-48px))] max-[900px]:h-[calc(100vh-72px)] max-[900px]:w-[calc(100vw-24px)]"
+            >
+              <LibraryTextReader
+                :src="mediaPreviewDialog.url"
+                :file-key="`${mediaPreviewDialog.libraryId}::${mediaPreviewDialog.path}`"
+              />
+            </div>
           </div>
 
-          <template v-if="mediaPreviewDialog.kind === 'image' || mediaPreviewDialog.kind === 'pdf'">
+          <template v-if="mediaPreviewDialog.kind === 'image'">
             <div class="media-preview-resize-zone media-preview-resize-zone-top" data-direction="n" @pointerdown="handleMediaPreviewResizeStart"></div>
             <div class="media-preview-resize-zone media-preview-resize-zone-right" data-direction="e" @pointerdown="handleMediaPreviewResizeStart"></div>
             <div class="media-preview-resize-zone media-preview-resize-zone-bottom" data-direction="s" @pointerdown="handleMediaPreviewResizeStart"></div>
@@ -1850,7 +1847,7 @@ const { uploadDropHint, uploadDragState, onExternalUploadOver, onExternalUploadL
   return { ...target, libraryName: library.name, element: rowElement || breadcrumb }
 })
 
-import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 
 const uploadDragIconRows = computed(() => (uploadDragState.value?.items.length ? uploadDragState.value.items : [{}]).map(item => ({
   name: item.name || (item.type?.startsWith('image/') ? 'image.png' : item.type?.startsWith('audio/') ? 'audio.mp3' : item.type?.startsWith('video/') ? 'video.mp4' : item.type === 'application/pdf' ? 'file.pdf' : 'file'),
@@ -1948,6 +1945,25 @@ import {
 import { classifyLibraryEntryKind, libraryEntryIconFor, libraryEntryMetaFor } from '../components/library/_libraryFileKind'
 
 import { ElMessage } from 'element-plus'
+
+import lightGallery from 'lightgallery'
+import { createLibraryMediaGallery } from '../utils/libraryMediaGallery'
+import { buildLightGalleryVideoItem, LIGHT_GALLERY_OPEN_OPTIONS } from '../utils/libraryMediaPreview'
+import lgZoom from 'lightgallery/plugins/zoom'
+import lgVideo from 'lightgallery/plugins/video'
+import lgFullscreen from 'lightgallery/plugins/fullscreen'
+import lgThumbnail from 'lightgallery/plugins/thumbnail'
+import lgRotate from '../utils/libraryMediaRotate'
+import 'lightgallery/css/lightgallery.css'
+import 'lightgallery/css/lg-zoom.css'
+import 'lightgallery/css/lg-video.css'
+import 'lightgallery/css/lg-fullscreen.css'
+import 'lightgallery/css/lg-thumbnail.css'
+import 'lightgallery/css/lg-rotate.css'
+import '../styles/library-media-preview.css'
+
+const LibraryPdfReader = defineAsyncComponent(() => import('../components/library/LibraryPdfReader.vue'))
+const LibraryTextReader = defineAsyncComponent(() => import('../components/library/LibraryTextReader.vue'))
 
 import { aiSubtitleMatchApi, asmrSyncApi, baiduNetdiskApi, configApi, isCanceledApiRequest, libraryApi, localUploadApi, rjSubtitleApi, taskApi, taskCenterApi, synologyOtpRequired } from '../api'
 
@@ -3195,19 +3211,6 @@ const mediaPreviewDialog = ref({
   previewKey: '',
 })
 
-const mediaPreviewTextEncoding = ref('auto')
-
-const mediaPreviewTextEncodingOptions = [
-  { value: 'auto', label: '自动识别', description: '按常见文本编码自动尝试' },
-  { value: 'utf-8', label: 'UTF-8', description: '现代文本 / Markdown / JSON' },
-  { value: 'utf-8-sig', label: 'UTF-8 BOM', description: '带 BOM 的 UTF-8 文本' },
-  { value: 'shift_jis', label: 'Shift-JIS', description: '日文旧文本常见编码' },
-  { value: 'cp932', label: 'CP932', description: 'Windows 日文文本常见编码' },
-  { value: 'gb18030', label: 'GB18030', description: '简繁中文兼容编码' },
-  { value: 'big5', label: 'Big5', description: '繁体中文旧文本常见编码' },
-  { value: 'utf-16', label: 'UTF-16', description: 'Windows 记事本文本' },
-]
-
 const mediaPreviewTransitionName = ref('media-preview-next')
 
 const mediaPreviewImageFrame = ref({ width: 0, height: 0 })
@@ -3255,7 +3258,7 @@ function clampMediaPreviewDialogOffset (offset, size = mediaPreviewDialogSize.va
 }
 
 const mediaPreviewDialogStyle = computed(() => ({
-  ...(mediaPreviewDialog.value.kind === 'image' || mediaPreviewDialog.value.kind === 'pdf'
+  ...(mediaPreviewDialog.value.kind === 'image'
     ? {
         width: `${mediaPreviewDialogSize.value.width}px`,
         height: `${mediaPreviewDialogSize.value.height}px`,
@@ -3275,7 +3278,7 @@ const mediaPreviewDialogSizeText = computed(() => {
 })
 
 function handleMediaPreviewViewportResize () {
-  if (!mediaPreviewDialog.value.visible || !['image', 'pdf'].includes(mediaPreviewDialog.value.kind)) return
+  if (!mediaPreviewDialog.value.visible || mediaPreviewDialog.value.kind !== 'image') return
   const { maxWidth, maxHeight } = getMediaPreviewViewportBounds()
   const current = mediaPreviewDialogSize.value
   const scale = Math.min(1, maxWidth / Math.max(current.width, 1), maxHeight / Math.max(current.height, 1))
@@ -3294,9 +3297,9 @@ function handleMediaPreviewViewportResize () {
 
 const mediaPreviewImageRef = ref(null)
 
-const mediaPreviewVideoRef = ref(null)
+const mediaLightGallery = createLibraryMediaGallery(lightGallery)
 
-const mediaPreviewFrameRef = ref(null)
+const mediaPreviewVideoRef = ref(null)
 
 const imageZoomState = ref({ scale: 1, translateX: 0, translateY: 0 })
 
@@ -3425,7 +3428,7 @@ function handleMediaPreviewDragEnd () {
 }
 
 function handleMediaPreviewResizeStart (event) {
-  if (!['image', 'pdf'].includes(mediaPreviewDialog.value.kind)) return
+  if (mediaPreviewDialog.value.kind !== 'image') return
   event.preventDefault()
   event.currentTarget?.setPointerCapture?.(event.pointerId)
   mediaPreviewDialogUserResized.value = true
@@ -3571,24 +3574,8 @@ function buildMediaPreviewUrl (libraryId, path, options = {}) {
 }
 
 function buildTextMediaPreviewUrl (libraryId, path) {
-
-  return buildMediaPreviewUrl(libraryId, path, {
-    encoding: mediaPreviewTextEncoding.value,
-    cacheBust: true,
-  })
-
-}
-
-function handleMediaPreviewTextEncodingChange () {
-
-  if (mediaPreviewDialog.value.kind !== 'text') return
-
-  mediaPreviewDialog.value = {
-    ...mediaPreviewDialog.value,
-    url: buildTextMediaPreviewUrl(selectedLibraryId.value, mediaPreviewDialog.value.path),
-    previewKey: buildMediaPreviewKey(selectedLibraryId.value, mediaPreviewDialog.value.path),
-  }
-
+  const url = buildMediaPreviewUrl(libraryId, path, { cacheBust: true })
+  return `${url}${url.includes('?') ? '&' : '?'}raw=true`
 }
 
 function buildMediaPreviewKey (libraryId, path) {
@@ -3649,6 +3636,53 @@ function handleMediaPreviewImageLoad (event) {
     }
   }
 
+}
+
+async function openMediaLightGallery (libraryId, initialPath, kind = 'image', title = '') {
+  const rows = kind === 'image'
+    ? mediaPreviewImageRows.value
+    : [{ path: initialPath, name: title }]
+  const initialIndex = Math.max(0, rows.findIndex(row => row?.path === initialPath))
+  // 只建立媒体清单；原图加载和尺寸读取交给插件，避免整目录下载阻塞首屏。
+  const items = rows.map(row => {
+    const src = buildMediaPreviewUrl(libraryId, row.path)
+    if (kind === 'video') {
+      return buildLightGalleryVideoItem(src, row.name)
+    }
+    return {
+      src,
+      thumb: src,
+      alt: row.name || '图片',
+      title: row.name || '图片',
+    }
+  })
+
+  if (!items.length) return
+
+  await mediaLightGallery.open({
+    ...LIGHT_GALLERY_OPEN_OPTIONS,
+    dynamic: true,
+    dynamicEl: items,
+    plugins: [
+      lgZoom,
+      lgFullscreen,
+      lgThumbnail,
+      lgRotate,
+      ...(kind === 'video' ? [lgVideo] : []),
+    ],
+    index: initialIndex,
+    // 仅保留当前及相邻图片，缩略图只渲染可见窗口，限制请求与解码竞争。
+    preload: 2,
+    numberOfSlideItemsInDom: 5,
+    virtualization: { slides: 5, thumbs: 2 },
+    download: true,
+    zoom: true,
+    actualSize: true,
+    fullscreen: true,
+    thumbnail: kind === 'image',
+    rotate: true,
+    loop: false,
+  }, initialIndex)
 }
 
 const tampermonkeyLoaded = ref(false)
@@ -21235,6 +21269,8 @@ function handleSubtitleInspectorRowClick (row, event) {
 
 
 function handleSubtitleDialogKeydown (event) {
+  // PDF 的快捷键、内部弹窗和退出由独立阅读器处理。
+  if (mediaPreviewDialog.value.visible && mediaPreviewDialog.value.kind === 'pdf') return
 
   if (event?.key === 'Escape' && mediaPreviewDialog.value.visible) {
 
@@ -21809,10 +21845,14 @@ async function viewLibraryRow (row) {
   const targetLibraryId = target.library_id || selectedLibraryId.value
 
   const targetLibrary = getLibraryById(targetLibraryId)
+  const kind = classifyLibraryEntryKind(target)
+
+  if (['image', 'video'].includes(kind) && targetLibrary?.type !== 'synology_filestation') {
+    await openMediaLightGallery(targetLibraryId, target.path, kind, target.name)
+    return
+  }
 
   if (targetLibrary?.type === 'synology_filestation') {
-
-    const kind = classifyLibraryEntryKind(target)
 
     if (kind === 'image') {
       setMediaPreviewImageMotion(1)
@@ -21820,10 +21860,9 @@ async function viewLibraryRow (row) {
       resetMediaPreviewDialogSize()
     }
 
-    if (kind === 'text') mediaPreviewTextEncoding.value = 'auto'
-
     mediaPreviewDialog.value = {
       visible: true,
+      libraryId: targetLibraryId,
       title: target.name || '远程文件',
       path: target.path || '',
       url: kind === 'text'
@@ -21838,10 +21877,6 @@ async function viewLibraryRow (row) {
 
   }
 
-  const kind = classifyLibraryEntryKind(target)
-
-  if (kind === 'text') mediaPreviewTextEncoding.value = 'auto'
-
   const url = kind === 'text'
     ? buildTextMediaPreviewUrl(targetLibraryId, target.path)
     : buildMediaPreviewUrl(targetLibraryId, target.path)
@@ -21854,6 +21889,7 @@ async function viewLibraryRow (row) {
 
   mediaPreviewDialog.value = {
     visible: true,
+    libraryId: targetLibraryId,
     title: target.name || '文件观看',
     path: target.path || '',
     url,
@@ -21910,13 +21946,6 @@ function releaseMediaPreviewStreams () {
     try { video.load?.() } catch {}
   }
 
-  const frame = mediaPreviewFrameRef.value
-
-  if (frame) {
-    try { frame.removeAttribute?.('src') } catch {}
-    try { frame.src = 'about:blank' } catch {}
-  }
-
   const image = mediaPreviewImageRef.value
 
   if (image) {
@@ -21927,6 +21956,8 @@ function releaseMediaPreviewStreams () {
 
 
 function closeMediaPreviewDialog () {
+
+  void mediaLightGallery.close()
 
   releaseMediaPreviewStreams()
 

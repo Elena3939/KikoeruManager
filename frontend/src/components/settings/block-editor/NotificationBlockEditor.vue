@@ -372,6 +372,7 @@ defineExpose({
 }
 .blk-prev-panel {
   width: min(880px, 100%);
+  height: calc(100dvh - 64px);
   max-height: calc(100vh - 64px);
   background: var(--set-surface);
   border: 1px solid var(--set-border);
@@ -436,5 +437,15 @@ defineExpose({
 .blk-prev-fade-enter-from .blk-prev-panel,
 .blk-prev-fade-leave-to .blk-prev-panel {
   transform: translateY(8px) scale(0.98);
+}
+
+@media (max-width: 640px) {
+  .blk-body { flex-direction: column; overflow-y: auto; }
+  .blk-body > :first-child { flex: none; min-height: 360px; }
+  .blk-right { width: 100%; min-height: 220px; flex-shrink: 0; }
+  .blk-prev-mask { padding: 8px; }
+  .blk-prev-panel { height: calc(100dvh - 16px); max-height: calc(100dvh - 16px); }
+  .blk-prev-head-title { flex-wrap: wrap; }
+  .blk-prev-head-hint { margin-left: 0; }
 }
 </style>

@@ -38,11 +38,12 @@
         <span>{{ blocks.length ? '点击刷新查看邮件预览' : '添加块后预览邮件效果' }}</span>
       </div>
     </div>
+    <div v-if="errorMessage" class="blk-preview-error" role="alert">{{ errorMessage }}</div>
   </div>
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { onUnmounted, ref, watch } from 'vue'
 import { Mail, RefreshCw } from 'lucide-vue-next'
 import { notificationApi } from '../../../api'
 
@@ -57,18 +58,22 @@ const eventType   = ref(props.eventType)
 const htmlContent = ref('')
 const subjectText = ref('')
 const loading     = ref(false)
+const errorMessage = ref('')
 const requestId   = ref(0)
 
 let debounceTimer = null
-let abortController = null
 
 watch(
-  [() => props.blocks, eventType],
+  [() => props.blocks, eventType, () => props.subjectTemplate, () => props.domain],
   ([newBlocks]) => {
+    clearTimeout(debounceTimer)
+    ++requestId.value
     // blocks 为空时直接清空预览，不发请求
     if (!newBlocks?.length) {
       htmlContent.value = ''
       subjectText.value = ''
+      loading.value = false
+      errorMessage.value = ''
       return
     }
     clearTimeout(debounceTimer)
@@ -78,15 +83,15 @@ watch(
 )
 
 async function fetchPreview() {
+  clearTimeout(debounceTimer)
   if (!props.blocks.length) {
     htmlContent.value = ''
     subjectText.value = ''
     return
   }
-  abortController?.abort()
-  abortController = new AbortController()
   const id = ++requestId.value
   loading.value = true
+  errorMessage.value = ''
   try {
     const res = await notificationApi.previewBlocks(
       props.blocks,
@@ -98,12 +103,21 @@ async function fetchPreview() {
     if (id !== requestId.value) return
     htmlContent.value = res.html || ''
     subjectText.value = res.subject || ''
-  } catch {
-    // 中断请求静默处理
+  } catch (error) {
+    if (id !== requestId.value) return
+    htmlContent.value = ''
+    subjectText.value = ''
+    errorMessage.value = error.response?.data?.detail || error.message || '邮件预览失败，请重试'
   } finally {
     if (id === requestId.value) loading.value = false
   }
 }
+
+watch(() => props.eventType, value => { eventType.value = value })
+onUnmounted(() => {
+  clearTimeout(debounceTimer)
+  ++requestId.value
+})
 
 defineExpose({ fetchPreview })
 </script>
@@ -205,6 +219,11 @@ defineExpose({ fetchPreview })
   justify-content: center;
   gap: 10px;
   color: var(--set-text-subtle, rgba(29, 29, 31, 0.35));
+  font-size: 12px;
+}
+.blk-preview-error {
+  padding: 10px 14px;
+  color: var(--set-text-strong, #1d1d1f);
   font-size: 12px;
 }
 </style>

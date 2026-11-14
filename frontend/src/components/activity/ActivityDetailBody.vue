@@ -251,11 +251,11 @@
       />
 
       <!-- 完整 detail JSON 折叠 -->
-      <section v-if="rawDetailString" class="panel">
+      <section v-if="hasRawDetail" class="panel">
         <div class="panel-head clickable" @click="rawExpanded = !rawExpanded">
           <Code2 :size="13" :stroke-width="2.4" />
           <span>原始 detail JSON</span>
-          <span class="ml-1 inline-flex items-center px-1.5 py-[1px] rounded text-[10px] font-semibold tabular-nums tracking-tight text-slate-600 bg-slate-100/80 ring-1 ring-inset ring-slate-200/60 normal-case">{{ rawDetailLines }} 行</span>
+          <span v-if="rawExpanded" class="ml-1 inline-flex items-center px-1.5 py-[1px] rounded text-[10px] font-semibold tabular-nums tracking-tight text-slate-600 bg-slate-100/80 ring-1 ring-inset ring-slate-200/60 normal-case">{{ rawDetailLines }} 行</span>
           <ChevronDown
             class="panel-toggle-icon"
             :size="14"
@@ -263,7 +263,7 @@
             :class="{ 'is-open': rawExpanded }"
           />
         </div>
-        <div v-show="rawExpanded" class="raw-json-wrap">
+        <div v-if="rawExpanded" class="raw-json-wrap">
           <pre class="raw-json"><code>{{ rawDetailString }}</code></pre>
         </div>
       </section>
@@ -532,7 +532,9 @@ const outputPathDisplay = computed(() => {
 })
 
 // ====== 原始 JSON ======
+const hasRawDetail = computed(() => Boolean(props.row?.detail && typeof props.row.detail === 'object'))
 const rawDetailString = computed(() => {
+  if (!rawExpanded.value) return ''
   const detail = props.row?.detail
   if (!detail || typeof detail !== 'object') return ''
   try {
@@ -562,7 +564,7 @@ const hasContent = computed(() => {
   if (childRows.value.length) return true
   if (sourcePathDisplay.value) return true
   if (outputPathDisplay.value) return true
-  if (rawDetailString.value) return true
+  if (hasRawDetail.value) return true
   return false
 })
 

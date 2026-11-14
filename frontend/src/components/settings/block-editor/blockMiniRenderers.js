@@ -305,19 +305,10 @@ const FILE_STATUS_STYLE = {
 }
 
 function lucideIcon(name, color, size = 15) {
-  const paths = {
-    chevronRight: '<path d="m9 18 6-6-6-6"/>',
-    folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9L9.6 3.9A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
-    folderOpen: '<path d="m6 14 1.5-2.9A2 2 0 0 1 9.2 10H20a2 2 0 0 1 1.8 2.9l-2.2 4.4A3 3 0 0 1 16.9 19H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.7.9l.8 1.2a2 2 0 0 0 1.7.9H19a2 2 0 0 1 2 2v2"/>',
-    file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
-    fileText: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
-    music: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
-    image: '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
-    archive: '<path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/>',
-  }
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:-3px;flex-shrink:0;">${paths[name] || paths.file}</svg>`
+  const glyphs = { chevronRight: '›', folder: '📁', folderOpen: '📂', file: '📄', fileText: '📝', music: '🎵', image: '🖼', archive: '📦' }
+  const glyph = glyphs[name] || glyphs.file
+  return `<span aria-hidden="true" style="display:inline-block;width:${size}px;font-size:${size}px;line-height:1;vertical-align:-2px;flex-shrink:0;color:${color};">${glyph}</span>`
 }
-
 function fileTreeIconName(label) {
   const lower = String(label || '').toLowerCase()
   if (/\.(wav|flac|mp3|m4a|ogg|aac|opus|cue)$/.test(lower)) return 'music'

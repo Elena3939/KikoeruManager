@@ -2,6 +2,20 @@ html.kikoerumanager-dark .conflict-diagnostics {
   color: var(--km-dark-text);
 }
 
+html.kikoerumanager-dark body #app .tasks-page .filename-diagnostic,
+html.kikoerumanager-dark body #app .tasks-page .filename-diagnostic-row {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: var(--tasks-border) !important;
+  box-shadow: none !important;
+}
+html.kikoerumanager-dark body #app .tasks-page .filename-diagnostic {
+  background: rgba(16, 16, 18, 0.42) !important;
+}
+html.kikoerumanager-dark body #app .tasks-page .filename-diagnostic-metrics {
+  border-color: var(--tasks-border) !important;
+}
+
 html.kikoerumanager-dark .conflict-diagnostics pre {
   background: var(--km-dark-elevated);
 }
@@ -2200,8 +2214,6 @@ html.kikoerumanager-dark :is(
   .blk-right,
   .blk-lib,
   .blk-canvas,
-  .blk-canvas-paper,
-  .blk-row,
   .blk-row-actions,
   .blk-row-type-badge,
   .blk-preview,
@@ -2239,13 +2251,10 @@ html.kikoerumanager-dark :is(
   color: var(--km-dark-text-strong) !important;
 }
 
-html.kikoerumanager-dark .blk-row-content :is(table, td, th, div) {
-  border-color: var(--km-dark-border) !important;
-}
-
-html.kikoerumanager-dark .blk-row-content :is(table, td, th) {
-  background: var(--km-dark-surface-soft) !important;
-  color: var(--km-dark-text) !important;
+/* 邮件画布保留实际邮件配色，工具栏和属性面板继续使用工作台主题。 */
+html.kikoerumanager-dark .blk-canvas-paper {
+  background: #fff;
+  color: #1d1d1f;
 }
 
 html.kikoerumanager-dark .rte-body .tiptap {

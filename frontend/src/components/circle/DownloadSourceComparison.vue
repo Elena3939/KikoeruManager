@@ -14,7 +14,7 @@
         <header class="site-comparison-header">
           <div class="site-heading-copy">
             <strong>{{ site.label }}</strong>
-            <span>已选 {{ site.selectedWorks }}/{{ site.groups.length }} 部作品 · {{ site.selectedCount }}/{{ site.count }} {{ site.id === 'imoutoheaven' ? '个压缩包' : '个文件' }} · {{ formatSize(site.selectedBytes) }}/{{ formatSize(site.bytes) }}</span>
+            <span>已选 {{ site.selectedWorks }}/{{ site.groups.length }} 部作品 · {{ site.selectedCount }}/{{ site.count }} {{ site.selection === 'file' ? '个文件' : '个资源组' }} · {{ formatSize(site.selectedBytes) }}/{{ formatSize(site.bytes) }}</span>
           </div>
           <button type="button" class="site-select-button" :aria-pressed="isSiteSelected(site)" @click="chooseSite(site)">{{ isSiteSelected(site) ? '取消全选' : '全选' }}</button>
         </header>
@@ -54,11 +54,10 @@ import { computed } from 'vue'
 import { Link2 } from 'lucide-vue-next'
 import DownloadResourceTree from './DownloadResourceTree.vue'
 import AppDropdown from '../common/AppDropdown.vue'
+import { downloadSources } from './downloadSources'
 const props = defineProps({ plans: { type: Array, required: true }, modelValue: { type: String, default: 'asmr.one' } })
 const emit = defineEmits(['update:modelValue', 'select-site', 'choose-row', 'choose-source', 'toggle-root', 'toggle-expand', 'toggle-all', 'toggle-row'])
-const sites = computed(() => [
-  { id: 'asmr.one', label: 'asmr.one' }, { id: 'imoutoheaven', label: 'YAAS' },
-].map(site => {
+const sites = computed(() => downloadSources.map(site => {
   const entries = props.plans.flatMap(plan => (plan.sourcePreviews?.length ? plan.sourcePreviews : [plan])
     .filter(option => (option.source_provider || 'asmr.one') === site.id)
     .map(option => {

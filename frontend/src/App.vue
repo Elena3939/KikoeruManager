@@ -4047,7 +4047,11 @@ html.kikoerumanager-dark .settings-page .settings-nav-badge.is-dirty {
 }
 
 html.kikoerumanager-dark .settings-page .sidebar-ghost-btn,
-html.kikoerumanager-dark .settings-page button:not(.el-switch__core):not(.settings-nav-item):not(.pikpak-account-tab) {
+html.kikoerumanager-dark .settings-page .save-bar-btn,
+html.kikoerumanager-dark .settings-page .preset-button,
+html.kikoerumanager-dark .settings-page .provider-button,
+html.kikoerumanager-dark .settings-page .add-button,
+html.kikoerumanager-dark .settings-page .settings-legacy-action {
   border-color: rgba(96, 165, 250, 0.24) !important;
 }
 

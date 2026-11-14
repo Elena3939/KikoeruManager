@@ -8,7 +8,7 @@ _EXTRACT_REASON_MESSAGES = {
     "source_missing": "解压失败：压缩包源文件不存在，可能已被移动或删除，请重新下载或确认路径",
     "wrong_password": "解压失败：密码未命中（无密码、RJ 号、密码库候选均未通过）",
     "missing_password": "解压失败：压缩包需要密码，但当前没有可用密码",
-    "password_probe_inconclusive": "解压失败：密码内容验证未完成（超时或资源不足），尚不能确定密码是否正确",
+    "password_probe_inconclusive": "解压失败：密码内容验证未完成，尚不能确定密码是否正确",
     "disk_full": "解压失败：临时目录磁盘空间不足",
     "volume_incomplete": "解压失败：分卷压缩包不完整或自解压分卷视图异常",
     "archive_corrupt": "解压失败：压缩包损坏或下载不完整（Headers/Data Error）",

@@ -395,6 +395,7 @@ class TaskCenterMaterializationService:
     def list_summary_page(
         self, *, domain=None, subtype=None, status=None, search=None, limit=200, offset=0,
         status_priority, domain_priority,
+        sort="updated_desc",
     ):
         """在同一个数据库快照内完成替代去重、统计与分页，只读取本页 payload。"""
         import json
@@ -404,6 +405,7 @@ class TaskCenterMaterializationService:
             "subtype": subtype or "", "search": safe_text(search, strip=True).lower(),
             "limit": max(1, min(int(limit or 200), 500)), "offset": max(0, int(offset or 0)),
             "status_priority": json.dumps(status_priority), "domain_priority": json.dumps(domain_priority),
+            "sort": sort,
         }
         params["pattern"] = "%" + _escape_ilike_pattern(params["search"]) + "%"
         db = SessionLocal()
@@ -486,11 +488,20 @@ class TaskCenterMaterializationService:
                       AND (:subtype IN ('','all') OR subtype = :subtype)
                       AND (:search = '' OR search ILIKE :pattern ESCAPE '!')
                 ), page AS (
-                    SELECT item_id, row_number() OVER (ORDER BY
-                        COALESCE((CAST(:status_priority AS jsonb)->>status)::int,99),
-                        COALESCE((CAST(:domain_priority AS jsonb)->>domain)::int,99),
-                        stamp DESC, id COLLATE "C") AS position
-                    FROM filtered ORDER BY position LIMIT :limit OFFSET :offset
+                    SELECT f.item_id, row_number() OVER (ORDER BY
+                        CASE WHEN :sort = 'status_priority' THEN
+                            COALESCE((CAST(:status_priority AS jsonb)->>f.status)::int,99) END,
+                        CASE WHEN :sort = 'created_desc' THEN
+                            NULLIF(t.payload_json->>'created_at', '')::timestamp END DESC NULLS LAST,
+                        CASE WHEN :sort = 'progress_desc' THEN
+                            COALESCE(NULLIF(t.payload_json->>'progress', '')::float8, 0) END DESC NULLS LAST,
+                        COALESCE(NULLIF(t.payload_json->>'updated_at', '')::timestamp,
+                            NULLIF(t.payload_json->>'completed_at', '')::timestamp,
+                            NULLIF(t.payload_json->>'started_at', '')::timestamp,
+                            NULLIF(t.payload_json->>'created_at', '')::timestamp) DESC NULLS LAST,
+                        f.id COLLATE "C") AS position
+                    FROM filtered f JOIN task_center_items t USING(item_id)
+                    ORDER BY position LIMIT :limit OFFSET :offset
                 )
                 SELECT
                     NOT EXISTS (SELECT 1 FROM base WHERE legacy OR id IS NULL) AS ready,
@@ -511,7 +522,7 @@ class TaskCenterMaterializationService:
     def list_identity_projection(self) -> List[Dict[str, Any]]:
         """仅取去重/排序依赖；大 payload 只在 SQL 分页后读取。"""
         fields = ("id", "entity_id", "engine_task_id", "domain", "status", "kind", "subtype",
-                  "source_path", "created_at", "started_at", "completed_at")
+                  "source_path", "created_at", "started_at", "completed_at", "updated_at", "progress")
         metadata_keys = ("retry_failed_task_id", "superseded_by_task_id", "recovered_failure_ids")
         payload = TaskCenterItem.payload_json
         db = SessionLocal()

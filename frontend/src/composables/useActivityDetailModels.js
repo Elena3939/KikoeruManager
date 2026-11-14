@@ -923,6 +923,8 @@ function inferDeleteTreeItemType(path, itemType) {
 function filterDeleteEntrySections(row) {
   const d = row?.detail
   if (!d || typeof d !== 'object') return []
+  // 社团补全下载也使用 detail.items 记录已创建任务，但它不是过滤预审。
+  if (String(row?.category || '').trim() !== 'pipeline_filter') return []
   const sections = []
   if (Array.isArray(d.items) && d.items.length) {
     sections.push({
@@ -1179,6 +1181,40 @@ function asmrSyncEntrySections(row) {
     key: String(row?.category || '').trim() === 'upload' ? 'upload-file-tree' : 'asmr-file-tree',
     title: `文件清单（${titleParts.join(' / ')}）`,
     description: resolveAsmrSyncSectionDescription(d),
+    rows: buildFilterDeleteTreeRows(merged),
+  }]
+}
+
+function circleCompletionDownloadEntrySections(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object' || String(row?.category || '').trim() !== 'circle_completion') return []
+  if (!['download_batch_start', 'download_batch_completed', 'download_batch_partial_failed'].includes(String(row?.action || '').trim())) return []
+  const files = []
+  const visit = (items) => {
+    for (const child of Array.isArray(items) ? items : []) {
+      const childDetail = safeDetail(child)
+      const relation = String(child?.relation || '').trim()
+      if (relation === 'task_completion' || child?.action === 'task_finished' || child?.action === 'task_finished_incomplete') {
+        files.push(...mapAsmrSyncFileItems(childDetail.download_files, 'circle-download'))
+      }
+      visit(child?.child_rows)
+    }
+  }
+  visit(d.child_rows)
+  const direct = mapAsmrSyncFileItems(d.download_files, 'circle-download')
+  const merged = (direct.length ? direct : files).slice(0, 200)
+  if (!merged.length) return []
+  const totalBytes = sumAsmrSyncFileBytes(merged)
+  const count = Number(d.success_count || merged.length)
+  const titleParts = [String(count)]
+  if (totalBytes > 0) titleParts.push(formatBytes(totalBytes))
+  if (Number(d.average_download_speed_bytes || 0) > 0) {
+    titleParts.push(`${formatBytes(d.average_download_speed_bytes)}/s`)
+  }
+  return [{
+    key: 'circle-download-file-tree',
+    title: `已下载文件（${titleParts.join(' / ')}）`,
+    description: [d.download_root, d.target_path || d.final_output_path].filter(Boolean).join(' → '),
     rows: buildFilterDeleteTreeRows(merged),
   }]
 }
@@ -1491,6 +1527,7 @@ function activityEntrySections(row) {
   return [
     ...conflictResolutionEntrySections(row),
     ...asmrSyncEntrySections(row),
+    ...circleCompletionDownloadEntrySections(row),
     ...baiduNetdiskEntrySections(row),
     ...deleteEntrySections(row),
     ...importFilteredEntrySections(row),
@@ -2015,11 +2052,14 @@ function _deriveVariantTypeTag(label) {
 function circleCompletionIndexModel(row) {
   if (!row || row.category !== 'circle_completion' || row.action !== 'index_completed') return null
   const d = safeDetail(row)
+  const observation = d.source_probe_observation
+  const observedWorks = Array.isArray(observation?.works) ? observation.works : []
+  const observedByCode = new Map(observedWorks.map(item => [item.canonical_rjcode, item]))
   const sourceBreakdown = Array.isArray(d.source_breakdown)
     ? d.source_breakdown
         .map((it) => ({
           key: String(it?.key || '').trim(),
-          label: String(it?.label || it?.key || '未命名'),
+          label: String(it?.label || it?.key || '未命名') + (observedWorks.length && ['yaas', 'link_sheet'].includes(it?.key) ? '（索引时）' : ''),
           count: Number(it?.count || 0),
         }))
         .filter((it) => it.key)
@@ -2032,6 +2072,8 @@ function circleCompletionIndexModel(row) {
           rows: Array.isArray(s?.rows) ? s.rows
             .filter((it) => !_isEnglishVariant(it?.preferred_variant_label))
             .map((it) => {
+              const observed = observedByCode.get(it?.canonical_rjcode)
+              if (observed) it = { ...it, source_compare: { ...it.source_compare, yaas: observed.yaas, link_sheet: observed.link_sheet } }
               const rawLabel = String(it?.preferred_variant_label || '').trim()
               const kikoeruTags = Array.isArray(it?.source_compare?.kikoeru?.tags)
                 ? it.source_compare.kikoeru.tags.filter(Boolean)
@@ -2072,6 +2114,14 @@ function circleCompletionIndexModel(row) {
                     primaryBadge: String(it?.source_compare?.asmr_one?.primary_badge || '').trim(),
                     all_rjcodes: Array.isArray(it?.source_compare?.asmr_one?.all_rjcodes) ? it.source_compare.asmr_one.all_rjcodes.filter(Boolean) : [],
                   },
+                  link_sheet: {
+                    all_rjcodes: Array.isArray(it?.source_compare?.link_sheet?.all_rjcodes) ? it.source_compare.link_sheet.all_rjcodes.filter(Boolean) : [],
+                    status: String(it?.source_compare?.link_sheet?.status || 'unknown'),
+                  },
+                  yaas: {
+                    all_rjcodes: Array.isArray(it?.source_compare?.yaas?.all_rjcodes) ? it.source_compare.yaas.all_rjcodes.filter(Boolean) : [],
+                    status: String(it?.source_compare?.yaas?.status || 'unknown'),
+                  },
                 },
               }
             }) : [],
@@ -2086,6 +2136,8 @@ function circleCompletionIndexModel(row) {
     includeDlsite: Boolean(d.include_dlsite),
     includeKikoeru: Boolean(d.include_kikoeru),
     sourceBreakdown,
+    sourceObservedAt: String(observation?.observed_at || ''),
+    sourceObservationSummary: observedWorks.length ? `YAAS：已命中 ${observedWorks.filter(item => item.yaas?.status === 'hit').length}，待探测 ${observedWorks.filter(item => item.yaas?.status === 'pending').length}，未命中 ${observedWorks.filter(item => item.yaas?.status === 'missing').length}，失败 ${observedWorks.filter(item => item.yaas?.status === 'error').length}；妙蛙种子：已对比 ${observedWorks.length}，命中 ${observedWorks.filter(item => item.link_sheet?.status === 'hit').length}` : '',
     rows,
   }
 }
@@ -2168,6 +2220,7 @@ function circleIndexSourceTone(sourceKey, item) {
   if (sourceKey === 'kikoeru') return item?.sourceCompare?.kikoeru?.primary_rjcode ? 'check' : 'empty'
   if (sourceKey === 'dlsite') return Array.isArray(item?.sourceCompare?.dlsite?.all_rjcodes) && item.sourceCompare.dlsite.all_rjcodes.length ? 'check' : 'empty'
   if (sourceKey === 'asmr_one') return item?.sourceCompare?.asmr_one?.primary_rjcode ? 'check' : 'empty'
+  if (sourceKey === 'link_sheet') return Array.isArray(item?.sourceCompare?.link_sheet?.all_rjcodes) && item.sourceCompare.link_sheet.all_rjcodes.length ? 'check' : 'empty'
   return 'empty'
 }
 
@@ -2503,9 +2556,14 @@ export function useActivityDetailModels(rowRef) {
         || (compareSourceFilter.value === 'kikoeru' && it?.sourceCompare?.kikoeru?.primary_rjcode)
         || (compareSourceFilter.value === 'dlsite' && Array.isArray(it?.sourceCompare?.dlsite?.all_rjcodes) && it.sourceCompare.dlsite.all_rjcodes.length)
         || (compareSourceFilter.value === 'asmr_one' && it?.sourceCompare?.asmr_one?.primary_rjcode)
+        || (compareSourceFilter.value === 'link_sheet' && Array.isArray(it?.sourceCompare?.link_sheet?.all_rjcodes) && it.sourceCompare.link_sheet.all_rjcodes.length)
+        || (compareSourceFilter.value === 'yaas' && it?.sourceCompare?.yaas?.all_rjcodes.length)
+        || (compareSourceFilter.value.startsWith('yaas_') && it?.sourceCompare?.yaas?.status === compareSourceFilter.value.slice(5))
         || (compareSourceFilter.value === 'missing' && !it?.sourceCompare?.kikoeru?.primary_rjcode
             && !(Array.isArray(it?.sourceCompare?.dlsite?.all_rjcodes) && it.sourceCompare.dlsite.all_rjcodes.length)
-            && !it?.sourceCompare?.asmr_one?.primary_rjcode)
+            && !it?.sourceCompare?.asmr_one?.primary_rjcode
+            && !it?.sourceCompare?.yaas?.all_rjcodes.length
+            && !(Array.isArray(it?.sourceCompare?.link_sheet?.all_rjcodes) && it.sourceCompare.link_sheet.all_rjcodes.length))
       if (!sm) return false
       const variant = String(it?.variantTypeTag || it?.preferred_variant_label || '')
       const vm = compareVariantFilter.value === 'all'
@@ -2522,6 +2580,8 @@ export function useActivityDetailModels(rowRef) {
         it?.sourceCompare?.kikoeru?.primary_rjcode,
         ...(Array.isArray(it?.sourceCompare?.dlsite?.all_rjcodes) ? it.sourceCompare.dlsite.all_rjcodes : []),
         it?.sourceCompare?.asmr_one?.primary_rjcode,
+        ...(it?.sourceCompare?.yaas?.all_rjcodes || []),
+        ...(Array.isArray(it?.sourceCompare?.link_sheet?.all_rjcodes) ? it.sourceCompare.link_sheet.all_rjcodes : []),
       ].map((v) => String(v || '').toLowerCase())
       return hay.some((v) => v.includes(q))
     })

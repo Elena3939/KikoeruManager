@@ -99,11 +99,12 @@ def read_page(db, circle_id, *, page=1, page_size=10, **query):
         if compare:
             root["source_compare"] = entries[0]["compare_payload"]
         else:
-            seen = {str(root.get("display_rjcode") or root["canonical_rjcode"]).upper()}
+            # 分组成员以独立作品身份去重；展示版本不能吞掉另一个作品。
+            seen = {str(root["canonical_rjcode"]).upper()}
             bonuses = []
             for entry in entries:
                 item = entry["payload"]
-                code = str(item.get("display_rjcode") or item["canonical_rjcode"]).upper()
+                code = str(item["canonical_rjcode"]).upper()
                 if code not in seen:
                     bonuses.append(item)
                     seen.add(code)
@@ -118,7 +119,7 @@ def read_page(db, circle_id, *, page=1, page_size=10, **query):
                 page_count=header["page_count"], page_size=params["size"])
 
 
-def read_selection(db, circle_id, *, details=False, **query):
+def read_selection(db, circle_id, *, details=False, include_compare=False, **query):
     """全选只投影必要字段；定位使用与分页相同的筛选、挂靠及排序。"""
     sql, params, _ = page_statement(**{**query, "view_mode": "list"})
     sql = sql[:sql.index(", stats AS (")]
@@ -127,6 +128,8 @@ def read_selection(db, circle_id, *, details=False, **query):
               "is_unreleased", "release_date", "original_release_date", "bonus_parent_rjcode")
     payload = "s.payload" if details else "jsonb_build_object(" + ",".join(
         f"'{field}',s.payload->'{field}'" for field in fields) + ")"
+    if include_compare:
+        payload = "s.payload || jsonb_build_object('source_compare', s.compare_payload)"
     sql += f""", selected AS (
         SELECT {payload} AS payload, f.aliases, root.group_key AS parent,
                dense_rank() OVER (ORDER BY gr.ordinal)::integer - 1 AS group_index,
@@ -156,7 +159,7 @@ def published_header(header, include_dl_only=True):
                 "new_works_count", "bonus_works_count"):
         summary.setdefault(key, 0)
     summary.setdefault("owned_stats", dict.fromkeys(("total", "original", "simplified", "traditional", "subtitle", "bonus"), 0))
-    summary.setdefault("compare_stats", dict.fromkeys(("total", "kikoeru", "dlsite", "asmr_one", "yaas", "missing"), 0))
+    summary.setdefault("compare_stats", dict.fromkeys(("total", "kikoeru", "dlsite", "asmr_one", "yaas", "link_sheet", "missing"), 0))
     summary.setdefault("status_filter_counts", {"missing": {}, "owned": {}})
     revision = int(header["revision"] or 0)
     pending = header["requested_seq"] > header["applied_seq"] or not revision

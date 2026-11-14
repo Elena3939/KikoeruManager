@@ -17,6 +17,19 @@ ProgressCallback = Callable[[int, int], None]
 CancellationCheck = Callable[[], bool]
 
 
+def directory_has_files(path: str) -> bool:
+    """检查真实目录；首个文件即返回，读取失败不得当成空目录。"""
+    pending = [path]
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False) and not entry.is_symlink():
+                    pending.append(entry.path)
+                else:
+                    return True
+    return False
+
+
 async def move_path_efficient(
     src: str,
     dst: str,

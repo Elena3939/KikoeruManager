@@ -38,13 +38,37 @@ from .google_drive_oauth import (
     resolve_google_drive_oauth_proxy_url,
 )
 from .log_sanitizer import sanitize_text_for_log
+from .mega_errors import mega_api_error_message
 from .resource_budget_service import get_resource_budget_service
 
 logger = logging.getLogger(__name__)
-_MEGA_TRANSFER_LOCK = asyncio.Lock()
+_MEGA_COMMAND_LOCK = asyncio.Lock()
+_MEGA_TRANSFERS = 0
 _MEGA_IDLE_TASK = None
 _MEGA_ACTIVE_TASKS = 0
 _MEGA_SERVER_USED = False
+
+
+@contextlib.asynccontextmanager
+async def _mega_transfer_slot(task=None):
+    """跨任务共用 HTTP 下载并发配置，等待期间响应暂停和取消。"""
+    global _MEGA_TRANSFERS
+    while True:
+        if task is not None:
+            await task.wait_if_paused()
+            if task.is_cancelled():
+                raise asyncio.CancelledError()
+        limit = max(1, int(get_config().http_downloader.max_concurrent_downloads))
+        # 检查与占用之间不让出事件循环，避免并发任务超额领取。
+        if _MEGA_TRANSFERS < limit:
+            _MEGA_TRANSFERS += 1
+            break
+        await asyncio.sleep(0.1)
+    try:
+        yield
+    finally:
+        _MEGA_TRANSFERS -= 1
+
 
 _BLOCKED_HOST_HINTS = {"tranfile.com", "transfernow.net"}
 _PIKPAK_HOST_HINTS = {"mypikpak.com", "www.mypikpak.com", "drive.mypikpak.com"}
@@ -68,6 +92,7 @@ _PIKPAK_LINK_CONCURRENCY = 8
 # 直链解析必须在同一个转存文件 ID 上等待，不能靠任务重试重新转存。
 _PIKPAK_DOWNLOAD_LINK_MAX_ATTEMPTS = 24
 _PIKPAK_DOWNLOAD_LINK_MAX_BACKOFF_SECONDS = 15.0
+_PIKPAK_DOWNLOAD_LINK_TIMEOUT_SECONDS = 300.0
 _PIKPAK_SHARE_CONCURRENCY = 3
 _SHARE_PREVIEW_ONLY_SOURCES = {"pikpak", "transferit", "mega"}
 _FILE_LEVEL_SELECTION_SOURCES = _SHARE_PREVIEW_ONLY_SOURCES | {"gofile", "google_drive"}
@@ -311,7 +336,11 @@ def sanitize_http_download_item(item: Dict[str, Any]) -> Dict[str, Any]:
         out["url"] = masked_url or mask_http_download_url(str(out.get("url") or ""))
     if masked_url:
         out["masked_url"] = masked_url
-    return out
+    for key in ("share_url", "public_url"):
+        if out.get(key):
+            out[key] = mask_http_download_url(str(out[key]))
+    from .log_sanitizer import mask_urls_in_data
+    return mask_urls_in_data(out)
 
 
 def sanitize_http_download_preview(preview: Dict[str, Any]) -> Dict[str, Any]:
@@ -1210,6 +1239,12 @@ class HttpDownloadService:
             "token_refresh_callback": lambda callback_client, **kwargs: self._save_pikpak_token_callback(callback_client, account=account, **kwargs),
         }
         client = PikPakApi(**kwargs)
+        if token:
+            try:
+                self._restore_pikpak_user_id(client)
+            except Exception:
+                await self._close_pikpak_client(client)
+                raise
         setattr(client, "_kikoeru_pikpak_account", account)
         login_checked = False
         if not token:
@@ -1224,6 +1259,23 @@ class HttpDownloadService:
             login_checked = True
         setattr(client, "_kikoeru_login_checked", login_checked)
         return client
+
+    def _restore_pikpak_user_id(self, client) -> None:
+        # SDK 的 encoded_token 只恢复 access/refresh token，captcha/init 却要求 user_id。
+        # 此处只补齐现有凭据的请求字段，认证仍由 PikPak 服务端完成。
+        if getattr(client, "user_id", None):
+            return
+        try:
+            parts = str(client.access_token).split(".")
+            if len(parts) != 3:
+                raise ValueError("JWT 格式无效")
+            payload = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+            subject = json.loads(payload).get("sub")
+            if not isinstance(subject, str) or not subject.strip():
+                raise ValueError("JWT 缺少用户标识")
+        except (AttributeError, ValueError, TypeError) as exc:
+            raise HttpDownloadError("PikPak 保存的登录凭据缺少有效用户标识，请重新保存账号密码") from exc
+        client.user_id = subject
 
     async def _ensure_pikpak_logged_in(self, client, account: PikPakAccount) -> None:
         """让检测/状态接口把旧 token 失效和密码登录失败区分开。"""
@@ -1899,7 +1951,7 @@ class HttpDownloadService:
         try:
             while True:
                 await asyncio.sleep(_MEGA_IDLE_TIMEOUT_SECONDS)
-                async with _MEGA_TRANSFER_LOCK:
+                async with _MEGA_COMMAND_LOCK:
                     if _MEGA_ACTIVE_TASKS:
                         continue
                     try:
@@ -1923,6 +1975,7 @@ class HttpDownloadService:
     async def _mega_folder_nodes(self, raw_url: str) -> Dict[str, Any]:
         try:
             from mega_client import AsyncMegaClient
+            from mega_client.exceptions import MegaAPIError
             from mega_client.crypto import (
                 decrypt_attributes,
                 decrypt_key,
@@ -1942,11 +1995,18 @@ class HttpDownloadService:
             trust_env=False,
         ) as http_client:
             async with AsyncMegaClient(http_client=http_client) as client:
-                response = (await client._api(
-                    [{"a": "f", "c": 1, "r": 1, "ca": 1}],
-                    folder_handle=link.handle,
-                ))[0]
+                try:
+                    response = (await client._api(
+                        [{"a": "f", "c": 1, "r": 1, "ca": 1}],
+                        folder_handle=link.handle,
+                    ))[0]
+                except MegaAPIError as exc:
+                    if type(exc.code) is int and exc.code < 0:
+                        raise HttpDownloadError(mega_api_error_message(exc.code)) from exc
+                    raise HttpDownloadError("MEGA 文件夹接口响应格式异常") from exc
 
+        if type(response) is int and response < 0:
+            raise HttpDownloadError(mega_api_error_message(response))
         if not isinstance(response, dict) or not isinstance(response.get("f"), list):
             raise HttpDownloadError("Mega 文件夹 API 返回数据异常")
 
@@ -2047,7 +2107,7 @@ class HttpDownloadService:
                     http_client,
                     RetryConfig(attempts=5),
                     chunk_size=16 * 1024 * 1024,
-                    parallelism=4,
+                    parallelism=max(1, min(int(self._config().split), int(self._config().max_connection_per_server))),
                 )
                 for node in files:
                     if task is not None:
@@ -2149,6 +2209,90 @@ class HttpDownloadService:
             "speed_bytes_per_sec": 0,
         }
 
+    async def _download_mega_file_item(
+        self,
+        item: Dict[str, Any],
+        *,
+        task=None,
+        progress_callback=None,
+    ) -> Dict[str, Any]:
+        """直接使用公开链接客户端，绕过 MEGAcmd 的单活动传输队列。"""
+        try:
+            from mega_client import AsyncMegaClient
+            from mega_client.downloader import AsyncDownloader
+            from mega_client.retry import RetryConfig
+        except ImportError as exc:
+            raise HttpDownloadError(
+                "后端缺少 mega-public-client 依赖，请重新安装 backend/requirements.txt"
+            ) from exc
+
+        raw_url = str(item.get("original_url") or item.get("url") or "").strip()
+        final_path = Path(os.path.abspath(str(item.get("final_path") or "")))
+        if not raw_url or not str(final_path):
+            raise HttpDownloadError("Mega 文件下载缺少链接或目标路径")
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        proxy = self._proxy_url("mega") or None
+        expected = int(item.get("size_bytes") or 0)
+        last_at = time.monotonic()
+        last_done = 0
+
+        async with httpx.AsyncClient(proxy=proxy, timeout=90, trust_env=False) as http_client:
+            async with AsyncMegaClient(http_client=http_client) as client:
+                info = await client.get_file_info(raw_url)
+
+                async def on_progress(done: int, size: int):
+                    nonlocal last_at, last_done
+                    if task is not None:
+                        await task.wait_if_paused()
+                        if task.is_cancelled():
+                            raise asyncio.CancelledError()
+                    now = time.monotonic()
+                    speed = int(max(0, int(done) - last_done) / max(0.001, now - last_at))
+                    last_done, last_at = int(done), now
+                    if progress_callback is not None:
+                        progress_callback({
+                            "gid": str(item.get("gid") or ""),
+                            "name": item.get("filename") or info.name,
+                            "relative_path": item.get("relative_path") or "",
+                            "local_path": str(final_path),
+                            "url": item.get("masked_url") or self._mask_url(raw_url),
+                            "source": "mega",
+                            "status": "downloading",
+                            "downloaded": int(done),
+                            "total": expected or int(size),
+                            "size": expected or int(size),
+                            "progress": min(99, int(int(done) / max(1, int(size)) * 100)),
+                            "speed_bytes_per_sec": speed,
+                        })
+
+                downloader = AsyncDownloader(
+                    http_client,
+                    RetryConfig(attempts=5),
+                    chunk_size=16 * 1024 * 1024,
+                    parallelism=max(1, min(
+                        int(self._config().split),
+                        int(self._config().max_connection_per_server),
+                    )),
+                )
+                await downloader.download(info, final_path, progress=on_progress, resume=True)
+        downloaded = final_path.stat().st_size if final_path.is_file() else 0
+        if expected > 0 and downloaded != expected:
+            raise HttpDownloadError(f"Mega 下载文件大小校验失败：实际 {downloaded} bytes，预期 {expected} bytes")
+        return {
+            "gid": str(item.get("gid") or ""),
+            "name": item.get("filename") or final_path.name,
+            "relative_path": item.get("relative_path") or "",
+            "local_path": str(final_path),
+            "url": item.get("masked_url") or self._mask_url(raw_url),
+            "source": "mega",
+            "status": "completed",
+            "progress": 100,
+            "downloaded": downloaded,
+            "total": expected or downloaded,
+            "size": expected or downloaded,
+            "speed_bytes_per_sec": 0,
+        }
+
     async def _mega_metadata(self, raw_url: str) -> Dict[str, Any]:
         handle = "unknown"
         stage = "validate_link"
@@ -2200,9 +2344,12 @@ class HttpDownloadService:
                 )
                 response.raise_for_status()
                 stage = "file_metadata_response"
-                result = response.json()[0]
+                payload = response.json()
+                result = payload[0] if isinstance(payload, list) and payload else payload
+            if type(result) is int and result < 0:
+                raise HttpDownloadError(mega_api_error_message(result))
             if not isinstance(result, dict):
-                raise HttpDownloadError(f"MEGA 接口返回错误码 {result}")
+                raise HttpDownloadError("MEGA 文件接口响应格式异常")
             if "at" not in result or "s" not in result:
                 raise HttpDownloadError("MEGA 接口响应缺少文件属性或大小")
             stage = "decrypt_attributes"
@@ -2257,6 +2404,15 @@ class HttpDownloadService:
             _MEGA_IDLE_TASK = None
         try:
             return await self._download_mega_item_impl(item, task=task, progress_callback=progress_callback)
+        except Exception as exc:
+            # 下载阶段依赖库也可能直接抛出 API 错误，沿用预览阶段的说明。
+            try:
+                from mega_client.exceptions import MegaAPIError
+            except ImportError:
+                raise exc
+            if isinstance(exc, MegaAPIError) and type(exc.code) is int and exc.code < 0:
+                raise HttpDownloadError(mega_api_error_message(exc.code)) from exc
+            raise
         finally:
             _MEGA_ACTIVE_TASKS -= 1
             if not _MEGA_ACTIVE_TASKS and _MEGA_SERVER_USED:
@@ -2273,11 +2429,28 @@ class HttpDownloadService:
         final_path = os.path.abspath(target_path)
         is_folder = bool(item.get("is_directory") or item.get("kind") == "folder")
         if is_folder:
-            return await self._download_mega_folder_item(
-                item,
-                task=task,
-                progress_callback=progress_callback,
-            )
+            async with _mega_transfer_slot(task):
+                return await self._download_mega_folder_item(
+                    item,
+                    task=task,
+                    progress_callback=progress_callback,
+                )
+        if os.path.exists(final_path):
+            raise HttpDownloadError("Mega 目标文件已存在，请选择重命名冲突策略")
+        try:
+            from mega_client.crypto import decode_file_key
+            from mega_client.parser import parse_mega_url
+            decode_file_key(parse_mega_url(url).key)
+        except Exception:
+            # 兼容旧版 MEGAcmd 可识别但新客户端无法解析的链接。
+            pass
+        else:
+            async with _mega_transfer_slot(task):
+                return await self._download_mega_file_item(
+                    item,
+                    task=task,
+                    progress_callback=progress_callback,
+                )
         if os.path.exists(final_path) and not (is_folder and os.path.isdir(final_path)):
             raise HttpDownloadError("Mega 目标文件已存在，请选择重命名冲突策略")
         target_dir = os.path.dirname(final_path)
@@ -2287,8 +2460,17 @@ class HttpDownloadService:
         async def run(command: str, *args: str) -> str:
             return await self._run_mega_command(command, *args, task_id=task_key)
 
-        logger.info("[MEGA下载] 等待传输锁 task=%s", task_key)
-        async with _MEGA_TRANSFER_LOCK:
+        logger.info("[MEGA下载] 等待 HTTP 下载并发槽 task=%s", task_key)
+        if task is not None:
+            task.current_step = "等待 MEGA 下载"
+            task.update_progress(task.progress, task.current_step)
+        async with _mega_transfer_slot(task):
+            if task is not None:
+                await task.wait_if_paused()
+                if task.is_cancelled():
+                    raise asyncio.CancelledError()
+                task.current_step = "下载 MEGA"
+                task.update_progress(task.progress, task.current_step)
             logger.info("[MEGA下载] 开始准备 task=%s", task_key)
             staging_root = os.path.join(target_dir, ".mega-staging", self._sanitize_filename(task_key))
             staging_dir = os.path.join(staging_root, self._sanitize_filename(item.get("gid") or item.get("filename") or "item"))
@@ -2308,31 +2490,30 @@ class HttpDownloadService:
                 proxy = self._proxy_url("mega")
                 logger.info("[MEGA下载] 设置代理 task=%s proxy_enabled=%s", task_key, bool(proxy))
                 _MEGA_SERVER_USED = True
-                for attempt in range(1, _MEGA_STARTUP_ATTEMPTS + 1):
+                # 只串行化共享配置和提交，传输与进度轮询不持有命令锁。
+                async with _MEGA_COMMAND_LOCK:
+                    for attempt in range(1, _MEGA_STARTUP_ATTEMPTS + 1):
+                        try:
+                            await run("proxy", proxy if proxy else "--none")
+                            break
+                        except HttpDownloadError as exc:
+                            reason = str(exc).lower()
+                            if attempt == _MEGA_STARTUP_ATTEMPTS or not (
+                                "unable to connect to service" in reason
+                                or "please ensure mega-cmd-server is running" in reason
+                            ):
+                                raise
+                            logger.warning("[MEGA下载] 服务启动中 task=%s attempt=%s", task_key, attempt)
+                            await asyncio.sleep(2)
+                    submitted = True
+                    logger.info("[MEGA下载] 提交传输 task=%s", task_key)
+                    submission = asyncio.create_task(run("get", "-q", url, staging_dir))
                     try:
-                        await run("proxy", proxy if proxy else "--none")
-                        break
-                    except HttpDownloadError as exc:
-                        reason = str(exc).lower()
-                        if attempt == _MEGA_STARTUP_ATTEMPTS or not (
-                            "unable to connect to service" in reason
-                            or "please ensure mega-cmd-server is running" in reason
-                        ):
-                            raise
-                        logger.warning("[MEGA下载] 服务启动中 task=%s attempt=%s", task_key, attempt)
-                        await asyncio.sleep(2)
-                submitted = True
-                get_args = ["-q"]
-                if is_folder:
-                    get_args.insert(0, "-m")
-                logger.info("[MEGA下载] 提交传输 task=%s", task_key)
-                submission = asyncio.create_task(run("get", *get_args, url, staging_dir))
-                try:
-                    await asyncio.shield(submission)
-                except asyncio.CancelledError:
-                    with contextlib.suppress(Exception):
-                        await submission
-                    raise
+                        await asyncio.shield(submission)
+                    except asyncio.CancelledError:
+                        with contextlib.suppress(Exception):
+                            await submission
+                        raise
                 last_bytes, last_at = 0, time.monotonic()
                 paused = False
                 missing_since = time.monotonic()
@@ -2350,7 +2531,6 @@ class HttpDownloadService:
                             logger.info("[MEGA下载] 传输状态 task=%s state=%s", task_key, state)
                             last_state = state
                         if state == "COMPLETED":
-                            finished = True
                             break
                         if state in {"FAILED", "CANCELLED"}:
                             raise HttpDownloadError(f"Mega 传输失败：{state}")
@@ -2418,11 +2598,16 @@ class HttpDownloadService:
                                 tag = transfer[1].strip()
                                 break
                         await asyncio.sleep(0.5)
-                if tag and not finished and task is not None and task.is_cancelled():
+                if tag and not finished:
                     with contextlib.suppress(Exception):
                         await asyncio.shield(run("transfers", "-c", tag))
                 if finished:
-                    shutil.rmtree(staging_root, ignore_errors=True)
+                    shutil.rmtree(staging_dir, ignore_errors=True)
+                    with contextlib.suppress(OSError):
+                        os.rmdir(staging_root)
+                    # 最外层空目录会阻止归档器继续清理作品和会话父目录。
+                    with contextlib.suppress(OSError):
+                        os.rmdir(os.path.dirname(staging_root))
         if is_folder and os.path.isdir(final_path):
             downloaded = sum(path.stat().st_size for path in Path(final_path).rglob("*") if path.is_file())
         else:
@@ -4564,19 +4749,28 @@ class HttpDownloadService:
         # captcha/init 对副账号偶发 400，单次失败极易丢分卷。下载阶段多次重试(失败则重新登录刷新匹配 token + 退避)，
         # 预览阶段(allow_missing)只试一次保持响应速度。
         attempts = 1 if allow_missing else max(1, max_attempts)
+        deadline = time.monotonic() + _PIKPAK_DOWNLOAD_LINK_TIMEOUT_SECONDS
         last_error: Optional[Exception] = None
         for attempt in range(1, attempts + 1):
             info: Any = None
             try:
-                info = await client.get_download_url(file_id)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError()
+                info = await asyncio.wait_for(client.get_download_url(file_id), timeout=remaining)
+            except TimeoutError as exc:
+                with contextlib.suppress(Exception):
+                    client.captcha_token = None
+                raise HttpDownloadError("PikPak 解析下载直链超过总等待时限，请检查 API 网络连接后重试") from exc
             except Exception as exc:
                 last_error = exc
                 info = None
-                # PikPak 在转存尚未完成时会返回包含 null 字符串字段的错误。
                 # get_download_url 会把 captcha token 留在 client 上，下一次请求前必须丢弃，
                 # 否则重试仍可能命中同一个失效 token。
                 with contextlib.suppress(Exception):
                     client.captcha_token = None
+                if "invalid value for string type: null" in str(exc).lower():
+                    raise self._pikpak_error(exc, "验证码初始化参数校验") from exc
             if isinstance(info, dict):
                 url = str(info.get("web_content_link") or "").strip()
                 if not url:
@@ -4593,10 +4787,10 @@ class HttpDownloadService:
                 account = getattr(client, "_kikoeru_pikpak_account", None)
                 error_text = str(last_error or "").lower()
                 transient_file_state = (
-                    "invalid value for string type: null" in error_text
-                    or "仍在转码" in error_text
+                    "仍在转码" in error_text
                     or "仍在审核" in error_text
                     or "not ready" in error_text
+                    or "转码/审核" in error_text
                     or "processing" in error_text
                 )
                 if transient_file_state:
@@ -4609,16 +4803,25 @@ class HttpDownloadService:
                     )
                 if (
                     not transient_file_state
+                    and self._is_pikpak_token_error(last_error)
                     and account
                     and account.username
                     and account.password
                     and account.password != "********"
                 ):
                     with contextlib.suppress(Exception):
-                        await self._refresh_pikpak_login_with_password(client, account, stage="解析下载直链")
+                        remaining = deadline - time.monotonic()
+                        if remaining > 0:
+                            await asyncio.wait_for(
+                                self._refresh_pikpak_login_with_password(client, account, stage="解析下载直链"),
+                                timeout=remaining,
+                            )
                 # 转存接口返回 RESTORE_START 后，文件详情可能需要几分钟才能生成直链。
                 # 逐步退避并限制单次间隔，避免多分卷并发时把账号 API 打爆。
-                await asyncio.sleep(min(2.0 * attempt, _PIKPAK_DOWNLOAD_LINK_MAX_BACKOFF_SECONDS))
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise HttpDownloadError("PikPak 解析下载直链超过总等待时限，请检查 API 网络连接后重试")
+                await asyncio.sleep(min(2.0 * attempt, _PIKPAK_DOWNLOAD_LINK_MAX_BACKOFF_SECONDS, remaining))
         if allow_missing:
             return {}
         if isinstance(last_error, HttpDownloadError):
@@ -6839,10 +7042,57 @@ class HttpDownloadService:
         for gid in gids:
             await self._remove_aria2_gid(gid)
 
+    async def _link_sheet_preview(self, task, metadata):
+        from .link_sheet_service import get_link_sheet_service
+        snapshot = await asyncio.to_thread(get_link_sheet_service().task_files, metadata)
+        if not self._mega_enabled():
+            raise HttpDownloadError("Mega 下载未启用")
+        manifest_key = hashlib.sha256("|".join(file["id"] for file in snapshot["files"]).encode()).hexdigest()[:12]
+        folder = "/".join([snapshot["rjcode"], snapshot["revision_id"],
+                           self._sanitize_filename(snapshot["group_name"])[:48] + "-" +
+                           snapshot["group_id"] + "-" + manifest_key])
+        retry_ids = metadata.get("link_sheet_retry_file_ids")
+        items = []
+        for file in snapshot["files"]:
+            if retry_ids is not None and file["id"] not in retry_ids:
+                continue
+            await task.wait_if_paused()
+            if task.is_cancelled():
+                raise asyncio.CancelledError()
+            remote = await self._mega_metadata(file["url"])
+            remote_size = int(remote.get("size_bytes") or 0)
+            sheet_size = int(file["size_bytes"] or 0)
+            if remote.get("filename") != file["name"]:
+                raise HttpDownloadError(f"链接库文件名与 MEGA 不一致：{file['name']}")
+            if remote_size <= 0:
+                raise HttpDownloadError(f"MEGA 未返回有效文件大小：{file['name']}")
+            if sheet_size > 0 and remote_size != sheet_size:
+                logger.warning(
+                    "[链接库下载] 清单大小与 MEGA 不一致，采用 MEGA 实际大小 "
+                    "file=%s sheet_size=%s mega_size=%s",
+                    file["name"],
+                    sheet_size,
+                    remote_size,
+                )
+            save_name = file.get("save_name", file["name"])
+            target = self._resolve_target(save_name, folder, "resume")
+            if target["filename"] != save_name:
+                raise HttpDownloadError(f"链接库保存文件名不能安全落盘：{save_name}")
+            # 路径绑定修订和完整候选组合；MEGA 暂存完成后才原子落到 final_path。
+            already = (os.path.isfile(target["final_path"])
+                       and os.path.getsize(target["final_path"]) == remote_size)
+            masked = self._mask_url(file["url"])
+            items.append({**target, "ok": True, "url": file["url"], "original_url": file["url"],
+                          "masked_url": masked, "source": "mega", "kind": "file",
+                          "size_bytes": remote_size, "file_id": file["id"],
+                          "already_completed": already, "resumable": True})
+        return {"items": items, "source_modes": ["mega"], "resolved_urls": [], "source_items": []}
+
     async def _start_download_task_inner(self, task) -> Dict[str, Any]:
         metadata = dict(task.task_metadata or {})
+        link_sheet = metadata.get("resource_source") == "link_sheet"
         raw_urls = list(metadata.get("urls") or [])
-        if not raw_urls:
+        if not raw_urls and not link_sheet:
             raise HttpDownloadError("没有可下载链接")
         cfg = self._config()
         if not bool(getattr(cfg, "enabled", True)):
@@ -6868,7 +7118,9 @@ class HttpDownloadService:
         # 旧版重试标记会导致先转存整份分享、再筛掉已完成分卷，从而泄漏空间。
         # 分享仍重新读取，但转存必须使用原始文件选择。
         task.task_metadata.pop("pikpak_retry_rebuild_share", None)
-        if metadata.get("resource_source") == "imoutoheaven":
+        if link_sheet:
+            preview = await self._link_sheet_preview(task, metadata)
+        elif metadata.get("resource_source") == "imoutoheaven":
             from .resource_source_service import ARCHIVE_PASSWORD, get_resource_source_service
             resolved = await get_resource_source_service().resolve_file(
                 metadata.get("yaas_path"))
@@ -6883,6 +7135,9 @@ class HttpDownloadService:
                 "public_url": raw_urls[0], "masked_url": raw_urls[0], "resumable": True}],
                 "source_modes": ["imoutoheaven"], "resolved_urls": [], "source_items": []}
         else:
+            if any(self._is_pikpak_url(url) for url in raw_urls):
+                task.current_step = "解析 PikPak 下载链接"
+                task.update_progress(task.progress, task.current_step)
             preview = await self.preview_urls(
                 raw_urls,
                 target_subdir=target_subdir,
@@ -7102,7 +7357,7 @@ class HttpDownloadService:
                 "relative_path": item["relative_path"],
                 "local_path": item["final_path"],
                 "url": item.get("masked_url") or self._mask_url(str(item.get("url") or "")),
-                "original_url": item.get("original_url") or item.get("url"),
+                "original_url": None if link_sheet else item.get("original_url") or item.get("url"),
                 "source": "mega",
                 "status": "pending",
                 "progress": 0,
@@ -7111,6 +7366,7 @@ class HttpDownloadService:
                 "size": int(item.get("size_bytes") or 0),
                 "kind": item.get("kind", "file"),
                 "is_directory": bool(item.get("is_directory")),
+                "file_id": item.get("file_id", ""),
             })
 
         self._task_gids[task.id] = gids
@@ -7168,6 +7424,8 @@ class HttpDownloadService:
         mega_failed_rows = []
 
         def merge_download_row(row: Dict[str, Any]) -> None:
+            if link_sheet:
+                row = sanitize_http_download_item(row)
             row_gid = str(row.get("gid") or "")
             for existing in download_files:
                 if row_gid and str(existing.get("gid") or "") == row_gid:
@@ -7318,19 +7576,23 @@ class HttpDownloadService:
                 refresh_download_runtime()
 
         if mega_items:
-            for index, item in enumerate(mega_items, start=1):
+            async def download_mega(index, item):
                 await task.wait_if_paused()
                 if task.is_cancelled():
-                    await self.cancel_task(task.id)
                     raise asyncio.CancelledError()
                 task.current_step = f"下载 Mega {index}/{len(mega_items)}"
                 task.update_progress(max(task.progress, 3), task.current_step)
                 try:
-                    row = await self._download_mega_item(item, task=task, progress_callback=handle_transfer_progress)
+                    if item.get("already_completed"):
+                        row = {"gid": item["gid"], "name": item["filename"], "source": "mega",
+                               "relative_path": item["relative_path"], "local_path": item["final_path"],
+                               "status": "completed", "progress": 100, "downloaded": item["size_bytes"],
+                               "total": item["size_bytes"], "size": item["size_bytes"]}
+                    else:
+                        row = await self._download_mega_item(item, task=task, progress_callback=handle_transfer_progress)
                     mega_success_files.append(row)
                     merge_download_row(row)
                 except asyncio.CancelledError:
-                    await self.cancel_task(task.id)
                     raise
                 except Exception as exc:
                     partial_downloaded = 0
@@ -7357,6 +7619,23 @@ class HttpDownloadService:
                     mega_failed_rows.append(failed_row)
                     merge_download_row(failed_row)
                 refresh_download_runtime()
+
+            pending_mega = iter(enumerate(mega_items, start=1))
+
+            async def mega_worker():
+                for index, item in pending_mega:
+                    await download_mega(index, item)
+
+            workers = [asyncio.create_task(mega_worker()) for _ in range(
+                min(len(mega_items), max(1, int(cfg.max_concurrent_downloads)))
+            )]
+            try:
+                await asyncio.gather(*workers)
+            finally:
+                for worker in workers:
+                    if not worker.done():
+                        worker.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
 
         last_log_at = 0.0
         if gids:
@@ -7568,7 +7847,18 @@ class HttpDownloadService:
                 sanitize_http_download_item(item)
                 for item in attempt_history
             ]
-        task.task_metadata["urls"] = urls
+        if metadata.get("resource_source") == "link_sheet":
+            task.task_metadata.pop("urls", None)
+            if retry_items:
+                from .link_sheet_service import get_link_sheet_service
+                pinned = await asyncio.to_thread(get_link_sheet_service().task_files, metadata)
+                names = {str(row.get("name") or row.get("filename") or "") for row in retry_items}
+                task.task_metadata["link_sheet_retry_file_ids"] = [
+                    file["id"] for file in pinned["files"] if file["name"] in names]
+            else:
+                task.task_metadata.pop("link_sheet_retry_file_ids", None)
+        else:
+            task.task_metadata["urls"] = urls
         if retry_items:
             task.task_metadata["selected_items"] = [
                 sanitize_http_download_item(item)

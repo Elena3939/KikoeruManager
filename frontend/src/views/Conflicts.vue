@@ -1374,7 +1374,7 @@ function getProblemConflictAlertTitle(conflict) {
 function getProblemConflictAlertMessage(conflict) {
   if (isApiRenameConflict(conflict)) return '重试将重新查询 DLsite 元数据，并在原库存位置重命名。无需密码。'
   if (isDisguisedVolumeConflict(conflict)) {
-    return '检测到疑似分卷压缩包，但部分分卷后缀被伪装或无法识别。请使用“手动重命名分卷”确认文件名后再重试。'
+    return '检测到分卷命名或卷号不连续。请先查看目录中的全部分卷，确认名称后再重试解压。'
   }
   return isExtractFailed(conflict) ? '请检查密码、分卷完整性或压缩包本身是否损坏。' : '请按失败原因修复后重试。'
 }

@@ -29,6 +29,7 @@ from ..models.database import (
     CircleCatalog,
     CircleWork,
     DLsiteBonusOriginalProbeState,
+    DLsiteBonusProbeCache,
     DLsiteBonusProbeHitIndex,
     LibraryOwnedWork,
     LibrarySnapshot,
@@ -48,7 +49,7 @@ from .asmr_resource_service import get_asmr_resource_service
 from .circle_download_preview import CircleDownloadPreviewMixin
 from .circle_image_cache_service import get_circle_image_cache_service
 from .dlsite_service import DLsiteWorkSummary, get_dlsite_service, with_dlsite_api_snapshot
-from .dlsite_bonus_probe_service import DLsiteBonusProbeService
+from .dlsite_bonus_probe_service import DLsiteBonusProbeService, get_dlsite_bonus_probe_service
 from .metadata_service import MetadataService
 from .release_dates import is_unreleased, release_date_end
 from .release_dates import is_unreleased as release_is_unreleased
@@ -468,7 +469,15 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
     def _completion_items_with_resources(self, scope, state):
         if self._completion_state_builder_overridden():
-            return self._completion_prune_bonus_items(deepcopy(state['items']))
+            # 物化状态保存的是基础作品快照；链接库 / YAAS 属于可变来源覆盖层，
+            # 每次刷新或建立索引都必须从当前表状态重新装饰，不能直接返回裸 items。
+            items = self._completion_prune_bonus_items(deepcopy(state['items']))
+            from .resource_source_service import get_resource_source_service
+            with SessionLocal() as db:
+                get_resource_source_service().decorate_items(db, items)
+                from .circle_subtitle_repair_service import get_circle_subtitle_repair_service
+                get_circle_subtitle_repair_service().decorate_items(db, items)
+            return items
         key = self._completion_query_cache_key('resources', scope, {})
         with self._completion_resource_locks[hash(key) % len(self._completion_resource_locks)]:
             cached = self._completion_l1_l2_get(self._completion_view_cache, 'resources', key, readonly=True)
@@ -973,11 +982,18 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
     def _sort_linked_variants(self, canonical_info: Dict[str, Any], fallback_rjcode: str) -> List[Dict[str, Any]]:
         link_map = dict(canonical_info.get("link_map") or {})
         variants = []
-        for linked_rj in set(canonical_info.get("linked_rjcodes") or [fallback_rjcode]):
+        identity_code = self.normalize_rjcode(canonical_info.get("canonical_rjcode") or fallback_rjcode)
+        candidate_codes = set(canonical_info.get("linked_rjcodes") or [])
+        if identity_code:
+            candidate_codes.add(identity_code)
+        for linked_rj in candidate_codes:
             normalized_rj = self.normalize_rjcode(linked_rj)
             if not normalized_rj:
                 continue
             meta = link_map.get(normalized_rj) or {}
+            # 父子关联不是同一作品的语言版本，不能参与展示、下载和库存排序。
+            if str(meta.get("link_type") or "").strip().lower() == "bonus":
+                continue
             variants.append({
                 "rjcode": normalized_rj,
                 "link_type": str(meta.get("link_type") or ("self" if normalized_rj == fallback_rjcode else "")).strip().lower() or "self",
@@ -993,12 +1009,14 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
     def _preferred_variant(self, canonical_info: Dict[str, Any], fallback_rjcode: str) -> Dict[str, Any]:
         variants = self._sort_linked_variants(canonical_info, fallback_rjcode)
         return variants[0] if variants else {
-            "rjcode": self.normalize_rjcode(fallback_rjcode),
+            "rjcode": self.normalize_rjcode(canonical_info.get("canonical_rjcode") or fallback_rjcode),
             "link_type": "self",
             "lang": "",
         }
 
     def _is_displayable_variant(self, link_type: Any, lang: Any) -> bool:
+        if str(link_type or "").strip().lower() == "bonus":
+            return False
         group_key = str(self._variant_group(link_type, lang).get("key") or "").strip()
         return group_key in {"simplified", "traditional", "original"}
 
@@ -1418,6 +1436,8 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
     def _variant_group(self, link_type: Any, lang: Any) -> Dict[str, str]:
         normalized_type = str(link_type or "").strip().lower()
         normalized_lang = self._normalize_lang_code(lang)
+        if normalized_type == "bonus":
+            return {"key": "bonus", "label": "特典", "short_label": "特典"}
         if normalized_lang in {"CHI_HANS", "ZH_HANS", "ZH_CN", "CHS", "SIMPLIFIED_CHINESE"}:
             return {"key": "simplified", "label": "简体优先", "short_label": "简中"}
         if normalized_lang in {"CHI_HANT", "ZH_HANT", "ZH_TW", "CHT", "TRADITIONAL_CHINESE"}:
@@ -2901,6 +2921,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
 
     def _build_completion_compare_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
         yaas = next((source for source in item.get("resource_sources", []) if source.get("id") == "imoutoheaven"), {})
+        link_sheet = next((source for source in item.get("resource_sources", []) if source.get("id") == "link_sheet"), {})
         source_compare = item.get("source_compare") if isinstance(item.get("source_compare"), dict) else {}
         kikoeru = source_compare.get("kikoeru") if isinstance(source_compare.get("kikoeru"), dict) else {}
         dlsite = source_compare.get("dlsite") if isinstance(source_compare.get("dlsite"), dict) else {}
@@ -2916,6 +2937,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             "__releaseTimestamp": int(item.get("__release_timestamp") or 0),
             "__releaseDate": str(item.get("release_date") or "").strip(),
             "sourceCompare": {
+                "link_sheet": {"all_rjcodes": list(link_sheet.get("rjcodes") or [])},
                 "yaas": {
                     "all_rjcodes": list(yaas.get("rjcodes") or []),
                     "status": item.get("yaas_probe_status") or "pending",
@@ -3141,6 +3163,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 "dlsite": sum(1 for item in items if item.get("has_dlsite")),
                 "asmr_one": sum(1 for item in items if item.get("has_asmr_one")),
                 "yaas": sum(1 for item in items if any(source.get("id") == "imoutoheaven" for source in item.get("resource_sources", []))),
+                "link_sheet": sum(1 for item in items if any(source.get("id") == "link_sheet" for source in item.get("resource_sources", []))),
                 "missing": len(compare_missing),
             },
             "status_filter_counts": {
@@ -3228,6 +3251,8 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                         return bool(asmr_one.get("primary_rjcode"))
                     if compare_filter == "yaas":
                         return any(source.get("id") == "imoutoheaven" for source in item.get("resource_sources", []))
+                    if compare_filter == "link_sheet":
+                        return any(source.get("id") == "link_sheet" for source in item.get("resource_sources", []))
                     if compare_filter == "missing":
                         return not item.get("server_owned") and not dlsite.get("all_rjcodes") and not item.get("has_downloadable_source", item.get("has_asmr_one"))
                     return True
@@ -3924,16 +3949,17 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         这是社团补全页的定位搜索，只读本地索引表，不触发 DLsite / Kikoeru
         网络请求；用户输入 RJ 后用它找到所属社团，再跳转到该社团详情页。
         """
-        from sqlalchemy import Text as sa_Text, cast as sa_cast, or_ as sa_or, text as sa_text
+        from sqlalchemy import or_ as sa_or, text as sa_text
 
         raw_keyword = str(keyword or "").strip()
         if not raw_keyword:
             return []
         safe_limit = max(1, min(50, int(limit or 20)))
         normalized_rj = self.normalize_rjcode(raw_keyword)
+        if not re.fullmatch(r"[RVB]J(?:\d{6}|\d{8})", normalized_rj):
+            normalized_rj = ""
         lowered_keyword = raw_keyword.lower().replace("!", "!!").replace("%", "!%").replace("_", "!_")
         like_pattern = f"%{lowered_keyword}%"
-        json_pattern = f"%{normalized_rj}%"
 
         db = SessionLocal()
         try:
@@ -3943,38 +3969,48 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 .outerjoin(LibraryOwnedWork, LibraryOwnedWork.canonical_rjcode == CircleWork.canonical_rjcode)
             )
 
-            filters = [
-                sa_text(
-                    """
-                    (COALESCE(circle_works.canonical_rjcode, '') || ' ' ||
-                     COALESCE(circle_works.display_rjcode, '') || ' ' ||
-                     COALESCE(circle_works.title, '')) ILIKE :circle_work_search_pattern ESCAPE '!'
-                    """
-                ).bindparams(circle_work_search_pattern=like_pattern),
-                sa_text(
-                    """
-                    (COALESCE(circle_catalogs.circle_name_normalized, '') || ' ' ||
-                     COALESCE(circle_catalogs.circle_name, '') || ' ' ||
-                     COALESCE(circle_catalogs.circle_id, '')) ILIKE :circle_catalog_search_pattern ESCAPE '!'
-                    """
-                ).bindparams(circle_catalog_search_pattern=like_pattern),
-            ]
             if normalized_rj:
-                filters.extend([
+                # RJ 定位走等值 / JSONB 包含查询，避免把 RJ 也降级成拼接字段 ILIKE。
+                # 特典行可能复用本体 canonical，真正的特典号通常在 display / linked 中。
+                filters = [
                     CircleWork.canonical_rjcode == normalized_rj,
                     CircleWork.display_rjcode == normalized_rj,
-                    sa_cast(CircleWork.linked_rjcodes, sa_Text).like(json_pattern),
-                ])
-            rows = (
-                query
-                .filter(sa_or(*filters))
-                .order_by(
-                    (CircleWork.canonical_rjcode == normalized_rj).desc(),
+                    sa_text(
+                        "circle_works.linked_rjcodes @> CAST(:linked_rjcode_json AS jsonb)"
+                    ).bindparams(linked_rjcode_json=json.dumps([normalized_rj], ensure_ascii=True)),
+                ]
+                order_by = (
                     (CircleWork.display_rjcode == normalized_rj).desc(),
+                    (CircleWork.canonical_rjcode == normalized_rj).desc(),
                     CircleCatalog.last_indexed_at.desc(),
                     CircleWork.updated_at.desc(),
                 )
-                .limit(safe_limit * 2)
+            else:
+                filters = [
+                    sa_text(
+                        """
+                        (COALESCE(circle_works.canonical_rjcode, '') || ' ' ||
+                         COALESCE(circle_works.display_rjcode, '') || ' ' ||
+                         COALESCE(circle_works.title, '')) ILIKE :circle_work_search_pattern ESCAPE '!'
+                        """
+                    ).bindparams(circle_work_search_pattern=like_pattern),
+                    sa_text(
+                        """
+                        (COALESCE(circle_catalogs.circle_name_normalized, '') || ' ' ||
+                         COALESCE(circle_catalogs.circle_name, '') || ' ' ||
+                         COALESCE(circle_catalogs.circle_id, '')) ILIKE :circle_catalog_search_pattern ESCAPE '!'
+                        """
+                    ).bindparams(circle_catalog_search_pattern=like_pattern),
+                ]
+                order_by = (
+                    CircleCatalog.last_indexed_at.desc(),
+                    CircleWork.updated_at.desc(),
+                )
+            rows = (
+                query
+                .filter(sa_or(*filters))
+                .order_by(*order_by)
+                .limit(safe_limit)
                 .all()
             )
 
@@ -4018,16 +4054,8 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     normalized_cover,
                     display_rjcode or canonical,
                 )
-                if cover_cache_rjcode and cover_cache_rjcode != display_rjcode:
-                    image_cache_service.restore_from_legacy_alias(
-                        cover_cache_rjcode,
-                        [display_rjcode],
-                    )
-                    image_cache_service.restore_from_legacy_alias(
-                        cover_cache_rjcode,
-                        [display_rjcode],
-                        variant="list",
-                    )
+                # 搜索接口只读已有缓存；别在键入 RJ 时同步做别名恢复/磁盘写入。
+                # 需要补齐的封面由详情页的后台恢复流程处理。
                 local_cover_url = image_cache_service.get_local_url(
                     cover_cache_rjcode,
                     allow_missing=True,
@@ -4037,6 +4065,11 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     variant="list",
                     allow_missing=True,
                 )
+
+                actual_owned_codes = set(self._actual_owned_rjcodes(owned_row))
+                is_bonus_work = bool(work.is_bonus_work)
+                owned_codes = {display_rjcode} if is_bonus_work else {canonical, display_rjcode}
+                owned = bool(actual_owned_codes.intersection(owned_codes))
 
                 results.append({
                     "circle_id": circle_id,
@@ -4054,8 +4087,9 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     ),
                     "cvs": cvs,
                     "release_date": release_date,
-                    "owned": owned_row is not None,
-                    "server_owned": owned_row is not None,
+                    "is_bonus_work": is_bonus_work,
+                    "owned": owned,
+                    "server_owned": owned,
                     "has_asmr_one": bool(work.has_asmr_one),
                     "asmr_available_rjcode": self.normalize_rjcode(work.asmr_available_rjcode),
                     "last_indexed_at": catalog.last_indexed_at.isoformat() if catalog.last_indexed_at else None,
@@ -4076,10 +4110,23 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         include_kikoeru: bool,
     ) -> Dict[str, Any]:
         works = list(summary.get("works") or [])
+        def source_items(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+            return [source for source in (item.get("resource_sources") or []) if isinstance(source, dict)]
+
+        def has_link_sheet(item: Dict[str, Any]) -> bool:
+            compare = item.get("source_compare") if isinstance(item.get("source_compare"), dict) else {}
+            compare_source = compare.get("link_sheet") if isinstance(compare.get("link_sheet"), dict) else {}
+            return bool(compare_source.get("all_rjcodes")) or any(
+                source.get("id") == "link_sheet" and source.get("rjcodes")
+                for source in source_items(item)
+            )
+
         source_breakdown = [
             {"key": "kikoeru", "label": "库存已收录", "count": sum(1 for item in works if item.get("server_owned"))},
             {"key": "dlsite", "label": "DLsite", "count": sum(1 for item in works if item.get("has_dlsite"))},
             {"key": "asmr_one", "label": "asmr.one", "count": sum(1 for item in works if item.get("has_asmr_one"))},
+            {"key": "yaas", "label": "YAAS", "count": sum(1 for item in works if any(source.get("id") == "imoutoheaven" for source in source_items(item)))},
+            {"key": "link_sheet", "label": "妙蛙种子", "count": sum(1 for item in works if has_link_sheet(item))},
             {"key": "local_downloaded", "label": "本地已下载", "count": sum(1 for item in works if item.get("local_download_ready"))},
             {"key": "downloadable", "label": "可下载", "count": sum(1 for item in works if not item.get("server_owned") and item.get("has_downloadable_source", item.get("has_asmr_one")))},
             {"key": "dl_only", "label": "暂无来源", "count": sum(1 for item in works if not item.get("server_owned") and item.get("has_dlsite") and not item.get("has_downloadable_source", item.get("has_asmr_one")))},
@@ -4095,6 +4142,18 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             preferred_variant = item.get("preferred_variant") if isinstance(item.get("preferred_variant"), dict) else {}
             group_key = str(preferred_variant.get("group_key") or "original")
             source_compare = item.get("source_compare") if isinstance(item.get("source_compare"), dict) else {}
+            link_sheet_codes = list((source_compare.get("link_sheet") or {}).get("all_rjcodes") or [])
+            if not link_sheet_codes:
+                link_sheet_codes = next(
+                    (list(source.get("rjcodes") or []) for source in source_items(item) if source.get("id") == "link_sheet"),
+                    [],
+                )
+            source_compare = {**source_compare, "link_sheet": {"all_rjcodes": link_sheet_codes}}
+            yaas_codes = next((list(source.get("rjcodes") or []) for source in source_items(item)
+                               if source.get("id") == "imoutoheaven"), [])
+            source_compare["yaas"] = {"all_rjcodes": yaas_codes,
+                                      "status": item.get("yaas_probe_status") or "pending"}
+            source_compare["link_sheet"]["status"] = "hit" if link_sheet_codes else "missing"
             grouped_rows[group_key].append({
                 "canonical_rjcode": item.get("canonical_rjcode"),
                 "work_rjcode": source_compare.get("work_rjcode") or item.get("canonical_rjcode"),
@@ -4129,6 +4188,9 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             "force_refresh": bool(force_refresh),
             "include_dlsite": bool(include_dlsite),
             "include_kikoeru": bool(include_kikoeru),
+            "yaas_probe_counts": {status: sum(1 for item in works
+                if (item.get("yaas_probe_status") or "pending") == status)
+                for status in ("hit", "pending", "missing", "error")},
         }
 
     def _build_source_compare(
@@ -4411,6 +4473,13 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 normalized = self.normalize_rjcode(code)
                 if normalized and normalized not in linked_codes:
                     linked_codes.append(normalized)
+            if bool(getattr(row, "is_bonus_work", False)):
+                linked_codes = [canonical]
+            else:
+                linked_codes = [variant["rjcode"] for variant in self._sort_linked_variants({
+                    "canonical_rjcode": canonical, "linked_rjcodes": linked_codes,
+                    "link_map": link_map,
+                }, canonical)]
             canonical_candidates[canonical] = [code for code in linked_codes if code]
             for code in linked_codes:
                 if code and code not in seen_lookup_codes:
@@ -4832,6 +4901,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         try:
             # 一次性删除所有相关旧行：DELETE WHERE canonical IN (...) OR linked IN (...)
             db.query(WorkCanonicalLink).filter(
+                WorkCanonicalLink.link_type != "bonus",
                 (WorkCanonicalLink.canonical_rjcode.in_(all_canonical_codes))
                 | (WorkCanonicalLink.linked_rjcode.in_(all_linked_codes))
             ).delete(synchronize_session=False)
@@ -4909,6 +4979,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 db.query(WorkCanonicalLink)
                 .filter(
                     WorkCanonicalLink.evidence_status == "verified",
+                    WorkCanonicalLink.link_type != "bonus",
                     (WorkCanonicalLink.linked_rjcode.in_(normalized))
                     | (WorkCanonicalLink.canonical_rjcode.in_(normalized))
                 )
@@ -5048,6 +5119,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     db.query(WorkCanonicalLink)
                     .filter(
                         WorkCanonicalLink.evidence_status == "verified",
+                        WorkCanonicalLink.link_type != "bonus",
                         (WorkCanonicalLink.linked_rjcode == normalized_rj)
                         | (WorkCanonicalLink.canonical_rjcode == normalized_rj)
                     )
@@ -5071,6 +5143,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                             db.query(WorkCanonicalLink)
                             .filter(
                                 WorkCanonicalLink.evidence_status == "verified",
+                                WorkCanonicalLink.link_type != "bonus",
                                 WorkCanonicalLink.canonical_rjcode.in_(cached_canonicals),
                             )
                             .all()
@@ -5111,7 +5184,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 evidence_status = str(
                     getattr(linked_work, "evidence_status", "") or "unverified"
                 ).strip().lower()
-                if evidence_status != "verified":
+                if evidence_status != "verified" or work_type.lower() == "bonus":
                     continue
                 if work_type == "original":
                     canonical_rjcode = linked_rj_norm
@@ -5150,7 +5223,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                         evidence_status = str(
                             getattr(linked_work, "evidence_status", "") or "unverified"
                         ).strip().lower()
-                        if evidence_status != "verified":
+                        if evidence_status != "verified" or work_type.lower() == "bonus":
                             continue
                         if work_type == "original":
                             recovered_canonical = linked_rj_norm
@@ -5196,6 +5269,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                         db.query(WorkCanonicalLink)
                         .filter(
                             WorkCanonicalLink.evidence_status == "verified",
+                            WorkCanonicalLink.link_type != "bonus",
                             (WorkCanonicalLink.linked_rjcode.in_(overlap_codes))
                             | (WorkCanonicalLink.canonical_rjcode.in_(overlap_codes))
                         )
@@ -5235,6 +5309,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             db = SessionLocal()
             try:
                 db.query(WorkCanonicalLink).filter(
+                    WorkCanonicalLink.link_type != "bonus",
                     (WorkCanonicalLink.canonical_rjcode == canonical_rjcode)
                     | (WorkCanonicalLink.linked_rjcode.in_([row["linked_rjcode"] for row in link_rows]))
                 ).delete(synchronize_session=False)
@@ -5449,19 +5524,25 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         # 即使 force_refresh=True 也会跑 Block 1 SELECT 然后丢弃结果，纯属浪费。
         # 这里改为一次性 ``WHERE linked_rjcode IN (...) OR canonical_rjcode IN (...)``
         # 把所有相关行批量拉出来灌进 memory cache。新社团首次索引时 DB 空，方法返回 0 无副作用。
-        # 即使 force_refresh=True 也跑：``WorkCanonicalLink`` 是 DLsite 关联链解析结果的
-        # 持久化，跟 ``dlsite_service`` 内部的 24h HTTP cache 是两个层，强刷语义针对的是后者。
+        # 强刷跳过数据库旧链预热，避免读取后又丢弃；同轮新链仍复用。
         prewarm_ctx = perf.timed("stage_snapshot_wave1_prewarm_canonical") if perf else contextlib.nullcontext()
         with prewarm_ctx:
             warmed = await asyncio.to_thread(
                 self._prewarm_canonical_cache_from_db, snapshot.candidate_rjcodes
-            )
+            ) if not force_refresh else 0
         if perf:
             perf.inc("wave1_canonical_cache_prewarmed", warmed)
         logger.info(
             "[社团补全·snapshot] wave1 批量预热 _canonical_cache: rj=%d cache_warmed=%d force_refresh=%s",
             len(snapshot.candidate_rjcodes), warmed, force_refresh,
         )
+        initial_payloads = [payload for code in snapshot.candidate_rjcodes
+                            if (payload := self._canonical_cache.get(code)) is not None] if force_refresh else []
+        stale_payload_ids = {id(payload) for payload in initial_payloads}
+
+        def reusable_chain(code):
+            payload = self._canonical_cache.get(code)
+            return payload if payload is not None and id(payload) not in stale_payload_ids else None
 
         async def prefetch_dlsite(rj: str) -> Tuple[str, str, Set[str], Dict[str, Any]]:
             """返回 ``(原始 rj, canonical rj, 链上所有 rj 的集合, canonical_info)``。
@@ -5474,7 +5555,10 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             cache 是空的，这条 fast-path 不命中，正常进入 ``resolve_canonical_rj``
             走 DLsite HTTP；但 buffered 模式下 DB writes 已被合并，sem 真并发。
             """
-            cached_payload = self._canonical_cache.get(rj) if not force_refresh else None
+            # 强刷只应作用于本次索引开始前的旧缓存；同一波首次索引里，
+            # 前一个 RJ 刚解析出的关联链必须复用，否则翻译版/重复候选会
+            # 在 force_refresh=True 下把同一条 DLsite 关系链重新请求多次。
+            cached_payload = reusable_chain(rj)
             if cached_payload is not None:
                 canonical = self.normalize_rjcode(cached_payload.get("canonical_rjcode")) or rj
                 related: Set[str] = {rj, canonical}
@@ -5490,6 +5574,16 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             canonical = rj
             canonical_info: Dict[str, Any] = {}
             async with wave1_sem:
+                # 排队期间其它候选可能已解析出这条链，强刷也复用本轮新结果。
+                cached_payload = reusable_chain(rj)
+                if cached_payload is not None:
+                    canonical = self.normalize_rjcode(cached_payload.get("canonical_rjcode")) or rj
+                    related.add(canonical)
+                    related.update(code for value in cached_payload.get("linked_rjcodes") or []
+                                   if (code := self.normalize_rjcode(value)))
+                    if perf:
+                        perf.inc("wave1_chain_memory_hits")
+                    return rj, canonical, related, cached_payload
                 chain_t0 = time.monotonic()
                 try:
                     canonical_info = await self.resolve_canonical_rj(rj, refresh=force_refresh) or {}
@@ -5616,6 +5710,9 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     ).all() if is_unreleased(row.release_date)
                 }
         unreleased_codes = await asyncio.to_thread(load_unreleased_codes)
+        from .resource_source_service import get_resource_source_service
+        await asyncio.to_thread(get_resource_source_service().enqueue_codes,
+                                set(snapshot.all_rjcodes) - unreleased_codes, refresh=force_refresh)
 
         # 用本次官方 product 响应确认作品归属；只有归属明确且目录完整，才允许目录缺失短路。
         maker_reader = getattr(self.dlsite_service, "index_product_makers", None)
@@ -7266,12 +7363,26 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         )
         if circle_id:
             hit_query = hit_query.filter(DLsiteBonusProbeHitIndex.circle_id.in_(("", circle_id)))
-        return {
+        confirmed = {
             normalized
             for value in [*(row[0] for row in linked_rows), *(row[0] for row in hit_query.all())]
             for normalized in [self.normalize_rjcode(value)]
             if normalized
         }
+        # ASMR 来源的图片差分可能没有 work_metadata，也还没有父子关联。
+        # 作品自身的官方结构化探测结果足以判定特典，不能等挂载成功才显示标识。
+        # 复用缓存读取的当前分类规则，避免历史布尔值或缺失下载数造成误判。
+        probe_service = get_dlsite_bonus_probe_service()
+        pending_codes = sorted(normalized_codes - confirmed)
+        for offset in range(0, len(pending_codes), 1000):
+            cached_rows = db.query(DLsiteBonusProbeCache).filter(
+                DLsiteBonusProbeCache.rjcode.in_(pending_codes[offset:offset + 1000]),
+            ).all()
+            for row in cached_rows:
+                feature = probe_service._feature_from_cache_row(row)
+                if feature.is_hidden_bonus_audio:
+                    confirmed.add(feature.workno)
+        return confirmed
 
     def _load_bonus_rjcodes_for_owned_state(self, rjcodes: Set[str]) -> Set[str]:
         db = SessionLocal()
@@ -7293,8 +7404,9 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             self.normalize_rjcode(item.get("rjcode")),
         }
         own_codes.discard("")
-        if bool(item.get("is_bonus_work")) or bool(own_codes & bonus_rjcodes):
-            return own_codes
+        canonical_code = self.normalize_rjcode(canonical) or self.normalize_rjcode(item.get("canonical_rjcode"))
+        if bool(item.get("is_bonus_work")) or canonical_code in bonus_rjcodes:
+            return {canonical_code} if canonical_code else set()
 
         candidates = {
             *own_codes,
@@ -7326,7 +7438,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 evidence_source == "translation_info"
                 and work_type in {"translation", "child_translation"}
             )
-            if is_inventory_candidate and normalized not in candidates:
+            if work_type != "bonus" and is_inventory_candidate and normalized not in candidates:
                 candidates.append(normalized)
         return candidates
 
@@ -7376,6 +7488,49 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
             return [], None
         if catalog is None:
             return [], None
+        codes = [code for code in catalog
+                 if code not in known_rjcodes and self.normalize_rjcode(code) == code]
+
+        # 新社团没有本地 metadata 缓存时，历史目录可能包含大量停售作品。
+        # 逐个 get_product_info 会为每个 RJ 走完整 product 页面链路，几十个作品就会
+        # 变成分钟级；product/info/ajax 支持批量查询，直接拿结构化字段完成同样的
+        # maker / workno / 音声类型校验。小目录保留旧路径，兼容已有单 RJ mock 和异常回退。
+        bulk_reader = getattr(self.dlsite_service, "_fetch_product_info_ajax_payloads", None)
+        if len(codes) >= 10 and callable(bulk_reader):
+            try:
+                payloads = {}
+                for start in range(0, len(codes), 500):
+                    batch = await bulk_reader(codes[start:start + 500])
+                    if batch is None:
+                        payloads = None
+                        break
+                    if isinstance(batch, dict):
+                        payloads.update(batch)
+            except Exception:
+                logger.warning("[社团补全] 历史候选批量官方校验失败 maker=%s", maker_id, exc_info=True)
+                payloads = None
+            if payloads is None:
+                return [], catalog
+            candidates = []
+            for rjcode in codes:
+                product = payloads.get(rjcode) if isinstance(payloads, dict) else None
+                if not isinstance(product, dict):
+                    continue
+                product_workno = self.normalize_rjcode(product.get("workno") or rjcode)
+                maker = product.get("maker") if isinstance(product.get("maker"), dict) else {}
+                product_maker_id = self._normalize_maker_id(product.get("maker_id") or maker.get("id"))
+                if (product_maker_id != maker_id or product_workno != rjcode
+                        or str(product.get("work_type") or "").upper() != "SOU"):
+                    continue
+                candidates.append({
+                    "rjcode": rjcode,
+                    "title": product.get("work_name") or "",
+                    "maker_id": maker_id,
+                    "maker_name": product.get("maker_name") or maker.get("name") or "",
+                    "source": "dlsite",
+                })
+            return candidates, catalog
+
         semaphore = asyncio.Semaphore(10)
 
         async def verify(rjcode):
@@ -7398,8 +7553,6 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                     "source": "dlsite",
                 }
 
-        codes = [code for code in catalog
-                 if code not in known_rjcodes and self.normalize_rjcode(code) == code]
         candidates = await asyncio.gather(*(verify(code) for code in codes))
         return [item for item in candidates if item is not None], catalog
 
@@ -8914,8 +9067,15 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         self._schedule_circle_bonus_refresh(circle_id, bonus_lookup_rjcodes)
 
         report(97, "生成社团视图摘要", circle_id=circle_id)
+        from .resource_source_service import get_resource_source_service
+        await asyncio.to_thread(get_resource_source_service().enqueue_circle, circle_id)
         self.invalidate_completion_view_cache(circle_id)
-        summary = await self.build_circle_completion_view(circle_id)
+        published_ready = await self._wait_for_published_circle_revision(circle_id)
+        if not published_ready:
+            raise RuntimeError("社团索引快照尚未发布完成，不能生成完成记录")
+        summary = await asyncio.to_thread(self._read_published_completion, circle_id, "index_snapshot", include_dl_only=True)
+        summary["downloadable_count"] = sum(1 for item in summary.get("works", [])
+            if not item.get("server_owned") and item.get("has_downloadable_source"))
         indexed_counts = {
             "works": len(summary.get("works") or []),
             "local_owned_count": int(summary.get("local_owned_count") or 0),
@@ -8935,7 +9095,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 f"DL 有 {indexed_counts['dl_count']} 个 / "
                 f"asmr.one 有 {sum(1 for item in summary.get('works') or [] if item.get('has_asmr_one'))} 个 / "
                 f"可下载 {indexed_counts['downloadable_count']} 个 / "
-                f"暂无来源 {sum(1 for item in summary.get('works') or [] if not item.get('server_owned') and item.get('has_dlsite') and not item.get('has_asmr_one'))} 个"
+                f"暂无来源 {sum(1 for item in summary.get('works') or [] if not item.get('server_owned') and item.get('has_dlsite') and not item.get('has_downloadable_source', item.get('has_asmr_one')))} 个"
             ),
             circle_id=circle_id,
             circle_name=identity["circle_name"] or circle_query,
@@ -8960,6 +9120,7 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
                 "existing_indexed_count": len(existing_canonical_rjcodes),
                 "skipped_existing_count": skipped_existing,
                 "newly_indexed_count": len(aggregated),
+                "published_snapshot_ready": published_ready,
             },
         )
         try:
@@ -8990,6 +9151,32 @@ class CircleCompletionService(CircleDownloadPreviewMixin):
         """目录和详情共享发布头，读请求不聚合来源作品。"""
         from .circle_completion_read_model import read_recent
         return await asyncio.to_thread(read_recent, SessionLocal, self.normalize_circle_name(keyword), limit)
+
+    async def _wait_for_published_circle_revision(self, circle_id: str, *, timeout_seconds: float = 12.0) -> bool:
+        """索引写入提交后等待物化快照追上，避免完成日志读取到旧空快照。"""
+        deadline = time.monotonic() + max(0.5, float(timeout_seconds or 12.0))
+
+        def state() -> Tuple[int, int]:
+            from ..models.database import CircleCompletionControl, CircleCompletionHead
+            with SessionLocal() as db:
+                control = db.get(CircleCompletionControl, str(circle_id or ""))
+                head = db.get(CircleCompletionHead, str(circle_id or ""))
+                return (
+                    int(getattr(control, "requested_seq", 0) or 0),
+                    int(getattr(head, "applied_seq", 0) or 0) if head and head.revision and head.active_generation else -1,
+                )
+
+        while time.monotonic() < deadline:
+            requested_seq, applied_seq = await asyncio.to_thread(state)
+            if requested_seq <= applied_seq:
+                return True
+            await asyncio.sleep(0.15)
+        requested_seq, applied_seq = await asyncio.to_thread(state)
+        logger.warning(
+            "[社团补全] 索引完成日志等待物化超时 circle_id=%s requested_seq=%s applied_seq=%s",
+            circle_id, requested_seq, applied_seq,
+        )
+        return requested_seq <= applied_seq
 
     def _build_filter_skip_reasons(self, resources: List[Dict[str, Any]]) -> Dict[str, List[str]]:
         config = get_config()

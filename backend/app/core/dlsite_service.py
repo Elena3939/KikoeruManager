@@ -2203,10 +2203,10 @@ class DLsiteApiService:
             raise httpx.ConnectError(f"DLsite HTTP 短熔断中，剩余 {remaining:.1f}s")
 
         if self._http_semaphore is None:
-            # 默认 3 个并发 DLsite 请求 + 0.1-0.3s 抖动：用 ``DLSITE_HTTP_CONCURRENCY``
+            # 默认 6 个并发 DLsite 请求 + 0.1-0.3s 抖动：用 ``DLSITE_HTTP_CONCURRENCY``
             # / ``DLSITE_HTTP_SLEEP_MIN`` / ``DLSITE_HTTP_SLEEP_MAX`` 环境变量可在
             # 网络波动时临时压回 1 / 0.2 / 0.8。
-            sem_size = max(1, int(os.environ.get("DLSITE_HTTP_CONCURRENCY", "3") or "3"))
+            sem_size = max(1, int(os.environ.get("DLSITE_HTTP_CONCURRENCY", "6") or "6"))
             self._http_semaphore = asyncio.Semaphore(sem_size)
         sleep_min = float(os.environ.get("DLSITE_HTTP_SLEEP_MIN", "0.1") or "0.1")
         sleep_max = float(os.environ.get("DLSITE_HTTP_SLEEP_MAX", "0.3") or "0.3")

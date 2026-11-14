@@ -377,7 +377,10 @@ class LibraryIndexService:
         from_seq: int,
         through_seq: int,
         chunk_size: int,
-    ) -> None:
+    ) -> dict[str, int]:
+        total_entries_delta = 0
+        total_size_delta = 0
+        folder_count_delta = 0
         for relative_path in self._generation_reconcile_roots(
             library_id,
             from_seq,
@@ -402,6 +405,23 @@ class LibraryIndexService:
                             & (LibraryIndexEntry.relative_path < relative_path + "0")
                         )
                     )
+                old_total_entries, old_total_size, old_folder_count = q.with_entities(
+                    func.count(LibraryIndexEntry.id),
+                    func.coalesce(
+                        func.sum(
+                            func.greatest(
+                                func.coalesce(LibraryIndexEntry.size, 0),
+                                0,
+                            )
+                        ).filter(LibraryIndexEntry.entry_type == "file"),
+                        0,
+                    ),
+                    func.count(LibraryIndexEntry.id).filter(
+                        LibraryIndexEntry.entry_type == "dir",
+                        LibraryIndexEntry.relative_path != "",
+                        func.coalesce(LibraryIndexEntry.parent_path, "") == "",
+                    ),
+                ).one()
                 q.delete(synchronize_session=False)
                 db.commit()
             except Exception:
@@ -409,9 +429,15 @@ class LibraryIndexService:
                 raise
             finally:
                 db.close()
+            total_entries_delta -= int(old_total_entries or 0)
+            total_size_delta -= int(old_total_size or 0)
+            folder_count_delta -= int(old_folder_count or 0)
             if not os.path.exists(target):
                 continue
             buffer: list[IndexEntry] = []
+            new_total_entries = 0
+            new_total_size = 0
+            new_folder_count = 0
             for entry in self._local_scanner_factory().scan_subtree(
                 library_id,
                 root_path,
@@ -420,6 +446,10 @@ class LibraryIndexService:
                 entry.generation = generation
                 entry.materialized_seq = through_seq
                 buffer.append(entry)
+                new_total_entries += 1
+                size_delta, folder_delta = self._entry_stats(entry)
+                new_total_size += size_delta
+                new_folder_count += folder_delta
                 if len(buffer) >= chunk_size:
                     self._store.bulk_upsert(
                         buffer,
@@ -433,6 +463,14 @@ class LibraryIndexService:
                     chunk_size=chunk_size,
                     maintain_status_stats=False,
                 )
+            total_entries_delta += new_total_entries
+            total_size_delta += new_total_size
+            folder_count_delta += new_folder_count
+        return {
+            "total_entries_delta": total_entries_delta,
+            "total_size_bytes_delta": total_size_delta,
+            "folder_count_delta": folder_count_delta,
+        }
 
     @staticmethod
     def _building_generation_stats(library_id: str, generation: int) -> dict[str, int]:
@@ -622,7 +660,7 @@ class LibraryIndexService:
                 library_id,
                 root_path,
             )
-            self._scan_building_generation(
+            stats = self._scan_building_generation(
                 library_id,
                 root_path,
                 generation,
@@ -638,7 +676,6 @@ class LibraryIndexService:
                 finally:
                     db.close()
                 if accepted_seq == reconciled_seq:
-                    stats = self._building_generation_stats(library_id, generation)
                     try:
                         return self._cutover_building_generation(
                             library_id,
@@ -650,7 +687,7 @@ class LibraryIndexService:
                         if "accepted_seq" not in str(exc):
                             raise
                         continue
-                self._reconcile_building_generation(
+                delta = self._reconcile_building_generation(
                     library_id,
                     root_path,
                     generation,
@@ -658,6 +695,12 @@ class LibraryIndexService:
                     accepted_seq,
                     chunk_size,
                 )
+                stats["total_entries"] += int(delta["total_entries_delta"])
+                stats["total_size_bytes"] += int(delta["total_size_bytes_delta"])
+                stats["folder_count"] += int(delta["folder_count_delta"])
+                stats["total_entries"] = max(0, stats["total_entries"])
+                stats["total_size_bytes"] = max(0, stats["total_size_bytes"])
+                stats["folder_count"] = max(0, stats["folder_count"])
                 reconciled_seq = accepted_seq
                 db = SessionLocal()
                 try:

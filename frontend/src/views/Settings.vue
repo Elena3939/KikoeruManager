@@ -117,6 +117,10 @@
         <HttpDownloadSettingsPanel :config="config" />
       </SettingsSectionPanel>
 
+      <SettingsSectionPanel v-else-if="activeSection === 'linkSheet'" kicker="Excel Link Library" title="Excel 链接库">
+        <LinkSheetSettingsPanel />
+      </SettingsSectionPanel>
+
       <SettingsSectionPanel
         v-else-if="activeSection === 'baiduNetdisk'"
         kicker="Baidu Netdisk"
@@ -145,15 +149,6 @@
       </SettingsSectionPanel>
 
       <SettingsSectionPanel
-        v-else-if="activeSection === 'fts'"
-        kicker="Full-Text Search"
-        title="全文搜索索引"
-        description="管理 PostgreSQL pg_trgm 搜索索引。支持中文任意片段搜索，重建期间功能不中断。"
-      >
-        <FtsSettingsPanel />
-      </SettingsSectionPanel>
-
-      <SettingsSectionPanel
         v-else-if="activeSection === 'security'"
         kicker="Security Gate"
         title="安全门禁"
@@ -176,7 +171,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { Bell, Bot, Boxes, DownloadCloud, HardDrive, LifeBuoy, ScanSearch, ServerCog, ShieldCheck, TextSearch, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
+import { Bell, Bot, Boxes, DownloadCloud, HardDrive, LifeBuoy, ScanSearch, ServerCog, ShieldCheck, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
 import SettingsSectionPanel from '../components/settings/SettingsSectionPanel.vue'
 import SettingsWorkbench from '../components/settings/SettingsWorkbench.vue'
 import BaiduNetdiskNavIcon from '../components/settings/BaiduNetdiskNavIcon.vue'
@@ -187,10 +182,10 @@ import RulesSettingsPanel from '../components/settings/RulesSettingsPanel.vue'
 import ServicesSettingsPanel from '../components/settings/ServicesSettingsPanel.vue'
 import AISubtitleSettingsPanel from '../components/settings/AISubtitleSettingsPanel.vue'
 import HttpDownloadSettingsPanel from '../components/settings/HttpDownloadSettingsPanel.vue'
+import LinkSheetSettingsPanel from '../components/settings/LinkSheetSettingsPanel.vue'
 import BaiduNetdiskSettingsPanel from '../components/settings/BaiduNetdiskSettingsPanel.vue'
 import SystemSettingsPanel from '../components/settings/SystemSettingsPanel.vue'
 import MaintenanceSettingsPanel from '../components/settings/MaintenanceSettingsPanel.vue'
-import FtsSettingsPanel from '../components/settings/FtsSettingsPanel.vue'
 import NotificationSettingsPanel from '../components/settings/NotificationSettingsPanel.vue'
 import SecurityGateSettingsPanel from '../components/settings/SecurityGateSettingsPanel.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
@@ -206,10 +201,10 @@ const sectionKeyMap = {
   services: ['kikoeru_server', 'asmr_sync', 'asmr_sync_step', 'rj_subtitle', 'email_watcher', 'bonus_probe', 'circle_external_search'],
   aiSubtitle: ['ai_subtitle_matching'],
   httpDownload: ['http_downloader'],
+  linkSheet: [],
   baiduNetdisk: ['baidu_netdisk'],
   system: ['database', 'redis', 'resource_budget', 'task_center'],
   maintenance: ['password_cleanup', 'archive_cleanup', 'backup_zip'],
-  fts: [],
   security: ['security_gate'],
   notification: ['notification_email', 'notification_center']
 }
@@ -279,10 +274,10 @@ const sections = [
   { id: 'services', title: '外部服务', short: 'Kikoeru、ASMR、RJ 字幕、特典补全', icon: ScanSearch, keywords: ['kikoeru', 'asmr', 'subtitle', 'email', 'bonus', 'probe', 'dlsite', '外部服务', '特典补全', '特典探测'] },
   { id: 'aiSubtitle', title: 'AI 配对', short: '模型、Key、提示词、阈值', icon: Bot, keywords: ['ai', 'subtitle', 'match', 'model', 'prompt', '字幕配对', '模型', '提示词'] },
   { id: 'httpDownload', title: 'HTTP 下载', short: 'HTTP、Gofile、PikPak', icon: DownloadCloud, keywords: ['http', 'download', 'aria2', 'gofile', 'pikpak', '外链下载'] },
+  { id: 'linkSheet', title: 'Excel 链接库', short: '导入、清单修订、异常记录', icon: DownloadCloud, keywords: ['excel', 'xlsx', 'mega', '链接库', '导入'] },
   { id: 'baiduNetdisk', title: '百度网盘', short: '官方登录、分享直下、SVIP', icon: BaiduNetdiskNavIcon, keywords: ['baidu', '百度网盘', '分享直下', 'SVIP', '百度'] },
   { id: 'system', title: '系统运行', short: '数据库、任务列表加速、资源预算', icon: ServerCog, keywords: ['system', 'runtime', 'postgresql', 'pool', 'resource_budget', '系统', '连接池', '资源预算', '任务', '列表', '加速'] },
-  { id: 'maintenance', title: '维护与清理', short: '清理、备份、压缩包', icon: LifeBuoy, keywords: ['cleanup', 'backup', 'archive', '维护'] },
-  { id: 'fts', title: '全文搜索索引', short: 'pg_trgm 加速', icon: TextSearch, keywords: ['search', 'trigram', 'pg_trgm', '索引', '全文搜索', 'postgresql'] },
+  { id: 'maintenance', title: '维护与清理', short: '清理、备份、压缩包、索引', icon: LifeBuoy, keywords: ['cleanup', 'backup', 'archive', 'search', 'trigram', 'pg_trgm', '索引', '全文搜索', '维护'] },
   { id: 'security', title: '安全门禁', short: '验证器、黑名单', icon: ShieldCheck, keywords: ['security', 'google authenticator', '门禁', '黑名单'] },
   { id: 'notification', title: '通知中心', short: 'SMTP 邮件、站内铃铛', icon: Bell, keywords: ['notification', 'smtp', 'email', '通知', '邮件', '铃铛'] }
 ]
@@ -338,9 +333,9 @@ onMounted(() => {
 .settings-page {
   --set-page-bg: transparent;
   --set-surface: #ffffff;
-  --set-surface-soft: #f8fafc;
-  --set-surface-muted: #f1f5f9;
-  --set-surface-hover: #f8fafc;
+  --set-surface-soft: #ffffff;
+  --set-surface-muted: #ffffff;
+  --set-surface-hover: #ffffff;
   --set-field-bg: #ffffff;
   --set-text: #334155;
   --set-text-strong: #111827;
@@ -351,13 +346,13 @@ onMounted(() => {
   --set-border-strong: rgba(15, 23, 42, 0.2);
   --set-accent: #111827;
   --set-accent-hover: #1f2937;
-  --set-accent-soft: rgba(15, 23, 42, 0.06);
+  --set-accent-soft: #ffffff;
   --set-primary-bg: #1f2937;
   --set-primary-bg-hover: #111827;
   --set-primary-border: rgba(15, 23, 42, 0.92);
   --set-primary-text: #ffffff;
-  --set-chip-bg: #f8fafc;
-  --set-chip-bg-active: #e5e7eb;
+  --set-chip-bg: #ffffff;
+  --set-chip-bg-active: #ffffff;
   --set-chip-text: #475569;
   --set-chip-text-strong: #0f172a;
   --set-focus-ring: rgba(15, 23, 42, 0.08);

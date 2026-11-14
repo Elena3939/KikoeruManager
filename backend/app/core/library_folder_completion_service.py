@@ -286,7 +286,7 @@ class LibraryFolderCompletionService:
 
             selected_resources = [self._sanitize_resource_for_task(item) for item in selected_resources]
             estimated_bytes = sum(int(item.get("size_bytes") or 0) for item in selected_resources)
-            session_id = self.resource_service._create_download_session(
+            session_id = await asyncio.to_thread(self.resource_service._create_download_session,
                 rjcode=actual_rjcode,
                 work_title=str(work_info.get("title") or target.rjcode),
                 folder_path=target.folder_path,
@@ -424,6 +424,8 @@ class LibraryFolderCompletionService:
             for resource in list(data.get("selected_resources") or [])
             if isinstance(resource, dict)
         ]
+        # 提交时再按当前规则校验，避免旧预览或客户端清单重新带入已过滤资源。
+        selected_resources, _ = self._apply_extract_filter_rules(selected_resources)
         if not selected_resources:
             raise ValueError(f"{rjcode} 没有选中任何缺失文件")
         return {
@@ -451,7 +453,7 @@ class LibraryFolderCompletionService:
                 selected_resources = item["selected_resources"]
                 session_id = str(item.get("session_id") or "").strip()
                 if not session_id:
-                    session_id = self.resource_service._create_download_session(
+                    session_id = await asyncio.to_thread(self.resource_service._create_download_session,
                         rjcode=rjcode,
                         work_title=str(item.get("work_title") or rjcode),
                         folder_path=item["folder_path"],
@@ -514,7 +516,7 @@ class LibraryFolderCompletionService:
                     "business_key": metadata["business_key"],
                 })
                 await engine.submit(task)
-                self.resource_service._update_session(
+                await asyncio.to_thread(self.resource_service._update_session,
                     session_id,
                     task_id=task.id,
                     status="queued",

@@ -99,7 +99,72 @@ class AdjustableLimiter:
 _node = contextvars.ContextVar("extract_archive_node", default=None)
 _timing = contextvars.ContextVar("extract_archive_timing", default=None)
 _attempt = contextvars.ContextVar("extract_attempt", default=None)
+_active_clocks = contextvars.ContextVar("extract_active_clocks", default=())
+_phase_kinds = contextvars.ContextVar("extract_phase_kinds", default=())
+_probe_budget = contextvars.ContextVar("extract_probe_budget", default=None)
 _candidate_secret = os.urandom(32)
+
+
+class ActiveClock:
+    """累计实际工作时间；资源排队和用户暂停可嵌套扣除，不依赖任务诊断数据。"""
+
+    def __init__(self):
+        self.started = time.monotonic()
+        self.excluded = 0.0
+        self.suspended_at = None
+        self.suspensions = 0
+
+    @property
+    def elapsed(self):
+        ended = self.suspended_at if self.suspensions else time.monotonic()
+        return max(0.0, ended - self.started - self.excluded)
+
+    def suspend(self):
+        if not self.suspensions:
+            self.suspended_at = time.monotonic()
+        self.suspensions += 1
+
+    def resume(self):
+        self.suspensions -= 1
+        if not self.suspensions:
+            self.excluded += time.monotonic() - self.suspended_at
+            self.suspended_at = None
+
+
+@contextlib.contextmanager
+def active_clock(*, budget_seconds=None):
+    clock = ActiveClock()
+    token = _active_clocks.set((*_active_clocks.get(), clock))
+    budget_token = _probe_budget.set((clock, budget_seconds)) if budget_seconds is not None else None
+    try:
+        yield clock
+    finally:
+        if budget_token is not None:
+            _probe_budget.reset(budget_token)
+        _active_clocks.reset(token)
+
+
+def probe_execution_timeout(timeout):
+    """取得资源后重新计算剩余工作预算；不会把排队计入进程时限。"""
+    budget = _probe_budget.get()
+    if budget is None:
+        return timeout
+    clock, limit = budget
+    remaining = max(0.0, limit - clock.elapsed)
+    return remaining if timeout is None else min(timeout, remaining)
+
+
+@contextlib.contextmanager
+def exclude_active_time():
+    """在实际等待边界暂停当前协程的工作时钟，退出（含取消）后恢复。"""
+    clocks = _active_clocks.get()
+    for clock in clocks:
+        clock.suspend()
+    try:
+        yield
+    finally:
+        for clock in reversed(clocks):
+            clock.resume()
 
 
 def current_archive_depth():
@@ -150,18 +215,26 @@ def measured_phase(kind):
     def decorate(method):
         @functools.wraps(method)
         async def wrapped(*args, **kwargs):
+            kinds = _phase_kinds.get()
+            if kind in kinds:
+                return await method(*args, **kwargs)
             started = time.monotonic()
+            token = _phase_kinds.set((*kinds, kind))
             try:
-                result = await method(*args, **kwargs)
-                if kind == 'probe' and len(args) >= 3:
-                    candidate_evidence(args[2], [], content=result)
-                return result
-            except asyncio.CancelledError:
-                if kind == 'probe' and len(args) >= 3:
-                    candidate_evidence(args[2], [], content='cancelled')
-                raise
+                with active_clock() as clock:
+                    try:
+                        result = await method(*args, **kwargs)
+                        if kind == 'probe' and len(args) >= 3:
+                            candidate_evidence(args[2], [], content=result)
+                        return result
+                    except asyncio.CancelledError:
+                        if kind == 'probe' and len(args) >= 3:
+                            candidate_evidence(args[2], [], content='cancelled')
+                        raise
+                    finally:
+                        record_event(kind, started, duration_seconds=clock.elapsed)
             finally:
-                record_event(kind, started)
+                _phase_kinds.reset(token)
         return wrapped
     return decorate
 
@@ -199,14 +272,14 @@ async def archive_node(task, path, *, root=False):
             summarize(timing)
 
 
-def record_event(kind, started, *, ended=None):
+def record_event(kind, started, *, ended=None, duration_seconds=None):
     node = _node.get()
     if node is not None:
         ended = time.monotonic() if ended is None else ended
         event_id = uuid.uuid4().hex
         node["events"].append({"id": event_id, "attempt_id": _attempt.get() or event_id, "kind": kind,
                                "start": started, "end": ended,
-                               "duration_ms": max(0, round((ended - started) * 1000))})
+                               "duration_ms": max(0, round((ended - started if duration_seconds is None else duration_seconds) * 1000))})
         timing = _timing.get()
         if timing is not None:
             totals = timing.setdefault("totals_ms", {})

@@ -1393,12 +1393,43 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
             end_at = _coerce_dt(finish_row.get("created_at"))
             if start_at and end_at and end_at >= start_at:
                 duration_ms = int((end_at - start_at).total_seconds() * 1000)
+        merged_detail = dict(parent_detail)
         if duration_ms > 0:
-            parent_row["detail"] = {
-                **parent_detail,
-                "duration_ms": duration_ms,
-                "task_duration_ms": duration_ms,
-            }
+            merged_detail["duration_ms"] = max(int(merged_detail.get("duration_ms") or 0), duration_ms)
+            merged_detail["task_duration_ms"] = merged_detail["duration_ms"]
+
+        # 社团下载父记录需要直接携带已完成文件清单和运行指标，详情抽屉无需再逐个跳子任务。
+        if str(parent_row.get("action") or "").strip() == "download_batch_start":
+            existing_files = [
+                item for item in (merged_detail.get("download_files") or [])
+                if isinstance(item, dict)
+            ]
+            finished_files = [
+                item for item in (finish_detail.get("download_files") or [])
+                if isinstance(item, dict)
+            ]
+            if finished_files:
+                merged_detail["download_files"] = (existing_files + finished_files)[:200]
+            for key in ("downloaded_bytes", "success_count", "failed_count"):
+                value = int(finish_detail.get(key) or 0)
+                if value:
+                    merged_detail[key] = int(merged_detail.get(key) or 0) + value
+            performance_metrics = finish_detail.get("performance_metrics")
+            if not isinstance(performance_metrics, dict):
+                performance_metrics = {}
+            speed = int(
+                finish_detail.get("average_download_speed_bytes")
+                or performance_metrics.get("average_download_speed_bytes", 0)
+                or 0
+            )
+            if speed:
+                merged_detail["average_download_speed_bytes"] = (
+                    max(int(merged_detail.get("average_download_speed_bytes") or 0), speed)
+                )
+            for key in ("download_root", "target_path", "final_output_path"):
+                if finish_detail.get(key) and not merged_detail.get(key):
+                    merged_detail[key] = finish_detail[key]
+        parent_row["detail"] = merged_detail
         parent_row["latest_activity_at"] = finish_row.get("created_at") or parent_row.get("latest_activity_at") or parent_row.get("created_at")
     
     # 第一步：收集索引和刷新记录

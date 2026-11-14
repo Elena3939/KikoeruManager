@@ -11,6 +11,7 @@ const phaseLabels = {
   bonus_probe: '特典探测', download: '下载', upload: '上传', library_upload: '入库上传',
   downloaded: '下载完成', download_reused: '复用下载', ready_for_upload: '等待上传',
   waiting_upload_turn: '等待上传', refresh_download_link: '刷新下载链接',
+  local_import: '入库', waiting_local_import: '等待入库',
   download_failed: '下载失败', upload_failed: '上传失败', verify: '校验',
   pending: '等待', queued: '排队', receiving: '接收', completed: '完成',
 }

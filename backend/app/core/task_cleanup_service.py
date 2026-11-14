@@ -76,11 +76,30 @@ def _cleanup_download_files(task: Any, metadata: Dict[str, Any], result: Dict[st
             continue
         _remove_file(candidate, result)
 
+    _cleanup_mega_staging(task, metadata, boundaries, result)
+
     deleted_files = [
         path for path in result["cleaned_paths"]
         if not str(path).lower().endswith(".aria2")
     ]
     _cleanup_empty_parent_dirs(deleted_files, boundaries, result)
+
+
+def _cleanup_mega_staging(task: Any, metadata: Dict[str, Any], boundaries: List[str], result: Dict[str, Any]) -> None:
+    """仅清理本任务的 MEGAcmd 暂存区，不触碰同目录内的其它任务。"""
+    task_id = str(getattr(task, "id", "") or "").strip()
+    if not task_id or os.path.basename(task_id) != task_id or task_id in {".", ".."}:
+        return
+    parents = {os.path.dirname(path) for path in _download_file_candidates(metadata, boundaries)}
+    parents.update(boundaries)
+    for parent in sorted(parents):
+        staging = os.path.join(parent, ".mega-staging", task_id)
+        if not _path_allowed_for_file_cleanup(os.path.realpath(staging), [os.path.realpath(root) for root in boundaries]):
+            continue
+        if os.path.islink(staging) or os.path.islink(os.path.dirname(staging)):
+            continue
+        _remove_directory(staging, result)
+        _cleanup_empty_parent_dirs([staging], boundaries, result)
 
 
 def _download_file_candidates(metadata: Dict[str, Any], boundaries: List[str]) -> Set[str]:
@@ -105,6 +124,8 @@ def _download_file_candidates(metadata: Dict[str, Any], boundaries: List[str]) -
     for path in paths:
         if not path.lower().endswith(".aria2"):
             with_fragments.add(path + ".aria2")
+        if not path.lower().endswith(".part"):
+            with_fragments.add(path + ".part")
     return with_fragments
 
 

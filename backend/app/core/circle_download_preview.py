@@ -84,11 +84,14 @@ class CircleDownloadPreviewMixin:
     def _describe_download_versions(self, versions):
         from .circle_completion_service import SessionLocal
         from ..models.database import ASMRResourceRecord, LibraryOwnedWork, ResourceSourceProbe
+        from ..models.link_sheet import LinkSheetCurrent
         from .resource_source_service import SOURCE, VERSION
         from sqlalchemy import or_, cast
         from sqlalchemy.dialects.postgresql import JSONB
-        codes = [item['rjcode'] for item in versions]
+        codes = list(dict.fromkeys(item['rjcode'] for item in versions))
         with SessionLocal() as db:
+            sheet_codes = {code for code, in db.query(LinkSheetCurrent.rjcode).filter(
+                LinkSheetCurrent.rjcode.in_(codes), LinkSheetCurrent.enabled.is_(True)).all()}
             # ASMRWork.work_status 是 cataloged/downloaded 等工作流状态，不是资源可用结论。
             asmr = {code for (code,) in db.query(ASMRResourceRecord.work_rjcode).filter(
                 ASMRResourceRecord.work_rjcode.in_(codes),
@@ -115,6 +118,8 @@ class CircleDownloadPreviewMixin:
                     if code in asmr else [])
                 if source and any(group.get('complete') for group in source.candidates or []):
                     item['resource_sources'].append({'id': SOURCE, 'label': 'YAAS'})
+                if code in sheet_codes:
+                    item['resource_sources'].append({'id': 'link_sheet', 'label': '妙蛙种子'})
                 item['probe_status'] = ('available' if item['resource_sources'] else
                     source.status if source else 'pending')
         return versions
@@ -212,8 +217,8 @@ class CircleDownloadPreviewMixin:
         return deepcopy(await asyncio.shield(task))
 
     async def _preview_download_version(self, circle_id, canonical_rjcode, rjcode, *, include_resource_sources=True,
-                                        available_sources=None):
-        context = await asyncio.to_thread(self._download_preview_context, circle_id, canonical_rjcode)
+                                        available_sources=None, sheet_plans=None, preview_context=None):
+        context = preview_context or await asyncio.to_thread(self._download_preview_context, circle_id, canonical_rjcode)
         target = self.normalize_rjcode(rjcode)
         if not target:
             raise ValueError('无效的下载 RJ')
@@ -255,10 +260,17 @@ class CircleDownloadPreviewMixin:
         async with self._download_preview_limiter():
             if include_resource_sources and available_sources == {'imoutoheaven'}:
                 plan = await get_resource_source_service().plan(target, exact=True)
+            elif include_resource_sources and available_sources == {'link_sheet'}:
+                from .link_sheet_service import get_link_sheet_service
+                plan = (deepcopy(sheet_plans.get(target)) if sheet_plans is not None
+                        else await asyncio.to_thread(get_link_sheet_service().plan, target))
+                if not plan:
+                    raise ValueError('链接库清单已变化或已停用')
             elif not include_resource_sources or available_sources == {'asmr.one'}:
                 plan = await build_asmr()
             else:
-                plan = await get_resource_source_service().combine_plan(target, build_asmr, exact=True)
+                kwargs = {'sheet_plans': sheet_plans} if sheet_plans is not None else {}
+                plan = await get_resource_source_service().combine_plan(target, build_asmr, exact=True, **kwargs)
         identity = dict(context, rjcode=target, requested_rjcode=target, resolved_rjcode=target,
                         title=plan.get('title') or context['title'], discovery_only=False,
                         probe_status='available' if plan.get('selectable_resources') or plan.get('filtered_out_resources') else 'missing')
@@ -274,27 +286,73 @@ class CircleDownloadPreviewMixin:
         from ..config.settings import get_config
         from .library_manager import get_library_manager
         requested = requested_rjcodes or {}
+        canonicals = list(dict.fromkeys(canonical_rjcodes))
+        contexts = dict(zip(canonicals, await asyncio.gather(*(
+            asyncio.to_thread(self._download_preview_context, circle_id, code) for code in canonicals))))
+        local_by_canonical = {}
+        if include_resource_sources:
+            descriptors = []
+            for canonical, context in contexts.items():
+                clicked = self.normalize_rjcode(next(iter(requested.get(canonical) or []), '')) or context['display_rjcode']
+                if context['is_bonus_work']:
+                    clicked = context['display_rjcode']
+                codes = [clicked] if context['is_bonus_work'] else list(dict.fromkeys([
+                    clicked, context['display_rjcode'], context['canonical_rjcode']]))
+                descriptors.extend(dict(context, rjcode=code, requested_rjcode=clicked, clicked_rjcode=clicked,
+                    resolved_rjcode=code, selected_version=code == clicked, language_label='未知语言',
+                    discovery_only=True, discovery_error='') for code in codes)
+            unreleased = await asyncio.to_thread(self._unreleased_download_codes,
+                list({item['rjcode'] for item in descriptors}))
+            descriptors = [item for item in descriptors if item['rjcode'] not in unreleased]
+            # 来源描述一次批量读取，避免每个作品重复查询来源和库存状态。
+            for offset in range(0, len(descriptors), 500):
+                described = await asyncio.to_thread(self._describe_download_versions, descriptors[offset:offset + 500])
+                for item in described:
+                    local_by_canonical.setdefault(item['canonical_rjcode'], []).append(item)
 
         async def prepare(canonical):
-            context = await asyncio.to_thread(self._download_preview_context, circle_id, canonical)
+            context = contexts[canonical]
             clicked = self.normalize_rjcode(next(iter(requested.get(canonical) or []), '')) or context['display_rjcode']
             # 特典不接受历史候选字段或本篇编号替代。
             if context['is_bonus_work']:
                 clicked = context['display_rjcode']
-            versions = await self._discover_download_versions(context, clicked, refresh=refresh)
+            local_versions = local_by_canonical.get(canonical, [])
+            available = [item for item in local_versions if item.get('resource_sources')]
+            sheet_only = available and all(
+                {source['id'] for source in item['resource_sources']} == {'link_sheet'}
+                for item in available)
+            if sheet_only:
+                versions = available
+            else:
+                versions = await self._discover_download_versions(context, clicked, refresh=refresh)
+                known = {item['rjcode'] for item in versions}
+                versions.extend(item for item in local_versions if item['rjcode'] not in known
+                                and any(source['id'] == 'link_sheet'
+                                        for source in item.get('resource_sources', [])))
             # 语言关联只说明作品关系；下载面板只接收来源已有资源证据的版本。
             versions = [item for item in versions if any(
                 source['id'] == 'asmr.one' or include_resource_sources
                 for source in item.get('resource_sources', []))]
+            return context, clicked, versions
+
+        discovered = await asyncio.gather(*(prepare(code) for code in canonicals))
+        sheet_plans = None
+        if include_resource_sources and not discovery_only:
+            from .link_sheet_service import get_link_sheet_service
+            sheet_codes = {version['rjcode'] for _, _, versions in discovered for version in versions}
+            sheet_plans = await asyncio.to_thread(get_link_sheet_service().plans, sheet_codes)
+
+        async def materialize_group(context, clicked, versions):
             if discovery_only:
                 return versions
-
+            canonical = context['canonical_rjcode']
             async def materialize(version):
                 try:
                     plan = await self._preview_download_version(
                         circle_id, canonical, version['rjcode'],
                         include_resource_sources=include_resource_sources,
-                        available_sources={source['id'] for source in version['resource_sources']})
+                        available_sources={source['id'] for source in version['resource_sources']},
+                        sheet_plans=sheet_plans, preview_context=context)
                     if not plan.get('selectable_resources') and not plan.get('filtered_out_resources'):
                         return None
                     return {**version, **plan, 'selected_version': version['rjcode'] == clicked,
@@ -308,7 +366,7 @@ class CircleDownloadPreviewMixin:
                 ready[0]['selected_version'] = True
             return ready
 
-        groups = await asyncio.gather(*(prepare(code) for code in dict.fromkeys(canonical_rjcodes)))
+        groups = await asyncio.gather(*(materialize_group(*entry) for entry in discovered))
         plans = [plan for group in groups for plan in group]
         libraries = await asyncio.to_thread(get_library_manager().list_libraries)
         default = next((item for item in libraries if item.get('is_default')), None) or next(iter(libraries), {})

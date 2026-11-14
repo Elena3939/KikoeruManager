@@ -1,0 +1,24 @@
+/* 图片就绪后淡入；只改透明度，不干扰官方插件的缩放、旋转和切图变换。 */
+.km-media-gallery .lg-item .lg-img-wrap {
+  opacity: 0;
+}
+
+.km-media-gallery .lg-item.lg-complete .lg-img-wrap {
+  opacity: 1;
+}
+
+/* 首图保留淡入，切图只使用官方滑动，避免滑动中叠加透明度变化。 */
+.km-media-gallery .lg-item.km-gallery-first.lg-complete .lg-img-wrap {
+  animation: km-media-image-reveal 180ms ease-out;
+}
+
+@keyframes km-media-image-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .km-media-gallery .lg-item.km-gallery-first.lg-complete .lg-img-wrap {
+    animation: none;
+  }
+}

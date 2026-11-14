@@ -654,6 +654,9 @@
       <span class="panel-head-count">{{ circleIndexModel.rows.length }}</span>
     </div>
     <p class="text-[11.5px] leading-relaxed text-slate-500 mb-2">{{ circleIndexSummary }}</p>
+    <p v-if="circleIndexModel.sourceObservedAt" class="text-[11.5px] leading-relaxed text-slate-500 mb-2">
+      当前来源核对（{{ circleIndexModel.sourceObservedAt.replace('T', ' ').slice(0, 19) }}）：{{ circleIndexModel.sourceObservationSummary }}。下方 YAAS / 妙蛙种子标签及筛选使用当前结果，上方索引统计保留完成时快照。
+    </p>
     <div v-if="circleIndexModel.sourceBreakdown.length" class="flex flex-wrap gap-1.5 mb-2.5">
       <span
         v-for="b in circleIndexModel.sourceBreakdown"
@@ -714,7 +717,10 @@
           <span v-if="work.sourceCompare.kikoeru.primary_rjcode" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('info')">Kikoeru<span v-if="work.sourceCompare.kikoeru.primaryBadge"> · {{ work.sourceCompare.kikoeru.primaryBadge }}</span></span>
           <span v-if="work.sourceCompare.dlsite.all_rjcodes.length" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('warn')">DLsite × {{ work.sourceCompare.dlsite.all_rjcodes.length }}</span>
           <span v-if="work.sourceCompare.asmr_one.primary_rjcode" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('success')">asmr.one<span v-if="work.sourceCompare.asmr_one.primaryBadge"> · {{ work.sourceCompare.asmr_one.primaryBadge }}</span></span>
-          <span v-if="!work.sourceCompare.kikoeru.primary_rjcode && !work.sourceCompare.dlsite.all_rjcodes.length && !work.sourceCompare.asmr_one.primary_rjcode" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('neutral')">暂无来源</span>
+          <span v-if="work.sourceCompare.link_sheet.all_rjcodes.length" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('success')">妙蛙种子 × {{ work.sourceCompare.link_sheet.all_rjcodes.length }}</span>
+          <span class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses(work.sourceCompare.yaas.status === 'hit' ? 'success' : 'neutral')">YAAS · {{ YAAS_STATUS_LABELS[work.sourceCompare.yaas.status] || '未记录' }}<template v-if="work.sourceCompare.yaas.all_rjcodes.length"> × {{ work.sourceCompare.yaas.all_rjcodes.length }}</template></span>
+          <span class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('neutral')" v-if="!work.sourceCompare.link_sheet.all_rjcodes.length">妙蛙种子 · {{ work.sourceCompare.link_sheet.status === 'missing' ? '未命中' : '未记录' }}</span>
+          <span v-if="!work.sourceCompare.kikoeru.primary_rjcode && !work.sourceCompare.dlsite.all_rjcodes.length && !work.sourceCompare.asmr_one.primary_rjcode && !work.sourceCompare.yaas.all_rjcodes.length && !work.sourceCompare.link_sheet.all_rjcodes.length" class="inline-flex items-center px-1.5 py-[2px] rounded-[4px] text-[10px] font-semibold tracking-wide ring-1 ring-inset" :class="srcTagClasses('neutral')">暂无来源</span>
         </div>
       </li>
     </ul>
@@ -963,11 +969,17 @@ const CIRCLE_REFRESH_FILTERS = [
   { value: 'unchanged', label: '无变化' }
 ]
 
+const YAAS_STATUS_LABELS = { hit: '已命中', pending: '待探测', missing: '未命中', error: '探测失败' }
 const CIRCLE_SOURCE_FILTERS = [
   { value: 'all', label: '全部' },
   { value: 'kikoeru', label: 'Kikoeru' },
   { value: 'dlsite', label: 'DLsite' },
-  { value: 'asmr_one', label: 'asmr.one' }
+  { value: 'asmr_one', label: 'asmr.one' },
+  { value: 'yaas', label: 'YAAS 已命中' },
+  { value: 'yaas_pending', label: 'YAAS 待探测' },
+  { value: 'yaas_missing', label: 'YAAS 未命中' },
+  { value: 'yaas_error', label: 'YAAS 失败' },
+  { value: 'link_sheet', label: '妙蛙种子' }
 ]
 
 const CIRCLE_VARIANT_FILTERS = [

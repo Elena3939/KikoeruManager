@@ -17,7 +17,7 @@ from ..config.settings import get_config
 from ..models.database import ConflictWork, SessionLocal, WorkCanonicalLink, get_db
 from .dlsite_service import get_dlsite_service
 from .extract_service import ExtractService
-from .fs_utils import copy_file_publish_sync, move_path_replacing_sync, run_file_operation_async
+from .fs_utils import copy_file_publish_sync, directory_has_files, move_path_replacing_sync, run_file_operation_async
 from .kikoeru_duplicate_service import get_kikoeru_service
 from .library_manager import SynologyFileStationClient, get_library_manager
 from .password_utils import normalize_password_value
@@ -1301,6 +1301,10 @@ class LinkedSubtitleImportService:
                     or not target_route_confident
                 )
                 and (subtitle_count > 0 or can_probe_later)
+                and (
+                    bool(candidates)
+                    or candidate_search_status == "pending_remote"
+                )
             )
         elif is_manual_subtitle_source:
             should_queue_pending = (
@@ -2401,7 +2405,7 @@ class LinkedSubtitleImportService:
         candidate_bundle = await self.search_target_candidates(
             target_rjcode,
             preferred_library_id=preferred_library_id,
-        ) if target_rjcode and is_linked_subtitle_source else []
+        ) if target_rjcode and (is_linked_subtitle_source or kikoeru_target_is_empty_shell) else []
         if isinstance(candidate_bundle, dict):
             candidates = list(candidate_bundle.get("candidates") or [])
             candidate_search_status = str(candidate_bundle.get("search_status") or "")
@@ -2410,6 +2414,23 @@ class LinkedSubtitleImportService:
             candidates = list(candidate_bundle or [])
             candidate_search_status = ""
             candidate_search_reason = ""
+        # 播放器零音轨只是线索，删除资格必须按本地真实文件判断，不能使用索引计数。
+        inventory_empty_shell_status = "unknown"
+        if kikoeru_target_is_empty_shell and len(candidates) == 1:
+            inventory_empty_shell_status = "empty"
+            for candidate in candidates:
+                path = str(candidate.get("folder_path") or "").strip()
+                if candidate.get("library_type") != "local" or not path or not os.path.isdir(path):
+                    inventory_empty_shell_status = "unknown"
+                    break
+                try:
+                    has_files = await asyncio.to_thread(directory_has_files, path)
+                except OSError:
+                    inventory_empty_shell_status = "unknown"
+                    break
+                if has_files:
+                    inventory_empty_shell_status = "not_empty"
+                    break
         ready_candidates = [item for item in candidates if bool(item.get("ready_for_import"))]
         selected_candidate = ready_candidates[0] if len(ready_candidates) == 1 else None
         has_local_target_candidate = bool(candidates)
@@ -2442,6 +2463,10 @@ class LinkedSubtitleImportService:
                 bool(source_rjcode)
                 and bool(target_rjcode)
                 and subtitle_count > 0
+                and (
+                    bool(has_local_target_candidate)
+                    or candidate_search_status == "pending_remote"
+                )
             )
         elif is_manual_subtitle_source:
             # 小包强制激活路径：subtitle_count 可能为 0（包内字幕未在预检阶段提取），
@@ -2510,6 +2535,7 @@ class LinkedSubtitleImportService:
             "kikoeru_has_work": target_exists_in_kikoeru,
             "kikoeru_needs_subtitle": target_needs_subtitle_in_kikoeru,
             "kikoeru_target_is_empty_shell": kikoeru_target_is_empty_shell,
+            "inventory_empty_shell_status": inventory_empty_shell_status,
             "kikoeru_source_query_ok": source_kikoeru_query_ok,
             "kikoeru_target_query_ok": target_kikoeru_query_ok,
             "kikoeru_route_confident": kikoeru_route_confident,

@@ -28,11 +28,19 @@ def read_published(service, sessions, circle, operation, **query):
         size = max(1, min(200, int(query.pop("page_size", 10) or 10)))
         only_missing = query.pop("only_missing", False)
         only_downloadable = query.pop("only_downloadable", False)
-        if operation in {"bonus", "detail"}:
+        if operation in {"bonus", "detail", "index_snapshot"}:
             query["tab"] = "missing" if only_missing else "compare"
-        header, records = read_selection(db, circle, details=operation == "detail", **query)
+        header, records = read_selection(db, circle, details=operation in {"detail", "index_snapshot"},
+                                         include_compare=operation == "index_snapshot", **query)
+        if operation == "index_snapshot":
+            from .resource_source_service import get_resource_source_service
+            # 一次批量查当前探测缓存和链接库，不逐作品联网或重复构建社团视图。
+            get_resource_source_service().decorate_items(db, [row["payload"] for row in records])
 
     items = [row["payload"] for row in records]
+    if operation == "index_snapshot":
+        # 审计专用快照保留来源证据，普通详情与全选继续使用轻量投影。
+        return dict(header, works=items, filtered_count=len(items))
     if operation == "locate":
         match = next((row for row in records if requested and requested in row["aliases"]), None)
         total = max((row["group_index"] for row in records), default=-1) + 1
@@ -45,6 +53,7 @@ def read_published(service, sessions, circle, operation, **query):
                     page=index // size + 1 if match else 1, page_size=size, page_count=count, total=total)
     if operation == "detail":
         items = [item for item in items if not only_downloadable or item.get("has_downloadable_source", item.get("has_asmr_one"))]
+        present_completion_rows(service, items)
         return dict(header, works=[service._strip_completion_internal_fields(item) for item in items], filtered_count=len(items))
     if operation == "bonus":
         fields = ("canonical_rjcode", "display_rjcode", "title", "owned", "local_owned", "server_owned")

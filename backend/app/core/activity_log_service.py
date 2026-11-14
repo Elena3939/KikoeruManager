@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy import or_
 
 from .http_download_service import (
     build_http_download_batch_title,
@@ -549,7 +550,7 @@ def _sanitize_for_db_json(value: Any, depth: int = 0) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [
             x
-            for x in (_sanitize_for_db_json(v, depth + 1) for v in list(value)[:200])
+            for x in (_sanitize_for_db_json(v, depth + 1) for v in value)
             if x is not None
         ]
     try:
@@ -740,6 +741,8 @@ def write_activity_log(
     }
     if created_at is not None:
         payload["created_at"] = created_at
+    if event_key is not None:
+        payload["event_key"] = event_key
     if transaction is not None:
         payload["event_key"] = event_key
         get_activity_log_writer().insert_once(transaction, payload)
@@ -757,8 +760,13 @@ def log_asmr_sync_event(
     task_id: Optional[str] = None,
     source_path: Optional[str] = None,
     detail: Optional[Dict[str, Any]] = None,
+    task_metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     payload = dict(detail or {})
+    if task_metadata is not None and task_id:
+        payload["execution_id"] = f"{task_id}:{task_metadata.get('retry_count', 0)}"
+        if task_metadata.get("activity_operation_id"):
+            payload["operation_id"] = task_metadata["activity_operation_id"]
     if session_id:
         payload.setdefault("session_id", session_id)
     if rjcode:
@@ -890,7 +898,11 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
 
     if st == TaskStatus.PROCESSING:
         metadata = task.task_metadata or {}
-        pending_detail = {"task_type": getattr(tt, "value", str(getattr(task, "type", "")))}
+        pending_detail = {"task_type": getattr(tt, "value", str(getattr(task, "type", ""))),
+                          "attempt_no": metadata.get("retry_count", 0),
+                          "batch_id": metadata.get("batch_id"),
+                          "session_id": metadata.get("session_id"),
+                          "operation_id": metadata.get("activity_operation_id")}
         if metadata.get("retry_from_conflicts") and metadata.get("retry_batch_id"):
             category = CATEGORY_AUTO_IMPORT
             pending_detail.update({
@@ -994,8 +1006,9 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
         upload_runtime = meta.get("upload_runtime") if isinstance(meta.get("upload_runtime"), dict) else {}
         postprocess_options = meta.get("postprocess_options") if isinstance(meta.get("postprocess_options"), dict) else {}
         source_action = str(meta.get("source_action") or "").strip()
-        downloaded_bytes = int(performance_metrics.get("downloaded_bytes") or 0)
-        duration_ms = int(performance_metrics.get("duration_ms") or _duration_ms_for_task(task) or 0)
+        from .activity_operation_normalizer import first_known
+        downloaded_bytes = int(first_known(performance_metrics.get("downloaded_bytes"), 0))
+        duration_ms = int(first_known(performance_metrics.get("duration_ms"), _duration_ms_for_task(task), 0))
         average_download_speed_bytes = int(
             performance_metrics.get("average_download_speed_bytes")
             or performance_metrics.get("average_speed_bytes")
@@ -1008,12 +1021,11 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
         )
         success_count = int(performance_metrics.get("success_count") or 0)
         failed_count = int(performance_metrics.get("failed_count") or 0)
-        uploaded_count = int(performance_metrics.get("uploaded_count") or len(uploaded_files) or 0)
+        uploaded_count = int(first_known(performance_metrics.get("uploaded_count"), len(uploaded_files)))
         uploaded_bytes = int(
-            performance_metrics.get("uploaded_bytes")
-            or upload_runtime.get("total_bytes")
-            or sum(int(item.get("size_bytes") or 0) for item in uploaded_files)
-            or 0
+            first_known(performance_metrics.get("uploaded_bytes"),
+                        sum(int(item.get("size_bytes") or 0) for item in uploaded_files) if uploaded_files else None,
+                        upload_runtime.get("transferred_bytes"), 0)
         )
         average_upload_speed_bytes = int(
             performance_metrics.get("average_upload_speed_bytes")
@@ -1070,14 +1082,16 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
                 {
                     "name": str(item.get("name") or item.get("file_name") or ""),
                     "relative_path": str(item.get("relative_path") or item.get("file_name") or ""),
-                    "size_bytes": int(item.get("size_bytes") or item.get("total") or item.get("downloaded") or 0),
+                    "size_bytes": first_known(item.get("size_bytes"), item.get("total"), item.get("downloaded")),
                     "status": str(item.get("stage") or item.get("status") or ""),
                 }
                 for item in list(meta.get("download_files") or [])
                 if isinstance(item, dict)
-            ][:200],
+            ],
             "duration_ms": duration_ms,
-            "uploaded_files": uploaded_files[:200],
+            "download_duration_ms": performance_metrics.get("download_duration_ms"),
+            "upload_duration_ms": performance_metrics.get("upload_duration_ms"),
+            "uploaded_files": uploaded_files,
         }
     elif tt == TaskType.BAIDU_NETDISK_UPLOAD:
         upload_runtime = meta.get("upload_runtime") if isinstance(meta.get("upload_runtime"), dict) else {}
@@ -1139,9 +1153,9 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
             "total_bytes": total_bytes,
             "average_upload_speed_bytes": average_upload_speed_bytes,
             "duration_ms": duration_ms,
-            "upload_files": upload_files[:200],
-            "uploaded_files": uploaded_files[:200],
-            "failed_files": failed_files[:200],
+            "upload_files": upload_files,
+            "uploaded_files": uploaded_files,
+            "failed_files": failed_files,
         }
     elif tt in {TaskType.HTTP_DOWNLOAD, TaskType.BAIDU_NETDISK_DOWNLOAD}:
         from .baidu_netdisk_service import sanitize_baidu_netdisk_item
@@ -1166,15 +1180,14 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
         else:
             platforms = http_download_platforms_from_metadata(meta)
             platform_label = str(meta.get("platform_label") or "").strip() or http_download_platforms_label(platforms)
-        downloaded_bytes = int(
-            performance_metrics.get("downloaded_bytes")
-            or download_runtime.get("transferred_bytes")
-            or sum(int((item or {}).get("downloaded") or 0) for item in download_files)
-            or 0
-        )
-        success_count = int(performance_metrics.get("success_count") or len([item for item in download_files if (item or {}).get("status") == "completed"]) or 0)
-        failed_count = int(performance_metrics.get("failed_count") or len(failed_files) or 0)
-        duration_ms = int(performance_metrics.get("duration_ms") or _duration_ms_for_task(task) or 0)
+        from .activity_operation_normalizer import first_known
+        downloaded_bytes = int(first_known(
+            performance_metrics.get("downloaded_bytes"), download_runtime.get("transferred_bytes"),
+            sum(int((item or {}).get("downloaded") or 0) for item in download_files)))
+        success_count = int(first_known(performance_metrics.get("success_count"),
+                                       len([item for item in download_files if (item or {}).get("status") == "completed"])))
+        failed_count = int(first_known(performance_metrics.get("failed_count"), len(failed_files)))
+        duration_ms = int(first_known(performance_metrics.get("duration_ms"), _duration_ms_for_task(task), 0))
         average_speed_bytes = int(
             performance_metrics.get("average_speed_bytes")
             or (downloaded_bytes / max(duration_ms / 1000, 1) if downloaded_bytes > 0 and duration_ms > 0 else 0)
@@ -1213,8 +1226,8 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
             "downloaded_bytes": downloaded_bytes,
             "average_speed_bytes": average_speed_bytes,
             "duration_ms": duration_ms,
-            "download_files": download_files[:200],
-            "failed_files": failed_files[:200],
+            "download_files": download_files,
+            "failed_files": failed_files,
         }
     elif tt == TaskType.BROWSER_UPLOAD:
         upload = meta.get('browser_upload') or {}
@@ -1277,7 +1290,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
             "uploaded_bytes": uploaded_bytes,
             "average_upload_speed_bytes": average_upload_speed_bytes,
             "duration_ms": duration_ms,
-            "uploaded_files": uploaded_files[:200],
+            "uploaded_files": uploaded_files,
         }
     elif tt == TaskType.EXTRACT:
         archive_size_bytes, archive_path = _resolve_archive_snapshot(task)
@@ -1433,6 +1446,13 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
             **_import_timing_snapshot(task, meta),
         }
 
+    detail["attempt_no"] = meta.get("retry_count", 0)
+    detail["execution_id"] = f"{task.id}:{meta.get('retry_count', 0)}"
+    if meta.get("activity_operation_id"):
+        detail["operation_id"] = meta["activity_operation_id"]
+    for key, value in (("task_started_at", task.started_at), ("task_completed_at", task.completed_at)):
+        if value is not None:
+            detail.setdefault(key, value.isoformat())
     if meta.get("scan_id"):
         for key in (
             "scan_id", "candidate_id", "input_route", "metadata_prefetch",
@@ -1571,7 +1591,7 @@ def log_subtitle_pair_complete(
     if isinstance(linked_detail, dict):
         pair_changes = linked_detail.get("pair_changes")
         if isinstance(pair_changes, list):
-            linked_detail["pair_changes"] = pair_changes[:200]
+            linked_detail["pair_changes"] = pair_changes
         detail.update(linked_detail)
     write_activity_log(
         category=CATEGORY_SUBTITLE_PAIR,
@@ -1688,7 +1708,7 @@ def log_batch_api_rename_result(
             "total_count": int(total_count or 0),
             "success_count": int(success_count or 0),
             "failed_count": int(failed_count or 0),
-            "results": results[:200] if isinstance(results, list) else [],
+            "results": results if isinstance(results, list) else [],
         },
         source_path=str(source_path or "").strip() or None,
         task_id=str(batch_id or "").strip() or None,
@@ -1729,7 +1749,7 @@ def log_batch_manual_rename_result(
             "total_count": int(total_count or 0),
             "success_count": int(success_count or 0),
             "failed_count": int(failed_count or 0),
-            "results": results[:200] if isinstance(results, list) else [],
+            "results": results if isinstance(results, list) else [],
         },
         source_path=str(source_path or "").strip() or None,
         task_id=str(batch_id or "").strip() or None,
@@ -1998,11 +2018,14 @@ def _mark_filter_delete_failed_preview_retried(payload: Dict[str, Any], retry_st
                 ActivityLog.category == CATEGORY_PIPELINE_FILTER,
                 ActivityLog.action == "filter_delete_preview",
                 ActivityLog.status == "failed",
+                or_(ActivityLog.session_key == session_key,
+                    ActivityLog.detail.op("->>")("session_key") == session_key),
             )
             .order_by(ActivityLog.created_at.desc())
             .all()
         )
         updated = 0
+        changed_rows = []
         for row in rows:
             detail = row.detail if isinstance(row.detail, dict) else {}
             if str(detail.get("session_key") or "").strip() != session_key:
@@ -2011,6 +2034,7 @@ def _mark_filter_delete_failed_preview_retried(payload: Dict[str, Any], retry_st
                 continue
             detail = {
                 **detail,
+                "original_execution_status": detail.get("original_execution_status", row.status),
                 "retry_status": retry_status,
                 "retry_completed": retry_status in {"success", "partial_success"},
                 "retry_completed_at": retry_completed_at,
@@ -2026,8 +2050,12 @@ def _mark_filter_delete_failed_preview_retried(payload: Dict[str, Any], retry_st
             if status_text not in summary:
                 row.summary = f"{summary}；{status_text}"[:4000] if summary else status_text
             updated += 1
+            changed_rows.append(row)
         if updated:
+            from .activity_operation_projection import refresh_mutated_events, publish_revision
+            refresh_mutated_events(db, changed_rows)
             db.commit()
+            publish_revision()
         else:
             db.rollback()
     except Exception:
@@ -2091,6 +2119,7 @@ def mark_task_conflict_resolved_activity_log(
         new_status = status_map[raw_action]
         new_label = label_map[raw_action]
         resolved_at = datetime.now().isoformat()
+        old_statuses = {row.id: row.status for row in rows}
         for row in rows:
             row.status = new_status
             existing_summary = (row.summary or "").strip()
@@ -2105,6 +2134,7 @@ def mark_task_conflict_resolved_activity_log(
                 "conflict_resolution_action": raw_action,
                 "conflict_resolution_label": new_label,
                 "conflict_resolved_at": resolved_at,
+                "original_execution_status": old_statuses[row.id],
             }
             if conflict_id:
                 updated_detail["conflict_id"] = str(conflict_id)
@@ -2113,7 +2143,10 @@ def mark_task_conflict_resolved_activity_log(
             # 这里显式打 dirty 标记，和现有 _mark_filter_delete_failed_preview_retried 行为对齐。
             flag_modified(row, "detail")
 
+        from .activity_operation_projection import refresh_mutated_events, publish_revision
+        refresh_mutated_events(db, rows, old_statuses=old_statuses)
         db.commit()
+        publish_revision()
         # 行级 dict 缓存按 id 持久缓存（注释里写的“rows 不可变”假设在这里被打破），
         # 必须手动 invalidate 一下，否则下次列表请求会一直命中旧的“等待处理”。
         # 列表查询缓存也走兜底失效，避免拿到旧合并结果。
@@ -2336,6 +2369,10 @@ def log_import_batch_start_result(payload: Dict[str, Any], *, category: str = CA
 
     detail = {
         "mode": "import_batch_start" if category == CATEGORY_AUTO_IMPORT else "process_existing_batch_start",
+        "schema_version": 2,
+        "scan_closed": True,
+        "producer_closed": True,
+        "submitted_count": created_count,
         "batch_id": batch_id or None,
         "requested_count": requested_count,
         "created_count": created_count,
@@ -2531,6 +2568,7 @@ def backfill_auto_import_extract_fields(
 
         db = SessionLocal()
         try:
+            changed_rows = []
             rows = (
                 db.query(ActivityLog)
                 .filter(ActivityLog.category.in_([CATEGORY_AUTO_IMPORT, CATEGORY_EXTRACT, CATEGORY_PROCESS_EXISTING]))
@@ -2631,6 +2669,7 @@ def backfill_auto_import_extract_fields(
                         needs_update = True
 
                     if needs_update:
+                        changed_rows.append(row)
                         row.detail = _sanitize_for_db_json(detail)
                         flag_modified(row, "detail")
                         if row.status == "success" and (next_archive_input or category == CATEGORY_EXTRACT):
@@ -2658,7 +2697,12 @@ def backfill_auto_import_extract_fields(
                     failed += 1
                     logger.warning("[操作记录] 回填 auto_import 解压字段失败: id=%s", getattr(row, "id", None), exc_info=True)
 
+            if changed_rows:
+                from .activity_operation_projection import refresh_mutated_events, publish_revision
+                refresh_mutated_events(db, changed_rows)
             db.commit()
+            if changed_rows:
+                publish_revision()
             offset += len(rows)
             # 若本批加载不足 chunk_size，视作表已扫完
             if len(rows) < this_chunk:

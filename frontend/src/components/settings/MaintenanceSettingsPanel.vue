@@ -72,6 +72,12 @@
         </div>
       </div>
     </div>
+
+    <section class="maintenance-index-section" aria-labelledby="maintenance-index-title">
+      <div class="card-title" id="maintenance-index-title">全文搜索索引</div>
+      <p class="maintenance-index-desc">管理 PostgreSQL pg_trgm 搜索索引。支持中文任意片段搜索，重建期间功能不中断。</p>
+      <FtsSettingsPanel />
+    </section>
   </div>
 </template>
 
@@ -82,6 +88,7 @@ import SettingsRangeStepper from './SettingsRangeStepper.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import AppDropdown from '../common/AppDropdown.vue'
 import DatabaseShrinkCard from './DatabaseShrinkCard.vue'
+import FtsSettingsPanel from './FtsSettingsPanel.vue'
 
 defineProps({
   config: { type: Object, required: true }
@@ -145,6 +152,19 @@ const archiveFormatOptions = [
   font-size: 13.5px;
   font-weight: 600;
   letter-spacing: -0.1px;
+}
+
+.maintenance-index-section {
+  min-width: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--set-border-soft);
+}
+
+.maintenance-index-desc {
+  margin: -6px 0 16px;
+  color: var(--set-text-muted);
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .field-input {

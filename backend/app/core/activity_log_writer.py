@@ -148,15 +148,23 @@ class ActivityLogWriter:
         db = SessionLocal()
         try:
             with get_resource_budget_service().acquire_sync("database_write", reason="activity_log.flush"):
-                db.bulk_save_objects([ActivityLog(**payload) for payload in batch])
+                batch = self._insert_batch(db, batch)
+                self._upsert_daily_stats(db, batch)
+                self._maintain_projections(db, batch)
                 from .conflict_retry_activity import sync_retry_parent
                 sync_retry_parent(db, batch)
-                self._upsert_daily_stats(db, batch)
-                get_activity_log_rollup_service().upsert_from_payloads(db, batch)
+                if db.info.get("_activity_log_changed_parent_ids"):
+                    self._maintain_projections(db, [])
+                from .activity_operation_projection import projection_state
+                state = projection_state(db)
+                if state is None or not state.ready:
+                    get_activity_log_rollup_service().upsert_from_payloads(db, batch)
                 db.commit()
             if db.info.pop("_activity_log_parent_changed", False):
                 get_activity_log_row_dict_cache().invalidate()
             self._last_write_ts = time.time()
+            from .activity_operation_projection import publish_revision
+            publish_revision()
             return
         except Exception:
             db.rollback()
@@ -170,16 +178,23 @@ class ActivityLogWriter:
                 db2 = SessionLocal()
                 try:
                     with get_resource_budget_service().acquire_sync("database_write", reason="activity_log.flush_one"):
-                        db2.add(ActivityLog(**payload))
-                        db2.flush()
+                        inserted = self._insert_batch(db2, [payload])
+                        self._upsert_daily_stats(db2, inserted)
+                        self._maintain_projections(db2, inserted)
                         from .conflict_retry_activity import sync_retry_parent
-                        sync_retry_parent(db2, [payload])
-                        self._upsert_daily_stats(db2, [payload])
-                        get_activity_log_rollup_service().upsert_from_payloads(db2, [payload])
+                        sync_retry_parent(db2, inserted)
+                        if db2.info.get("_activity_log_changed_parent_ids"):
+                            self._maintain_projections(db2, [])
+                        from .activity_operation_projection import projection_state
+                        state = projection_state(db2)
+                        if state is None or not state.ready:
+                            get_activity_log_rollup_service().upsert_from_payloads(db2, inserted)
                         db2.commit()
                     if db2.info.pop("_activity_log_parent_changed", False):
                         get_activity_log_row_dict_cache().invalidate()
                     self._last_write_ts = time.time()
+                    from .activity_operation_projection import publish_revision
+                    publish_revision()
                 except Exception:
                     db2.rollback()
                     logger.warning("[操作记录] 单条写入失败: category=%s action=%s", payload.get("category"), payload.get("action"), exc_info=True)
@@ -202,10 +217,16 @@ class ActivityLogWriter:
         ).returning(ActivityLog.id)).scalar()
         if not inserted:
             return False
+        self._upsert_daily_stats(db, [payload], strict=True)
+        self._maintain_projections(db, [payload], strict=True)
         from .conflict_retry_activity import sync_retry_parent
         sync_retry_parent(db, [payload])
-        self._upsert_daily_stats(db, [payload], strict=True)
-        get_activity_log_rollup_service().upsert_from_payloads(db, [payload])
+        if db.info.get("_activity_log_changed_parent_ids"):
+            self._maintain_projections(db, [], strict=True)
+        from .activity_operation_projection import projection_state
+        state = projection_state(db)
+        if state is None or not state.ready:
+            get_activity_log_rollup_service().upsert_from_payloads(db, [payload])
         self.invalidate_after_commit(db)
         return True
 
@@ -223,9 +244,10 @@ class ActivityLogWriter:
             if not session.in_nested_transaction():
                 writer = session.info.pop(key, None)
                 if writer is not None:
-                    if session.info.pop("_activity_log_parent_changed", False):
-                        get_activity_log_row_dict_cache().invalidate()
+                    session.info.pop("_activity_log_parent_changed", None)
                     writer._last_write_ts = time.time()
+                    from .activity_operation_projection import publish_revision
+                    publish_revision()
 
         def rolled_back(session):
             if not session.in_nested_transaction():
@@ -234,6 +256,41 @@ class ActivityLogWriter:
 
         event.listen(db, "after_commit", committed)
         event.listen(db, "after_rollback", rolled_back)
+
+    @staticmethod
+    def _insert_batch(db, batch):
+        from sqlalchemy.dialects.postgresql import insert
+        from ..models.database import ActivityLog, get_local_now
+        now = get_local_now()
+        rows = [{**row, "created_at": row.get("created_at") or now, "event_key": row.get("event_key")}
+                for row in batch]
+        if not rows:
+            return []
+        inserted = []
+        # SQLAlchemy 会把默认列一起展开；分块限制 PostgreSQL 单条语句的绑定参数数量。
+        for offset in range(0, len(rows), 500):
+            chunk = rows[offset:offset + 500]
+            ids = set(db.execute(insert(ActivityLog).values(chunk).on_conflict_do_nothing()
+                                 .returning(ActivityLog.id)).scalars())
+            inserted.extend(row for row in chunk if row["id"] in ids)
+        return inserted
+
+    @staticmethod
+    def _maintain_projections(db, batch, *, strict=False):
+        from .activity_operation_projection import maintain_operations, record_repair, projection_state
+        parent_ids = db.info.pop("_activity_log_changed_parent_ids", set())
+        changed = batch + [{"id": row_id} for row_id in parent_ids
+                           if row_id not in {row["id"] for row in batch}]
+        try:
+            with db.begin_nested():
+                maintain_operations(db, changed, force=bool(parent_ids))
+                state = projection_state(db)
+                db.info["_activity_operation_ready"] = bool(state and state.ready)
+        except Exception as exc:
+            if strict:
+                raise
+            record_repair(db, changed, "operations", exc)
+            logger.warning("[操作记录] 操作投影维护失败，已记录待修复事件", exc_info=True)
 
     @staticmethod
     def _upsert_daily_stats(db, batch: list[Dict[str, Any]], *, strict: bool = False) -> None:
@@ -286,12 +343,71 @@ class ActivityLogWriter:
                         "status": status,
                         "count": delta,
                     })
-        except Exception:
+        except Exception as exc:
             if strict:
                 raise
             # 聚合写入失败不影响主业务记录；PostgreSQL 里失败语句会污染事务，
             # 所以上面必须用 savepoint，让这里的失败只回滚聚合写入。
             logger.debug("[操作记录] 日聚合 UPSERT 失败（非致命）", exc_info=True)
+            from .activity_operation_projection import record_repair
+            record_repair(db, batch, "daily", exc)
+
+    @staticmethod
+    def _adjust_daily_stats(
+        db,
+        *,
+        created_at,
+        category: str,
+        old_status: str | None,
+        new_status: str | None,
+        strict: bool = False,
+    ) -> None:
+        """修正已存在审计行的状态桶，保持日统计与事实表一致。"""
+        from datetime import datetime as _dt
+        from sqlalchemy import text as _text
+
+        if old_status == new_status:
+            return
+        if isinstance(created_at, _dt):
+            date_str = created_at.strftime("%Y-%m-%d")
+        elif isinstance(created_at, str) and len(created_at) >= 10:
+            date_str = created_at[:10]
+        else:
+            date_str = _dt.now().strftime("%Y-%m-%d")
+        category = (category or "")[:40]
+        old_status = (old_status or "")[:20]
+        new_status = (new_status or "")[:20]
+        try:
+            with db.begin_nested():
+                db.execute(
+                    _text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:key, 0))"),
+                    {"key": f"activity-log-daily:{date_str}"},
+                )
+                if old_status:
+                    changed = db.execute(
+                        _text(
+                            "UPDATE activity_log_daily_stats "
+                            "SET count = count - 1, updated_at = CURRENT_TIMESTAMP "
+                            "WHERE date = :date AND category = :category AND status = :status AND count > 0"
+                        ),
+                        {"date": date_str, "category": category, "status": old_status},
+                    )
+                    if changed.rowcount != 1:
+                        raise ValueError("原日统计桶缺失或计数为零，需要重建日统计")
+                if new_status:
+                    db.execute(
+                        _text(
+                            "INSERT INTO activity_log_daily_stats(date, category, status, count, updated_at) "
+                            "VALUES (:date, :category, :status, 1, CURRENT_TIMESTAMP) "
+                            "ON CONFLICT(date, category, status) DO UPDATE SET "
+                            "count = activity_log_daily_stats.count + 1, updated_at = CURRENT_TIMESTAMP"
+                        ),
+                        {"date": date_str, "category": category, "status": new_status},
+                    )
+        except Exception:
+            if strict:
+                raise
+            logger.debug("[操作记录] 日聚合状态修正失败（非致命）", exc_info=True)
 
 
 # ========== 单例 ==========

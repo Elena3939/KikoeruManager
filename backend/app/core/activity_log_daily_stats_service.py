@@ -60,6 +60,14 @@ def rebuild_daily_stats(db, *, start_date: date, end_date: date, apply: bool = F
                 INSERT INTO activity_log_daily_stats(date, category, status, count, updated_at)
                 VALUES (:date, :category, :status, :count, CURRENT_TIMESTAMP)
             """), [dict(row) for row in rows])
+    if apply:
+        # 同日写入受上面的独占锁保护；只有已重新核对的日桶才能解除待修复标记。
+        db.execute(text("""
+            DELETE FROM activity_log_projection_repairs r
+             USING activity_logs a
+             WHERE r.component = 'daily' AND r.event_id = a.id
+               AND a.created_at >= :start AND a.created_at < :end
+        """), params)
     return {"applied": bool(apply), "source_rows": sum(expected.values()),
             "stored_count": sum(actual.values()), "mismatched_buckets": len(differences),
             "differences": differences, "source": "activity_logs", "rollup_added": False}

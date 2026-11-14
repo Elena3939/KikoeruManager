@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, BigInteger, Index, text, Float, event, CheckConstraint, ForeignKey
+from sqlalchemy import create_engine, Column, String, Integer, Date, DateTime, Boolean, Text, BigInteger, Index, text, Float, event, CheckConstraint, ForeignKey, LargeBinary
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -1399,6 +1399,8 @@ class ActivityLog(Base):
         Index('idx_activity_category_session', 'category', 'session_key'),
         Index('idx_activity_status_created', 'status', 'created_at'),
         Index('idx_activity_category_status_created', 'category', 'status', 'created_at'),
+        Index('idx_activity_parent', 'parent_id'),
+        Index('idx_activity_detail_parent', text("(detail ->> 'parent_id')")),
     )
 
     def to_dict(self):
@@ -1417,6 +1419,14 @@ class ActivityLog(Base):
             'session_key': self.session_key,
             'parent_id': self.parent_id,
         }
+
+
+class ActivityLogDetailArchive(Base):
+    """无损压缩原始审计详情；列表和投影读取无需解压。"""
+    __tablename__ = "activity_log_detail_archives"
+    event_id = Column(String(36), ForeignKey("activity_logs.id", ondelete="CASCADE"), primary_key=True)
+    payload = Column(LargeBinary, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=get_local_now)
 
 
 class ActivityLogDailyStats(Base):
@@ -1468,6 +1478,122 @@ class ActivityLogRollup(Base):
         Index('idx_activity_rollup_type_value', 'rollup_type', 'group_value'),
         Index('idx_activity_rollup_category_status', 'category', 'latest_status'),
     )
+
+
+class ActivityLogOperation(Base):
+    """每个用户操作唯一一行；代际发布避免历史回填与在线读取混用。"""
+    __tablename__ = "activity_log_operations"
+
+    generation = Column(Integer, primary_key=True)
+    operation_id = Column(String(64), primary_key=True)
+    category = Column(String(40), nullable=False)
+    identity_kind = Column(String(24), nullable=False)
+    identity_value = Column(Text, nullable=False)
+    root_log_id = Column(String(36))
+    status = Column(String(24), nullable=False, default="incomplete")
+    original_status = Column(String(24))
+    initiated_at = Column(DateTime, nullable=False)
+    latest_activity_at = Column(DateTime, nullable=False)
+    revision = Column(BigInteger, nullable=False, default=0)
+    event_count = Column(Integer, nullable=False, default=0)
+    counts = Column(JSONB, nullable=False, default=dict)
+    presentation = Column(JSONB, nullable=False, default=dict)
+    integrity = Column(JSONB, nullable=False, default=list)
+
+    __table_args__ = (
+        Index("idx_activity_operation_page", "generation", "latest_activity_at", "operation_id"),
+        Index("idx_activity_operation_date", "generation", "initiated_at"),
+        Index("idx_activity_operation_filter", "generation", "category", "status", "initiated_at"),
+    )
+
+
+class ActivityLogOperationMember(Base):
+    """执行成员的紧凑当前态；每次写入只更新受影响成员及父操作的计数差额。"""
+    __tablename__ = "activity_log_operation_members"
+    generation = Column(Integer, primary_key=True)
+    operation_id = Column(String(64), primary_key=True)
+    member_id = Column(String(64), primary_key=True)
+    status = Column(String(24), nullable=False)
+    original_status = Column(String(24))
+    event_at = Column(DateTime, nullable=False)
+    event_id = Column(String(36), nullable=False)
+    is_projection = Column(Boolean, nullable=False, default=False)
+
+
+class ActivityLogOperationEvent(Base):
+    __tablename__ = "activity_log_operation_events"
+    generation = Column(Integer, primary_key=True)
+    event_id = Column(String(36), primary_key=True)
+    operation_id = Column(String(64), nullable=False)
+    event_at = Column(DateTime, nullable=False)
+    __table_args__ = (
+        Index("idx_activity_operation_events_page", "generation", "operation_id", "event_at", "event_id"),
+    )
+
+
+class ActivityLogMetricFact(Base):
+    """一个执行尝试、阶段、指标唯一；清单/摘要替换文件事件的临时累计值。"""
+    __tablename__ = "activity_log_metric_facts"
+    generation = Column(Integer, primary_key=True)
+    operation_id = Column(String(64), nullable=False)
+    execution_id = Column(String(64), primary_key=True)
+    phase = Column(String(24), primary_key=True)
+    metric = Column(String(32), primary_key=True)
+    value = Column(BigInteger, nullable=False)
+    completed_at = Column(DateTime, nullable=False)
+    source_event_id = Column(String(36), nullable=False)
+    authority = Column(Integer, nullable=False)
+    __table_args__ = (
+        Index("idx_activity_metric_date", "generation", "completed_at", "phase", "metric"),
+        Index("idx_activity_metric_operation", "generation", "operation_id"),
+    )
+
+
+class ActivityLogOperationFile(Base):
+    __tablename__ = "activity_log_operation_files"
+    generation = Column(Integer, primary_key=True)
+    operation_id = Column(String(64), primary_key=True)
+    execution_id = Column(String(64), primary_key=True)
+    phase = Column(String(24), primary_key=True)
+    file_id = Column(String(64), primary_key=True)
+    payload = Column(JSONB, nullable=False)
+    source_event_id = Column(String(36), nullable=False)
+    event_at = Column(DateTime, nullable=False)
+    __table_args__ = (
+        Index("idx_activity_operation_file_page", "generation", "operation_id", "phase", "file_id", "execution_id"),
+    )
+
+
+class ActivityLogOperationDaily(Base):
+    """操作发起日与指标完成日分账；分类、当前状态变化使用事务内差额迁移。"""
+    __tablename__ = "activity_log_operation_daily"
+    generation = Column(Integer, primary_key=True)
+    date = Column(Date, primary_key=True)
+    category = Column(String(40), primary_key=True)
+    status = Column(String(24), primary_key=True)
+    kind = Column(String(16), primary_key=True)
+    phase = Column(String(24), primary_key=True)
+    metric = Column(String(32), primary_key=True)
+    value = Column(BigInteger, nullable=False)
+
+
+class ActivityLogProjectionState(Base):
+    __tablename__ = "activity_log_projection_state"
+    id = Column(Integer, primary_key=True)
+    active_generation = Column(Integer, nullable=False, default=1)
+    building_generation = Column(Integer)
+    ready = Column(Boolean, nullable=False, default=False)
+    revision = Column(BigInteger, nullable=False, default=0)
+    checkpoint = Column(JSONB, nullable=False, default=dict)
+
+
+class ActivityLogProjectionRepair(Base):
+    """派生维护异常必须持久可见，不能把统计故障当成零值。"""
+    __tablename__ = "activity_log_projection_repairs"
+    event_id = Column(String(36), primary_key=True)
+    component = Column(String(24), primary_key=True)
+    error = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=get_local_now)
 
 
 class ASMRWork(Base):
@@ -4935,3 +5061,7 @@ def get_db_path_info():
 
 def get_database_url_info():
     return _mask_database_url(_DATABASE_URL)
+
+
+# 在统一 metadata 上注册链接库表，供新安装和 Alembic 共用。
+from . import link_sheet as _link_sheet_models

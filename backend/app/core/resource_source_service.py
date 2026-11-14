@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from contextlib import asynccontextmanager
 from datetime import datetime
 import hashlib
@@ -185,8 +186,23 @@ class ResourceSourceService:
         task.add_done_callback(self._queue_tasks.discard)
 
     def decorate_items(self, db, items):
+        from ..models.link_sheet import LinkSheetCurrent
         codes = {code for item in items for code in item.get('resource_probe_rjcodes',
                  [item.get('canonical_rjcode'), item.get('display_rjcode')]) if code}
+        # 链接库比对的是作品完整关联链；resource_probe_rjcodes 只覆盖 YAAS
+        # 探测编号，不能拿它作为妙蛙种子 RJ 对比的范围。
+        sheet_lookup_codes = {
+            code
+            for item in items
+            for code in (
+                item.get('canonical_rjcode'),
+                item.get('display_rjcode'),
+                *(item.get('linked_rjcodes') or []),
+            )
+            if code
+        }
+        sheet_codes = set(code for code, in db.query(LinkSheetCurrent.rjcode).filter(
+            LinkSheetCurrent.rjcode.in_(sheet_lookup_codes), LinkSheetCurrent.enabled.is_(True)).all()) if sheet_lookup_codes else set()
         states = {row.rjcode: row for row in db.query(ResourceSourceProbe).filter(
             ResourceSourceProbe.source == SOURCE, ResourceSourceProbe.probe_version == VERSION,
             ResourceSourceProbe.rjcode.in_(codes)).all()} if codes else {}
@@ -198,15 +214,57 @@ class ResourceSourceService:
             item['resource_sources'] = ([{'id': 'asmr.one', 'label': 'asmr.one'}] if item.get('has_asmr_one') else [])
             if hits:
                 item['resource_sources'].append({'id': SOURCE, 'label': 'YAAS', 'rjcodes': hits})
+            # 特典有独立 RJ；本体/语言关联 RJ 的链接库资源不能继承给特典。
+            # 普通作品仍按完整关联链匹配，保留本体与语言版本的现有行为。
+            if item.get('is_bonus_work'):
+                sheet_item_codes = list(dict.fromkeys([
+                    item.get('canonical_rjcode'),
+                    item.get('display_rjcode'),
+                ]))
+            else:
+                sheet_item_codes = list(dict.fromkeys([
+                    *item_codes,
+                    item.get('canonical_rjcode'),
+                    item.get('display_rjcode'),
+                    *(item.get('linked_rjcodes') or []),
+                ]))
+            sheet_hits = [code for code in sheet_item_codes if code in sheet_codes]
+            if sheet_hits:
+                item['resource_sources'].append({'id': 'link_sheet', 'label': '妙蛙种子', 'rjcodes': sheet_hits})
             item['has_downloadable_source'] = bool(item['resource_sources'])
             item['yaas_probe_status'] = 'hit' if hits else ('pending' if any(
                 code not in states or states[code].status == 'pending' for code in item_codes if code)
                 else 'error' if any(states[code].status == 'error' for code in item_codes if code in states) else 'missing')
-            if hits:
-                item['download_plan'] = item.get('download_plan') or {'rjcode': hits[0]}
+            if hits or sheet_hits:
+                item['download_plan'] = item.get('download_plan') or {'rjcode': (hits or sheet_hits)[0]}
                 item['status_tags'] = [tag for tag in item.get('status_tags', []) if tag != '暂不可下载']
                 if '可下载' not in item['status_tags']:
                     item['status_tags'].append('可下载')
+
+    def observe_index_sources(self, db, detail):
+        """只读当前来源，单独返回观察结果，绝不改写索引完成时的快照。"""
+        items = []
+        for section in detail.get('work_sections') or []:
+            for row in section.get('rows') or []:
+                compare = row.get('source_compare') or {}
+                codes = list(dict.fromkeys(code for code in [
+                    row.get('canonical_rjcode'), row.get('display_rjcode'),
+                    *((compare.get('dlsite') or {}).get('all_rjcodes') or []),
+                ] if re.fullmatch(r'RJ\d{6,8}', str(code or ''))))
+                if codes:
+                    items.append(dict(canonical_rjcode=row.get('canonical_rjcode'),
+                        display_rjcode=row.get('display_rjcode'), linked_rjcodes=codes,
+                        resource_probe_rjcodes=codes))
+        if not items:
+            return None
+        self.decorate_items(db, items)
+        return {'observed_at': datetime.now().isoformat(), 'works': [dict(
+            canonical_rjcode=item['canonical_rjcode'],
+            yaas={'status': item['yaas_probe_status'], 'all_rjcodes': next((
+                source['rjcodes'] for source in item['resource_sources'] if source['id'] == SOURCE), [])},
+            link_sheet={'status': 'hit' if any(source['id'] == 'link_sheet' for source in item['resource_sources']) else 'missing',
+                'all_rjcodes': next((source['rjcodes'] for source in item['resource_sources'] if source['id'] == 'link_sheet'), [])},
+        ) for item in items]}
 
     @asynccontextmanager
     async def lease(self, kind, slots=1):
@@ -511,13 +569,19 @@ class ResourceSourceService:
                             'filename': posixpath.basename(path)}
         raise ResourceSourceError('YAAS 下载节点跳转或限流次数过多，请稍后重试')
 
-    async def combine_plan(self, rjcode, asmr_builder, refresh=False, *, exact=False):
-        """旧客户端仍可只调原计划；新客户端显式请求两个来源。"""
+    async def combine_plan(self, rjcode, asmr_builder, refresh=False, *, exact=False, sheet_plans=None):
+        """来源并发查询；批量预览可传入本次请求已读取的链接库计划。"""
         options, errors = [], []
-        sources = ['asmr.one', SOURCE]
-        # 两个来源互不依赖，同时查询，仍按固定顺序展示与汇总错误。
+        from .link_sheet_service import get_link_sheet_service
+        sources = ['asmr.one', SOURCE, 'link_sheet']
+        async def sheet_plan():
+            if sheet_plans is not None:
+                return copy.deepcopy(sheet_plans.get(rjcode))
+            return await asyncio.to_thread(get_link_sheet_service().plan, rjcode)
+        # 来源互不依赖，同时查询，仍按固定顺序展示与汇总错误。
         results = await asyncio.gather(
             asmr_builder(), self.plan(rjcode, refresh=refresh, exact=exact),
+            sheet_plan(),
             return_exceptions=True,
         )
         for source, plan in zip(sources, results):
@@ -588,13 +652,16 @@ class ResourceSourceService:
     async def validate_batch(self, items):
         """整个批次先校验来源与选择，防止后面的非法条目导致前半批已入队。"""
         validated = {}
-        if any((item.get('source_provider') or 'asmr.one') not in {'asmr.one', SOURCE} for item in items):
+        if any((item.get('source_provider') or 'asmr.one') not in {'asmr.one', SOURCE, 'link_sheet'} for item in items):
             raise ValueError('未知下载来源')
         for index, item in enumerate(items):
             provider = item.get('source_provider') or 'asmr.one'
-            if provider not in {'asmr.one', SOURCE}:
+            if provider not in {'asmr.one', SOURCE, 'link_sheet'}:
                 raise ValueError('未知下载来源')
-            if provider == SOURCE:
+            if provider == 'link_sheet':
+                from .link_sheet_service import get_link_sheet_service
+                validated[index] = await asyncio.to_thread(get_link_sheet_service().validate_item, item)
+            elif provider == SOURCE:
                 validated[index] = await self.validate_item(item)
             elif not item.get('rjcode') or not item.get('session_id') or not item.get('selected_resources'):
                 raise ValueError('asmr.one 下载项缺少 RJ、会话或选中资源')
@@ -603,6 +670,9 @@ class ResourceSourceService:
         return validated
 
     async def submit(self, item, source_page, context=None, validated=None):
+        if item.get('source_provider') == 'link_sheet':
+            from .link_sheet_service import get_link_sheet_service
+            return await get_link_sheet_service().submit(item, source_page, context, validated)
         from .task_engine import Task, TaskType, get_task_engine
         requested, group = validated or await self.validate_item(item)
         tasks = []
@@ -635,7 +705,6 @@ class ResourceSourceService:
 
     def enqueue_circle(self, circle_id):
         from ..models.database import CircleWork
-        from ..models.database import WorkMetadata
         with SessionLocal() as db:
             codes = set()
             for row in db.query(CircleWork.canonical_rjcode, CircleWork.display_rjcode,
@@ -643,8 +712,17 @@ class ResourceSourceService:
                 codes.add(row.canonical_rjcode)
                 codes.add(row.display_rjcode)
                 codes.update(row.linked_rjcodes or [])
+        self.enqueue_codes(codes)
+
+    def enqueue_codes(self, codes, *, refresh=False):
+        """关联链确定后即可入队，与 ASMR/元数据阶段重叠执行。"""
+        from ..models.database import WorkMetadata
+        codes = {normalize_rj(code) for code in codes if normalize_rj(code)}
+        if not codes:
+            return
+        with SessionLocal() as db:
             unreleased = {
-                row.rjcode for row in db.query(WorkMetadata).filter(
+                row.rjcode for row in db.query(WorkMetadata.rjcode, WorkMetadata.release_date).filter(
                     WorkMetadata.rjcode.in_(codes - {None})
                 ).all() if is_unreleased(row.release_date)
             }
@@ -652,7 +730,13 @@ class ResourceSourceService:
                            status='pending', candidates=[], error='') for code in sorted(codes - {None} - unreleased)
                       if re.fullmatch(r'RJ\d{6,8}', str(code or ''))]
             for offset in range(0, len(values), 500):
-                db.execute(insert(ResourceSourceProbe).values(values[offset:offset + 500]).on_conflict_do_nothing())
+                statement = insert(ResourceSourceProbe).values(values[offset:offset + 500])
+                statement = statement.on_conflict_do_update(
+                    index_elements=['source', 'rjcode', 'probe_version'],
+                    set_={'status': 'pending', 'candidates': [], 'error': ''},
+                    where=(ResourceSourceProbe.status != 'pending') if refresh else (ResourceSourceProbe.expires_at <= datetime.now()),
+                )
+                db.execute(statement)
             db.commit()
 
     def pending_codes(self):

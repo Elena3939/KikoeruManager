@@ -26,7 +26,7 @@ from .baidu_netdisk_service import (
     sanitize_baidu_netdisk_item,
     sanitize_baidu_netdisk_metadata,
 )
-from ..models.database import ConflictWork, SessionLocal
+from ..models.database import ConflictWork, SessionLocal, Task as TaskRecord
 from ..config.settings import get_config
 
 logger = logging.getLogger(__name__)
@@ -432,6 +432,8 @@ class TaskCenterService:
             enriched["extracted_file_tree_root_label"] = self._safe_text(
                 enriched.get("file_tree_root_label")
             )
+        if enriched.get("terminal_file_tree_snapshot_status") == self._safe_text(task_status).lower():
+            return enriched
         if self._should_skip_directory_file_tree_snapshot(metadata, domain):
             return enriched
         # 进行中的目录仍在变化；详情读取只能使用任务已生成的快照，不能和解压争抢磁盘。
@@ -526,8 +528,8 @@ class TaskCenterService:
             return
         items.append({"label": label, "value": str(value)})
 
-    def _last_timestamp(self, item: Dict[str, Any]) -> float:
-        for field in ("completed_at", "started_at", "created_at"):
+    def _last_timestamp(self, item: Dict[str, Any], fields=("completed_at", "started_at", "created_at")) -> float:
+        for field in fields:
             raw_value = self._safe_text(item.get(field))
             if not raw_value:
                 continue
@@ -2030,15 +2032,20 @@ class TaskCenterService:
             ]
         return filtered
 
-    def _sort_items(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _sort_items(self, items: List[Dict[str, Any]], sort: str = "updated_desc") -> List[Dict[str, Any]]:
+        def key(item):
+            updated = self._last_timestamp(item, ("updated_at", "completed_at", "started_at", "created_at"))
+            tie = (-updated, self._safe_text(item.get("id")))
+            if sort == "created_desc":
+                return (-self._last_timestamp(item, ("created_at",)), *tie)
+            if sort == "progress_desc":
+                return (-float(item.get("progress") or 0), *tie)
+            if sort == "status_priority":
+                return (self.STATUS_PRIORITY.get(self._safe_text(item.get("status")), 99), *tie)
+            return tie
         return sorted(
             items,
-            key=lambda item: (
-                self.STATUS_PRIORITY.get(self._safe_text(item.get("status")), 99),
-                self.DOMAIN_PRIORITY.get(self._safe_text(item.get("domain")), 99),
-                -self._last_timestamp(item),
-                self._safe_text(item.get("id")),
-            )
+            key=key,
         )
 
     def _safe_serialize_engine_task(self, task: Task, *, mode: str = "detail") -> Optional[Dict[str, Any]]:
@@ -2334,6 +2341,7 @@ class TaskCenterService:
         search: Optional[str] = None,
         limit: int = 200,
         offset: int = 0,
+        sort: str = "updated_desc",
     ) -> Dict[str, Any]:
         """任务中心物化表 SQL 读路径预览，暂不接管正式 API。"""
         from .task_center_materialization_service import get_task_center_materialization_service
@@ -2342,6 +2350,7 @@ class TaskCenterService:
         result = service.list_summary_page(
             domain=domain, subtype=subtype, status=status, search=search, limit=limit, offset=offset,
             status_priority=self.STATUS_PRIORITY, domain_priority=self.DOMAIN_PRIORITY,
+            sort=sort,
         )
         if result is not None:
             counts = self._build_overview_counts(result.pop("counts"), grouped=True)
@@ -2355,7 +2364,7 @@ class TaskCenterService:
         overrides = {item["id"]: item for old, item in zip(original_rows, rows) if old is not item}
         all_items = self._dedupe_items(rows)
         all_items = [item for item in all_items if not self._is_superseded_failed_item(item)]
-        all_items = self._sort_items(all_items)
+        all_items = self._sort_items(all_items, sort=sort)
         counts = self._build_overview_counts(all_items)
         safe_limit = max(1, min(int(limit or 200), 500))
         safe_offset = max(0, int(offset or 0))
@@ -2490,6 +2499,7 @@ class TaskCenterService:
         limit: int = 200,
         offset: int = 0,
         mode: str = "detail",
+        sort: str = "updated_desc",
     ) -> Dict[str, Any]:
         normalized_mode = self._safe_text(mode).lower() or "detail"
         safe_limit = max(1, min(int(limit or 200), 500))
@@ -2503,6 +2513,7 @@ class TaskCenterService:
                     search=search,
                     limit=safe_limit,
                     offset=safe_offset,
+                    sort=sort,
                 )
                 return materialized
             except Exception:
@@ -2520,6 +2531,7 @@ class TaskCenterService:
         except Exception:
             logger.exception("[任务中心] _filter_items 异常，跳过过滤步骤")
         total = len(items)
+        items = self._sort_items(items, sort=sort)
         page_items = items[safe_offset:safe_offset + safe_limit]
         if normalized_mode == "summary":
             try:
@@ -2538,7 +2550,47 @@ class TaskCenterService:
 
     def _get_engine_item_detail(self, task_id: str) -> Optional[Dict[str, Any]]:
         task = get_task_engine().get_task(task_id)
+        if task is None:
+            task = self._load_persisted_task(task_id)
         return self._safe_serialize_engine_task(task, mode="detail") if task else None
+
+    def _load_persisted_task(self, task_id: str) -> Optional[Task]:
+        """仅在内存任务不存在时回读任务快照，避免正常详情增加数据库查询。"""
+        normalized_id = self._safe_text(task_id)
+        if not normalized_id:
+            return None
+        db = SessionLocal()
+        try:
+            record = db.get(TaskRecord, normalized_id)
+            if record is None:
+                return None
+            try:
+                task_type = TaskType(record.type)
+            except (TypeError, ValueError):
+                logger.warning("[任务中心] 持久化任务类型无法恢复: task_id=%s type=%s", normalized_id, record.type)
+                return None
+            task = Task(
+                task_type,
+                record.source_path or "",
+                record.output_path,
+                metadata=dict(record.task_metadata or {}),
+                task_id=record.id,
+            )
+            with task._set_state_silent():
+                task.created_at = record.created_at or task.created_at
+                task.started_at = record.started_at
+                task.completed_at = record.completed_at
+                task.current_step = record.current_step or ""
+                task.progress = int(record.progress or 0)
+                task.status = TaskStatus(record.status or TaskStatus.PENDING.value)
+                task.error_message = record.error_message
+            get_task_engine()._ensure_task_context(task)
+            return task
+        except Exception:
+            logger.exception("[任务中心] 回读持久化任务失败: task_id=%s", normalized_id)
+            return None
+        finally:
+            db.close()
 
     async def get_item(
         self,
@@ -2589,6 +2641,8 @@ class TaskCenterService:
         if not task_id:
             return None
         task = get_task_engine().get_task(task_id)
+        if task is None:
+            task = await run_sync_stage("task_center_files", self._load_persisted_task, task_id)
         if not task:
             return None
         metadata = dict(task.task_metadata or {})
@@ -2604,6 +2658,21 @@ class TaskCenterService:
         # 详情会把旧 file_tree_items 映射为 extracted_file_tree_items，续页必须使用同一来源。
         if requested_field == "extracted_file_tree_items" and not rows:
             rows = metadata.get("file_tree_items")
+        if (
+            requested_field in {"final_file_tree_items", "extracted_file_tree_items", "file_tree_items"}
+            and not rows
+            and task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+        ):
+            metadata = self._ensure_file_tree_metadata(
+                metadata,
+                self._safe_text(task.output_path),
+                self._safe_text(task.source_path),
+                self._execution_domain(task, self._infer_domain(task)),
+                task.status.value,
+            )
+            rows = metadata.get(requested_field)
+            if requested_field == "extracted_file_tree_items" and not rows:
+                rows = metadata.get("file_tree_items")
         if not isinstance(rows, list):
             rows = []
         safe_offset = max(0, int(offset or 0))

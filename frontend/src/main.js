@@ -12,6 +12,11 @@ import router from './router'
 import { appLoadingDirective } from './directives/appLoading'
 import SuccessMessageIcon from './components/system/SuccessMessageIcon.vue'
 import ErrorMessageIcon from './components/system/ErrorMessageIcon.vue'
+import { setWasmUrl } from '@lottiefiles/dotlottie-vue'
+import dotLottieWasmUrl from '@lottiefiles/dotlottie-web/dotlottie-player.wasm?url'
+
+// 播放器随应用发布，避免空态动画等待外部 CDN。
+setWasmUrl(dotLottieWasmUrl)
 
 function normalizeMessageOptions(options) {
   if (typeof options === 'string' || isVNode(options) || typeof options === 'function') {

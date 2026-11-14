@@ -42,7 +42,16 @@
         <component :is="iconMeta(row).icon" :size="20" class="tree-icon shrink-0" :class="{ 'archive-package-icon': isArchive && row.type !== 'dir' }" :style="iconStyle(iconMeta(row))" />
         <div class="min-w-0 flex-1">
           <span class="tree-name block truncate text-sm font-medium" :title="row.name">{{ row.name }}</span>
-          <span v-if="isArchive" class="resource-file-meta"><span class="version-tag" :data-language-tone="languageTone(archiveLanguage(row))">{{ archiveLanguage(row) }}</span> {{ row.resource.rjcode }} · {{ row.resource.files?.length || 0 }} 个文件{{ row.resource.complete ? '' : ' · 分卷不完整' }}</span>
+          <span v-if="isArchive && plan.source_provider !== 'link_sheet'" class="resource-file-meta"><span class="version-tag" :data-language-tone="languageTone(archiveLanguage(row))">{{ archiveLanguage(row) }}</span> {{ row.resource.rjcode }} · {{ row.resource.files?.length || 0 }} 个文件{{ row.resource.complete ? '' : ' · 分卷不完整' }}</span>
+          <div v-if="plan.source_provider === 'link_sheet' && candidateFiles(row).length" class="link-sheet-candidates" @click.stop>
+            <label v-for="file in candidateFiles(row)" :key="file.candidate_ids[0]" class="link-sheet-file">
+              <span :title="file.name">{{ file.name }}</span>
+              <select v-model="file.selected_candidate_id"
+                :disabled="readonly" :aria-label="`${file.name} 的候选链接`">
+                <option v-for="(candidate, index) in file.candidate_ids" :key="candidate" :value="candidate">候选 {{ index + 1 }}</option>
+              </select>
+            </label>
+          </div>
           <slot name="row-detail" :row="row" />
         </div>
         <slot name="row-action" :row="row"><span class="tree-size text-xs shrink-0">{{ formatSize(row.size_bytes) }}</span></slot>
@@ -60,7 +69,10 @@ import { LIBRARY_ENTRY_KIND_META, libraryEntryMetaFor } from '../library/_librar
 
 const props = defineProps({ plan: { type: Object, default: null }, plans: { type: Array, default: null }, readonly: Boolean, hideRoot: Boolean, sourceSelected: { type: Boolean, default: true } })
 const emit = defineEmits(['toggle-root', 'toggle-all', 'toggle-expand', 'toggle-row', 'change-source'])
-const isArchive = computed(() => props.plan?.source_provider === 'imoutoheaven')
+const isArchive = computed(() => ['imoutoheaven', 'link_sheet'].includes(props.plan?.source_provider))
+function candidateFiles(row) {
+  return (row.resource?.files || []).filter(file => file.candidate_ids?.length > 1)
+}
 const allSelected = computed(() => props.plan?.selectable_resources?.length > 0
   && props.plan.selected_resource_count === props.plan.selectable_resources.length)
 function archiveLanguage(row) {
@@ -95,6 +107,11 @@ function formatSize(bytes) {
 </script>
 
 <style scoped>
+.link-sheet-candidates { color: #71717a; font-size: 11px; margin-top: 4px; }
+.link-sheet-file { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.link-sheet-file > span { min-width: 0; overflow-wrap: anywhere; flex: 1; }
+.link-sheet-file select { flex-shrink: 0; max-width: 110px; border: 1px solid #a1a1aa66; border-radius: 4px; padding: 3px; color: inherit; background: transparent; }
+:global(html.kikoerumanager-dark .link-sheet-candidates) { color: var(--km-dark-text-muted); }
 .version-tag[data-language-tone="simplified"] { --language-tag-text: #2563eb; --language-tag-bg: #3b82f614; --language-tag-border: #3b82f659; }
 .version-tag[data-language-tone="traditional"] { --language-tag-text: #15803d; --language-tag-bg: #22c55e14; --language-tag-border: #22c55e59; }
 .version-tag[data-language-tone="other"] { --language-tag-text: #a16207; --language-tag-bg: #eab30814; --language-tag-border: #eab30866; }

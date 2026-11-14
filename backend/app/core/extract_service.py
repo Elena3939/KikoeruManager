@@ -55,7 +55,7 @@ from ..core.password_utils import (
 )
 from ..core.json_safety import database_safe_text, safe_json_value
 from ..core.resource_budget_service import get_resource_budget_service
-from .extract_runtime import AdjustableLimiter, ArchiveFingerprintCache, archive_node, record_event, node_state, measured_phase, archive_attempt, candidate_evidence, current_archive_depth
+from .extract_runtime import AdjustableLimiter, ArchiveFingerprintCache, archive_node, record_event, node_state, measured_phase, archive_attempt, candidate_evidence, current_archive_depth, active_clock, exclude_active_time, probe_execution_timeout
 from .failure_reason_formatter import format_extract_failure_message
 
 logger = logging.getLogger(__name__)
@@ -145,15 +145,15 @@ class ExtractService:
     PROBE_BEFORE_EXTRACT: bool = True
     # 策略：魔数探测 → 小条目 t 探测 → 流式探测
     PROBE_ENTRY_MAX_SIZE: int = 5 * 1024 * 1024   # 小条目 t 探测的尺寸上限
-    PROBE_ENTRY_TIMEOUT: float = 30.0             # 单条目 t 命令的最大耗时
-    PROBE_MAGIC_TIMEOUT: float = 20.0             # 魔数探测（只读前几十字节）超时
+    PROBE_ENTRY_TIMEOUT: float = 60.0             # 取得槽位后的单条目验证时限
+    PROBE_MAGIC_TIMEOUT: float = 30.0             # 取得槽位后的前缀探测时限
     PROBE_MAGIC_ENTRY_LIMIT: int = 3              # 一次密码最多抽样多少个强魔数条目
-    PROBE_FULL_TEST_TIMEOUT: float = 60.0         # 无输出内容验证首轮时限
-    PROBE_FULL_TEST_RETRY_TIMEOUT: float = 120.0
-    PASSWORD_VALIDATION_TIMEOUT: float = 300.0   # 未知密码轮查总时限，耗尽后保留未定
+    PROBE_FULL_TEST_TIMEOUT: float = 180.0        # 无输出内容验证首轮执行时限
+    PROBE_FULL_TEST_RETRY_TIMEOUT: float = 600.0
+    PASSWORD_VALIDATION_TIMEOUT: float = 1800.0  # 候选验证累计工作预算，不含排队和暂停
     PROBE_BYTES: int = 2 * 1024 * 1024            # 流式探测读到 2MB 即认为解压流可信
     ZIP_PASSWORD_BYTE_PROBE_BYTES: int = 4 * 1024 * 1024
-    PROBE_TIMEOUT_SECONDS: float = 30.0           # 单次流式探测最多等 30s，超时进入无输出验证
+    PROBE_TIMEOUT_SECONDS: float = 60.0           # 单次流式探测执行时限
     # 无扩展名的嵌套包没有文件名/RJ 线索，密码库通常会回落到大量通用候选。
     # 这类 RAR 不能允许逐个完整解压几十次，否则会长期占满解压槽位。
     NESTED_OPAQUE_PASSWORD_CANDIDATE_LIMIT: int = max(
@@ -185,6 +185,8 @@ class ExtractService:
             str(INSPECT_SLOT_WAIT_TIMEOUT),
         ) or INSPECT_SLOT_WAIT_TIMEOUT
     )
+    # 密码探测必须排队等待正式解压槽，不能因等待槽位被判成候选超时。
+    PASSWORD_PROBE_SLOT_WAIT_TIMEOUT: float = 0.0
     BACKGROUND_PRECHECK_SLOT_WAIT_TIMEOUT: float = float(
         os.getenv("KIKOERUMANAGER_7Z_BACKGROUND_PRECHECK_SLOT_WAIT_TIMEOUT_SECONDS", "3") or 3
     )
@@ -2254,10 +2256,11 @@ class ExtractService:
                             raise asyncio.CancelledError()
 
             try:
-                if timeout_seconds > 0:
-                    await asyncio.wait_for(_wait_resources(), timeout=timeout_seconds)
-                else:
-                    await _wait_resources()
+                with exclude_active_time():
+                    if timeout_seconds > 0:
+                        await asyncio.wait_for(_wait_resources(), timeout=timeout_seconds)
+                    else:
+                        await _wait_resources()
             except asyncio.TimeoutError:
                 record_event("wait", queued_at)
                 node_state("preparing")
@@ -2334,25 +2337,28 @@ class ExtractService:
         wait_timeout: Optional[float] = None,
         update_task_progress: bool = True,
     ) -> AsyncIterator[bool]:
-        """获取密码探测需要的 7z 清单槽和资源预算，显式 0 表示持续等待。
+        """获取密码探测需要的 7z 解压槽和资源预算，显式 0 表示持续等待。
 
         探测子进程自身有 timeout，但如果卡在 semaphore / resource budget 的
         acquire 阶段，子进程还没启动，内部 timeout 根本不会开始计时。
+
+        密码探测和正式解压都属于 7z 的 CPU/磁盘工作，必须共享同一组
+        archive_cpu 槽位，不能让独立的探测并发绕过解压并发上限。
         """
-        semaphore = self._get_7z_inspect_semaphore()
-        slot_limit = self.__class__._seven_zip_inspect_semaphore_limit or 1
+        semaphore = self._get_7z_semaphore()
+        slot_limit = self.__class__._seven_zip_semaphore_limit or 1
         try:
             timeout_seconds = max(0.0, float(
-                self.PROBE_SLOT_WAIT_TIMEOUT if wait_timeout is None else wait_timeout
+                self.PASSWORD_PROBE_SLOT_WAIT_TIMEOUT if wait_timeout is None else wait_timeout
             ))
         except Exception:
-            timeout_seconds = 45.0
+            timeout_seconds = 0.0
         async with self._acquire_7z_resource_slot(
             semaphore=semaphore,
-            budget_resource="archive_inspect",
+            budget_resource="archive_cpu",
             reason=reason,
             archive_path=archive_path,
-            slot_label="密码探测槽位",
+            slot_label="解压槽位（密码探测）",
             slot_limit=slot_limit,
             wait_timeout=timeout_seconds,
             task=task,
@@ -2850,6 +2856,9 @@ class ExtractService:
                 len(volume_set.volumes),
             )
 
+        if volume_set:
+            self._validate_volume_set_structure(volume_set, task)
+
         if not volume_set:
             # _detect_volume_set 没认出分卷组：在进入单体解压链路之前先跑一道
             # 启发式"伪装多卷"探测。命中（首卷魔数 + 同前缀连续数字兄弟 +
@@ -2878,7 +2887,7 @@ class ExtractService:
             else:
                 archive_path = volume_set.entry_path or volume_set.volumes[0]
 
-            if volume_set.type in {"part_password", "zip_truncated_tail"}:
+            if volume_set.type in {"part_password", "zip_truncated_tail", "7z_main_with_ext"}:
                 volume_set = await self._prepare_password_part_volume_view(volume_set, task)
                 archive_path = volume_set.entry_path
 
@@ -3633,6 +3642,7 @@ class ExtractService:
         scanned_files = 0
         scanned_dirs = 0
         subtitle_probe_mode = bool((task.task_metadata or {}).get("subtitle_probe_mode"))
+        replace_empty_shell = bool((task.task_metadata or {}).get("replace_inventory_empty_shell"))
         archive_extensions = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'}
 
         # 阶段 0：残缺后缀修复 pass
@@ -3855,7 +3865,7 @@ class ExtractService:
 
                     if 0 < nested_archive_size < self.NESTED_SUBTITLE_SIZE_THRESHOLD:
                         # subtitle_probe_mode：专门用于字幕补配预检的临时解包，直接展开小包
-                        if not subtitle_probe_mode:
+                        if not subtitle_probe_mode and not replace_empty_shell:
                             classification = await self._classify_nested_small_archive(
                                 file_path,
                                 filename,
@@ -3885,7 +3895,7 @@ class ExtractService:
                             )
                         else:
                             logger.info(
-                                "[字幕预检] 嵌套小包 %.1fMB，字幕预检模式直接展开: %s",
+                                "[字幕展开] 嵌套小包 %.1fMB，字幕预检或空壳替换任务完整展开: %s",
                                 nested_archive_size / 1024 / 1024,
                                 filename,
                             )
@@ -5552,14 +5562,52 @@ class ExtractService:
                 return VolumeSet(group.base_name, group.volumes, "part_password", entry_path=group.main_path)
             return None
 
+        shared_group = detect_archive_volume_group(file_path)
+        if shared_group and shared_group.volume_type == "7z_main_with_ext":
+            return VolumeSet(
+                shared_group.base_name,
+                shared_group.volumes,
+                "7z_main_with_ext",
+                entry_path=shared_group.main_path,
+            )
+
         zip_main_match = re.search(r'^(?P<base>.+)\.zip?$', filename, re.IGNORECASE)
+        zip_truncated_tail_match = re.search(r'^(?P<base>.+)\.zi-p$', filename, re.IGNORECASE)
         zip_part_match = re.search(r'^(?P<base>.+)\.z\d{2}$', filename, re.IGNORECASE)
-        if zip_main_match or zip_part_match:
-            base_name = (zip_main_match or zip_part_match).group('base')
+        if zip_main_match or zip_truncated_tail_match or zip_part_match:
+            base_name = (zip_main_match or zip_truncated_tail_match or zip_part_match).group('base')
             volume_set = self._build_zip_volume_set(directory, base_name)
             if volume_set:
                 logger.info(f"[VolumeSet] 检测到 ZIP 分卷组: {base_name}")
                 return volume_set
+
+        # ``foo.7z + foo.7z.002`` 不是合法的 7z 分卷首卷命名。
+        # 先把它识别成一组，后续在密码探测前明确报缺少 .7z.001，
+        # 不能让主卷被当成单体压缩包进入超时链路。
+        seven_zip_main_match = re.search(r'^(?P<base>.+)\.7z$', filename, re.IGNORECASE)
+        if seven_zip_main_match:
+            base_name = seven_zip_main_match.group('base')
+            try:
+                numbered = [
+                    os.path.join(directory, item)
+                    for item in os.listdir(directory)
+                    if re.fullmatch(rf'{re.escape(base_name)}\.7z\.\d{{3}}', item, re.IGNORECASE)
+                ]
+            except OSError:
+                numbered = []
+            if numbered:
+                ordered = [file_path] + sorted(numbered, key=self._volume_sort_key)
+                logger.info(
+                    "[VolumeSet] 检测到非法 7z 首卷命名: %s, volumes=%s",
+                    base_name,
+                    [os.path.basename(path) for path in ordered],
+                )
+                return VolumeSet(
+                    base_name,
+                    ordered,
+                    "7z_main_with_ext",
+                    entry_path=file_path,
+                )
 
         rar_main_match = re.search(r'^(?P<base>.+)\.rar$', filename, re.IGNORECASE)
         rar_part_match = re.search(r'^(?P<base>.+)\.r\d{2}$', filename, re.IGNORECASE)
@@ -5621,8 +5669,12 @@ class ExtractService:
         zip_path = os.path.join(directory, f"{base_name}.zip")
         truncated_tail = False
         if not os.path.exists(zip_path):
-            zip_path = os.path.join(directory, f"{base_name}.zi")
-            if not self._is_confirmed_zip_tail(zip_path, directory, base_name):
+            tail_candidates = (
+                os.path.join(directory, f"{base_name}.zi-p"),
+                os.path.join(directory, f"{base_name}.zi"),
+            )
+            zip_path = next((path for path in tail_candidates if os.path.exists(path)), "")
+            if not zip_path or not self._is_confirmed_zip_tail(zip_path, directory, base_name):
                 return None
             truncated_tail = True
 
@@ -5867,12 +5919,22 @@ class ExtractService:
     async def _prepare_password_part_volume_view(self, volume_set: 'VolumeSet', task: Task) -> 'VolumeSet':
         """用标准卷名链接整组来源，保留原路径供密码匹配、审计和归档使用。"""
         truncated_zip = volume_set.type == "zip_truncated_tail"
-        names = [
-            os.path.basename(path) + "p" if path.lower().endswith(".zi")
-            else normalize_part_volume_filename(os.path.basename(path))
-            for path in volume_set.volumes
-        ]
-        if not truncated_zip:
+        renamed_7z_first_volume = volume_set.type == "7z_main_with_ext"
+        if renamed_7z_first_volume:
+            names = [
+                f"{volume_set.base_name}.7z.001"
+                if index == 0
+                else os.path.basename(path)
+                for index, path in enumerate(volume_set.volumes)
+            ]
+        else:
+            names = [
+                re.sub(r"\.zi(?:-p)?$", ".zip", os.path.basename(path), flags=re.IGNORECASE)
+                if re.search(r"\.zi(?:-p)?$", os.path.basename(path), re.IGNORECASE)
+                else normalize_part_volume_filename(os.path.basename(path))
+                for path in volume_set.volumes
+            ]
+        if not truncated_zip and not renamed_7z_first_volume:
             indices = [int(re.search(r"\.part(\d+)\.", name, re.IGNORECASE).group(1)) for name in names]
             if indices != list(range(1, len(indices) + 1)):
                 self._set_extract_meta(task, extract_failure_reason="volume_incomplete")
@@ -5905,7 +5967,8 @@ class ExtractService:
         })
         logger.info("[VolumeSet] 已创建标准卷名视图，保留原始来源: volumes=%s", len(paths))
         entry = paths[volume_set.volumes.index(volume_set.entry_path)] if truncated_zip else paths[0]
-        return VolumeSet(volume_set.base_name, paths, "zip_volume_main" if truncated_zip else "part", entry_path=entry)
+        output_type = "zip_volume_main" if truncated_zip else "7z_volume_with_ext" if renamed_7z_first_volume else "part"
+        return VolumeSet(volume_set.base_name, paths, output_type, entry_path=entry)
 
     def _link_or_copy_file(self, source_path: str, target_path: str) -> str:
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
@@ -6545,6 +6608,125 @@ class ExtractService:
         except TimeoutError:
             return False
         return not (task and task.is_cancelled())
+
+    def _validate_volume_set_structure(
+        self,
+        volume_set: 'VolumeSet',
+        task: Optional[Task] = None,
+    ) -> None:
+        """在启动 7z 或密码探测前拒绝缺卷、跳号和非法首卷命名。"""
+        volume_type = volume_set.type
+        names = [os.path.basename(path) for path in volume_set.volumes]
+        indices: List[int] = []
+        pattern: Optional[re.Pattern[str]] = None
+        structure_invalid = False
+
+        if volume_type == "7z_main_with_ext":
+            # 某些下载器会把真实首卷 .7z.001 改名为 .7z。这里不是缺卷，
+            # 先按首卷别名接受，后续会建立临时标准名视图交给 7zz。
+            pattern = re.compile(r"\.7z\.(\d{3})$", re.IGNORECASE)
+            tail_indices = sorted(
+                int(match.group(1))
+                for name in names
+                if (match := pattern.search(name))
+            )
+            if tail_indices == list(range(2, (tail_indices[-1] + 1) if tail_indices else 2)):
+                return
+            message = f"7z 分卷卷号不连续：实际卷号={tail_indices or '无'}"
+            structure_invalid = True
+        elif volume_type == "7z_volume_with_ext":
+            pattern = re.compile(r"\.7z\.(\d{3})$", re.IGNORECASE)
+            message = "7z 分卷缺少首卷或卷号不连续"
+        elif volume_type == "7z_volume":
+            pattern = re.compile(r"\.(\d{3})$", re.IGNORECASE)
+            message = "数字分卷缺少首卷或卷号不连续"
+        elif volume_type == "zip_volume_main":
+            pattern = re.compile(r"\.z(\d{2})$", re.IGNORECASE)
+            message = "ZIP 分卷缺少首卷或卷号不连续"
+        elif volume_type == "zip_numeric_split":
+            pattern = re.compile(r"\.(\d{3})$", re.IGNORECASE)
+            message = "ZIP 数字分卷缺少首卷或卷号不连续"
+        else:
+            return
+
+        if pattern is not None:
+            for name in names:
+                match = pattern.search(name)
+                if match:
+                    indices.append(int(match.group(1)))
+            indices.sort()
+            expected_start = 2 if volume_type == "zip_numeric_split" else 1
+            expected_indices = list(
+                range(expected_start, (indices[-1] + 1) if indices else expected_start)
+            )
+            if indices != expected_indices:
+                message = f"{message}：实际卷号={indices or '无'}"
+        else:
+            expected_indices = []
+
+        if structure_invalid or (
+            volume_type != "7z_main_with_ext"
+            and pattern is not None
+            and indices != expected_indices
+        ):
+            error = f"{message}；文件={', '.join(names)}"
+            if task is not None:
+                directory = os.path.dirname(volume_set.volumes[0]) if volume_set.volumes else ""
+                detected_kind = (
+                    "7z"
+                    if volume_type.startswith("7z")
+                    else "zip"
+                    if volume_type.startswith("zip")
+                    else "unknown"
+                )
+                suggested_renames = []
+                for index, path in enumerate(volume_set.volumes, start=1):
+                    new_name = os.path.basename(path)
+                    if volume_type == "7z_main_with_ext" and index == 1:
+                        new_name = f"{volume_set.base_name}.7z.001"
+                    suggested_renames.append({
+                        "old": path,
+                        "new": os.path.join(directory, new_name),
+                    })
+                disguised_volume_set = {
+                    "directory": directory,
+                    "detected_kind": detected_kind,
+                    "suspect_files": [
+                        {
+                            "path": path,
+                            "name": os.path.basename(path),
+                            "index": (
+                                1
+                                if volume_type == "7z_main_with_ext" and index == 0
+                                else next(
+                                    (
+                                        int(match.group(1))
+                                        for match in [
+                                            re.search(r"\.7z\.(\d{3})$", os.path.basename(path), re.IGNORECASE),
+                                            re.search(r"\.z(\d{2})$", os.path.basename(path), re.IGNORECASE),
+                                            re.search(r"\.(\d{3})$", os.path.basename(path), re.IGNORECASE),
+                                        ]
+                                        if match
+                                    ),
+                                    index + 1,
+                                )
+                            ),
+                            "size": os.path.getsize(path) if os.path.exists(path) else 0,
+                        }
+                        for index, path in enumerate(volume_set.volumes)
+                    ],
+                    "suggested_renames": suggested_renames,
+                    "confidence": "high",
+                    "reason": "volume_incomplete",
+                }
+                self._set_extract_meta(
+                    task,
+                    extract_failure_reason="volume_incomplete",
+                    extract_missing_volume_error=error,
+                    password_probe_failure_reason="volume_incomplete",
+                    disguised_volume_set=disguised_volume_set,
+                )
+            raise ArchiveMissingVolumeError(error)
 
     async def _is_file_stable_quick(self, file_path: str) -> bool:
         """快速检查文件是否稳定（只检查一次）"""
@@ -8100,6 +8282,57 @@ class ExtractService:
             return None
         return self._password_cache_key(fingerprint, password)
 
+    def _detect_zip_aes_password_encoding(self, archive_path: str, password: str) -> Optional[str]:
+        """只读至多三个 AES 条目的盐和校验值，识别同一密码的字节编码。"""
+        candidates = self._zip_password_byte_candidates(password)
+        checked = 0
+        try:
+            with zipfile.ZipFile(archive_path) as archive, open(archive_path, "rb") as source:
+                for info in archive.infolist():
+                    if info.is_dir() or info.compress_type != 99 or not (info.flag_bits & 1):
+                        continue
+                    extra = info.extra
+                    offset = 0
+                    strength = None
+                    while offset + 4 <= len(extra):
+                        field_id, size = struct.unpack_from("<HH", extra, offset)
+                        offset += 4
+                        if offset + size > len(extra):
+                            return None
+                        if field_id == 0x9901 and size == 7:
+                            version, vendor, strength, _method = struct.unpack_from("<H2sBH", extra, offset)
+                            if version not in (1, 2) or vendor != b"AE":
+                                return None
+                            break
+                        offset += size
+                    if strength not in (1, 2, 3):
+                        return None
+                    source.seek(info.header_offset)
+                    header = source.read(30)
+                    if len(header) != 30 or header[:4] != b"PK\x03\x04":
+                        return None
+                    name_size, extra_size = struct.unpack_from("<HH", header, 26)
+                    source.seek(name_size + extra_size, os.SEEK_CUR)
+                    key_size = 8 * (strength + 1)
+                    salt_size = 4 * (strength + 1)
+                    salt = source.read(salt_size)
+                    verifier = source.read(2)
+                    if len(salt) != salt_size or len(verifier) != 2:
+                        return None
+                    candidates = [
+                        (encoding, value) for encoding, value in candidates
+                        if hashlib.pbkdf2_hmac("sha1", value, salt, 1000, 2 * key_size + 2)[-2:] == verifier
+                    ]
+                    if not candidates:
+                        return None
+                    checked += 1
+                    if checked >= 3:
+                        break
+        except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile, ValueError, struct.error):
+            return None
+        # 两字节校验值只用于选择编码，解压成功仍由后续完整性检查决定。
+        return candidates[0][0] if checked and len(candidates) == 1 else None
+
     def _apply_cached_zip_password_argv_encoding(self, cmd: List[Any]) -> List[Any]:
         if sys.platform == "win32":
             return cmd
@@ -8108,6 +8341,8 @@ class ExtractService:
         if password_arg is None or not archive_path:
             return cmd
         index, password = password_arg
+        if not self._password_has_non_ascii(password):
+            return cmd
         cache_key = self._zip_password_encoding_cache_key(archive_path, password)
         encoding = (
             self.__class__._zip_password_argv_encoding_cache.get(cache_key)
@@ -8115,7 +8350,12 @@ class ExtractService:
             else None
         )
         if not encoding:
-            return cmd
+            encoding = self._detect_zip_aes_password_encoding(archive_path, password)
+            if not encoding:
+                return cmd
+            if cache_key:
+                self.__class__._zip_password_argv_encoding_cache[cache_key] = encoding
+            logger.info("ZIP AES 密码字节编码识别: archive=%s encoding=%s", archive_path, encoding)
         try:
             encoded_arg = f"-p{password}".encode(encoding)
         except UnicodeEncodeError:
@@ -8163,12 +8403,30 @@ class ExtractService:
             pass
         return name.replace("\\", "/")
 
+    @measured_phase("probe")
     async def _verify_zip_password_content(self, archive_path, password, *, timeout, task=None):
         """完整读取最小加密条目并验证 CRC，兼容非 UTF-8 密码且不写解压文件。"""
+        async with self._acquire_probe_inspect_slot(
+            "extract.probe_zip_content", archive_path, task, wait_timeout=0,
+        ) as acquired:
+            if not acquired:
+                return "unknown"
+            return await self._verify_zip_password_content_in_slot(
+                archive_path, password, timeout=timeout, task=task,
+            )
+
+    async def _verify_zip_password_content_in_slot(self, archive_path, password, *, timeout, task=None):
+        """取得共享解压槽后再启动工作线程和执行时限。"""
         stopped = threading.Event()
-        deadline = time.monotonic() + timeout if timeout is not None else None
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
 
         def verify():
+            execution_timeout = probe_execution_timeout(timeout)
+            deadline = time.monotonic() + execution_timeout if execution_timeout is not None else None
+            loop.call_soon_threadsafe(started.set)
+            if stopped.is_set():
+                return "cancelled"
             try:
                 with zipfile.ZipFile(archive_path) as archive:
                     entries = [entry for entry in archive.infolist()
@@ -8198,6 +8456,8 @@ class ExtractService:
 
         worker = asyncio.create_task(asyncio.to_thread(verify))
         try:
+            with exclude_active_time():
+                await started.wait()
             return await asyncio.shield(worker)
         finally:
             stopped.set()
@@ -10275,6 +10535,8 @@ class ExtractService:
                     logger.error(f"清理解压目录失败: {output_path}, {e}")
 
     async def _run_7z_command(self, cmd, *args, **kwargs):
+        # 指定密码和无后缀嵌套包也必须识别编码；磁盘读取和密钥派生放在线程中。
+        cmd = await asyncio.to_thread(self._apply_cached_zip_password_argv_encoding, cmd)
         result = await self._run_7z_command_once(cmd, *args, **kwargs)
         if result.returncode and b"E_INVALIDARG" in (result.stderr or b""):
             cleaned = [arg for arg in cmd if not (isinstance(arg, str) and arg.startswith("-mcp="))]
@@ -10754,7 +11016,7 @@ class ExtractService:
                 try:
                     first_byte = await asyncio.wait_for(
                         process.stdout.read(1),
-                        timeout=max(1.0, float(timeout)),
+                        timeout=probe_execution_timeout(max(1.0, float(timeout))),
                     )
                     if first_byte:
                         if process.returncode is None:
@@ -10889,7 +11151,7 @@ class ExtractService:
             try:
                 await asyncio.wait(
                     {stdout_task, wait_task},
-                    timeout=timeout,
+                    timeout=probe_execution_timeout(timeout),
                     return_when=asyncio.FIRST_COMPLETED,
                 )
             except Exception:
@@ -11023,7 +11285,7 @@ class ExtractService:
             try:
                 try:
                     stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                        process.communicate(), timeout=timeout
+                        process.communicate(), timeout=probe_execution_timeout(timeout)
                     )
                 except asyncio.TimeoutError:
                     candidate_evidence(password, [], probe_reason='timeout')
@@ -11089,23 +11351,21 @@ class ExtractService:
         results = {}
         pending = []
         fingerprint = self._archive_fingerprint(archive_path)
-        deadline = time.monotonic() + self.PASSWORD_VALIDATION_TIMEOUT
+        validation_elapsed = 0.0
 
-        async def bounded_probe(method, *args, timeout, exclude_resource_wait=False, **kwargs):
-            remaining = deadline - time.monotonic()
+        async def bounded_probe(method, *args, timeout, **kwargs):
+            nonlocal validation_elapsed
+            remaining = self.PASSWORD_VALIDATION_TIMEOUT - validation_elapsed
             if remaining <= 0:
                 return "timeout"
-            try:
-                if exclude_resource_wait:
-                    # 资源槽位等待不计入密码验证时限；只有 7z 进程启动后的
-                    # 内容校验才使用 method 自身的 timeout。
-                    return await method(*args, timeout=timeout, **kwargs)
-                return await asyncio.wait_for(
-                    method(*args, timeout=min(timeout, remaining), **kwargs),
-                    timeout=remaining,
-                )
-            except asyncio.TimeoutError:
-                return "timeout"
+            # 所有后端使用同一工作时钟；不再用外层墙钟中断资源排队。
+            with active_clock(budget_seconds=remaining) as clock:
+                try:
+                    return await method(*args, timeout=min(timeout, remaining), **kwargs)
+                except asyncio.TimeoutError:
+                    return "timeout"
+                finally:
+                    validation_elapsed += clock.elapsed
 
         def missing_volume():
             if task is not None:
@@ -11122,15 +11382,19 @@ class ExtractService:
                     password_candidate_checked=len(results),
                     nested_password_candidate_total=len(passwords),
                     nested_password_candidate_limited=False,
+                    password_validation_elapsed_ms=round(validation_elapsed * 1000),
+                    password_validation_budget_ms=round(self.PASSWORD_VALIDATION_TIMEOUT * 1000),
+                    password_validation_budget_exhausted=validation_elapsed >= self.PASSWORD_VALIDATION_TIMEOUT,
                 )
 
         async def checkpoint():
             if task is not None:
                 if task.is_cancelled():
                     raise asyncio.CancelledError()
-                await task.wait_if_paused()
+                with exclude_active_time():
+                    await task.wait_if_paused()
             if fingerprint != self._archive_fingerprint(archive_path):
-                raise RuntimeError("密码验证期间归档来源已变化")
+                raise RuntimeError("文件发生变化，密码探测中止")
 
         # RAR 预读可能因排队失败而没有清单。先读目录发现缺卷，不能为每个
         # 候选整包扫描几十 GB 后再重复遇到同一个结构错误。
@@ -11148,7 +11412,7 @@ class ExtractService:
 
         for password in passwords:
             await checkpoint()
-            if time.monotonic() >= deadline:
+            if validation_elapsed >= self.PASSWORD_VALIDATION_TIMEOUT:
                 break
             while True:
                 result = await bounded_probe(
@@ -11179,7 +11443,7 @@ class ExtractService:
             retry = []
             for password in pending:
                 await checkpoint()
-                if time.monotonic() >= deadline:
+                if validation_elapsed >= self.PASSWORD_VALIDATION_TIMEOUT:
                     break
                 validated_backend = seven_zip_executable or self.seven_zip
                 if task is not None:
@@ -11207,7 +11471,6 @@ class ExtractService:
                         archive_path, password, timeout=timeout, task=task,
                         seven_zip_executable=seven_zip_executable,
                         resource_wait_timeout=0,
-                        exclude_resource_wait=True,
                     )
                     paused = task is not None and task.consume_stop_reason() == "pause"
                     await checkpoint()
@@ -11224,7 +11487,6 @@ class ExtractService:
                             archive_path, password, timeout=timeout, task=task,
                             seven_zip_executable=self.seven_zip_zstd,
                             resource_wait_timeout=0,
-                            exclude_resource_wait=True,
                         )
                         paused = task is not None and task.consume_stop_reason() == "pause"
                         await checkpoint()
@@ -11249,7 +11511,6 @@ class ExtractService:
                                 seven_zip_executable=validated_backend,
                                 password_bytes=password_bytes,
                                 resource_wait_timeout=0,
-                                exclude_resource_wait=True,
                             )
                             paused = task is not None and task.consume_stop_reason() == "pause"
                             await checkpoint()
@@ -11280,6 +11541,7 @@ class ExtractService:
             pending = retry
             if not pending:
                 break
+        record_progress()
         if task is not None:
             self._set_extract_meta(
                 task, password_candidate_total=len(passwords),
@@ -11294,6 +11556,7 @@ class ExtractService:
             )
         return [], results
 
+    @measured_phase("probe")
     async def _probe_by_full_test(
         self,
         archive_path: str,
@@ -11335,7 +11598,7 @@ class ExtractService:
             slot_label="密码完整验证槽位",
             slot_limit=self.__class__._seven_zip_semaphore_limit or 1,
             wait_timeout=(
-                self.PROBE_SLOT_WAIT_TIMEOUT
+                self.PASSWORD_PROBE_SLOT_WAIT_TIMEOUT
                 if resource_wait_timeout is None
                 else resource_wait_timeout
             ),
@@ -11344,7 +11607,7 @@ class ExtractService:
             if not acquired:
                 candidate_evidence(password, [], probe_reason='resource_timeout')
                 # 尚未启动的候选仍未定，不能记成密码错误。
-                return 'timeout' if timeout is not None else 'unknown'
+                return 'unknown'
             logger.info("执行7z探测命令: %s", self._format_command_for_log(cmd))
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
@@ -11358,7 +11621,7 @@ class ExtractService:
             try:
                 try:
                     stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                        process.communicate(), timeout=timeout
+                        process.communicate(), timeout=probe_execution_timeout(timeout)
                     )
                 except asyncio.TimeoutError:
                     candidate_evidence(password, [], probe_reason='timeout')
@@ -11483,7 +11746,7 @@ class ExtractService:
                 archive_path,
                 password,
                 entry,
-                timeout=self.PROBE_ENTRY_TIMEOUT,
+                timeout=min(timeout, self.PROBE_ENTRY_TIMEOUT),
                 task=task,
                 seven_zip_executable=executable,
             )
@@ -11599,7 +11862,7 @@ class ExtractService:
 
             try:
                 await asyncio.wait(
-                    {stdout_task, wait_task}, timeout=timeout,
+                    {stdout_task, wait_task}, timeout=probe_execution_timeout(timeout),
                     return_when=asyncio.FIRST_COMPLETED,
                 )
             except BaseException:

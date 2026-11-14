@@ -97,6 +97,8 @@ def build_task_center_event(task, reason: str = "progress") -> dict[str, Any]:
         value = metadata.get(key)
         if isinstance(value, dict):
             runtime.update(value)
+    if str(getattr(getattr(task, "type", None), "value", "")) == "asmr_sync_download" and metadata.get("download_runtime"):
+        runtime = dict(metadata["download_runtime"])
     event["runtime"] = {key: runtime[key] for key in (
         "phase", "stage", "speed_bytes_per_sec", "downloaded_bytes", "transferred_bytes",
         "completed_bytes", "total_bytes", "file_index", "current_file_index",

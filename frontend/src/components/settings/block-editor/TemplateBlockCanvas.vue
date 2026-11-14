@@ -257,7 +257,7 @@ function toggleEnabled(id) {
 .blk-canvas-paper {
   max-width: 600px;
   margin: 0 auto;
-  background: var(--set-surface, #fff);
+  background: #fff;
   border: 1px solid var(--set-border-soft, rgba(29, 29, 31, 0.07));
   border-radius: 16px;
   padding: 28px 32px;
@@ -303,6 +303,8 @@ function toggleEnabled(id) {
      真实邮件由后端 wrap_email_envelope 包外壳，画布只负责显示内容本身。 */
   max-width: 100%;
   overflow: hidden;
+  color: #1d1d1f;
+  background: #fff;
 }
 .blk-row-content :deep(table) {
   max-width: 100% !important;

@@ -184,50 +184,11 @@ function getDomainCount(domain) {
 
 const ACTIVE_STATUSES = new Set(['processing', 'pending', 'paused', 'waiting_manual', 'waiting_retry'])
 
-function safeTimestamp(value) {
-  const ts = new Date(value || 0).getTime()
-  return Number.isFinite(ts) ? ts : 0
-}
-
-function statusPriority(status) {
-  const map = {
-    processing: 0,
-    waiting_manual: 1,
-    waiting_retry: 2,
-    pending: 3,
-    paused: 4,
-    partial_failed: 5,
-    failed: 6,
-    cancelled: 7,
-    completed: 8,
-  }
-  return map[String(status || '')] ?? 99
-}
-
 const filteredItems = computed(() => {
   let next = Array.isArray(items.value) ? [...items.value] : []
   if (activeOnly.value) {
     next = next.filter((item) => ACTIVE_STATUSES.has(String(item?.status || '').trim()))
   }
-  if (sortKey.value === 'updated_desc') {
-    return next.map(withTaskSummaryPieces)
-  }
-  next.sort((a, b) => {
-    if (sortKey.value === 'created_desc') {
-      return safeTimestamp(b?.created_at) - safeTimestamp(a?.created_at)
-    }
-    if (sortKey.value === 'progress_desc') {
-      const p = Number(b?.progress || 0) - Number(a?.progress || 0)
-      if (p !== 0) return p
-      return safeTimestamp(b?.updated_at || b?.created_at) - safeTimestamp(a?.updated_at || a?.created_at)
-    }
-    if (sortKey.value === 'status_priority') {
-      const s = statusPriority(a?.status) - statusPriority(b?.status)
-      if (s !== 0) return s
-      return safeTimestamp(b?.updated_at || b?.created_at) - safeTimestamp(a?.updated_at || a?.created_at)
-    }
-    return safeTimestamp(b?.updated_at || b?.created_at) - safeTimestamp(a?.updated_at || a?.created_at)
-  })
   return next.map(withTaskSummaryPieces)
 })
 
@@ -311,7 +272,7 @@ function shouldRefreshDetail(nextItems) {
 
 watch(currentDomain, () => { currentSubtype.value = 'all' }, { flush: 'sync' })
 
-watch([currentDomain, currentSubtype, currentStatus], () => {
+watch([currentDomain, currentSubtype, currentStatus, sortKey], () => {
   shouldAutoSelectVisibleTask.value = true
   currentOffset.value = 0
   refreshTaskCenter(false, { silent: true }).catch((error) => {
@@ -557,6 +518,7 @@ async function refreshTaskCenter(showMessage = false, options = {}) {
 
     const params = {
       mode: 'summary',
+      sort: sortKey.value,
       limit: pageSize.value,
       offset: currentOffset.value,
       _t: Date.now(),
