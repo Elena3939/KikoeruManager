@@ -3580,6 +3580,182 @@ class ExtractService:
             )
         return "non_subtitle"
 
+    @staticmethod
+    def _opaque_7z_header(path: str) -> Optional[Tuple[int, int, int]]:
+        """只读固定头，取得归档总长、尾部头长度及 CRC。"""
+        with open(path, "rb") as stream:
+            head = stream.read(32)
+        if len(head) != 32 or head[:6] != b"7z\xbc\xaf\x27\x1c":
+            return None
+        if zlib.crc32(head[12:32]) != struct.unpack_from("<I", head, 8)[0]:
+            return None
+        offset, size, crc = struct.unpack_from("<QQI", head, 12)
+        return 32 + offset + size, size, crc
+
+    @staticmethod
+    def _validate_opaque_7z_group(paths: List[str]) -> bool:
+        """按候选卷序随机读取尾部头；不拼接、复制或扫描大文件。"""
+        header = ExtractService._opaque_7z_header(paths[0])
+        if not header:
+            return False
+        total, size, expected_crc = header
+        sizes = [os.path.getsize(path) for path in paths]
+        if not size or size > 1024 * 1024 or sum(sizes) != total:
+            return False
+        offset, remaining, crc = total - size, size, 0
+        for path, length in zip(paths, sizes):
+            if offset >= length:
+                offset -= length
+                continue
+            with open(path, "rb") as stream:
+                stream.seek(offset)
+                data = stream.read(min(remaining, length - offset))
+            crc = zlib.crc32(data, crc)
+            remaining -= len(data)
+            offset = 0
+            if not remaining:
+                break
+        return remaining == 0 and crc == expected_crc
+
+    @staticmethod
+    def _read_archive_rename_hints(directory: str, filenames: List[str]) -> Dict[str, str]:
+        """只解析同目录批处理中的声明式改名，不执行脚本或其它命令。"""
+        rules = []
+        for name in filenames:
+            if Path(name).suffix.lower() not in {".bat", ".cmd"}:
+                continue
+            path = os.path.join(directory, name)
+            if os.path.islink(path) or os.path.getsize(path) > 65536:
+                continue
+            with open(path, "rb") as stream:
+                raw = stream.read(65537)
+            if len(raw) > 65536:
+                continue
+            for encoding in ("utf-8-sig", "gb18030"):
+                try:
+                    text = raw.decode(encoding)
+                    break
+                except UnicodeDecodeError:
+                    text = ""
+            for line in text.splitlines():
+                match = re.fullmatch(
+                    r'\s*@?(?:ren|rename)\s+(?:"([^"\r\n]+)"|(\S+))\s+'
+                    r'(?:"([^"\r\n]+)"|(\S+))\s*', line, re.IGNORECASE,
+                )
+                if not match:
+                    continue
+                old, new = match[1] or match[2], match[3] or match[4]
+                if any(char in old + new for char in '/\\:&|<>%!^?'):
+                    continue
+                if not re.fullmatch(r".+\.7z(?:\.\d{3})?", new, re.IGNORECASE):
+                    continue
+                if old.startswith("*.") and new.startswith("*."):
+                    if "*" not in old[1:] + new[1:]:
+                        rules.append((old[1:], new[1:], True))
+                elif "*" not in old + new:
+                    rules.append((old, new, False))
+        hints: Dict[str, str] = {}
+        for name in filenames:
+            targets = set()
+            for old, new, wildcard in rules:
+                if wildcard and name.lower().endswith(old.lower()):
+                    targets.add(name[:-len(old)] + new)
+                elif not wildcard and name.lower() == old.lower():
+                    targets.add(new)
+            if len(targets) > 1:
+                raise ValueError(f"分卷改名映射存在歧义: {name}")
+            if targets:
+                hints[name] = targets.pop()
+        return hints
+
+    def _repair_opaque_7z_volumes(self, directory: str, filenames: List[str]) -> Dict[str, str]:
+        """在嵌套密码探测前恢复任意后缀分卷；卷序必须有明确证据。"""
+        hints = self._read_archive_rename_hints(directory, filenames)
+        groups: Dict[str, Dict[str, str]] = {}
+        for name, target in hints.items():
+            match = re.fullmatch(r"(.+\.7z)(?:\.(\d{3}))?", target, re.IGNORECASE)
+            if match:
+                mapping = groups.setdefault(match[1], {})
+                if target in mapping:
+                    raise ValueError(f"分卷改名目标重复: {target}")
+                mapping[target] = name
+        plans = []
+        claimed = set()
+        for base, mapping in groups.items():
+            targets = sorted(mapping)
+            expected = [base] if targets == [base] else [
+                f"{base}.{index:03d}" for index in range(1, len(targets) + 1)
+            ]
+            sources = [os.path.join(directory, mapping[name]) for name in targets]
+            if targets != expected or len(set(mapping.values())) != len(targets):
+                raise ValueError(f"分卷改名映射不连续或重复: {base}")
+            if any(os.path.islink(path) or not os.path.isfile(path) for path in sources):
+                raise ValueError(f"分卷改名源文件无效: {base}")
+            if not self._validate_opaque_7z_group(sources):
+                raise ArchiveMissingVolumeError(f"改名映射对应的 7z 卷组长度或头校验不通过: {base}")
+            plans.extend(zip(sources, [os.path.join(directory, name) for name in targets]))
+            claimed.update(mapping.values())
+
+        # 没有脚本时只接受可唯一确定的两卷、三卷；相同大小的多个中间卷不猜顺序。
+        siblings: Dict[str, List[str]] = {}
+        ordinary = {".txt", ".bat", ".cmd", ".jpg", ".png", ".json", ".nfo", ".mp3", ".wav", ".flac", ".lrc", ".srt"}
+        for name in filenames:
+            if name in claimed or Path(name).suffix.lower() in ordinary:
+                continue
+            if re.search(r"\.7z(?:\.\d{3})?$", name, re.IGNORECASE):
+                continue
+            siblings.setdefault(os.path.splitext(name)[0], []).append(name)
+        for base, names in siblings.items():
+            if not 2 <= len(names) <= 64:
+                continue
+            suffixes = [os.path.splitext(name)[1][1:] for name in names]
+            if all(re.fullmatch(r"\d{3}", suffix) for suffix in suffixes):
+                if sorted(int(suffix) for suffix in suffixes) == list(range(1, len(names) + 1)):
+                    continue  # 标准 .001/.002 由原有分卷链路处理。
+            paths = [os.path.join(directory, name) for name in names]
+            if any(os.path.islink(path) or not os.path.isfile(path) for path in paths):
+                continue
+            firsts = [path for path in paths if self._opaque_7z_header(path)]
+            if len(firsts) != 1:
+                continue
+            first = firsts[0]
+            header = self._opaque_7z_header(first)
+            first_size = os.path.getsize(first)
+            if header[0] <= first_size:
+                continue
+            rest = [path for path in paths if path != first]
+            tails = [path for path in rest if os.path.getsize(path) < first_size]
+            if len(paths) == 2:
+                ordered = [first, *rest]
+            elif len(paths) == 3 and len(tails) == 1:
+                middle = next(path for path in rest if path != tails[0])
+                if os.path.getsize(middle) != first_size:
+                    continue
+                ordered = [first, middle, tails[0]]
+            else:
+                raise ValueError(f"伪装 7z 分卷顺序不唯一，需要明确的改名映射: {base}")
+            if not self._validate_opaque_7z_group(ordered):
+                raise ArchiveMissingVolumeError(f"伪装 7z 分卷长度或头校验不通过: {base}")
+            plans.extend((path, os.path.join(directory, f"{base}.7z.{index:03d}"))
+                         for index, path in enumerate(ordered, 1))
+
+        plans = [(old, new) for old, new in plans if old != new]
+        if len({new.casefold() for _, new in plans}) != len(plans):
+            raise ValueError("伪装分卷改名目标重复")
+        for old, new in plans:
+            if os.path.lexists(new):
+                raise FileExistsError(f"伪装分卷改名目标已存在: {os.path.basename(new)}")
+        completed = []
+        try:
+            for old, new in plans:
+                move_path_sync(old, new)
+                completed.append((old, new))
+        except Exception:
+            for old, new in reversed(completed):
+                move_path_sync(new, old)
+            raise
+        return dict(plans)
+
     async def _extract_nested_archives(
         self,
         directory: str,
@@ -3691,6 +3867,16 @@ class ExtractService:
                     break
                 await task.wait_if_paused()
 
+                # 同一目录只规划一次，先恢复卷名再扫描，避免把首卷送入密码轮查。
+                repaired = await asyncio.to_thread(self._repair_opaque_7z_volumes, root, files)
+                if repaired:
+                    files = [os.path.basename(repaired.get(os.path.join(root, name), os.path.join(root, name)))
+                             for name in files]
+                    task.task_metadata.setdefault("opaque_volume_renames", []).extend(
+                        {"old": old, "new": new} for old, new in repaired.items()
+                    )
+                    logger.info("[伪装分卷规范化] 已验证并改名 %d 个文件: %s", len(repaired), root)
+
                 for filename in files:
                     scanned_files += 1
                     if scanned_files % max(1, self.NESTED_SCAN_FILE_BUDGET) == 0:
@@ -3699,6 +3885,10 @@ class ExtractService:
                             return 0
                         await asyncio.sleep(0)
                     file_path = os.path.join(root, filename)
+
+                    numbered_7z = re.search(r"\.7z\.(\d{3})$", filename, re.IGNORECASE)
+                    if numbered_7z and int(numbered_7z[1]) > 1:
+                        continue
 
                     # 检查是否已经处理过（防止循环）
                     file_real_path = await asyncio.to_thread(os.path.realpath, file_path)

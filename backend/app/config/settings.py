@@ -10,6 +10,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileModifiedEvent
 
 from ..core.log_sanitizer import sanitize_for_log
+from .ai_subtitle_prompt import DEFAULT_AI_SUBTITLE_PROMPT, resolve_ai_subtitle_prompt
 
 class SynologyLibraryConfig(BaseModel):
     """群晖库存配置"""
@@ -473,18 +474,16 @@ class AISubtitleMatchingConfig(BaseModel):
     timeout_seconds: int = 30
     max_retries: int = 2
     temperature: float = 0
+    reasoning_effort: str = "low"
+    fast_mode: bool = True
     confidence_threshold: int = 85
     max_items_per_request: int = 120
-    prompt_template: str = (
-        "你是字幕文件名匹配器。你只能根据文件名判断音频和字幕组是否对应。\n"
-        "不要假设文件内容、字幕正文、音频时长、音频 metadata 或目录路径。\n"
-        "输入包含 audio_files 与 subtitle_groups。每项只有 id 和 filename/base_name。\n"
-        "请只输出 JSON，格式为：\n"
-        '{"matches":[{"audio_id":"a1","subtitle_group_id":"g1","confidence":0,"reason":"简短中文原因"}],'
-        '"unmatched_audio_ids":[],"unmatched_subtitle_group_ids":[]}\n'
-        "规则：一个 audio_id 最多匹配一个 subtitle_group_id；一个 subtitle_group_id 最多使用一次；"
-        "文件名完全对应、轨道号对应、标题规范化后对应时给高分；不确定就放入 unmatched。"
-    )
+    prompt_template: str = DEFAULT_AI_SUBTITLE_PROMPT
+
+    @model_validator(mode="after")
+    def normalize_prompt(self):
+        self.prompt_template = resolve_ai_subtitle_prompt(self.prompt_template)
+        return self
 
 class BackupZipConfig(BaseModel):
     enabled: bool = False

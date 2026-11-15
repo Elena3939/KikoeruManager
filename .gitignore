@@ -129,6 +129,7 @@ tools/xiaobu-multiframe.ps1
 # Local runtime helper scripts output
 .runtime/
 output/
+/outputs/
 tools/baidupcs-go/
 tools/megacmd/
 tools/unar/
@@ -138,6 +139,7 @@ tools/7zz-*/
 
 # pytest 临时目录（conftest.py 把 basetemp 重定向到这里规避 Windows %TEMP% 锁）
 /temp/
+/.test-*/
 backend/.pytest-*/
 .pytest-*/
 .pytest_cache/

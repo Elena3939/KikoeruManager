@@ -159,6 +159,8 @@ import { ElMessage } from 'element-plus'
 import { ExternalLink, Folder, FolderOpen, Loader2, Minimize2, RefreshCw, Trash2, X } from 'lucide-vue-next'
 import { openVerificationPopup } from '../../utils/browserVerificationPopup'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
+import { useSubtitlePairingLog } from '../../composables/useSubtitlePairingLog'
+import { buildSubtitleRuleCandidates } from '../../utils/subtitleRulePairs'
 import { aiSubtitleMatchApi, libraryApi, rjSubtitleApi, subtitleImportApi } from '../../api'
 import { runWithConcurrency } from '../../composables/useAsyncBatch'
 import { normalizeTaskCenterRealtimePayloads } from '../../composables/taskCenterEventUtils'
@@ -399,6 +401,7 @@ const subtitleLastPairBuildMode = ref('')
 const subtitleManualPairs = ref([])
 const subtitleSelectedManualPairId = ref('')
 const subtitlePairApplying = ref(false)
+const { pairingLogs, logPairing, aiDiagnostics, capturePairingAudit } = useSubtitlePairingLog(() => subtitleInspectorInfo.value.subtitleDir)
 const subtitleAutoPairing = ref(false)
 const subtitleAudioFilterMode = ref('all')
 const subtitleSubtitleFilterMode = ref('all')
@@ -454,6 +457,7 @@ function buildTaskDraftState() {
       subtitlePaths: [...(subtitleSequenceSelection.value.subtitlePaths || [])].map(path => String(path || '')).filter(Boolean)
     },
     lastPairBuildMode: String(subtitleLastPairBuildMode.value || ''),
+    aiDiagnostics: aiDiagnostics.value,
     selectedManualPairId: String(subtitleSelectedManualPairId.value || ''),
     manualPairs: (subtitleManualPairs.value || []).map(pair => normalizeDraftPair(pair)).filter(Boolean)
   }
@@ -499,6 +503,8 @@ function restoreSubtitleTaskDraft(taskId = '') {
   if (!normalizedTaskId) return false
   const draft = loadTaskDraftMap()[normalizedTaskId]
   if (!draft || typeof draft !== 'object') return false
+  // 旧规则草稿不能冒充当前 AI 模式的结果；用户手动编辑和已生成的 AI 草稿仍保留。
+  if (subtitleOptions.value.aiMatchMode !== 'rule' && ['auto', 'rule'].includes(draft.lastPairBuildMode)) return false
 
   const restoredPairs = (draft.manualPairs || [])
     .map(pair => normalizeDraftPair(pair))
@@ -531,6 +537,7 @@ function restoreSubtitleTaskDraft(taskId = '') {
     subtitlePaths: [...(draft.sequenceSelection?.subtitlePaths || [])].map(path => String(path || '')).filter(path => subtitlePathSet.has(path))
   }
   subtitleLastPairBuildMode.value = String(draft.lastPairBuildMode || '')
+  aiDiagnostics.value = draft.aiDiagnostics || null
   subtitleManualPairs.value = restoredPairs
   subtitleSelectedManualPairId.value = restoredPairs.some(pair => pair.id === draft.selectedManualPairId)
     ? String(draft.selectedManualPairId || '')
@@ -1307,7 +1314,8 @@ async function inspectSubtitleTask(task, options = {}) {
       }
     }
     const restored = restoreSubtitleTaskDraft(task.id)
-    if (!restored) buildRuleSubtitlePairs({ silent: true })
+    subtitleInspectorLoading.value = false
+    if (!restored) await buildAutoSubtitlePairs({ silent: true })
     skipTaskDraftPersistence = false
     persistSubtitleTaskDraft(task.id)
   } catch (error) {
@@ -1779,6 +1787,7 @@ function resetSubtitleManualMatchState() {
   subtitleSequenceMode.value = false
   clearSubtitleSequenceSelection()
   subtitleLastPairBuildMode.value = ''
+  aiDiagnostics.value = null
   subtitleManualPairs.value = []
   subtitleSelectedManualPairId.value = ''
 }
@@ -1902,6 +1911,7 @@ function buildOrderedSubtitlePairs() {
   }
   subtitleManualPairs.value = nextPairs
   subtitleLastPairBuildMode.value = 'ordered'
+  aiDiagnostics.value = null
   subtitleSelectedManualPairId.value = nextPairs[0]?.id || ''
 }
 
@@ -1936,6 +1946,7 @@ function buildSequenceSubtitlePairs() {
   ))
   subtitleManualPairs.value.push(...nextPairs)
   subtitleLastPairBuildMode.value = 'sequence'
+  aiDiagnostics.value = null
   subtitleSelectedManualPairId.value = nextPairs[0]?.id || subtitleSelectedManualPairId.value
   clearSubtitleSequenceSelection()
   subtitleSequenceMode.value = false
@@ -1950,74 +1961,17 @@ function buildSequenceOrOrderedSubtitlePairs() {
 }
 
 function buildRuleSubtitlePairs({ silent = false } = {}) {
-  const audioList = [...subtitleInspectorAudioFiles.value]
-  const subtitleList = [...subtitleInspectorSubtitleFiles.value]
-  const usedSubtitlePaths = new Set()
-  const pairs = []
-
-  const subtitleByExact = new Map()
-  const subtitleByNormalized = new Map()
-  const subtitleByTrack = new Map()
-  for (const subtitle of subtitleList) {
-    const name = String(subtitle.name || '')
-    const baseName = stripTrailingAudioExtension(name.replace(/\.[^.]+$/, ''))
-    const normalized = normalizeSubtitleMatchName(name)
-    const trackNumber = extractSubtitleTrackNumber(name)
-    subtitleByExact.set(baseName.toLowerCase(), subtitleByExact.get(baseName.toLowerCase()) || [])
-    subtitleByExact.get(baseName.toLowerCase()).push(subtitle)
-    if (normalized) {
-      subtitleByNormalized.set(normalized, subtitleByNormalized.get(normalized) || [])
-      subtitleByNormalized.get(normalized).push(subtitle)
-    }
-    if (trackNumber !== null) {
-      subtitleByTrack.set(trackNumber, subtitleByTrack.get(trackNumber) || [])
-      subtitleByTrack.get(trackNumber).push(subtitle)
-    }
-  }
-
-  function consumeCandidate(candidates = []) {
-    for (const item of candidates) {
-      if (usedSubtitlePaths.has(item.path)) continue
-      usedSubtitlePaths.add(item.path)
-      return item
-    }
-    return null
-  }
-
-  for (const audio of audioList) {
-    const audioName = String(audio.name || '')
-    const audioBase = audioName.replace(/\.[^.]+$/, '')
-    const audioNormalized = normalizeSubtitleMatchName(audioName)
-    const audioTrack = extractSubtitleTrackNumber(audioName)
-    let matchedSubtitle = consumeCandidate(subtitleByExact.get(audioBase.toLowerCase()))
-    let confidenceLevel = 'high'
-    let matchReason = '精确文件名'
-    if (!matchedSubtitle && audioTrack !== null) {
-      matchedSubtitle = consumeCandidate(subtitleByTrack.get(audioTrack))
-      if (matchedSubtitle) {
-        confidenceLevel = 'high'
-        matchReason = `轨道号 ${audioTrack}`
-      }
-    }
-    if (!matchedSubtitle && audioNormalized) {
-      matchedSubtitle = consumeCandidate(subtitleByNormalized.get(audioNormalized))
-      if (matchedSubtitle) {
-        confidenceLevel = 'medium'
-        matchReason = '规范化标题'
-      }
-    }
-    if (!matchedSubtitle) continue
-    pairs.push(createSubtitlePair(audio, matchedSubtitle, { confidenceLevel, matchReason }))
-  }
-
-  if (!pairs.length) {
-    if (!silent) ElMessage.warning('没有生成可用的规则预匹配结果')
-    return false
-  }
+  const pairs = buildSubtitleRuleCandidates(
+    subtitleInspectorAudioFiles.value, subtitleInspectorSubtitleFiles.value,
+    normalizeSubtitleMatchName, stripTrailingAudioExtension
+  ).map(({ audio, subtitle, ...options }) => createSubtitlePair(audio, subtitle, options))
   subtitleManualPairs.value = pairs
-  subtitleLastPairBuildMode.value = 'auto'
+  subtitleLastPairBuildMode.value = 'rule'
+  aiDiagnostics.value = null
   subtitleSelectedManualPairId.value = pairs[0]?.id || ''
-  return true
+  logPairing(`规则配对完成：${pairs.length} 组；跨语言标题和仅同号候选交由 AI 判断`, pairs.length ? 'success' : 'warning')
+  if (!pairs.length && !silent) ElMessage.warning('没有明确同名候选，请使用 AI 比对翻译名')
+  return Boolean(pairs.length)
 }
 
 function normalizeAIPairConfidenceLevel(score) {
@@ -2037,7 +1991,7 @@ function buildSubtitlePairFromAIMatch(match, audioByPath, subtitleByPath, subtit
   if (!audio || !subtitle) return null
   return createSubtitlePair(audio, subtitle, {
     confidenceLevel: normalizeAIPairConfidenceLevel(match?.ai_confidence ?? match?.match_score),
-    matchReason: `AI 草稿${match?.match_reason ? `：${match.match_reason}` : ''}`
+    matchReason: `AI 草稿：${match?.ai_reason || match?.match_reason || match?.match_type || '模型未提供依据'}`
   })
 }
 
@@ -2050,7 +2004,13 @@ async function buildAISubtitlePairs() {
     return false
   }
 
+  const pairingContext = subtitleInspectorInfo.value.subtitleDir
   subtitleAutoPairing.value = true
+  logPairing(`AI 请求开始：${audioList.length} 条音频 / ${subtitleList.length} 个字幕；译名含义优先，轨号辅助，检查版本差异`)
+  subtitleManualPairs.value = []
+  const waitTimer = setInterval(() => {
+    if (pairingContext === subtitleInspectorInfo.value.subtitleDir) logPairing('正在等待模型返回配对结果…')
+  }, 10000)
   try {
     const data = await aiSubtitleMatchApi.preview({
       audioFiles: audioList.map(item => ({
@@ -2071,12 +2031,15 @@ async function buildAISubtitlePairs() {
       aiConfidenceThreshold: subtitleOptions.value.aiConfidenceThreshold
     })
 
-    if (data?.status === 'disabled' || data?.status === 'skipped' || data?.success === false) {
+    if (pairingContext !== subtitleInspectorInfo.value.subtitleDir) return false
+    if (data?.status === 'disabled' || data?.status === 'skipped' || data?.status === 'failed' || data?.success === false) {
+      logPairing(`AI 配对失败：${data?.error?.message || data?.error?.title || data?.status || '未知错误'}`, 'error')
       if (data?.error?.message) ElMessage.warning(`AI 配对不可用：${data.error.message}`)
       else ElMessage.warning('AI 配对不可用')
       return false
     }
 
+    aiDiagnostics.value = data?.metadata?.ai_diagnostics || null
     const audioByPath = new Map(audioList.map(item => [String(item.path || ''), item]))
     const subtitleByPath = new Map(subtitleList.map(item => [String(item.path || ''), item]))
     const subtitleByName = new Map()
@@ -2096,6 +2059,12 @@ async function buildAISubtitlePairs() {
       pairs.push(pair)
     }
 
+    for (const pair of pairs) logPairing(`${pair.audio_name} → ${pair.subtitle_name}；${pair.matchReason}`)
+    const result = data?.match_result || {}
+    logPairing(`AI 返回：${pairs.length} 组；未配音频 ${(result.unmatched_audio || []).length} 条，未配字幕 ${(result.unmatched_subtitles || []).length} 个`, pairs.length ? 'success' : 'warning')
+    for (const name of result.unmatched_audio || []) logPairing(`未配音频：${name}`, 'warning')
+    for (const name of result.unmatched_subtitles || []) logPairing(`未配字幕：${name}`, 'warning')
+    for (const reason of result.ai_validation_errors || []) logPairing(`配对校验：${reason}`, 'warning')
     if (!pairs.length) {
       ElMessage.warning('AI 没有生成可用配对草稿')
       return false
@@ -2107,22 +2076,25 @@ async function buildAISubtitlePairs() {
     ElMessage.success(`AI 已生成 ${pairs.length} 组配对草稿`)
     return true
   } catch (error) {
+    if (pairingContext === subtitleInspectorInfo.value.subtitleDir) logPairing(`AI 请求失败：${error.response?.data?.detail || error.message}`, 'error')
     ElMessage.warning('AI 配对失败: ' + (error.response?.data?.detail || error.message))
     return false
   } finally {
+    clearInterval(waitTimer)
     subtitleAutoPairing.value = false
   }
 }
 
-async function buildAutoSubtitlePairs(options = {}) {
-  const { preferAi = true, silent = false } = options || {}
-  if (preferAi && await buildAISubtitlePairs()) return true
+async function buildAutoSubtitlePairs({ silent = false } = {}) {
+  // 当前模式为 AI 时失败也保留失败原因，不能悄悄换成规则草稿。
+  if (subtitleOptions.value.aiMatchMode !== 'rule') return buildAISubtitlePairs()
   return buildRuleSubtitlePairs({ silent })
 }
 
 function clearSubtitleManualPairs() {
   subtitleManualPairs.value = []
   subtitleLastPairBuildMode.value = ''
+  aiDiagnostics.value = null
   subtitleSelectedManualPairId.value = ''
   subtitleMatchSelection.value = { audioPath: '', subtitlePath: '' }
   clearSubtitleSequenceSelection()
@@ -2239,6 +2211,7 @@ async function applySubtitleManualPairs() {
     return
   }
 
+  const pairingAudit = capturePairingAudit(subtitleManualPairs.value, subtitleLastPairBuildMode.value)
   subtitlePairApplying.value = true
   const phaseOneRenamed = []
   const phaseTwoRenamed = []
@@ -2418,6 +2391,7 @@ async function applySubtitleManualPairs() {
 
     const currentTaskId = activeTask.value?.id || props.taskId
     await rjSubtitleApi.completeManual(currentTaskId, {
+      ...pairingAudit,
       appliedPairs: appliedPairCount,
       deletedSubtitles: unusedSubtitleRows.length,
       namingStrategy: subtitleOptions.value.namingStrategy || 'audio'
@@ -2819,7 +2793,7 @@ const subtitleTaskStageCtx = computed(() => ({
   subtitleTaskRerunId: retryingTaskId.value,
   subtitleTaskManualOverview: subtitleTaskManualOverview.value,
   subtitleTaskManualFilter: subtitleTaskManualFilter.value,
-  activeSubtitleTaskProgressLogs: activeSubtitleTaskProgressLogs.value,
+  activeSubtitleTaskProgressLogs: [...activeSubtitleTaskProgressLogs.value, ...pairingLogs.value],
   getTaskDisplayRJCode,
   getTaskSourceRJCode,
   getRJSubtitleTaskBaseStatusType: getRJSubtitleTaskStatusType,
@@ -2922,12 +2896,16 @@ const subtitleWorkbenchStageCtx = computed(() => ({
 }))
 
 const subtitleWorkbenchCtx = computed(() => ({
+  activeSubtitleTaskProgressLogs: [...activeSubtitleTaskProgressLogs.value, ...pairingLogs.value],
+  formatProgressLogTime: value => String(value || '').slice(11, 19),
+  getProgressLogLevelLabel: level => ({ info: '信息', success: '成功', warning: '警告', error: '错误' }[level] || '信息'),
   subtitleInspectorInfo: subtitleInspectorInfo.value,
   subtitleInspectorBusy: subtitleInspectorBusy.value,
   subtitleInspectorLoading: subtitleInspectorLoading.value,
   subtitleInspectorDeleting: subtitleInspectorDeleting.value,
   subtitleInspectorHasDirectories: subtitleInspectorHasDirectories.value,
   subtitleInspectorAudioFiles: subtitleInspectorAudioFiles.value,
+  subtitleInspectorSubtitleFiles: subtitleInspectorSubtitleFiles.value,
   subtitleInspectorFlatTree: subtitleInspectorFlatTree.value,
   subtitleInspectorSelectedRows: subtitleInspectorSelectedRows.value,
   subtitleInspectorSelectedIds: subtitleInspectorSelectedIds.value,

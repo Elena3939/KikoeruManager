@@ -5,8 +5,8 @@ SOURCE_FILE=${1:?missing source file}
 CONTAINER_PATH=${2:?missing container path}
 RELEASE_ID=${3:?missing release id}
 EXPECTED_HASH=${4:?missing source hash}
-IGNORED_TASK_IDS=${5:-}
-case "$IGNORED_TASK_IDS" in *[!0-9a-f,-]*) exit 1 ;; esac
+MCP_PROCESSING=${5:?missing MCP processing count}
+MCP_VERIFIED_AT=${6:?missing MCP verification time}
 
 DOCKER=/var/packages/Docker/target/usr/bin/docker
 CONTAINER=elena39-kikoerumanager
@@ -51,12 +51,11 @@ DATA_SOURCE=$("$DOCKER" inspect --format '{{range .Mounts}}{{if eq .Destination 
 ACTUAL_HASH=$(sha256sum "$SOURCE_FILE" | awk '{print $1}')
 [ "$ACTUAL_HASH" = "$EXPECTED_HASH" ] || fail '上传文件 SHA-256 不匹配'
 
-PROCESSING=$("$DOCKER" exec "$CONTAINER" sh -lc 'export PGPASSWORD="$POSTGRES_PASSWORD"; psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U kikoerumanager -d kikoerumanager -Atc "SELECT count(*) FROM task_center_items WHERE status = '\''processing'\'' AND NOT (COALESCE(engine_task_id, '\'''\'') = ANY(string_to_array('\''"$1"'\'', '\'','\'')));"' sh "$IGNORED_TASK_IDS" | tr -d '[:space:]')
-case "$PROCESSING" in
-  0) ;;
-  ''|*[!0-9]*) fail '无法确认 processing 任务数量' ;;
-  *) fail "检测到 $PROCESSING 个 processing 任务，拒绝热补丁" ;;
-esac
+# 数据库事实由 production PostgreSQL MCP 核验，SSH 不再查询数据库。
+[ "$MCP_PROCESSING" = 0 ] || fail 'MCP 核验存在 processing 任务，拒绝热补丁'
+case "$MCP_VERIFIED_AT" in ''|*[!0-9]*) fail 'MCP 核验时间无效' ;; esac
+GATE_AGE=$(( $(date +%s) - MCP_VERIFIED_AT ))
+[ "$GATE_AGE" -ge 0 ] && [ "$GATE_AGE" -le 120 ] || fail 'MCP 核验超过 120 秒，请重新查询'
 
 BACKUP_DIR="$DATA_SOURCE/.deploy/file-hotfix-backups/$RELEASE_ID"
 BACKUP_FILE="$BACKUP_DIR/original.py"
@@ -67,6 +66,7 @@ printf 'release_id=%s\nsource_sha256=%s\nprevious_image=%s\n' \
   "$EXPECTED_HASH" \
   "$("$DOCKER" inspect --format '{{.Config.Image}}' "$CONTAINER")" \
   > "$BACKUP_DIR/manifest.txt"
+printf 'mcp_processing=%s\nmcp_verified_at=%s\n' "$MCP_PROCESSING" "$MCP_VERIFIED_AT" >> "$BACKUP_DIR/manifest.txt"
 
 log "覆盖 $CONTAINER_PATH"
 "$DOCKER" cp "$SOURCE_FILE" "$CONTAINER:$CONTAINER_PATH"

@@ -1450,6 +1450,7 @@ function humanAction(row) {
   // 一些高频组合给个更友好的中文动作名（足够在 chip 行展示）
   if (cat === 'subtitle_crawl') {
     if (action === 'batch_start') return statusLabel(status)
+    if (row?.detail?.manual_match_completed) return '配对完成'
     if (status === 'success') return '抓取完成'
     if (status === 'failed') return '抓取失败'
     if (status === 'waiting') return '等待中'

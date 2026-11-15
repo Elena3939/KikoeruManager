@@ -31,6 +31,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from ..activity_log_service import CATEGORY_LABELS
+from ..activity_subtitle_state import apply_pair_state
 from ..activity_log_relations import IMPORT_RESULT_ACTIONS, latest_import_results, normalize_import_summary
 from ..activity_log_outcomes import import_result_status, is_duplicate_result, is_subtitle_handoff
 from ._helpers import (
@@ -177,6 +178,12 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
             latest_activity = max(latest_activity, pair_dt)
 
         if child_rows:
+            # 最新抓取之后的配对才决定任务当前结果；更早轮次只留在过程记录中。
+            latest_crawl = ordered_crawls[-1]
+            latest_pairs = sorted(pair_rows_by_task.get(task_id, []), key=lambda item: _coerce_dt(item.get("created_at")) or datetime.min)
+            if latest_pairs and (_coerce_dt(latest_pairs[-1].get("created_at")) or datetime.min) >= (_coerce_dt(latest_crawl.get("created_at")) or datetime.min):
+                apply_pair_state(root_row, latest_pairs[-1])
+                root_detail = root_row["detail"]
             root_row["detail"] = {
                 **root_detail,
                 "child_rows": child_rows,

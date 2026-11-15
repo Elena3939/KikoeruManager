@@ -1361,8 +1361,14 @@ class RJSubtitleService:
 
     def _group_subtitles(self, subtitle_files: List[Dict]) -> List[Dict]:
         groups = defaultdict(list)
-        for subtitle in subtitle_files:
-            normalized_subtitle = self._normalize_subtitle_file(subtitle)
+        normalized_files = [self._normalize_subtitle_file(subtitle) for subtitle in subtitle_files]
+        original_names = {item["base_name"].casefold() for item in normalized_files}
+        for normalized_subtitle in normalized_files:
+            # 有无后缀原版时，_1、_2 等副本不参与规则或 AI 配对，也不计为缺失项。
+            # 不删除源文件；没有原版则保留，避免误伤本身以 _1 命名的轨道。
+            duplicate = re.fullmatch(r"(.+)_[1-9][0-9]*", normalized_subtitle["base_name"])
+            if duplicate and duplicate.group(1).casefold() in original_names:
+                continue
             groups[normalized_subtitle['base_name']].append(normalized_subtitle)
 
         grouped = []
@@ -1793,7 +1799,12 @@ class RJSubtitleService:
 
         exact_map = {audio['base_name'].lower(): audio for audio in audio_index}
         normalized_map = {audio['normalized_name']: audio for audio in audio_index if audio['normalized_name']}
-        number_map = {audio['track_number']: audio for audio in audio_index if audio['track_number'] is not None}
+        number_map = defaultdict(list)
+        group_numbers = defaultdict(list)
+        for audio in audio_index:
+            number_map[audio['track_number']].append(audio)
+        for group in subtitle_groups:
+            group_numbers[group['track_number']].append(group)
 
         def can_use(audio):
             return audio and audio['path'] not in used_audio
@@ -1806,11 +1817,18 @@ class RJSubtitleService:
                 used_audio.add(audio['path'])
                 continue
 
+            # 标题优先于序号。重复轨号不能以遍历次序决定本篇/EX 的归属。
+            audio = normalized_map.get(group['normalized_name'])
+            if group['normalized_name'] and can_use(audio):
+                grouped_matches.append((group, audio, '规范化匹配', 90))
+                used_audio.add(audio['path'])
+                continue
+
             track_number = group['track_number']
-            if track_number is not None:
-                audio = number_map.get(track_number)
+            if track_number is not None and len(number_map[track_number]) == len(group_numbers[track_number]) == 1:
+                audio = number_map[track_number][0]
                 if can_use(audio):
-                    grouped_matches.append((group, audio, f'序号匹配({track_number})', 95))
+                    grouped_matches.append((group, audio, f'序号待确认({track_number})', 60))
                     used_audio.add(audio['path'])
                     continue
 
@@ -1926,11 +1944,10 @@ class RJSubtitleService:
         if should_cancel and should_cancel():
             raise asyncio.CancelledError()
 
-        if progress_callback:
-            progress_callback(86, 'AI 分析字幕配对')
-
         audio_index = self._build_audio_index(audio_files, enable_metadata_match=enable_metadata_match)
         subtitle_groups = self._group_subtitles(subtitle_files)
+        if progress_callback:
+            progress_callback(86, f'AI 配对开始：模式 {mode}，{len(audio_index)} 条音频 / {len(subtitle_groups)} 组字幕，译名优先、轨号辅助')
         result = await get_ai_subtitle_match_service().build_auto_match_result(
             config=ai_config,
             audio_index=audio_index,
@@ -1944,6 +1961,15 @@ class RJSubtitleService:
         )
         if should_cancel and should_cancel():
             raise asyncio.CancelledError()
+        if progress_callback:
+            matched = result.get('match_result') or {}
+            progress_callback(87, f"AI 配对结束：{result.get('status')}，配对 {len(matched.get('matches') or [])} 项，未配音频 {len(matched.get('unmatched_audio') or [])} 条，未配字幕 {len(matched.get('unmatched_subtitles') or [])} 项")
+            for item in matched.get('ai_result_items') or []:
+                progress_callback(87, f"AI 依据：{item.get('audio_name')} → {item.get('subtitle_group')}；{item.get('confidence')} 分；{item.get('reason')}")
+            for reason in matched.get('ai_validation_errors') or []:
+                progress_callback(87, f'AI 配对校验：{reason}')
+            if result.get('error'):
+                progress_callback(87, f"AI 配对错误：{(result.get('error') or {}).get('title', '请求失败')}")
         return result
 
     def _is_synology_error_code(self, exc: Exception, code: int) -> bool:

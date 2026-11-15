@@ -1,5 +1,6 @@
 import { readonly, ref } from 'vue'
 import { apiUrl, redirectIfSecurityGateExpired } from '../api'
+import { mergeTransferRealtimeEvents } from '../utils/transferTaskEvent.js'
 
 const STREAM_URL = apiUrl('/events/stream')
 const MAX_RETRY_DELAY = 30000
@@ -314,7 +315,8 @@ function flushTaskEventBatch() {
 }
 
 function scheduleTaskEventBatch(event) {
-  pendingTaskEvents.set(taskEventBatchKey(event), event)
+  const key = taskEventBatchKey(event)
+  pendingTaskEvents.set(key, mergeTransferRealtimeEvents(pendingTaskEvents.get(key), event))
   if (taskEventBatchTimer) return
   taskEventBatchTimer = setTimeout(flushTaskEventBatch, taskEventBatchDelay())
 }

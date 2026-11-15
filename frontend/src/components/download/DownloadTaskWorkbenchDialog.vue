@@ -371,6 +371,7 @@ import AppLottieProgressBar from '../common/AppLottieProgressBar.vue'
 import AppEmptyState from '../common/AppEmptyState.vue'
 import StatefulButton from '../ui/stateful-button.vue'
 import { getDownloadBatchPercent, getMatchingDownloadSummary, formatDownloadEta, formatDownloadCompletion } from '../../utils/downloadProgress.js'
+import { getTransferCardProgress } from '../../utils/transferCardProgress.js'
 
 const props = defineProps({
   cleanupFailedTask: { type: Function, default: null },
@@ -573,6 +574,7 @@ function isFileRetrying(task, file) {
 }
 
 const pausedTasks = computed(() => mergedTasks.value.filter(task => isTaskPaused(task)))
+const downloadProgress = computed(() => getTransferCardProgress(props.tasks, 'download'))
 const backendDownloadSummary = computed(() => !isUploadMode.value && !shouldShowUploadMetrics.value
   ? getMatchingDownloadSummary(props.downloadSummary, props.tasks) : null)
 const estimatedDownloadCompletion = computed(() => {
@@ -589,7 +591,7 @@ const shouldShowUploadMetrics = computed(() => {
 })
 const totalDownloadSpeed = computed(() => {
   const speed = backendDownloadSummary.value?.speed_bytes_per_sec
-    ?? processingTasks.value.reduce((sum, task) => sum + getVisibleDownloadSpeed(task), 0)
+    ?? downloadProgress.value.speedBytesPerSec
   if (speed > 0) return formatSpeed(speed)
   if (!processingTasks.value.length && pausedTasks.value.length) return '已暂停'
   return '—'
@@ -602,6 +604,7 @@ const totalUploadSpeed = computed(() => {
 })
 const totalRemainingTransferBytes = computed(() => {
   if (backendDownloadSummary.value) return backendDownloadSummary.value.remaining_bytes
+  if (!isUploadMode.value) return downloadProgress.value.remainingBytes
   return processingTasks.value.reduce((sum, task) => {
     return sum + getTaskRemainingBytes(task)
   }, 0)
@@ -613,6 +616,7 @@ const aggregatedTransferEta = computed(() => {
     return { completed: '已完成', paused: '已暂停', needs_attention: '需要处理', cancelled: '已取消' }[summary.eta_status]
       || formatDownloadEta(summary.eta_seconds)
   }
+  if (!isUploadMode.value) return formatDownloadEta(downloadProgress.value.etaSeconds)
   const downloadSpeed = processingTasks.value.reduce((sum, task) => sum + getVisibleDownloadSpeed(task), 0)
   const uploadSpeed = processingTasks.value.reduce((sum, task) => sum + getVisibleUploadSpeed(task), 0)
   const downloadRemainingBytes = processingTasks.value.reduce((sum, task) => sum + getDownloadRemainingBytes(task), 0)
@@ -1208,6 +1212,10 @@ function getUploadTotalBytes(task) {
 }
 
 function getTaskTransferBytes(task) {
+  if (!isUploadMode.value) {
+    const runtimeBytes = Number(getDownloadRuntime(task)?.total_bytes || 0)
+    if (runtimeBytes > 0) return runtimeBytes
+  }
   if (isUploadMode.value) {
     const runtimeBytes = Number(getUploadRuntime(task)?.total_bytes || 0)
     if (runtimeBytes > 0) return runtimeBytes
@@ -1358,14 +1366,7 @@ function getTaskOverallPercent(task) {
     const percent = Math.max(0, Math.min(100, Math.floor(Math.min(1, uploadedBytes / uploadTotal) * 100)))
     return uploadedBytes < uploadTotal ? Math.min(percent, 99) : Math.min(percent, 99)
   }
-  // 下载+上传并行任务：下载和上传各贡献 0-50%，合并为 0-100%
-  if (isUploadEnabled(task)) {
-    const uploadTotal = getUploadTotalBytes(task) || transferTotal
-    const downloadFraction = Math.min(1, getTaskDownloadedBytes(task) / transferTotal)
-    const uploadFraction = Math.min(1, getTaskUploadedBytes(task) / uploadTotal)
-    const percent = Math.max(0, Math.min(100, Math.floor((downloadFraction + uploadFraction) / 2 * 100)))
-    return Math.min(percent, 99)
-  }
+  // 下载视图始终显示总下载字节进度；入库进度由独立的上传运行态表达。
   const downloadedBytes = Math.max(0, getTaskDownloadedBytes(task))
   const downloadTotal = Math.max(0, getDownloadTotalBytes(task) || transferTotal)
   if (downloadTotal > 0) {
@@ -1566,15 +1567,16 @@ function buildUnifiedFileRows(task) {
     const row = ensureRow(file.relative_path || file.name, { ...file, index: file.index || index + 1 })
     if (!row) return
     const progress = Math.max(0, Math.min(100, Math.round(Number(file.progress || 0))))
-    const fileTaskProcessing = String(file.__task_status || '') === 'processing'
+    const fileTaskStatus = String(file.__task_status || task.status || '')
+    const fileTaskProcessing = fileTaskStatus === 'processing'
     const rowRelativePath = String(row.relative_path || row.name || '').trim()
     const isCurrentUploadTarget = progress >= 100 && uploadCurrentRelativePath && uploadCurrentRelativePath === rowRelativePath
     row.progress = progress
     row.downloadedBytes = Number(file.downloaded || 0)
     row.uploadedBytes = 0
-    row.sourceTaskStatus = String(file.__task_status || '')
+    row.sourceTaskStatus = fileTaskStatus
     row.downloadSpeed = Number(file.speed_bytes_per_sec || 0)
-    row.downloadSpeedVisible = fileTaskProcessing && progress < 100 && row.downloadSpeed > 0
+    row.downloadSpeedVisible = fileTaskProcessing && (!file.stage || file.stage === 'download') && progress < 100 && row.downloadSpeed > 0
     row.uploadSpeed = 0
     row.uploadSpeedVisible = false
     if (progress >= 100 && uploadEnabled && isCurrentUploadTarget) {
@@ -1585,6 +1587,15 @@ function buildUnifiedFileRows(task) {
       row.stageLabel = progress >= 100 ? (uploadEnabled ? '上传准备中' : '已下载') : (fileTaskProcessing ? '下载中' : '等待重试')
       row.statusText = row.stageLabel
       row.tone = progress >= 100 ? (uploadEnabled ? 'upload' : 'neutral') : (fileTaskProcessing ? 'processing' : 'neutral')
+    }
+    if (String(file.stage || '').endsWith('_failed')) {
+      row.stageLabel = row.statusText = '下载失败'
+      row.tone = 'danger'
+      row.downloadSpeedVisible = false
+    } else if (progress < 100 && ['queued', 'pending'].includes(file.stage)) {
+      row.stageLabel = row.statusText = '等待下载'
+      row.tone = 'neutral'
+      row.downloadSpeedVisible = false
     }
     row.sizeText = `下载 ${formatSize(file.downloaded || 0)} / ${formatSize(row.total)}`
   })

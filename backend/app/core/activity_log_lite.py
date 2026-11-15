@@ -455,6 +455,9 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
         "rerun": bool(detail.get("rerun_linked") or detail.get("rerun_count")),
         "compacted": bool(detail.get("__compacted")),
     }
+    if category == "subtitle_crawl":
+        item["detail"] = {key: detail[key] for key in ("downloaded_count", "written_files_count",
+            "awaiting_manual_match", "manual_match_completed") if key in detail}
     if detail.get("mode") in {"conflict_retry_batch", "conflict_retry_item"}:
         item["category_label"] = "重试作品"
         item["outcome_label"] = {

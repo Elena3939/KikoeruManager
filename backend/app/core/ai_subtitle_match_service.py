@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import logging
 
 from .log_sanitizer import mask_url_for_log, sanitize_text_for_log
+from ..config.ai_subtitle_prompt import AI_SUBTITLE_MATCH_REQUIREMENTS, resolve_ai_subtitle_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +197,9 @@ def _normalize_error(exc: Exception) -> Dict[str, str]:
     title = "未知错误"
     suggestion = "查看 raw_summary，确认模型服务和配置是否可用"
 
-    if "timeout" in lowered or "timeout" in exc_name:
+    if "unsupportedparams" in exc_name or "unsupportedparam" in lowered:
+        code, title, suggestion = "unsupported_parameters", "模型请求参数不兼容", "检查模型支持的采样与推理参数；该错误发生在配对结果生成之前"
+    elif "timeout" in lowered or "timeout" in exc_name:
         code, title, suggestion = "timeout", "请求超时", "调大超时时间，或检查代理/模型服务响应速度"
     elif "rate" in lowered and "limit" in lowered or "ratelimit" in exc_name:
         code, title, suggestion = "rate_limited", "触发限流", "稍后重试，或降低并发/更换模型"
@@ -269,6 +272,27 @@ async def _temporary_proxy(proxy_url: str):
                     os.environ[key] = value
 
 
+def _response_diagnostics(response: Any, *, streaming: bool = False) -> Dict[str, Any]:
+    """只提取上游实际返回的解释与计量，不保存请求配置或凭据。"""
+    def field(obj, key, default=None):
+        return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+
+    choices = field(response, "choices", []) or []
+    message = field(choices[0], "delta" if streaming else "message", {}) if choices else {}
+    usage = field(response, "usage", {}) or {}
+    prompt_details = field(usage, "prompt_tokens_details", {}) or {}
+    completion_details = field(usage, "completion_tokens_details", {}) or {}
+    return {
+        "reasoning": str(field(message, "reasoning_content", "") or field(message, "reasoning", "") or ""),
+        "prompt_tokens": field(usage, "prompt_tokens"),
+        "completion_tokens": field(usage, "completion_tokens"),
+        "total_tokens": field(usage, "total_tokens"),
+        "cached_tokens": field(prompt_details, "cached_tokens"),
+        "reasoning_tokens": field(completion_details, "reasoning_tokens"),
+        "finish_reason": field(choices[0], "finish_reason") if choices else None,
+    }
+
+
 class AISubtitleMatchService:
     """封装 LiteLLM 调用、配对校验和 usage 记录。"""
 
@@ -286,19 +310,18 @@ class AISubtitleMatchService:
         config["timeout_seconds"] = max(1, min(_safe_int(config.get("timeout_seconds"), 30), 300))
         config["max_retries"] = max(0, min(_safe_int(config.get("max_retries"), 2), 10))
         config["temperature"] = _safe_float(config.get("temperature"), 0)
+        config["reasoning_effort"] = _safe_text(config.get("reasoning_effort")) or "low"
+        config["fast_mode"] = config.get("fast_mode", True) is not False
         config["confidence_threshold"] = max(0, min(_safe_int(config.get("confidence_threshold"), 85), 100))
         config["max_items_per_request"] = max(1, min(_safe_int(config.get("max_items_per_request"), 120), 500))
-        config["prompt_template"] = _safe_text(config.get("prompt_template"))
+        config["prompt_template"] = resolve_ai_subtitle_prompt(config.get("prompt_template"))
         config["model"] = _normalize_openai_compatible_model_id(config["model"], config)
         return config
 
     def _build_messages(self, config: Dict[str, Any], payload: Dict[str, Any]) -> List[Dict[str, str]]:
-        prompt = config.get("prompt_template") or (
-            "你是字幕文件名匹配器。只根据文件名输出 JSON。"
-            "一个 audio_id 最多匹配一个 subtitle_group_id，不确定就放入 unmatched。"
-        )
+        prompt = resolve_ai_subtitle_prompt(config.get("prompt_template"))
         return [
-            {"role": "system", "content": prompt},
+            {"role": "system", "content": f"{prompt}\n业务配对要求：{AI_SUBTITLE_MATCH_REQUIREMENTS}"},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
         ]
 
@@ -306,6 +329,8 @@ class AISubtitleMatchService:
         data = {
             "model": config.get("model") or "",
             "prompt": config.get("prompt_template") or "",
+            "reasoning_effort": config.get("reasoning_effort", "low"),
+            "fast_mode": config.get("fast_mode", True),
             "payload": payload,
         }
         return hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
@@ -329,6 +354,14 @@ class AISubtitleMatchService:
             "num_retries": config["max_retries"] if max_retries is None else max_retries,
             "api_key": config["api_key"],
         }
+        # OpenAI 推理模型由服务端决定采样温度；不关闭推理来迁就 temperature=0。
+        # 同时覆盖自定义中转模型后缀，以及 openai/、azure/ 等路由前缀。
+        model_id = config["model"].rsplit("/", 1)[-1].lower()
+        if re.match(r"^(?:gpt-(?:[5-9]|[1-9][0-9]+)(?:[.\-]|$)|o[0-9]+(?:[.\-]|$))", model_id):
+            kwargs.pop("temperature", None)
+            kwargs["reasoning_effort"] = config.get("reasoning_effort", "low")
+            if config.get("fast_mode", True):
+                kwargs["service_tier"] = "priority"
         if response_format:
             kwargs["response_format"] = {"type": "json_object"}
         if max_tokens is not None:
@@ -353,14 +386,26 @@ class AISubtitleMatchService:
     ) -> Tuple[str, Dict[str, int]]:
         stream_kwargs = dict(kwargs)
         stream_kwargs["stream"] = True
+        stream_kwargs["stream_options"] = {"include_usage": True}
         started = time.perf_counter()
         first_chunk_ms: Optional[int] = None
+        first_event_ms: Optional[int] = None
+        reasoning_parts: List[str] = []
+        diagnostics: Dict[str, Any] = {}
         content_parts: List[str] = []
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
         stream = await litellm.acompletion(**stream_kwargs)
         async for chunk in stream:
             delta, chunk_usage = _extract_litellm_stream_delta(chunk)
+            chunk_details = _response_diagnostics(chunk, streaming=True)
+            reasoning = chunk_details.pop("reasoning")
+            if delta or reasoning:
+                if first_event_ms is None:
+                    first_event_ms = int((time.perf_counter() - started) * 1000)
+            if reasoning:
+                reasoning_parts.append(reasoning)
+            diagnostics.update({key: value for key, value in chunk_details.items() if value is not None})
             if delta:
                 if first_chunk_ms is None:
                     first_chunk_ms = int((time.perf_counter() - started) * 1000)
@@ -377,6 +422,11 @@ class AISubtitleMatchService:
             len("".join(content_parts)),
             usage.get("total_tokens", 0),
         )
+        usage["diagnostics"] = {
+            **diagnostics, "reasoning": "".join(reasoning_parts),
+            "request_duration_ms": duration_ms, "first_event_ms": first_event_ms,
+            "first_content_ms": first_chunk_ms, "stream_used": True,
+        }
         return "".join(content_parts), usage
 
     async def _complete_non_streaming(
@@ -390,6 +440,10 @@ class AISubtitleMatchService:
         response = await litellm.acompletion(**kwargs)
         duration_ms = int((time.perf_counter() - started) * 1000)
         content, usage = _extract_litellm_content(response)
+        usage["diagnostics"] = {
+            **_response_diagnostics(response), "request_duration_ms": duration_ms,
+            "first_event_ms": None, "first_content_ms": None, "stream_used": False,
+        }
         logger.info(
             "[AI字幕] %s 非流式完成: duration_ms=%s output_chars=%s tokens=%s",
             request_label,
@@ -465,12 +519,15 @@ class AISubtitleMatchService:
             proxy_url=config.get("proxy_url", ""),
             request_label=request_label,
         )
+        usage.setdefault("diagnostics", {}).update({"raw_output": content, "stream_used": stream_used})
         try:
             parsed = _parse_json_content(content)
             logger.info("[AI字幕] %s JSON 解析成功: stream_used=%s", request_label, stream_used)
             return parsed, usage
         except Exception as exc:
-            raise ValueError(f"json_output_failed: {exc}") from exc
+            error = ValueError(f"json_output_failed: {exc}")
+            error.ai_diagnostics = usage["diagnostics"]
+            raise error from exc
 
     async def _probe_model_connection(self, config: Dict[str, Any]) -> Dict[str, Any]:
         try:
@@ -742,6 +799,9 @@ class AISubtitleMatchService:
         used_audio = set()
         used_groups = set()
         for match in base_match_result.get("matches") or []:
+            # 序号和顺序无法证明译名对应，必须交给模型和其它候选一起判断。
+            if match.get("match_type") not in {"完全匹配", "规范化匹配"}:
+                continue
             score = _safe_int(match.get("match_score"))
             if score < threshold:
                 continue
@@ -819,6 +879,13 @@ class AISubtitleMatchService:
                 continue
             if group_id in used_groups:
                 errors.append(f"duplicate_subtitle_group_id:{group_id}")
+                continue
+            audio_name = _safe_text(audio_by_id[audio_id].get("display_name"))
+            group_name = _safe_text(group_by_id[group_id].get("base_name"))
+            # 明确的去音效版不能交给普通音频；只检查可确认的版本标记，不猜译名语义。
+            no_se = r"(?:无\s*(?:se|音效|效果音)|無\s*(?:se|音效|効果音)|(?:se|効果音|効果音声)\s*(?:なし|無し|抜き)|no[\s_-]*se|without\s+(?:se|sound\s+effects))"
+            if bool(re.search(no_se, audio_name, re.I)) != bool(re.search(no_se, group_name, re.I)):
+                errors.append(f"version_conflict:{audio_id}:{group_id}:无SE版本不一致")
                 continue
             row = {
                 "audio_id": audio_id,
@@ -1072,6 +1139,7 @@ class AISubtitleMatchService:
                 },
             }
 
+        usage = {}
         try:
             response, usage = await self._call_model(runtime_config, payload)
             ai_matches, low_confidence, validation_errors = self._validate_ai_response(
@@ -1136,6 +1204,21 @@ class AISubtitleMatchService:
             }
             duration_ms = int((time.perf_counter() - started) * 1000)
             status = "preview" if resolved_mode == "ai_assist" else ("succeeded" if auto_safe else "awaiting_manual")
+            diagnostics = {
+                **(usage.get("diagnostics") or {}),
+                "model": runtime_config.get("model", ""),
+                "duration_ms": duration_ms,
+                "prompt_tokens": usage.get("diagnostics", usage).get("prompt_tokens"),
+                "completion_tokens": usage.get("diagnostics", usage).get("completion_tokens"),
+                "total_tokens": usage.get("diagnostics", usage).get("total_tokens"),
+                "audio_count": len(payload["audio_files"]),
+                "subtitle_group_count": len(payload["subtitle_groups"]),
+                "matched_count": len(ai_matches),
+                "low_confidence_count": len(low_confidence),
+                "validation_errors": validation_errors,
+                "duplicate_outputs": duplicate_outputs,
+                "result_items": ai_result_items,
+            }
             await self.record_usage(
                 task_id=task_id,
                 rjcode=rjcode,
@@ -1180,6 +1263,7 @@ class AISubtitleMatchService:
                 "match_result": match_result,
                 "metadata": {
                     "ai_match_status": status,
+                    "ai_diagnostics": diagnostics,
                     "ai_match_mode": resolved_mode,
                     "ai_auto_applied": auto_safe,
                     "ai_match_model": runtime_config.get("model", ""),
@@ -1230,6 +1314,11 @@ class AISubtitleMatchService:
                 "error": normalized,
                 "metadata": {
                     "ai_match_status": "failed",
+                    "ai_diagnostics": {
+                        **(getattr(exc, "ai_diagnostics", None) or usage.get("diagnostics") or {}),
+                        "model": runtime_config.get("model", ""), "duration_ms": duration_ms,
+                        "validation_errors": [normalized.get("message") or normalized.get("title")],
+                    },
                     "ai_match_mode": resolved_mode,
                     "ai_auto_applied": False,
                     "ai_match_model": runtime_config.get("model", ""),

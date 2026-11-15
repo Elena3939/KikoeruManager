@@ -120,6 +120,16 @@
               <SettingsNumberStepper v-model="config.ai_subtitle_matching.temperature" :min="0" :max="2" :step="0.1" />
             </SettingsFieldCard>
           </div>
+          <div class="mini-grid two">
+            <SettingsFieldCard label="推理强度">
+              <AppDropdown v-model="config.ai_subtitle_matching.reasoning_effort" :options="aiReasoningOptions" class="settings-field-dd" />
+            </SettingsFieldCard>
+            <SettingsToggleRow
+              v-model="config.ai_subtitle_matching.fast_mode"
+              title="Fast 优先处理"
+              subtitle="推理模型请求优先处理，实际速度与计费由模型服务决定。"
+            />
+          </div>
           <div class="model-fetch-row">
             <button type="button" class="ai-action-btn" :disabled="aiSubtitleModelsLoading" @click="fetchAISubtitleModels">
               <RefreshCw :size="14" :stroke-width="2.4" :class="{ 'spin-once': aiSubtitleModelsLoading }" />
@@ -215,6 +225,11 @@ const aiModeOptions = [
   { value: 'ai_auto', label: 'AI 自动应用' },
   { value: 'rule_ai_auto', label: '规则 + AI 自动补全' },
   { value: 'ai_assist', label: 'AI 辅助草稿' }
+]
+const aiReasoningOptions = [
+  { value: 'low', label: '轻度（推荐）' },
+  { value: 'medium', label: '中度' },
+  { value: 'high', label: '深度' }
 ]
 
 const AI_SUBTITLE_MODELS_CACHE_VERSION = 2

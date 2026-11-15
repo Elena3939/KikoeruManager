@@ -154,7 +154,7 @@ class Task:
     def mark_changed(self, reason: str = "status"):
         if (self.task_metadata or {}).get("scan_id"):
             self._input_snapshot_revision = int(getattr(self, "_input_snapshot_revision", 0)) + 1
-        if reason in {"progress", "status", "started", "completed", "failed", "cancelled"}:
+        if reason in {"progress", "download_runtime", "status", "started", "completed", "failed", "cancelled"}:
             try:
                 self._log_progress_snapshot()
             except Exception:
@@ -757,7 +757,7 @@ class TaskEngine:
                 versions[task.type] = versions.get(task.type, 0) + 1
             self._write_task_runtime_to_redis(task, reason=reason)
             # 高频传输摘要只进 Redis / SSE；状态变化仍走任务中心持久化。
-            if reason not in {"upload_runtime", "io_runtime"}:
+            if reason not in {"upload_runtime", "download_runtime", "io_runtime"}:
                 self.enqueue_task_center_item_snapshot(task)
             broadcast_task_center_changed(task, reason=reason)
         except Exception:
@@ -1728,31 +1728,77 @@ class TaskEngine:
                 return item
         return TaskStatus.COMPLETED
 
-    def load_persisted_linked_subtitle_tasks(self) -> int:
-        """恢复字幕补配工作台任务，只有用户清理后才从工作台消失。"""
+    def load_persisted_linked_subtitle_tasks(
+        self,
+        task_ids: Optional[set[str]] = None,
+        *,
+        refresh_existing: bool = False,
+    ) -> int:
+        """恢复等待人工配对的字幕任务，并同步其它进程刚写入的终态快照。"""
         from ..models.database import SessionLocal, Task as TaskRecord
 
+        normalized_task_ids = {
+            str(task_id or "").strip()
+            for task_id in (task_ids or set())
+            if str(task_id or "").strip()
+        }
         db = SessionLocal()
         loaded_count = 0
         recovered_tasks = []
         try:
-            rows = db.query(TaskRecord).filter(
+            query = db.query(TaskRecord).filter(
                 (TaskRecord.type == TaskType.RJ_SUBTITLE_FETCH.value)
                 | ((TaskRecord.type == TaskType.HTTP_DOWNLOAD.value)
                    & TaskRecord.task_metadata['browser_verification_required'].as_boolean().is_(True))
-            ).all()
+            )
+            if normalized_task_ids:
+                query = query.filter(TaskRecord.id.in_(normalized_task_ids))
+            rows = query.all()
             for row in rows:
-                if row.id in self.tasks:
-                    continue
                 metadata = dict(row.task_metadata or {})
                 source_mode = str(metadata.get("source_mode") or "").strip().lower()
                 is_circle_repair = metadata.get('source_action') == 'circle_subtitle_repair'
                 is_browser_wait = bool(metadata.get('browser_verification_required'))
-                if source_mode not in {"linked_translation_archive_import", "subtitle_folder_import"} and not is_circle_repair and not is_browser_wait:
+                is_rj_manual_task = (
+                    row.type == TaskType.RJ_SUBTITLE_FETCH.value
+                    and (bool(metadata.get("awaiting_manual_match")) or bool(metadata.get("manual_match_completed")))
+                )
+                if (
+                    source_mode not in {"linked_translation_archive_import", "subtitle_folder_import"}
+                    and not is_circle_repair
+                    and not is_browser_wait
+                    and not is_rj_manual_task
+                ):
                     continue
                 is_waiting_manual = bool(metadata.get("awaiting_manual_match"))
                 is_manual_completed = bool(metadata.get("manual_match_completed"))
                 if not (is_waiting_manual or is_manual_completed or is_circle_repair or is_browser_wait):
+                    continue
+
+                existing = self.tasks.get(row.id)
+                persisted_status = self._coerce_task_status(row.status)
+                if existing is not None:
+                    if refresh_existing and (
+                        persisted_status in {
+                            TaskStatus.WAITING_MANUAL,
+                            TaskStatus.WAITING_RETRY,
+                            TaskStatus.COMPLETED,
+                            TaskStatus.FAILED,
+                            TaskStatus.CANCELLED,
+                        }
+                        or bool(metadata.get("manual_match_completed"))
+                        != bool((existing.task_metadata or {}).get("manual_match_completed"))
+                    ):
+                        with existing._set_state_silent():
+                            existing.status = persisted_status
+                            existing.progress = int(row.progress or 0)
+                            existing.current_step = row.current_step or existing.current_step
+                            existing.error_message = row.error_message
+                            existing.created_at = row.created_at or existing.created_at
+                            existing.started_at = row.started_at
+                            existing.completed_at = row.completed_at
+                            existing.task_metadata = metadata
+                        existing._metadata_version = int(getattr(existing, "_metadata_version", 0) or 0) + 1
                     continue
 
                 task_type = self._coerce_task_type(row.type)
@@ -1760,7 +1806,7 @@ class TaskEngine:
                     continue
                 recovered_manual = (
                     is_waiting_manual and not is_manual_completed
-                    and self._coerce_task_status(row.status) in {TaskStatus.PENDING, TaskStatus.PROCESSING}
+                    and persisted_status in {TaskStatus.PENDING, TaskStatus.PROCESSING}
                 )
                 if recovered_manual:
                     # 已存在的内存任务在入口跳过；这里只恢复没有执行器的人工配对快照。
@@ -1769,14 +1815,14 @@ class TaskEngine:
                     row.completed_at = None
                     metadata["manual_match_recovered_at"] = datetime.now().isoformat()
                     row.task_metadata = metadata
-                recovered_browser = is_browser_wait and self._coerce_task_status(row.status) not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+                recovered_browser = is_browser_wait and persisted_status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
                 if recovered_browser:
                     row.status = TaskStatus.WAITING_MANUAL.value
                     row.current_step = '请在当前浏览器重新验证并下载'
                     row.completed_at = None
                     metadata.pop('browser_verification_session_id', None)
                     row.task_metadata = metadata
-                recovered_circle = is_circle_repair and not is_waiting_manual and not recovered_browser and self._coerce_task_status(row.status) in {TaskStatus.PENDING, TaskStatus.PROCESSING}
+                recovered_circle = is_circle_repair and not is_waiting_manual and not recovered_browser and persisted_status in {TaskStatus.PENDING, TaskStatus.PROCESSING}
                 if recovered_circle:
                     row.status = TaskStatus.FAILED.value
                     row.current_step = "上次进程中断，请在字幕工作台重试"
@@ -5271,6 +5317,9 @@ class TaskEngine:
             'manual_match_applied_pairs': 0,
             'manual_match_deleted_subtitles': 0,
             'manual_match_completed_at': None,
+            'ai_diagnostics': None,
+            'pairing_mode': '',
+            'pair_changes': [],
             'subtitle_dir': '',
             'written_files': [],
             'skipped_files': [],
@@ -7682,6 +7731,8 @@ class TaskEngine:
                 'ai_unmatched_audio_count': result.get('ai_unmatched_audio_count', 0),
                 'ai_unmatched_subtitle_count': result.get('ai_unmatched_subtitle_count', 0),
                 'ai_match_result': result.get('ai_match_result', {}),
+                'ai_diagnostics': result.get('ai_diagnostics'),
+                'pairing_mode': result.get('ai_match_mode', ai_match_mode),
                 'ai_match_error': result.get('ai_match_error', {}),
             })
             if str(result.get('subtitle_dir') or '').strip():

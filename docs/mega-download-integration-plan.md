@@ -1,6 +1,34 @@
 # MEGA 下载接入调研与实施方案
 
+### MEGA API 错误说明（2026-11-10）
+
+依据 [MEGA SDK 的 error 枚举](https://github.com/meganz/sdk/blob/master/include/mega/types.h)，
+`backend/app/core/mega_errors.py` 集中定义全部 `-1` 至 `-30` API 错误，文件信息与文件夹节点请求共用。
+错误显示保留中文含义、官方符号和原始数字，例如：
+`MEGA：资源已被 MEGA 管理封锁，请更换有效分享；接口未提供具体封锁原因（API_EBLOCKED，错误码 -16）`。
+
+重点区分：`-9` 资源不存在、`-14` 加解密错误、`-15` MEGA 会话无效、`-16` 管理封锁、
+`-17` 配额超限、`-18` 暂时不可用、`-19` 连接过多、`-24` 剩余配额不足、`-29` 超存储配额付费限制。
+`-17` 不直接断言是下载流量耗尽；`-16` 不猜测投诉或封禁原因。
+未知负数保留原始错误码，非错误码的畸形响应明确显示格式异常，不输出响应体或分享密钥。
+该映射只改善错误说明，不新增自动重试；HTTP 状态、网络异常和 MEGAcmd 进程退出码保持独立语义。
+
+### 下载任务控制身份
+
+MEGA 等 HTTP 下载任务即使携带 `session_id`，也不是 ASMR 增强下载会话。
+工作台通过共享来源注册表 `isHttpDownloadTask` 判断传输类型，重试、暂停、恢复走 HTTP 任务接口，
+取消及失败关闭按真实引擎任务 ID 清理全部分卷；不能仅凭 `session_id` 调用增强会话接口。
+链接库 `link_sheet` 与 YAAS `imoutoheaven` 使用同一识别规则，避免合并卡片丢失类型字段后误报“会话不存在”。
+
 ## 结论
+
+当前并发规则（2026-11-10）：MEGA 统一读取设置页 HTTP 下载的
+`http_downloader.max_concurrent_downloads`，同批文件并行调度、跨任务共用并发上限。
+没有 MEGA 专用并发配置或整文件互斥锁；修改上限后，等待中的下载按最新值领取槽位，
+降低上限不打断已开始的传输。共享代理配置与提交命令只持有短锁，传输轮询、暂停、取消按各自标签独立执行。
+文件夹下载也占用上述槽位，文件分片并发读取 `split` 和 `max_connection_per_server` 的较小值。
+工作台继续汇总各文件的已下载字节、活动文件数和速度，不新增独立统计配置。
+下文为初始接入调研，涉及并发的旧方案以本节为准。
 
 第一版推荐接入官方 `MEGAcmd`，只覆盖 MEGA 公开分享链接下载：
 
@@ -68,7 +96,6 @@
 mega_enabled: bool = False
 mega_cmd_path: str = "mega-get"
 mega_download_mode: str = "megacmd"
-mega_max_parallel: int = 1
 ```
 
 配置语义：
@@ -76,7 +103,7 @@ mega_max_parallel: int = 1
 - `mega_enabled`：是否启用 MEGA 链接解析和下载。
 - `mega_cmd_path`：`mega-get` 可执行文件路径，Windows 可配置完整路径。
 - `mega_download_mode`：预留下载实现，目前只接受 `megacmd`。
-- `mega_max_parallel`：MEGA 专用并发，默认 `1`，避免触发 MEGA 风控或 CLI 会话冲突。
+- 并发复用 `http_downloader.max_concurrent_downloads`，不增加 `mega_max_parallel`。
 
 ### 平台识别
 
@@ -314,6 +341,12 @@ npm run build
 - 下载中取消任务，任务中心状态正确。
 - 未安装 MEGAcmd 时，健康检查和下载失败文案明确。
 - MEGA 链接中的 key/password 不出现在日志、任务列表、历史详情和通知预览中。
+
+## 下载残留清理（2026-11-11）
+
+- MEGAcmd 文件校验并发布成功后，删除当前文件暂存区，并尝试删除空的任务目录及外层 `.mega-staging`。其他任务仍在使用的目录不受影响。
+- 下载失败时保留暂存内容供重试；关闭任务并请求清理时，同时处理 `.aria2`、`.part` 和下载目标同层 `.mega-staging/<task-id>`，不删除公共下载根或其他任务暂存区。
+- 外层 `.mega-staging` 即使为空，也会阻止归档器清理源目录及会话、RJ 父目录。排查旧残留应先确认目录树内有无文件，不得把 RJ 目录或下载器 `.aria2-rpc` 整体视为垃圾。
 
 ## 后续扩展
 

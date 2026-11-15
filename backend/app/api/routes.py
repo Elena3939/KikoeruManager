@@ -1097,7 +1097,8 @@ def list_activity_logs(
     if category:
         query = query.filter(ActivityLog.category == category)
     if status and not (lite and not show_subactions):
-        query = query.filter(ActivityLog.status == status)
+        from ..core.activity_subtitle_state import sql_subtitle_status
+        query = query.filter(sql_subtitle_status(ActivityLog, ActivityLog.status) == status)
 
     # Phase 2：精准过滤走新索引列，跳过合并 / FTS 分支
     batch_id_value = (batch_id or "").strip()
@@ -1290,6 +1291,8 @@ def list_activity_logs(
         except Exception:
             logger.warning("[操作记录] lite 批次状态聚合回填失败（不阻断主流程）", exc_info=True)
 
+        from ..core.activity_subtitle_state import enrich_subtitle_items
+        enrich_subtitle_items(items, db)
         payload = {
             "total": int(total),
             "page": page,
@@ -16243,6 +16246,8 @@ class RJSubtitleManualCompleteRequest(BaseModel):
     deleted_subtitles: int = 0
     naming_strategy: str = "audio"
     pair_changes: List[dict] = []
+    pairing_mode: str = ""
+    ai_diagnostics: Optional[dict] = None
     folder_path: str = ""
     library_id: Optional[str] = None
     rjcode: str = ""
@@ -16529,15 +16534,16 @@ async def ai_subtitle_match_preview(request: AISubtitleMatchPreviewRequest):
         }
         ai_config = get_config().ai_subtitle_matching
         ai_config_for_preview = ai_config.model_dump() if hasattr(ai_config, "model_dump") else dict(ai_config or {})
-        # 配对台的“自动预配对”按钮按最新口径：只要 AI 总开关和模型配置可用，就优先用 AI 生成草稿。
-        # 这里不让“辅助草稿”子开关阻断 preview；正式 RJ 任务模式仍走保存的配置。
+        # 手动点击就是本次调用授权，不受后台自动配对开关或所选模式限制。
+        # 固定为只生成草稿，应用文件仍需用户点击；不修改保存的配置。
+        ai_config_for_preview["enabled"] = True
         ai_config_for_preview["manual_assist_enabled"] = True
         result = await get_ai_subtitle_match_service().build_auto_match_result(
             config=ai_config_for_preview,
             audio_index=audio_index,
             subtitle_groups=subtitle_groups,
             base_match_result=empty_base,
-            mode=request.ai_match_mode or "ai_assist",
+            mode="ai_assist",
             naming_strategy=request.naming_strategy or "audio",
             threshold=request.ai_confidence_threshold,
         )
@@ -17106,12 +17112,26 @@ async def rj_subtitle_manual_complete(
     try:
         engine = get_task_engine()
         task = engine.get_task(task_id)
+        if not task:
+            # 多 worker 部署下，创建任务和确认配对可能落在不同进程；先从持久化快照补入当前进程，
+            # 否则接口只能写操作记录，实际任务仍停留在“AI 配对待确认”。
+            try:
+                engine.load_persisted_linked_subtitle_tasks(
+                    task_ids={task_id},
+                    refresh_existing=True,
+                )
+                task = engine.get_task(task_id)
+            except Exception:
+                logger.warning("[字幕补配] 当前进程加载持久化任务失败: task_id=%s", task_id, exc_info=True)
         applied_pairs = max(0, int(request.applied_pairs or 0))
         deleted_subtitles = max(0, int(request.deleted_subtitles or 0))
         fallback_folder_path = str(request.folder_path or "").strip()
         fallback_rjcode = str(request.rjcode or "").strip().upper()
         pair_changes = request.pair_changes if isinstance(request.pair_changes, list) else []
-        pair_changes = pair_changes[:200]
+        pairing_audit = {
+            "pairing_mode": request.pairing_mode,
+            "ai_diagnostics": request.ai_diagnostics,
+        }
         fallback_crawl_row = None
 
         if task and task.type != TaskType.RJ_SUBTITLE_FETCH:
@@ -17155,6 +17175,7 @@ async def rj_subtitle_manual_complete(
                 linked_detail={
                     "batch_id": str(crawl_detail.get("batch_id") or "").strip() or None,
                     "pair_changes": pair_changes,
+                    **pairing_audit,
                     "folder_path": source_path or None,
                     "library_id": str(request.library_id or crawl_detail.get("library_id") or "").strip() or None,
                     "naming_strategy": naming_strategy,
@@ -17190,10 +17211,18 @@ async def rj_subtitle_manual_complete(
             }
 
         naming_strategy = str(request.naming_strategy or task.task_metadata.get("naming_strategy") or "audio").lower()
-        linked_finalize_result = await get_linked_subtitle_import_service().finalize_manual_match_task(
-            task,
-            expected_min_files=1,
-        )
+        source_mode = str(task.task_metadata.get("source_mode") or "").strip().lower()
+        is_linked_import_task = source_mode in {"linked_translation_archive_import", "subtitle_folder_import"}
+        if is_linked_import_task:
+            # 补配工作台的字幕还在临时目录时，确认后才发布到目标库存。
+            linked_finalize_result = await get_linked_subtitle_import_service().finalize_manual_match_task(
+                task,
+                expected_min_files=1,
+            )
+        else:
+            # RJ 字幕抓取工作台已经直接在作品目录中重命名 / 删除字幕，不能再走补配发布，
+            # 更不能在完成后 remove_task，否则状态快照会被删掉，刷新后又显示旧的 AI 待确认。
+            linked_finalize_result = {"applied": False, "reason": "not_linked_subtitle_task"}
 
         task.task_metadata = task.task_metadata or {}
         task.task_metadata["awaiting_manual_match"] = False
@@ -17202,6 +17231,8 @@ async def rj_subtitle_manual_complete(
         task.task_metadata["manual_match_applied_pairs"] = applied_pairs
         task.task_metadata["manual_match_deleted_subtitles"] = deleted_subtitles
         task.task_metadata["naming_strategy"] = naming_strategy
+        task.task_metadata.update(pairing_audit)
+        task.task_metadata["pair_changes"] = pair_changes
 
         summary_parts = [f"已应用 {applied_pairs} 组配对"]
         if deleted_subtitles:
@@ -17295,6 +17326,7 @@ async def rj_subtitle_manual_complete(
                     "reason": _lf.get("reason"),
                     "batch_id": str(task.task_metadata.get("batch_id") or "").strip() or None,
                     "pair_changes": pair_changes,
+                    **pairing_audit,
                     "folder_path": str(task.task_metadata.get("folder_path") or task.source_path or "").strip() or None,
                     "library_id": str(task.task_metadata.get("library_id") or "").strip() or None,
                     "naming_strategy": naming_strategy,
@@ -17325,6 +17357,11 @@ async def rj_subtitle_manual_complete(
                     success=True,
                     summary=f"字幕补配完成，共导入 {imported_count} 个字幕文件",
                     detail={
+                        **pairing_audit,
+                        "pair_changes": pair_changes,
+                        "naming_strategy": naming_strategy,
+                        "target_folder_path": _target_folder,
+                        "library_id": _target_library_id,
                         "task_id": task_id,
                         "final_file_count": imported_count,
                         "target_rjcode": import_target_rj or None,
@@ -17340,8 +17377,7 @@ async def rj_subtitle_manual_complete(
         except Exception:
             logger.warning("[操作记录] 字幕配对记录失败", exc_info=True)
 
-        source_mode = str(task.task_metadata.get("source_mode") or "").strip().lower()
-        if source_mode in {"linked_translation_archive_import", "subtitle_folder_import"}:
+        if is_linked_import_task:
             try:
                 from ..models.database import ConflictWork
 
@@ -17375,10 +17411,11 @@ async def rj_subtitle_manual_complete(
             except Exception:
                 logger.warning("[任务中心] 字幕补配完成后保留任务快照失败: task_id=%s", task_id, exc_info=True)
         else:
+            # 普通 RJ 字幕抓取任务的配对结果已经落在原目录，必须保留完成快照供状态接口和任务中心读取。
             try:
-                await asyncio.to_thread(engine.remove_task, task_id)
+                await asyncio.to_thread(engine.persist_task_snapshot, task)
             except Exception:
-                logger.warning("[任务中心] 字幕配对完成后清理任务记录失败: task_id=%s", task_id, exc_info=True)
+                logger.warning("[任务中心] RJ 字幕抓取配对完成后保留任务快照失败: task_id=%s", task_id, exc_info=True)
 
         return {"success": True, "task_id": task_id, "message": summary}
     except HTTPException:
@@ -17492,6 +17529,8 @@ async def rj_subtitle_status():
 
     try:
         engine = get_task_engine()
+        # 任务可能由其它 worker 创建或完成；每次状态读取先同步持久化终态，避免内存快照继续显示旧的 AI 待确认。
+        engine.load_persisted_linked_subtitle_tasks(refresh_existing=True)
         all_tasks = engine.get_all_tasks()
         rj_tasks = [task for task in all_tasks if task.type == TaskType.RJ_SUBTITLE_FETCH]
         status_weight = {

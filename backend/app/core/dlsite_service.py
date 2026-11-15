@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from functools import lru_cache, wraps
 from contextvars import ContextVar
 from urllib.parse import parse_qs, urlparse
+from selectolax.lexbor import LexborHTMLParser
 
 from .ttl_cache import TTLCache
 
@@ -574,16 +575,18 @@ class DLsiteApiService:
         year, month, day = match.groups()
         return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
 
-    def _extract_release_date_from_listing_chunk(self, chunk: str) -> str:
-        if not chunk:
+    def _extract_release_date_from_listing_chunk(self, chunk: str, *, visible_text: Optional[str] = None) -> str:
+        if not chunk and not visible_text:
             return ''
-        for pattern in [
+        for index, pattern in enumerate([
             r'(?:regist_date|release_date|sales_date)["\']?\s*[:=]\s*["\']([^"\']+)["\']',
             r'class="[^"]*(?:regist_date|release_date|work_date|date)[^"]*"[^>]*>\s*([^\s<][^<\n]*)</',
             r'(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2})',
             r'(20\d{6})',
-        ]:
-            match = re.search(pattern, chunk, re.IGNORECASE)
+        ]):
+            # 裸日期只能来自卡片可见文字，不能把价格汇率属性里的小数误认成 YYYYMMDD。
+            source = visible_text if index >= 2 and visible_text is not None else chunk
+            match = re.search(pattern, source, re.IGNORECASE)
             if match:
                 normalized = self._normalize_date_text(html.unescape(match.group(1)).strip())
                 if normalized:
@@ -625,11 +628,9 @@ class DLsiteApiService:
 
         策略：
 
-        - 用 ``<li class="search_result_img_box_inner"> ... </li>`` 这种作品卡片块的边界
-          切分 HTML，每一段对应一个 RJ。对每段单独跑字段级正则，避免跨作品串字段。
-        - 切分失败 / 块少时 fallback 到 ``_extract_worknos_from_listing_html`` —— 这意味着
-          列表层没有 summary 增益，下游会全部走 ``is_probably_audio=None`` 进 metadata 链路，
-          降级为旧行为，不会出错。
+        - Lexbor 只建一次 DOM，按模板选择完整作品卡片，避免整页多轮正则及嵌套标签截断。
+          字段优先级和音声分类保持原有口径；裸日期仅从卡片文字读取。
+        - 没有已知模板时保留 product_id 锚点切片支持；列表完整作品号仍由调用方单独提取。
 
         提取的字段：
 
@@ -644,110 +645,135 @@ class DLsiteApiService:
         """
         if not text:
             return []
-        chunks: List[str] = []
-        for pattern in [
-            # maniax new/date PC template
-            r'<div[^>]*class="[^"]*n_worklist_item[^"]*"[^>]*>.*?(?=<div[^>]*class="[^"]*n_worklist_item|\Z)',
-            # maker_profile 经典 PC 模板
-            r'<li[^>]*class="[^"]*search_result_img_box_inner[^"]*"[^>]*>.*?</li>',
-            # maniax-touch / SP 模板
-            r'<li[^>]*class="[^"]*work_1col[^"]*"[^>]*>.*?</li>',
-            r'<li[^>]*class="[^"]*work_2col[^"]*"[^>]*>.*?</li>',
-            # announce 列表
-            r'<div[^>]*class="[^"]*work_news_each[^"]*"[^>]*>.*?</div>\s*</div>\s*</div>',
-        ]:
-            try:
-                chunks.extend(re.findall(pattern, text, re.IGNORECASE | re.DOTALL))
-            except Exception:
-                continue
+        tree = LexborHTMLParser(text)
+        # 保持旧实现的模板优先级，混合模板或重复作品的首条记录仍有稳定顺序。
+        cards = [
+            node
+            for selector in (
+                'div.n_worklist_item',
+                'li.search_result_img_box_inner',
+                'li.work_1col',
+                'li.work_2col',
+                'div.work_news_each',
+            )
+            for node in tree.css(selector)
+        ]
         # 当所有模板都没匹到时（DLsite 改版 / 极简 SSR），fallback：以 product_id 锚点切片。
-        if not chunks:
+        if not cards:
+            chunks = []
             anchors = list(re.finditer(r'/(?:work|announce)/=/product_id/([RVB]J(?:\d{8}|\d{6}))', text, re.IGNORECASE))
             for i, m in enumerate(anchors):
                 start = max(0, m.start() - 400)
                 end = min(len(text), (anchors[i + 1].start() if i + 1 < len(anchors) else m.end() + 1200))
                 chunks.append(text[start:end])
+            cards = [LexborHTMLParser(chunk).root for chunk in chunks]
 
         summaries: List[DLsiteWorkSummary] = []
         seen: Set[str] = set()
-        for chunk in chunks:
+        for card in cards:
             workno = ""
             # 1) data-product_id 属性优先（HTML5 自定义属性）
-            m = re.search(r'data-product_id\s*=\s*["\']([RVB]J(?:\d{8}|\d{6}))["\']', chunk, re.IGNORECASE)
-            if m:
-                workno = self._normalize_workno(m.group(1))
+            product_nodes = [card] if 'data-product_id' in card.attributes else []
+            product_nodes.extend(card.css('[data-product_id]'))
+            for node in product_nodes:
+                value = node.attributes.get('data-product_id') or ''
+                if re.fullmatch(r'[RVB]J(?:\d{8}|\d{6})', value, re.IGNORECASE):
+                    workno = self._normalize_workno(value)
+                    break
             # 2) href 上 product_id/RJxxx
+            links = card.css('a[href]')
             if not workno:
-                m = re.search(r'/(?:work|announce)/=/product_id/([RVB]J(?:\d{8}|\d{6}))', chunk, re.IGNORECASE)
-                if m:
-                    workno = self._normalize_workno(m.group(1))
+                for node in links:
+                    m = re.search(r'/(?:work|announce)/=/product_id/([RVB]J(?:\d{8}|\d{6}))', node.attributes['href'], re.IGNORECASE)
+                    if m:
+                        workno = self._normalize_workno(m.group(1))
+                        break
             if not workno or workno in seen:
                 continue
             seen.add(workno)
 
             summary = DLsiteWorkSummary(workno=workno)
+            chunk = card.html
 
-            # 标题：作品链接的 alt / title / 锚文本
-            for pat in [
-                r'<img[^>]*alt\s*=\s*["\']([^"\']+)["\'][^>]*src=["\'][^"\']*(?:product|resize)[^"\']*' + re.escape(workno.lower()) + r'[^"\']*["\']',
-                r'class="[^"]*work_name[^"]*"[^>]*>\s*<a[^>]*title=["\']([^"\']+)["\']',
-                r'class="[^"]*work_name[^"]*"[^>]*>\s*<a[^>]*>\s*([^<\n]+?)\s*</a>',
-            ]:
-                m = re.search(pat, chunk, re.IGNORECASE)
-                if m:
-                    summary.title = html.unescape(m.group(1)).strip()
-                    break
+            # 图片属性直接从 DOM 读取，避免每个 RJ 生成两个不同的正则、冲掉 re 编译缓存。
+            images = [node.attributes for node in card.css('img')]
+            for attrs in images:
+                src = attrs.get('src') or ''
+                if workno.lower() in src.lower() and any(part in src.lower() for part in ('product', 'resize')):
+                    summary.title = (attrs.get('alt') or '').strip()
+                    if summary.title:
+                        break
+
+            # 标题链接保留现有紧邻锚点的优先级，避免改变依赖标题的弱信号分类。
+            if not summary.title:
+                title_node = card.css_first('[class*="work_name"]')
+                title_html = title_node.html if title_node is not None else ''
+                for pat in (
+                    r'class="[^"]*work_name[^"]*"[^>]*>\s*<a[^>]*title=["\']([^"\']+)["\']',
+                    r'class="[^"]*work_name[^"]*"[^>]*>\s*<a[^>]*>\s*([^<\n]+?)\s*</a>',
+                ):
+                    m = re.search(pat, title_html, re.IGNORECASE)
+                    if m:
+                        summary.title = html.unescape(m.group(1)).strip()
+                        break
 
             # maker 链接：href 上 maker_id 与文案
-            m = re.search(r'/(?:circle/profile|maker)/=/maker_id/(RG\d+)', chunk, re.IGNORECASE)
-            if m:
-                summary.maker_id = m.group(1).upper()
-            m = re.search(
-                r'class="[^"]*maker_name[^"]*"[^>]*>\s*<a[^>]*>\s*([^<\n]+?)\s*</a>',
-                chunk,
-                re.IGNORECASE,
-            )
-            if m:
-                summary.maker_name = html.unescape(m.group(1)).strip()
+            for link in links:
+                m = re.search(r'/(?:circle/profile|maker)/=/maker_id/(RG\d+)', link.attributes['href'], re.IGNORECASE)
+                if m:
+                    summary.maker_id = m.group(1).upper()
+                    break
+            maker_link = card.css_first('[class*="maker_name"] > a')
+            if maker_link is not None:
+                summary.maker_name = maker_link.text(deep=False).strip()
 
             # cover：列表缩略图 src（避免懒加载占位图）
-            m = re.search(
-                r'<img[^>]*(?:src|data-src)\s*=\s*["\']([^"\']*resize[^"\']*' + re.escape(workno.lower()) + r'[^"\']*)["\']',
-                chunk,
-                re.IGNORECASE,
-            )
-            if m:
-                summary.cover_url = m.group(1).strip()
+            for attrs in images:
+                for key, value in reversed(list(attrs.items())):
+                    if key in {'src', 'data-src'} and value and 'resize' in value.lower() and workno.lower() in value.lower():
+                        summary.cover_url = value.strip()
+                        break
+                if summary.cover_url:
+                    break
 
-            summary.release_date = self._extract_release_date_from_listing_chunk(chunk)
+            # 结构字段、日期节点优先；裸日期只查可见文字，避免价格属性误命中。
+            if any(key in chunk for key in ('regist_date', 'release_date', 'sales_date')):
+                matched = re.search(
+                    r'(?:regist_date|release_date|sales_date)["\']?\s*[:=]\s*["\']([^"\']+)["\']',
+                    chunk, re.IGNORECASE,
+                )
+                if matched:
+                    summary.release_date = self._normalize_date_text(html.unescape(matched.group(1)).strip())
+            if not summary.release_date:
+                for node in card.css('[class*="date"]'):
+                    value = node.text(deep=False).strip()
+                    if value:
+                        summary.release_date = self._normalize_date_text(value)
+                        break
+            if not summary.release_date:
+                summary.release_date = self._extract_release_date_from_listing_chunk(
+                    '', visible_text=card.text(separator=' '),
+                )
 
             # work_category / work_type chip：class 名 + 文案分两条解析，避免任一缺失
-            for m in re.finditer(
-                r'class="[^"]*(work_category|work_genre|category_name)[^"]*"[^>]*>\s*([^<\n]+?)\s*</',
-                chunk,
-                re.IGNORECASE,
-            ):
-                label = html.unescape(m.group(2)).strip()
+            for node in card.css('[class*="work_category"], [class*="work_genre"], [class*="category_name"]'):
+                label = node.text(deep=False).strip()
                 if label and not summary.category_label:
                     summary.category_label = label
             # work_type chip 在 PC 模板里通常是 type="type_SOU" 的 class
-            for m in re.finditer(
-                r'class="[^"]*(type_[A-Z]{2,5}|work_audio|work_game|work_comic|work_video)[^"]*"',
-                chunk,
-            ):
-                token = m.group(1).strip()
+            for node in [card, *card.css('[class]')]:
+                tokens = re.findall(r'type_[A-Z]{2,5}|work_audio|work_game|work_comic|work_video', node.attributes.get('class') or '')
+                if not tokens:
+                    continue
+                token = tokens[-1]
                 if token and token not in summary.icon_classes:
                     summary.icon_classes.append(token)
                     if not summary.work_type_code and token.startswith("type_"):
                         summary.work_type_code = token[len("type_"):]
 
             # file_format chip（announce + maker 主页都偶尔出现）
-            for m in re.finditer(
-                r'class="[^"]*work_file_format[^"]*"[^>]*>\s*([^<\n]+?)\s*</',
-                chunk,
-                re.IGNORECASE,
-            ):
-                label = html.unescape(m.group(1)).strip()
+            for node in card.css('[class*="work_file_format"]'):
+                label = node.text(deep=False).strip()
                 if label and label not in summary.file_format_labels:
                     summary.file_format_labels.append(label)
 

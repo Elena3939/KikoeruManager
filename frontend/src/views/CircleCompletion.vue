@@ -4144,16 +4144,7 @@ async function refreshDownloadWorkbench(options = {}) {
     const previousTaskMap = new Map(trackedDownloadTasks.value.map(task => [String(task?.id || ''), task]))
     trackedDownloadTasks.value = nextTrackedTasks.map(next => {
       const previous = previousTaskMap.get(String(next?.id || ''))
-      next = mergeTransferTaskSnapshot(previous, next)
-      if (previous && previous.download_files_truncated === false && next?.download_files_truncated) {
-        return {
-          ...next,
-          download_files: previous.download_files,
-          download_files_total: previous.download_files_total,
-          download_files_truncated: false,
-        }
-      }
-      return next
+      return mergeTransferTaskSnapshot(previous, next)
     })
     const stillActive = trackedDownloadTasks.value.some(task => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(task.status || '')))
     if (stillActive || downloadWorkbenchVisible.value || downloadWorkbenchBackgroundActive.value) startDownloadWorkbenchPolling()
@@ -4174,8 +4165,9 @@ async function loadFullDownloadTaskFiles(task) {
   const total = Number(task.download_files_total || rows.length) || rows.length
   if (rows.length >= total) return
   try {
-    let offset = rows.length
-    const mergedRows = [...rows]
+    // 实时变化可能先送达第 120 行之后的文件，不能拿数组长度当分页偏移。
+    let offset = 0
+    const mergedRows = []
     let result = null
     while (offset < total) {
       result = await taskCenterApi.getItemFiles({ engine_task_id: taskId, offset, limit: 500 })
@@ -4193,7 +4185,7 @@ async function loadFullDownloadTaskFiles(task) {
       download_files_truncated: Boolean(result?.has_more && offset < total),
     }
     trackedDownloadTasks.value = trackedDownloadTasks.value.map(item => (
-      item.id === task.id || item.active_task_id === taskId ? merged : item
+      item.id === task.id || item.active_task_id === taskId ? mergeTransferTaskSnapshot(item, merged) : item
     ))
   } catch (error) {
     console.error('加载下载文件明细失败:', error)

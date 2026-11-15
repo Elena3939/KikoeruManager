@@ -249,11 +249,15 @@ def install(bundle, root, container, docker, production=False):
         deadline = time.monotonic() + 15
         while True:
             try:
-                probes = json.loads(run(docker, "exec", container, "python3", "-c", probe_code))
+                output = subprocess.run(
+                    [docker, "exec", container, "python3", "-c", probe_code],
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+                probes = json.loads(output.stdout)
                 break
-            except subprocess.CalledProcessError:
+            except subprocess.CalledProcessError as exc:
                 if time.monotonic() >= deadline:
-                    raise
+                    raise RuntimeError("宿主执行器 socket 就绪检查超时: " +
+                                       (exc.stderr or str(exc)).strip()) from exc
                 time.sleep(0.25)
         digest = hashlib.sha256(json.dumps(config["mappings"], sort_keys=True).encode()).hexdigest()
         if not probes or any(row["mapping_version"] != digest for row in probes):
@@ -282,7 +286,7 @@ def install(bundle, root, container, docker, production=False):
     print("执行器已安装；应用 host_enabled 未修改，须独立验收后显式启用")
 
 
-def refresh(root, container, docker, production=False):
+def refresh(root, container, docker, production=False, source_root=None):
     """容器重建后重新核对挂载和身份，沿用已安装的执行器及解释器。"""
     installation_root(str(root))
     if (production or container == "elena39-kikoerumanager") and (
@@ -298,10 +302,13 @@ def refresh(root, container, docker, production=False):
     inspected = json.loads(run(docker, "inspect", container))[0]
     uid = int(run(docker, "exec", container, "id", "-u"))
     gid = int(run(docker, "exec", container, "id", "-g"))
+    sources = Path(source_root) if source_root else current
+    if any(not (sources / name).is_file() for name in FILES):
+        raise RuntimeError("宿主执行器源码不完整，不能刷新")
     with tempfile.TemporaryDirectory(prefix="kikoerumanager-mover-refresh-") as temporary:
         bundle = Path(temporary) / "bundle"
         make_bundle(bundle, inspected, [row["container"] for row in previous["mappings"]],
-                    uid, gid, str(root), current, host_python)
+                    uid, gid, str(root), sources, host_python)
         install(bundle, root, container, docker, production)
 
 
@@ -316,6 +323,7 @@ def main():
     parser.add_argument("--refresh", action="store_true", help="按当前容器身份刷新已安装执行器")
     parser.add_argument("--root", default="/var/lib/kikoerumanager-file-mover")
     parser.add_argument("--host-python", default="/bin/python3", help="已核实的宿主 Python 3.8+ 绝对路径；安装前实测版本")
+    parser.add_argument("--source-root", help="刷新时使用的宿主执行器源码目录；默认沿用当前安装版本")
     parser.add_argument("--install", action="store_true")
     parser.add_argument("--production", action="store_true")
     parser.add_argument("--container", default="elena39-kikoerumanager")
@@ -323,7 +331,7 @@ def main():
     args = parser.parse_args()
     canonical(args.root)
     if args.refresh:
-        refresh(Path(args.root), args.container, args.docker, args.production)
+        refresh(Path(args.root), args.container, args.docker, args.production, args.source_root)
     elif args.bundle is None:
         parser.error("准备或安装需要 --bundle")
     elif args.install:

@@ -471,7 +471,7 @@ class RedisService:
                 continue
             value = metadata.get(key)
             if key in {'download_files', 'failed_files'}:
-                rows = list(value or []) if isinstance(value, list) else []
+                rows = value if isinstance(value, list) else []
                 total = len(rows)
                 runtime_metadata[key] = rows[:_TASK_RUNTIME_TRANSFER_ROW_LIMIT]
                 runtime_metadata[f'{key}_total'] = total

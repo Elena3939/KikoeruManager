@@ -3,11 +3,20 @@ param(
     [string]$LocalFile = 'backend\app\core\library_folder_completion_service.py',
     [string]$ContainerPath = '/app/app/core/library_folder_completion_service.py',
     [string]$ReleaseId,
+    [Parameter(Mandatory = $true)]
+    [ValidateRange(0, 0)]
+    [int]$McpProcessingCount,
+    [Parameter(Mandatory = $true)]
+    [long]$McpVerifiedAtEpoch,
     [ValidatePattern('^[a-f0-9-]{36}$')]
     [string[]]$IgnoredTaskIds = @()
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($IgnoredTaskIds.Count) { throw 'MCP 门禁不允许在脚本内忽略运行任务。' }
+$gateAge = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $McpVerifiedAtEpoch
+if ($gateAge -lt 0 -or $gateAge -gt 120) { throw 'MCP 任务核验已过期，请重新查询 production。' }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $connectScript = Join-Path $repoRoot '.codex\ssh\connect-production.ps1'
@@ -53,7 +62,7 @@ if ($LASTEXITCODE -ne 0) {
     throw '本地源码上传失败。'
 }
 
-& $connectScript -Sudo "/bin/sh '$remoteScript' '$remoteFile' '$ContainerPath' '$ReleaseId' '$expectedHash' '$($IgnoredTaskIds -join ',')'"
+& $connectScript -Sudo "/bin/sh '$remoteScript' '$remoteFile' '$ContainerPath' '$ReleaseId' '$expectedHash' '$McpProcessingCount' '$McpVerifiedAtEpoch'"
 if ($LASTEXITCODE -ne 0) {
     throw "生产热补丁失败: $ReleaseId"
 }

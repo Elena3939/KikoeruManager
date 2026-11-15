@@ -154,7 +154,7 @@
       <section v-if="childRows.length" class="panel">
         <div class="panel-head">
           <GitBranch :size="13" :stroke-width="2.4" />
-          <span>关联事件</span>
+          <span>{{ row?.category === 'subtitle_crawl' && row?.action !== 'batch_start' ? '处理过程' : '关联事件' }}</span>
           <span class="ml-1 inline-flex items-center px-1.5 py-[1px] rounded text-[10px] font-semibold tabular-nums tracking-tight text-slate-600 bg-slate-100/80 ring-1 ring-inset ring-slate-200/60 normal-case">{{ childRows.length }}</span>
           <button
             v-if="childRows.length > 6"
@@ -220,7 +220,7 @@
                 v-if="child.id && child.id !== row?.id"
                 class="child-jump-btn"
                 type="button"
-                title="跳转到该子任务详情"
+                title="查看这条处理记录"
                 @click.stop="onChildClick(child)"
               >
                 <ArrowUpRight :size="13" :stroke-width="2.6" />
@@ -772,7 +772,7 @@ async function copyText(value) {
   gap: 14px;
 }
 
-.is-baidu-detail .detail-scroll > :deep(.panel) {
+.detail-scroll > :deep(.panel) {
   flex-shrink: 0;
 }
 

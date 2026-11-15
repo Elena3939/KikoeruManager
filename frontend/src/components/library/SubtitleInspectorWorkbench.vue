@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div :class="immersive ? 'subtitle-inspector-workbench-root flex h-full min-h-0 flex-col overflow-hidden' : 'subtitle-inspector-workbench-root flex flex-col min-h-0 rounded-[18px] border border-slate-200 bg-white'">
     <div v-if="!immersive" class="flex items-center justify-between gap-3 px-5 py-3.5 border-b border-slate-100">
       <div class="flex flex-col gap-0.5 min-w-0">
@@ -101,19 +101,19 @@
             </div>
           </div>
           <div class="flex items-center gap-1.5 flex-wrap justify-end">
-            <button class="subtitle-ai-pair-button inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold border border-cyan-200 bg-cyan-50 text-cyan-700 transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:border-cyan-300 hover:bg-cyan-100 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="view.subtitleAutoPairing || !view.subtitleInspectorAudioFiles.length || !view.subtitleInspectorSubtitleFiles.length" title="让 AI 直接生成配对草稿；确认后再点击导入。" @click="view.buildAISubtitlePairs">
-              <Bot :size="12" :stroke-width="2.2" :class="{ 'is-spinning': view.subtitleAutoPairing }" />{{ view.subtitleAutoPairing ? 'AI 配对中' : 'AI 配对' }}
-            </button>
-            <button class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-medium border transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="view.subtitleAutoPairing || !view.subtitleInspectorAudioFiles.length || !view.subtitleInspectorSubtitleFiles.length" title="不用 AI，按文件名、轨道号和规范化标题生成规则草稿。" @click="view.buildRuleSubtitlePairs">
+            <StatefulButton unstyled :show-default-icons="false" class="subtitle-ai-pair-button inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold border border-cyan-200 bg-cyan-50 text-cyan-700 transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:border-cyan-300 hover:bg-cyan-100 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="Boolean(pairingUnavailableReason)" :title="pairingUnavailableReason || '直接请求模型，译名含义优先、轨号辅助；点击应用才写入。'" @click="view.buildAISubtitlePairs">
+              <Bot :size="12" :stroke-width="2.2"  />{{ view.subtitleAutoPairing ? 'AI 配对中' : 'AI 配对' }}
+            </StatefulButton>
+            <StatefulButton unstyled :show-default-icons="false" class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-medium border transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="Boolean(pairingUnavailableReason)" :title="pairingUnavailableReason || '按明确同名或规范化标题生成规则草稿；跨语言标题请用 AI。'" @click="view.buildRuleSubtitlePairs">
               <Wand2 :size="12" class="text-emerald-500" />规则预配对
-            </button>
+            </StatefulButton>
             <button :class="['inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-medium border transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] active:scale-95', view.subtitleSequenceMode ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300']" @click="view.setSubtitleSequenceMode(!view.subtitleSequenceMode)">
               <MousePointerClick :size="12" :class="view.subtitleSequenceMode ? 'text-slate-300' : 'text-blue-500'" />{{ view.subtitleSequenceMode ? '退出顺序点选' : '顺序点选配对' }}
             </button>
             <button class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-medium border border-slate-200 bg-white text-slate-700 transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="view.subtitleSequenceMode ? !view.canBuildSequenceSubtitlePairs : !view.filteredSubtitleInspectorAudioFiles.length || !view.filteredSubtitleInspectorSubtitleFiles.length" @click="view.buildSequenceOrOrderedSubtitlePairs">
               <ListOrdered :size="12" class="text-amber-500" />{{ view.subtitleSequenceMode ? '生成顺序预配对' : '按当前列表预配对' }}
             </button>
-            <button class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold border border-slate-900 bg-slate-900 text-white transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:bg-slate-800 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="!view.subtitleManualPairs.length" :title="!view.subtitleManualPairs.length ? '请先在中间区域生成或添加至少一组配对，再执行应用。' : ''" @click="view.applySubtitleManualPairs">
+            <button class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold border border-slate-900 bg-slate-900 text-white transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:bg-slate-800 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="view.subtitleInspectorBusy || !view.subtitleManualPairs.length" :title="!view.subtitleManualPairs.length ? '请先在中间区域生成或添加至少一组配对，再执行应用。' : ''" @click="view.applySubtitleManualPairs">
               <CheckCircle2 :size="12" :class="{ 'is-spinning': view.subtitlePairApplying }" />{{ view.subtitleManualApplyLabel || '一键应用同名' }}
             </button>
           </div>
@@ -130,6 +130,7 @@
           <span>字幕工作台目录读取失败：{{ view.subtitleInspectorInfo.subtitleLoadError }}</span>
         </div>
 
+        <div v-if="pairingUnavailableReason" role="status" class="px-2 text-xs text-slate-500">{{ pairingUnavailableReason }}</div>
         <div v-if="view.subtitleInspectorInfo.audioLoadError" class="flex items-start gap-2 px-4 py-2.5 rounded-[10px] border border-amber-200 bg-amber-50 text-[12.5px] text-amber-800">
           <AlertTriangle :size="14" :stroke-width="2.2" class="mt-0.5 flex-shrink-0 text-amber-500" />
           <span>原音频目录读取失败：{{ view.subtitleInspectorInfo.audioLoadError }}。字幕目录已保留，可先检查任务写入目录或重新选择目标目录。</span>
@@ -219,7 +220,7 @@
       </div>
       </div>
 
-      <details v-if="showPairing && view.activeSubtitleTaskProgressLogs?.length" class="subtitle-pairing-progress-log border-t border-slate-200">
+      <details :open="pairingLogOpen" @toggle="pairingLogOpen = $event.target.open" v-if="showPairing && view.activeSubtitleTaskProgressLogs?.length" class="subtitle-pairing-progress-log border-t border-slate-200">
         <summary class="flex cursor-pointer items-center justify-between gap-2 py-3">
           <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">过程日志</span>
           <span class="text-[11px] text-slate-400">{{ view.activeSubtitleTaskProgressLogs.length }} 条</span>
@@ -389,8 +390,9 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import AppEmptyState from '../common/AppEmptyState.vue'
+import StatefulButton from '../ui/stateful-button.vue'
 import {
   Sparkles,
   RefreshCw,
@@ -607,6 +609,17 @@ const view = computed(() => {
 })
 const showPairing = computed(() => ['all', 'pairing'].includes(props.stageMode))
 const showTree = computed(() => ['all', 'tree'].includes(props.stageMode))
+const pairingUnavailableReason = computed(() => {
+  if (view.value.subtitleInspectorLoading) return '正在读取目录'
+  if (view.value.subtitleInspectorDeleting) return '正在删除文件'
+  if (view.value.subtitlePairApplying) return '正在应用配对'
+  if (view.value.subtitleAutoPairing) return 'AI 正在分析，请查看过程日志'
+  if (!view.value.subtitleInspectorAudioFiles.length) return '当前目录没有音频候选'
+  if (!view.value.subtitleInspectorSubtitleFiles.length) return '当前目录没有字幕候选'
+  return ''
+})
+const pairingLogOpen = ref(false)
+watch(() => view.value.subtitleAutoPairing, value => { if (value) pairingLogOpen.value = true })
 
 function isAwaitingManualTask(task) {
   const status = String(task?.status || '').toLowerCase()

@@ -38,6 +38,8 @@ python3 tools/host-file-mover-install.py --install --bundle bundle --production
 
 安装时重新读取真实 inspect、UID/GID、Python 版本，校验 SHA-256、映射和容器身份；启动 systemd 服务后从真实容器做 socket 探测。服务使用异常重启及开机启动，不新增 TCP 端口或业务挂载。安装失败恢复上个 current 链接和 unit；成功只保留三份版本。安装器不修改 host_enabled。
 
+systemd active 不代表 socket 已完成绑定。安装器在 15 秒就绪窗口内重试真实容器探测，暂存失败输出，不把启动瞬间的缺失 socket 堆栈直接输出为告警；持续失败才携带最后一次错误退出并回滚。
+
 ## 设置页与只读诊断
 
 设置 → 文件移动加速可调整 `host_enabled`、`socket_path`、`request_timeout_seconds`、`journal_path`，使用页面顶部保存。当前配置、执行器在线和业务白名单就绪分别显示；草稿开关不会冒充实际启用状态。状态每 15 秒刷新，页面隐藏时暂停轮询。

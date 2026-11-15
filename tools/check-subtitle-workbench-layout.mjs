@@ -23,6 +23,9 @@ const subtitles=Array.from({length:26},(_,i)=>({path:'/subtitles/'+i,name:(i+1)+
 Object.assign(ctx.workbenchCtx,{subtitleInspectorInfo:{subtitleDir:'/subtitles',folderName:'字幕工作台测试任务',totalFiles:26},activeSubtitleInspectTask:task,subtitleInspectorAudioFiles:audio,subtitleInspectorSubtitleFiles:subtitles,filteredSubtitleInspectorAudioFiles:audio,filteredSubtitleInspectorSubtitleFiles:subtitles})
 Object.assign(ctx.workbenchCtx,{activeSubtitleTaskProgressLogs:ctx.taskOverviewCtx.activeSubtitleTaskProgressLogs,formatProgressLogTime:value=>value,getProgressLogLevelLabel:()=> '信息',subtitleManualPairs:[{id:'pair-1',audio_name:audio[0].name,subtitle_name:subtitles[0].name,target_subtitle_name:'配对结果.vtt',confidenceLevel:'high'}]})
 ctx.taskOverviewCtx.visibleSubtitleTasks=[task]
+const scanItem={library_id:'layout-library',folder_path:'/ANIME/[コロコエ][RJ01413239]',folder_name:'[コロコエ][RJ01413239][CV 涼花] 字幕布局检查',queue_state:'queued',queue_message:'已应用 8 组配对'}
+ctx.scanCtx={}
+Object.assign(ctx.scanCtx,{subtitleScanSessionSummary:[],subtitleDialogSelection:[scanItem],subtitleExecutableSelectionItems:[scanItem],subtitleExecutableDisplayItems:[scanItem],pagedSubtitleSelectionItems:[scanItem],subtitleSelectionFilterOptions:[{key:'all',label:'全部',value:1},{key:'queued',label:'已入任务',value:1}],subtitleSelectionFilter:'all',subtitleSkippedSelectionItems:[],subtitleSkippedSelectionFilterOptions:[],filteredSubtitleSkippedSelectionItems:[],subtitleScanTargetResults:[],subtitleScanResults:[],subtitleSkippedScanResults:[],filteredSubtitleSkippedScanResults:[],subtitleSelectionTotalPages:1,buildSubtitleSelectionKey:()=> 'scan-layout',isSubtitleSelectionActive:()=>false,getLibraryLabelById:()=> 'ANIME',getSubtitleSelectionQueueLabel:()=> '已入任务',getSubtitleSelectionExistingChips:()=>[{key:'local',label:'本地字幕 8'}],canInspectSubtitleSelectionFolder:()=>true,canRetryCreateSubtitleTaskForSelection:()=>false,canForceCreateSubtitleTaskForSelection:()=>false,focusSubtitleSelectionItem:noop,setSubtitleExecutableCollapsed:value=>ctx.scanCtx.subtitleExecutableCollapsed=value,setSubtitleSelectionFilter:value=>ctx.scanCtx.subtitleSelectionFilter=value})
 Object.assign(ctx.taskNavigatorCtx,{getTaskDisplayRJCode:task=>task.rjcode,getSubtitleDownloadFiles:()=>[],getSubtitleAppliedWrittenFiles:()=>[]})
 createApp({setup:()=>()=>h('div',{class:'subtitle-workbench-dialog'},h(Shell,{title:'RJ 字幕抓取工作台',focusCode:'RJ01581759',focusName:'布局检查'},()=>h(Stage,{ctx})))}).mount('#app')
 window.layoutCtx=ctx;window.ready=true
@@ -34,7 +37,7 @@ try {
   browser = await chromium.launch({channel:'msedge',headless:true})
   const page = await browser.newPage()
   const errors=[]
-  page.on('pageerror',error=>{errors.push(error.message);console.error(error.message)})
+  page.on('pageerror',error=>{errors.push(error.message);console.error(error.stack)})
   page.on('console',message=>{if(message.type()==='error')console.error(message.text())})
   const out=resolve(root,'data/subtitle-layout-check')
   await mkdir(out,{recursive:true})
@@ -44,6 +47,25 @@ try {
     await page.waitForFunction(()=>window.ready)
     for(const dark of [false,true]) {
       await page.evaluate(dark=>document.documentElement.classList.toggle('kikoerumanager-dark',dark),dark)
+      await page.waitForTimeout(100)
+      await page.evaluate(()=>window.layoutCtx.railMode='scan')
+      await page.waitForTimeout(100)
+      const scan=await page.evaluate(()=>{
+        const buttons=[...document.querySelectorAll('.scan-rail-segment')]
+        const labels=buttons.map(button=>{
+          const label=button.querySelector('span:not(.scan-rail-segment-count)')
+          const range=document.createRange();range.selectNodeContents(label)
+          const box=button.getBoundingClientRect()
+          return {text:label.textContent,lines:range.getClientRects().length,clipped:label.scrollWidth>label.clientWidth+1,overflow:[...button.children].some(child=>{const rect=child.getBoundingClientRect();return rect.left<box.left||rect.right>box.right})}
+        })
+        return {labels,heights:buttons.map(button=>button.getBoundingClientRect().height)}
+      })
+      console.log(JSON.stringify({width,dark,scan}))
+      if(scan.labels.length!==2||scan.labels.some(label=>label.lines!==1||label.clipped||label.overflow)||Math.max(...scan.heights)-Math.min(...scan.heights)>1)throw new Error(JSON.stringify({width,dark,scan}))
+      await page.screenshot({path:resolve(out,width+'-'+(dark?'dark':'light')+'-scan.png')})
+      await page.locator('.scan-rail-segment-queued').click()
+      if(!await page.locator('.scan-rail-segment-queued').evaluate(el=>el.classList.contains('active')))throw new Error('扫描筛选未切换')
+      await page.evaluate(()=>window.layoutCtx.railMode='tasks')
       await page.waitForTimeout(100)
       const result=await page.evaluate(()=>{
         const log=document.querySelector('.subtitle-log-stream-scroll')

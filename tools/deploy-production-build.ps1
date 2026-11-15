@@ -6,11 +6,16 @@ param(
     [string]$RuntimeBaseTag,
     [ValidatePattern('^[a-f0-9]{40}$')]
     [string]$RuntimeBaseRevision,
-    [string]$ReleaseId
+    [string]$ReleaseId,
+    [ValidatePattern('^elena39/kikoerumanager:[0-9]+\.[0-9]+\.[0-9]+$')]
+    [string]$ExistingImage,
+    [int]$McpProcessingCount = -1,
+    [long]$McpVerifiedAtEpoch
 )
 
 $ErrorActionPreference = 'Stop'
 if ($RuntimeBaseTag -and $RuntimeBaseRevision) { throw '运行环境基线 tag 和 revision 不能同时指定。' }
+if ($ExistingImage -and ($RuntimeBaseTag -or $RuntimeBaseRevision -or $Force)) { throw '应用已有镜像不能复用运行时基线或绕过任务门禁。' }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $connectScript = Join-Path $repoRoot '.codex\ssh\connect-production.ps1'
@@ -36,13 +41,46 @@ if ($ReleaseId -notmatch '^[0-9A-Za-z][0-9A-Za-z-]{5,80}$') {
     throw "非法发布版本号: $ReleaseId"
 }
 
+if ($ExistingImage) {
+    if ($McpProcessingCount -ne 0 -or $McpVerifiedAtEpoch -le 0) { throw '必须提供 production MCP 的空闲任务核验。' }
+    $identityCommand = '/var/packages/Docker/target/usr/bin/docker image inspect ' + $ExistingImage + ' --format ''{{.Id}} {{index .Config.Labels "org.opencontainers.image.revision"}}'''
+    $identity = (& $connectScript -Sudo $identityCommand | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $identity -notmatch '^(sha256:[a-f0-9]{64}) ([a-f0-9]{40})$') { throw '已有镜像身份不完整。' }
+    $imageId = $Matches[1]
+    $imageRevision = $Matches[2]
+    $currentId = (& $connectScript -Sudo '/var/packages/Docker/target/usr/bin/docker inspect --format ''{{.Id}}'' elena39-kikoerumanager' | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $currentId -notmatch '^[a-f0-9]{64}$') { throw '无法固定当前生产容器身份。' }
+    $archive = Join-Path ([IO.Path]::GetTempPath()) "kikoerumanager-release-$ReleaseId.tar.gz"
+    $remoteArchive = "/tmp/kikoerumanager-release-$ReleaseId.tar.gz"
+    $remoteScript = "/tmp/kikoerumanager-deploy-$ReleaseId.sh"
+    try {
+        & tar.exe -czf $archive -C $repoRoot Dockerfile .dockerignore backend/requirements.txt frontend/package-lock.json tools/host-file-mover-install.py tools/sync-production-synology.py
+        if ($LASTEXITCODE -ne 0) { throw '发布辅助文件打包失败。' }
+        $payload = ([IO.File]::ReadAllText($remoteScriptSource)).Replace("`r`n", "`n")
+        $payload | & $pwshExecutable -NoProfile -File $connectScript "umask 077; cat > '$remoteScript'; chmod 700 '$remoteScript'"
+        if ($LASTEXITCODE -ne 0) { throw '发布脚本上传失败。' }
+        & tar.exe -cf - -C ([IO.Path]::GetTempPath()) ([IO.Path]::GetFileName($archive)) |
+            & $pwshExecutable -NoProfile -File $connectScript 'umask 077; tar -xf - -C /tmp'
+        if ($LASTEXITCODE -ne 0) { throw '发布辅助文件上传失败。' }
+        $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+        $dryRunValue = if ($DryRun) { '1' } else { '0' }
+        & $connectScript -Sudo "/bin/sh '$remoteScript' '$remoteArchive' '$ReleaseId' '$imageRevision' '0' '$dryRunValue' '$hash' '$ExistingImage' '$McpProcessingCount' '$McpVerifiedAtEpoch' '$currentId' '$imageId'"
+        if ($LASTEXITCODE -ne 0) { throw '已有镜像发布未完成，请检查回滚和健康状态。' }
+        Write-Host "生产镜像应用完成: $ExistingImage ($imageId)" -ForegroundColor Green
+    }
+    finally {
+        Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+    }
+    return
+}
+
 $sourceRevision = (& git -C $repoRoot rev-parse --verify HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $sourceRevision) {
     throw '无法读取当前 Git revision，拒绝发布。'
 }
 
 $sourceFiles = @(& git -C $repoRoot -c core.quotepath=false ls-files -co --exclude-standard | Where-Object {
-    $_ -notmatch '(^|/)(temp|\.test-tmp[^/]*|\.pytest-tmp|\.codex[^/]*|\.codegraph|__pycache__)(/|$)'
+    $_ -notmatch '(^|/)(temp|outputs|\.test-[^/]*|\.pytest-tmp|\.codex[^/]*|\.codegraph|__pycache__)(/|$)'
 })
 if ($LASTEXITCODE -ne 0 -or $sourceFiles.Count -eq 0) {
     throw '无法列出源码快照文件，拒绝发布。'
@@ -145,7 +183,7 @@ COPY frontend/dist/ /app/static/
 
     Write-Host '由生产服务器构建并切换容器...' -ForegroundColor Yellow
     $archiveHash = (Get-FileHash -LiteralPath $localArchive -Algorithm SHA256).Hash.ToLowerInvariant()
-    & $connectScript -Sudo "/bin/sh '$remoteScript' '$remoteArchive' '$ReleaseId' '$sourceRevision' '$forceValue' '$dryRunValue' '$archiveHash'"
+    & $connectScript -Sudo "/bin/sh '$remoteScript' '$remoteArchive' '$ReleaseId' '$sourceRevision' '$forceValue' '$dryRunValue' '$archiveHash' '' '$McpProcessingCount' '$McpVerifiedAtEpoch'"
     if ($LASTEXITCODE -ne 0) {
         throw "生产发布失败，版本 $ReleaseId 未完成切换。"
     }

@@ -7,6 +7,11 @@ SOURCE_REVISION=${3:?missing source revision}
 FORCE=${4:-0}
 DRY_RUN=${5:-0}
 ARCHIVE_SHA256=${6:?missing archive sha256}
+EXISTING_IMAGE=${7:-}
+MCP_PROCESSING=${8:--1}
+MCP_VERIFIED_AT=${9:-0}
+EXPECTED_CONTAINER_ID=${10:-}
+EXPECTED_IMAGE_ID=${11:-}
 
 DOCKER=/var/packages/Docker/target/usr/bin/docker
 CONTAINER=elena39-kikoerumanager
@@ -65,6 +70,11 @@ RELEASE_DIR="$RELEASES_ROOT/$RELEASE_ID"
 CONTEXT_DIR="$RELEASE_DIR/context"
 MANIFEST_FILE="$RELEASE_DIR/manifest.txt"
 IMAGE="elena39/kikoerumanager:hotfix-$RELEASE_ID"
+if [ -n "$EXISTING_IMAGE" ]; then
+  IMAGE=$EXISTING_IMAGE
+  [ "$("$DOCKER" image inspect --format '{{.Id}}' "$IMAGE")" = "$EXPECTED_IMAGE_ID" ] || fail '已有镜像摘要变化'
+  [ "$("$DOCKER" inspect --format '{{.Id}}' "$CONTAINER")" = "$EXPECTED_CONTAINER_ID" ] || fail '生产容器身份变化'
+fi
 
 if [ -e "$RELEASE_DIR" ]; then
   fail "发布版本已存在: $RELEASE_ID"
@@ -93,27 +103,16 @@ if [ "$DRY_RUN" = '1' ]; then
   exit 0
 fi
 
-active_processing_count() {
-  "$DOCKER" exec "$CONTAINER" sh -lc '
-    export PGPASSWORD="$POSTGRES_PASSWORD"
-    psql -h 127.0.0.1 -p 5432 -U kikoerumanager -d kikoerumanager -Atc \
-      "SELECT count(*) FROM task_center_items WHERE status = '\''processing'\'';"
-  ' 2>/dev/null | tr -d '[:space:]'
-}
-
 require_idle_or_force() {
-  count=$(active_processing_count || true)
-  case "$count" in
-    ''|*[!0-9]*)
-      [ "$FORCE" = '1' ] || fail '无法确认生产 processing 任务数量；如已人工确认可中断，再使用 -Force 发布'
-      log '无法确认 processing 任务数量，按 -Force 继续'
-      ;;
-    0) ;;
-    *)
-      [ "$FORCE" = '1' ] || fail "检测到 $count 个 processing 任务，拒绝在任务运行时切换容器"
-      log "检测到 $count 个 processing 任务，按 -Force 继续"
-      ;;
-  esac
+  # 数据库事实只接受 production PostgreSQL MCP 的新鲜核验。
+  [ "$MCP_PROCESSING" = 0 ] || fail 'MCP 未确认任务空闲，拒绝切换容器'
+  case "$MCP_VERIFIED_AT" in ''|*[!0-9]*) fail 'MCP 核验时间无效' ;; esac
+  age=$(( $(date +%s) - MCP_VERIFIED_AT ))
+  [ "$age" -ge 0 ] && [ "$age" -le 120 ] || fail 'MCP 核验超过 120 秒，请重新查询'
+  if [ -n "$EXISTING_IMAGE" ]; then
+    [ "$("$DOCKER" image inspect --format '{{.Id}}' "$IMAGE")" = "$EXPECTED_IMAGE_ID" ] || fail '已有镜像摘要变化'
+    [ "$("$DOCKER" inspect --format '{{.Id}}' "$CONTAINER")" = "$EXPECTED_CONTAINER_ID" ] || fail '生产容器身份变化'
+  fi
 }
 
 refresh_host_mover() {
@@ -264,8 +263,12 @@ cleanup_old_releases() {
 }
 
 require_idle_or_force
-log "开始在生产服务器构建镜像: $IMAGE"
-build_image || fail '生产镜像构建连续三次失败'
+if [ -n "$EXISTING_IMAGE" ]; then
+  log "应用已下载镜像，不构建、不拉取: $IMAGE"
+else
+  log "开始在生产服务器构建镜像: $IMAGE"
+  build_image || fail '生产镜像构建连续三次失败'
+fi
 
 "$DOCKER" image inspect "$IMAGE" >/dev/null
 PRECHECK_CONTAINER="${CONTAINER}-precheck-$RELEASE_ID"

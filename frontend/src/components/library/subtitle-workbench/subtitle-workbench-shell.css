@@ -161,7 +161,7 @@
 .subtitle-import-workbench .subtitle-workbench-stage .scan-rail-segment > span:not(.scan-rail-segment-count) {
   overflow: visible;
   text-overflow: clip;
-  white-space: normal;
+  white-space: nowrap;
   line-height: 1.5;
 }
 

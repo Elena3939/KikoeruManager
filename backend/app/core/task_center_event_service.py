@@ -137,7 +137,7 @@ def build_task_center_event(task, reason: str = "progress") -> dict[str, Any]:
     for runtime_key in ("upload_runtime", "download_runtime"):
         runtime = metadata.get(runtime_key)
         if isinstance(runtime, dict):
-            # 上传小窗只需要运行态摘要；完整文件明细仍通过状态接口按需读取。
+            # 小窗和下载弹窗共用后端汇总，文件明细通过独立变化项更新。
             event[runtime_key] = {
                 key: runtime.get(key, 0 if key.endswith("bytes") or key.endswith("seconds") else "")
                 for key in (
@@ -145,6 +145,8 @@ def build_task_center_event(task, reason: str = "progress") -> dict[str, Any]:
                     "speed_bytes_per_sec",
                     "phase",
                     "stage",
+                    "status",
+                    "progress",
                     "updated_at",
                     "snapshot_at_ms",
                     "current_source_dir",
@@ -162,6 +164,15 @@ def build_task_center_event(task, reason: str = "progress") -> dict[str, Any]:
                 )
                 if key in runtime
             }
+    changes = getattr(task, "_download_file_changes", None)
+    if changes:
+        event["download_file_changes"] = [
+            {key: item[key] for key in (
+                "name", "relative_path", "index", "downloaded", "total", "progress",
+                "stage", "updated_at", "speed_bytes_per_sec", "eta_seconds",
+            ) if key in item}
+            for item in changes.values()
+        ]
     bonus_probe_meta = metadata.get("bonus_probe_meta")
     if isinstance(bonus_probe_meta, dict):
         event["bonus_probe_meta"] = {
@@ -185,7 +196,8 @@ def build_task_center_event(task, reason: str = "progress") -> dict[str, Any]:
 def _should_emit(event: dict[str, Any]) -> bool:
     task_id = str(event.get("engine_task_id") or "")
     reason = str(event.get("reason") or "progress")
-    if not task_id or reason in _IMMEDIATE_REASONS:
+    # 下载运行态已在源头限频；二次节流会丢失已合并的文件变化项。
+    if not task_id or reason in _IMMEDIATE_REASONS or reason == "download_runtime":
         return True
 
     signature = (

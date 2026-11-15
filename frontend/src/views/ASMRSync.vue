@@ -1376,16 +1376,6 @@ function stopEnhancedDownloadWorkbenchPolling() {
   }
 }
 
-function scheduleEnhancedDownloadWorkbenchRefresh() {
-  if (enhancedDownloadWorkbenchTimer || !enhancedDownloadWorkbenchTaskIds.value.length) return
-  enhancedDownloadWorkbenchTimer = window.setTimeout(() => {
-    enhancedDownloadWorkbenchTimer = null
-    refreshEnhancedDownloadWorkbench({ silent: true }).catch(error => {
-      console.error('实时刷新增强下载文件明细失败:', error)
-    })
-  }, 350)
-}
-
 function startEnhancedDownloadWorkbenchPolling() {
   stopEnhancedDownloadWorkbenchPolling()
 }
@@ -1434,8 +1424,9 @@ async function loadFullWorkbenchTaskFiles(task, targetRef) {
   const total = Number(task.download_files_total || rows.length) || rows.length
   if (rows.length >= total) return
   try {
-    let offset = rows.length
-    const mergedRows = [...rows]
+    // 实时变化可能先送达第 120 行之后的文件，不能拿数组长度当分页偏移。
+    let offset = 0
+    const mergedRows = []
     let result = null
     while (offset < total) {
       result = await taskCenterApi.getItemFiles({ engine_task_id: taskId, offset, limit: 500 })
@@ -1453,7 +1444,7 @@ async function loadFullWorkbenchTaskFiles(task, targetRef) {
       download_files_truncated: Boolean(result?.has_more && offset < total),
     }
     targetRef.value = targetRef.value.map(item => (
-      item.id === task.id || item.active_task_id === taskId ? merged : item
+      item.id === task.id || item.active_task_id === taskId ? mergeTransferTaskSnapshot(item, merged) : item
     ))
   } catch (error) {
     console.error('加载下载文件明细失败:', error)
@@ -1464,16 +1455,7 @@ function mergeWorkbenchTaskRows(previousRows = [], nextRows = []) {
   const previousMap = new Map((previousRows || []).map(task => [String(task?.id || ''), task]))
   return (nextRows || []).map(next => {
     const previous = previousMap.get(String(next?.id || ''))
-    if (next.download_runtime || previous?.download_runtime) next = mergeTransferTaskSnapshot(previous, next)
-    if (previous && previous.download_files_truncated === false && next?.download_files_truncated) {
-      return {
-        ...next,
-        download_files: previous.download_files,
-        download_files_total: previous.download_files_total,
-        download_files_truncated: false,
-      }
-    }
-    return next
+    return mergeTransferTaskSnapshot(previous, next)
   })
 }
 
@@ -2574,12 +2556,6 @@ function startStatusPolling () {
       const existing = tasks.value.some(task => String(task.id) === String(payload.engine_task_id))
       if (!existing) { if (!refreshing.value) void refreshStatus(); continue }
       tasks.value = tasks.value.map(task => patchTransferTaskEvent(task, payload))
-      if (
-        payload.task_type === 'asmr_sync_download'
-        && enhancedDownloadWorkbenchTaskIds.value.some(id => String(id) === String(payload.engine_task_id))
-      ) {
-        scheduleEnhancedDownloadWorkbenchRefresh()
-      }
       const item = scanResults.value.find(row => row.rjcode === payload.rjcode)
       if (item) item.status = payload.status === 'processing' ? 'downloading' : payload.status
     }

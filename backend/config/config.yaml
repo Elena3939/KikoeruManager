@@ -282,6 +282,12 @@ backup_zip:
   archive_format: zip
   compression_level: 9
 
+# AI 配对：轻度推理与 Fast 优先处理；提示词留空使用内置业务规则。
+ai_subtitle_matching:
+  reasoning_effort: low
+  fast_mode: true
+  prompt_template: ""
+
 # DLsite 邮件监听：代理由应用所在主机 / 容器访问，留空直连。
 email_watcher:
   schedule_mode: continuous

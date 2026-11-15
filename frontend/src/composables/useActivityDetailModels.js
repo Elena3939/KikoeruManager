@@ -219,6 +219,11 @@ function pairDetailPayload(row) {
 function isSubtitlePairRelatedRow(row) {
   if (!row) return false
   if (['subtitle_crawl', 'subtitle_pair'].includes(String(row.category || ''))) return true
+  if (row.category === 'subtitle_import') {
+    const detail = safeDetail(row)
+    if (detail.manual_match_completed || detail.awaiting_manual_match || detail.pairing_mode
+      || detail.pair_changes?.length || detail.ai_diagnostics) return true
+  }
   if (['pair', 'subtitle_import'].includes(String(row.relation || ''))) return true
   return Boolean(pairDetailRow(row))
 }
@@ -239,6 +244,8 @@ function pairChangeRows(row) {
       audio_after: String(it?.audio_after || '').trim(),
       subtitle_before: String(it?.subtitle_before || '').trim(),
       subtitle_after: String(it?.subtitle_after || '').trim(),
+      reason: String(it?.reason || '').trim(),
+      confidence: String(it?.confidence ?? '').trim(),
     }))
     .filter((it) => it.audio_before || it.audio_after || it.subtitle_before || it.subtitle_after)
 }
@@ -263,7 +270,7 @@ function unmatchedAudioCount(row) {
 function isManualPairCompleted(row) {
   const d = safeDetail(row)
   const pd = pairDetailPayload(row)
-  return Boolean(d.manual_match_completed || pd.manual_match_completed || pairDetailRow(row)?.status === 'success')
+  return Boolean(d.manual_match_completed || pd.manual_match_completed || d.ai_auto_applied || pd.ai_auto_applied || pairDetailRow(row)?.status === 'success')
 }
 
 function isAwaitingManualPair(row) {
@@ -1616,6 +1623,36 @@ function pairWorkbenchModel(row) {
   }
 }
 
+function pairAIDiagnosticsModel(diagnostics) {
+  if (!diagnostics || typeof diagnostics !== 'object') return null
+  const metrics = []
+  if (diagnostics.model) metrics.push({ label: '模型', value: diagnostics.model })
+  for (const [key, label, suffix] of [
+    ['duration_ms', '配对总耗时', ' ms'], ['request_duration_ms', '模型请求耗时', ' ms'],
+    ['first_event_ms', '首个响应内容', ' ms'], ['first_content_ms', '首个输出正文', ' ms'],
+    ['prompt_tokens', '输入 token', ''], ['completion_tokens', '输出 token', ''],
+    ['total_tokens', '总 token', ''], ['cached_tokens', '缓存命中 token', ''],
+    ['reasoning_tokens', '推理 token', ''], ['audio_count', '请求音频', ' 条'],
+    ['subtitle_group_count', '请求字幕组', ' 组'], ['matched_count', 'AI 配对', ' 组'],
+    ['low_confidence_count', '低置信候选', ' 组']
+  ]) {
+    if (diagnostics[key] != null && Number.isFinite(Number(diagnostics[key]))) {
+      metrics.push({ label, value: `${diagnostics[key]}${suffix}` })
+    }
+  }
+  if (typeof diagnostics.stream_used === 'boolean') metrics.push({ label: '响应方式', value: diagnostics.stream_used ? '流式' : '非流式' })
+  if (diagnostics.finish_reason) metrics.push({ label: '结束原因', value: diagnostics.finish_reason })
+  const outputMs = Number(diagnostics.request_duration_ms) - Number(diagnostics.first_content_ms)
+  if (diagnostics.first_content_ms != null && outputMs > 0 && Number(diagnostics.completion_tokens) > 0 && diagnostics.reasoning_tokens === 0) {
+    metrics.push({ label: '输出速度（估算）', value: `${(Number(diagnostics.completion_tokens) * 1000 / outputMs).toFixed(1)} token/s` })
+  }
+  return {
+    metrics, reasoning: String(diagnostics.reasoning || ''), rawOutput: String(diagnostics.raw_output || ''),
+    items: Array.isArray(diagnostics.result_items) ? diagnostics.result_items : [],
+    errors: [...(diagnostics.validation_errors || []), ...(diagnostics.duplicate_outputs || [])]
+  }
+}
+
 function pairResultModel(row) {
   if (!row) return null
   if (isSubtitleBatchRootRow(row)) return null
@@ -1623,7 +1660,17 @@ function pairResultModel(row) {
   const detail = safeDetail(row)
   const pairRow = pairDetailRow(row)
   const pairDetail = pairDetailPayload(row)
-  const changes = pairChangeRows(pairRow || row)
+  let changes = pairChangeRows(pairRow || row)
+  if (!changes.length) {
+    const result = pairDetail.ai_match_result || pairDetail.match_result || detail.ai_match_result || detail.match_result
+    changes = (Array.isArray(result?.matches) ? result.matches : []).map(item => ({
+      audio_before: item.audio_name, subtitle_before: item.subtitle_name,
+      subtitle_after: item.output_subtitle_name, reason: item.ai_reason || item.match_reason,
+      confidence: item.ai_confidence ?? item.match_score
+    }))
+  }
+  const mode = String(pairDetail.pairing_mode || detail.pairing_mode || pairDetail.ai_match_mode || detail.ai_match_mode || '')
+  const ai = pairAIDiagnosticsModel(pairDetail.ai_diagnostics || (pairDetail.pairing_mode ? null : detail.ai_diagnostics))
   const appliedPairs = Number(pairDetail.applied_pairs ?? pairDetail.manual_match_applied_pairs
     ?? detail.applied_pairs ?? detail.manual_match_applied_pairs ?? changes.length ?? 0)
   const deletedSubtitles = Number(pairDetail.deleted_subtitles ?? pairDetail.manual_match_deleted_subtitles
@@ -1631,25 +1678,28 @@ function pairResultModel(row) {
   const unmatched = unmatchedAudioCount(row)
   const namingStrategy = String(pairDetail.naming_strategy || detail.naming_strategy || '').trim()
   const downloaded = Number(detail.downloaded_count || pairDetail.downloaded_count || 0)
-  const written = Number(detail.written_files_count || pairDetail.written_files_count || 0)
+  const isImport = row.category === 'subtitle_import' || row.relation === 'subtitle_import'
+  const written = Number(detail.written_files_count || pairDetail.written_files_count
+    || (isImport ? (detail.final_file_count || pairDetail.final_file_count) : 0) || 0)
   const summary = pairSummaryText(row) || String(row?.summary || '').trim()
-  const hasData = Boolean(summary || changes.length || appliedPairs || deletedSubtitles || downloaded || written || unmatched)
+  const hasData = Boolean(summary || changes.length || mode || ai || appliedPairs || deletedSubtitles || downloaded || written || unmatched)
   if (!hasData) return null
   const awaiting = isAwaitingManualPair(row)
   const completed = isManualPairCompleted(row)
   const status = completed ? 'success' : (awaiting ? 'warning' : 'default')
   const statusLabel = completed ? '已完成配对' : (awaiting ? '待手动配对' : '已抓取未继续')
   const metrics = [
+    { label: '配对模式', value: ({ rule: '规则配对', ai: 'AI 配对', ai_assist: 'AI 辅助配对', ai_auto: 'AI 自动配对', rule_ai_auto: '规则 + AI 自动配对', manual: ai ? '人工调整（AI 草稿）' : '手动配对', ordered: '顺序配对', sequence: '选中顺序配对' })[mode] || '未记录' },
     { label: '已配对', value: `${Math.max(0, appliedPairs)} 组` },
     { label: '未配对音频', value: `${Math.max(0, unmatched)} 个` },
     { label: '删除字幕', value: `${Math.max(0, deletedSubtitles)} 个` },
-    { label: '抓取字幕', value: `${Math.max(0, downloaded)} 个` },
+    { label: isImport ? '导入字幕' : '抓取字幕', value: `${Math.max(0, isImport ? written : downloaded)} 个` },
   ]
   if (written > 0) metrics.push({ label: '写入字幕', value: `${written} 个` })
-  if (namingStrategy) metrics.push({ label: '命名策略', value: namingStrategy === 'audio' ? '按音频名' : namingStrategy })
+  if (namingStrategy) metrics.push({ label: '命名策略', value: ({ audio: '按音频名', subtitle: '按字幕名' })[namingStrategy] || namingStrategy })
   return {
     title: completed ? '字幕配对已落地' : '字幕配对状态',
-    status, statusLabel, summary, metrics, changes,
+    status, statusLabel, summary, metrics, changes, ai,
   }
 }
 
@@ -1870,6 +1920,7 @@ function humanAction(row) {
       if (status === 'failed') return '批量字幕任务创建失败'
       return '批量字幕任务创建'
     }
+    if (row?.detail?.manual_match_completed) return '字幕配对完成'
     if (status === 'success') return 'RJ 字幕爬取完成'
     if (status === 'failed') return 'RJ 字幕爬取失败'
     if (status === 'waiting') return 'RJ 字幕任务等待中'

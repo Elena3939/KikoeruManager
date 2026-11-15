@@ -116,17 +116,41 @@
       </div>
     </div>
     <div v-if="pairResult.changes.length" class="flex flex-col gap-1.5">
-      <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-500/80">配对映射</div>
+      <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-500/80">配对映射（原音频名 ← 原字幕名）</div>
       <div
-        v-for="(change, idx) in pairResult.changes.slice(0, 8)"
+        v-for="(change, idx) in pairResult.changes"
         :key="`pchg-${idx}`"
-        class="text-[11.5px] leading-relaxed font-mono px-2 py-1 rounded-md bg-slate-50/50 ring-1 ring-inset ring-slate-200/30"
+        class="pair-change-row text-[11.5px] leading-relaxed font-mono px-2 py-1 rounded-md bg-slate-50/50 ring-1 ring-inset ring-slate-200/30"
       >
-        <span class="text-slate-500">{{ change.audio_after || change.audio_before || '?' }}</span>
+        <span class="text-slate-500">{{ change.audio_before || '原音频名未记录' }}</span>
         <span class="mx-1 text-slate-400">←</span>
-        <span class="text-slate-700">{{ change.subtitle_after || change.subtitle_before || '?' }}</span>
+        <span class="text-slate-700">{{ change.subtitle_before || '原字幕名未记录' }}</span>
+        <div v-if="change.reason" class="text-slate-500 mt-1">配对依据：{{ change.reason }}<span v-if="change.confidence"> · 置信度 {{ change.confidence }}</span></div>
+        <div v-if="(change.audio_after && change.audio_after !== change.audio_before) || (change.subtitle_after && change.subtitle_after !== change.subtitle_before)" class="text-slate-500 mt-1">
+          落地文件：{{ change.audio_after || change.audio_before }} / {{ change.subtitle_after || change.subtitle_before }}
+        </div>
       </div>
-      <span v-if="pairResult.changes.length > 8" class="text-[11px] text-slate-500">…还有 {{ pairResult.changes.length - 8 }} 项</span>
+    </div>
+    <div v-if="pairResult.ai" class="pair-ai-diagnostics mt-3">
+      <div class="text-[12px] font-semibold mb-2">AI 配对详情与性能</div>
+      <div class="pair-metric-grid">
+        <div v-for="metric in pairResult.ai.metrics" :key="metric.label" class="pair-metric-card">
+          <div class="pair-metric-label">{{ metric.label }}</div>
+          <div class="pair-metric-value">{{ metric.value }}</div>
+        </div>
+      </div>
+      <details class="pair-ai-section" :open="Boolean(pairResult.ai.reasoning)">
+        <summary>AI 思考过程（接口返回）</summary>
+        <pre class="pair-ai-text">{{ pairResult.ai.reasoning || '本次接口未返回思考内容；下方展示模型返回的逐组配对依据。' }}</pre>
+      </details>
+      <div v-for="(item, idx) in pairResult.ai.items" :key="`ai-reason-${idx}`" class="pair-change-row text-[11.5px] my-1">
+        {{ item.audio_name }} ← {{ item.subtitle_group }} · {{ item.confidence }} 分：{{ item.reason }}
+      </div>
+      <div v-for="(error, idx) in pairResult.ai.errors" :key="`ai-error-${idx}`" class="text-[12px] text-amber-600 break-words">校验：{{ error }}</div>
+      <details class="pair-ai-section">
+        <summary>AI 原始输出</summary>
+        <pre class="pair-ai-text">{{ pairResult.ai.rawOutput || '本次未记录原始输出' }}</pre>
+      </details>
     </div>
   </section>
 
@@ -1488,6 +1512,41 @@ function formatBytes(size) {
   background: rgba(248, 250, 252, 0.96);
   color: #334155;
   border-color: rgba(148, 163, 184, 0.32);
+}
+
+.pair-change-row {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.pair-ai-section {
+  min-width: 0;
+  margin-top: 8px;
+  color: inherit;
+  font-size: 12px;
+}
+
+.pair-ai-section summary {
+  cursor: pointer;
+  padding: 6px 0;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.pair-ai-section summary:hover { transform: translateY(-2px) scale(1.02); }
+.pair-ai-section summary:active { transform: scale(0.96); }
+.pair-ai-section summary:focus,
+.pair-ai-section summary:focus-visible { outline: none; box-shadow: none; }
+
+.pair-ai-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
 }
 
 .pair-metric-grid {

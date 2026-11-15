@@ -596,9 +596,8 @@ export function useSubtitleTask ({
 
   function shouldDelayAutoInspectSubtitleTree (task) {
     if (!task?.id) return false
-    if (!task.force_rerun) return false
     if (task.subtitle_dir) return false
-    return ['pending', 'processing'].includes(String(task.status || ''))
+    return ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(task.status || ''))
   }
 
   function isSubtitleTaskRerunLocked (task) {
@@ -1125,6 +1124,7 @@ export function useSubtitleTask ({
     upsertSubtitleSelectionEntry(item, {
       queue_state: 'manual_match_completed',
       queue_message: summary,
+      awaiting_manual_match: false,
       manual_match_completed: true,
       manual_match_applied_pairs: Math.max(0, Number(payload.appliedPairs || 0)),
       manual_match_deleted_subtitles: Math.max(0, Number(payload.deletedSubtitles || 0)),
@@ -1193,6 +1193,7 @@ export function useSubtitleTask ({
           source_mode: String(item.source_mode || task.source_mode || '').trim(),
           restored_at: String(task.restored_at || item.restored_at || '').trim(),
           activity_context: task.activity_context || item.activity_context || null,
+          awaiting_manual_match: Boolean(task.awaiting_manual_match) && !task.manual_match_completed,
           status: nextExistingCount > 0 ? 'existing' : (item.status || '')
         }
       })

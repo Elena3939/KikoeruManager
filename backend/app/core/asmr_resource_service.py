@@ -395,6 +395,12 @@ class ASMRResourceService:
         stage: str,
     ) -> None:
         now = datetime.now()
+        task_status = getattr(task, "status", None)
+        if (
+            (task.task_metadata.get("download_runtime") or {}).get("status") == "paused"
+            and getattr(task_status, "value", task_status) == "processing"
+        ):
+            self._set_runtime_resumed(task)
         runtime = dict(task.task_metadata.get("download_runtime") or {})
         started_at = str(runtime.get("started_at") or "").strip() or now.isoformat()
         previous = dict(download_progress_state.get(file_key) or {})
@@ -404,35 +410,33 @@ class ASMRResourceService:
             normalized_downloaded = min(normalized_downloaded, normalized_total)
         failed_stage = str(stage or "").endswith("_failed")
         file_started_at = str(previous.get("started_at") or "").strip() or now.isoformat()
-        previous_updated_at = str(previous.get("updated_at") or "").strip()
         previous_downloaded = int(previous.get("downloaded") or 0)
         previous_speed = int(previous.get("speed_bytes_per_sec") or 0)
+        sample_at = str(previous.get("speed_sample_at") or "").strip()
+        sample_bytes = int(previous.get("speed_sample_downloaded_bytes", previous_downloaded))
+        if stage == "download" and previous.get("stage") != "download":
+            # 排队、重试等待不计入文件传输速度。
+            sample_at = now.isoformat()
+            sample_bytes = previous_downloaded
+            previous_speed = 0
         try:
-            previous_updated = datetime.fromisoformat(previous_updated_at) if previous_updated_at else None
+            sample_time = datetime.fromisoformat(sample_at) if sample_at else None
         except Exception:
-            previous_updated = None
-        try:
-            file_elapsed = max(0.001, (now - datetime.fromisoformat(file_started_at)).total_seconds())
-        except Exception:
-            file_elapsed = 0.001
-            file_started_at = now.isoformat()
-
-        if previous_updated is not None:
-            speed_window = max(0.001, (now - previous_updated).total_seconds())
-            speed_delta = max(0, normalized_downloaded - previous_downloaded)
-            if speed_delta > 0 and speed_window >= 0.35:
+            sample_time = None
+        file_speed = previous_speed
+        advance_file_sample = sample_time is None or normalized_downloaded < sample_bytes
+        if sample_time is not None and not advance_file_sample:
+            speed_window = max(0.001, (now - sample_time).total_seconds())
+            speed_delta = max(0, normalized_downloaded - sample_bytes)
+            if speed_window >= 0.35 and speed_delta > 0:
                 instant_speed = int(speed_delta / speed_window)
-            else:
-                instant_speed = 0
-        else:
-            instant_speed = 0
-        average_speed = int(normalized_downloaded / file_elapsed) if normalized_downloaded > 0 else 0
-        if instant_speed > 0 and average_speed > 0:
-            file_speed = int((instant_speed * 0.75) + (average_speed * 0.25))
-        else:
-            file_speed = instant_speed or average_speed or previous_speed
-        if previous_speed > 0 and file_speed > 0:
-            file_speed = int((previous_speed * 0.45) + (file_speed * 0.55))
+                file_speed = int(previous_speed * 0.35 + instant_speed * 0.65) if previous_speed else instant_speed
+                advance_file_sample = True
+            elif speed_window >= 1.5:
+                file_speed = 0
+                advance_file_sample = True
+        if stage != "download":
+            file_speed = 0
         file_remaining = max(0, normalized_total - normalized_downloaded)
         file_eta = int(file_remaining / file_speed) if file_speed > 0 and file_remaining > 0 else 0
         file_progress = int(normalized_downloaded / normalized_total * 100) if normalized_total else 0
@@ -452,6 +456,8 @@ class ASMRResourceService:
             "updated_at": now.isoformat(),
             "speed_bytes_per_sec": file_speed,
             "eta_seconds": file_eta,
+            "speed_sample_at": now.isoformat() if advance_file_sample else sample_at,
+            "speed_sample_downloaded_bytes": normalized_downloaded if advance_file_sample else sample_bytes,
         }
         current_file_state = download_progress_state.get(file_key)
         if isinstance(current_file_state, dict):
@@ -485,7 +491,7 @@ class ASMRResourceService:
         def is_active(item: Dict[str, Any]) -> bool:
             item_total = max(0, int(item.get("total") or 0))
             item_downloaded = max(0, int(item.get("downloaded") or 0))
-            return 0 < item_downloaded < max(1, item_total)
+            return str(item.get("stage") or "") == "download" and 0 < item_downloaded < max(1, item_total)
 
         transferred_bytes = max(
             0,
@@ -533,6 +539,12 @@ class ASMRResourceService:
             aggregate_sample_at = datetime.fromisoformat(previous_aggregate_at) if previous_aggregate_at else None
         except Exception:
             aggregate_sample_at = None
+        contribution_delta = transferred_contribution(current_file_state) - transferred_contribution(previous)
+        if aggregate_sample_at is not None and (
+            stage in {"queued", "download_reused", "ready_for_upload"} or contribution_delta < 0
+        ):
+            # 缓存复用、断点基线和重试回退改变完成量，但不是本窗口的网络吞吐。
+            previous_aggregate_bytes = max(0, previous_aggregate_bytes + contribution_delta)
         aggregate_sample_speed = 0
         advance_speed_sample = aggregate_sample_at is None
         if aggregate_sample_at is not None:
@@ -586,14 +598,22 @@ class ASMRResourceService:
             "speed_sample_at": now.isoformat() if advance_speed_sample else previous_aggregate_at,
             "speed_sample_transferred_bytes": transferred_bytes if advance_speed_sample else previous_aggregate_bytes,
         }
-        if stage in {"download", "download_reused"}:
-            # 下载阶段的任务进度必须来自真实字节量，否则日志会一直停在准备阶段。
+        if stage in {"download", "downloaded", "download_reused"}:
+            # 字节进度与日志去重分离；整数百分比不变也必须继续发送速度和文件变化。
             task_progress = min(91, 5 + int(aggregate_progress * 0.86))
-            task_progress = max(int(task.progress or 0), task_progress)
-            task.update_progress(
-                task_progress,
-                f"下载中 {completed_files}/{total_files}: {file_name}",
-            )
+            with task._set_state_silent():
+                task.progress = max(int(task.progress or 0), task_progress)
+                task.current_step = f"下载中 {completed_files}/{total_files}: {file_name}"
+        changes = getattr(task, "_download_file_changes", None)
+        if changes is None:
+            changes = task._download_file_changes = {}
+        changes[file_key] = current_file_state
+        last_emit = getattr(task, "_download_runtime_emitted_at", None)
+        boundary = stage in {"downloaded", "download_reused", "ready_for_upload"} or failed_stage
+        if boundary or last_emit is None or (now - last_emit).total_seconds() >= 0.75:
+            task._download_runtime_emitted_at = now
+            task.touch_metadata("download_runtime")
+            changes.clear()
 
     def _finalize_download_runtime(self, task, status: str = "completed") -> None:
         runtime = dict(task.task_metadata.get("download_runtime") or {})
@@ -611,6 +631,8 @@ class ASMRResourceService:
             if int(runtime.get("total_bytes") or 0) > 0:
                 runtime["progress"] = 100
         task.task_metadata["download_runtime"] = runtime
+        task.touch_metadata("download_runtime")
+        getattr(task, "_download_file_changes", {}).clear()
 
     def _update_upload_runtime(
         self,
@@ -747,6 +769,41 @@ class ASMRResourceService:
             runtime["speed_bytes_per_sec"] = 0
             runtime["eta_seconds"] = 0
             runtime["is_waiting_turn"] = False
+            task.task_metadata[key] = runtime
+
+    def _set_runtime_resumed(self, task) -> None:
+        now = datetime.now().isoformat()
+        for key, files_key, bytes_key in (
+            ("download_runtime", "download_files", "downloaded"),
+            ("upload_runtime", "upload_files", "uploaded"),
+        ):
+            runtime = dict(task.task_metadata.get(key) or {})
+            if runtime.get("status") != "paused":
+                continue
+            # 暂停清零了汇总计数，但逐文件进度仍然保留；恢复时只重建一次，
+            # 避免后续增量更新一直执行 0 - 1 + 1，导致有速度却无活跃文件。
+            runtime["active_file_count"] = sum(
+                1 for item in task.task_metadata.get(files_key) or []
+                if 0 < int(item.get(bytes_key) or 0) < max(1, int(item.get("total") or 0))
+                and (key != "download_runtime" or item.get("stage") == "download")
+            )
+            runtime["status"] = "processing"
+            runtime["updated_at"] = now
+            runtime["speed_bytes_per_sec"] = 0
+            runtime["eta_seconds"] = 0
+            if key == "download_runtime":
+                # 新窗口从恢复时开始，暂停等待时间不参与吞吐采样。
+                runtime["speed_sample_at"] = now
+                runtime["speed_sample_transferred_bytes"] = int(runtime.get("transferred_bytes") or 0)
+                for item in task.task_metadata.get(files_key) or []:
+                    item["speed_sample_at"] = now
+                    item["speed_sample_downloaded_bytes"] = int(item.get(bytes_key) or 0)
+                    item["speed_bytes_per_sec"] = 0
+                    item["eta_seconds"] = 0
+                    item["updated_at"] = now
+                    changes = getattr(task, "_download_file_changes", None)
+                    if changes is not None and item.get("stage") == "download":
+                        changes[str(item.get("relative_path") or item.get("name") or "")] = item
             task.task_metadata[key] = runtime
 
     def _mark_upload_waiting(
@@ -1774,6 +1831,7 @@ class ASMRResourceService:
                 self._set_runtime_paused(task)
                 task.current_step = "已暂停"
             elif action == "resume":
+                self._set_runtime_resumed(task)
                 engine.resume_task(task.id)
                 task.current_step = "恢复中"
             elif action == "cancel":
@@ -3184,7 +3242,8 @@ class ASMRResourceService:
         state_lock = asyncio.Lock()
         session_result_persisted = False
         completed_count = 0
-        last_download_step_event_at = 0.0
+        task._download_file_changes = {}
+        task._download_runtime_emitted_at = None
         total_files = max(len(selected_resources), 1)
         network_download_indices: set[int] = set()
         expected_download_total_bytes = sum(
@@ -3268,7 +3327,7 @@ class ASMRResourceService:
         self._append_task_log(task, start_summary)
 
         async def handle_resource(index: int, resource: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-            nonlocal completed_count, last_download_step_event_at
+            nonlocal completed_count
             await task.wait_if_paused()
             if task.is_cancelled():
                 raise RuntimeError("用户取消")
@@ -3283,7 +3342,6 @@ class ASMRResourceService:
             async with semaphore:
                 try:
                     def file_progress_callback(downloaded_bytes: int, total_bytes: int, name=display_name, file_index=index):
-                        nonlocal last_download_step_event_at
                         self._update_download_runtime(
                             task,
                             progress_state,
@@ -3296,12 +3354,6 @@ class ASMRResourceService:
                             total_files=total_files,
                             stage="download",
                         )
-                        runtime = dict(task.task_metadata.get("download_runtime") or {})
-                        completed_files = int(runtime.get("completed_files") or 0)
-                        now_monotonic = time.monotonic()
-                        if now_monotonic - last_download_step_event_at >= 0.75:
-                            last_download_step_event_at = now_monotonic
-                            task.current_step = f"{'资源检查中' if reimport_only else '下载中'} {completed_files}/{total_files}: {name}"
 
                     file_exists = os.path.exists(destination) and os.path.getsize(destination) > 0
                     existing_size = os.path.getsize(destination) if file_exists else 0
@@ -3572,7 +3624,7 @@ class ASMRResourceService:
                 }
                 async with state_lock:
                     completed_count += 1
-                    task.update_progress(min(96, 5 + int(completed_count / total_files * 86)), f"已完成 {completed_count}/{total_files} 个文件")
+                    task.update_progress(task.progress, f"已完成 {completed_count}/{total_files} 个文件")
                 return result
 
         try:

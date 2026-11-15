@@ -995,6 +995,13 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any], *, transaction
             "folder_path": meta.get("folder_path"),
             "library_id": meta.get("library_id"),
             "subtitle_library_id": meta.get("subtitle_library_id"),
+            "pairing_mode": meta.get("pairing_mode"),
+            "ai_match_mode": meta.get("ai_match_mode"),
+            "ai_auto_applied": meta.get("ai_auto_applied"),
+            "ai_diagnostics": meta.get("ai_diagnostics"),
+            "ai_match_result": meta.get("ai_match_result"),
+            "pair_changes": meta.get("pair_changes"),
+            "naming_strategy": meta.get("naming_strategy"),
             "awaiting_manual_match": bool(meta.get("awaiting_manual_match")),
             "batch_id": str(meta.get("batch_id") or "").strip() or None,
         }

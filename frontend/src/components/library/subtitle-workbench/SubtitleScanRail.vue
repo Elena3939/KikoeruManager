@@ -680,8 +680,8 @@ function getScanResultIcon(status) {
 }
 
 .scan-rail-segment-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -1233,6 +1233,7 @@ function getScanResultIcon(status) {
 
 .scan-rail-segment {
   display: inline-flex;
+  flex: 1 0 auto;
   align-items: center;
   justify-content: center;
   gap: 7px;
@@ -1306,6 +1307,7 @@ function getScanResultIcon(status) {
 
 .scan-rail-segment-count {
   display: inline-flex;
+  flex-shrink: 0;
   min-width: 24px;
   align-items: center;
   justify-content: center;
@@ -2025,8 +2027,8 @@ html.dark .subtitle-scan-rail-root :deep(.scan-rail-card-action svg) {
 }
 
 @media (max-width: 360px) {
-  .scan-rail-segment-grid {
-    grid-template-columns: 1fr;
+  .scan-rail-segment {
+    flex-basis: 100%;
   }
 }
 </style>

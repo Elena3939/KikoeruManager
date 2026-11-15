@@ -1109,6 +1109,21 @@ class TaskCenterService:
             parent_metadata = self._item_metadata(parent)
             parent_metadata["merged_subtitle_task_id"] = self._safe_text(item.get("engine_task_id"))
             parent_metadata["merged_subtitle_source_mode"] = source_mode
+            # 子字幕任务才持有配对后的最终状态；合并到父任务时必须同步这些字段，
+            # 否则任务中心仍会用父任务旧快照显示“AI 配对待确认”。
+            for key in (
+                "awaiting_manual_match",
+                "manual_match_completed",
+                "manual_match_completed_at",
+                "manual_match_applied_pairs",
+                "manual_match_deleted_subtitles",
+                "ai_match_mode",
+                "ai_auto_applied",
+                "pairing_mode",
+                "ai_diagnostics",
+            ):
+                if key in child_metadata:
+                    parent_metadata[key] = self._json_safe(child_metadata.get(key))
             parent_details["metadata"] = self._json_safe(parent_metadata)
             parent_details["merged_subtitle_task"] = self._json_safe(item)
             parent["details"] = parent_details
@@ -1285,7 +1300,14 @@ class TaskCenterService:
             self._append_metric(metrics, "现有字幕", metadata.get("existing_subtitle_count"))
             self._append_metric(metrics, "写入", len(metadata.get("written_files") or []))
             if metadata.get("ai_match_mode") and metadata.get("ai_match_mode") != "rule":
-                self._append_metric(metrics, "AI", "自动应用" if metadata.get("ai_auto_applied") else "待确认")
+                ai_label = (
+                    "已确认"
+                    if metadata.get("manual_match_completed")
+                    else "自动应用"
+                    if metadata.get("ai_auto_applied")
+                    else "待确认"
+                )
+                self._append_metric(metrics, "AI", ai_label)
             if metadata.get("awaiting_manual_match"):
                 self._append_metric(metrics, "待手配", "是")
         elif domain == "asmr_sync":

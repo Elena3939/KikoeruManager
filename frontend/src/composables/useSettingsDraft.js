@@ -372,6 +372,8 @@ export const defaultConfig = {
     timeout_seconds: 30,
     max_retries: 2,
     temperature: 0,
+    reasoning_effort: 'low',
+    fast_mode: true,
     confidence_threshold: 85,
     max_items_per_request: 120,
     prompt_template: ''

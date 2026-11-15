@@ -10,7 +10,7 @@ const size = bytes => {
 
 export function getTransferRuntime(task, mode) {
   return task?.[`${mode}_runtime`] || task?.performance_metrics?.[`${mode}_runtime`]
-    || task?.task_metadata?.performance_metrics?.[`${mode}_runtime`] || {}
+    || task?.task_metadata?.[`${mode}_runtime`] || task?.task_metadata?.performance_metrics?.[`${mode}_runtime`] || {}
 }
 
 export function getTransferCardProgress(tasks = [], mode = 'download', now = Date.now()) {
@@ -23,6 +23,8 @@ export function getTransferCardProgress(tasks = [], mode = 'download', now = Dat
     const transferred = completed ? total : number(runtime.transferred_bytes ?? files.reduce((sum, file) => sum
       + (file.status === 'completed' ? number(file.size_bytes || file.size || file.total) : number(mode === 'upload' ? file.uploaded : file.downloaded)), 0))
     const active = status(task) === 'processing' && !['verifying', 'completed', 'paused'].includes(runtime.phase)
+      && !['completed', 'failed', 'paused', 'cancelled'].includes(runtime.status)
+      && (runtime.active_file_count == null || number(runtime.active_file_count) > 0)
     return { total, transferred: total ? Math.min(total, transferred) : transferred, completed,
       fraction: completed ? 1 : total ? Math.min(1, transferred / total) : Math.min(1, number(task.progress) / 100),
       speed: active ? number(runtime.speed_bytes_per_sec) : 0 }
@@ -43,6 +45,7 @@ export function getTransferCardProgress(tasks = [], mode = 'download', now = Dat
         : tasks.some(task => getTransferRuntime(task, mode).phase === 'verifying') && speed === 0 ? '正在确认远端文件' : ''
   return {
     percentage, completed,
+    totalBytes: total, transferredBytes: transferred, speedBytesPerSec: speed, remainingBytes: remaining, etaSeconds: eta,
     metaText: `${mode === 'upload' ? '上传' : '下载'} ${size(transferred)} / ${known ? size(total) : '统计中'} · 速度 ${size(speed)}/s · 剩余 ${known ? size(remaining) : '统计中'}`,
     timingText: stateText || `预计剩余：${formatDownloadEta(eta)} · 预计完成：${formatDownloadCompletion(eta ? now + eta * 1000 : null)}`
   }

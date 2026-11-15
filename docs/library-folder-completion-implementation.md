@@ -51,7 +51,10 @@
      - `upload_options.mode="local"`
      - `upload_options.target_path=<目标 RJ 文件夹>`
      - `postprocess_options.enabled=false`
-   - 下载成功后通过现有 `_upload_to_local()` 按资源 `relative_path` 写入目标 RJ 文件夹。
+   - 预览和提交启动时都重新执行现有过滤规则；`all` / `folder` 规则同时作用于音频、字幕、台本和图片等所有远端资源，不能因扩展名不是音频而绕过。
+   - 补全任务优先把文件下载到目标 RJ 文件夹下的隐藏暂存目录；校验成功后通过 `move_path_efficient()` 发布到目标相对路径，避免下载完成后再复制整份文件，并保留目标目录已有文件。
+   - 下载运行态维护整批 `total_bytes` / `transferred_bytes`；入库阶段的单文件进度不能覆盖下载阶段总量。
+   - 补全启动、会话更新、索引通知等同步数据库和磁盘操作移出 asyncio 主循环，避免一次 PostgreSQL 提交或挂载卷写入阻塞所有任务。
    - 任务完成后刷新库存统计并通知库存索引 self mutation。
 
 ## 后端拆分
@@ -77,7 +80,7 @@
 
 - `_apply_extract_filter_rules(remote_resources)`
   - 将资源转换为 `asmr_download_service.filter_files()` 需要的 `{title,path,type,size}` 形状。
-  - 过滤后映射回原始资源。
+  - 过滤后映射回原始资源；提交接口再次调用，防止旧预览或客户端旧资源清单绕过规则。
   - 记录 `filtered_out_count` 和过滤掉的相对路径。
 
 - `_is_empty_rj_folder(local_resources)`

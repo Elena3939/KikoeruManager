@@ -7,6 +7,7 @@ from .activity_log_aggregator import merge_activity_rows_from_dicts
 from .activity_log_lite import build_lite_item
 from .activity_log_relations import IMPORT_CATEGORIES, IMPORT_RESULT_ACTIONS
 from .activity_log_outcomes import sql_import_result_status
+from .activity_subtitle_state import sql_subtitle_status
 
 
 def import_batch_key():
@@ -87,7 +88,7 @@ def list_batch_lite(db, query, *, page, limit, status=None, searching=False):
     # 回查完整成员不沿用搜索、日期和单包状态条件，避免只汇总命中的半个批次。
     members = db.query(
         kind.label("kind"), ActivityLog.category.label("category"), key.label("key"),
-        ActivityLog.id, ActivityLog.action, sql_import_result_status(ActivityLog).label("status"), ActivityLog.created_at,
+        ActivityLog.id, ActivityLog.action, sql_subtitle_status(ActivityLog, sql_import_result_status(ActivityLog)).label("status"), ActivityLog.created_at,
         case((ActivityLog.action == "batch_start", cast(func.coalesce(
             ActivityLog.detail.op("->>")("created_count"), "0"), Integer)), else_=0).label("expected"),
         case((ActivityLog.action == "batch_start", cast(func.coalesce(
@@ -190,6 +191,8 @@ def list_batch_lite(db, query, *, page, limit, status=None, searching=False):
         if item is not None:
             item["latest_activity_at"] = group.latest.isoformat() if group.latest else item.get("created_at")
             items.append(item)
+    from .activity_subtitle_state import enrich_subtitle_items
+    enrich_subtitle_items(items, db)
     return {"total": total, "page": page, "limit": limit, "items": items}
 
 

@@ -2330,6 +2330,8 @@ export const rjSubtitleApi = {
       deleted_subtitles: payload.deletedSubtitles ?? 0,
       naming_strategy: payload.namingStrategy || 'audio',
       pair_changes: payload.pairChanges || [],
+      pairing_mode: payload.pairingMode || '',
+      ai_diagnostics: payload.aiDiagnostics || null,
       folder_path: payload.folderPath || '',
       library_id: payload.libraryId || '',
       rjcode: payload.rjcode || ''

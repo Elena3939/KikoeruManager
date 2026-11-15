@@ -26,6 +26,13 @@ KikoeruManager 默认使用 PostgreSQL `pg_trgm` 作为搜索加速后端，不�
 - 1-2 字符关键词不能依赖 trigram 一定命中索引；如果接口没有强分页、强作用域或专用 btree 路径，必须在入口拒绝或提示用户补充关键词。
 - 所有片段搜索都必须转义 `%/_/!`，禁止把用户输入当作 SQL 通配符。
 
+## 库存索引重建统计
+
+- 全量 generation 扫描时同步累计条目数、文件总字节数和顶层目录数，并把这份统计传给 cutover。
+- generation reconcile 只对 mutation 涉及的子树计算删除前后的统计差额，再合并回候选 generation。
+- cutover 禁止再次对整个 `library_index_entries` 做 `COUNT/SUM` 聚合；`_building_generation_stats` 仅保留给兼容诊断和测试调用。
+- 若新增重建阶段统计字段，必须同时更新扫描、子树 reconcile 和 cutover 三条路径，不能通过提高慢 SQL 阈值隐藏全代扫描。
+
 ## 配置
 
 `database` 配置新增：
